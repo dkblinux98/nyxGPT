@@ -137,6 +137,36 @@ def test_monitoring_slack_bot_token_is_the_field_that_regressed() -> None:
     assert _wizard_fields()["monitoring.slack_bot_token"].secret is True
 
 
+def test_the_uppercase_spelling_on_disk_is_masked_too(tmp_path: Path) -> None:
+    """The owner writes `SLACK_BOT_TOKEN`; the schema spells it lowercase (#3947/#3944).
+
+    Uppercase keys in `[monitoring]`, `[github]` and `[pypi]` are deliberate --
+    they mirror GitHub secret/variable names (owner note on #3947). The wizard
+    still had to mask that value, and it is not obvious that it does: the
+    schema's key is `slack_bot_token`, and `read_sections` looks it up by that
+    name. It works because `load_config` builds a `ConfigParser` with the
+    default `optionxform`, which lowercases option names on read -- which is
+    also why the leak was real on the owner's machine rather than hidden by
+    the spelling. Pin it, so a future switch to a case-preserving parser (as
+    `_build_schema` already uses for `example.config.ini`) cannot silently
+    turn this masking into a no-op.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        "[nyxgpt]\ndefault_model = llama3\n"
+        "[ollama]\nbase_url = http://localhost:11434\n"
+        "[monitoring]\nSLACK_BOT_TOKEN = xoxb-uppercase-on-disk\n",
+        encoding="utf-8",
+    )
+
+    entry = config_wizard.read_sections(config.load_config(str(cfg_path)))["monitoring"][
+        "slack_bot_token"
+    ]
+    assert isinstance(entry, dict), f"an uppercase key on disk came back as a bare value: {entry!r}"
+    assert entry["set"] is True
+    assert "xoxb-uppercase-on-disk" not in json.dumps(entry)
+
+
 def test_read_sections_never_returns_cleartext_for_a_secret() -> None:
     """Pin `read_sections`'s docstring claim to the schema, not to prose.
 

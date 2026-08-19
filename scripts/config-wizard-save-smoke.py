@@ -43,6 +43,16 @@ naming the error class and the line number and quoting none of the file. The
 leaking rendering is injected first and required to leak, for the same reason
 as above.
 
+A third pair covers the mirror image of the first, on the same endpoint and
+the same key (#3947): `[monitoring] slack_bot_token` was declared
+`secret=False` in `WIZARD_SCHEMA`, so `GET /api/v1/config/sections` -- the
+request the wizard makes on load -- returned the live token in cleartext to
+the browser. Here the token is read off the wire from a real API process, with
+the pre-fix classification injected first and required to leak. Unit tests
+reach `read_sections` and the endpoint under `TestClient`; this reaches the
+deployed path, including the uppercase `SLACK_BOT_TOKEN` spelling on disk that
+the schema itself spells in lowercase.
+
 Run: `python3 scripts/config-wizard-save-smoke.py` (no arguments; needs the
 package importable, e.g. `pip install -e .`).
 """
@@ -65,13 +75,23 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "example.config.ini"
 
-#: The section and key that fired on the owner's machine. `slack_bot_token` is
-#: non-secret in `WIZARD_SCHEMA`, so the wizard echoes it to the form and posts
-#: it back on *every* save -- which is why an ordinary save was enough.
+#: The section and key that fired on the owner's machine. `slack_bot_token` was
+#: non-secret in `WIZARD_SCHEMA` at the time, so the wizard echoed it to the
+#: form and posted it back on *every* save -- which is why an ordinary save was
+#: enough to reach the duplicating write. That flag was itself the defect
+#: behind #3947 and is now `secret=True`; the save below therefore posts the
+#: value explicitly rather than relying on the echo, and the third scenario
+#: pair asserts the echo is gone.
 SECTION = "monitoring"
 KEY = "slack_bot_token"
 DISK_SPELLING = "SLACK_BOT_TOKEN"
 STALE_KEY = "an_option_no_longer_in_the_example_config"
+
+#: The value `seed_config` puts on the `SLACK_BOT_TOKEN` line. Shaped like a
+#: Slack bot token because #3947's question is whether a *live-looking*
+#: credential travels to the browser, and named so the assertions below can
+#: look for it in a response body.
+SEEDED_TOKEN = "xoxb-seeded-by-the-smoke-test"  # pragma: allowlist secret
 
 # Restores the exact pre-fix behaviour of both halves of the defect: a
 # case-sensitive matcher (which duplicates instead of updating) and a write
@@ -101,6 +121,20 @@ def _prefix_write(cfg_path, new_text, _original_text):
 
 w._find_key_line = _prefix_find_key_line
 w._write_ini_checked = _prefix_write
+"""
+
+# Restores the pre-fix classification of #3947: the field carried no
+# `_FIELD_OVERRIDES` entry, so `_build_field_spec` gave it `secret=False` and
+# `read_sections` returned it verbatim. Removing the entry and rebuilding the
+# schema is exactly that state -- and rebuilding, rather than editing the
+# frozen `FieldSpec`, is what makes this an injection of the *old rule* rather
+# than of one hand-picked outcome. Executed before uvicorn imports the app.
+INJECT_NONSECRET_BOT_TOKEN = """
+import nyxgpt.config_wizard as w
+
+w._FIELD_OVERRIDES.pop(("monitoring", "slack_bot_token"), None)
+w.WIZARD_SCHEMA = w._build_schema()
+w._SCHEMA_BY_SECTION = {s.section: s for s in w.WIZARD_SCHEMA}
 """
 
 #: A unique marker seeded into config.ini, used by the disclosure half below.
@@ -166,7 +200,7 @@ def seed_config(home: Path) -> Path:
     text += (
         f"\n[{SECTION}]\n"
         "enabled = false\n"
-        f"{DISK_SPELLING} = xoxb-seeded-by-the-smoke-test\n"
+        f"{DISK_SPELLING} = {SEEDED_TOKEN}\n"
         f"{STALE_KEY} = leftover\n"
     )
     # `[monitoring]` may already exist in example.config.ini; two headers of
@@ -530,6 +564,96 @@ def check_leak_injection_reproduces() -> None:
     log(f"PASS: pre-review rendering discloses the line and the home path (status={r['status']})")
 
 
+def bot_token_scenario(*, inject_nonsecret: bool) -> dict:
+    """Boot on a seeded config.ini and read what a browser opening the wizard gets.
+
+    #3947: `GET /api/v1/config/sections` is the request the Configuration
+    Wizard makes on load, and `[monitoring] slack_bot_token` was returned
+    through it in cleartext. Unit tests cover `read_sections` and the endpoint
+    under `TestClient`; what only a real process shows is the whole path a
+    deployed instance actually runs -- uvicorn, the config middleware loading
+    `$HOME/.nyxGPT/config.ini` from disk, the JSON on the wire -- against the
+    owner's real spelling of the key, `SLACK_BOT_TOKEN` in uppercase, which
+    the wizard's own schema spells in lowercase.
+
+    The request is deliberately unauthenticated (the seeded config leaves
+    `[auth] enabled = false`, as example.config.ini ships it): that is the
+    shape of the exposure, a value leaving disk for any caller that can reach
+    the port.
+    """
+    with tempfile.TemporaryDirectory(prefix="nyxgpt-3947-") as tmp:
+        home = Path(tmp)
+        seed_config(home)
+        port = free_port()
+        bootstrap = INJECT_NONSECRET_BOT_TOKEN if inject_nonsecret else ""
+
+        proc = start_api(home, port, bootstrap=bootstrap)
+        if not wait_for_health(proc, port):
+            raise AssertionError(f"the API never came up on the seeded config.ini:\n{stop(proc)}")
+        try:
+            status, body = http_status_and_text(port, "/api/v1/config/sections")
+        finally:
+            api_log = stop(proc)
+
+        return {"status": status, "body": body, "log": api_log}
+
+
+def check_bot_token_never_reaches_the_browser() -> None:
+    """The shipped wizard must answer with `{set, masked}`, never the token (#3947)."""
+    log("shipped behaviour: what GET /config/sections hands a browser for the bot token")
+    r = bot_token_scenario(inject_nonsecret=False)
+
+    failures: list[str] = []
+    if r["status"] != 200:
+        failures.append(f"the wizard's own load request returned {r['status']}: {r['body'][:400]}")
+    elif SEEDED_TOKEN in r["body"]:
+        failures.append("the response body contains the bot token in cleartext")
+    else:
+        try:
+            entry = json.loads(r["body"])["sections"][SECTION][KEY]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            entry = None
+            failures.append(f"could not read sections.{SECTION}.{KEY} from the response: {exc}")
+        if entry is not None:
+            # Masked is not enough on its own: a field that simply stopped
+            # being reported would also contain no cleartext, and would be a
+            # different defect (the wizard could no longer tell the user
+            # whether a token is set). Assert the pair the UI renders.
+            if not isinstance(entry, dict) or set(entry) != {"set", "masked"}:
+                failures.append(f"expected a {{set, masked}} pair, got {entry!r}")
+            elif entry["set"] is not True:
+                failures.append(
+                    "the token is on disk under its uppercase spelling but the wizard "
+                    f"reports it unset ({entry!r}) -- the mask hid the value and the "
+                    "field with it"
+                )
+            elif SEEDED_TOKEN in str(entry["masked"]):
+                failures.append(f"the mask is not masking: {entry['masked']!r}")
+
+    if failures:
+        raise AssertionError(
+            "the running API still exposes the Slack bot token:\n  - "
+            + "\n  - ".join(failures)
+            + f"\n--- api log ---\n{r['log'][-2000:]}"
+        )
+    log("PASS: the token is reported as {set, masked} and its value is nowhere in the body")
+
+
+def check_nonsecret_injection_reproduces_the_leak() -> None:
+    """With the pre-#3947 classification back, that same GET must leak the token."""
+    log("injected pre-fix classification: the same request must return the token")
+    r = bot_token_scenario(inject_nonsecret=True)
+
+    if SEEDED_TOKEN not in r["body"]:
+        raise AssertionError(
+            "removing the secret override did NOT put the token in the response, so this "
+            "job cannot tell a fixed build from the one that leaked. Either the schema no "
+            "longer derives sensitivity from `_FIELD_OVERRIDES` or the fixture stopped "
+            f"reaching the field (status={r['status']}, body={r['body'][:400]})"
+        )
+    log(f"PASS: the pre-fix classification returns the token in cleartext (status={r['status']})")
+
+
 def main() -> int:
     if not EXAMPLE_CONFIG.is_file():
         log(f"FAIL: {EXAMPLE_CONFIG} not found")
@@ -539,6 +663,8 @@ def main() -> int:
         check_fixed()
         check_leak_injection_reproduces()
         check_no_pre_auth_disclosure()
+        check_nonsecret_injection_reproduces_the_leak()
+        check_bot_token_never_reaches_the_browser()
     except AssertionError as e:
         log(f"FAIL: {e}")
         return 1
