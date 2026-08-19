@@ -122,6 +122,22 @@ both of them the same number and the collision is created at merge, by neither
 branch alone. That is how `V-034`/`V-035` came to be defined twice, failing
 `test_ledger_entry_ids_are_unique` for every review on the branch afterwards.
 
+**The number you are given is provisional, and that is fine** (#3862). A
+branch open for days cannot know what the base will hold by the time it lands,
+so `review_accept_and_merge.sh` re-runs the allocation immediately before the
+merge:
+
+```
+python3 scripts/agents/lib/ledger_ids.py reallocate --base origin/<release branch> --write
+```
+
+Only IDs that **both** sides invented since the merge base are moved, only on
+the branch, and cross-references move with them. Entries you merely edited keep
+their IDs. So do not hand-resolve a duplicate-ID conflict on a long-lived
+branch — the by-hand resolution got the `theirs`/`mine` sides backwards on the
+first attempt (#3836/`V-030`). `test_ledger_entry_ids_are_unique` stays as the
+backstop; it works, and it is what catches anything this misses.
+
 **Decision** — something was settled, and by whom.
 
 ```
@@ -789,7 +805,50 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
   Source: #3853; #3860 run 32202943938 (Q-002's reproduction); D-026.
 
-- **D-031** · 2026-08-19 · developer agent (#3861) — **The native install
+- **D-031** · 2026-08-19 · developer agent (#3862) — **A branch may be deleted
+  only when its content is provably on the target branch, and an issue may be
+  closed as `completed` only on the same proof.** "Provably" means blob-level:
+  an ancestor, or every path the branch touches already identical there (or a
+  subset of it, which is the shape a branch takes when the base has simply
+  moved ahead on `agents/LEDGER.md`). Commit ancestry, commit count, `git
+  branch --merged`, mergeability, branch age, "no PR exists" and "its issue is
+  closed" are **all** unusable, each disproven against a real three-branch set
+  on 2026-08-18: on that data the branch whose every byte had landed looked the
+  *most* unmerged of the three, so acting on any of them keeps the redundant
+  branch and destroys the two holding the only copy of 438 lines of tests.
+  Anything not positively proven is reported, never deleted, and every gate
+  fails closed — an unreachable check means "keep". This is the criterion
+  D-013's event-driven cleanup acts on; it does not reopen the no-scheduled-
+  sweep decision, and `.github/workflows/cleanup_stale_branches.yml` (a weekly
+  sweep that deleted unmerged branches for being 14 days old) was removed under
+  it. The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_branch_content.py`, `tests/test_branch_hygiene.sh` and
+  `.github/workflows/branch-guard-smoke.yml`, per the retirement of the
+  verification log.
+  The same change adds the **one** exception to "PRs are created only via
+  `developer_submit_for_review.sh`" — a draft rescue PR for a branch that
+  reached `origin` without one — and that exception is written into `CLAUDE.md`
+  § PR Rules, not left implicit here. A rescue draft is a waypoint: it carries a
+  marker the developer workflow matches so a reassignment continues on that
+  branch, and it is promoted (closing reference, out of draft) only when a run
+  passes verification. Without that loop the rescue would trade an orphan branch
+  for a stranded draft PR, which is worse — an open PR shields its head branch
+  from every cleanup there is.
+  (Filed as `D-030`, renumbered to `D-031` by `ledger_ids.py reallocate
+  --write --base origin/v3.0.0` when `v3.0.0` landed #3853's `D-030` first —
+  this entry's own machinery, run on the collision it was written for, and the
+  first time that renumber was not done by hand. It rewrites the ledger only:
+  the four cross-references this change had planted in
+  `agents/runbooks/review-runbook.md`, `scripts/branch-guard-smoke.sh`,
+  `scripts/closure-gate-smoke.sh` and
+  `.github/workflows/delete_branch_on_pr_close.yml` were carried by hand,
+  because a tree-wide rewrite cannot tell them from the base's *own*
+  `D-030` reference in `macos-brew-smoke.yml`, which must not move. IDs are
+  never reused.)
+  Source: #3862; `scripts/agents/lib/branch_content.py`;
+  `scripts/agents/developer_ensure_pr_exists.sh`.
+
+- **D-032** · 2026-08-19 · developer agent (#3861) — **The native install
   marker records an identity, and reconciliation is a comparison of whole
   identities — never a list of transition pairs.** `mode` (`artifact`/`dev`)
   is now one field of an `InstallIdentity` alongside the service **manager**,

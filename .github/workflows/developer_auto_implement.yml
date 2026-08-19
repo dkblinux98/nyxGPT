@@ -354,6 +354,26 @@ jobs:
               | head -1)
           fi
 
+          # A rescue draft (developer_ensure_pr_exists.sh, #3862) carries
+          # `Refs #ISSUE`, never `Closes #ISSUE` -- it is not a submission, and
+          # must not close the issue if someone merges it. So neither lookup
+          # above can see it, and without this third one a reassignment would
+          # report pr_exists=false, start a fresh timestamped branch, duplicate
+          # the rescued work, and leave the draft open forever with its head
+          # branch shielded from cleanup by that open PR. Match the marker, and
+          # only among OPEN PRs: closing a rescue draft is the discard signal,
+          # so a closed one must not block re-implementing the issue.
+          RESCUE=false
+          if [[ -z "$FOUND_PR" ]]; then
+            FOUND_PR=$(gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" --paginate \
+              --jq ".[] | select(.body // \"\" | contains(\"<!-- rescue-pr: issue-${ISSUE} -->\")) | .number" \
+              | head -1)
+            if [[ -n "$FOUND_PR" ]]; then
+              RESCUE=true
+              echo "::notice::Found rescue draft PR #$FOUND_PR for issue #$ISSUE; continuing on its branch instead of starting a new one"
+            fi
+          fi
+
           if [[ -n "$FOUND_PR" ]]; then
             PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${FOUND_PR}")
             EXISTING_PR="$FOUND_PR"
@@ -364,11 +384,13 @@ jobs:
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
             echo "pr_state=$PR_STATE" >> "$GITHUB_OUTPUT"
             echo "pr_branch=$PR_BRANCH" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR #$EXISTING_PR found for issue #$ISSUE (state: $PR_STATE, branch: $PR_BRANCH)"
+            echo "rescue=$RESCUE" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR #$EXISTING_PR found for issue #$ISSUE (state: $PR_STATE, branch: $PR_BRANCH, rescue: $RESCUE)"
           else
             echo "pr_exists=false" >> "$GITHUB_OUTPUT"
             echo "pr_state=" >> "$GITHUB_OUTPUT"
             echo "pr_branch=" >> "$GITHUB_OUTPUT"
+            echo "rescue=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No existing PR found for issue #$ISSUE"
           fi
 
@@ -378,6 +400,8 @@ jobs:
         shell: bash
         env:
           PR: ${{ steps.check_pr.outputs.existing_pr }}
+          # #3837: step outputs reach the shell as data, never as source.
+          RESCUE: ${{ steps.check_pr.outputs.rescue }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
@@ -404,9 +428,18 @@ jobs:
           MERGEABLE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq \
             'if .mergeable == null then "UNKNOWN" elif .mergeable_state == "dirty" then "CONFLICTING" else "MERGEABLE" end')
 
-          if [[ -n "$REVIEW_COMMENT" || "$MERGEABLE" == "CONFLICTING" ]]; then
+          # Third reason to take the fix path, alongside CHANGES_REQUESTED and
+          # CONFLICTING: this is a rescue draft (#3862). There is no review to
+          # act on -- the previous run never got far enough to be reviewed --
+          # but there IS unfinished work on a branch that must be continued
+          # rather than duplicated onto a new one. Without this clause the run
+          # would post "PR already exists and has no review issues, skipping"
+          # and the rescued work would sit in a draft nobody ever finishes.
+          if [[ -n "$REVIEW_COMMENT" || "$MERGEABLE" == "CONFLICTING" || "$RESCUE" == "true" ]]; then
             echo "has_review_issues=true" >> "$GITHUB_OUTPUT"
-            if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+            if [[ "$RESCUE" == "true" ]]; then
+              echo "::notice::PR is a rescue draft - will continue the unfinished implementation"
+            elif [[ "$MERGEABLE" == "CONFLICTING" ]]; then
               echo "::notice::PR conflicts with its base branch - will resolve"
             else
               echo "::notice::PR has CHANGES_REQUESTED review - will fix issues"
@@ -546,16 +579,44 @@ jobs:
         shell: bash
         env:
           PR: ${{ steps.check_pr.outputs.existing_pr }}
+          # #3837: step outputs reach the shell as data, never as source.
+          RESCUE: ${{ steps.check_pr.outputs.rescue }}
+          ISSUE: ${{ github.event.issue.number }}
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
-          # Get the latest CHANGES_REQUESTED review (not comment).
-          # --jq runs once per fetched page -- stream matching reviews
-          # across all pages first, then slurp+last (see AGENTS.md).
-          gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --paginate \
-            --jq '.[] | select(.state == "CHANGES_REQUESTED")' \
-            | jq -s -r 'last | .body' \
-            > /tmp/review-comments.txt
-          echo "Saved review feedback to /tmp/review-comments.txt"
+          # A rescue draft (#3862) has no review to fetch -- the run that
+          # produced it never reached review. Hand the fix step the actual
+          # brief instead of the string "null" (which is what `last | .body`
+          # yields over an empty review list).
+          if [[ "$RESCUE" == "true" ]]; then
+            cat > /tmp/review-comments.txt <<EOF
+          ## Continue an unfinished implementation (rescue draft PR #${PR})
+
+          There is no code review to address. PR #${PR} is a **rescue draft**: an
+          earlier developer-agent run for issue #${ISSUE} pushed its branch to the
+          remote and ended before its verification passed, so \`developer_ensure_pr_exists.sh\`
+          opened a draft PR to keep the work from being stranded.
+
+          Your job this round is to **finish that work on that branch**, not to start
+          over: check out the PR's head branch (Step 1 below), read what is already
+          committed there, and implement whatever the issue still requires. Do not
+          create a new branch.
+
+          When your changes pass the full verification suite, the workflow rewrites
+          this PR's body to \`Closes #${ISSUE}\`, marks it ready for review and requests
+          the review agent -- you do not need to do any of that yourself.
+          EOF
+            echo "Wrote the rescue-continuation brief to /tmp/review-comments.txt"
+          else
+            # Get the latest CHANGES_REQUESTED review (not comment).
+            # --jq runs once per fetched page -- stream matching reviews
+            # across all pages first, then slurp+last (see AGENTS.md).
+            gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --paginate \
+              --jq '.[] | select(.state == "CHANGES_REQUESTED")' \
+              | jq -s -r 'last | .body' \
+              > /tmp/review-comments.txt
+            echo "Saved review feedback to /tmp/review-comments.txt"
+          fi
 
           # Extract structured critical_issues from hidden review comment if available.
           # Same per-page --jq pitfall as above -- stream, then slurp+last.
@@ -817,7 +878,18 @@ jobs:
             echo "Syncing $CURRENT -> $PR_BRANCH (force: review fix supersedes stale PR tip)"
             git push --force origin "HEAD:refs/heads/$PR_BRANCH"
           fi
-          git push origin --delete "$CURRENT" || echo "Could not delete stray branch $CURRENT (non-fatal)"
+          # #3862: the delete is the supersession event, so it goes through the
+          # same blob-level guard as every other one. Previously the push above
+          # failing (protected ref, race, rejected force) still fell through to
+          # an unconditional delete, destroying the stray branch's only copy of
+          # the fix. Re-read the remote and prove the content is there first.
+          git fetch origin "$PR_BRANCH" --quiet
+          if python3 scripts/agents/lib/branch_content.py landed \
+               --base "origin/$PR_BRANCH" --branch "$CURRENT"; then
+            git push origin --delete "$CURRENT" || echo "Could not delete stray branch $CURRENT (non-fatal)"
+          else
+            echo "::warning::Keeping stray branch $CURRENT — its content is not provably on $PR_BRANCH."
+          fi
 
       - name: Post implementation start comment
         if: steps.check_pr.outputs.pr_exists == 'false'
@@ -1583,6 +1655,24 @@ jobs:
           ISSUE="${{ github.event.issue.number }}"
 
           echo "::group::Requesting review for existing PR #$PR"
+
+          # A rescue draft (#3862) reaches this step once its continuation run
+          # has passed verification -- which is exactly the moment it stops
+          # being a rescue and becomes a submission. Promote it: give it the
+          # `Closes #ISSUE` body the PR rules require (the rescue body carries
+          # `Refs`, on purpose, so a merge of an unfinished draft could not
+          # close the issue) and take it out of draft, or the review agent is
+          # asked to review something GitHub will not let it merge.
+          if [[ "$(gh pr view "$PR" --json isDraft --jq '.isDraft')" == "true" ]]; then
+            echo "::notice::PR #$PR is a draft; promoting it to ready for review"
+            body="$(gh pr view "$PR" --json body --jq '.body')"
+            if [[ "$body" == *"<!-- rescue-pr: issue-${ISSUE} -->"* ]]; then
+              printf '%s\n' "${body//Refs #${ISSUE}/Closes #${ISSUE}}" > /tmp/promoted-pr-body.md
+              gh pr edit "$PR" --body-file /tmp/promoted-pr-body.md || \
+                echo "::warning::Failed to rewrite rescue PR body to 'Closes #${ISSUE}'"
+            fi
+            gh pr ready "$PR" || echo "::warning::Failed to mark PR #$PR ready for review"
+          fi
 
           # Assign PR to review-agent
           gh pr edit "$PR" --add-assignee "${{ vars.REVIEW_AGENT }}" || \
@@ -2745,3 +2835,31 @@ jobs:
 
           notify_human_escalation "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" "$DEDUP_KEY" \
             || echo "::warning::Human-channel notification failed for issue #${ISSUE} — escalation itself is unaffected."
+
+      # ---------------------------------------------------------------
+      # #3862: no branch reaches the remote without a pull request.
+      # ---------------------------------------------------------------
+      - name: Ensure the work branch has a pull request
+        # LAST step in the job, and `always()`, because that is the whole
+        # point: this run pushed the work branch to origin long before a PR
+        # was possible (developer_create_branch.sh at creation, then
+        # "Snapshot uncommitted implementation work" before verification, so a
+        # turn-limited implementation is not lost with the runner). "Submit PR
+        # for review" is gated on success(), so every failure exit between
+        # those points -- Final Verification, a Phase 1-3 escalation, a
+        # usage-limit abort, the job timing out -- used to end with a branch on
+        # the remote that no PR, no review agent and no cleanup could see.
+        # Three of them sat there for weeks; two held the only copy of 438
+        # lines of test coverage.
+        #
+        # The script opens a DRAFT PR (a rescue, not a submission -- this run's
+        # checks did not pass) or, when the branch's content is provably
+        # already on the release branch, deletes it. It never fails the job.
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          ./scripts/agents/developer_ensure_pr_exists.sh "${{ github.event.issue.number }}" \
+            || echo "::warning::PR-existence backstop did not complete; check for an orphaned branch."

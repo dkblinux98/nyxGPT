@@ -131,8 +131,13 @@ _reset_stub case4
 cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"303": {"item_id": "PVTI_pr303", "status": "In Review"}}
 EOF
-cat > "$GH_STUB_DIR/pulls.json" <<'EOF'
-{"303": {"head": "feat/lane-invariant", "base": "v3.0.0", "merged": false, "state": "open"}}
+# head_sha/base_sha are the checkout's own HEAD, so #3862's closure gate sees
+# a PR whose content is trivially already on the base and verifies it. Case 4b
+# below is the other half.
+HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+cat > "$GH_STUB_DIR/pulls.json" <<EOF
+{"303": {"head": "feat/lane-invariant", "base": "v3.0.0", "merged": false, "state": "open",
+         "head_sha": "$HEAD_SHA", "base_sha": "$HEAD_SHA"}}
 EOF
 
 merge_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
@@ -141,6 +146,32 @@ merge_rc=$?
 _assert_eq "merge flow exits 0" "$merge_rc" "0"
 _assert_contains "merge flow reports the lane stamp" "$merge_out" "project item -> Closed"
 _assert_eq "LANE INVARIANT: merged PR is not left in In Review" "$(_pr_lane 303)" "Closed"
+_assert_contains "the merge is verified by content, not by the merge command's exit code" \
+  "$merge_out" "is present on v3.0.0"
+
+# ---- case 4b: a merge that cannot be verified does NOT close the issue --
+# #3862: #3789 and #3815 were both closed as `completed` while their fixes sat
+# on branches that never reached the release branch, because the closure was
+# keyed on a run reporting success. An unverifiable head must stop the closure
+# and fail the run loudly rather than mark the work done.
+_reset_stub case4b
+cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
+{"313": {"item_id": "PVTI_pr313", "status": "In Review"}}
+EOF
+cat > "$GH_STUB_DIR/pulls.json" <<'EOF'
+{"313": {"head": "feat/unverifiable", "base": "v3.0.0", "merged": false, "state": "open",
+         "head_sha": "0000000000000000000000000000000000000000",
+         "base_sha": "0000000000000000000000000000000000000000"}}
+EOF
+
+unverified_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
+  bash "$MERGE_SCRIPT" 313 3742 2>&1)"
+unverified_rc=$?
+_assert_eq "an unverifiable merge fails the run" "$unverified_rc" "1"
+_assert_contains "and says why, naming the branch it could not confirm" \
+  "$unverified_out" "NOT verifiably on v3.0.0"
+_assert_not_contains "and never runs the issue close" \
+  "$unverified_out" "Closing issue #3742"
 
 # ---- case 5: dry-run merge announces the stamp without writing ---------
 _reset_stub case5

@@ -982,3 +982,21 @@ The review workflow requires these secrets to be configured:
 
 ### Branch Cleanup
 Branch deletion happens in `review_accept_and_merge.sh` via `--delete-branch`, not in auto-fix workflow.
+
+Everywhere else, a branch is deleted **only when its content is provably on
+the target branch** — an ancestor, or every path it touches already identical
+there (`scripts/agents/lib/branch_content.py`; ledger D-031). Commit ancestry,
+commit count, `git branch --merged`, mergeability, branch age, "no PR exists"
+and "its issue is closed" are all unusable as signals; each was disproven
+against a real branch set, where the branch whose every byte had landed looked
+the *most* unmerged of three. Anything not positively proven is **reported,
+not deleted**, and there is no scheduled sweep (D-013). `reconcile_dead_branches.sh`
+reports on demand and needs `--delete` to act.
+
+### The closure gate
+`review_accept_and_merge.sh` will **not close an issue on a merge it cannot
+verify**. `gh pr merge` exiting 0 is a report; the evidence is that every path
+the PR head touched is readable on the base branch afterwards. If the check
+cannot confirm it, the issue is left open, a comment says why, and the run
+exits non-zero — #3789 and #3815 were both closed as `completed` with their
+fixes stranded on branches that never landed (#3862).

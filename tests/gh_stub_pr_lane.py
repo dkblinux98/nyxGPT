@@ -18,7 +18,14 @@ GitHub. Two properties matter:
 Fixtures the suite writes into ``$GH_STUB_DIR``:
   ``pr_items.json``   {pr_number: {"item_id": str|null, "status": str|null}}
   ``pulls.json``      {pr_number: {"head": str, "base": str, "merged": bool,
-                                   "state": "open"|"closed"}}
+                                   "state": "open"|"closed",
+                                   "head_sha": str, "base_sha": str}}
+                      head_sha/base_sha feed #3862's closure gate, which
+                      refuses to close an issue unless the PR's content is
+                      verifiably on the base branch. They default to HEAD of
+                      the checkout the suite runs in, which trivially
+                      verifies; point head_sha at something unresolvable to
+                      exercise the refusal.
   ``items_page.json``  project item nodes for the sweep query (see _sweep_page)
 """
 
@@ -248,12 +255,17 @@ def _rest(route: str, jq_filter: str | None) -> None:
         entry = _read_json("pulls.json", {}).get(
             pr, {"head": "feat/example", "base": "v3.0.0", "merged": False, "state": "open"}
         )
+        default_sha = os.environ.get("STUB_HEAD_SHA", "HEAD")
         _emit(
             {
                 "node_id": f"PR_node_{pr}",
                 "number": int(pr),
-                "head": {"ref": entry["head"], "repo": {"full_name": "dkblinux98/nyxGPT"}},
-                "base": {"ref": entry["base"]},
+                "head": {
+                    "ref": entry["head"],
+                    "sha": entry.get("head_sha", default_sha),
+                    "repo": {"full_name": "dkblinux98/nyxGPT"},
+                },
+                "base": {"ref": entry["base"], "sha": entry.get("base_sha", default_sha)},
                 "mergeable": True,
                 "mergeable_state": "clean",
                 "merged": entry["merged"],
