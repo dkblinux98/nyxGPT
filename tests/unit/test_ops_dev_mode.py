@@ -368,12 +368,13 @@ def _record_identity(monkeypatch, mode, manager, api_service):
     return identity
 
 
-def test_reconcile_is_a_no_op_record_when_the_identity_is_unchanged(
+def test_reconcile_retires_nothing_when_the_identity_and_the_machine_both_match(
     monkeypatch, checkout, tmp_path
 ):
     monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
     # Record exactly the identity this run is about to install, which is what
@@ -383,16 +384,55 @@ def test_reconcile_is_a_no_op_record_when_the_identity_is_unchanged(
 
     with (
         patch.object(ops, "_stop_brew_service") as stop,
-        patch.object(ops, "_brew_services_snapshot", return_value={}) as snapshot,
+        patch.object(ops, "_brew_services_snapshot", return_value={}),
     ):
         results = ops._reconcile_install_mode(dev=False)
 
     stop.assert_not_called()
-    # Nothing is even *looked* for when the identity matches: an unchanged
-    # install must not pay a `brew services list` on every re-run.
-    snapshot.assert_not_called()
     # An unchanged identity must not bounce services or rebuild a healthy venv.
     assert venv.exists()
+    assert [r.message for r in results if "changing" in r.message] == []
+
+
+def test_reconcile_retires_a_foreign_service_even_when_the_identity_is_unchanged(
+    monkeypatch, checkout, tmp_path
+):
+    """A matching marker is not evidence that the machine matches it (#3861 review).
+
+    The marker records what the last install *targeted*, not what is
+    registered now: a retire that failed, a keg's service started by hand, or
+    an install made outside `nyxgpt ops` all leave a foreign service beside a
+    marker that already names the target. Gating the subtraction on a changed
+    identity made `doctor`'s own remedy -- "re-run `nyxgpt up` ... to retire
+    the ones that are not this install's" -- a no-op in every state doctor
+    can fire in.
+    """
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    identity = ops._native_install_identity(dev=False)
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None, identity=identity)
+
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        ops,
+        "_stop_brew_service",
+        lambda name: stopped.append(name) or [ops.OpsResult(True, f"stopped {name}")],
+    )
+    # An older channel's keg, registered and crash-looping, under a marker
+    # that says the current build is the one installed.
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api@2.1.0": "error", **dict.fromkeys(identity.service_names, "started")},
+    )
+
+    results = ops._reconcile_install_mode(dev=False)
+
+    assert stopped == ["nyxgpt-api@2.1.0"]
+    # Reported as no identity *change* -- because there was none -- while the
+    # foreign service is still retired.
     assert [r.message for r in results if "changing" in r.message] == []
 
 

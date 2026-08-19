@@ -539,6 +539,121 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  // --- WHICH build, not merely which mode (#3861) ---
+  //
+  // A mode cannot tell a 2.1.0 keg from a 3.0.0rc12 one -- both are
+  // 'artifact' -- which is how four install identities accumulated on one
+  // machine with nothing able to say so. The page has to name the build, and
+  // has to say when it cannot rather than presenting the mode as if it did.
+
+  it('names the installed build and the services it is registered under (#3861)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started', web: 'started' },
+          install_mode: {
+            mode: 'artifact',
+            checkout: null,
+            label: 'artifact (published/vendored build -- the repo-less default)',
+            components: ['api', 'web'],
+            identity: {
+              known: true,
+              manager: 'brew',
+              services: { api: 'nyxgpt-api@3.0.0rc', web: 'nyxgpt-web@3.0.0rc' },
+              version: '3.0.0rc12',
+              channel: 'candidate',
+              detail:
+                'brew: api=nyxgpt-api@3.0.0rc, web=nyxgpt-web@3.0.0rc; ' +
+                'version 3.0.0rc12; channel candidate',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('3.0.0rc12 (candidate)')).toBeInTheDocument();
+    expect(screen.getByText('brew')).toBeInTheDocument();
+    // Both components are named with their concrete service names -- the
+    // whole point is that `nyxgpt-api` and `nyxgpt-api@3.0.0rc` read
+    // differently here.
+    expect(screen.getByText('api=nyxgpt-api@3.0.0rc')).toBeInTheDocument();
+    expect(screen.getByText('web=nyxgpt-web@3.0.0rc')).toBeInTheDocument();
+    expect(screen.queryByText(/No install identity recorded/)).not.toBeInTheDocument();
+  });
+
+  it('still names the services when a known identity carries no version (#3861)', async () => {
+    // A recorded identity whose version could not be read is still an
+    // identity: the service names are what distinguish two kegs, and losing
+    // the version must not drop the card back to "artifact" with nothing
+    // said about which build registered them.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started' },
+          install_mode: {
+            mode: 'artifact',
+            checkout: null,
+            label: 'artifact (published/vendored build -- the repo-less default)',
+            components: ['api', 'web'],
+            identity: {
+              known: true,
+              manager: 'brew',
+              services: { api: 'nyxgpt-api' },
+              version: '',
+              channel: 'stable',
+              detail: 'brew: api=nyxgpt-api; version unknown; channel stable',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('unknown version (stable)')).toBeInTheDocument();
+    expect(screen.getByText('api=nyxgpt-api')).toBeInTheDocument();
+  });
+
+  it('says so plainly when the marker records no identity (#3861)', async () => {
+    // `known: false` is what a marker written before identities were
+    // recorded reads back as. Unknown must never be presented as "the same
+    // as whatever is installed" -- that silence is the defect.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started' },
+          install_mode: {
+            mode: 'artifact',
+            checkout: null,
+            label: 'artifact (published/vendored build -- the repo-less default)',
+            components: ['api', 'web'],
+            identity: {
+              known: false,
+              manager: 'unknown',
+              services: {},
+              version: '',
+              channel: 'unknown',
+              detail: 'no install identity recorded',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText(/No install identity recorded/)).toBeInTheDocument();
+    expect(screen.getByText(/cannot say which build the native/)).toBeInTheDocument();
+  });
+
   // --- The Kubernetes card's OWN install mode (#3834) ---
   //
   // Reported separately from the native marker on purpose: a host can run a

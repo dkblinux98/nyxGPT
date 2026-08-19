@@ -780,7 +780,23 @@ rather than mechanism, and nothing can enforce them.
   absent) is a possible mismatch reconciled defensively against what the
   service managers actually report, never "the same"; (c) reconcile **stops
   and de-registers, never uninstalls** — removal is a teardown decision
-  (#3859). Scope note: this is the `ops.py` half of #3853. The *packaging*
+  (#3859); (d) **a stop is not a de-registration until it has been checked.**
+  `brew services stop` exits 0 for a service that is registered but not
+  *running* — the `error` state a crash-looping keg sits in, which is the
+  state the owner's Mac was in — and leaves its LaunchAgent plist in place for
+  launchd to reload at the next login. So `_stop_brew_service` verifies
+  against `brew services list`, escalates to unloading the job and removing
+  the plist, and reports a **failure** when the service survives that.
+  Trusting the exit code is what made the first evidence run print `ok
+  Stopped brew service: nyxgpt-api` on a machine where `brew services list`
+  still showed it (run 32222041921); (e) the subtraction runs on **every**
+  install, not only when the recorded identity differs. A matching marker
+  records what the last install *targeted*, not what is registered now
+  (a failed retire, a hand-started service, an install made outside `nyxgpt
+  ops`), and gating it on `differences` made `doctor`'s own remedy — "re-run
+  `nyxgpt up` … to retire the ones that are not this install's" — a no-op in
+  every state `doctor` can fire in. What the comparison gates is the
+  *reporting* of the change and the api-venv rebuild. Scope note: this is the `ops.py` half of #3853. The *packaging*
   half stays parked — nothing here adds `conflicts_with` to the stable
   formula, so **D-026**'s debt (flipping `macos-brew-smoke.yml`'s
   reverse-direction `::warning::` back to a hard failure) is untouched and

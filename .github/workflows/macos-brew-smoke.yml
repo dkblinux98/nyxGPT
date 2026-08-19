@@ -804,8 +804,12 @@ jobs:
           # unstamped checkout does not, which would make the identity step
           # below detect "stable" while sitting inside the candidate's own
           # keg. Stamp it for the rc build only, then put it back so nothing
-          # after this step sees a mutated checkout.
+          # after this step sees a mutated checkout. Restored from a trap, not
+          # from the next line: under `set -e` a failed rc build would skip an
+          # unguarded restore and leave every later step -- including the log
+          # dumps that would explain the failure -- reading a mutated version.
           cp pyproject.toml "$RUNNER_TEMP/pyproject.toml.orig"
+          trap 'cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml' EXIT
           python - <<'PY'
           import pathlib
           p = pathlib.Path("pyproject.toml")
@@ -815,6 +819,7 @@ jobs:
           python scripts/build_homebrew_artifacts.py 3.0.0rc0 dist/rc \
             "file://${PWD}/dist/rc/dist" --channel rc
           cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml
+          trap - EXIT
           grep -m1 '^version' pyproject.toml
 
           ls -1 dist/stable/*.rb dist/rc/*.rb
@@ -1062,10 +1067,26 @@ jobs:
             brew services list | awk '$1 ~ /^nyxgpt-/ && $2 != "none" {print $1}' | sort | tr '\n' ' '
           }
 
+          # The registration itself is the plist brew copies into
+          # ~/Library/LaunchAgents: that file, not the exit code of `brew
+          # services stop`, is what launchd reloads at the next login. The
+          # first run of this step passed `brew services stop` and still left
+          # BOTH services registered (run 32222041921), because brew exits 0
+          # without de-registering a service that is registered but not
+          # running -- the `error` state below, and the exact state the
+          # owner's crash-looping Mac was in. So the plist is asserted gone,
+          # not merely reported stopped.
+          plist_gone() {
+            ! test -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$1.plist"
+          }
+
           echo "=== register BOTH service sets: the state the owner's Mac was in ==="
           brew services start nyxgpt-api || true
           brew services start nyxgpt-api@3.0.0rc || true
           brew services list || true
+          echo "service states (an 'error' state is registered-but-not-started, where"
+          echo "\`brew services stop\` exits 0 and does nothing -- the case #3861 tripped on):"
+          brew services list | awk '$1 ~ /^nyxgpt-/ {print "  " $1 " -> " $2}'
           before="$(registered)"
           echo "registered before: $before"
           case "$before" in
@@ -1090,6 +1111,10 @@ jobs:
               echo "::error::the previously-recorded stable service is still registered after the reconcile (#3861)"
               exit 1 ;;
           esac
+          plist_gone nyxgpt-api || {
+            echo "::error::nyxgpt-api's LaunchAgent plist survived the retire -- launchd will start it again at the next login (#3861)"
+            exit 1
+          }
 
           echo "=== and the reverse: a stable install over a recorded candidate retires the candidate ==="
           brew services start nyxgpt-api@3.0.0rc || true
@@ -1101,6 +1126,10 @@ jobs:
               echo "::error::the previously-recorded candidate service is still registered after the reconcile (#3861)"
               exit 1 ;;
           esac
+          plist_gone 'nyxgpt-api@3.0.0rc' || {
+            echo "::error::nyxgpt-api@3.0.0rc's LaunchAgent plist survived the retire -- launchd will start it again at the next login (#3861)"
+            exit 1
+          }
 
           echo "=== the machine is still usable ==="
           command -v nyxgpt

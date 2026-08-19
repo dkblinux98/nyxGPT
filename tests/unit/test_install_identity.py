@@ -561,4 +561,11 @@ def test_retiring_never_uninstalls_the_previous_keg(monkeypatch):
 
     ops._retire_service(MANAGER_BREW, "nyxgpt-api")
 
-    assert ran == [["brew", "services", "stop", "nyxgpt-api"]]
+    # The stop, then the read that checks it took: `brew services stop` exits
+    # 0 without de-registering a crashed service, so the exit code is not the
+    # answer (#3861 review). Nothing here removes the keg.
+    assert ran == [
+        ["brew", "services", "stop", "nyxgpt-api"],
+        ["brew", "services", "list"],
+    ]
+    assert not [argv for argv in ran if {"uninstall", "remove", "rm"} & set(argv)]

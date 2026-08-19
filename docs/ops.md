@@ -515,6 +515,26 @@ same reading from the other end: `api`/`web` services registered on the
 machine that the recorded install does not own are listed by name, which is
 what makes a second install visible instead of silent.
 
+**The retire runs on every install, not only when the identity changed.** A
+marker that matches the install about to happen is a record of what the last
+install *targeted*, not a survey of the machine — a service started by hand,
+an install made outside `nyxgpt ops`, or a retire that failed last time all
+leave something registered beside a marker that already names the target. So
+every `nyxgpt up` subtracts its own services from everything registered and
+retires the remainder; what the identity comparison decides is whether the
+change is *reported* and whether the shared api venv is rebuilt. This is what
+makes `doctor`'s remedy above — re-run `nyxgpt up` — actually retire the
+services it just named.
+
+**Retiring a service means de-registering it, and that is checked.** `brew
+services stop` exits 0 for a service that is registered but not running — the
+state a crash-looping keg sits in — while leaving its LaunchAgent plist in
+`~/Library/LaunchAgents`, so launchd starts it again at the next login. Every
+stop is therefore verified against `brew services list`, escalated to
+unloading the job and removing the plist when it did not take, and reported
+as a **failure** if the service is still registered after that, rather than
+as a stop that worked.
+
 On Linux the manager carries no signal — both modes drive the same
 `nyxgpt-api`/`nyxgpt-web` systemd `--user` units — so there the version and
 channel are the entire difference between two installs.

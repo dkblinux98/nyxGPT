@@ -1218,6 +1218,49 @@ def _brew_services_snapshot() -> dict[str, str]:
     return snapshot
 
 
+def _brew_service_registration(name: str) -> tuple[str, Path | None]:
+    """Return `(state, plist)` for brew service `name` from `brew services list`.
+
+    `state` is the Status column (`started`, `error`, `none`, ...), or
+    `"none"` when brew does not list the formula at all. `plist` is the File
+    column -- and that file *is* the registration: a plist sitting in
+    ~/Library/LaunchAgents is what launchd starts again at the next login,
+    which is why "did the stop take?" is a question about this path and not
+    about an exit code (#3861).
+
+    The File column is read rather than derived from the formula name on
+    purpose: brew has used more than one label scheme, and the column is
+    what this machine's brew actually wrote. `_brew_services_snapshot` stays
+    the cheap name->state map its many callers want; this is the one caller
+    that needs the file too.
+    """
+    if _which("brew") is None:
+        return "none", None
+    cp = _run(
+        ["brew", "services", "list"],
+        check=False,
+        expected=True,
+        timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+    )
+    for line in (cp.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == name:
+            last = parts[-1]
+            plist = Path(last).expanduser() if last.endswith(".plist") else None
+            return parts[1], plist
+    return "none", None
+
+
+def _brew_service_is_registered(name: str) -> bool:
+    """Whether brew service `name` will still be started by launchd.
+
+    True for any state other than `none`, and for a `none` state that still
+    names a plist -- either one means something is left to start it.
+    """
+    state, plist = _brew_service_registration(name)
+    return state != "none" or (plist is not None and plist.exists())
+
+
 def _docker_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for a container, or 'absent'."""
     if _which("docker") is None:
@@ -4113,6 +4156,11 @@ def _retire_previous_identity(
     installed, which `brew services` restarts at the next login. The
     target's own services are excluded from both halves, so an install never
     retires what it is about to start.
+
+    Called on every install, including one whose recorded identity already
+    matches the target: the discovery half is the only thing that can see a
+    service no marker ever described, and that population does not appear
+    only on the runs where the identity changed.
     """
     keep = set(target.service_names)
     stale = dict.fromkeys(
@@ -4145,6 +4193,11 @@ def _reconcile_install_mode(dev: bool) -> list[OpsResult]:
     An *unknown* previous identity (no marker, or one written before #3861)
     is treated as a possible mismatch and reconciled defensively, never as
     "the same": reading unknown as unchanged is today's failure exactly.
+
+    What the comparison gates is the *reporting* of the change and the venv
+    rebuild it implies. The retire itself is unconditional, because a marker
+    that matches the target says nothing about what is actually registered
+    beside it -- see the comment on the `_retire_previous_identity` call.
     """
     previous = read_install_mode()
     target_identity = _native_install_identity(dev)
@@ -4162,9 +4215,20 @@ def _reconcile_install_mode(dev: bool) -> list[OpsResult]:
                 "\n".join(differences),
             )
         )
-        results.extend(_retire_previous_identity(previous.identity, target_identity))
-        if _identity_change_invalidates_api_venv(previous.identity, target_identity):
-            results.extend(_drop_stale_api_venv())
+    # Subtracting the target's own services from everything registered runs
+    # on *every* install, not only when the recorded identity changed. A
+    # matching marker is not evidence that the machine matches it: a retire
+    # that failed last time, a keg's service started by hand, an install made
+    # outside `nyxgpt ops` at all -- each leaves a foreign service registered
+    # under a marker that already says "this is what is installed". Gating
+    # the subtraction on `differences` made `doctor`'s own remedy ("re-run
+    # `nyxgpt up` to retire the ones that are not this install's") a no-op in
+    # exactly the states doctor fires in. The cost is one `brew services
+    # list` per install, and on a machine with nothing foreign registered the
+    # loop retires nothing.
+    results.extend(_retire_previous_identity(previous.identity, target_identity))
+    if differences and _identity_change_invalidates_api_venv(previous.identity, target_identity):
+        results.extend(_drop_stale_api_venv())
 
     state = InstallModeState(
         mode=target,
@@ -10983,20 +11047,64 @@ def restart(args) -> int:
 # --- Stop/down helpers ---
 
 
-def _stop_brew_service(name: str) -> list[OpsResult]:
-    """Stop Homebrew service `name` via `brew services stop`.
+def _force_deregister_brew_service(name: str) -> list[OpsResult]:
+    """Do by hand the two things a successful `brew services stop` does.
 
-    Returns a single-element list: an OpsResult reporting brew missing, the
-    stop command's success, or its failure with captured stdout/stderr.
+    Unload the job from the GUI domain and delete the LaunchAgent plist brew
+    copied into ~/Library/LaunchAgents, in that order -- booting a job out
+    without removing its plist reinstates it at the next login
+    (`_remove_launchagents` records the same ordering rule).
+
+    Only ever called after a stop that did not de-register (see
+    `_stop_brew_service`), and only on macOS: brew services on Linux drive
+    systemd units, where `launchctl` and ~/Library/LaunchAgents do not exist.
+    """
+    if not _is_macos():
+        return []
+    _, plist = _brew_service_registration(name)
+    if plist is None:
+        # brew named no file (it reports none for an unregistered service),
+        # so fall back to the label brew has used for its service plists.
+        plist = _launchagents_dir() / f"homebrew.mxcl.{name}.plist"
+    results = _stop_launchagent(plist.stem)
+    if plist.exists():
+        try:
+            plist.unlink()
+            results.append(OpsResult(True, f"Removed brew service plist: {name}", str(plist)))
+        except OSError as e:
+            results.append(
+                OpsResult(
+                    False,
+                    f"Failed to remove brew service plist: {name}",
+                    f"{plist}: {type(e).__name__}: {e}",
+                )
+            )
+    return results
+
+
+def _stop_brew_service(name: str) -> list[OpsResult]:
+    """Stop Homebrew service `name` and verify it is really de-registered.
+
+    Not `brew services stop` alone, and not its exit code: brew exits 0 for a
+    service that is registered but not currently running -- the `error` state
+    a crash-looping keg sits in, which is exactly the state the owner's Mac
+    was in (#3853) -- while leaving the LaunchAgent plist in place, so
+    launchd starts it again at the next login. Trusting the exit code is what
+    made #3861's reconcile print `Stopped brew service: nyxgpt-api` on a
+    machine where `brew services list` still showed it registered
+    (macos-brew-smoke run 32222041921, the evidence job for this very fix).
+
+    So the stop is *checked* against `brew services list` and escalated to
+    `_force_deregister_brew_service` when it did not take, and a service
+    still registered after that is reported as a failure rather than as a
+    stop. Everything downstream -- the identity reconcile, `ops stop`,
+    teardown -- acts on the claim that nothing will start this service again,
+    so the claim has to be true or say it is not.
     """
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot stop {name}")]
     try:
         cp = _run(["brew", "services", "stop", name], check=False)
-        if cp.returncode == 0:
-            return [OpsResult(True, f"Stopped brew service: {name}")]
-        details = _output_excerpt(cp)
-        return [OpsResult(False, f"Failed to stop brew service: {name}", details.strip())]
     except Exception as e:
         return [
             OpsResult(
@@ -11005,6 +11113,38 @@ def _stop_brew_service(name: str) -> list[OpsResult]:
                 f"{type(e).__name__}: {e}",
             )
         ]
+
+    results: list[OpsResult] = []
+    if cp.returncode != 0:
+        results.append(
+            OpsResult(False, f"Failed to stop brew service: {name}", _output_excerpt(cp).strip())
+        )
+    if not _brew_service_is_registered(name):
+        if cp.returncode == 0:
+            results.append(OpsResult(True, f"Stopped brew service: {name}"))
+        return results
+
+    results.extend(_force_deregister_brew_service(name))
+    if _brew_service_is_registered(name):
+        results.append(
+            OpsResult(
+                False,
+                f"Brew service is still registered after stopping it: {name}",
+                "`brew services stop` exited without de-registering it, and unloading it by "
+                "hand did not either -- launchd will start it again at the next login. "
+                f"Check `brew services list` and ~/Library/LaunchAgents for {name}.",
+            )
+        )
+    else:
+        results.append(
+            OpsResult(
+                True,
+                f"Stopped and de-registered brew service: {name}",
+                "`brew services stop` left it registered (the state a crashed service sits "
+                "in); unloaded the job and removed its LaunchAgent plist.",
+            )
+        )
+    return results
 
 
 def _stop_docker_container(name: str) -> list[OpsResult]:

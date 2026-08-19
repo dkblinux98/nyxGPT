@@ -662,6 +662,29 @@ def test_the_identity_step_proves_the_old_gate_could_not_have_caught_it() -> Non
     )
 
 
+def test_the_identity_step_asserts_the_launchagent_plist_is_gone() -> None:
+    """A "stopped" service is not a de-registered one (#3861 review).
+
+    The first run of this step (32222041921) passed `brew services stop` and
+    still found both services registered: brew exits 0 without de-registering
+    a service that is registered but not running, and the plist it leaves in
+    ~/Library/LaunchAgents is what launchd starts again at the next login. A
+    check that reads only `brew services list` would also have passed the
+    moment brew changed *that* output without removing the file, so the file
+    itself is asserted gone.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "plist_gone" in run and "homebrew.mxcl" in run, (
+        "the step no longer checks the LaunchAgent plist, so a retire that "
+        "stops a service and leaves it registered would pass again"
+    )
+    for formula in ("plist_gone nyxgpt-api", "plist_gone 'nyxgpt-api@3.0.0rc'"):
+        assert formula in run, (
+            f"{formula!r} is gone: both directions retire a service, so both "
+            "have to prove the registration went with it"
+        )
+
+
 def test_the_rc_keg_is_stamped_so_the_channel_it_detects_is_its_own() -> None:
     """The candidate keg has to declare a candidate version, or the step lies.
 
@@ -679,6 +702,11 @@ def test_the_rc_keg_is_stamped_so_the_channel_it_detects_is_its_own() -> None:
     )
     assert "pyproject.toml.orig" in run, (
         "the stamp is no longer restored, so every step after it sees a mutated " "checkout"
+    )
+    assert "trap 'cp \"$RUNNER_TEMP/pyproject.toml.orig\" pyproject.toml' EXIT" in run, (
+        "the restore is no longer guarded by a trap: under `set -e` a failed rc "
+        "build skips it, and every later step -- including the failure log dump "
+        "that would explain the build -- reads a mutated version"
     )
 
 
