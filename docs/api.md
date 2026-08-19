@@ -718,9 +718,11 @@ casing the file already uses, so `SLACK_BOT_TOKEN` on disk is updated rather
 than shadowed by a second `slack_bot_token` line (#3944). The write is staged
 into a temporary file, parsed there, and only then swapped in atomically: if
 the merged text would not parse, the endpoint returns `500` with
-`"code": "config_write_refused"` and a message naming the offending line, and
-`config.ini` is left byte-identical. The same guard covers the stale-key
-removal endpoint below.
+`"code": "config_write_refused"` and a message naming the error and the line
+*number*, and `config.ini` is left byte-identical. The text of the offending
+line is deliberately not included -- it can be a credential, from the file or
+from the payload just posted; `nyxgpt ops doctor` shows it locally. The same
+guard covers the stale-key removal endpoint below.
 
 ### `POST /api/v1/config/sections/stale-keys/remove`
 
@@ -4711,7 +4713,12 @@ contributor documents stay in the repository and are absent from the artifact
 - **`config_unreadable`** — every request loads `~/.nyxGPT/config.ini`, so a
   malformed line makes *every* endpoint return `500` with this code. Unlike
   the generic `internal_error`, its `message` names the file, the parse error
-  and the line number; `nyxgpt ops doctor` reports the same thing (#3944).
+  and the line number (#3944). It never quotes the *content* of the offending
+  line: while config.ini is unparseable, API-key auth cannot be enforced at
+  all — the auth middleware has to load config before it can check a key — so
+  this response is readable by anyone who can reach the port, and the
+  offending line can be a secret. Run `nyxgpt ops doctor` on the host to see
+  the line itself.
 
 ---
 

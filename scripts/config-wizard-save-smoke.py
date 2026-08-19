@@ -30,6 +30,18 @@ the pre-fix behaviour monkeypatched back in (case-sensitive matcher, unchecked
 `write_text`) and asserts the API *does* break. Without that half this job
 would pass on any build, including one that never fixed anything.
 
+A second pair of scenarios covers what the stated cause is allowed to *say*
+(review finding on PR #3960). The guard that reports an unreadable config.ini
+has to be the outermost middleware, because `api_key_auth` calls `load_config`
+itself before it can read `[auth] enabled` or compare a key -- so while the
+file is unparseable there is no request on which auth is enforceable, and that
+diagnosis reaches anyone who can reach the port. With auth switched on and a
+credential in the file, the API is booted on a good config, the file is then
+hand-damaged so a secret-bearing line sits above the first section header, and
+an *anonymous* request must come back naming the error class and the line
+number and quoting none of the file. The leaking rendering is injected first
+and required to leak, for the same reason as above.
+
 Run: `python3 scripts/config-wizard-save-smoke.py` (no arguments; needs the
 package importable, e.g. `pip install -e .`).
 """
@@ -88,6 +100,33 @@ def _prefix_write(cfg_path, new_text, _original_text):
 
 w._find_key_line = _prefix_find_key_line
 w._write_ini_checked = _prefix_write
+"""
+
+#: A credential seeded into config.ini, used by the disclosure half below.
+SECRET_ON_DISK = "sk-live-SMOKE-SECRET-VALUE"
+
+# Restores the pre-review rendering of a parse error: one that quotes the raw
+# offending line. `MissingSectionHeaderError.line` is the setting that appears
+# before any header, so on a hand-edit slip that line is a credential -- and
+# this diagnosis is what the API returns to an *unauthenticated* caller,
+# because `api_key_auth` cannot check a key it cannot load a config to find.
+INJECT_LEAKY_DIAGNOSIS = """
+import configparser
+import nyxgpt.config as c
+
+_original_describe = c.describe_config_parse_error
+
+
+def _leaky_describe(config_path, exc, **_kwargs):
+    if isinstance(exc, configparser.MissingSectionHeaderError):
+        return (
+            f"Cannot parse {config_path}: {type(exc).__name__} at line {exc.lineno}: "
+            f"{exc.line.strip()!r} appears before any [section] header."
+        )
+    return _original_describe(config_path, exc)
+
+
+c.describe_config_parse_error = _leaky_describe
 """
 
 
@@ -150,9 +189,13 @@ def _dedupe_section(text: str, section: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def start_api(home: Path, port: int, *, inject_prefix: bool) -> subprocess.Popen:
-    """Launch a real uvicorn serving `nyxgpt.app:app` against `home`'s config.ini."""
-    bootstrap = INJECT_PREFIX_BEHAVIOUR if inject_prefix else ""
+def start_api(home: Path, port: int, *, bootstrap: str = "") -> subprocess.Popen:
+    """Launch a real uvicorn serving `nyxgpt.app:app` against `home`'s config.ini.
+
+    `bootstrap` is executed in the API process *before* uvicorn imports the
+    app, which is how the pre-fix behaviours are injected (#3753's rule: a
+    green run must be unable to be green by luck).
+    """
     code = (
         bootstrap
         + "\nimport uvicorn\n"
@@ -257,7 +300,8 @@ def scenario(*, inject_prefix: bool) -> dict:
         seed_config(home)
         port = free_port()
 
-        proc = start_api(home, port, inject_prefix=inject_prefix)
+        bootstrap = INJECT_PREFIX_BEHAVIOUR if inject_prefix else ""
+        proc = start_api(home, port, bootstrap=bootstrap)
         if not wait_for_health(proc, port):
             raise AssertionError(
                 "the API never came up on the SEEDED config.ini, so this run proves "
@@ -269,7 +313,7 @@ def scenario(*, inject_prefix: bool) -> dict:
             result_log = stop(proc)
 
         # The 502 half: can a *fresh* process still boot from this file?
-        reboot = start_api(home, port, inject_prefix=inject_prefix)
+        reboot = start_api(home, port, bootstrap=bootstrap)
         result["reboots"] = wait_for_health(reboot, port, timeout=45.0)
         reboot_log = stop(reboot)
 
@@ -334,6 +378,117 @@ def check_injection_reproduces() -> None:
     )
 
 
+def seed_config_with_auth_enabled(home: Path) -> Path:
+    """Seed the same config.ini, with API-key auth on and a real secret in it."""
+    cfg_path = seed_config(home)
+    text = cfg_path.read_text(encoding="utf-8")
+    text += f"\n[auth]\nenabled = true\napi_key = {SECRET_ON_DISK}\nheader = X-API-Key\n"
+    cfg_path.write_text(_dedupe_section(text, "auth"), encoding="utf-8")
+    cfg_path.chmod(0o600)
+    configparser.ConfigParser().read(cfg_path, encoding="utf-8")
+    return cfg_path
+
+
+def http_status_and_text(port: int, path: str) -> tuple[int, str]:
+    """GET `path` with **no** credentials and return `(status, raw body text)`."""
+    url = f"http://127.0.0.1:{port}{path}"
+    req = urllib.request.Request(url)  # noqa: S310 - fixed loopback URL
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            return resp.status, (resp.read() or b"").decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, (e.read() or b"").decode(errors="replace")
+
+
+def disclosure_scenario(*, inject_leak: bool) -> dict:
+    """Boot on a good config, then hand-damage it, and read the anonymous 500 body.
+
+    This is the state the review found: config.ini becomes unparseable while
+    the API is up (a hand-edit, or any other writer), and from that moment
+    `api_key_auth` cannot enforce anything -- it calls `load_config` before it
+    can read `[auth] enabled` or compare a key. So whatever the parse
+    diagnosis says travels to any caller who can reach the port, with auth
+    configured and switched on. Only a real ASGI stack shows this: it depends
+    on the middleware registration order and on the guard being outermost.
+    """
+    with tempfile.TemporaryDirectory(prefix="nyxgpt-3944-disclosure-") as tmp:
+        home = Path(tmp)
+        cfg_path = seed_config_with_auth_enabled(home)
+        port = free_port()
+        bootstrap = INJECT_LEAKY_DIAGNOSIS if inject_leak else ""
+
+        proc = start_api(home, port, bootstrap=bootstrap)
+        if not wait_for_health(proc, port):
+            raise AssertionError(f"the API never came up on the seeded config.ini:\n{stop(proc)}")
+        try:
+            # Auth really is on: an anonymous request is refused while the
+            # file is still readable. Without this the run below would prove
+            # nothing about *pre-auth* disclosure.
+            authed_status, _ = http_status_and_text(port, "/api/v1/config/sections")
+
+            # The hand-edit slip the recovery docs walk a user through: a
+            # setting ends up above its section header. `configparser` reports
+            # line 1 -- and line 1 is a credential.
+            cfg_path.write_text(
+                f"api_key = {SECRET_ON_DISK}\n" + cfg_path.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            status, body = http_status_and_text(port, "/api/v1/config/sections")
+        finally:
+            api_log = stop(proc)
+
+        return {
+            "status_before_damage": authed_status,
+            "status": status,
+            "body": body,
+            "log": api_log,
+        }
+
+
+def check_no_pre_auth_disclosure() -> None:
+    """The stated cause must not carry the file's own bytes to an anonymous caller."""
+    log("shipped behaviour: an anonymous caller hitting a hand-damaged config.ini")
+    r = disclosure_scenario(inject_leak=False)
+
+    failures: list[str] = []
+    if r["status_before_damage"] != 401:
+        failures.append(
+            "auth was not being enforced before the damage "
+            f"(got {r['status_before_damage']}, expected 401), so this run cannot "
+            "show anything about pre-auth disclosure"
+        )
+    if r["status"] != 500:
+        failures.append(f"expected 500 while config.ini is unparseable, got {r['status']}")
+    if "config_unreadable" not in r["body"]:
+        failures.append("the response no longer names its cause -- redaction cost the diagnosis")
+    if "MissingSectionHeaderError" not in r["body"] or "line 1" not in r["body"]:
+        failures.append("the error class and line number must survive redaction")
+    if SECRET_ON_DISK in r["body"]:
+        failures.append(
+            "the response body contains a credential read out of config.ini: " f"{r['body'][:400]}"
+        )
+    if failures:
+        raise AssertionError(
+            "the anonymous config_unreadable response is wrong:\n  - " + "\n  - ".join(failures)
+        )
+    log("PASS: anonymous 500 names the class and line, and carries no line content")
+
+
+def check_leak_injection_reproduces() -> None:
+    """Without the redaction, that same response must leak (#3753's inverse proof)."""
+    log("injected pre-review diagnosis: the same anonymous request must leak the line")
+    r = disclosure_scenario(inject_leak=True)
+
+    if SECRET_ON_DISK not in r["body"]:
+        raise AssertionError(
+            "injecting the line-quoting diagnosis did NOT leak the credential, so this "
+            "job cannot tell a redacted build from a leaking one. Either the injection no "
+            "longer matches the pre-review rendering or the fixture stopped reaching it "
+            f"(status={r['status']}, body={r['body'][:400]})"
+        )
+    log(f"PASS: pre-review rendering discloses the line (status={r['status']})")
+
+
 def main() -> int:
     if not EXAMPLE_CONFIG.is_file():
         log(f"FAIL: {EXAMPLE_CONFIG} not found")
@@ -341,6 +496,8 @@ def main() -> int:
     try:
         check_injection_reproduces()
         check_fixed()
+        check_leak_injection_reproduces()
+        check_no_pre_auth_disclosure()
     except AssertionError as e:
         log(f"FAIL: {e}")
         return 1

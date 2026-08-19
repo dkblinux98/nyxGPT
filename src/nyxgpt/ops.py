@@ -11031,7 +11031,13 @@ def doctor(_args) -> int:
             # not actionable: this is the single fault that takes the whole API
             # down (every request loads config.ini), and the user needs the
             # line to fix it (#3944). Report it as an issue, with the line.
-            issues.append(describe_config_parse_error(cfg, e))
+            #
+            # This is the one caller that opts into quoting the file's own text
+            # (`include_line_text`), and it is the reason the default is off:
+            # doctor is a local command, run by the owner of the file, printing
+            # to their terminal. The API's rendering of the same fault is
+            # redacted because it is reachable pre-auth, and it points here.
+            issues.append(describe_config_parse_error(cfg, e, include_line_text=True))
             cfg_parser = None
         except Exception as e:
             logger.warning(

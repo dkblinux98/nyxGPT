@@ -236,7 +236,12 @@ class ConfigParseError(RuntimeError):
     """
 
 
-def describe_config_parse_error(config_path: Path | str, exc: configparser.Error) -> str:
+def describe_config_parse_error(
+    config_path: Path | str,
+    exc: configparser.Error,
+    *,
+    include_line_text: bool = False,
+) -> str:
     """Render `exc` as a one-line diagnosis naming the file, error and line.
 
     `configparser` spreads the line number over three different attributes
@@ -246,6 +251,23 @@ def describe_config_parse_error(config_path: Path | str, exc: configparser.Error
     the base class has none. Normalising them here means every consumer
     (`load_config`, `nyxgpt ops doctor`, the wizard's pre-write check) says
     the same actionable thing instead of "Failed to parse <path>".
+
+    **`include_line_text` defaults to False because this text reaches
+    unauthenticated callers.** `config_unreadable_guard` is the API's
+    outermost middleware and must be: `api_key_auth` itself calls
+    `load_config` before it can read `[auth] enabled` or compare a key, so
+    when config.ini is malformed there is no request on which auth is
+    enforceable, and this diagnosis is the 500 body for anyone who can reach
+    the port. The raw text of the offending line is exactly the thing that
+    must not travel that channel -- a hand-edit that drops a `[section]`
+    header makes the *following* line the offender, and that line can be
+    ``api_key = sk-live-...``. Error class, line number and section/option
+    *names* are safe and stay: they are schema, not values.
+
+    So the file's own bytes are quoted only when a caller opts in, and the
+    only caller that does is `nyxgpt ops doctor` -- a local command the user
+    runs against their own file, which is where the recovery documentation
+    already sends them. Redacted callers point at it rather than guessing.
     """
     lineno = getattr(exc, "lineno", None)
     where = f" at line {lineno}" if isinstance(lineno, int) else ""
@@ -255,7 +277,7 @@ def describe_config_parse_error(config_path: Path | str, exc: configparser.Error
         # `exc.option` is already lowercased by `optionxform`, so a user
         # staring at `SLACK_BOT_TOKEN` and `slack_bot_token` in their file
         # has no other clue that those are one option as far as the app is
-        # concerned.
+        # concerned. Names only -- no value is quoted, on either path.
         detail = (
             f"option {exc.option!r} in section {exc.section!r} is defined more than once "
             "(option names are case-insensitive, so SLACK_BOT_TOKEN and slack_bot_token "
@@ -264,17 +286,34 @@ def describe_config_parse_error(config_path: Path | str, exc: configparser.Error
     elif isinstance(exc, configparser.DuplicateSectionError):
         detail = f"section {exc.section!r} is defined more than once"
     elif isinstance(exc, configparser.MissingSectionHeaderError):
-        detail = f"{exc.line.strip()!r} appears before any [section] header"
+        detail = (
+            f"{exc.line.strip()!r} appears before any [section] header"
+            if include_line_text
+            else "a setting appears before any [section] header"
+        )
     elif isinstance(exc, configparser.ParsingError) and getattr(exc, "errors", None):
         where = ""
-        detail = "; ".join(f"line {n}: {text.strip()!r}" for n, text in exc.errors)
-    else:
+        if include_line_text:
+            detail = "; ".join(f"line {n}: {text.strip()!r}" for n, text in exc.errors)
+        else:
+            numbers = ", ".join(str(n) for n, _ in exc.errors)
+            plural = "lines" if len(exc.errors) > 1 else "line"
+            detail = f"unreadable {plural} {numbers}"
+    elif include_line_text:
         detail = " ".join(str(exc).split())
+    else:
+        # The base class and the interpolation subclasses put raw values in
+        # `str(exc)` (`InterpolationMissingOptionError` carries `rawval`), so
+        # the fallback is redacted too rather than trusted case by case.
+        detail = "the file could not be read by ConfigParser"
 
-    return (
-        f"Cannot parse {config_path}: {type(exc).__name__}{where}: {detail}. "
+    hint = (
         "Fix that line (or restore a known-good config.ini) and retry."
+        if include_line_text
+        else "Run `nyxgpt ops doctor` to see the offending line, fix it "
+        "(or restore a known-good config.ini) and retry."
     )
+    return f"Cannot parse {config_path}: {type(exc).__name__}{where}: {detail}. {hint}"
 
 
 def load_config(path: str | Path | None = None) -> ConfigParser:

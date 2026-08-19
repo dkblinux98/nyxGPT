@@ -877,7 +877,11 @@ async def config_parse_error_handler(request: Request, exc: Exception):
     generic `internal_error`, leaving the owner with a dead dashboard and no
     stated cause. `ConfigParseError` already carries the file, the fault and
     the line number; pass it through verbatim. It is a curated diagnosis, not
-    a traceback, and these endpoints are admin-authenticated.
+    a traceback, and it does *not* quote the file's own bytes -- see
+    `describe_config_parse_error`, which redacts line text by default
+    precisely because this response is reachable without authentication
+    (`api_key_auth` loads config before it can check any key, so a malformed
+    config.ini is a state in which auth cannot be enforced at all).
     """
     return _config_unreadable_response(exc, getattr(request.state, "request_id", None))
 

@@ -1048,6 +1048,13 @@ class ConfigWriteError(RuntimeError):
     Carries a `describe_config_parse_error` diagnosis. Raised *before* the
     real config.ini is touched, so the file on disk is unchanged when a
     caller sees this.
+
+    The diagnosis is taken in its redacted form (the default -- see
+    `describe_config_parse_error`): this message is rendered into an HTTP
+    body as `config_write_refused`, and the offending line can be a
+    credential either from the file or from the payload just posted. The
+    line number and the option/section names are enough to act on, and
+    `nyxgpt ops doctor` shows the text locally.
     """
 
 

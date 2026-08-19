@@ -1315,3 +1315,11 @@ option 'slack_bot_token' in section 'monitoring' is defined more than once ...
 
 Fix that line and the API recovers on its next request — no reinstall, and
 nothing else to clean up.
+
+`nyxgpt ops doctor` is the surface that shows the offending line's *text*, and
+the only one: the API's `config_unreadable` response names the error class and
+the line number but never quotes the line. While `config.ini` cannot be parsed,
+API-key authentication cannot be enforced either (the auth check has to load
+the config before it can compare a key), so that response is readable by
+anyone who can reach the port — and the line it points at can be a secret. The
+doctor runs on the host, against your own file, and has neither problem.

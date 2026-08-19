@@ -539,3 +539,60 @@ def test_every_endpoint_reports_a_damaged_config_as_itself_not_internal_error(
     assert error["code"] == "config_unreadable"
     assert "DuplicateOptionError" in error["message"]
     assert "line 3" in error["message"]
+
+
+def test_config_unreadable_never_returns_the_raw_offending_line(_isolated_config):
+    """The stated cause must not carry the file's own bytes to an anonymous caller.
+
+    `config_unreadable_guard` is the outermost middleware and has to be:
+    `api_key_auth` calls `load_config` itself, before it can read
+    `[auth] enabled` or compare a key, so while config.ini is malformed there
+    is no request on which auth is enforceable. This response therefore goes
+    to anyone who can reach the port -- and for the `MissingSectionHeader`
+    shape (a hand-edit that drops a `[section]` line, the exact repair the
+    recovery docs walk a user through) the offending line is the *next* one,
+    which here is a live credential. Naming the class and the line is the
+    diagnosis; quoting the line is a disclosure.
+    """
+    _isolated_config.write_text(
+        "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n", encoding="utf-8"
+    )
+    config_module._CACHED_CFG = None
+    config_module._CACHED_PATH = None
+    config_module._CACHED_MTIME_NS = None
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/config/sections")
+
+    assert resp.status_code == 500
+    error = resp.json()["error"]
+    assert error["code"] == "config_unreadable"
+    # Still a stated cause, not "Internal server error".
+    assert "MissingSectionHeaderError" in error["message"]
+    assert "line 1" in error["message"]
+    # ...but nothing from the file itself.
+    assert "sk-live-VERYSECRETVALUE" not in resp.text
+    assert "api_key = " not in resp.text
+    # And it says where the full line *can* be seen, locally.
+    assert "nyxgpt ops doctor" in error["message"]
+
+
+def test_config_write_refused_never_returns_the_raw_offending_line(_isolated_config):
+    """Same redaction on the wizard's own refusal path (`config_write_refused`).
+
+    The refused text is the merge of the file and the payload just posted, so
+    the line it names can be a credential from either.
+    """
+    _isolated_config.write_text(
+        "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n", encoding="utf-8"
+    )
+    client = TestClient(app)
+
+    resp = client.post("/api/v1/config/sections", json={"nyxgpt": {"default_model": "a"}})
+
+    assert resp.status_code == 500
+    error = resp.json()["error"]
+    assert error["code"] in {"config_write_refused", "config_unreadable"}
+    assert "sk-live-VERYSECRETVALUE" not in resp.text
+    # The file was already broken, so nothing may have been written to it.
+    assert _isolated_config.read_text(encoding="utf-8").startswith("api_key = sk-live")
