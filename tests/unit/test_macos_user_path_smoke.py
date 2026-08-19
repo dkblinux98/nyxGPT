@@ -326,6 +326,58 @@ def test_the_self_heal_assertion_matches_what_self_heal_status_prints() -> None:
     )
 
 
+def test_the_script_asserts_the_health_wait_never_names_a_started_component() -> None:
+    """The other end of #3853, and the line the owner actually saw.
+
+    `nyxgpt up` printed `Still unhealthy: web` while the web service was
+    `started` the whole time, because the probe looked up `nyxgpt-web` and the
+    candidate install had registered `nyxgpt-web@3.0.0rc`. The script asserts
+    api/web never appear in that line.
+
+    Deliberately conditional on the line being present, and deliberately not
+    an assertion on `up`'s exit code: this runner has no Docker daemon, so the
+    `docker engine` step fails, `install()` returns 2 and `up` returns that
+    before the health wait ever runs. Asserting `up` returns 0 here would
+    assert something no hosted macOS runner can produce -- the honest gate is
+    the probe assertion above (non-vacuous on every run) plus this one, which
+    is non-vacuous exactly when the wait did run.
+    """
+    script = _script()
+    assert 'grep -q "Still unhealthy" "$WORK/up.log"' in script, (
+        "the script no longer reads `nyxgpt up`'s own health-wait verdict, so the "
+        "line the owner saw in #3853 is asserted nowhere"
+    )
+    pattern = _script_ere(r"(^|[ ,:])${component}([,.]|$)")
+    for component in ("api", "web"):
+        line = (
+            "WARNING: not every component reported healthy within the timeout -- "
+            f"Still unhealthy: {component}. run `nyxgpt ops status` for details."
+        )
+        assert _grep_matches(pattern.replace("${component}", component), line), (
+            f"the script's pattern does not match {line!r}, which is what "
+            "`nyxgpt up` prints on a timeout -- the assertion can never fire"
+        )
+    # Must not match a component that is merely a substring of another word,
+    # or the assertion fires on healthy runs and gets deleted as noise.
+    assert not _grep_matches(
+        pattern.replace("${component}", "api"),
+        "WARNING: not every component reported healthy -- Still unhealthy: cassandra.",
+    ), "the pattern matches a line naming a different component"
+
+
+def test_the_up_health_wait_line_is_the_one_ops_actually_prints() -> None:
+    """Pinned against `ops.py`, not against a remembered string."""
+    source = (REPO_ROOT / "src" / "nyxgpt" / "ops.py").read_text(encoding="utf-8")
+    assert "f\" Still unhealthy: {', '.join(pending)}.\"" in source, (
+        "`nyxgpt up` no longer prints ` Still unhealthy: <components>.` on a "
+        "health-wait timeout, so the user-path script greps for a line that "
+        "cannot appear (#3853)"
+    )
+    assert (
+        'grep -q "Still unhealthy"' in _script()
+    ), "the script and ops.py have drifted about the health-wait timeout line"
+
+
 def test_the_conflict_job_captures_install_exit_codes_without_tripping_errexit() -> None:
     """A refusal is the designed pass case, and it was killing the step.
 
@@ -517,32 +569,34 @@ def test_the_conflict_jobs_own_direction_stays_a_hard_assertion() -> None:
     )
 
 
-def test_the_reverse_direction_records_3853_instead_of_failing_on_it() -> None:
-    """Ratified by huddle `change-approach` (2026-08-19, PR #3925).
+def test_the_reverse_direction_is_a_hard_assertion_again() -> None:
+    """The D-026 debt, paid (#3853).
 
-    This direction is beyond AC4 and reproduces #3853, which is open and whose
-    fix direction is parked by ledger Q-002. A PR gate that hard-fails on a
-    parked open defect cannot be landed green by any fix cycle, so the outcome
-    is recorded as a warning naming the issue. The assertions about the state
-    the machine is left in stay hard -- no open defect excuses a `nyxgpt` that
-    is missing or will not run.
+    Between PR #3925 and #3853's fix this direction *recorded* the
+    both-installed outcome as a `::warning::` rather than failing on it: it
+    reproduced an open defect whose fix direction was parked by ledger Q-002,
+    and a gate that hard-fails on a defect the project has decided not to fix
+    yet is a permanent red that trains readers to ignore it.
+
+    Q-002 is answered and the packaging half has landed -- the stable formula
+    declares `conflicts_with` its own line's candidate
+    (`build_homebrew_artifacts.render_stable_formula`) -- so both install
+    orders are the same assertion again. That symmetry is the property: a
+    one-sided `conflicts_with` guarded one order and nothing at all in the
+    other, which is how the owner's Mac ended up with two complete stacks.
+
+    This test replaces `test_the_reverse_direction_records_3853_instead_of_failing_on_it`,
+    which pinned the warning text and had to be updated with the flip.
     """
     step = _conflict_step(REVERSE_DIRECTION_STEP)
     run = step["run"]
 
-    warning = next(
-        (line for line in run.splitlines() if "::warning::" in line and "#3853" in line),
-        None,
+    assert "::warning::" not in run, (
+        "the reverse direction still records the both-installed state as a "
+        "warning. #3853 is fixed: the stable formula declares conflicts_with "
+        "its line's candidate, so brew must refuse this outright and the step "
+        "must fail if it does not"
     )
-    assert warning is not None, (
-        "the reverse direction no longer emits a warning naming #3853; the "
-        "both-installed state it reproduces would then be recorded nowhere"
-    )
-    for phrase in ("#3853 reproduced in CI by this job", "conflicts_with is directional"):
-        assert phrase in warning, (
-            f"the #3853 warning text no longer says {phrase!r}, so the log stops "
-            "explaining what was reproduced and why it is not a failure"
-        )
 
     both_installed = re.search(
         r'if \[ "\$stable_installed" = "1" \] && \[ "\$candidate_installed" = "1" \]; then'
@@ -551,11 +605,24 @@ def test_the_reverse_direction_records_3853_instead_of_failing_on_it() -> None:
         re.S,
     )
     assert both_installed is not None, "the both-installed branch is gone from the step"
-    assert "exit 1" not in both_installed.group(1), (
-        "the reverse direction hard-fails on the both-installed state again. That "
-        "state is open defect #3853; failing on it makes this check unlandable by "
-        "any fix cycle. The huddle ratified recording it. The flip back belongs to "
-        "the PR that fixes #3853 -- and that PR updates this test with it."
+    branch = both_installed.group(1)
+    assert "::error::" in branch and "exit 1" in branch, (
+        "the reverse direction no longer fails when both channels end up "
+        "installed. That is the exact state #3853 was reported from -- two "
+        "kegs for one component, each registering a keep_alive service on the "
+        "same port -- and it is now guarded by packaging, so a green run over "
+        "it would be a hollow gate"
+    )
+    assert "#3853" in branch, (
+        "the both-installed failure no longer names #3853, so the log stops "
+        "saying which defect a regression here has reintroduced"
+    )
+    # A refusal has to be attributable, exactly as in the other direction: an
+    # untrusted tap refuses too (#3770), and "the stable is not installed"
+    # cannot tell the two apart on its own.
+    assert "conflicting formulae are installed" in run, (
+        "the step no longer checks *why* brew refused, so an untrusted-tap "
+        "refusal would read as conflicts_with working"
     )
 
     for hard in (
@@ -568,13 +635,81 @@ def test_the_reverse_direction_records_3853_instead_of_failing_on_it() -> None:
         )
 
 
-def test_the_reverse_direction_comment_records_the_debt_not_a_refusal() -> None:
-    """The comment must not instruct the next session to undo the agreed fix.
+RETIRED_COUNTERPART_STEP = "Measure: the same conflict after the candidate is retired from the tap"
 
-    An earlier revision of this block said "Do not soften this assertion to get
-    a green check", which -- after the huddle ratified exactly that change --
-    would have trapped both the #3853 fixer and the next reviewer into
-    re-litigating a settled decision.
+
+def test_the_job_measures_the_retired_counterpart_case_instead_of_assuming_it() -> None:
+    """Ledger Q-007: what happens once the ceremony deletes the rc formula.
+
+    #3853's packaging fix makes the *stable* formula declare
+    `conflicts_with "<name>@<line>rc"`, and the release ceremony deletes that
+    formula from the tap once the line ships
+    (`scripts/retire_rc_formulas.sh`). Whether the conflict still holds for a
+    machine that still has the keg, and what a clean machine is shown, are
+    both unestablished -- and #3853 exists precisely because a behaviour
+    everyone believed was never run. So the job reproduces the state and
+    prints the answer rather than either guessing or ignoring it.
+
+    Recorded, not asserted, per ledger D-026: a gate fails on what is settled
+    and records what is open. The machine-left-usable checks stay hard,
+    because no open question excuses a broken CLI.
+    """
+    run = _conflict_step(RETIRED_COUNTERPART_STEP)["run"]
+
+    assert "rm -f" in run and "nyxgpt-api@3.0.0rc.rb" in run, (
+        "the step no longer removes the candidate formula from the tap, so it "
+        "measures the counterpart-present case the previous step already covers"
+    )
+    assert "MEASURED:" in run, (
+        "the step no longer prints its findings under a greppable marker, so "
+        "the answer to Q-007 would be buried in a brew log"
+    )
+    for hard in (
+        "no nyxgpt on PATH after the retired-counterpart install attempt",
+        "nyxgpt is on PATH but does not run after the retired-counterpart install attempt",
+    ):
+        assert re.search(rf"::error::{re.escape(hard)}[^\n]*exit 1", run), (
+            f"the machine-left-usable assertion {hard!r} is no longer hard; an "
+            "open question does not excuse a broken CLI"
+        )
+    assert "should be removed from" in run, (
+        "the step no longer recognises Homebrew's own advice to delete the "
+        "declaration -- that wording is the outcome the ledger entry warns "
+        "against following, so it has to be detected by name"
+    )
+
+
+def test_the_open_question_about_retirement_is_recorded_in_the_ledger() -> None:
+    """A measurement nobody reads is a measurement that was not taken.
+
+    The step above prints an answer on every formula PR; this pins the entry
+    that tells a future session the question exists and where the answer
+    appears.
+    """
+    ledger = (REPO_ROOT / "agents" / "LEDGER.md").read_text(encoding="utf-8")
+    assert "**Q-007**" in ledger, "the retired-counterpart question is not in the ledger"
+    question = ledger[ledger.index("**Q-007**") :]
+    question = question[: question.index("\n\n")]
+    # The ledger wraps at ~78 columns, so the step name is split across lines.
+    assert RETIRED_COUNTERPART_STEP in " ".join(question.split()), (
+        "the Q-007 entry no longer names the step that answers it, so a future "
+        "session has the question and no way to close it"
+    )
+
+
+def test_the_reverse_direction_comment_records_what_was_measured() -> None:
+    """The comment carries the evidence, not an instruction to the next session.
+
+    Two things it must not do. It must not tell a future session to refuse a
+    change that was later ratified -- an earlier revision said "Do not soften
+    this assertion to get a green check", which after the huddle ratified
+    exactly that would have trapped both the #3853 fixer and the next
+    reviewer. And it must not assert today's check colour, which expires the
+    moment the behaviour changes and cannot be verified from the file.
+
+    What it must keep is the measurement: run 32202943938 is the reason
+    anyone knows `conflicts_with` is directional, and the block is the only
+    place in-tree that says so next to the step that proved it.
     """
     # The step still has to exist under that name; `yaml.safe_load` drops
     # comments, so the block itself is read off the raw file -- everything
@@ -592,9 +727,11 @@ def test_the_reverse_direction_comment_records_the_debt_not_a_refusal() -> None:
         "the comment asserts today's check color, which expires the moment the "
         "behavior changes and cannot be verified from the file"
     )
-    assert "#3853" in comment and "flip" in comment, (
-        "the comment no longer records the debt: the PR that fixes #3853 owes "
-        "the flip back to a hard assertion, and nothing else says so in-tree"
+    assert "#3853" in comment and "32202943938" in comment, (
+        "the comment no longer cites the run that established this behaviour. "
+        "That run is why the project knows conflicts_with is directional at "
+        "all (ledger Q-002); without the citation the assertion below reads as "
+        "an assumption"
     )
 
 
@@ -608,8 +745,11 @@ def test_the_conflict_job_also_proves_the_install_identity_reconcile() -> None:
     They say nothing about what an install then *does* about the one it is
     replacing -- which is the question #3861 is about, and the one whose
     answer was "nothing" while two `keep_alive` service sets fought over
-    ports 8000/3000 on the owner's Mac. Reaching that state needs no fault
-    injection here: both kegs are really installed by the steps above.
+    ports 8000/3000 on the owner's Mac. Since #3853 declared `conflicts_with`
+    in both directions the state is no longer reachable by installing, so the
+    step stages it (see the staging guard below) -- and it still has to be
+    covered, because packaging guards machines that install *after* that
+    declaration shipped, not the ones already in the state.
     """
     run = _conflict_step(IDENTITY_STEP)["run"]
     assert "brew services start nyxgpt-api@3.0.0rc" in run and (
@@ -633,6 +773,48 @@ def test_the_conflict_job_also_proves_the_install_identity_reconcile() -> None:
     assert "still registered after the reconcile (#3861)" in run and "exit 1" in run, (
         "the step no longer fails when the previous install's service survives "
         "the reconcile, which is the entire defect"
+    )
+
+
+def test_the_identity_step_stages_the_second_keg_and_leaves_the_tap_alone() -> None:
+    """The two-keg machine is staged now, and the staging must not leak (#3853 merge).
+
+    Before #3853 this step relied on the stable install simply succeeding on
+    top of the candidate: `conflicts_with` was declared on one side only, so
+    that order was guarded by nothing (ledger Q-002). Both orders are now
+    refused, which is the fix -- and it takes away the state this step exists
+    to reconcile, so the step strips the declaration from the tap's copy of
+    the stable formula for one install and puts the file straight back.
+
+    Three things have to hold together or the job silently stops measuring
+    what it claims. The strip has to be *checked*, or a tap whose stable
+    formula lost its declaration would stage nothing and the step would pass
+    on a one-keg machine. The restore has to be trapped, or a failed install
+    leaves the mutated formula behind and the "Measure" step after this one
+    reads this file instead of `render_stable_formula`. And the staged keg
+    has to be removed again, or that same step starts from a two-keg machine
+    it does not document.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "conflicts_with" in run and "sed -i" in run, (
+        "the step no longer stages the second keg. Since #3853 brew refuses "
+        "the stable onto an installed candidate, so without the staging this "
+        "step reconciles a machine with one keg on it and proves nothing"
+    )
+    assert "::error::the stable formula in the tap declares no conflicts_with" in run, (
+        "the staging no longer fails when there is no declaration to strip: it "
+        "would then quietly stage nothing on exactly the tree where #3853's "
+        "packaging fix had been lost"
+    )
+    assert 'trap \'cp "$RUNNER_TEMP/nyxgpt-api.rb.orig" "$STABLE_RB"\' EXIT' in run, (
+        "the tap restore is no longer guarded by a trap, so a failed staging "
+        "install leaves a formula with no conflicts_with in the tap -- and the "
+        "step after this one measures that edit rather than the real formula"
+    )
+    assert "brew uninstall --ignore-dependencies nyxgpt-api" in run, (
+        "the staged keg is no longer removed, so the measurement step after "
+        "this one starts from a two-keg machine instead of the "
+        "candidate-only one its own comment describes"
     )
 
 

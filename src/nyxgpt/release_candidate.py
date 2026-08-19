@@ -234,8 +234,10 @@ def rc_formula_name(service: str, release: str) -> str:
 def rc_formulas(release: str) -> tuple[str, ...]:
     """Both formulas an rc publish of `release` stamps into the tap.
 
-    They declare `conflicts_with` their stable counterparts, so a machine can
-    only ever be on one channel at a time.
+    Each channel's formulas declare `conflicts_with` the other's -- both
+    directions since #3853, because `conflicts_with` is only checked when the
+    formula declaring it is the one being installed -- so a machine can only
+    ever be on one channel at a time, whichever order it is installed in.
     """
     return tuple(rc_formula_name(service, release) for service in TAP_SERVICES)
 

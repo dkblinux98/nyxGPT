@@ -67,7 +67,10 @@ sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/nyxgpt
 # non-interactive: without the trust step the `brew install` below stops at
 # the prompt and provisioning dead-ends (#3752). Trust is per tap, which is
 # what the install below needs -- a per-formula grant does not cover the
-# counterpart formula `conflicts_with` makes brew load (#3770). The
+# counterpart formula `conflicts_with` makes brew load (#3770). That applies
+# to the STABLE install this script runs since #3853, not only to a candidate
+# one: the stable formula now declares the conflict too, so `brew install
+# nyxgpt-api` loads `nyxgpt-api@<line>rc` on its way in. The
 # subcommand is spelled `tap-trust` on some Homebrews and `trust` on others,
 # so try both; failing both is tolerated -- a Homebrew old enough not to
 # gate has neither subcommand and nothing to trust.

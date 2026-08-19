@@ -41,19 +41,29 @@ name: macOS Brew Smoke
 #                candidate, so it runs on dispatch and after an rc cut, never
 #                on a PR.
 #   stable-over-candidate  Does `conflicts_with` hold when the counterpart is
-#                actually there? `keg-install`'s throwaway tap deliberately
-#                carries no stable formula, which covers the absent-counterpart
-#                case (#3753) and leaves the present-counterpart case -- stable
-#                installed, candidate on top -- covered nowhere. That is the
-#                case the owner hit (#3853). Builds both channels from the
-#                working tree, so it needs no publish and runs on PRs.
-#                Since #3861 it also answers the question after that one: once
-#                two channels ARE installed, does an install reconcile the one
-#                it replaces, or leave two `keep_alive` service sets registered
-#                on ports 8000/3000? It gets both kegs registered and runs the
-#                real identity reconcile in both directions. Same machine
-#                state, one job -- #3861 shares this one rather than paying a
-#                second macOS runner to rebuild it.
+#                actually there, in BOTH install orders? `keg-install`'s
+#                throwaway tap deliberately carries no stable formula, which
+#                covers the absent-counterpart case (#3753) and leaves the
+#                present-counterpart case -- stable installed, candidate on
+#                top -- covered nowhere. That is the case the owner hit
+#                (#3853). Both orders are asserted, because `conflicts_with`
+#                is directional: it is checked only when the formula declaring
+#                it is the one being installed, so a one-sided declaration
+#                guards one order and nothing at all in the other. Builds both
+#                channels from the working tree, so it needs no publish and
+#                runs on PRs.
+#                Since #3861 it also answers the question after that one: on a
+#                machine where two channels ARE installed, does an install
+#                reconcile the one it replaces, or leave two `keep_alive`
+#                service sets registered on ports 8000/3000? That state is no
+#                longer reachable by installing (the assertions above are
+#                exactly that it is refused), so the #3861 step *stages* it
+#                deliberately -- which is the honest shape, because packaging
+#                guards the machines that install after the declaration
+#                shipped and reconcile is what every machine already in the
+#                state needs. Same runner, one job: #3861 shares this one
+#                rather than paying a second macOS runner to rebuild it.
+
 #
 # Cost: macOS runners bill at a multiple of Linux, so the PR trigger is
 # paths-filtered down to the formulas, the stamping script, the install-identity
@@ -927,37 +937,29 @@ jobs:
 
       - name: The other direction -- the stable onto an installed candidate
         # Beyond AC4, which names only the direction above. This is the order
-        # the owner actually reached #3853 by: the rc formula declares the
-        # conflict, the stable one does not, so this is the direction where
-        # "both installed" can happen.
-        #
-        # It RECORDS that outcome, it does not fail on it, and that is a
-        # ratified decision, not a softening for a green check (huddle
-        # `change-approach`, 2026-08-19, on PR #3925). The reasoning: run
+        # the owner actually reached #3853 by, and until that issue was fixed
+        # it was the direction where "both installed" could happen: run
         # 32202943938 answered ledger Q-002 here -- `conflicts_with` is
-        # directional and nothing checks this direction, so brew builds and
-        # installs the stable keg to completion
+        # directional, only the rc formula declared it, so brew built and
+        # installed the stable keg to completion
         # (`/opt/homebrew/Cellar/nyxgpt-api/3.0.0: 6,140 files`) and only then
-        # fails `brew link` on the symlink collision -- `Could not symlink
+        # failed `brew link` on the symlink collision -- `Could not symlink
         # bin/nyxgpt ... is a symlink belonging to nyxgpt-api@3.0.0rc`. A failed
-        # link is not a guard: the keg stays installed, /opt/homebrew/bin/nyxgpt
-        # still points at the candidate, and the machine ends at
+        # link is not a guard: the keg stayed installed, /opt/homebrew/bin/nyxgpt
+        # still pointed at the candidate, and the machine ended at
         # `stable installed: 1 / candidate installed: 1`.
         #
-        # That is #3853, which is OPEN and whose fix direction is deliberately
-        # parked by ledger Q-002 -- taking the packaging side of it here (adding
-        # `conflicts_with` to the stable formula) would unpark an owner
-        # decision. A hard failure on a parked open defect is a gate no fix
-        # cycle on this PR can land, so this job's job is to be the standing CI
-        # reproduction of #3853 instead: the warning below names it, and the
-        # assertions that stay HARD are the ones about the state the machine is
-        # left in (`nyxgpt` on PATH and running), which no open defect excuses.
-        #
-        # THE DEBT: the PR that fixes #3853 owes the flip back -- turn the
-        # `::warning::` into `::error::` + `exit 1` and update the test that
-        # pins this text. Noted on #3853 itself. Do not flip it before then,
-        # and do not delete the recording: an unrecorded both-installed state
-        # is the hollow-gate shape #3860 exists to remove.
+        # THE DEBT IS PAID HERE (#3853, ledger D-026). Between PR #3925 and
+        # this fix the both-installed outcome was emitted as a `::warning::`
+        # naming #3853 rather than failing, because #3853 was open and its fix
+        # direction was parked by Q-002 -- a gate that hard-fails on a defect
+        # the project has decided not to fix yet is a permanent red that trains
+        # readers to ignore it. Q-002 is answered and the packaging fix has
+        # landed (`scripts/build_homebrew_artifacts.py`'s
+        # `render_stable_formula` declares `conflicts_with` on the stable side
+        # too), so this is a hard assertion again. Both orders are now the same
+        # assertion, which is the point: a one-sided conflict guarded one
+        # install order and nothing at all in the other.
         run: |
           set -uo pipefail
           # Same rc-capture as the step above, for the same reason: the default
@@ -975,11 +977,28 @@ jobs:
           echo "stable installed: $stable_installed / candidate installed: $candidate_installed"
 
           if [ "$stable_installed" = "1" ] && [ "$candidate_installed" = "1" ]; then
-            echo "::warning::#3853 reproduced in CI by this job: installing the stable over the candidate leaves both installed, because conflicts_with is directional and only the rc formula declares it. Recorded, not failed, while #3853 is open (ledger Q-002); the PR that fixes #3853 flips this back to a hard failure."
-          else
-            echo "the stable did not install over the candidate -- if #3853 has landed,"
-            echo "this step owes its flip back to a hard assertion (see the comment above)."
+            echo "Both channels are installed at once, in the stable-onto-candidate order."
+            echo "Since #3853 the stable formula declares conflicts_with its own line's"
+            echo "candidate, so brew must refuse this. Reaching here means that declaration"
+            echo "was dropped, was not stamped by build_homebrew_artifacts.py, or names a"
+            echo "formula other than the one in this tap -- check the conflicts_with line in"
+            echo "the stable formula printed by the tap step above."
+            echo "::error::stable and candidate are installed simultaneously despite conflicts_with (#3853)"
+            exit 1
           fi
+
+          # Same discipline as the candidate-onto-stable step: a refusal only
+          # counts as `conflicts_with` holding if brew refused FOR THAT REASON.
+          # An untrusted tap refuses too (#3770's shape), and "the stable is not
+          # installed" cannot tell those apart on its own.
+          if [ "$stable_installed" = "0" ]; then
+            grep -qi 'conflicting formulae are installed' stable-on-top.log || {
+              echo "::error::the stable was refused, but not for conflicts_with -- brew gave some other reason (see stable-on-top.log above); this step is measuring something other than the conflict"
+              exit 1
+            }
+            echo "refused for the declared conflict, which is conflicts_with working in the direction #3853 found unguarded"
+          fi
+
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the stable install attempt"; exit 1; }
           nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the stable install attempt"; exit 1; }
 
@@ -988,16 +1007,32 @@ jobs:
         # for this exact machine state rather than a second one.
         #
         # The packaging steps above answer "can two channels be installed at
-        # once?" (yes, in one direction -- that is #3853). This step answers
-        # the question #3861 is about: once they are, does an install
+        # once?" Since #3853 the answer is no, in both orders -- that is what
+        # they now hard-assert. This step answers the question that survives
+        # it: on a machine where two channels ARE installed, does an install
         # *reconcile* the previous one, or does it leave two `keep_alive`
         # service sets registered on ports 8000/3000 the way the owner's Mac
-        # did for seven hours?
+        # did for seven hours? Packaging cannot answer that. `conflicts_with`
+        # is checked when a formula is installed, so it guards machines that
+        # install *after* the declaration shipped; every machine already in
+        # the bad state (the owner's, and anyone who installed before it),
+        # every hand-installed keg, and the local `file://` tap path whose
+        # checked-in formulas `build_homebrew_artifacts.py` never stamps, all
+        # still arrive at reconcile carrying two service sets.
         #
-        # No fault injection is needed to reach the failing state -- both kegs
-        # are really installed here, and `brew services start` really
-        # registers both. What DOES need proving is that the fix is what
-        # removes it, so the driver first prints the old gate's own verdict:
+        # So the state is STAGED here rather than reached by installing:
+        # the tap's stable formula is installed with its `conflicts_with`
+        # line stripped, and the formula is put straight back. That is a
+        # deliberate change from the first version of this step, which simply
+        # relied on the stable install succeeding -- it did, because the
+        # one-sided declaration Q-002 found left that order unguarded, and
+        # #3853 has since closed it. Staging is the honest shape: this step
+        # is not measuring whether brew allows two kegs (the steps above do
+        # that, and would fail if it did), it is measuring what `nyxgpt ops`
+        # does when it finds them.
+        #
+        # What still needs proving is that the FIX is what removes the second
+        # service set, so the driver first prints the old gate's own verdict:
         # `previous.mode != target` is `artifact != artifact`, i.e. False. The
         # pre-#3861 code could not have acted on this machine, and the step
         # fails if that stops being true (the model would then be back to
@@ -1011,14 +1046,57 @@ jobs:
         run: |
           set -euo pipefail
 
+          TAP_DIR="$(brew --repository nyxgpt/both-channels)"
+          STABLE_RB="$TAP_DIR/Formula/nyxgpt-api.rb"
+
+          echo "=== stage the two-keg machine this step is about ==="
+          # The tap goes back exactly as the stamping steps left it, whatever
+          # happens below. The step after this one measures the STABLE
+          # formula's own `conflicts_with` against a retired counterpart; if
+          # this step's edit leaked, that measurement would be reading this
+          # file rather than `build_homebrew_artifacts.render_stable_formula`.
+          # Restored from a trap and not merely from the next line, because
+          # under `set -e` a failed install would skip an unguarded restore.
+          cp "$STABLE_RB" "$RUNNER_TEMP/nyxgpt-api.rb.orig"
+          trap 'cp "$RUNNER_TEMP/nyxgpt-api.rb.orig" "$STABLE_RB"' EXIT
+
+          grep -n conflicts_with "$STABLE_RB" || {
+            echo "::error::the stable formula in the tap declares no conflicts_with, so #3853's packaging fix is not in this tree -- the steps above are not asserting what they claim and the staging below would be stripping nothing"
+            exit 1
+          }
+          sed -i '' '/conflicts_with/d' "$STABLE_RB"
+          # A failed `brew link` is expected and is not a failure of this
+          # staging: both kegs own `bin/nyxgpt`, so the second one to install
+          # cannot be linked. The keg is still installed -- which is exactly
+          # what run 32202943938 recorded, and exactly the state the owner's
+          # machine was in -- and `brew services` works off the keg, not the
+          # link.
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api > stage-stable.log 2>&1 || true
+          tail -20 stage-stable.log
+          cp "$RUNNER_TEMP/nyxgpt-api.rb.orig" "$STABLE_RB"
+          trap - EXIT
+          brew list --versions nyxgpt-api || {
+            echo "::error::could not stage the stable keg alongside the candidate (see stage-stable.log above) -- this step has nothing to reconcile and is measuring nothing"
+            exit 1
+          }
+          brew list --versions | grep -i nyxgpt || true
+
           reconcile_from() {
             # $1 = keg whose venv python runs the reconcile (the `nyxgpt` the
             #      operator would be invoking), $2 = the api service name the
             #      marker records as the PREVIOUS install.
             local keg="$1" previous_api="$2"
             local py
-            py="$(brew --prefix "$keg")/libexec/venv/bin/python3"
-            test -x "$py" || { echo "::error::no venv python in $keg"; exit 1; }
+            # `brew --prefix <formula>` for a keg whose `brew link` failed
+            # still resolves (the opt link is made during install, before
+            # linking), but fall back to the Cellar rather than assume it:
+            # the staged keg above is deliberately an unlinked one.
+            py="$(brew --prefix "$keg" 2>/dev/null)/libexec/venv/bin/python3"
+            if [ ! -x "$py" ]; then
+              py="$(ls -d "$(brew --cellar "$keg")"/*/libexec/venv/bin/python3 2>/dev/null | tail -1)"
+            fi
+            test -n "$py" && test -x "$py" || { echo "::error::no venv python in $keg"; exit 1; }
+            echo "reconcile driver for $keg: $py"
             NYXGPT_PREVIOUS_API="$previous_api" "$py" - <<'PY'
           import os
           import sys
@@ -1135,6 +1213,74 @@ jobs:
           command -v nyxgpt
           nyxgpt --version
 
+          # Hand the next step the machine state it documents: candidate
+          # installed, stable not. The staged keg was this step's own
+          # scaffolding and must not outlive it -- leaving it installed would
+          # make the measurement below read a two-keg machine.
+          echo "=== unstage: remove the keg this step installed ==="
+          brew uninstall --ignore-dependencies nyxgpt-api 2>&1 | tail -5 || true
+          brew list --versions | grep -i nyxgpt || true
+
+      - name: "Measure: the same conflict after the candidate is retired from the tap"
+        # An open question, measured rather than guessed (#3853, ledger Q-007).
+        #
+        # The release ceremony deletes a shipped line's candidate formulas from
+        # the tap (`scripts/retire_rc_formulas.sh`), so after 3.0.0 ships the
+        # stable formula's `conflicts_with "nyxgpt-api@3.0.0rc"` names a formula
+        # the tap no longer carries -- while an operator's machine may still
+        # have that KEG installed. Two things follow, and neither is knowable
+        # from reading Homebrew's source:
+        #
+        #   1. does the conflict still hold, because `Formulary` can load the
+        #      formula back from the installed keg's own `.brew/*.rb`; and
+        #   2. what does a user with no candidate installed see -- an absent
+        #      counterpart is documented as a benign warning (#3753), but on the
+        #      STABLE formula that warning lands on the main install path, and
+        #      Homebrew's wording for it ("should be removed from ...") is
+        #      advice this project must not follow.
+        #
+        # This step reproduces exactly that state and prints the answer. It is
+        # NOT a hard assertion, because nothing has established what the answer
+        # should be yet -- per ledger D-026, a gate records what is open and
+        # fails on what is settled. The machine-left-usable checks stay hard.
+        # When the run answers it, that answer closes Q-007 and this step
+        # becomes an assertion.
+        run: |
+          set -uo pipefail
+          TAP_DIR="$(brew --repository nyxgpt/both-channels)"
+
+          # Reach the state: candidate installed, stable not, rc formula gone
+          # from the tap.
+          brew uninstall nyxgpt-api 2>&1 | tail -5 || true
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api@3.0.0rc 2>&1 | tail -10
+          brew list --versions nyxgpt-api@3.0.0rc || {
+            echo "::warning::could not stage the candidate, so this measurement did not run"
+            exit 0
+          }
+          rm -f "$TAP_DIR/Formula/nyxgpt-api@3.0.0rc.rb"
+          echo "tap now carries:"; ls -1 "$TAP_DIR/Formula/"
+
+          rc=0
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api > retired-counterpart.log 2>&1 || rc=$?
+          echo "stable install exited $rc with the candidate formula retired"
+          tail -40 retired-counterpart.log
+
+          stable_installed=0
+          brew list --versions nyxgpt-api > /dev/null 2>&1 && stable_installed=1
+          echo "MEASURED: stable installed after retirement: $stable_installed"
+          if grep -qi 'conflicting formulae are installed' retired-counterpart.log; then
+            echo "MEASURED: the conflict still held -- brew resolved the retired formula (installed keg)"
+          elif grep -qi 'should be removed from' retired-counterpart.log; then
+            echo "MEASURED: brew could not resolve the retired formula and advised removing the declaration"
+            echo "::warning::#3853/Q-007: with the candidate formula retired from the tap, the stable formula's conflicts_with does not resolve. Read this step's log before changing the declaration -- the advice brew prints must not be followed blindly."
+          else
+            echo "MEASURED: neither wording appeared -- read retired-counterpart.log above"
+          fi
+
+          # Whatever it turns out to be, the machine has to stay usable.
+          command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the retired-counterpart install attempt"; exit 1; }
+          nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the retired-counterpart install attempt"; exit 1; }
+
       - name: Install logs on failure
         if: failure()
         run: |
@@ -1142,7 +1288,7 @@ jobs:
           # its `tail`, these carry the reason brew gave, and Homebrew's own
           # per-formula logs do not (they only exist for installs that got as
           # far as building).
-          for log in candidate.log stable-on-top.log; do
+          for log in candidate.log stable-on-top.log retired-counterpart.log; do
             [ -f "$log" ] || continue
             echo "--- $log ---"
             cat "$log" || true
@@ -1199,11 +1345,18 @@ jobs:
           # gate third-party taps has neither subcommand and nothing to trust.
           brew tap-trust "$TAP" || brew trust "$TAP" \
             || echo "::warning::neither 'brew tap-trust' nor 'brew trust' accepted $TAP -- proceeding untrusted"
-          # The `conflicts_with "nyxgpt-api"` warning is benign (brew warns and
-          # installs anyway -- see docs/homebrew.md), but "is the stable
-          # counterpart actually in the tap?" kept being answered by guesswork
-          # after the #3737 backfill. Report it as a fact instead. Never fails
-          # the job: an absent counterpart does not break the install.
+          # A `conflicts_with` naming a formula the tap does not carry is
+          # benign -- brew warns and installs anyway (docs/homebrew.md). That
+          # is the ABSENT-counterpart case only: when the counterpart is
+          # actually INSTALLED, brew refuses, and the `stable-over-candidate`
+          # job asserts both directions of that on a real runner. Reading the
+          # "warns anyway" behaviour more broadly than the absent case is what
+          # left #3853's direction unguarded (ledger Q-002 / D-030).
+          #
+          # "Is the stable counterpart actually in the tap?" kept being
+          # answered by guesswork after the #3737 backfill. Report it as a
+          # fact instead. Never fails the job: an absent counterpart does not
+          # break the install.
           echo "--- formulas this tap actually carries ---"
           ls -1 "$(brew --repository "$TAP")"/Formula 2>/dev/null \
             || ls -1 "$(brew --repository "$TAP")" 2>/dev/null \

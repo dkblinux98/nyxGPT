@@ -44,6 +44,10 @@ INSTALL_STEP_FUNCS: tuple[str, ...] = (
     # patched out, so it runs for real in every test that patches "all" steps.
     "_report_orphaned_launchd_jobs",
     "_reconcile_install_mode",
+    # Stops an api/web brew service belonging to a *different* formula than
+    # the one this install owns -- the leftover keg's `keep_alive` service
+    # that kept winning the :8000 race on the owner's Mac (#3853).
+    "_stop_superseded_brew_services",
     "_ensure_docker_engine",
     "migrate_legacy_volumes",
     "_reconcile_phantom_compose_app_containers",

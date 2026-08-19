@@ -753,7 +753,43 @@ rather than mechanism, and nothing can enforce them.
   Source: #3911; `.github/workflows/huddle_session.yml`;
   `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
 
-- **D-030** · 2026-08-19 · developer agent (#3861) — **The native install
+- **D-030** · 2026-08-19 · developer agent (#3853) — **A service's name is read
+  from what is installed, never asserted from a constant, and a conflict
+  between two formulas is declared by both of them.** Two corrections in one
+  fix, and both are the kind a future session would re-derive wrongly.
+
+  (a) *`conflicts_with` is directional* — checked only when the formula that
+  declares it is the one being installed. Only the rc formula declared one, so
+  candidate-onto-stable was refused and stable-onto-candidate was checked by
+  nothing: brew built the keg to completion and failed at `brew link`, which
+  is **not a guard**, because the keg stays installed. This closes **Q-002**'s
+  practical half — the stable formula now declares its own line's candidate
+  (`build_homebrew_artifacts.render_stable_formula`), and both orders are hard
+  assertions in `macos-brew-smoke.yml`'s `stable-over-candidate` job. That
+  flip **pays the D-026 debt**; a candidate from a *different* release line is
+  not nameable by a formula stamped before it existed, and is handled at
+  runtime by the `superseded brew services` install step instead.
+
+  (b) *The candidate channel's documented caveat was never only about
+  `status`.* `ops install` printed "the service is named `nyxgpt-api@3.0.0rc`,
+  so `ops status` reports this component as not running" and the project read
+  that as an accepted trade. It was not: `nyxgpt up` gates on the **same**
+  probe, so on every rc install it waited its full timeout and exited 2 on a
+  healthy stack — and the candidate channel is the acceptance-testing path, so
+  the one install flow used to accept a release was the one where `up`
+  structurally could not succeed. **A documented caveat about a read-out is
+  not a caveat about the commands that gate on it**; when writing one, name
+  every consumer or fix the read-out. It was fixed rather than re-documented.
+
+  Which service name each caller resolves, and the sweep that found Homebrew
+  to be the only place a published artifact's name varies by channel, are not
+  recorded here — they are in `src/nyxgpt/brew_services.py` and
+  `tests/unit/test_brew_service_names.py`, per the verification retirement.
+  (Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3853; #3860 run 32202943938 (Q-002's reproduction); D-026.
+
+- **D-031** · 2026-08-19 · developer agent (#3861) — **The native install
   marker records an identity, and reconciliation is a comparison of whole
   identities — never a list of transition pairs.** `mode` (`artifact`/`dev`)
   is now one field of an `InstallIdentity` alongside the service **manager**,
@@ -796,11 +832,20 @@ rather than mechanism, and nothing can enforce them.
   ops`), and gating it on `differences` made `doctor`'s own remedy — "re-run
   `nyxgpt up` … to retire the ones that are not this install's" — a no-op in
   every state `doctor` can fire in. What the comparison gates is the
-  *reporting* of the change and the api-venv rebuild. Scope note: this is the `ops.py` half of #3853. The *packaging*
-  half stays parked — nothing here adds `conflicts_with` to the stable
-  formula, so **D-026**'s debt (flipping `macos-brew-smoke.yml`'s
-  reverse-direction `::warning::` back to a hard failure) is untouched and
-  still owed by the PR that fixes #3853. Extends **D-009**, whose "installing
+  *reporting* of the change and the api-venv rebuild. Scope note: this is the
+  runtime half of #3853, and it now sits **beside** that issue's packaging
+  half rather than waiting on it — **D-030** landed on `v3.0.0` while this was
+  in review, declaring `conflicts_with` in both directions and paying
+  **D-026**'s debt. The two are defence in depth, not duplicates, and neither
+  makes the other removable: packaging refuses the *second install* on a
+  machine whose brew is up to date with both formulas, while this retires
+  what is already registered — on every machine that reached the bad state
+  before that declaration shipped, through a hand-installed keg, or through a
+  local `file://` tap whose checked-in formulas that script never stamps.
+  `_stop_superseded_brew_services` (D-030's install step) overlaps this
+  subtraction by design since #3861 rather than covering a case reconcile
+  cannot see; what it adds is a second stop attempt sited immediately before
+  the api/web installs. Extends **D-009**, whose "installing
   either mode over the other stops the other's services" now reads as the
   identity comparison's special case.
   Source: #3861; `src/nyxgpt/install_mode.py` (`InstallIdentity`);
@@ -885,6 +930,10 @@ rather than mechanism, and nothing can enforce them.
   untrusted, and resolving `conflicts_with` *loads* the named formula, so brew
   refuses on trust grounds before it ever evaluates the conflict — #3770's
   shape, and why the job now trusts the whole tap.
+  **Acted on 2026-08-19 (#3853), so this question no longer blocks anything:**
+  the stable formula declares its own line's candidate, both directions are
+  hard assertions in CI, and a cross-line candidate is stopped at install time
+  rather than by packaging. See **D-030**.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a
@@ -953,6 +1002,31 @@ rather than mechanism, and nothing can enforce them.
   Not taken inside this PR: an intake path built on a guessed credential model
   is one that gets rebuilt, and the two paths it would have to hedge across
   differ in where the product is hosted, not in a detail.
+
+- **Q-007** · 2026-08-19 · developer agent (#3853) — After the release
+  ceremony retires a shipped line's candidate formulas from the tap
+  (`scripts/retire_rc_formulas.sh`), the stable formula's new
+  `conflicts_with "<name>@<line>rc"` (**D-030**) names a formula the tap no
+  longer carries. Two things follow and neither is established: (a) does the
+  conflict still hold for a machine that still has that **keg** installed —
+  i.e. can Homebrew's `Formulary` load the formula back from the keg's own
+  `.brew/*.rb` — and (b) what does a user with no candidate installed see?
+  An absent counterpart is documented as a benign warning (#3753), but on the
+  *stable* formula that warning lands on the main install path, and
+  Homebrew's wording for it advises removing the declaration, which is
+  advice this project must not follow. Do not act on either by reading
+  Homebrew's source: #3853 exists because a behavior everyone believed was
+  never run.
+  Needs: the `Measure: the same conflict after the candidate is retired from
+  the tap` step in `macos-brew-smoke.yml`'s `stable-over-candidate` job,
+  which reproduces exactly that state on a clean `macos-15` runner and prints
+  the answer. It runs on every formula PR; read its `MEASURED:` lines.
+  Blocks: nothing today. It cannot be reached before 3.0.0 ships and its
+  candidates are retired, and until then both directions of the conflict are
+  hard-asserted. If (b) turns out noisy, the candidate answer is retiring an
+  rc formula by replacing it with a disabled stub rather than deleting it —
+  which keeps the name resolvable and gives a better error than "No available
+  formula" — not dropping the declaration.
 
 ## Superseded
 

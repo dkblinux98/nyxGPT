@@ -310,7 +310,26 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
     _record_identity(monkeypatch, install_mode.INSTALL_MODE_ARTIFACT, "brew", "nyxgpt-api")
+    # Both halves of the union, in one test, because this is the machine that
+    # needs both. The marker records the plain names -- what the last install
+    # through `nyxgpt ops` targeted -- while the machine also carries the
+    # versioned services a candidate-channel install registers (#3853), which
+    # no marker here describes. The dev switch has to stop *all four*: each
+    # holds :8000/:3000 against the dev LaunchAgents and `keep_alive true`
+    # brings it straight back. The marker alone would miss the `@3.0.0rc`
+    # pair; discovery alone would miss `nyxgpt-web`, which brew reports as
+    # nothing here at all.
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {
+            "nyxgpt-api": "stopped",
+            "nyxgpt-api@3.0.0rc": "started",
+            "nyxgpt-web@3.0.0rc": "started",
+        },
+    )
 
     stopped: list[str] = []
     monkeypatch.setattr(
@@ -322,7 +341,12 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     results = ops._reconcile_install_mode(dev=True)
 
     assert all(r.ok for r in results), [r.message for r in results]
-    assert stopped == ["nyxgpt-api", "nyxgpt-web"]
+    assert stopped == [
+        "nyxgpt-api",
+        "nyxgpt-web",
+        "nyxgpt-api@3.0.0rc",
+        "nyxgpt-web@3.0.0rc",
+    ]
     assert not venv.exists()
     assert install_mode.read_install_mode().is_dev is True
 
@@ -690,6 +714,8 @@ _INSTALL_STEPS = (
     "_sync_packaged_resources",
     "_clear_intentional_stops",
     "_install_config",
+    "_report_orphaned_launchd_jobs",
+    "_stop_superseded_brew_services",
     "_ensure_docker_engine",
     "migrate_legacy_volumes",
     "_reconcile_phantom_compose_app_containers",

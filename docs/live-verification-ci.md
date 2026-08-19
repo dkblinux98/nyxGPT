@@ -185,7 +185,15 @@ and screenshots make verifiable in the review loop:
   `stable-over-candidate` job additionally executes what happens when two
   channels are installed at once: `brew services` really registers both keg's
   services and the real install-identity reconcile (#3861) runs against them,
-  in both directions. The same boundary applies to the dev install mode's macOS
+  in both directions. Since #3853 that job also proves brew *refuses* the
+  second install in both orders, so the two-keg machine is staged there
+  deliberately (the stable formula's `conflicts_with` is stripped for one
+  install, then restored) rather than reached by installing. That is not a
+  weaker proof of the reconcile: packaging guards the machines that install
+  after the declaration ships, and reconcile is what every machine already in
+  the state needs -- including the local `file://` tap path, whose checked-in
+  formulas `build_homebrew_artifacts.py` never stamps. The same boundary
+  applies to the dev install mode's macOS
   LaunchAgents (`com.nyxgpt.api`/`com.nyxgpt.web`, see
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)):
   `launchctl bootstrap gui/<uid>` needs a real GUI session, which the hosted
@@ -220,6 +228,18 @@ and screenshots make verifiable in the review loop:
   named, in the same commit that tolerates it. What stays owner acceptance:
   Cassandra-backed session storage (the CI run exercises the `file` backend
   the default config selects), and the observability profiles on macOS.
+
+  One consequence, spelled out because it looks like a gap and is not:
+  **`nyxgpt up`'s exit code cannot be asserted on this runner.** A tolerated
+  step is still a *failed* step, so `install()` returns 2 and `up` returns
+  that before its health wait ever runs. The half of `up` that #3853 broke --
+  the wait, which asks `self_heal.list_component_status()` whether every
+  desired component is healthy -- is asserted directly instead, by
+  `nyxgpt self-heal status` naming `api` and `web` as `[OK]` and by
+  `nyxgpt ops status` reporting them running, plus a check that `up`'s own
+  `Still unhealthy:` line (when the wait does run) never names a component
+  whose service is started. Asserting `up == 0` here would assert something
+  no hosted macOS runner can produce, which is a red gate, not a strong one.
 - **The setup wizard's prompts** -- `nyxgpt wizard` is interactive by design
   and `ops install` correctly refuses to run it without a TTY, so the CI user
   path seeds `~/.nyxGPT/config.ini` from the *installed package's* own

@@ -85,6 +85,16 @@ _ALLOWLIST: dict[str, set[str]] = {
         # tap's channel formula. Absent (the installed-package case) is a
         # supported answer, not a failure.
         'template = REPO_ROOT / "homebrew" / f"{name}.rb"',
+        # `_target_brew_formula` (#3853): asks the *same* question that line
+        # answers -- "is there a checkout to build a local file:// tap
+        # from?" -- so that the superseded-service reconcile can never stop
+        # the service this install is about to start. Deliberately the
+        # installer's own condition rather than a second heuristic; on an
+        # artifact install it is simply False and the published channel
+        # formula answers, which is the repo-less path working as intended.
+        # `_native_install_identity` reaches the same branch through
+        # `_homebrew_formula_template`, so all three agree by construction.
+        'if (REPO_ROOT / "homebrew" / f"{name}.rb").exists():',
         # Self-contained Linux venv build (`ops package --linux`): builds
         # an installable artifact from the checkout's own example.config.ini.
         'example_config = REPO_ROOT / "example.config.ini"',
