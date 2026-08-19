@@ -206,10 +206,10 @@ Locality: this flag deploys to a cluster on the local machine, and that is the
 default — `nyxgpt ops install --kubernetes` needs no locality flag (#3948).
 `--local` is still accepted as an explicit no-op, so the commands on this page
 and in your scripts keep working. `--cloud` is accepted by the CLI surface but
-rejected. Kubernetes is genuinely a local-only deployment target today: the
-cloud path provisions an AWS instance (`nyxgpt cloud infra apply`) and runs the
-stack on it with Compose (`nyxgpt cloud deploy`, see [cloud.md](cloud.md)), not
-in a cluster.
+rejected, and here that is more than a limit of the flag: the cloud path
+provisions an AWS instance (`nyxgpt cloud infra apply`) and runs the stack on it
+with Compose (`nyxgpt cloud deploy`, see [cloud.md](cloud.md)) — it is not a
+cluster deployment, so there is no cloud target for this flag to accept.
 
 The command refuses to start if the native/Compose stack already owns the
 `api` port — run `nyxgpt ops down` (or stop the conflicting components)

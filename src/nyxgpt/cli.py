@@ -1655,8 +1655,8 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
             "cluster instead of native/Homebrew reconciliation; add --dev to build the two "
             "container images from your working tree. Uses an existing reachable cluster if "
             "kubectl is already configured, otherwise provisions a local kind cluster. "
-            "Kubernetes is a local-only deployment target today -- `nyxgpt cloud deploy` "
-            "runs the stack with Compose, not a cluster"
+            "The cloud path is not a cluster: `nyxgpt cloud deploy` runs the stack on an "
+            "AWS instance with Compose (see docs/cloud.md)"
         ),
     )
     locality = parser.add_mutually_exclusive_group()
