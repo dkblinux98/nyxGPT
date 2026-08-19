@@ -698,7 +698,7 @@ jobs:
         # either link fired, and when one drops a REQUEST_CHANGES verdict
         # goes nowhere -- APPROVE merged fine on dispatch (PR #3613) while
         # REQUEST_CHANGES sat for 9+ hours with zero fix activity on PRs
-        # #3684/#3683/#3606 until a human posted RETRY_IMPLEMENTATION by
+        # #3684/#3683/#3606 until a human re-dispatched the developer by
         # hand (#3704).
         #
         # The script gives the event chain a head start and only acts if no

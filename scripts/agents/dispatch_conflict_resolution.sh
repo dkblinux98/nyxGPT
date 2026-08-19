@@ -214,11 +214,11 @@ If — and only if — resolving needs a decision only the owner can make (e.g. 
   gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$MSG" || true
   issue_comment "$ISSUE" "$MSG" || _warn "Could not comment on issue #${ISSUE}."
 
-  set_issue_status "$ISSUE" "$STATUS_IN_PROGRESS" \
-    || _warn "Could not set issue #${ISSUE} Status -> ${STATUS_IN_PROGRESS}."
+  # Assignment is the dispatch (#3882): the developer claims the issue and
+  # moves it to In Progress itself when the run starts.
   assign_and_trigger_developer "$ISSUE"
 
-  echo "[conflict] Dispatched round $((rounds + 1)) (issue #${ISSUE} -> ${STATUS_IN_PROGRESS}, @${DEV_AGENT} reassigned)." >&2
+  echo "[conflict] Dispatched round $((rounds + 1)) (issue #${ISSUE}, @${DEV_AGENT} reassigned)." >&2
   _result_line "dispatch" "$reason"
   exit 0
 fi

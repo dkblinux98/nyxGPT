@@ -1275,8 +1275,8 @@ ${AUTOPILOT_INFO_MARKER}" \
 # in-flight developer run -- e.g. it refused earlier because a prose
 # "Blocked by: #N" gate was open at the time, or its runs died in an
 # incident. Before #3709 nothing picked those back up when their blockers
-# merged, so a human posted RETRY_IMPLEMENTATION at every gate opening (the
-# Sprint 8 cloud chain #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was
+# merged, so a human re-triggered the developer by hand at every gate
+# opening (the Sprint 8 cloud chain #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was
 # hand-walked that way). Owner requirement: no babysitting -- the loop
 # drives its own chain.
 #
@@ -1426,11 +1426,15 @@ autopilot_scan_parked() {
     | python3 "${_LIB_DIR}/parked_resume.py" scan
 }
 
-# Posts the auto-resume trigger on a parked issue: the same
-# RETRY_IMPLEMENTATION mechanics a human would post by hand, plus the budget
-# marker. developer_auto_implement.yml accepts this comment from the review
-# agent and the developer agent (its issue_comment gate), which are the two
-# identities sprint_autopilot_kick runs under.
+# Resumes a parked issue: assign it back to the developer agent (#3882), and
+# leave the budget-marked comment as the record of why.
+#
+# The assignment is the whole trigger. This used to post a retry token and
+# rely on developer_auto_implement.yml pattern-matching the comment body --
+# the mechanism that let a workflow's own prose start work (#3706, #3790).
+# The comment still carries the auto-resume marker, because
+# parked_resume.py counts *markers*, not tokens, when it decides whether the
+# budget is spent.
 _autopilot_post_resume() {
   local issue="$1"
   require_cmd jq
@@ -1441,12 +1445,14 @@ _autopilot_post_resume() {
   max="$(jq -r '.max_resumes // 3' <<<"$budget" 2>/dev/null || echo 3)"
   marker="$(python3 "${_LIB_DIR}/parked_resume.py" marker "$issue" "$n")"
 
-  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Restarting implementation automatically (#3709) -- no human trigger needed.
+  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Reassigning it to @${DEV_AGENT} to restart implementation (#3709) -- no human trigger needed.
 
 If this run stops again without progress, the auto-resume budget (${max}) will be spent and the issue is reported as gate-stuck on the release tracking issue instead of being retried forever. A comment from the repo owner resets the budget (#3689).
 
-RETRY_IMPLEMENTATION
 ${marker}"
+
+  # The assignment, not the comment, is what starts the work (#3882).
+  assign_and_trigger_developer "$issue"
 }
 
 # -------------------------
@@ -2364,23 +2370,28 @@ If rework is genuinely needed, it is a **new issue**: a closed issue means the w
 
   if [[ -n "$current_assignee" ]]; then
     # Developer already assigned - unassign first to force a new 'assigned'
-    # event (reassigning the same login fires none). This alone proved
-    # insufficient in production (#3647: a REQUEST_CHANGES redispatch with
-    # the assignee already parked on the dev agent started nothing, and the
-    # issue sat idle until a manual RETRY_IMPLEMENTATION comment) -- so it
-    # is backed by a RETRY_IMPLEMENTATION comment as a second, independent
-    # trigger path. developer_auto_implement.yml's issue_comment gate
-    # accepts that comment from the dev agent, the human owner, or the
-    # review agent, so whichever caller hits this branch (review-agent
-    # redispatch, conflict-resolution round, human override) has a working
-    # fallback even if the assignment-cycling event never fires/propagates.
+    # event (reassigning the same login fires none).
+    #
+    # #3882 removed the second trigger path this branch used to carry: a
+    # bare retry token posted as a comment, which developer_auto_implement.yml
+    # pattern-matched. That was the #3647 answer to one observed miss (a
+    # REQUEST_CHANGES redispatch that started nothing) -- and it is the same
+    # prose-as-API mechanism that later re-triggered a workflow from its own
+    # output ~500 times (#3790). Assignment is the lever; a comment carries
+    # findings.
+    #
+    # What backs the write instead: assign_issue_verified re-reads the
+    # assignees and retries until the PATCH has actually landed (a silent
+    # no-op PATCH is the failure mode a fire-and-forget call cannot see), the
+    # per-issue concurrency group in developer_auto_implement.yml serializes
+    # whatever it starts, and review_ensure_handoff.sh (#3704) is the
+    # backstop for a handoff that produces no developer run at all.
     _debug "Developer already assigned to #$issue - unassigning first to force event"
     gh issue edit "$issue" --remove-assignee "$DEV_AGENT"
     sleep 1  # Brief pause to ensure event processes
-    issue_assign_only "$issue" "$DEV_AGENT"
+    assign_issue_verified "$issue" "$DEV_AGENT" \
+      || _warn "Could not verify the re-assignment of #$issue to @${DEV_AGENT} -- the developer run may not have been dispatched."
     _debug "Reassigned developer to #$issue - workflow will trigger via assignment event"
-    issue_comment "$issue" "RETRY_IMPLEMENTATION"
-    _debug "Posted RETRY_IMPLEMENTATION fallback comment on #$issue"
     return
   fi
 

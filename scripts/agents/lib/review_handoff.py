@@ -9,7 +9,7 @@ path for PRs whose automatic review never fired), the review run itself has
 no way to observe whether either link actually fired -- and when one drops,
 a REQUEST_CHANGES verdict simply goes nowhere. Observed 2026-08-09/10 on
 PRs #3684, #3683 and #3606: verdicts posted, zero fix activity for 9+ hours
-until a human posted `RETRY_IMPLEMENTATION` by hand.
+until a human re-dispatched the developer agent by hand.
 
 This module holds the decision half of the backstop:
 `scripts/agents/review_ensure_handoff.sh` gathers PR reviews and comments via
