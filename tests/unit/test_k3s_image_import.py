@@ -56,17 +56,25 @@ def _only(*present):
 
 
 class _FakePopen:
-    """Stands in for `docker save`, which is a pipe rather than a `_run` call."""
+    """Stands in for `docker save`, which is a pipe rather than a `_run` call.
 
-    def __init__(self, argv, returncode=0, stderr=""):
+    `stderr` is deliberately absent: the real call hands `docker save` a temp
+    file, not a pipe, so a double that offers a readable `.stderr` would let a
+    regression back to `stderr=PIPE` pass here. The deadlock that shape
+    reintroduces is invisible in a test either way -- it needs 64KiB of
+    diagnostic -- so the test's job is to hold the *shape*.
+    """
+
+    def __init__(self, argv, returncode=0, stderr_file=None):
         self.argv = argv
         self.returncode = returncode
-        self.stdout = None
-        self.stderr = None
-        self._stderr_text = stderr
+        self.stdout = _FakeStream("")
+        self._stderr_file = stderr_file
+
+    def wait(self, timeout=None):
+        return self.returncode
 
     def __enter__(self):
-        self.stderr = _FakeStream(self._stderr_text)
         return self
 
     def __exit__(self, *exc):
@@ -89,8 +97,15 @@ def k3s_calls(monkeypatch):
     """Record the `docker save` and `k3s ctr images import` invocations."""
     calls = {"save": [], "import": []}
 
-    def fake_popen(argv, **_kwargs):
+    def fake_popen(argv, **kwargs):
         calls["save"].append(argv)
+        calls["save_kwargs"] = kwargs
+        # Whatever `docker save` writes to stderr is written *by docker*; the
+        # double writes it through the same file object the caller supplied, so
+        # a test can assert the message survives the handoff.
+        stderr = kwargs.get("stderr")
+        if calls.get("save_stderr") and hasattr(stderr, "write"):
+            stderr.write(calls["save_stderr"])
         return _FakePopen(argv, returncode=calls.get("save_rc", 0))
 
     def fake_run(argv, **kwargs):
@@ -161,11 +176,35 @@ def test_a_failed_docker_save_names_itself(monkeypatch, tmp_path, k3s_calls):
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     monkeypatch.setattr(ops, "_run", _build_succeeds)
     k3s_calls["save_rc"] = 1
+    k3s_calls["save_stderr"] = "No such image: nyxgpt-api:local"
 
     results = ops._build_and_load_k8s_image()
 
     assert not all(r.ok for r in results)
     assert any("docker save" in r.message for r in results)
+    # The diagnostic docker wrote has to survive the handoff, or the operator
+    # is told the save failed and nothing about why.
+    assert any("No such image" in (r.details or "") for r in results)
+
+
+@pytest.mark.unit
+def test_docker_saves_stderr_is_a_file_not_a_second_pipe(monkeypatch, tmp_path, k3s_calls):
+    """Nothing reads a stderr pipe until after the import returns.
+
+    So a `docker save` that filled the 64KiB stderr buffer would block on the
+    write, stop feeding the import, and leave the two processes waiting on
+    each other until the timeout expired. The diagnostic is a line or two in
+    practice, which is exactly why this deadlock would never reproduce in a
+    test and would surface as a fifteen-minute hang on somebody's deploy.
+    """
+    monkeypatch.setattr(ops, "_which", _only("docker", "k3s", "sudo"))
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+    monkeypatch.setattr(ops, "_run", _build_succeeds)
+
+    ops._build_and_load_k8s_image()
+
+    assert k3s_calls["save_kwargs"]["stderr"] is not subprocess.PIPE
+    assert hasattr(k3s_calls["save_kwargs"]["stderr"], "write")
 
 
 @pytest.mark.unit

@@ -7248,9 +7248,17 @@ def _k3s_import_image(image: str) -> list[OpsResult]:
     a failed import is a failed install, reported at the step that caused it
     instead of eight minutes later as an unexplained Pending stack.
 
-    Piped rather than staged through a temp file: the two images together are
-    several GB, and a cloud instance's root volume is sized for the stack, not
-    for a second copy of it.
+    The image itself is **piped**, not staged through a temp file: the two
+    images together are several GB, and a cloud instance's root volume is
+    sized for the stack, not for a second copy of it. `docker save`'s
+    **stderr**, on the other hand, goes to a temp file rather than to a second
+    pipe, and that asymmetry is deliberate. Nothing reads a stderr pipe until
+    after the import returns, so a `docker save` that filled the 64KiB stderr
+    buffer would block on the write, stop feeding the import, and leave the
+    two processes waiting on each other until the timeout below expired. The
+    diagnostic is a line or two in practice, which is exactly why the deadlock
+    would never show up in testing and would surface as a fifteen-minute hang
+    on somebody's deploy.
 
     `sudo` unless already root -- containerd's socket
     (`/run/k3s/containerd/containerd.sock`) is root-owned, and the login user
@@ -7258,9 +7266,12 @@ def _k3s_import_image(image: str) -> list[OpsResult]:
     """
     argv = [*_k3s_sudo_prefix(), "k3s", "ctr", "images", "import", "-"]
     try:
-        with subprocess.Popen(  # nosec B603 - fixed argv, no shell
-            ["docker", "save", image], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        ) as save:
+        with (
+            tempfile.TemporaryFile(mode="w+") as save_errors,
+            subprocess.Popen(  # nosec B603
+                ["docker", "save", image], stdout=subprocess.PIPE, stderr=save_errors
+            ) as save,
+        ):
             cp = subprocess.run(  # nosec B603 - fixed argv, no shell
                 argv,
                 stdin=save.stdout,
@@ -7273,7 +7284,9 @@ def _k3s_import_image(image: str) -> list[OpsResult]:
             # import died early, instead of blocking the `with` on a full pipe.
             if save.stdout is not None:
                 save.stdout.close()
-            save_stderr = (save.stderr.read() if save.stderr else "") or ""
+            save.wait(timeout=K3S_IMAGE_IMPORT_TIMEOUT_SECONDS)
+            save_errors.seek(0)
+            save_stderr = save_errors.read()
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning(
             "ops: k3s image import failed for %s: %s",
