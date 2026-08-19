@@ -1,0 +1,93 @@
+name: k3s Cloud Smoke
+
+# The question this job answers: does `nyxgpt cloud deploy --kubernetes`'s k3s
+# bootstrap produce a cluster the existing `k8s/*.yaml` manifests run on, with
+# nothing listening on the public interface? (#3956, implementing #3506.)
+#
+# It is the executed evidence for a change whose whole claim is about runtime
+# behaviour on a provisioned machine (D-006). Unit tests can assert the shape
+# of the rendered bootstrap; they cannot tell you that k3s binds where the
+# flags say, that `--disable=servicelb` takes, that `local-path` survives, or
+# that an image built with docker is invisible to k3s's containerd -- which is
+# the defect that would otherwise have shipped as a green install and a stack
+# of ImagePullBackOff Pods.
+#
+# It runs the REAL text a deploy sends: `scripts/k3s-cloud-smoke.sh` executes
+# `cloud_deploy.render_k3s_bootstrap()` and the bridge-unit slice of
+# `render_provision_script()`, rather than a hand-maintained copy. A smoke that
+# tests an approximation certifies the approximation -- the #3860 lesson.
+#
+# Two of its six steps are FAULT INJECTIONS (#3753's both-halves rule): the
+# image-import step proves the Pod fails without the import and runs with it,
+# and the bridge step proves 127.0.0.1:8000 goes dead when the bridge stops, so
+# neither can pass by luck on a runner where something else was listening.
+#
+# WHAT THIS JOB CANNOT COVER, and does not pretend to: a real EC2 instance, a
+# real AWS security group, and the IMDSv2 read (exercised here through its
+# documented non-EC2 fallback). There is no hosted runner that is an EC2
+# instance -- see docs/live-verification-ci.md, which names this explicitly.
+#
+# Scoped like the other cluster smokes: installing k3s and driving a real
+# cluster is not free, so it runs only when the cloud deploy path, the
+# Kubernetes half of ops, the manifests, or this job change.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/ops.py'
+      - 'k8s/**'
+      - 'scripts/k3s-cloud-smoke.sh'
+      - '.github/workflows/k3s-cloud-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/ops.py'
+      - 'k8s/**'
+      - 'scripts/k3s-cloud-smoke.sh'
+      - '.github/workflows/k3s-cloud-smoke.yml'
+  workflow_dispatch:
+
+# Read-only: this job installs a cluster on its own runner and never touches
+# the repository or its APIs (the CodeQL actions/missing-workflow-permissions
+# pattern, same as linux-native-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  k3s-cloud-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # The runner's own address, before anything is installed -- so the
+      # smoke's "bound to the private address, not 0.0.0.0" assertion can be
+      # read against a number that was captured independently of the thing it
+      # is checking.
+      - name: Record the runner's addresses
+        run: |
+          echo "MEASURED: hostname -I -> $(hostname -I)"
+          echo "MEASURED: listeners on 6443 before the bootstrap:"
+          ss -ltnH 'sport = :6443' || echo "  (none)"
+
+      - name: Run the k3s cloud smoke
+        run: ./scripts/k3s-cloud-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          sudo systemctl status k3s --no-pager -l || true
+          sudo journalctl -u k3s --no-pager -n 200 || true
+          kubectl get pods -A -o wide || true
+          kubectl -n nyxgpt describe pods || true
+          systemctl --user status 'nyxgpt-k8s-bridge@*' --no-pager -l || true
