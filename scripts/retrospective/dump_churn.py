@@ -85,6 +85,7 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
+    "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
     # #3919's grooming workflow. Two branches added it independently, the
     # de-duplication of that (#3927) removed both copies, and `collect()`
