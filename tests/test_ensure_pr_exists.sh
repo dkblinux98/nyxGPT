@@ -65,6 +65,30 @@ _assert_not_contains() {
   fi
 }
 
+# Case-insensitive ERE assertion. `_assert_not_contains` is a literal glob
+# match, which is the wrong instrument for the closing-keyword property:
+# GitHub matches `close|closes|closed|fix|fixes|fixed|resolve|resolves|
+# resolved` immediately before an issue reference, ANYWHERE in the body and
+# WITHOUT regard to case. Guarding that with the literal "Close" is a check
+# that cannot fail on the real violation -- and it did not: the body used to
+# read "would close #9201 if", lowercase and mid-sentence, a live closing
+# reference, while that assertion passed (#3862, second review round).
+_assert_not_matches() {
+  local desc="$1" haystack="$2" pattern="$3"
+  if printf '%s' "$haystack" | grep -Eiq "$pattern"; then
+    echo "[FAIL] $desc: /$pattern/ unexpectedly matched in:" >&2
+    echo "$haystack" >&2
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "[ok] $desc"
+  fi
+}
+
+# Every keyword GitHub honours, in every case, immediately before the
+# reference. Kept next to its falsifiability check below -- the two are one
+# instrument.
+CLOSING_KEYWORD_RE='(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]]+#9201'
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
@@ -260,8 +284,33 @@ _assert_not_contains "the body does NOT close the issue (the draft is unfinished
   "$BODY" "Closes #9201"
 _assert_contains "the body describes continuation on this branch" \
   "$BODY" "checks \`claude/issue-9201-stranded\` out and"
-_assert_not_contains "and never spells a closing keyword GitHub would honour on merge" \
-  "$BODY" "Close"
+_assert_not_matches "and never spells a closing keyword GitHub would honour on merge" \
+  "$BODY" "$CLOSING_KEYWORD_RE"
+
+# 2b. The assertion above must be able to fail. The exact string the body
+# carried before this fix, plus one of each remaining keyword form, are fed
+# to the same pattern: if any of these stops matching, the guard has been
+# weakened and case 2 is decoration again.
+for _violation in \
+  "so spelling it out would close #9201 if anyone merged" \
+  "Closes #9201" \
+  "this CLOSED #9201" \
+  "fixes #9201" \
+  "Fix #9201" \
+  "resolved  #9201"
+do
+  if printf '%s' "$_violation" | grep -Eiq "$CLOSING_KEYWORD_RE"; then
+    echo "[ok] the keyword guard still catches: ${_violation}"
+  else
+    echo "[FAIL] the keyword guard no longer catches: ${_violation}" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+# ...and it must not fire on the phrasing the body legitimately uses to
+# explain the rule, or the fix would be untestable in the other direction.
+_assert_not_matches "the explanatory phrasing itself is not a closing reference" \
+  "No closing keyword appears anywhere above that reference for #9201" \
+  "$CLOSING_KEYWORD_RE"
 
 # ======================================================================
 # 3. The marker the body writes is the marker the workflow matches
