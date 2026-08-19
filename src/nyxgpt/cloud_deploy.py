@@ -527,7 +527,13 @@ def working_tree_files(source: Path) -> list[str]:
     from, and the transfer stays small.
 
     Tracked paths deleted in the working tree are dropped: git still lists
-    them and tar would fail on the first one.
+    them and tar would fail on the first one. The test is `lexists`, not
+    `is_file`, and the difference is load-bearing rather than pedantic --
+    `src/nyxgpt/resources/` is a directory of *symlinks* back to the
+    top-level `docker/`, `ops/`, `k8s/`, `terraform/` and `scripts/cloud/`
+    trees (#3621), each one tracked by git as a single entry that `is_file()`
+    answers False for. Shipping the tree without them would put a checkout on
+    the instance whose `ops install` could not find its own runtime data.
     """
     completed = subprocess.run(
         [
@@ -550,7 +556,7 @@ def working_tree_files(source: Path) -> list[str]:
             f"{(completed.stderr or '').strip() or 'git ls-files failed'}"
         )
     names = [name for name in completed.stdout.split("\0") if name]
-    return sorted({name for name in names if (source / name).is_file()})
+    return sorted({name for name in names if os.path.lexists(source / name)})
 
 
 def build_working_tree_archive(source: Path, dest: Path) -> int:
@@ -909,11 +915,17 @@ NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt\""""
 
 # `--dev` (#3950). Still no clone and no download of source: the tree was
 # copied here over this deploy's own SSH connection by `ship_working_tree`
-# before this script ran. The guard is not paranoia -- an install that fell
-# through to a published release here would hand the operator a healthy stack
-# that is not the code they are testing, which is the exact failure `--dev`
-# exists to prevent, and it would be invisible until they wondered why their
-# change had no effect.
+# before this script ran.
+#
+# The guard earns its place twice, both measured on a bare AL2023 box
+# (`scripts/cloud-dev-deploy-smoke.sh` phase 1). With the directory *absent*
+# and the guard removed, the run builds the venv and then dies inside pip with
+# "is not a valid editable requirement ... or a VCS URL (beginning with
+# bzr+http, ...)" -- a message about version control, ninety seconds in, for
+# an operator whose actual problem is that a file copy did not happen. With a
+# *stale* tree left by an earlier `--dev` deploy there is no error at all:
+# the box installs the old code and comes up healthy, and the operator finds
+# out when their change appears to have done nothing.
 DEV_INSTALL_BLOCK = """# --- nyxGPT itself, from the working tree this deploy shipped ----------
 if [ ! -f "__REMOTE_SOURCE__/pyproject.toml" ]; then
   echo "no working tree at __REMOTE_SOURCE__ -- --dev ships one before provisioning, and this instance has none" >&2

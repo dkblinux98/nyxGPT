@@ -183,6 +183,38 @@ def test_the_repository_itself_is_never_shipped(dev_checkout):
     assert not [name for name in names if name.startswith(".git/") or name == ".git"]
 
 
+def test_symlinked_resource_directories_are_shipped(dev_checkout):
+    """`src/nyxgpt/resources/` is symlinks, and dropping them breaks the install.
+
+    Since #3621 the ops layer's runtime data (Compose files, unit templates,
+    k8s manifests, the Terraform configs, `scripts/cloud/`) reaches the
+    package through symlinks in `src/nyxgpt/resources/` pointing back at the
+    top-level trees. git tracks each as one entry, and a plain `is_file()`
+    filter answers False for every symlink-to-a-directory among them -- which
+    would ship a checkout whose `ops install` cannot find its own resources,
+    and would do it silently.
+    """
+    (dev_checkout / "src" / "nyxgpt" / "resources").mkdir()
+    (dev_checkout / "shared").mkdir()
+    (dev_checkout / "shared" / "compose.yml").write_text("x\n", encoding="utf-8")
+    (dev_checkout / "src" / "nyxgpt" / "resources" / "shared").symlink_to("../../../shared")
+    subprocess.run(["git", "-C", str(dev_checkout), "add", "-A"], check=True, capture_output=True)
+    assert "src/nyxgpt/resources/shared" in cloud_deploy.working_tree_files(dev_checkout)
+
+    archive = dev_checkout.parent / "tree.tar.gz"
+    cloud_deploy.build_working_tree_archive(dev_checkout, archive)
+    extracted = dev_checkout.parent / "extracted"
+    extracted.mkdir()
+    subprocess.run(
+        ["tar", "-xzf", str(archive), "-C", str(extracted)], check=True, capture_output=True
+    )
+    # Shipped as a symlink, and one that still resolves on the far side --
+    # its target travelled with it.
+    landed = extracted / "src" / "nyxgpt" / "resources" / "shared"
+    assert landed.is_symlink()
+    assert (landed / "compose.yml").read_text(encoding="utf-8") == "x\n"
+
+
 def test_a_tracked_file_deleted_in_the_working_tree_does_not_break_the_archive(dev_checkout):
     """git still lists it; tar would abort on the first one."""
     (dev_checkout / "web" / "package.json").unlink()
