@@ -11,6 +11,8 @@ install rather than being reported as success.
 from __future__ import annotations
 
 from configparser import ConfigParser
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +25,20 @@ def _cfg(**overrides: str) -> ConfigParser:
     cfg["ollama"] = {"base_url": "http://127.0.0.1:11434"}
     cfg["rag"] = {"embedding_model": overrides.get("embedding_model", "nomic-embed-text")}
     return cfg
+
+
+def _no_config_anywhere(monkeypatch, tmp_path) -> None:
+    """Make "this machine has never been configured" true for real.
+
+    Redirecting `Path.home()` alone is not enough to reproduce it: the
+    developer's own `~/.nyxGPT/config.ini` is already baked into
+    `config.DEFAULT_CONFIG_PATH` at import, so a fallback that reaches for the
+    default *path* silently reads it and the test passes on a machine that is
+    not bare. Both have to be pointed at nothing (#3775: inject the condition).
+    """
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    monkeypatch.setattr("nyxgpt.config.DEFAULT_CONFIG_PATH", tmp_path / "absent" / "config.ini")
+    assert not (tmp_path / ".nyxGPT" / "config.ini").exists()
 
 
 def _installed(monkeypatch, names: list[str]) -> None:
@@ -322,6 +338,70 @@ def test_doctor_stays_silent_when_ollama_is_unreachable(monkeypatch, tmp_path):
     monkeypatch.setattr(model_bootstrap, "installed_model_names", unreachable)
 
     assert ops._missing_required_models_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_status_reports_defaults_instead_of_raising_when_there_is_no_config(
+    monkeypatch, tmp_path, capsys
+):
+    """`ops status` is the diagnostic a user runs on a machine that has not been
+    configured yet, and its contract is to always return 0.
+
+    The first cut asked `load_config` for the defaults by passing None -- but
+    None means "the default *path*", so the no-config case landed in the very
+    FileNotFoundError the `exists()` guard had just detected, and `ops status`
+    died with a traceback before printing its model block. Every other test
+    here hands in a cfg or patches `load_config`, so nothing covered the branch
+    that actually runs on a bare machine.
+    """
+    _no_config_anywhere(monkeypatch, tmp_path)
+    _installed(monkeypatch, [])
+
+    info = ops.required_models_status()
+    ops._print_required_models_status()
+
+    assert info["reachable"] is True
+    assert info["ready"] is False
+    # The code defaults, reported as missing -- what an unconfigured machine
+    # would in fact ask Ollama for.
+    assert [m["role"] for m in info["models"]] == ["chat"]
+    assert info["models"][0]["model"] == "llama3.1:8b"
+    assert info["models"][0]["present"] is False
+    out = capsys.readouterr().out
+    assert "chat: llama3.1:8b -- MISSING" in out
+    assert "nyxgpt ops install" in out
+
+
+@pytest.mark.unit
+def test_ops_status_survives_a_machine_with_no_config(monkeypatch, tmp_path):
+    """The whole command, not just the helper: `ops status` returns 0 rather
+    than raising on a bare machine (the k8s pod-state smoke calls it there)."""
+    _no_config_anywhere(monkeypatch, tmp_path)
+    _installed(monkeypatch, [])
+
+    assert ops.status(SimpleNamespace()) == 0
+
+
+@pytest.mark.unit
+def test_status_says_none_configured_only_for_an_explicitly_empty_model(
+    monkeypatch, tmp_path, capsys
+):
+    """The "none configured" line is reachable exactly one way: a config.ini
+    that sets the model keys to the empty string. An *absent* key falls back to
+    the code default instead, which is why this is not the no-config message."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.ini").write_text(
+        "[nyxgpt]\ndefault_model =\n\n[rag]\nembedding_model =\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    _installed(monkeypatch, [])
+
+    info = ops.required_models_status()
+    ops._print_required_models_status()
+
+    assert info["models"] == []
+    assert "none configured" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

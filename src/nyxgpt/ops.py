@@ -9065,7 +9065,16 @@ def required_models_status(
 
     if cfg is None:
         cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
-        cfg = load_config(cfg_path if cfg_path.exists() else None)
+        # An absent config reports against the shipped defaults, it does not
+        # raise: `load_config(None)` means "the default *path*", not "the
+        # defaults", so passing None here routed the no-config case straight
+        # into the FileNotFoundError the `exists()` check had just ruled out.
+        # `ops status` is the diagnostic a user runs on a not-yet-configured
+        # machine, and its contract is to always return 0 -- an empty parser
+        # makes every value fall through to its code default and the block
+        # degrades to reporting those as MISSING/UNKNOWN, which is the honest
+        # answer when there is no config to read.
+        cfg = load_config(cfg_path) if cfg_path.exists() else ConfigParser()
     base_url = get_ollama_base_url(cfg)
     wanted = model_bootstrap.required_models(cfg)
 
@@ -9107,6 +9116,10 @@ def _print_required_models_status() -> None:
     """Print the required-model readiness block of `nyxgpt ops status`."""
     info = required_models_status()
     print(f"\nRequired models (Ollama at {info['base_url']}):")
+    # Reachable, though only one way: `required_models` falls back to the code
+    # default when the key is *absent*, so this branch is not the no-config
+    # case -- it is a config.ini that sets `default_model =` (and
+    # `embedding_model =`) to the empty string, which asks for no model at all.
     if not info["models"]:
         print("  none configured -- set [nyxgpt] default_model in ~/.nyxGPT/config.ini")
         return
