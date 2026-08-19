@@ -219,3 +219,85 @@ def test_user_data_reports_unsupported_os(capsys):
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Unsupported --os" in captured.err
+
+
+# --- Session storage backend (#3865) ------------------------------------
+
+
+def test_linux_defaults_to_the_cassandra_session_backend():
+    """A Linux instance must not silently come up on host-local JSON sessions.
+
+    `ops install` provisions the `nyxgpt-cassandra` container on the instance
+    as a core service, so the backend the Kubernetes overlay asserts
+    declaratively is available here too -- and the cross-mode session
+    guarantee only holds if the cloud path actually selects it.
+    """
+    rendered = cloud_provision.render_user_data("linux")
+
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="cassandra"' in rendered
+    assert cloud_provision.SESSION_BACKEND_PLACEHOLDER not in rendered
+
+
+def test_macos_defaults_to_file_because_nothing_provisions_a_cassandra():
+    """The EC2 Mac template runs brew only -- it never runs `ops install`.
+
+    Defaulting that instance to `cassandra` would point its API at a database
+    that is not on the machine. File-backed by default is the honest answer,
+    and it is what docs/session-storage.md documents.
+    """
+    rendered = cloud_provision.render_user_data("macos")
+
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="file"' in rendered
+
+
+def test_the_backend_is_selectable_on_either_target():
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="file"' in cloud_provision.render_user_data(
+        "linux", session_backend="file"
+    )
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="cassandra"' in cloud_provision.render_user_data(
+        "macos", session_backend="cassandra"
+    )
+
+
+def test_both_templates_apply_the_choice_with_the_wrapped_command():
+    """Never a hand-rolled sed/python edit of config.ini on the instance.
+
+    The operational command wrapping requirement is what makes `nyxgpt ops
+    session-backend` the mechanism: it is the same command an operator runs,
+    and it is idempotent, so a re-provision is a no-op.
+    """
+    for os_family in cloud_provision.OS_FAMILIES:
+        rendered = cloud_provision.render_user_data(os_family)
+        assert "ops session-backend" in rendered
+
+
+def test_the_linux_choice_is_applied_before_ops_install():
+    """Order matters: `ops install` derives the containerized config from this one.
+
+    `_generate_compose_config` copies the native config.ini verbatim, so a
+    backend set *after* the install would leave the derived
+    `config.docker.ini` on the old value until the next reconcile.
+    """
+    body = "\n".join(_linux_executable_lines())
+    # The invocations, not the mentions: several `echo` diagnostics name
+    # `nyxgpt ops install` too.
+    set_backend = 'run_as_target "$NYXGPT_CLI" ops session-backend'
+    install = 'run_as_target "$NYXGPT_CLI" ops install'
+
+    assert body.index(set_backend) < body.index(install)
+
+
+def test_an_unsupported_backend_is_refused_at_render_time():
+    with pytest.raises(cloud_provision.CloudCommandError) as excinfo:
+        cloud_provision.render_user_data("linux", session_backend="postgres")
+
+    assert "--session-backend" in str(excinfo.value)
+
+
+def test_user_data_passes_the_flag_through(capsys):
+    args = argparse.Namespace(os="linux", version=None, output=None, session_backend="file")
+
+    exit_code = cloud_provision.user_data(args)
+
+    assert exit_code == 0
+    assert 'NYXGPT_SESSION_BACKEND_CHOICE="file"' in capsys.readouterr().out

@@ -142,7 +142,8 @@ Streaming is exposed consistently across:
 
 ### Sessions
 
-- File-based session storage
+- Session storage: file-backed or Cassandra-backed, selected per deployment
+  mode (see `docs/session-storage.md`)
 - Message history management
 - Metadata handling
 - Validation and safety checks
