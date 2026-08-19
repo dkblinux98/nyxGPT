@@ -134,13 +134,28 @@ apply_closure_rule() {
     # Never create a milestone (owner rule: agents do not create project
     # metadata). A missing one fails loudly rather than leaving the issue
     # looking handled.
-    if ! gh api "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=all&per_page=100" \
-         --jq '.[].title' | grep -qxF "$phase_milestone"; then
+    #
+    # Resolve the milestone NUMBER, and write it with REST. `gh issue edit
+    # --milestone <title>` resolves the title against *open* milestones only,
+    # and `Phase X: Rejected` is deliberately closed -- it is a graveyard, not
+    # a plan -- so the title write fails with "not found" on the live repo.
+    # The number never goes stale that way, and REST is the project's default
+    # for issue writes (AGENTS.md).
+    local milestones_json phase_milestone_number
+    if ! milestones_json="$(gh api --paginate \
+         "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=all&per_page=100" 2>&1)"; then
+      echo "::error::Failed listing milestones for issue #$ISSUE: $milestones_json"
+      return 1
+    fi
+    phase_milestone_number="$(printf '%s' "$milestones_json" \
+      | jq -r --arg t "$phase_milestone" '[.[] | select(.title == $t) | .number] | first // empty')"
+    if [[ -z "$phase_milestone_number" ]]; then
       echo "::error::Milestone '${phase_milestone}' does not exist -- cannot apply the closure rule to #$ISSUE."
       echo "Create it by hand (agents never create milestones), then re-run."
       return 1
     fi
-    gh issue edit "$ISSUE" --milestone "$phase_milestone" >/dev/null \
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
+      -F "milestone=${phase_milestone_number}" >/dev/null \
       || { echo "::error::Failed setting the milestone on issue #$ISSUE"; return 1; }
     echo "✓ Milestone: ${current_milestone:-(none)} -> ${phase_milestone}"
   fi
@@ -182,10 +197,13 @@ apply_closure_rule() {
     rc=0
     current="$(project_field_value "$item_id" "$field" 2>/dev/null)" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
-      # A field this board does not define is not an error: the rule strips
-      # what is there, and boards differ.
-      echo "· ${field}: not readable on this board -- skipped"
-      continue
+      # A field this board does not define reads back empty with rc 0
+      # (#3811), so rc != 0 means the API call itself failed -- a rate limit
+      # or a transport error, not a board difference. Swallowing it would
+      # leave a rejected issue sitting in its lane under a green run, with
+      # nothing left to re-fire the strip.
+      echo "::error::Failed reading ${field} on issue #$ISSUE (rc=${rc})"
+      return 1
     fi
     if [[ -z "$current" ]]; then
       echo "✓ ${field}: already clear"

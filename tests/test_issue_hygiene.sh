@@ -120,8 +120,8 @@ _reset_stub() {
   rm -rf "$GH_STUB_DIR"
   mkdir -p "$GH_STUB_DIR"
   cat > "$GH_STUB_DIR/milestones.json" <<'EOF'
-[{"title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open", "due_on": "2026-09-30"},
- {"title": "Phase X: Rejected", "state": "closed"}]
+[{"number": 6, "title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open", "due_on": "2026-09-30"},
+ {"number": 14, "title": "Phase X: Rejected", "state": "closed"}]
 EOF
 }
 
@@ -508,7 +508,7 @@ _assert_contains "C5: reports the fields already clear" "$out" "already clear"
 # looking handled with no marker on it at all.
 _reset_stub c6
 cat > "$GH_STUB_DIR/milestones.json" <<'EOF'
-[{"title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open"}]
+[{"number": 6, "title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open"}]
 EOF
 _write_issue <<'EOF'
 {"number": 3875, "title": "no phase x on this repo", "body": "", "labels": [],
@@ -537,6 +537,28 @@ out="$(bash "$HYGIENE" --closure 3876 2>&1)"
 _assert_eq "C7: exits cleanly" "$?" "0"
 _assert_eq "C7: the milestone is still set" "$(_milestone)" "Phase X: Rejected"
 _assert_contains "C7: says there was nothing on the board to strip" "$out" "nothing to strip"
+
+# ---- case C8: the marker is written by number, not by title -------------
+# `Phase X: Rejected` is a CLOSED milestone on purpose -- it is a graveyard,
+# not a plan -- and `gh issue edit --milestone <title>` resolves titles
+# against open milestones only, so a title write fails "not found" on the
+# live repo. C1 already proves the marker lands; this pins HOW, so a
+# regression to the title write is a red test rather than a green run that
+# leaves every rejected issue unmarked.
+_reset_stub c8
+_write_issue <<'EOF'
+{"number": 3877, "title": "marker by number", "body": "", "labels": [],
+ "state": "closed", "state_reason": "not_planned", "assignees": []}
+EOF
+_write_board <<'EOF'
+{"item_id": "PVTI_3877", "fields": {"Status": "Backlog", "Sprint": "Sprint 8"}}
+EOF
+out="$(bash "$HYGIENE" --closure 3877 2>&1)"
+rc=$?
+_assert_eq "C8: exits cleanly" "$rc" "0"
+_assert_eq "C8: the closed milestone is set" "$(_milestone)" "Phase X: Rejected"
+_assert_contains "C8: written by number" \
+  "$(cat "$GH_STUB_DIR/issue_edit.log" 2>/dev/null || echo "")" "--milestone-number"
 
 # ---- summary ------------------------------------------------------------
 if [[ "$FAILURES" -eq 0 ]]; then

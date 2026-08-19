@@ -24,7 +24,7 @@ Fixtures the suite writes into ``$GH_STUB_DIR``:
                        "labels": [str], "milestone": str|null}
   ``board.json``      {"item_id": str|null, "fields": {name: value}}
                       item_id null == the issue is not on the board yet
-  ``milestones.json`` [{"title": str, "state": str, "due_on": str}]
+  ``milestones.json`` [{"number": int, "title": str, "state": str, "due_on": str}]
   ``iterations.json`` [{"id": str, "title": str, "startDate": "YYYY-MM-DD"}]
   ``race.json``       {"after_reads": int,        # project field-value reads
                        "after_issue_reads": int,  # REST issue reads
@@ -404,6 +404,29 @@ def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     # PATCH repos/{o}/{r}/issues/{n} with assignees[] REPLACES the list --
     # the only sanctioned way to assign, since an issue carries exactly one
     # assignee. Must be answered before the plain issue-read branch below.
+    # PATCH repos/{o}/{r}/issues/{n} with `milestone=<number>`. The closure
+    # rule writes the milestone by NUMBER, not by title: `gh issue edit
+    # --milestone <title>` resolves titles against OPEN milestones only, and
+    # `Phase X: Rejected` is deliberately closed. The stub resolves the number
+    # through milestones.json exactly as the API does, so a regression back to
+    # a title write against a closed milestone shows up as an unset marker.
+    if len(parts) == 5 and parts[3] == "issues" and method == "PATCH" and "milestone" in params:
+        wanted = str(params["milestone"])
+        matches = [
+            m for m in _read_json("milestones.json", [])
+            if str(m.get("number", "")) == wanted
+        ]
+        if not matches:
+            print(
+                f"gh: Validation Failed -- no milestone numbered {wanted}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        state["milestone"] = matches[0]["title"]
+        _log("issue_edit.log", f"--milestone-number\t{wanted}")
+        _save(state)
+        _emit(_issue_payload(state), jq_filter)
+
     if len(parts) == 5 and parts[3] == "issues" and method == "PATCH":
         replacement = [v for k, v in params.items() if k.startswith("assignees")]
         # `-F "assignees[]="` sends one EMPTY login, not a clear -- the
@@ -461,8 +484,22 @@ def _issue_command(argv: list[str]) -> None:
                 _log("issue_edit.log", f"--add-label\t{argv[index + 1]}")
                 index += 2
             elif token == "--milestone":
-                state["milestone"] = argv[index + 1]
-                _log("issue_edit.log", f"--milestone\t{argv[index + 1]}")
+                # Real `gh issue edit --milestone <title>` resolves the title
+                # against OPEN milestones only and exits 1 with "not found"
+                # otherwise. The stub reproduces that, because it is the whole
+                # reason the closure rule writes the milestone by number: its
+                # marker, `Phase X: Rejected`, is a closed milestone.
+                wanted = argv[index + 1]
+                open_titles = [
+                    m.get("title")
+                    for m in _read_json("milestones.json", [])
+                    if m.get("state", "open") == "open"
+                ]
+                if wanted not in open_titles:
+                    print(f"gh: '{wanted}' not found", file=sys.stderr)
+                    raise SystemExit(1)
+                state["milestone"] = wanted
+                _log("issue_edit.log", f"--milestone\t{wanted}")
                 index += 2
             else:
                 index += 1
