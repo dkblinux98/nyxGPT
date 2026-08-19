@@ -9,6 +9,7 @@ parse errors by falling back to that default rather than raising.
 
 from __future__ import annotations
 
+import configparser
 import ipaddress
 import logging
 import os
@@ -211,6 +212,60 @@ def validate_config(cfg: ConfigParser) -> list[str]:
     return errors
 
 
+class ConfigParseError(RuntimeError):
+    """config.ini exists but ConfigParser cannot read it (#3944).
+
+    `load_config` used to let `configparser` errors escape untouched, and the
+    API's catch-all handler turned every one of them into the generic
+    ``{"code": "internal_error", "message": "Internal server error"}``. That
+    is what the owner saw when a wizard save wrote a duplicate option: the
+    real cause -- a named file, a named error, a line number -- was thrown
+    away at exactly the moment it was needed. This type carries all three, so
+    a hand-edited or wizard-damaged config.ini reports what is wrong with it.
+    """
+
+
+def describe_config_parse_error(config_path: Path | str, exc: configparser.Error) -> str:
+    """Render `exc` as a one-line diagnosis naming the file, error and line.
+
+    `configparser` spreads the line number over three different attributes
+    depending on the subclass -- `lineno` (``DuplicateOptionError``,
+    ``DuplicateSectionError``, ``MissingSectionHeaderError``) and the
+    ``errors`` list of ``(lineno, line)`` pairs (``ParsingError``) -- and
+    the base class has none. Normalising them here means every consumer
+    (`load_config`, `nyxgpt ops doctor`, the wizard's pre-write check) says
+    the same actionable thing instead of "Failed to parse <path>".
+    """
+    lineno = getattr(exc, "lineno", None)
+    where = f" at line {lineno}" if isinstance(lineno, int) else ""
+
+    if isinstance(exc, configparser.DuplicateOptionError):
+        # The exact shape #3944 produced. Say the case-insensitivity out loud:
+        # `exc.option` is already lowercased by `optionxform`, so a user
+        # staring at `SLACK_BOT_TOKEN` and `slack_bot_token` in their file
+        # has no other clue that those are one option as far as the app is
+        # concerned.
+        detail = (
+            f"option {exc.option!r} in section {exc.section!r} is defined more than once "
+            "(option names are case-insensitive, so SLACK_BOT_TOKEN and slack_bot_token "
+            "are the same option)"
+        )
+    elif isinstance(exc, configparser.DuplicateSectionError):
+        detail = f"section {exc.section!r} is defined more than once"
+    elif isinstance(exc, configparser.MissingSectionHeaderError):
+        detail = f"{exc.line.strip()!r} appears before any [section] header"
+    elif isinstance(exc, configparser.ParsingError) and getattr(exc, "errors", None):
+        where = ""
+        detail = "; ".join(f"line {n}: {text.strip()!r}" for n, text in exc.errors)
+    else:
+        detail = " ".join(str(exc).split())
+
+    return (
+        f"Cannot parse {config_path}: {type(exc).__name__}{where}: {detail}. "
+        "Fix that line (or restore a known-good config.ini) and retry."
+    )
+
+
 def load_config(path: str | Path | None = None) -> ConfigParser:
     """Load config.ini from a path.
 
@@ -224,6 +279,9 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     Hot-reloadable settings include:
     - [nyxgpt] default_model
     - [rag] enable_chat_context
+
+    Raises `FileNotFoundError` when the file is absent and `ConfigParseError`
+    when it is present but malformed (#3944).
     """
     global _CACHED_CFG, _CACHED_PATH, _CACHED_MTIME_NS
 
@@ -258,7 +316,14 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
         return _CACHED_CFG
 
     parser = ConfigParser()
-    parser.read(config_path, encoding="utf-8")
+    try:
+        parser.read(config_path, encoding="utf-8")
+    except configparser.Error as e:
+        # Unguarded, this escaped as a bare `configparser` error and the API's
+        # catch-all handler flattened it to "Internal server error" -- the
+        # single least useful thing to tell a user whose config.ini has one
+        # bad line in it (#3944). Name the file, the fault and the line.
+        raise ConfigParseError(describe_config_parse_error(config_path, e)) from e
 
     # Validate configuration on first load only (not on hot-reload)
     # This prevents noisy validation errors on every config change

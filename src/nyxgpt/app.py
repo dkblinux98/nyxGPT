@@ -573,7 +573,20 @@ async def load_cfg_and_refresh_logging(request: Request, call_next):
     middleware/handlers.
     """
 
-    cfg = load_config(None)
+    try:
+        cfg = load_config(None)
+    except nyxgpt.config.ConfigParseError as e:
+        # Handled here rather than left to `config_parse_error_handler`:
+        # Starlette runs registered exception handlers *inside* the user
+        # middleware stack, so an exception raised in this middleware never
+        # reaches them and would come back as an unadorned 500 (#3944). Every
+        # endpoint depends on this load, so this one branch is what a user
+        # with a damaged config.ini sees from the whole API.
+        log.error("config.ini is unreadable: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"code": "config_unreadable", "message": str(e)}},
+        )
     request.state.cfg = cfg
 
     # Hot-apply logging config (especially level) on every request.
@@ -821,6 +834,52 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 "code": "http_error",
                 "message": detail if isinstance(detail, str) else "Request failed",
                 "details": None if isinstance(detail, str) else detail,
+                "request_id": req_id,
+            }
+        },
+    )
+
+
+@app.exception_handler(nyxgpt.config.ConfigParseError)
+async def config_parse_error_handler(request: Request, exc: Exception):
+    """Report an unreadable config.ini as itself, not as "Internal server error".
+
+    Every endpoint loads config, so one bad line in config.ini fails all of
+    them -- and until #3944 the catch-all below flattened that into the
+    generic `internal_error`, leaving the owner with a dead dashboard and no
+    stated cause. `ConfigParseError` already carries the file, the fault and
+    the line number; pass it through verbatim. It is a curated diagnosis, not
+    a traceback, and these endpoints are admin-authenticated.
+    """
+    req_id = getattr(request.state, "request_id", None)
+    log.error("config.ini is unreadable (request_id=%s): %s", req_id, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "config_unreadable",
+                "message": str(exc),
+                "request_id": req_id,
+            }
+        },
+    )
+
+
+@app.exception_handler(config_wizard.ConfigWriteError)
+async def config_write_error_handler(request: Request, exc: Exception):
+    """Report a refused wizard save, with the reason it was refused (#3944).
+
+    Raised *before* config.ini is touched, so the accompanying promise --
+    that the file on disk is unchanged -- is one the client can act on.
+    """
+    req_id = getattr(request.state, "request_id", None)
+    log.error("Refused a config.ini write (request_id=%s): %s", req_id, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "config_write_refused",
+                "message": str(exc),
                 "request_id": req_id,
             }
         },
