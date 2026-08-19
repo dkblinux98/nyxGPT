@@ -60,6 +60,7 @@ fails if it drifts. Do not hand-edit.
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
 | `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |
+| `rag-fresh-cassandra-smoke.yml` | pull_request, push, workflow_dispatch | RAG Fresh Cassandra Smoke |
 | `reconcile_closed_backlog_status.yml` | workflow_dispatch | Reconcile Closed Backlog Status |
 | `release-artifacts.yml` | release, workflow_dispatch | Release Artifacts |
 | `release-publish-pypi.yml` | workflow_dispatch | PyPI Publish (rc / stable) |

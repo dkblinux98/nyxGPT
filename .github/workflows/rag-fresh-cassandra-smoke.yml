@@ -1,0 +1,101 @@
+name: RAG Fresh Cassandra Smoke
+
+# One job, answering one question about the RAG Collections page (#3864):
+#
+#   rag-fresh-cassandra  On a Cassandra that has never been ingested into --
+#                        which is every clean deployment -- can an operator
+#                        list collections and create one? On rc12 they could
+#                        not: the page showed "Failed to load collections:
+#                        HTTP 500" and Create Collection died with
+#                        `Keyspace 'nyxgpt' does not exist`, because only the
+#                        ingest path ever created the keyspace.
+#
+#                        Unit tests cannot close this out. The mocked-driver
+#                        suites decide for themselves what a missing keyspace
+#                        does; only a real server decides whether `USE` on an
+#                        uncreated keyspace raises, whether this product's CQL
+#                        creates it, and whether a `VECTOR<FLOAT, n>` column
+#                        with an SAI index is accepted at all.
+#
+#                        scripts/rag-fresh-cassandra-smoke.py drives the real
+#                        API over real HTTP against the empty service
+#                        container below. Its phase 2 is the fault injection
+#                        required by the executed-verification gate: it runs
+#                        the exact statement the pre-fix code issued and
+#                        asserts it STILL fails on this cluster, so a pass in
+#                        phases 3-6 cannot be the cluster quietly having a
+#                        keyspace already.
+#
+# What it does NOT cover: the React rendering of the Collections page (that is
+# web/tests), and ingest itself (unchanged by #3864).
+
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/rag/vectorstore_cassandra.py'
+      - 'src/nyxgpt/app.py'
+      - 'scripts/rag-fresh-cassandra-smoke.py'
+      - '.github/workflows/rag-fresh-cassandra-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/rag/vectorstore_cassandra.py'
+      - 'src/nyxgpt/app.py'
+      - 'scripts/rag-fresh-cassandra-smoke.py'
+      - '.github/workflows/rag-fresh-cassandra-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rag-fresh-cassandra:
+    name: Collections list/create on an empty Cassandra
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      cassandra:
+        # A brand-new container: no keyspace, nothing ingested -- exactly the
+        # state of the owner's freshly provisioned EC2 instance. 5.0 is the
+        # line the product targets, and the only one that accepts the
+        # VECTOR/SAI schema `ensure_schema` writes.
+        image: cassandra:5.0
+        ports:
+          - 9042:9042
+        env:
+          MAX_HEAP_SIZE: 1G
+          HEAP_NEWSIZE: 256M
+          CASSANDRA_CLUSTER_NAME: nyxgpt-smoke
+        options: >-
+          --health-cmd "cqlsh -e 'describe cluster'"
+          --health-interval 20s
+          --health-timeout 10s
+          --health-retries 20
+          --health-start-period 60s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install nyxgpt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Collections list/create before any ingest
+        env:
+          CASSANDRA_HOST: 127.0.0.1
+          CASSANDRA_PORT: '9042'
+          # The keyspace the product defaults to, and the one the owner saw
+          # missing. It must not exist when the script starts (phase 1).
+          SMOKE_KEYSPACE: nyxgpt
+        run: python scripts/rag-fresh-cassandra-smoke.py
+
+      - name: API log (on failure)
+        if: failure()
+        run: cat /tmp/rag-fresh-cassandra-smoke-api.log || true
