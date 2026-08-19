@@ -1351,6 +1351,11 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         raise
     DEPLOY_STATE_FILE.unlink(missing_ok=True)
     settings = result.get("settings", {})
+    # An operator-supplied EC2 Mac is not part of the substrate this just tore
+    # down -- nyxGPT never created it and cannot terminate it (#3867). Say so
+    # rather than let "Cloud deployment destroyed" imply a Mac that is still
+    # running, and still billing, was included.
+    macos_target = str(previous.get("os_family") or "") == OS_FAMILY_MACOS
     record_history(
         "destroy",
         "succeeded",
@@ -1358,9 +1363,19 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         host=str(previous.get("host") or ""),
         instance_id=str(previous.get("instance_id") or ""),
         region=str(previous.get("region") or settings.get("aws_region") or ""),
-        detail="tunnel closed, substrate torn down",
+        detail=(
+            "tunnel closed, substrate torn down; the EC2 Mac target was left running "
+            "(nyxGPT does not manage it)"
+            if macos_target
+            else "tunnel closed, substrate torn down"
+        ),
     )
-    return {"action": "destroy", "tunnel": tunnel, "settings": settings}
+    return {
+        "action": "destroy",
+        "tunnel": tunnel,
+        "settings": settings,
+        "unmanaged_target": previous.get("host", "") if macos_target else "",
+    }
 
 
 # The wrapped commands that own each cloud lifecycle action, returned with
@@ -1960,8 +1975,14 @@ def deploy_command(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            destroy(args)
+            destroyed = destroy(args)
             print("Cloud deployment destroyed (tunnel closed, substrate torn down).")
+            if destroyed.get("unmanaged_target"):
+                print(
+                    f"The EC2 Mac at {destroyed['unmanaged_target']} is still running -- nyxGPT "
+                    "did not create it and cannot terminate it. Release it (and its Dedicated "
+                    "Host) yourself if you are done with it; the host bills until you do."
+                )
         elif subcommand == "tunnel":
             return _tunnel_command(args)
         elif subcommand == "credentials":

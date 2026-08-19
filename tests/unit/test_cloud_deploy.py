@@ -1888,3 +1888,39 @@ def test_a_pre_flag_deploy_record_reports_no_target_os_rather_than_guessing_linu
     )
 
     assert cloud_deploy.deploy_status()["os_family"] == ""
+
+
+def test_destroying_after_a_mac_deploy_says_the_mac_is_still_running(
+    monkeypatch, _isolated_cloud_home
+):
+    """`destroy` tears down the substrate, and an operator-supplied EC2 Mac was
+    never in it. Saying only "Cloud deployment destroyed" would imply a Mac --
+    and the Dedicated Host under it -- stopped billing when it did not."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.77", "version": "3.0.0", "os_family": "macos"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_infra, "destroy_infra", lambda args: {"settings": {"aws_region": "us-east-1"}}
+    )
+
+    result = cloud_deploy.destroy(_args(yes=True))
+
+    assert result["unmanaged_target"] == "198.51.100.77"
+    assert "left running" in cloud_deploy.deploy_history()[-1]["detail"]
+
+
+def test_destroying_after_a_linux_deploy_has_nothing_left_over_to_report(
+    monkeypatch, _isolated_cloud_home
+):
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10", "version": "3.0.0", "os_family": "linux"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_infra, "destroy_infra", lambda args: {"settings": {"aws_region": "us-east-1"}}
+    )
+
+    assert cloud_deploy.destroy(_args(yes=True))["unmanaged_target"] == ""

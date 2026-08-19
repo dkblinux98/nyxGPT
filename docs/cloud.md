@@ -155,6 +155,11 @@ Everything after provisioning is identical to the Linux path:
 `nyxgpt cloud tunnel` is still the only access path, and the app and web UI
 still bind `127.0.0.1` on the instance.
 
+**Teardown.** `nyxgpt cloud destroy --yes` closes the tunnel and tears down
+nyxGPT's own substrate — which never contained your Mac. It says so, and names
+the address still running: releasing that instance and its Dedicated Host is
+yours to do, and the host keeps billing until you do.
+
 The one thing no CI job can run is a real `mac*.metal` instance — GitHub
 Actions has no macOS EC2 runner and Apple's licensing does not permit macOS in
 a container (see [live-verification-ci.md](live-verification-ci.md)). What
