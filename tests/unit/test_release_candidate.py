@@ -1517,7 +1517,9 @@ def test_deploy_accepts_a_prerelease_and_splices_it_into_the_remote_script(
     from nyxgpt import cloud_deploy
 
     monkeypatch.setattr(cloud_deploy, "DEPLOY_STATE_FILE", tmp_path / "deploy.json")
-    args = argparse.Namespace(version=version, skip_observability=True)
+    # os_family explicit: `resolve_plan`'s `auto` reads the substrate's saved
+    # instance type (#3867), which is real state on the machine running this.
+    args = argparse.Namespace(version=version, skip_observability=True, os_family="linux")
     plan = cloud_deploy.resolve_plan(args)
     script = cloud_deploy.render_provision_script(plan)
 

@@ -16,10 +16,22 @@ support matrix for exactly which AMI families and macOS versions this
 covers.
 
 This module only renders the bootstrap script; it does not talk to AWS.
-Embedding the rendered output into an actual EC2 launch (as Terraform
-`user_data`, P6-8) or invoking it as part of `nyxgpt cloud deploy` (P6-11)
-is separate, not-yet-implemented scope -- see `nyxgpt.cloud`'s module
-docstring.
+
+**Who consumes the rendered script (#3867).** `nyxgpt cloud deploy --os`
+does: it resolves the target OS family and pipes the matching bootstrap to
+the instance over its wrapped SSH path (`cloud_deploy.render_provision_script`
+calls `render_user_data` for the macOS family). That is the user-facing
+provisioning flow, and it is the only one -- until #3867 the macOS script had
+no consumer at all, so bootstrapping an EC2 Mac meant a human pasting this
+output into an AWS console instance launch, which CLAUDE.md's Operational
+Command Wrapping requirement forbids.
+
+`nyxgpt cloud user-data` remains as the renderer's own command, for the
+first-boot `user_data` case an SSH-driven deploy cannot serve (an instance
+launched by something other than nyxGPT) and for the CI jobs that execute a
+rendered bootstrap directly (`cloud-artifact-smoke.yml`,
+`release-artifacts.yml`'s `ec2-linux-user-data-smoke`). Attaching it as
+Terraform `user_data` (P6-8) is still not done: the substrate sets none.
 """
 
 from __future__ import annotations

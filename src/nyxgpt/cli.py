@@ -2422,9 +2422,11 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     # nyxgpt cloud user-data (P6-12/#3511): renders the EC2 user-data
-    # bootstrap script for a target instance OS -- the OS-dispatch layer
-    # future `nyxgpt cloud deploy`/the Terraform AWS module (P6-11/P6-8)
-    # will embed as an instance's `user_data`. See
+    # bootstrap script for a target instance OS. `nyxgpt cloud deploy --os`
+    # is the provisioning command an operator runs -- it delivers these same
+    # scripts over SSH itself (#3867); this one prints the script, for the
+    # first-boot `user_data` case a deploy cannot serve and for the CI jobs
+    # that execute a rendered bootstrap directly. See
     # src/nyxgpt/cloud_provision.py and docs/cloud.md's target-OS support
     # matrix.
     cloud_user_data = cloud_sub.add_parser(
@@ -2746,6 +2748,22 @@ def cli(argv: list[str] | None = None) -> int:
             "of this CLI, then whatever the last deploy used)"
         ),
     )
+    # #3867: which target OS's bootstrap the deploy drives. `auto` keeps the
+    # Linux path flagless -- it reads the configured instance type (and, for a
+    # re-deploy of a `--host` target, that host's own deploy record). `macos`
+    # pipes the EC2 Mac bootstrap over the same wrapped SSH path, replacing the
+    # console copy/paste flow the wrapping requirement forbids.
+    cloud_deploy_p.add_argument(
+        "--os",
+        dest="os_family",
+        default="auto",
+        choices=list(cloud_deploy_mod.DEPLOY_OS_CHOICES),
+        help=(
+            "Target instance OS family (default: auto -- macos for a mac*.metal instance "
+            "type, linux otherwise). `--os macos` provisions an EC2 Mac named with --host; "
+            "nyxGPT's substrate cannot allocate the Dedicated Host one would need"
+        ),
+    )
     cloud_deploy_p.add_argument(
         "--dev",
         action="store_true",
@@ -2754,14 +2772,18 @@ def cli(argv: list[str] | None = None) -> int:
             "this nyxgpt runs from is copied to the instance and installed editable there, "
             "and `ops install --dev` on the box builds the api/web services from it. "
             "Requires a source checkout and refuses without one; --version is ignored. "
-            "Not inherited by the next deploy -- a plain `nyxgpt cloud deploy` always "
-            "installs a published release. See docs/cloud.md"
+            "Linux targets only -- refused with --os macos, whose Homebrew bootstrap has "
+            "no working-tree source. Not inherited by the next deploy -- a plain "
+            "`nyxgpt cloud deploy` always installs a published release. See docs/cloud.md"
         ),
     )
     cloud_deploy_p.add_argument(
         "--skip-observability",
         action="store_true",
-        help="Deploy the core app only, without the monitoring/logging/tracing/errors stack",
+        help=(
+            "Deploy the core app only, without the monitoring/logging/tracing/errors stack "
+            "(implied by --os macos, whose bootstrap installs no observability stack)"
+        ),
     )
     # #3865: defaults to `cassandra` so a cloud deploy shares one session list
     # with every other mode pointed at the same Cassandra, matching what the
@@ -2771,8 +2793,9 @@ def cli(argv: list[str] | None = None) -> int:
         "--session-backend",
         choices=list(VALID_SESSION_BACKENDS),
         help=(
-            "Chat session storage backend for the instance (default: cassandra, then "
-            "whatever the last deploy used) -- see docs/session-storage.md"
+            "Chat session storage backend for the instance (default: cassandra on Linux, "
+            "file on macOS, then whatever the last deploy of the same target OS used) -- "
+            "see docs/session-storage.md"
         ),
     )
     cloud_deploy_p.add_argument(

@@ -97,9 +97,10 @@ works here too and is remembered for later runs, plus:
 
 | Flag | Meaning |
 | --- | --- |
+| `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). See [EC2 Mac targets](#ec2-mac-targets) |
 | `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used). Ignored under `--dev` |
-| `--dev` | Deploy **your working tree** instead of a published release — see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
-| `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors |
+| `--dev` | Deploy **your working tree** instead of a published release — Linux targets only, see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
+| `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors (implied by `--os macos`, whose bootstrap installs none) |
 | `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
@@ -107,6 +108,71 @@ works here too and is remembered for later runs, plus:
 | `--host` | Target an existing box instead of the provisioned instance |
 | `--health-timeout` / `--ssh-timeout` | Seconds to wait for `/health` (default 900) and for SSH (default 300) |
 | `--status` | Superseded by [`nyxgpt cloud status`](#nyxgpt-cloud-status--where-is-my-instance-3813); still prints the same JSON for anything already scripted against it |
+
+### EC2 Mac targets
+
+`nyxgpt cloud deploy --os macos` provisions an EC2 Mac the same way it
+provisions a Linux instance: **nyxGPT renders the macOS bootstrap and pipes it
+to the machine over the wrapped SSH path itself.** There is no script to copy,
+nowhere to paste one, and no AWS console step (#3867).
+
+```bash
+nyxgpt cloud deploy --os macos --host <mac-public-ip> --ssh-user ec2-user
+```
+
+`--host` is required for a Mac, and the deploy tells you so — with the reason
+— before it applies or bills anything:
+
+**nyxGPT does not allocate the Dedicated Host an EC2 Mac needs.** macOS runs
+only on EC2's Mac instance types (`mac1.metal`, `mac2*.metal`), which require
+a [Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html).
+An allocated host bills for a **24-hour minimum** whether or not an instance
+runs on it, and cannot be released before that window closes — so
+`nyxgpt cloud infra` provisions default-tenancy instances only rather than
+spending that on a resource it could not then tear down. `--os macos` with no
+`--host` therefore fails immediately, naming the constraint; it does not
+apply the substrate, so the refusal costs nothing.
+
+What the deploy does for a Mac you point it at:
+
+- Runs the [EC2 Mac bootstrap](#what-the-rendered-scripts-do): Homebrew,
+  the remote tap, `nyxgpt-api`/`nyxgpt-web`, `brew services start`. Repo-less,
+  like every other install path.
+- Elevates with `sudo -n` in `ec2-macos-init`'s place, and tells the script
+  which login user to install Homebrew for (your `--ssh-user`). A Mac whose
+  login user needs a sudo password fails immediately with sudo's own message
+  rather than hanging on a prompt.
+- Defaults `--session-backend` to `file`. Nothing on that machine provisions
+  a Cassandra — its bootstrap does not run `nyxgpt ops install` — so
+  `cassandra` would point the API at a database that is not there. Pass
+  `--session-backend cassandra` if you run one elsewhere and point
+  `[rag] cassandra_hosts` at it.
+- Enables **no** observability stack and **no** self-heal watchdog, for the
+  same reason: the macOS bootstrap installs the two formulas and starts them,
+  and does not run `ops install`. `nyxgpt cloud status` reports the target OS
+  so this difference is visible after the scrollback is gone, and so does the
+  admin Infrastructure page.
+- Leaves the security group alone. That Mac is not the instance nyxGPT's
+  substrate manages, so `nyxgpt cloud allow-ip` does not apply to it — SSH
+  reachability is yours to arrange.
+
+Everything after provisioning is identical to the Linux path:
+`nyxgpt cloud tunnel` is still the only access path, and the app and web UI
+still bind `127.0.0.1` on the instance.
+
+**Teardown.** `nyxgpt cloud destroy --yes` closes the tunnel and tears down
+nyxGPT's own substrate — which never contained your Mac. It says so, and names
+the address still running: releasing that instance and its Dedicated Host is
+yours to do, and the host keeps billing until you do.
+
+The one thing no CI job can run is a real `mac*.metal` instance — GitHub
+Actions has no macOS EC2 runner and Apple's licensing does not permit macOS in
+a container (see [live-verification-ci.md](live-verification-ci.md)). What
+*is* executed: [`cloud-target-os-smoke.yml`](../.github/workflows/cloud-target-os-smoke.yml)
+runs the installed `nyxgpt cloud deploy` against a real sshd and asserts the
+macOS bootstrap is what arrives, elevated, and that the Linux one still
+arrives for a Linux plan; [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)
+installs the same formulas from the same remote tap on a real macOS runner.
 
 ### `nyxgpt cloud status` — where is my instance? (#3813)
 
@@ -312,6 +378,11 @@ Things worth knowing before you use it:
 - **It ships the tree, not the machine.** Anything your local stack has that
   the repository does not (an untracked config, a hand-installed dependency)
   is not on the instance.
+- **Linux targets only.** `--dev --os macos` is refused, before the substrate
+  is applied: the [EC2 Mac bootstrap](#ec2-mac-targets) installs published
+  Homebrew formulas from the remote tap and has no working-tree source, so
+  ignoring the flag would hand you a published release while you believed you
+  were testing your tree.
 
 Terraform and Kubernetes modes are a *local* install-mode choice
 (`nyxgpt ops install --terraform/--kubernetes --local`), and `--dev` composes
@@ -832,24 +903,28 @@ how to get a profile in place.
 
 ---
 
-## Target-OS provisioning (P6-12/#3511)
+## Target-OS provisioning (P6-12/#3511, #3867)
 
-`nyxgpt cloud user-data` renders the EC2 user-data bootstrap script that
-installs nyxGPT on a fresh instance and brings up the native stack --
-per-target-OS, from published artifacts only. It doesn't talk to AWS
-itself: it prints a script, which is what an instance's `user_data`
-consumes so the machine provisions itself on first boot.
+**To provision an instance, use [`nyxgpt cloud deploy --os`](#nyxgpt-cloud-deploy--the-one-command-path-p6-11-3513).**
+It renders the target OS's bootstrap and delivers it to the machine itself,
+for [Linux](#nyxgpt-cloud-deploy--the-one-command-path-p6-11-3513) and for
+[EC2 Mac](#ec2-mac-targets) alike. That is the whole provisioning story; the
+rest of this section documents the renderer underneath it.
 
-**Relationship to `nyxgpt cloud deploy`.** `deploy` (P6-11, #3513) reaches
-an already-running instance over SSH and provisions it there
-(`render_provision_script` in `src/nyxgpt/cloud_deploy.py`); the substrate
-module (P6-8, #3509) currently sets no `user_data` at all. The two
-bootstraps therefore overlap -- both `pip install` a published release and
-run `nyxgpt ops install`, never a clone -- but they answer different
-questions: `user-data` is the first-boot, no-SSH-required path and the only
-one that covers **EC2 Mac**, which `deploy`'s Linux-only SSH script does
-not. Collapsing them onto one renderer is follow-up work, not something
-either issue scoped.
+`nyxgpt cloud user-data` prints that same bootstrap script instead of
+delivering it. It exists for the two cases a deploy cannot serve:
+
+- **First boot with no SSH** — an instance launched by something other than
+  nyxGPT, whose `user_data` provisions it as it comes up.
+- **CI** — [`cloud-artifact-smoke.yml`](cloud-artifact-smoke.md) and
+  `release-artifacts.yml`'s `ec2-linux-user-data-smoke` job execute the real
+  rendered script rather than a copy that could drift.
+
+One renderer serves both: `cloud_deploy.render_provision_script` calls
+`cloud_provision.render_user_data` for the macOS family, so what a deploy
+sends and what this prints cannot diverge. (The Linux deploy keeps its own,
+SSH-shaped script — see [What the rendered scripts do](#what-the-rendered-scripts-do).)
+The substrate module (P6-8, #3509) still sets no Terraform `user_data`.
 
 ```bash
 nyxgpt cloud user-data --os linux
@@ -871,7 +946,7 @@ as a core service, so `cassandra` is available on the instance and is the
 default -- matching the Kubernetes overlay, and giving every mode pointed at
 the same Cassandra one shared session list. The EC2 Mac template deliberately
 does *not* run that path (it installs the two Homebrew formulas and starts
-them -- see [What the rendered script does](#what-the-rendered-script-does)),
+them -- see [What the rendered scripts do](#what-the-rendered-scripts-do)),
 so nothing provisions a Cassandra there and the default is `file`. Passing
 `--session-backend cassandra` on macOS is supported for an operator who
 points `[rag] cassandra_hosts` at a Cassandra they run elsewhere. Both
@@ -879,7 +954,7 @@ templates apply the choice with `nyxgpt ops session-backend`, before the
 services start, so no instance ever needs a hand-edited `config.ini`. See
 [session-storage.md](session-storage.md).
 
-### What the rendered script does
+### What the rendered scripts do
 
 **`--os linux`** (Amazon Linux 2023, Ubuntu 22.04/24.04 LTS -- see the
 [support matrix](#target-os-support-matrix) below), in order:
@@ -955,7 +1030,8 @@ checkout.
 EC2 Mac instances require a
 [Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html)
 with a 24-hour minimum allocation -- an AWS billing/allocation constraint,
-not a nyxGPT one. Any other Linux distro (no systemd, e.g. Alpine) or
+not a nyxGPT one, and the reason nyxGPT does not allocate one for you
+(see [EC2 Mac targets](#ec2-mac-targets)). Any other Linux distro (no systemd, e.g. Alpine) or
 Windows AMI is out of scope, per the native-install OS dispatch
 (`_unsupported_os_result` in `src/nyxgpt/ops.py`) and CLAUDE.md's
 Repo-less Portability section (Windows explicitly out of scope for
@@ -982,11 +1058,21 @@ EC2 instance's first boot hits. The job asserts both preconditions (no
 cannot silently drift back into masking them, and it verifies units and the
 `nyxgpt-cassandra` container as the target user afterwards.
 
-EC2 Mac has no CI coverage -- GitHub Actions has no macOS EC2 runner, and
-Apple's licensing does not permit running macOS in a container -- so the
-macOS support matrix above is documentation-verified, not CI-verified (the
-acceptance criteria call for CI coverage "where feasible (Linux at
-minimum)"). This is about EC2 Mac specifically, not about macOS as such:
+[`cloud-target-os-smoke.yml`](../.github/workflows/cloud-target-os-smoke.yml)
+covers the *delivery* half for both target OSes (#3867): it runs the installed
+`nyxgpt cloud deploy` against a real sshd on the runner and asserts the macOS
+bootstrap is what arrives, elevated with `sudo -n` and told which login user
+to install for, while a Linux plan still puts the Linux script on the same
+wire. It also asserts that `--os macos` with no Mac to run on refuses before
+applying anything, naming the Dedicated Host constraint. Reverting the
+dispatch fails it, so a green run is not green by luck.
+
+**EC2 Mac hardware itself has no CI coverage** -- GitHub Actions has no macOS
+EC2 runner, and Apple's licensing does not permit running macOS in a
+container -- so the macOS support matrix above is documentation-verified for
+the *instance* half (the acceptance criteria call for CI coverage "where
+feasible (Linux at minimum)"). This is about EC2 Mac specifically, not about
+macOS as such:
 plain Homebrew installs *are* CI-verified on hosted macOS runners by
 [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml), which is
 what covers `brew install nyxgpt-api` on a real Mac. One consequence worth an owner/manual verification pass on a

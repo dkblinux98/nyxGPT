@@ -88,6 +88,7 @@ def _args(**overrides) -> argparse.Namespace:
         "identity_file": None,
         "version": "3.0.0",
         "dev": False,
+        "os_family": "auto",
         "skip_observability": False,
         "no_tunnel": False,
         "health_timeout": None,
@@ -132,6 +133,31 @@ def test_the_refusal_uses_the_same_definition_of_a_checkout_as_the_local_install
     assert cloud_deploy.dev_source_root() == Path("/somewhere/else")
     monkeypatch.setattr(ops, "_dev_checkout_root", lambda: None)
     assert cloud_deploy.dev_source_root() is None
+
+
+def test_dev_on_a_macos_target_is_refused_rather_than_ignored(dev_checkout):
+    """Two flags that are each fine alone must not compose into a silent lie.
+
+    The EC2 Mac bootstrap (#3867) installs published Homebrew formulas and has
+    no working-tree source, so a `--dev` it merely ignored would hand the
+    operator a published release while they believed they were testing their
+    tree -- the exact defect #3950 exists to prevent. Refused in `resolve_plan`,
+    so it costs nothing: the substrate is not applied yet.
+    """
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.resolve_plan(_args(dev=True, os_family="macos", host="203.0.113.9"))
+    message = str(excinfo.value)
+    assert "--dev is not available for a macOS target" in message
+    assert "Homebrew" in message
+    # Both ways forward, the way every other refusal in this module names them.
+    assert "Linux target" in message and "drop --dev" in message
+
+
+def test_a_macos_deploy_without_dev_is_unaffected(dev_checkout):
+    """The refusal is about the combination, not about Macs."""
+    plan = cloud_deploy.resolve_plan(_args(os_family="macos", host="203.0.113.9"))
+    assert plan.os_family == cloud_deploy.OS_FAMILY_MACOS
+    assert plan.dev is False
 
 
 def test_a_plain_deploy_needs_no_checkout_at_all(monkeypatch):

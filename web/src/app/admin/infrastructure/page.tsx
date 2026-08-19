@@ -242,6 +242,9 @@ type CloudDeployStatus = {
   // which gives the version and not where it came from.
   dev: boolean;
   source_dir: string;
+  // Which target OS's bootstrap provisioned the instance (#3867). Empty when
+  // the deploy record predates `--os`, which is not the same claim as 'linux'.
+  os_family: string;
   connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
@@ -1074,6 +1077,23 @@ export default function InfrastructurePage() {
                   }
                 />
                 <Row label="Region" value={cloud.region} />
+                {/* #3867: the two target OSes are provisioned by different
+                    bootstraps and do not leave the instance in the same
+                    shape — an EC2 Mac runs the Homebrew formulas under
+                    launchd with no observability stack and no self-heal
+                    watchdog. Reported here because nothing else on this page
+                    distinguishes them. Observed, never driven: the pointer
+                    is `nyxgpt cloud deploy --os`. */}
+                <Row
+                  label="Target OS"
+                  value={
+                    cloud.os_family === 'macos'
+                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services; no observability stack, no self-heal watchdog'
+                      : cloud.os_family === 'linux'
+                        ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
+                        : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'
+                  }
+                />
                 <Row label="Observability profiles" value={cloud.profiles.join(', ')} />
                 {/* #3865: a cloud deploy used to run the back-compat `file`
                     backend silently, so chats lived as JSON on the instance's
