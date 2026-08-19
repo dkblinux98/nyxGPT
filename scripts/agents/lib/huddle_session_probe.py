@@ -287,7 +287,7 @@ def case_the_decision_reaches_the_pr(work: Path) -> None:
     result = run_step(
         step_body(name_contains="Post the decision"),
         work,
-        {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3933", "TS": ""},
+        {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3933", "THREAD_TS": ""},
     )
     body = result.gh_body
     check("the step succeeds with Slack unconfigured", result.code == 0, result.log)
@@ -304,7 +304,7 @@ def case_a_missing_decision_fails_loudly(work: Path) -> None:
     result = run_step(
         step_body(name_contains="Post the decision"),
         work,
-        {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3933", "TS": ""},
+        {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3933", "THREAD_TS": ""},
     )
     check("the step fails", result.code != 0, result.log)
     check("it says why", "nothing to dispatch" in result.log, result.log)
@@ -320,7 +320,7 @@ def case_the_crash_markers_are_recoverable(work: Path) -> None:
     started = run_step(
         step_body(name_contains="Record that the session started"),
         work,
-        {**env, "TS": "1700000000.000100"},
+        {**env, "THREAD_TS": "1700000000.000100"},
     )
     check("started marker posted", started.code == 0, started.log)
     check(
@@ -332,14 +332,16 @@ def case_the_crash_markers_are_recoverable(work: Path) -> None:
 
     # The session died before Slack answered: `thread=` with nothing after it
     # reads as a truncated marker, so both markers default to `none`.
-    failed = run_step(step_body(name_contains="Record a failed session"), work, {**env, "TS": ""})
+    failed = run_step(
+        step_body(name_contains="Record a failed session"), work, {**env, "THREAD_TS": ""}
+    )
     check("failure marker posted", failed.code == 0, failed.log)
     check(
         "it degrades to thread=none", "HUDDLE_FAILED thread=none" in failed.gh_body, failed.gh_body
     )
 
     started_none = run_step(
-        step_body(name_contains="Record that the session started"), work, {**env, "TS": ""}
+        step_body(name_contains="Record that the session started"), work, {**env, "THREAD_TS": ""}
     )
     check(
         "the started marker degrades the same way",
@@ -353,7 +355,7 @@ def case_slack_being_down_does_not_stop_the_huddle(work: Path) -> None:
     huddle = work / "h9"
     huddle.mkdir()
     _turn(huddle, "01-dev.md", "## Developer Position (round 1)\n\nmy diagnosis\n")
-    env = {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3933", "TS": ""}
+    env = {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3933", "THREAD_TS": ""}
 
     posted = run_step(step_body(name_contains="Round 1 - post the dev turn"), work, env)
     check("posting a turn exits 0", posted.code == 0, posted.log)
@@ -362,7 +364,7 @@ def case_slack_being_down_does_not_stop_the_huddle(work: Path) -> None:
     opened = run_step(
         step_body(name_contains="Open the huddle thread"),
         work,
-        {**env, "REASON": "2nd unconverged cycle", "ISSUE": "3911"},
+        {**env, "REASON": "2nd unconverged cycle", "ISSUE_NUMBER": "3911"},
     )
     check("opening a thread exits 0", opened.code == 0, opened.log)
     check("with no thread id", opened.output.get("ts", "") == "", str(opened.output))

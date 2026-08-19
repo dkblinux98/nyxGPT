@@ -195,15 +195,17 @@ jobs:
       - name: Open the huddle thread
         id: thread
         env:
+          # #3820/#3837: values reach a run: body as data through env, never
+          # as interpolated shell source.
           REASON: ${{ github.event.comment.body }}
-          ISSUE: ${{ steps.context.outputs.issue_number }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
         run: |
           set -euo pipefail
           # First line of the trigger comment, trimmed: enough for a thread
           # head, and it keeps an arbitrarily long comment body out of argv.
           SUMMARY=$(printf '%s' "${REASON:-manual dispatch}" | tr '\n' ' ' | cut -c1-280)
           TS=$(python3 scripts/agents/lib/huddle_channel.py open \
-                 "$PR_NUMBER" "$ISSUE" "$SUMMARY")
+                 "$PR_NUMBER" "$ISSUE_NUMBER" "$SUMMARY")
           echo "ts=$TS" >> "$GITHUB_OUTPUT"
           if [[ -n "$TS" ]]; then
             echo "::notice::Huddle thread $TS opened"
@@ -216,12 +218,12 @@ jobs:
       # the conversation went.
       - name: Record that the session started
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \
             ':speech_balloon: **Review huddle**: session started; the conversation is running now.' \
-            "<!-- HUDDLE_SESSION_STARTED thread=${TS:-none} run=${GITHUB_RUN_ID} -->" \
+            "<!-- HUDDLE_SESSION_STARTED thread=${THREAD_TS:-none} run=${GITHUB_RUN_ID} -->" \
             '<!-- nyxgpt-token-mention -->')"
 
       - name: "Round 1 - dev turn"
@@ -278,7 +280,7 @@ jobs:
         if: >-
           !cancelled() && steps.dev1.outcome == 'success'
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/01-dev.md"
@@ -287,7 +289,7 @@ jobs:
             exit 0
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" dev < "$FILE"
+            "$THREAD_TS" dev < "$FILE"
 
       - name: "Round 1 - review turn"
         id: rev1
@@ -344,7 +346,7 @@ jobs:
         if: >-
           !cancelled() && steps.rev1.outcome == 'success'
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/02-review.md"
@@ -353,7 +355,7 @@ jobs:
             exit 0
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" review < "$FILE"
+            "$THREAD_TS" review < "$FILE"
 
       - name: "Round 1 - has it settled?"
         id: settle1
@@ -423,7 +425,7 @@ jobs:
         if: >-
           !cancelled() && steps.dev2.outcome == 'success'
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/03-dev.md"
@@ -432,7 +434,7 @@ jobs:
             exit 0
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" dev < "$FILE"
+            "$THREAD_TS" dev < "$FILE"
 
       - name: "Round 2 - review turn"
         id: rev2
@@ -490,7 +492,7 @@ jobs:
         if: >-
           !cancelled() && steps.rev2.outcome == 'success'
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/04-review.md"
@@ -499,7 +501,7 @@ jobs:
             exit 0
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" review < "$FILE"
+            "$THREAD_TS" review < "$FILE"
 
       # Settling is sticky, and it has to be: round N gates on round N-1's
       # answer alone, so a huddle that settled in round 1 skips round 2 --
@@ -579,7 +581,7 @@ jobs:
         if: >-
           !cancelled() && steps.dev3.outcome == 'success'
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/05-dev.md"
@@ -588,7 +590,7 @@ jobs:
             exit 0
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" dev < "$FILE"
+            "$THREAD_TS" dev < "$FILE"
 
       - name: "Round 3 - review turn"
         id: rev3
@@ -646,7 +648,7 @@ jobs:
         if: >-
           !cancelled() && steps.rev3.outcome == 'success'
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/06-review.md"
@@ -655,7 +657,7 @@ jobs:
             exit 0
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" review < "$FILE"
+            "$THREAD_TS" review < "$FILE"
 
       - name: "Round 3 - has it settled?"
         id: settle3
@@ -750,7 +752,7 @@ jobs:
         if: "!cancelled() && steps.decision.outcome == 'success'"
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/90-decision.md"
@@ -759,9 +761,9 @@ jobs:
             exit 1
           fi
           python3 scripts/agents/lib/huddle_channel.py post \
-            "$TS" scrum < "$FILE"
+            "$THREAD_TS" scrum < "$FILE"
 
-          PERMALINK=$(python3 scripts/agents/lib/huddle_channel.py permalink "$TS")
+          PERMALINK=$(python3 scripts/agents/lib/huddle_channel.py permalink "$THREAD_TS")
           {
             cat "$FILE"
             printf '\n\n'
@@ -803,9 +805,9 @@ jobs:
           # Same shape as the started marker, including the `:-none` default:
           # a session that died before the thread opened still has to say so,
           # and `thread=` with nothing after it reads as a truncated marker.
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \
             ':warning: **Review huddle**: the session failed part-way through. The transcript above (if any) is what was written before it stopped.' \
-            "<!-- HUDDLE_FAILED thread=${TS:-none} run=${GITHUB_RUN_ID} -->" \
+            "<!-- HUDDLE_FAILED thread=${THREAD_TS:-none} run=${GITHUB_RUN_ID} -->" \
             '<!-- nyxgpt-token-mention -->')" || true
