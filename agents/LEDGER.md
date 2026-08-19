@@ -122,6 +122,22 @@ both of them the same number and the collision is created at merge, by neither
 branch alone. That is how `V-034`/`V-035` came to be defined twice, failing
 `test_ledger_entry_ids_are_unique` for every review on the branch afterwards.
 
+**The number you are given is provisional, and that is fine** (#3862). A
+branch open for days cannot know what the base will hold by the time it lands,
+so `review_accept_and_merge.sh` re-runs the allocation immediately before the
+merge:
+
+```
+python3 scripts/agents/lib/ledger_ids.py reallocate --base origin/<release branch> --write
+```
+
+Only IDs that **both** sides invented since the merge base are moved, only on
+the branch, and cross-references move with them. Entries you merely edited keep
+their IDs. So do not hand-resolve a duplicate-ID conflict on a long-lived
+branch — the by-hand resolution got the `theirs`/`mine` sides backwards on the
+first attempt (#3836/`V-030`). `test_ledger_entry_ids_are_unique` stays as the
+backstop; it works, and it is what catches anything this misses.
+
 **Decision** — something was settled, and by whom.
 
 ```
@@ -753,6 +769,85 @@ rather than mechanism, and nothing can enforce them.
   Source: #3911; `.github/workflows/huddle_session.yml`;
   `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
 
+- **D-030** · 2026-08-19 · developer agent (#3853) — **A service's name is read
+  from what is installed, never asserted from a constant, and a conflict
+  between two formulas is declared by both of them.** Two corrections in one
+  fix, and both are the kind a future session would re-derive wrongly.
+
+  (a) *`conflicts_with` is directional* — checked only when the formula that
+  declares it is the one being installed. Only the rc formula declared one, so
+  candidate-onto-stable was refused and stable-onto-candidate was checked by
+  nothing: brew built the keg to completion and failed at `brew link`, which
+  is **not a guard**, because the keg stays installed. This closes **Q-002**'s
+  practical half — the stable formula now declares its own line's candidate
+  (`build_homebrew_artifacts.render_stable_formula`), and both orders are hard
+  assertions in `macos-brew-smoke.yml`'s `stable-over-candidate` job. That
+  flip **pays the D-026 debt**; a candidate from a *different* release line is
+  not nameable by a formula stamped before it existed, and is handled at
+  runtime by the `superseded brew services` install step instead.
+
+  (b) *The candidate channel's documented caveat was never only about
+  `status`.* `ops install` printed "the service is named `nyxgpt-api@3.0.0rc`,
+  so `ops status` reports this component as not running" and the project read
+  that as an accepted trade. It was not: `nyxgpt up` gates on the **same**
+  probe, so on every rc install it waited its full timeout and exited 2 on a
+  healthy stack — and the candidate channel is the acceptance-testing path, so
+  the one install flow used to accept a release was the one where `up`
+  structurally could not succeed. **A documented caveat about a read-out is
+  not a caveat about the commands that gate on it**; when writing one, name
+  every consumer or fix the read-out. It was fixed rather than re-documented.
+
+  Which service name each caller resolves, and the sweep that found Homebrew
+  to be the only place a published artifact's name varies by channel, are not
+  recorded here — they are in `src/nyxgpt/brew_services.py` and
+  `tests/unit/test_brew_service_names.py`, per the verification retirement.
+  (Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3853; #3860 run 32202943938 (Q-002's reproduction); D-026.
+
+- **D-031** · 2026-08-19 · developer agent (#3862) — **A branch may be deleted
+  only when its content is provably on the target branch, and an issue may be
+  closed as `completed` only on the same proof.** "Provably" means blob-level:
+  an ancestor, or every path the branch touches already identical there (or a
+  subset of it, which is the shape a branch takes when the base has simply
+  moved ahead on `agents/LEDGER.md`). Commit ancestry, commit count, `git
+  branch --merged`, mergeability, branch age, "no PR exists" and "its issue is
+  closed" are **all** unusable, each disproven against a real three-branch set
+  on 2026-08-18: on that data the branch whose every byte had landed looked the
+  *most* unmerged of the three, so acting on any of them keeps the redundant
+  branch and destroys the two holding the only copy of 438 lines of tests.
+  Anything not positively proven is reported, never deleted, and every gate
+  fails closed — an unreachable check means "keep". This is the criterion
+  D-013's event-driven cleanup acts on; it does not reopen the no-scheduled-
+  sweep decision, and `.github/workflows/cleanup_stale_branches.yml` (a weekly
+  sweep that deleted unmerged branches for being 14 days old) was removed under
+  it. The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_branch_content.py`, `tests/test_branch_hygiene.sh` and
+  `.github/workflows/branch-guard-smoke.yml`, per the retirement of the
+  verification log.
+  The same change adds the **one** exception to "PRs are created only via
+  `developer_submit_for_review.sh`" — a draft rescue PR for a branch that
+  reached `origin` without one — and that exception is written into `CLAUDE.md`
+  § PR Rules, not left implicit here. A rescue draft is a waypoint: it carries a
+  marker the developer workflow matches so a reassignment continues on that
+  branch, and it is promoted (closing reference, out of draft) only when a run
+  passes verification. Without that loop the rescue would trade an orphan branch
+  for a stranded draft PR, which is worse — an open PR shields its head branch
+  from every cleanup there is.
+  (Filed as `D-030`, renumbered to `D-031` by `ledger_ids.py reallocate
+  --write --base origin/v3.0.0` when `v3.0.0` landed #3853's `D-030` first —
+  this entry's own machinery, run on the collision it was written for, and the
+  first time that renumber was not done by hand. It rewrites the ledger only:
+  the four cross-references this change had planted in
+  `agents/runbooks/review-runbook.md`, `scripts/branch-guard-smoke.sh`,
+  `scripts/closure-gate-smoke.sh` and
+  `.github/workflows/delete_branch_on_pr_close.yml` were carried by hand,
+  because a tree-wide rewrite cannot tell them from the base's *own*
+  `D-030` reference in `macos-brew-smoke.yml`, which must not move. IDs are
+  never reused.)
+  Source: #3862; `scripts/agents/lib/branch_content.py`;
+  `scripts/agents/developer_ensure_pr_exists.sh`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -831,6 +926,10 @@ rather than mechanism, and nothing can enforce them.
   untrusted, and resolving `conflicts_with` *loads* the named formula, so brew
   refuses on trust grounds before it ever evaluates the conflict — #3770's
   shape, and why the job now trusts the whole tap.
+  **Acted on 2026-08-19 (#3853), so this question no longer blocks anything:**
+  the stable formula declares its own line's candidate, both directions are
+  hard assertions in CI, and a cross-line candidate is stopped at install time
+  rather than by packaging. See **D-030**.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a
@@ -899,6 +998,31 @@ rather than mechanism, and nothing can enforce them.
   Not taken inside this PR: an intake path built on a guessed credential model
   is one that gets rebuilt, and the two paths it would have to hedge across
   differ in where the product is hosted, not in a detail.
+
+- **Q-007** · 2026-08-19 · developer agent (#3853) — After the release
+  ceremony retires a shipped line's candidate formulas from the tap
+  (`scripts/retire_rc_formulas.sh`), the stable formula's new
+  `conflicts_with "<name>@<line>rc"` (**D-030**) names a formula the tap no
+  longer carries. Two things follow and neither is established: (a) does the
+  conflict still hold for a machine that still has that **keg** installed —
+  i.e. can Homebrew's `Formulary` load the formula back from the keg's own
+  `.brew/*.rb` — and (b) what does a user with no candidate installed see?
+  An absent counterpart is documented as a benign warning (#3753), but on the
+  *stable* formula that warning lands on the main install path, and
+  Homebrew's wording for it advises removing the declaration, which is
+  advice this project must not follow. Do not act on either by reading
+  Homebrew's source: #3853 exists because a behavior everyone believed was
+  never run.
+  Needs: the `Measure: the same conflict after the candidate is retired from
+  the tap` step in `macos-brew-smoke.yml`'s `stable-over-candidate` job,
+  which reproduces exactly that state on a clean `macos-15` runner and prints
+  the answer. It runs on every formula PR; read its `MEASURED:` lines.
+  Blocks: nothing today. It cannot be reached before 3.0.0 ships and its
+  candidates are retired, and until then both directions of the conflict are
+  hard-asserted. If (b) turns out noisy, the candidate answer is retiring an
+  rc formula by replacing it with a disabled stub rather than deleting it —
+  which keeps the name resolvable and gives a better error than "No available
+  formula" — not dropping the declaration.
 
 ## Superseded
 

@@ -8,25 +8,31 @@ source "$DIR/lib/gh_project.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  reconcile_dead_branches.sh [--dry-run] [base_branch]
+  reconcile_dead_branches.sh [--delete] [base_branch]
 
-Periodic sweep for dead claude/*, feat/*, fix/*, and chore/* branches (#3392).
-A candidate branch is deleted only if one of these is true:
-  - it is fully merged/contained in base_branch (git merge-base --is-ancestor), or
+On-demand REPORT of claude/*, feat/*, fix/*, and chore/* branches (#3392,
+report-first since #3862). Nothing schedules this and nothing should: branch
+cleanup is event-driven (ledger D-013), owned by the agent that created the
+branch, at the moment work changes state. This script exists for the human
+question "what is still out there?", not as a sweep.
+
+A candidate branch is reported deletable only if one of these is true:
+  - its CONTENT is provably on base_branch — an ancestor, or every path it
+    touches already identical there (scripts/agents/lib/branch_content.py); or
   - it is the head of a PR that was closed WITHOUT merging (an explicit
-    abandonment signal), or
-  - it is superseded: its linked issue (parsed from the branch name) is
-    CLOSED, AND every commit unique to the branch has an equivalent
-    (same patch-id/diff) commit on base_branch — i.e. the same change
-    landed via a different branch/commit SHA.
+    abandonment signal).
 
-A branch is never deleted just because it is old or unmerged. The head of
-any OPEN pull request, base_branch itself, master/main, and branches with no
-recognizable issue number (e.g. a hand-created branch with no issue-<n>
-pattern) are always left alone.
+A branch is NEVER deletable because it is old, because it has no PR, because
+its linked issue is closed, or because it looks unmerged to `git branch
+--merged`. All four were disproven against a real branch set on 2026-08-18:
+the fully-landed branch looked the *most* unmerged of the three, and acting on
+any of those signals would have destroyed 438 lines of test coverage held
+nowhere else. The head of any OPEN pull request, base_branch itself, and
+master/main are always left alone.
 
 Defaults to base_branch = the configured release branch.
-Use --dry-run to preview without deleting anything.
+Reports only unless --delete is passed; anything not provably landed is
+reported either way, never deleted.
 EOF
 }
 
@@ -36,8 +42,14 @@ if [[ "${1:-}" == "--self-test" ]]; then
   echo "OK"; exit 0
 fi
 
-DRY_RUN=0
-if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
+# Report-only by default. The previous default was "delete unless --dry-run",
+# which is the wrong way round for an operation whose failure mode is the
+# permanent loss of the only copy of some work (#3862).
+DRY_RUN=1
+case "${1:-}" in
+  --delete) DRY_RUN=0; shift ;;
+  --dry-run) shift ;;   # accepted for compatibility; it is now the default
+esac
 
 load_config
 require_gh_auth
@@ -46,10 +58,10 @@ require_cmd jq
 
 BASE_BRANCH="${1:-$(get_release_branch)}"
 
-# extract_issue_number, closed_unmerged_pr_exists, classify_mergeable, and
-# MAX_BASE_COMMITS_TO_SCAN live in lib/gh_project.sh — shared with
-# developer_create_branch.sh's cleanup_superseded_branches so both paths use
-# the exact same merge/supersede verification (#3392).
+# extract_issue_number, closed_unmerged_pr_exists and classify_mergeable live
+# in lib/gh_project.sh — shared with developer_create_branch.sh's
+# cleanup_superseded_branches so both paths use the exact same content
+# verification (#3392, #3862).
 
 # Intentional non-issue branches that must never be swept (#3392).
 ALWAYS_PROTECTED=("$BASE_BRANCH" "master" "main")
@@ -62,7 +74,7 @@ is_always_protected() {
   return 1
 }
 
-echo "[reconcile] base_branch=${BASE_BRANCH} dry_run=${DRY_RUN}" >&2
+echo "[reconcile] base_branch=${BASE_BRANCH} report_only=${DRY_RUN}" >&2
 git fetch origin "$BASE_BRANCH" >&2
 
 echo "[reconcile] Fetching open PR head branches (protected)..." >&2
@@ -106,19 +118,21 @@ for branch in "${CANDIDATES[@]}"; do
     verdict="$(classify_mergeable "$branch" "$issue" "$BASE_BRANCH")"
     case "$verdict" in
       merged) reason="fully merged/contained in ${BASE_BRANCH}" ;;
-      superseded) reason="issue #${issue} closed + equivalent commits present on ${BASE_BRANCH}" ;;
+      superseded) reason="every path it touches is already on ${BASE_BRANCH}" ;;
       *) reason="" ;;
     esac
   fi
 
   if [[ -z "$reason" ]]; then
-    echo "[reconcile] KEEP  ${branch} — not confirmed merged/superseded" >&2
+    # The branch-guard lines above already named the files that would have
+    # been destroyed; this is the headline for them.
+    echo "[reconcile] KEEP  ${branch} — content NOT proven to be on ${BASE_BRANCH}" >&2
     kept_count=$((kept_count + 1))
     continue
   fi
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "[reconcile] [dry-run] would delete ${branch} — ${reason}" >&2
+    echo "[reconcile] [report] deletable: ${branch} — ${reason}" >&2
   else
     echo "[reconcile] DELETE ${branch} — ${reason}" >&2
     delete_remote_branch "$branch"
@@ -126,4 +140,4 @@ for branch in "${CANDIDATES[@]}"; do
   deleted_count=$((deleted_count + 1))
 done
 
-echo "[reconcile] Done. candidates=${#CANDIDATES[@]} deleted=${deleted_count} kept=${kept_count} dry_run=${DRY_RUN}" >&2
+echo "[reconcile] Done. candidates=${#CANDIDATES[@]} deletable=${deleted_count} kept=${kept_count} report_only=${DRY_RUN}" >&2

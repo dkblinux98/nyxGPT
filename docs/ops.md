@@ -63,6 +63,13 @@ brew tap-trust dkblinux98/nyxgpt   # one-time: Homebrew gates third-party taps
 brew install nyxgpt-api nyxgpt-web
 ```
 
+Homebrew also prints a `brew services start nyxgpt-api` line, because the
+formulas declare a `service` block. That is not the start command: it brings up
+that one service without Ollama, Cassandra or observability. Start the stack
+with `nyxgpt up` below — the formulas' caveats say the same thing at install
+time (#3854), and [homebrew.md](homebrew.md) covers when `brew services` *is*
+the right tool.
+
 (That is the remote tap — see [homebrew.md](homebrew.md#remote-tap), and
 [Trusting the tap](homebrew.md#trusting-the-tap-one-time-required) for the
 trust step.) pip is not the macOS path: Homebrew's Python is PEP 668
@@ -114,8 +121,10 @@ nyxgpt ops status
 nyxgpt ops restart
 nyxgpt ops stop
 nyxgpt ops down
+nyxgpt ops uninstall
 nyxgpt ops doctor
 nyxgpt ops env-sync
+nyxgpt ops session-backend
 nyxgpt ops secrets-sync
 nyxgpt ops logs
 nyxgpt ops observability
@@ -291,6 +300,16 @@ This command:
 - Detects and stops any Docker Compose app-tier containers (`api`, `web`,
   `ollama`, `cassandra`) left running from an earlier raw `docker compose
   up` or a previous mixed-mode install, reporting what it stopped
+- **macOS**: stops any `nyxgpt-api`/`nyxgpt-web` brew service belonging to a
+  *different formula* than the one this install owns, before that install
+  runs. A candidate install registers `nyxgpt-api@3.0.0rc` while an older
+  release's `nyxgpt-api` keg stays installed and registered — Homebrew treats
+  a differently-named formula as unrelated software — and both formulas
+  declare `keep_alive true`, so launchd relaunches whichever loses the race
+  for :8000 indefinitely, filing `[Errno 48] address already in use` into the
+  error tracker the whole time (#3853). Only the service is stopped; the keg
+  is left installed, and `nyxgpt ops uninstall` is what removes it. Nothing is
+  reported when there is nothing superseded, which is the normal case.
 - **macOS**: installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if
   missing, or reinstalls them when the vendored source has changed since the
   last install. When `nyxgpt-web` is actually rebuilt this way, the service
@@ -450,7 +469,9 @@ Constraints, by design:
   names the checkout being served ([ui.md](ui.md)).
 - On macOS, `nyxgpt ops down`/`stop` unloads the dev LaunchAgents but leaves
   their plists in `~/Library/LaunchAgents`, so they load again at the next
-  login — switching back with `nyxgpt up` removes them outright.
+  login. Two commands remove them outright: switching back with `nyxgpt up`,
+  and [`nyxgpt ops uninstall`](#nyxgpt-ops-uninstall), which also removes the
+  `com.nyxgpt.*` log/env agents both modes install.
 
 Which parts of this are proven by CI: the install mechanics (editable venv,
 dev-server wrapper, mode recording, and the switch back to the artifact path)
@@ -535,10 +556,22 @@ Reports:
   switch (e.g. `nyxgpt ops install` after `nyxgpt ops down` without `--terraform`) left
   two whole core stacks up at once, each answering on its own network (#3565).
 - Native service state (`started`, `stopped`, `error`) — Homebrew services
-  on macOS, systemd --user units on Linux
+  on macOS, systemd --user units on Linux. On macOS the service name is
+  **resolved from `brew services list`**, not assumed: a release-candidate
+  install registers `nyxgpt-api@3.0.0rc` after its formula, and reading the
+  stable name instead reported an entirely healthy candidate stack as
+  `none` — and made `nyxgpt up` wait its whole timeout and exit 2 on it,
+  since the health wait consumes the same probe (#3853). When a machine
+  carries several services for one component, the one that is **running** is
+  reported. See
+  [homebrew.md](homebrew.md#the-service-is-named-after-the-formula)
 - Docker container state for Cassandra
-- Log-follower agent load state (LaunchAgent on macOS, systemd --user unit
-  on Linux)
+- LaunchAgent load state for every agent nyxGPT installs on macOS -- both
+  log followers (`com.nyxgpt.cassandra-logs`, `com.nyxgpt.ollama-logs`), the
+  Ollama env agent (`com.nyxgpt.ollama-env`), and, in dev mode, the api/web
+  pair. On Linux, the equivalent systemd --user units. The two Ollama agents
+  used to be omitted, which made them invisible to the command an operator
+  would check a teardown with (#3859)
 - **Required models** — the configured chat and embedding models, and whether
   Ollama has each (`PRESENT`/`MISSING`, or `UNKNOWN` when Ollama itself did
   not answer). A missing one is printed with the `nyxgpt` command that fixes
@@ -546,7 +579,8 @@ Reports:
   renders, and the one `/api/v1/models/required` returns (#3824)
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
-  stack) for cleanup
+  stack) for cleanup -- and, when you are removing nyxGPT rather than
+  stopping it, [`nyxgpt ops uninstall`](#nyxgpt-ops-uninstall)
 
 This command does not modify system state.
 
@@ -752,6 +786,96 @@ this wrapper is what actually deletes the data now.)
 - `2` — one or more steps failed, or `--volumes` was passed without
   `--yes-really`
 
+### `down` stops; it does not uninstall
+
+`down` leaves the machine **installed**: every service is still registered
+with launchd/systemd and comes back at the next login, which is what you
+want when you are stopping a stack you intend to start again. If you are
+removing nyxGPT, that is [`nyxgpt ops uninstall`](#nyxgpt-ops-uninstall)
+below, and it must run *before* you remove the artifacts.
+
+---
+
+## `nyxgpt ops uninstall`
+
+The wrapped teardown to run **before** removing nyxGPT's artifacts (`brew
+uninstall`, `pip uninstall`). Everything `down` does, plus the
+deregistration `down` deliberately does not do.
+
+```bash
+nyxgpt ops uninstall
+```
+
+Then, and only then, remove the artifacts — on macOS:
+
+```bash
+brew uninstall $(brew list --formula | grep '^nyxgpt')
+brew untap dkblinux98/nyxgpt
+```
+
+### Why it has to come first
+
+`brew uninstall` deletes a keg's files without stopping its service, and a
+running process survives deletion of its executable — so `api` and `web`
+keep serving :8000 and :3000 from software that is no longer installed.
+`brew untap` then removes the formula definitions, so `brew services stop
+nyxgpt-api@3.0.0rc` has nothing left to act on. Homebrew has no uninstall
+hook, so nothing in a `brew uninstall` could ever have run this for you;
+the formulas' `caveats` say so at install time.
+
+### What it removes
+
+| Population | Where it came from |
+|---|---|
+| The `nyxgpt-api`/`nyxgpt-web` brew services, or the `nyxgpt-*` systemd `--user` units | the artifact install |
+| The `com.nyxgpt.*` LaunchAgents — Ollama logs, Ollama env, Cassandra logs, and the dev-mode api/web pair | `nyxgpt ops install` wrote these itself; Homebrew never knew they existed |
+| The `nyxgpt-cassandra` container and the observability Compose tier | the container tier |
+| The native install-mode marker | the record of a deployment that no longer exists |
+
+Removal, not just unloading: a plist left in `~/Library/LaunchAgents` or a
+unit left in `~/.config/systemd/user` is reinstated at the next login.
+
+The Homebrew half is found by its launchd label (`homebrew.mxcl.nyxgpt*`)
+as well as through `brew services stop`, so it still works on a machine
+where the tap is already gone and brew can no longer resolve the formula
+name — the state an operator reaches by uninstalling first.
+
+### Your data is preserved
+
+`~/.nyxGPT` — `config.ini`, `volumes/`, `logs/` — is never touched. Delete
+it by hand if you want it gone. `--volumes --yes-really` additionally
+deletes the Docker volumes (Cassandra/Postgres/Grafana data); `--volumes`
+alone is refused, same contract as `down`.
+
+### Behavior
+
+- **Idempotent.** It is meant to run against partially-removed machines: an
+  absent keg, a container that is already gone, a host with no Docker and a
+  machine with no Compose file are all reported as skipped, not failed.
+- Running it twice is a no-op the second time, not an error.
+- On a machine where the kegs are *already* uninstalled, run it anyway — it
+  finds the orphaned launchd jobs by their plists rather than by asking brew
+  to resolve a formula that no longer exists.
+- `nyxgpt ops install` reports the same condition from the other side: a
+  launchd job loaded against files that no longer exist is named at install
+  time, with this command as the fix, before anything tries to bind the
+  ports it is holding.
+- The neighbouring case — a job whose files *do* exist, because a previous
+  release's keg is still installed alongside this one — is handled by
+  install's own `superseded brew services` step rather than reported here.
+  Homebrew treats a differently-named formula as unrelated software, so a
+  `nyxgpt-api` keg is untouched by a `nyxgpt-api@3.0.0rc` install, and both
+  formulas declare `keep_alive true`: launchd relaunches whichever loses the
+  race for :8000, forever. Install stops the superseded *service* before
+  starting its own; the keg is left installed, and this command is what
+  removes it (#3853).
+
+### Exit codes
+
+- `0` — teardown completed (or there was nothing left to tear down)
+- `2` — one or more steps failed, or `--volumes` was passed without
+  `--yes-really`
+
 ---
 
 ## `nyxgpt ops doctor`
@@ -875,6 +999,40 @@ resulting `.env` is chmod'd `600`, same as `config.ini`.
 
 Run this after `nyxgpt wizard` and again any time you rotate a secret in
 config.ini, before `docker compose up`.
+
+---
+
+## `nyxgpt ops session-backend`
+
+Shows or sets `[nyxgpt] session_backend` in `config.ini` — where this
+machine's chat sessions are stored. The wrapped replacement for SSHing to a
+deployed instance and hand-editing the file (#3865).
+
+```bash
+nyxgpt ops session-backend             # report the backend in force
+nyxgpt ops session-backend cassandra   # sessions live in the stack's Cassandra
+nyxgpt ops session-backend file        # sessions live as JSON under `sessions_dir`
+nyxgpt ops restart api                 # the API reads the backend at startup
+```
+
+With no argument it reports the value **actually in force**, which is not
+always what the file says: `NYXGPT_SESSION_BACKEND` overrides `config.ini`,
+and the output names the override when there is one. That is the form the
+cloud path exposes as `nyxgpt cloud ops session-backend`, and it is a read —
+it writes nothing.
+
+Setting rewrites only that one line, leaving the file's comments intact, and
+writes nothing at all when the value is already what you asked for. Both
+properties are what make it safe for a provisioning script to call on every
+run: `nyxgpt cloud deploy` and `nyxgpt cloud user-data` both do, before
+`ops install`, so the derived containerized config
+(`docker/config.docker.ini`) picks the choice up in the same pass.
+
+An unknown backend is refused rather than written: an invalid value would be
+warned about and silently downgraded to `file` at load time, which is exactly
+the quiet wrong-store failure this command exists to prevent. See
+[session-storage.md](session-storage.md) for what each backend means and how
+every deployment mode selects one.
 
 ---
 

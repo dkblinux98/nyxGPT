@@ -392,23 +392,50 @@ class one construct wider — see §1e and ledger **V-027**/**V-032**.
    cap on dismissal rationales (ledger **V-029**) and that dismissal itself is
    a code-scanning *write* no agent token here holds: the reviewer names the
    verdict, the owner performs it.
+5. **When a PR claims to *close* an alert, count the flows.** An alert is one
+   sink with *N* source→sink paths, and it stays open while **any** of them
+   lives — `code_scan_report.yml` dumps every `codeFlow` per result for exactly
+   this reason. Read them all and check the diff kills each one. A PR that
+   redacts the flow it happened to read is not a fix; it is a rescan away from
+   the same alert with a new sink line.
 
-**Blocking conditions.** Both are Medium:
+**Blocking conditions.** All three are Medium:
 
 - an alert whose `file:line` lies in the diff, unless the review states why it
   is a false positive and traces the flow that makes it one;
 - a review that never read the list — the whole failure mode this gate exists
-  to close.
+  to close;
+- a PR claiming to close an alert without accounting for every `codeFlow` on it.
+
+**Motivating incident for the flow count (#3837, acceptance failure).** PR
+#3899 was merged claiming alert #123 fixed. It had three flows: the developer
+traced the one reaching the `except` branch of `/ops/release-candidate`,
+redacted it, and shipped. The other two ran through the **success** path — the
+same caught exception reaching `pypi_lookup_error` and a `blockers[]` entry in
+the `200` response — so the rescan reopened #123 at a new sink line and the
+owner failed acceptance with three words: *"#123 is still open."* Nothing in
+the review caught it, because the gate as first written asked only whether the
+list had been read.
 
 **Not blocking.** Pre-existing alerts in files the PR does not touch are
 *reported*, not fixed here: converting every PR into an alert-backlog sweep is
 the scope inflation §1e's symmetry rule warns against. File them, name them,
 move on.
 
-**Note on branch coverage.** CodeQL default setup scans only the default branch
-plus PRs, so a non-default branch's alert list is frozen until it becomes
-default again and receives a push (`CLAUDE.md` § Tooling). A stale list is
-still worth reading; say in the review that it is the default branch's list.
+**Note on branch coverage.** Do not assume the list is stale. The general
+statement that CodeQL default setup scans only the default branch plus PRs
+(`CLAUDE.md` § Tooling) does **not** describe this repository's configuration:
+dispatching `code_scan_report.yml` with `ref: refs/heads/v3.0.0` on 2026-08-19
+returned four fresh analyses at the branch tip `b367cb5a`, minutes old, across
+the python / javascript-typescript / actions / ruby categories. The release
+branch **is** scanned, and its alert list is live.
+
+This matters because the stale-list assumption is an excuse for every alert a
+review would otherwise have to answer for. Check the `Recent analyses` block the
+report prints first: it gives the commit and timestamp of the newest analysis
+for the ref. If that commit is the branch tip, the list is current and binding.
+Only if it genuinely lags should the review say so — and say which commit it is
+reporting from.
 
 ## 2) Severity model
 - Critical: correctness/security/data-loss/performance regression; must block merge
@@ -955,3 +982,21 @@ The review workflow requires these secrets to be configured:
 
 ### Branch Cleanup
 Branch deletion happens in `review_accept_and_merge.sh` via `--delete-branch`, not in auto-fix workflow.
+
+Everywhere else, a branch is deleted **only when its content is provably on
+the target branch** — an ancestor, or every path it touches already identical
+there (`scripts/agents/lib/branch_content.py`; ledger D-031). Commit ancestry,
+commit count, `git branch --merged`, mergeability, branch age, "no PR exists"
+and "its issue is closed" are all unusable as signals; each was disproven
+against a real branch set, where the branch whose every byte had landed looked
+the *most* unmerged of three. Anything not positively proven is **reported,
+not deleted**, and there is no scheduled sweep (D-013). `reconcile_dead_branches.sh`
+reports on demand and needs `--delete` to act.
+
+### The closure gate
+`review_accept_and_merge.sh` will **not close an issue on a merge it cannot
+verify**. `gh pr merge` exiting 0 is a report; the evidence is that every path
+the PR head touched is readable on the base branch afterwards. If the check
+cannot confirm it, the issue is left open, a comment says why, and the run
+exits non-zero — #3789 and #3815 were both closed as `completed` with their
+fixes stranded on branches that never landed (#3862).

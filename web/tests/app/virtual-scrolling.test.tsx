@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import ChatPane from '../../src/app/components/ChatPane';
 import React from 'react';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 /**
  * Virtual Scrolling Tests
@@ -13,7 +14,7 @@ import React from 'react';
 
 // Mock react-virtuoso for testing environment
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style, followOutput, atBottomStateChange, defaultItemHeight, ...props }: any) => {
+  Virtuoso: ({ data, itemContent, style, followOutput, atBottomStateChange, defaultItemHeight, ...props }: VirtuosoMockProps) => {
     // Simulate viewport rendering: only render ~10 items regardless of total count
     const VIEWPORT_ITEMS = 10;
     const renderCount = Math.min(data?.length || 0, VIEWPORT_ITEMS);
@@ -27,7 +28,7 @@ vi.mock('react-virtuoso', () => ({
         data-default-item-height={defaultItemHeight}
         data-follow-output={typeof followOutput === 'function' ? 'callback' : followOutput}
       >
-        {data?.slice(0, renderCount).map((item: any, index: number) => (
+        {data?.slice(0, renderCount).map((item: unknown, index: number) => (
           <div key={index} data-item-index={index}>
             {itemContent(index, item)}
           </div>

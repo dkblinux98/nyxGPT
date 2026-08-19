@@ -95,6 +95,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from nyxgpt import brew_services
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.config import (
     get_error_tracking_enabled,
@@ -180,17 +181,20 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # barrier-guard analysis recognizes the `re.fullmatch(...)` call form but
 # NOT the `.fullmatch` method of a precompiled `re.Pattern`.
 
-# Maps a core native component to its Homebrew service name, for native/
-# local-first mode health-checks/heals. Mirrors ops.NATIVE_BREW_SERVICES --
-# kept as a separate copy here (rather than importing ops.py) since ops.py
-# already imports this module (see the module docstring); ops.py is the
-# place that actually installs/creates these services, this module only
-# ever restarts what's already there.
-NATIVE_BREW_SERVICES: dict[str, str] = {
-    "api": "nyxgpt-api",
-    "web": "nyxgpt-web",
-    "ollama": "ollama",
-}
+# Maps a core native component to the *stable* Homebrew formula its service
+# is named after, for native/local-first mode health-checks/heals.
+#
+# This used to be a hand-maintained copy of ops.NATIVE_BREW_SERVICES, and the
+# two agreeing by convention is what shipped #3853: a candidate install
+# registers `nyxgpt-api@3.0.0rc`, neither copy knew versioned names existed,
+# and both looked up a service nothing had registered. Both now import the
+# one definition from `nyxgpt.brew_services`, which sits below both (ops.py
+# already imports this module, so the shared vocabulary cannot live in
+# either) -- the same shape D-022 settled for `k8s_pod_state.py`.
+#
+# Never look a component up by this name directly: resolve it against a live
+# `brew services list` snapshot with `brew_services.resolve`.
+NATIVE_BREW_SERVICES = brew_services.NATIVE_BREW_SERVICES
 # Linux twin of NATIVE_BREW_SERVICES -- mirrors ops.NATIVE_SYSTEMD_SERVICES
 # for the same reason NATIVE_BREW_SERVICES is a separate copy here (#3508).
 NATIVE_SYSTEMD_SERVICES: dict[str, str] = {
@@ -666,12 +670,7 @@ def _brew_services_snapshot() -> dict[str, str]:
         return {}
     if cp.returncode != 0:
         return {}
-    snapshot: dict[str, str] = {}
-    for line in (cp.stdout or "").splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            snapshot[parts[0]] = parts[1]
-    return snapshot
+    return brew_services.parse_services_list(cp.stdout or "")
 
 
 def _dev_mode_active() -> bool:
@@ -1053,7 +1052,12 @@ def _list_native_component_status() -> list[ComponentStatus]:
         native_names = NATIVE_SYSTEMD_SERVICES
     else:
         native_snapshot = _brew_services_snapshot()
-        native_names = dict(NATIVE_BREW_SERVICES)
+        # Resolved against what `brew services list` actually reports, never
+        # taken from the constant: a candidate install registers
+        # `nyxgpt-api@3.0.0rc`, and reading the stable name reported every
+        # component of a running rc stack as not installed -- so `nyxgpt up`
+        # burned its whole timeout and exited 2 on a healthy machine (#3853).
+        native_names = brew_services.resolve_all(NATIVE_BREW_SERVICES, native_snapshot)
         if _dev_mode_active():
             # A dev install (#3789) runs api/web under their own
             # LaunchAgents -- there is no keg for `brew services` to attach
@@ -1837,9 +1841,15 @@ def restart_native_component(component: str) -> HealResult:
         # `brew services restart` here would start the old keg's build on the
         # port the dev process is already serving on.
         return _restart_launchagent(DEV_LAUNCHD_LABELS[component])
-    brew_name = NATIVE_BREW_SERVICES.get(component)
-    if brew_name is None:
+    base = NATIVE_BREW_SERVICES.get(component)
+    if base is None:
         return HealResult(False, f"Unknown native component: {component}")
+    # The heal has to act on the service the *probe* found unhealthy, which
+    # on a candidate install is `nyxgpt-api@3.0.0rc` (#3853). Restarting the
+    # stable name instead would either fail against a formula that is not
+    # installed or -- worse, on a machine still carrying an older release's
+    # keg -- start that keg onto the port the candidate is serving on.
+    brew_name = brew_services.resolve(component, base, _brew_services_snapshot())
     return _restart_brew_service(brew_name)
 
 

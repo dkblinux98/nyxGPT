@@ -373,6 +373,10 @@ def test_backfill_stamps_formulas_from_the_tooling_checkouts_templates(backfille
 
     Placeholder-free and pointing at the real tarball -- a formula stamped
     from the tag's (nonexistent) templates could not exist at all.
+
+    Compared against the template put through `render_stable_formula` rather
+    than the raw template: since #3853 the stable channel injects its own
+    `conflicts_with` on the way out, exactly as the rc channel always has.
     """
     for name in ("nyxgpt-api", "nyxgpt-web"):
         formula = (backfilled_artifacts / f"{name}.rb").read_text(encoding="utf-8")
@@ -381,10 +385,12 @@ def test_backfill_stamps_formulas_from_the_tooling_checkouts_templates(backfille
         ).hexdigest()
 
         template = (REPO_ROOT / "homebrew" / "tap" / f"{name}.rb.tmpl").read_text(encoding="utf-8")
-        assert formula == (
+        assert formula == build_homebrew_artifacts.render_stable_formula(
             template.replace("__URL__", f"{BASE_URL}/{name}-9.9.9.tar.gz")
             .replace("__SHA256__", digest)
-            .replace("__VERSION__", "9.9.9")
+            .replace("__VERSION__", "9.9.9"),
+            name,
+            "9.9.9",
         )
 
 
@@ -1168,6 +1174,49 @@ def test_rc_conflicts_with_the_name_the_stable_channel_actually_publishes(built_
     formula = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
 
     assert f'conflicts_with "{stable}",' in formula
+
+
+@pytest.mark.parametrize("name", ["nyxgpt-api", "nyxgpt-web"])
+def test_the_stable_formula_declares_the_other_direction_of_the_conflict(built_artifacts, name):
+    """#3853: `conflicts_with` is directional and only the rc side declared it.
+
+    Established by running it on a clean macos-15 runner, not by reading the
+    docs -- ledger Q-002, `macos-brew-smoke.yml`'s `stable-over-candidate`
+    job, run 32202943938. Installing the *candidate* onto an installed stable
+    was refused correctly; the reverse order was checked by nothing, so brew
+    built the stable keg to completion and only failed `brew link` on the
+    symlink collision. A failed link is not a guard: the keg stays installed,
+    and the machine ends with two complete stacks for one component, each
+    registering a `keep_alive true` service on the same port. That is the
+    state #3853 was reported from.
+
+    The name declared is derived from this same script's rc channel, so it
+    can never dangle at something nothing publishes -- the mirror of
+    `test_rc_conflicts_with_the_name_the_stable_channel_actually_publishes`.
+    """
+    candidate = build_homebrew_artifacts.formula_name(name, "rc", "9.9.9rc0")
+    formula = (built_artifacts / f"{name}.rb").read_text(encoding="utf-8")
+
+    assert candidate == f"{name}@9.9.9rc"
+    assert f'conflicts_with "{candidate}",' in formula
+    assert "because:" in formula
+
+
+def test_the_two_channels_conflict_with_each_other_in_both_directions(
+    built_artifacts, built_rc_artifacts
+):
+    """The property, stated once: neither order can leave both kegs installed.
+
+    Checking each formula alone lets one direction be dropped without any
+    test noticing, which is precisely how #3853 shipped -- the project
+    believed it had a guard because one of the two formulas declared one.
+    """
+    for name in ("nyxgpt-api", "nyxgpt-web"):
+        stable = (built_artifacts / f"{name}.rb").read_text(encoding="utf-8")
+        candidate = (built_rc_artifacts / f"{name}@9.9.9rc.rb").read_text(encoding="utf-8")
+
+        assert f'conflicts_with "{name}@9.9.9rc",' in stable
+        assert f'conflicts_with "{name}",' in candidate
 
 
 def test_an_absent_stable_counterpart_is_documented_as_benign(built_rc_artifacts):

@@ -123,6 +123,71 @@ PY
     error_log_path var/"log/nyxgpt-web.err.log"
   end
 
+  # See ../nyxgpt-api.rb's caveats block for the full account (#3854): a
+  # formula with a `service` block and no `caveats` leaves Homebrew's generated
+  # "brew services start ..." line as the only instruction the operator gets,
+  # and following it produces a stack with no Ollama, no Cassandra and no
+  # observability. This formula needs the same message for the same reason --
+  # the owner is told it twice, once per keg.
+  #
+  # The one difference: the `nyxgpt` CLI ships in the nyxgpt-api keg
+  # (`bin.install_symlink venv/bin/nyxgpt` there), so a machine that installed
+  # only the web formula does not have the command this text names. Say so,
+  # and derive the counterpart's name from this one so the rc channel points at
+  # `nyxgpt-api@<line>rc` and the stable channel at `nyxgpt-api`.
+  #
+  # It also carries the teardown guidance (#3859), which arrived on v3.0.0 as a
+  # second `caveats` block. Ruby keeps only the last definition of a method, so
+  # two blocks in one formula is not two messages -- it is one silently winning
+  # and the other never printed, with `ruby -c` clean either way. They are one
+  # block for that reason: `brew uninstall` does not stop a formula's service
+  # first and Homebrew has no uninstall hook that could, so it deletes the keg's
+  # files out from under a running process that goes on serving from memory;
+  # `brew untap` then makes the formula name unresolvable, leaving services the
+  # operator cannot name to stop. nyxGPT's own `com.nyxgpt.*` LaunchAgents
+  # Homebrew never knew about. Caveats are the one place the operator is
+  # actually standing when they decide to remove nyxGPT.
+  def caveats
+    api_formula = name.sub("nyxgpt-web", "nyxgpt-api")
+    <<~EOS
+      To start nyxGPT, run:
+        nyxgpt up
+
+      That brings up the whole stack -- this web UI, the API, Ollama, Cassandra
+      and the observability services -- waits for it to report healthy, and
+      prints the web UI URL. `nyxgpt down` stops it again, and `nyxgpt ops
+      status` shows what is running.
+
+      The `nyxgpt` command is installed by the #{api_formula} formula:
+        brew install #{api_formula}
+
+      If you were pointed at `brew services start #{name}`, note
+      that it starts only this one service. It does not start the API this UI
+      talks to, it does not install or start Ollama, it does not create the
+      Cassandra container, and it does not start observability. A web UI
+      brought up that way fails to load sessions. Use it to control this
+      individual service once `nyxgpt up` has set the stack up -- not instead
+      of it.
+
+      `nyxgpt up` starts the Homebrew services for you, so they still restart
+      at login.
+
+      Before removing nyxGPT, run the wrapped teardown FIRST:
+        nyxgpt ops uninstall
+
+      It stops and deregisters everything the install put on this machine --
+      the Homebrew services, the com.nyxgpt.* LaunchAgents nyxGPT installed
+      itself, and the containers. Your data in ~/.nyxGPT is preserved.
+
+      Only then remove the artifacts:
+        brew uninstall #{name}
+        brew untap #{tap || "<your-tap>"}
+
+      Uninstalling first leaves #{name} running from deleted files on its
+      port, with no supported command left to stop it.
+    EOS
+  end
+
   test do
     assert_predicate bin/"nyxgpt-web", :exist?
     assert_predicate libexec/".next", :exist?

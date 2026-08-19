@@ -7,7 +7,24 @@ nyxGPT provides two persistent background services using **Homebrew services**:
 1. **nyxgpt-api** - FastAPI backend (REST API)
 2. **nyxgpt-web** - Next.js web UI
 
-This is the recommended way to keep both services running locally without keeping terminals open.
+This is how both stay running locally without keeping terminals open.
+
+> **Start the stack with `nyxgpt up`, not `brew services start`.**
+>
+> The two kegs above are two of the stack's parts. `nyxgpt up` reconciles and
+> starts all of them — the API, the web UI, Ollama, the `nyxgpt-cassandra`
+> container and the observability services — waits for health and prints the
+> web UI URL. It also starts the two Homebrew services for you, so they still
+> restart at login.
+>
+> `brew services start nyxgpt-api` starts that one service and nothing else.
+> Homebrew prints that command after `brew install` because the formulas
+> declare a `service` block; on its own it produces a stack that reports
+> `ollama: unreachable` and `cassandra: unreachable`, with observability
+> absent and the web UI unable to load sessions (#3854). The formulas' own
+> caveats now say so at install time. Use `brew services` to control an
+> individual service **after** `nyxgpt up` has set the stack up — the
+> per-service sections below are written for that case, not for first start.
 
 A Homebrew install has no repository checkout, so the documentation you would
 otherwise read from `docs/` ships inside the package instead: once
@@ -52,10 +69,12 @@ Homebrew spells this subcommand `brew tap-trust <tap>` on some builds and
 `brew trust <tap>` on others; if one is rejected as an unknown command, run
 the other — the error `brew install` prints names the spelling your Homebrew
 wants. Take the whole-tap form either way. Homebrew also offers a grant
-scoped to a single formula, and it is not enough here: installing a
-candidate makes brew resolve
-`conflicts_with "nyxgpt-api"` and load the *stable* formula, which a grant
-scoped to the candidate leaves untrusted, and the install aborts (#3770).
+scoped to a single formula, and it is not enough here: resolving a
+`conflicts_with` **loads** the formula it names, and a grant scoped to the
+formula on the command line leaves that counterpart untrusted, so the install
+aborts (#3770). That applies to both channels since #3853 — installing a
+candidate loads the stable formula, and installing the stable loads its
+line's candidate.
 
 `dkblinux98/nyxgpt` is the tap's name everywhere Homebrew asks for one. The
 repository behind it is `dkblinux98/homebrew-nyxgpt` — Homebrew's naming
@@ -219,7 +238,7 @@ immutable and can never take them), and pushes stamped `nyxgpt-api.rb` /
 brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt
 brew install nyxgpt-api nyxgpt-web
-brew services start nyxgpt-api && brew services start nyxgpt-web
+nyxgpt up
 ```
 
 Two guardrails make this safe to point at any tag:
@@ -234,6 +253,8 @@ Two guardrails make this safe to point at any tag:
 
 ---
 
+<a id="candidate-channel"></a>
+
 ## Release-candidate formulas (rc channel)
 
 Acceptance testing has to be able to install *unreleased* code on macOS the
@@ -246,9 +267,12 @@ brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt   # same one-time step as the stable formulas
 brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
 
-brew services start nyxgpt-api@3.0.0rc
-brew services start nyxgpt-web@3.0.0rc
+nyxgpt up
 ```
+
+`nyxgpt up` is the same command on either channel — the candidate kegs install
+the same `nyxgpt` CLI, and it starts whichever of the two formulas is present
+along with the rest of the stack.
 
 The formula is named for the **release line** it is a candidate for, so
 `3.1.0`'s candidates are `nyxgpt-api@3.1.0rc` -- a different formula that no
@@ -273,11 +297,36 @@ scripts/supersede_incomplete_rc_releases.sh 3.0.0 --repo dkblinux98/nyxGPT --dry
 ```
 
 Everything past `brew install` is identical to the stable formulas -- same
-tarball contents, same self-contained Cellar keg, same wrappers, same
-service names. `scripts/build_homebrew_artifacts.py --channel rc` derives
-the candidate formulas from the same `homebrew/tap/*.rb.tmpl` templates, so
-the two channels cannot drift about what the keg installs; only the class
-name, the description and the conflict declaration differ.
+tarball contents, same self-contained Cellar keg, same wrappers.
+`scripts/build_homebrew_artifacts.py --channel rc` derives the candidate
+formulas from the same `homebrew/tap/*.rb.tmpl` templates, so the two
+channels cannot drift about what the keg installs; only the class name, the
+description and the conflict declaration differ.
+
+### The service is named after the formula
+
+Homebrew names a service after the formula that installed it, so a candidate
+install registers **`nyxgpt-api@3.0.0rc`**, not `nyxgpt-api`:
+
+```
+$ brew services list
+Name               Status
+nyxgpt-api@3.0.0rc started
+nyxgpt-web@3.0.0rc started
+```
+
+That is normal and correct — it is what lets both channels be installed and
+started independently. nyxGPT resolves a component's service name from
+`brew services list` rather than assuming the stable name, so
+`nyxgpt ops status`, `nyxgpt up`'s health wait, `nyxgpt ops restart/stop`
+and the self-heal watchdog all act on whichever formula is actually
+registered (`src/nyxgpt/brew_services.py`). When a machine carries both — an
+older release's keg alongside a candidate — the one that is **running** is
+the one reported.
+
+Log files are unchanged: both channels write
+`$(brew --prefix)/var/log/nyxgpt-api.log` and `nyxgpt-web.log`, so
+`nyxgpt ops logs api` needs no channel-specific path.
 
 ### `brew install nyxgpt-api` is never affected
 
@@ -318,34 +367,67 @@ an unloadable `@`, so that mistake cannot come back.
 
 ### Switching a machine between channels
 
-The candidate formulas declare `conflicts_with` their stable counterparts,
-because both install the same `nyxgpt-api`/`nyxgpt-web` wrappers and the
-same brew service names. Switching channels is an explicit uninstall, never
-a silent swap:
+Each channel's formulas declare `conflicts_with` the other's, in **both**
+directions, because both install the same `nyxgpt-api`/`nyxgpt-web`
+wrappers. Switching channels is an explicit uninstall, never a silent swap:
 
 ```bash
 # stable -> release candidate
 brew services stop nyxgpt-api && brew uninstall nyxgpt-api
-brew install nyxgpt-api@3.0.0rc && brew services start nyxgpt-api@3.0.0rc
+brew install nyxgpt-api@3.0.0rc && nyxgpt up
 
 # a newer candidate of the same line (same formula, restamped)
-brew update && brew upgrade nyxgpt-api@3.0.0rc
+brew update && brew upgrade nyxgpt-api@3.0.0rc && nyxgpt up
 
 # ...and back once the release is out
 brew services stop nyxgpt-api@3.0.0rc && brew uninstall nyxgpt-api@3.0.0rc
-brew install nyxgpt-api && brew services start nyxgpt-api
+brew install nyxgpt-api && nyxgpt up
 ```
 
-If the tap does not carry the stable formula the candidate names — a tap
-whose stable formulas have not been published yet — `brew` warns that the
-conflict refers to an unknown formula and **carries on installing**. The
-warning is cosmetic and the declaration is deliberately left unconditional:
-Homebrew resolves `conflicts_with` when it loads the formula and offers no
-way to make one tolerant of a missing counterpart, so removing it to silence
-the warning would trade a cosmetic message for the silent channel clobber it
-exists to prevent. The name itself cannot go stale — it is derived from the
-stable formula the same publishing script stamps
-(`scripts/build_homebrew_artifacts.py`).
+`brew services stop` before the uninstall is the right command there — it is
+stopping one keg's service, not starting a stack. `nyxgpt up` afterwards is
+what re-reconciles everything the new keg needs.
+
+Those two are channel *swaps*, not removals: the machine keeps a nyxGPT
+install throughout, so the `com.nyxgpt.*` agents and the containers are meant
+to stay. Removing nyxGPT altogether is a different sequence — see
+[Removing nyxGPT](#removing-nyxgpt), and run `nyxgpt ops uninstall` first.
+
+**Both directions, deliberately.** `conflicts_with` is *directional*: it is
+checked when the formula that declares it is being installed, and not
+otherwise. Until #3853 only the candidate formula declared one, so
+`brew install nyxgpt-api@3.0.0rc` onto an installed `nyxgpt-api` was refused
+(`Cannot install ... because conflicting formulae are installed`) while the
+opposite order was checked by nothing at all — brew built the stable keg to
+completion and only then failed `brew link` on the symlink collision, which
+is not a guard, because the keg stays installed. The machine ends with two
+complete stacks for one component, each registering a `keep_alive true`
+service on the same port; launchd relaunches the loser of the port race
+forever. This is measured behaviour, not a reading of the docs:
+`macos-brew-smoke.yml`'s `stable-over-candidate` job runs both orders on a
+clean macOS runner and asserts each one.
+
+If the counterpart named by a conflict is **not in the tap** — a tap whose
+stable formulas have not been published yet, or a line whose candidates the
+release ceremony has already retired — `brew` warns that the conflict refers
+to an unknown formula and **carries on installing**. That is the absent-name
+case only, and it is cosmetic; it is not the case above, where the
+counterpart is installed. The declaration is deliberately left
+unconditional: Homebrew resolves `conflicts_with` when it loads the formula
+and offers no way to make one tolerant of a missing counterpart, so removing
+it to silence the warning would trade a cosmetic message for the silent
+channel clobber it exists to prevent. Neither name can go stale — each is
+derived from the formula the same publishing script stamps for the other
+channel (`scripts/build_homebrew_artifacts.py`).
+
+Because a formula can only name counterparts that exist when it is stamped,
+the stable formula names **its own release line's** candidate. A candidate
+from a *different* line left on the machine is caught at install time
+instead: `nyxgpt ops install` / `nyxgpt up` run a `superseded brew services`
+step that stops any api/web service belonging to a different formula than the
+one this install owns, before starting its own — so the port is free and
+nothing is left crash-looping. The keg is not removed; `nyxgpt ops uninstall`
+and `brew uninstall` are what remove software.
 
 Candidate formulas are **acceptance-only**. They are not upgraded on a
 schedule, carry no support expectation, and are removed from the tap by the
@@ -549,7 +631,10 @@ control, is the arbiter.
 
 ### Start the API
 
-Start the FastAPI backend as a background service:
+`nyxgpt up` starts this service along with the rest of the stack, and is what
+you want on a machine that is not already running. The command below starts
+this one service on its own — useful when the rest of the stack is already up
+and only the API is down:
 
 ```bash
 brew services start nyxgpt-api
@@ -609,7 +694,9 @@ refusal -- shows up there too, without needing the raw paths above (#3629).
 
 ### Start the Web UI
 
-Start the Next.js web UI as a background service:
+As with the API, `nyxgpt up` starts this service along with everything else it
+needs. The command below starts this one service on its own, for when the rest
+of the stack is already up:
 
 ```bash
 brew services start nyxgpt-web
@@ -664,14 +751,26 @@ tail -f "$(brew --prefix)/var/log/nyxgpt-web.err.log"
 ### Start both services
 
 ```bash
-brew services start nyxgpt-api
-brew services start nyxgpt-web
+nyxgpt up
 ```
 
-Or use the `nyxgpt ops restart` command for a coordinated restart:
+That is the whole stack, not just these two services — see the note at the top
+of this document for what `brew services start` leaves out. `nyxgpt down` stops
+it again.
+
+To restart the services that are already installed, without reconciling
+anything:
 
 ```bash
 nyxgpt ops restart
+```
+
+Starting the two kegs individually is still available, and is the right tool
+only when the rest of the stack is already running:
+
+```bash
+brew services start nyxgpt-api
+brew services start nyxgpt-web
 ```
 
 ### Stop both services
@@ -696,6 +795,61 @@ nyxgpt-web  started username ~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-web.pli
 
 ---
 
+## Removing nyxGPT
+
+**Run the wrapped teardown first, before any `brew uninstall`:**
+
+```bash
+nyxgpt ops uninstall
+```
+
+Then, and only then, remove the artifacts:
+
+```bash
+brew uninstall $(brew list --formula | grep '^nyxgpt')
+brew untap dkblinux98/nyxgpt
+```
+
+`nyxgpt ops uninstall` stops **and deregisters** everything the install put
+on the machine:
+
+| Population | Why `brew uninstall` cannot do it |
+|---|---|
+| The `nyxgpt-api`/`nyxgpt-web` brew services | Homebrew has no uninstall hook and does not stop a service before deleting its keg |
+| The `com.nyxgpt.*` LaunchAgents (Ollama logs/env, Cassandra logs) | nyxGPT installed these itself; Homebrew never knew they existed |
+| The `nyxgpt-cassandra` container and the observability Compose tier | not Homebrew's at all |
+
+Your data is preserved: `~/.nyxGPT` (config.ini, volumes, logs) is left
+alone. Delete that directory by hand if you want it gone too.
+
+**Why the order matters.** `brew uninstall` deletes a keg's files without
+stopping its service first, and a running process survives deletion of its
+executable — so the api and web services keep serving :8000 and :3000 from
+software that is no longer installed. `brew untap` then removes the formula
+definitions, so `brew services stop nyxgpt-api@3.0.0rc` has nothing left to
+act on: the services are orphaned from the tool that created them. The
+formulas' `caveats` say the same thing at the point of install.
+
+`nyxgpt ops uninstall` is idempotent — it is meant to be run against
+half-removed machines, so an already-stopped service or an already-deleted
+plist is reported and skipped, not treated as a failure. If you have already
+uninstalled the kegs, run it now: it finds the leftover launchd jobs by their
+plists rather than by asking brew to resolve a formula that is gone.
+
+`nyxgpt ops install` reports the same condition from the other side: a
+launchd job left loaded against deleted files is named at install time,
+before anything tries to bind the ports it is holding.
+
+`nyxgpt ops uninstall --volumes --yes-really` additionally deletes the
+Docker volumes (Cassandra/Postgres/Grafana data). Without both flags it
+refuses.
+
+To stop the stack *without* uninstalling it, use `nyxgpt down` — that leaves
+every service installed and registered to come back at the next login, which
+is exactly why it is not a substitute for the teardown above.
+
+---
+
 ## Service dependencies
 
 **Important:** The Web UI depends on the API service.
@@ -704,7 +858,15 @@ nyxgpt-web  started username ~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-web.pli
 - Start the API before starting the Web UI
 - If the API is down, the Web UI will show connection errors
 
-Recommended startup order:
+`nyxgpt up` handles the ordering, and waits for health rather than for a
+guessed number of seconds — which is the other reason it is the recommended
+way to start:
+
+```bash
+nyxgpt up
+```
+
+Starting them by hand means starting the API first and waiting for it:
 
 ```bash
 brew services start nyxgpt-api
@@ -935,4 +1097,6 @@ PATH reaches it.
 - The API is bound to `127.0.0.1` by default and is not exposed publicly
 - The Web UI is also bound to `127.0.0.1` for local-only access
 - Homebrew services automatically restart both services on login
-- Use `nyxgpt ops` commands for easier service management
+- Start the stack with `nyxgpt up`; `brew services start` covers only the one
+  service it names (see the note at the top of this document)
+- Use `nyxgpt ops` commands for service management

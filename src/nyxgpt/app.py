@@ -2644,7 +2644,10 @@ def ops_release_candidate(
     Makes one outbound call, to PyPI's JSON API, to learn which versions
     already exist. A failed lookup is reported in `pypi_lookup_error` and
     clears `publishable` rather than failing the request -- the dashboard
-    should still render the line's state when PyPI is unreachable.
+    should still render the line's state when PyPI is unreachable. That
+    field, and the `blockers` entry built from it, carry only the failure and
+    where to read its cause: `plan` redacts the transport error into the log
+    rather than the response (#3837, CodeQL #123).
     """
     target = (branch or release_candidate_module.default_branch()).strip()
     requested_channel = (channel or "rc").strip().lower()

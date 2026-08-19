@@ -2709,20 +2709,48 @@ closed_unmerged_pr_exists() {
   [[ "${count:-0}" -gt 0 ]]
 }
 
-# Bounds how many base-branch commits since the divergence point
-# classify_mergeable will patch-id-hash for supersede comparison. Above this,
-# the branch predates too much history to check safely/quickly, so it's left
-# for manual review instead of guessed at.
-MAX_BASE_COMMITS_TO_SCAN="${MAX_BASE_COMMITS_TO_SCAN:-1000}"
+# Path to the blob-level content check every deletion gate goes through
+# (#3862). Overridable so a smoke harness can point at a copy.
+BRANCH_CONTENT_PY="${BRANCH_CONTENT_PY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch_content.py}"
+
+# True when `branch`'s content is provably already on `base_branch` -- an
+# ancestor, or every path it touches identical to (or a subset of) the base's.
+# Delegates to scripts/agents/lib/branch_content.py so the shell and the unit
+# tests (tests/unit/test_branch_content.py) exercise one implementation.
+#
+# Fails CLOSED: a missing python3, a missing module, or any error inside it
+# means "not proven landed", never "safe to delete".
+branch_content_landed() {
+  local branch="$1" base_branch="$2" out=""
+  command -v python3 >/dev/null 2>&1 || {
+    _warn "python3 unavailable; cannot prove ${branch} landed -- keeping it."
+    return 1
+  }
+  [[ -f "$BRANCH_CONTENT_PY" ]] || {
+    _warn "branch_content.py not found at ${BRANCH_CONTENT_PY}; keeping ${branch}."
+    return 1
+  }
+  out="$(python3 "$BRANCH_CONTENT_PY" landed \
+    --base "origin/${base_branch}" --branch "origin/${branch}" 2>&1)" && return 0
+  # Not landed (or unprovable): echo the evidence so the caller's log names the
+  # files that would have been destroyed. Reporting is the whole point.
+  echo "$out" | sed 's/^/[branch-guard] /' >&2
+  return 1
+}
 
 # Prints one of "merged", "superseded", or "" (keep — not confirmed safe) for
 # `branch` against `base_branch`. This is the ONLY safety gate agent scripts
-# may rely on before deleting a remote branch (#3392): a branch is deletable
-# solely because it is fully merged/contained in base_branch, or because its
-# linked issue is closed AND every commit unique to the branch has an
-# equivalent (same patch-id) commit already on base_branch (the same change
-# landed via a different branch/SHA). An unmerged branch whose issue is still
-# open, or whose content never landed anywhere, always yields "".
+# may rely on before deleting a remote branch (#3392, rewritten #3862).
+#
+# A branch is deletable solely because **its content is provably on
+# base_branch**: an ancestor, or every path it touches already identical there.
+# `issue` is accepted for the caller's logging and is deliberately NOT part of
+# the decision: "its issue is closed", "no PR exists" and "the branch is old"
+# were each disproven as signals against a real branch set on 2026-08-18, and
+# the patch-id comparison this replaced could not see a rebase-and-reapply
+# (it kept the one branch that had fully landed and would have been no help
+# against the two that had not). See branch_content.py's docstring for the
+# table. Anything not positively proven yields "" and is reported, not deleted.
 classify_mergeable() {
   local branch="$1" issue="$2" base_branch="$3"
 
@@ -2733,39 +2761,7 @@ classify_mergeable() {
     return 0
   fi
 
-  # Unmerged from here on: only ever "superseded" (never "merged"), and only
-  # if the linked issue is closed and the diff content already landed.
-  [[ -n "$issue" ]] || { echo ""; return 0; }
-
-  local issue_state
-  issue_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.state | ascii_upcase' 2>/dev/null || echo "")"
-  [[ "$issue_state" == "CLOSED" ]] || { echo ""; return 0; }
-
-  local mb
-  mb="$(git merge-base "origin/${branch}" "origin/${base_branch}" 2>/dev/null || echo "")"
-  [[ -n "$mb" ]] || { echo ""; return 0; }
-
-  local base_commit_count
-  base_commit_count="$(git rev-list --count "${mb}..origin/${base_branch}" 2>/dev/null || echo 0)"
-  if (( base_commit_count > MAX_BASE_COMMITS_TO_SCAN )); then
-    echo ""
-    return 0
-  fi
-
-  local branch_ids base_ids id missing=0
-  branch_ids="$(git rev-list "${mb}..origin/${branch}" 2>/dev/null \
-    | while read -r c; do git show "$c" | git patch-id --stable 2>/dev/null | awk '{print $1}'; done | sort -u)"
-  [[ -n "$branch_ids" ]] || { echo ""; return 0; }
-
-  base_ids="$(git rev-list "${mb}..origin/${base_branch}" 2>/dev/null \
-    | while read -r c; do git show "$c" | git patch-id --stable 2>/dev/null | awk '{print $1}'; done | sort -u)"
-
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    echo "$base_ids" | grep -qx "$id" || { missing=1; break; }
-  done <<< "$branch_ids"
-
-  if [[ "$missing" == "0" ]]; then
+  if branch_content_landed "$branch" "$base_branch"; then
     echo "superseded"
   else
     echo ""
@@ -2777,6 +2773,14 @@ classify_mergeable() {
 # leaving `keep_branch` alone. Without this, every retry branch created by
 # developer_create_branch.sh survives forever once the PR that actually
 # merges comes from a *later* branch (#3392).
+#
+# This is the supersession event in ledger D-013's event-driven cleanup: the
+# agent that replaces a branch removes the one it replaced, in the same run.
+# There is deliberately no timer anywhere -- a scheduled sweep was rejected on
+# cost (first principle 1), and the one that existed
+# (.github/workflows/cleanup_stale_branches.yml) deleted unmerged branches for
+# being 14 days old, which is precisely how #3862's 438 stranded lines would
+# have been destroyed. It was removed with this change.
 #
 # Two independent gates must both agree before a candidate is deleted:
 #   1. it is not the head of any currently OPEN pull request, and

@@ -21,6 +21,11 @@
 set -euxo pipefail
 
 NYXGPT_VERSION="__NYXGPT_VERSION__"
+# Chat session storage backend for this instance (#3865), filled in by
+# `nyxgpt cloud user-data --session-backend`. Defaults to `cassandra`, for
+# parity with the Kubernetes overlay: every mode pointed at the same
+# Cassandra then shares one session list. See docs/session-storage.md.
+NYXGPT_SESSION_BACKEND_CHOICE="__NYXGPT_SESSION_BACKEND__"
 # Override to target a login user other than the AMI's default (rarely
 # needed -- only if a custom AMI ships a different default account).
 NYXGPT_TARGET_USER="${NYXGPT_TARGET_USER:-}"
@@ -240,6 +245,15 @@ if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
     "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
   run_as_target cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
 fi
+
+# The config seeded above carries `example.config.ini`'s back-compat
+# `session_backend = file`, which on a cloud instance means chats are JSON
+# files on ephemeral instance disk -- invisible to every other deployment
+# mode pointed at the same Cassandra, and gone with the instance (#3865).
+# Set the operator's choice before `ops install`, so the derived
+# containerized config and the API's first start both see it. Idempotent:
+# `ops session-backend` writes only when the value actually changes.
+run_as_target "$NYXGPT_CLI" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
 
 run_as_target "$NYXGPT_CLI" ops install --skip-observability
 

@@ -207,13 +207,39 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-# Create PR
-pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$CURRENT_BRANCH" --title "$PR_TITLE" --body-file "$body_file")"
-[[ -n "$pr_url" ]] || _die "Failed to create PR"
+# Adopt, don't duplicate (#3862). This branch may already carry an OPEN pull
+# request that is not a submission -- a rescue draft opened by
+# developer_ensure_pr_exists.sh when an earlier run died before reaching this
+# script. `gh pr create` against such a head fails outright ("a pull request
+# already exists"), and the old unconditional create turned that into a _die,
+# so the rescue draft became permanent debris: never marked ready, never
+# reviewed, and its head branch shielded from every cleanup by the open PR.
+# Take the existing PR over instead -- give it this script's body (which
+# carries `Closes #ISSUE`, unlike the rescue body's deliberate `Refs`), its
+# title, and take it out of draft. From here on it is an ordinary submission
+# and the rest of this script treats it as one.
+existing_pr="$(gh pr list --repo "$REPO" --head "$CURRENT_BRANCH" --state open \
+  --json number --jq '.[0].number // empty' 2>/dev/null || echo "")"
 
-# PR number is the trailing path segment of the create URL
-# (https://github.com/OWNER/REPO/pull/NNN) -- avoids a redundant read.
-pr_number="${pr_url##*/}"
+if [[ -n "$existing_pr" ]]; then
+  echo "[dev] Adopting existing open PR #${existing_pr} on ${CURRENT_BRANCH} instead of opening a second one" >&2
+  gh pr edit "$existing_pr" --repo "$REPO" --title "$PR_TITLE" --body-file "$body_file" >&2 \
+    || _die "Failed to update existing PR #${existing_pr} with the submission body"
+  # Idempotent by design: `gh pr ready` on an already-ready PR is a no-op that
+  # exits 0, so this costs nothing on the ordinary path.
+  gh pr ready "$existing_pr" --repo "$REPO" >&2 \
+    || _warn "Could not mark PR #${existing_pr} ready for review"
+  pr_url="${issue_url%/issues/*}/pull/${existing_pr}"
+  pr_number="$existing_pr"
+else
+  # Create PR
+  pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$CURRENT_BRANCH" --title "$PR_TITLE" --body-file "$body_file")"
+  [[ -n "$pr_url" ]] || _die "Failed to create PR"
+
+  # PR number is the trailing path segment of the create URL
+  # (https://github.com/OWNER/REPO/pull/NNN) -- avoids a redundant read.
+  pr_number="${pr_url##*/}"
+fi
 
 # Set PR assignee and reviewer to review-agent
 # PR and issue remain assigned to review-agent until merge completes successfully

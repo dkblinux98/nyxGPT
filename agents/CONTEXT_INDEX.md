@@ -21,6 +21,7 @@ fails if it drifts. Do not hand-edit.
 | `assign_backlog.yml` | issues | Assign Backlog Issues to scrummaster-agent |
 | `assignment-dispatch-smoke.yml` | push, pull_request, workflow_dispatch | Assignment Dispatch Smoke |
 | `auto-check-tasklist.yml` | issues, repository_dispatch | Auto-check Release Tracking Issues |
+| `branch-guard-smoke.yml` | pull_request, push, workflow_dispatch | Branch Guard Smoke |
 | `bulk_set_issue_status.yml` | workflow_dispatch | Bulk Set Issue Status |
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
 | `canary-rollout-smoke.yml` | pull_request, push, workflow_dispatch | Canary Rollout Smoke |
@@ -29,7 +30,6 @@ fails if it drifts. Do not hand-edit.
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
 | `claude.yml` | issue_comment, pull_request_review_comment, issues, pull_request_review | Claude Code |
-| `cleanup_stale_branches.yml` | schedule, workflow_dispatch | Cleanup Stale Agent Branches |
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
@@ -105,6 +105,7 @@ fails if it drifts. Do not hand-edit.
 | `create_phase6.sh` | File the Phase 6 issue set from product_management/PHASE_6_PLAN.md (2026-07-31 rewrite) into the owner-created milestone and the t |
 | `developer_analyze_failure.sh` | Intelligent failure analysis for developer workflow Analyzes workflow failures and attempts auto-fixes for common issues |
 | `developer_create_branch.sh` | Creates and checks out a branch off the current release branch |
+| `developer_ensure_pr_exists.sh` | The backstop that closes #3862's first defect: work reached `origin` and no |
 | `developer_pull_next.sh` | Selection, in the developer's context (#3883) |
 | `developer_submit_for_review.sh` | "<SingleLabel>: <Issue Title> (#<N>)" |
 | `dispatch_conflict_resolution.sh` | route a conflicted PR (#3801) |
@@ -115,7 +116,7 @@ fails if it drifts. Do not hand-edit.
 | `pr_close_project_status.sh` | stamp a merged/closed PR's project item to the terminal PR lane (STATUS_CLOSED) |
 | `promote_accepted_features.sh` | Promote issues whose acceptance blockers are all accepted (owner flow, 2026-08-02; native relationships since #3731, owner decisio |
 | `reconcile_closed_status.sh` | project-hygiene sweep |
-| `reconcile_dead_branches.sh` | Periodic sweep for dead claude/*, feat/*, fix/*, and chore/* branches (#3392) |
+| `reconcile_dead_branches.sh` | On-demand REPORT of claude/*, feat/*, fix/*, and chore/* branches (#3392, |
 | `reconcile_pr_lane.sh` | sweep merged/closed PR cards into the terminal PR lane (STATUS_CLOSED) |
 | `release_ceremony_watch.sh` | automated release ceremony trigger (#3730) |
 | `review_accept_and_merge.sh` | Merges the PR into the current release branch (merge commit) and deletes the PR branch, then: |

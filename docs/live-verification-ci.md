@@ -172,6 +172,12 @@ and screenshots make verifiable in the review loop:
   by [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)
   (`published-tap` job, driving
   [`scripts/macos-user-path-smoke.sh`](../scripts/macos-user-path-smoke.sh)).
+  What the install *tells* the operator to run is executed too, on every PR
+  that touches a formula: the `keg-install` job captures the `brew install`
+  transcript and
+  [`scripts/homebrew-caveats-smoke.sh`](../scripts/homebrew-caveats-smoke.sh)
+  requires it to name `nyxgpt up` and what `brew services start` leaves out
+  (#3854), injecting the caveats-less formula to prove the check discriminates.
   A formula, service-lifecycle or install change is therefore not exempt from
   the executed-verification gate (`agents/runbooks/review-runbook.md` §1c) on
   the grounds that this entry exists; what remains uncovered on that runner is
@@ -210,6 +216,18 @@ and screenshots make verifiable in the review loop:
   named, in the same commit that tolerates it. What stays owner acceptance:
   Cassandra-backed session storage (the CI run exercises the `file` backend
   the default config selects), and the observability profiles on macOS.
+
+  One consequence, spelled out because it looks like a gap and is not:
+  **`nyxgpt up`'s exit code cannot be asserted on this runner.** A tolerated
+  step is still a *failed* step, so `install()` returns 2 and `up` returns
+  that before its health wait ever runs. The half of `up` that #3853 broke --
+  the wait, which asks `self_heal.list_component_status()` whether every
+  desired component is healthy -- is asserted directly instead, by
+  `nyxgpt self-heal status` naming `api` and `web` as `[OK]` and by
+  `nyxgpt ops status` reporting them running, plus a check that `up`'s own
+  `Still unhealthy:` line (when the wait does run) never names a component
+  whose service is started. Asserting `up == 0` here would assert something
+  no hosted macOS runner can produce, which is a red gate, not a strong one.
 - **The setup wizard's prompts** -- `nyxgpt wizard` is interactive by design
   and `ops install` correctly refuses to run it without a TTY, so the CI user
   path seeds `~/.nyxGPT/config.ini` from the *installed package's* own

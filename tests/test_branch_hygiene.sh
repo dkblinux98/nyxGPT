@@ -44,8 +44,14 @@ _assert_eq "intentional non-issue branch yields empty" "" "$(extract_issue_numbe
 _assert_eq "release branch yields empty" "" "$(extract_issue_number "v2.0.0")"
 
 # --- Git fixture for classify_mergeable: a real bare "origin" plus a work ---
-# --- tree, so merge-base/patch-id comparisons run against real git history ---
-# --- instead of being mocked away (this is the crux safety logic for #3392) ---
+# --- tree, so the comparisons run against real git history instead of being ---
+# --- mocked away (this is the crux safety logic for #3392) ---
+# ---
+# --- Since #3862 the verdict is decided by a blob-level content comparison ---
+# --- (scripts/agents/lib/branch_content.py), not by patch-id equivalence and ---
+# --- not by the linked issue's state. tests/unit/test_branch_content.py owns ---
+# --- the classification cases; what this file pins is that the SHELL gate ---
+# --- routes through it and still fails closed. ---
 SANDBOX="$(mktemp -d)"
 cleanup_sandbox() { rm -rf "$SANDBOX"; }
 trap cleanup_sandbox EXIT
@@ -85,7 +91,7 @@ git add file2.txt
 git commit -q -m "same content landed independently on v2.0.0"
 git push -q origin v2.0.0
 
-# Scenario C: unmerged, issue still OPEN -> must be kept regardless of diff
+# Scenario C: unmerged, issue still OPEN, content nowhere else -> kept
 git checkout -q -b claude/issue-9103-keep-open v2.0.0
 echo "whatever" > file3.txt
 git add file3.txt
@@ -93,12 +99,34 @@ git commit -q -m "open issue branch"
 git push -q origin claude/issue-9103-keep-open
 
 # Scenario D: unmerged, issue CLOSED, but diff content never landed on
-# v2.0.0 -> must be kept (closed issue alone is not sufficient)
+# v2.0.0 -> must be kept. A closed issue is not, and never was, evidence:
+# #3789 and #3815 were both closed as `completed` while their branches held
+# the only copy of 438 lines of test coverage (#3862).
 git checkout -q -b claude/issue-9104-keep-diff v2.0.0
 echo "unique-content-never-landed" > file4.txt
 git add file4.txt
 git commit -q -m "content that never lands elsewhere"
 git push -q origin claude/issue-9104-keep-diff
+
+# Scenario E: rebased-but-landed, with a ledger the base moved ahead on --
+# the #3836 shape. Every byte landed via another branch, so the branch keeps
+# commits that are not on v2.0.0 forever and a merge of it genuinely
+# conflicts. It must still classify as deletable, or every rebased branch
+# accumulates for good.
+git checkout -q -b fix/9105-rebased-but-landed v2.0.0
+echo "reapplied-content" > file5.txt
+printf 'entry-one\n' > ledger.md
+git add file5.txt ledger.md
+git commit -q -m "work that gets re-applied elsewhere"
+git push -q origin fix/9105-rebased-but-landed
+git checkout -q v2.0.0
+echo "reapplied-content" > file5.txt
+printf 'entry-one\n' > ledger.md
+git add file5.txt ledger.md
+git commit -q -m "the same bytes, landed as a different commit"
+printf 'entry-one\nentry-two-added-later\n' > ledger.md
+git commit -q -am "base moves ahead on the ledger"
+git push -q origin v2.0.0
 
 git checkout -q v2.0.0
 
@@ -144,14 +172,22 @@ gh() {
 _assert_eq "fully merged (fast-forwarded) branch classifies as merged" \
   "merged" "$(classify_mergeable "claude/issue-9101-merged" "9101" "v2.0.0")"
 
-_assert_eq "unmerged + closed issue + equivalent diff already on base classifies as superseded" \
+_assert_eq "unmerged but the identical content is already on base classifies as superseded" \
   "superseded" "$(classify_mergeable "claude/issue-9102-superseded" "9102" "v2.0.0")"
 
-_assert_eq "unmerged + issue still open is kept (empty verdict)" \
+_assert_eq "content that exists nowhere but the branch is kept (empty verdict)" \
   "" "$(classify_mergeable "claude/issue-9103-keep-open" "9103" "v2.0.0")"
 
-_assert_eq "unmerged + closed issue but diff content never landed is kept (empty verdict)" \
+_assert_eq "a closed issue is not evidence: unlanded content is still kept" \
   "" "$(classify_mergeable "claude/issue-9104-keep-diff" "9104" "v2.0.0")"
+
+_assert_eq "rebased-but-landed with a base that moved ahead classifies as superseded" \
+  "superseded" "$(classify_mergeable "fix/9105-rebased-but-landed" "9105" "v2.0.0")"
+
+# Fail-closed: with the content check unreachable, nothing is ever deletable.
+_assert_eq "an unreachable content check yields keep, never delete" \
+  "" "$(BRANCH_CONTENT_PY=/nonexistent/branch_content.py \
+        classify_mergeable "fix/9105-rebased-but-landed" "9105" "v2.0.0" 2>/dev/null)"
 
 # --- Test group 3: closed_unmerged_pr_exists reads the explicit ---
 # --- abandonment signal (PR closed without merging) straight from `gh` ---

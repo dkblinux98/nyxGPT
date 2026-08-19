@@ -5,8 +5,16 @@ name: Delete Branch on PR Close Without Merge
 # path only clean up branches whose PR *merged*. A PR closed WITHOUT merging
 # is an explicit abandonment signal (the same signal
 # scripts/agents/reconcile_dead_branches.sh's closed_unmerged_pr_exists()
-# detects in its periodic sweep) — this workflow acts on it immediately at
-# close time instead of waiting for the weekly sweep.
+# reports on) — this workflow acts on it immediately at close time. That is
+# the whole cleanup model since #3862: event-driven, at the moments work
+# changes state, never a timer (ledger D-013). The weekly sweep this comment
+# used to defer to was removed with that decision, because it deleted unmerged
+# branches for being 14 days old and would have destroyed 438 lines of test
+# coverage held nowhere else.
+#
+# A closed-without-merge PR is the one deletion D-031's content check does not
+# gate, and deliberately: it is an explicit human decision to discard, and the
+# commits stay readable on the closed PR either way.
 #
 # Guards mirror reconcile_dead_branches.sh:
 #   * merged PRs are ignored (their branches are handled by the repo setting),
@@ -15,9 +23,6 @@ name: Delete Branch on PR Close Without Merge
 #   * the base/release branch, master, and main are always protected,
 #   * fork heads are ignored (we only manage branches in this repo),
 #   * a head that is still the head of ANOTHER open PR is left alone.
-#
-# Note: this workflow file must be maintained by the human owner — the agent
-# GitHub App tokens cannot create or modify .github/workflows/* files.
 
 on:
   pull_request:

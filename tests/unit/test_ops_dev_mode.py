@@ -309,6 +309,19 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
+    # A machine that was on the candidate channel registers its services under
+    # the versioned formula name (#3853). The dev switch has to stop those too:
+    # they hold :8000/:3000 against the dev LaunchAgents and `keep_alive true`
+    # brings them straight back.
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {
+            "nyxgpt-api": "stopped",
+            "nyxgpt-api@3.0.0rc": "started",
+            "nyxgpt-web@3.0.0rc": "started",
+        },
+    )
 
     stopped: list[str] = []
     monkeypatch.setattr(
@@ -320,7 +333,11 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     results = ops._reconcile_install_mode(dev=True)
 
     assert all(r.ok for r in results), [r.message for r in results]
-    assert stopped == ["nyxgpt-api", "nyxgpt-web"]
+    assert stopped == [
+        "nyxgpt-api@3.0.0rc",
+        "nyxgpt-api",
+        "nyxgpt-web@3.0.0rc",
+    ]
     assert not venv.exists()
     assert install_mode.read_install_mode().is_dev is True
 
@@ -611,6 +628,8 @@ _INSTALL_STEPS = (
     "_sync_packaged_resources",
     "_clear_intentional_stops",
     "_install_config",
+    "_report_orphaned_launchd_jobs",
+    "_stop_superseded_brew_services",
     "_ensure_docker_engine",
     "migrate_legacy_volumes",
     "_reconcile_phantom_compose_app_containers",

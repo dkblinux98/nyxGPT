@@ -51,13 +51,24 @@ sessions_dir = ~/.nyxGPT/sessions
 
 **`cassandra`:** sessions live in the stack's Cassandra (the same instance
 the RAG store uses), so every deployment mode — native, Compose, Terraform,
-Kubernetes — pointed at the same Cassandra sees the same session list, and
-concurrent access from multiple API instances is safe:
+Kubernetes, cloud — pointed at the same Cassandra sees the same session list,
+and concurrent access from multiple API instances is safe:
+
+```bash
+nyxgpt ops session-backend cassandra
+```
+
+or, equivalently, in `config.ini`:
 
 ```ini
 [nyxgpt]
 session_backend = cassandra
 ```
+
+A cloud deployment selects it at deploy time instead of on the instance —
+`nyxgpt cloud deploy --session-backend cassandra`, which is the default. See
+[session-storage.md](session-storage.md#how-each-deployment-mode-selects-the-backend-3865)
+for how every mode resolves it.
 
 On first API start with this backend, existing `sessions_dir` JSON files are
 imported once (idempotently); the files are kept as a read-only archive.
