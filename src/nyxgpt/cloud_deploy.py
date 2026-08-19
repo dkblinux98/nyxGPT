@@ -136,6 +136,16 @@ OBSERVABILITY_TUNNEL_PORTS: dict[str, tuple[tuple[str, int], ...]] = {
 # The endpoint deploy polls through the tunnel to decide the stack is up.
 HEALTH_PATH = "/health"
 
+# What runs the stack on the instance. `native` is the default -- systemd
+# --user services plus the Cassandra/observability containers, the layout
+# every cloud deploy has used since P6-11. `kubernetes` is #3506's decision
+# implemented (#3956): a single-node k3s cluster on the same box, running the
+# existing `k8s/*.yaml` manifests, which is what makes `nyxgpt canary` -- the
+# capability that decision was choosing a substrate *for* -- available on the
+# cloud target at all.
+SUBSTRATE_NATIVE = "native"
+SUBSTRATE_KUBERNETES = "kubernetes"
+
 # SSH options applied to every connection. `StrictHostKeyChecking=accept-new`
 # trusts the key on first contact but still fails loudly if it changes later
 # (a plain `no` would silently accept a swapped host); the instance is brand
@@ -188,6 +198,12 @@ class DeployPlan:
     health_timeout: float = 900.0
     ssh_timeout: float = 300.0
     session_backend: str = DEFAULT_SESSION_BACKEND
+    kubernetes: bool = False
+
+    @property
+    def substrate(self) -> str:
+        """What runs the stack on the instance: `kubernetes` or `native`."""
+        return SUBSTRATE_KUBERNETES if self.kubernetes else SUBSTRATE_NATIVE
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable form, recorded in `deploy.json`."""
@@ -200,6 +216,8 @@ class DeployPlan:
             "health_timeout": self.health_timeout,
             "ssh_timeout": self.ssh_timeout,
             "session_backend": self.session_backend,
+            "kubernetes": self.kubernetes,
+            "substrate": self.substrate,
         }
 
 
@@ -358,13 +376,20 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
     """Merge flags over the last deploy's recorded choices.
 
     The choices that carry over are the ones `deploy.json` records: the
-    release, the SSH user, the identity file and the session backend.
-    Everything else (profiles, timeouts, whether to open a tunnel) is per-run
-    and comes from the flags or their defaults.
+    release, the SSH user, the identity file, the session backend and the
+    substrate. Everything else (profiles, timeouts, whether to open a tunnel)
+    is per-run and comes from the flags or their defaults.
 
     The session backend carries over for the same reason the SSH user does:
     a re-deploy of an instance whose sessions live in Cassandra must not
     silently move them back to files because the operator omitted a flag.
+    The substrate carries over for a stronger version of the same reason
+    (#3956): a bare `nyxgpt cloud deploy` against a box already running k3s
+    must not quietly install a second, native copy of the stack beside the
+    cluster and fight it for ports 8000/3000. It is a *tri-state* flag
+    (`--kubernetes` / `--no-kubernetes` / neither) rather than a `store_true`
+    precisely so the carry-forward is reversible: a sticky boolean with no
+    way to say "off" is a trap, not a convenience.
     """
     previous = load_deploy_state()
     version = str(
@@ -402,6 +427,10 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
             f"Choose one of: {', '.join(VALID_SESSION_BACKENDS)} "
             "(see docs/session-storage.md)."
         )
+    requested_k8s = getattr(args, "kubernetes", None)
+    kubernetes = (
+        bool(previous.get("kubernetes", False)) if requested_k8s is None else bool(requested_k8s)
+    )
     return DeployPlan(
         version=version,
         profiles=profiles,
@@ -415,6 +444,7 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
         ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
         session_backend=backend,
+        kubernetes=kubernetes,
     )
 
 
@@ -544,7 +574,93 @@ if [ -z "$PY" ]; then
 fi
 echo "==> using $PY ($("$PY" -V 2>&1)) for the nyxGPT venv"
 
-# --- Node.js 20 (the web bundle's build and run toolchain) -------------
+__NODE_SECTION__
+# --- Docker (Cassandra + the observability stack run as containers) ----
+# The Compose plugin is deliberately NOT installed here: Amazon Linux 2023
+# packages no compose at all, so `nyxgpt ops install` owns that decision (it
+# tries the distro package, then Docker's own release binary) rather than this
+# script guessing per-distro package names.
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$(id -un)" || true
+
+# `usermod -aG` cannot reach an already-open login session, so every nyxGPT
+# command that talks to the Docker socket runs under `sg docker`, which grants
+# the group immediately and without a re-login. Resolved once, up front: the
+# `sg ... || <bare command>` form this replaced re-ran the whole command
+# *without* the group whenever the first attempt failed for an unrelated
+# reason, turning one failed step into a "permission denied ...
+# /var/run/docker.sock" cascade on the retry (#3760).
+if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
+  run_nyxgpt() { sg docker -c "$NYXGPT $*"; }
+else
+  run_nyxgpt() { "$NYXGPT" "$@"; }
+fi
+
+# --- A systemd --user session that survives logout ---------------------
+# `nyxgpt ops install` installs systemd --user units; without lingering they
+# would stop the moment this SSH session closes.
+sudo loginctl enable-linger "$(id -un)" || true
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+
+__LLM_RUNTIME_SECTION__
+# --- nyxGPT itself, from the published PyPI artifact -------------------
+# No checkout is created on this machine, by design (CLAUDE.md, repo-less
+# portability 2026-08-01): the instance installs the same published release
+# an operator would install on a laptop.
+"$PY" -m venv "$HOME/.nyxGPT/venv" >/dev/null
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet --upgrade pip
+"$HOME/.nyxGPT/venv/bin/pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"
+NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt"
+
+# --- Seed config.ini from the installed package ------------------------
+mkdir -p "$HOME/.nyxGPT"
+if [ ! -f "$HOME/.nyxGPT/config.ini" ]; then
+  EXAMPLE_CONFIG=$("$HOME/.nyxGPT/venv/bin/python" -c \\
+    "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
+  cp "$EXAMPLE_CONFIG" "$HOME/.nyxGPT/config.ini"
+  chmod 600 "$HOME/.nyxGPT/config.ini"
+fi
+
+# --- Session storage backend (#3865) -----------------------------------
+# `example.config.ini` ships the back-compat `session_backend = file`, which
+# on a cloud instance means chats are JSON files on ephemeral instance disk:
+# invisible to every other deployment mode pointed at the same Cassandra, and
+# gone with the instance. Nothing in this path used to change it, so the
+# cross-mode session guarantee (docs/session-storage.md, #3590) silently did
+# not hold for cloud deploys and the only fix was to SSH in and hand-edit
+# config.ini -- exactly the raw-operations flow the wrapped-command
+# requirement forbids. Set it here instead, before `ops install`, so the
+# derived containerized config (`_generate_compose_config`) and the API's
+# first start both see the operator's choice.
+#
+# Idempotent (`ops session-backend` writes only on a change), so a re-deploy
+# is a no-op here, and it never overrides an operator who deployed with
+# `--session-backend file`: the choice is recorded in deploy.json and
+# carried forward by `resolve_plan`.
+"$NYXGPT" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
+
+__STACK_BRINGUP_SECTION__
+# --- Self-healing ------------------------------------------------------
+# A cloud deployment is unattended by definition: nobody is watching the
+# instance to restart a component that dies, and the tunnel makes the stack
+# reachable only while the operator is at their workstation. The watchdog
+# ships disabled (example.config.ini's `[self_heal] enabled = false`, which
+# seeds the runtime flag on first run), so a cloud deploy turns it on
+# explicitly -- P6-16's acceptance criterion is a *self-healing* deployment,
+# not merely a running one. Idempotent: it writes one flag in
+# ~/.nyxGPT/self_heal_state.json, and the watchdog thread the API server
+# already runs re-reads that flag every interval, so this takes effect
+# without a restart on a re-deploy too.
+"$NYXGPT" self-heal enable
+
+echo "==> nyxGPT ${NYXGPT_VERSION} provisioned"
+"""
+
+
+# --- The native substrate's blocks (the default deploy, unchanged) -----
+
+NATIVE_NODE_SECTION = """# --- Node.js 20 (the web bundle's build and run toolchain) -------------
 # `nyxgpt ops install`'s "native web service" step runs `npm ci`/`npm run
 # build`, and the wrapper it installs execs `npm run start`, so npm has to
 # be here before `ops install` runs. Without it that step fails with "npm
@@ -589,75 +705,13 @@ if ! command -v npm >/dev/null 2>&1; then
   echo "node/npm could not be installed -- 'nyxgpt ops install' cannot build the nyxgpt-web bundle without npm" >&2
   exit 1
 fi
+"""
 
-# --- Docker (Cassandra + the observability stack run as containers) ----
-# The Compose plugin is deliberately NOT installed here: Amazon Linux 2023
-# packages no compose at all, so `nyxgpt ops install` owns that decision (it
-# tries the distro package, then Docker's own release binary) rather than this
-# script guessing per-distro package names.
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$(id -un)" || true
-
-# `usermod -aG` cannot reach an already-open login session, so every nyxGPT
-# command that talks to the Docker socket runs under `sg docker`, which grants
-# the group immediately and without a re-login. Resolved once, up front: the
-# `sg ... || <bare command>` form this replaced re-ran the whole command
-# *without* the group whenever the first attempt failed for an unrelated
-# reason, turning one failed step into a "permission denied ...
-# /var/run/docker.sock" cascade on the retry (#3760).
-if command -v sg >/dev/null 2>&1 && sg docker -c true >/dev/null 2>&1; then
-  run_nyxgpt() { sg docker -c "$NYXGPT $*"; }
-else
-  run_nyxgpt() { "$NYXGPT" "$@"; }
-fi
-
-# --- A systemd --user session that survives logout ---------------------
-# `nyxgpt ops install` installs systemd --user units; without lingering they
-# would stop the moment this SSH session closes.
-sudo loginctl enable-linger "$(id -un)" || true
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-
-# --- Ollama ------------------------------------------------------------
+NATIVE_LLM_RUNTIME_SECTION = """# --- Ollama ------------------------------------------------------------
 command -v ollama >/dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh
+"""
 
-# --- nyxGPT itself, from the published PyPI artifact -------------------
-# No checkout is created on this machine, by design (CLAUDE.md, repo-less
-# portability 2026-08-01): the instance installs the same published release
-# an operator would install on a laptop.
-"$PY" -m venv "$HOME/.nyxGPT/venv" >/dev/null
-"$HOME/.nyxGPT/venv/bin/pip" install --quiet --upgrade pip
-"$HOME/.nyxGPT/venv/bin/pip" install --quiet "nyxgpt==${NYXGPT_VERSION}"
-NYXGPT="$HOME/.nyxGPT/venv/bin/nyxgpt"
-
-# --- Seed config.ini from the installed package ------------------------
-mkdir -p "$HOME/.nyxGPT"
-if [ ! -f "$HOME/.nyxGPT/config.ini" ]; then
-  EXAMPLE_CONFIG=$("$HOME/.nyxGPT/venv/bin/python" -c \\
-    "from nyxgpt import config_wizard; print(config_wizard._EXAMPLE_CONFIG_PATH)")
-  cp "$EXAMPLE_CONFIG" "$HOME/.nyxGPT/config.ini"
-  chmod 600 "$HOME/.nyxGPT/config.ini"
-fi
-
-# --- Session storage backend (#3865) -----------------------------------
-# `example.config.ini` ships the back-compat `session_backend = file`, which
-# on a cloud instance means chats are JSON files on ephemeral instance disk:
-# invisible to every other deployment mode pointed at the same Cassandra, and
-# gone with the instance. Nothing in this path used to change it, so the
-# cross-mode session guarantee (docs/session-storage.md, #3590) silently did
-# not hold for cloud deploys and the only fix was to SSH in and hand-edit
-# config.ini -- exactly the raw-operations flow the wrapped-command
-# requirement forbids. Set it here instead, before `ops install`, so the
-# derived containerized config (`_generate_compose_config`) and the API's
-# first start both see the operator's choice.
-#
-# Idempotent (`ops session-backend` writes only on a change), so a re-deploy
-# is a no-op here, and it never overrides an operator who deployed with
-# `--session-backend file`: the choice is recorded in deploy.json and
-# carried forward by `resolve_plan`.
-"$NYXGPT" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
-
-# --- Bring the stack up ------------------------------------------------
+NATIVE_STACK_BRINGUP_SECTION = """# --- Bring the stack up ------------------------------------------------
 # Services bind 127.0.0.1 (P6-1 loopback default); nothing is published to a
 # non-loopback address, which is what makes the SSH tunnel the only path in.
 #
@@ -673,21 +727,189 @@ if [ -n "$NYXGPT_PROFILES" ]; then
 else
   run_nyxgpt ops install --skip-observability
 fi
+"""
 
-# --- Self-healing ------------------------------------------------------
-# A cloud deployment is unattended by definition: nobody is watching the
-# instance to restart a component that dies, and the tunnel makes the stack
-# reachable only while the operator is at their workstation. The watchdog
-# ships disabled (example.config.ini's `[self_heal] enabled = false`, which
-# seeds the runtime flag on first run), so a cloud deploy turns it on
-# explicitly -- P6-16's acceptance criterion is a *self-healing* deployment,
-# not merely a running one. Idempotent: it writes one flag in
-# ~/.nyxGPT/self_heal_state.json, and the watchdog thread the API server
-# already runs re-reads that flag every interval, so this takes effect
-# without a restart on a re-deploy too.
-"$NYXGPT" self-heal enable
 
-echo "==> nyxGPT ${NYXGPT_VERSION} provisioned"
+# --- The Kubernetes substrate's blocks (#3506's decision, #3956) -------
+#
+# #3506, approved by the owner 2026-08-04, decided **EC2 single-box with the
+# existing `k8s/*.yaml` manifests optionally layered on a single-node k3s
+# cluster for canary** -- rejecting a managed EKS control plane, not
+# Kubernetes. Its downstream section is explicit that this is "no new
+# deployment code path, just the existing `--kubernetes` install mode
+# pointed at the remote box over the P6-4 SSH path instead of a local
+# cluster", and that is exactly what these blocks do: they put a cluster on
+# the instance and then run the *existing* `nyxgpt ops install --kubernetes
+# --local` there. `_ensure_kubectl_and_cluster` already takes the
+# bring-your-own-cluster path whenever `kubectl cluster-info` answers, so the
+# install mode needs no notion of "remote" at all -- the box it installs on
+# is simply not the operator's workstation.
+#
+# Two things are deliberately NOT installed in this mode, because the
+# cluster supplies them and a second host-level copy would be worse than
+# useless:
+#
+#   * **Ollama.** `k8s/statefulset-ollama.yaml` runs it in-cluster. A host
+#     Ollama would be a second model server on the same box, holding a
+#     second copy of every pulled model in RAM, that nothing points at.
+#   * **Node/npm.** The native web service builds the Next bundle on the
+#     host with `npm ci`; in Kubernetes mode `nyxgpt-web:local` is a
+#     *container* built by docker from the published `nyxgpt-web` artifact
+#     (`_build_and_load_k8s_web_image`), so the host toolchain is never
+#     used. Installing it would add a NodeSource repo and several minutes to
+#     every deploy for nothing.
+#
+# Docker IS still installed: the k8s install path builds both images with it
+# before importing them into k3s's containerd (`_k3s_import_image`).
+
+# The k3s server flags, as one list so the CI proxy that executes this text
+# and the tests that assert on it read the same source (#3956).
+#
+#   --bind-address / --advertise-address / --node-ip
+#       Pin the apiserver and the node to the instance's PRIVATE address.
+#       k3s's default is 0.0.0.0, which would leave the apiserver listening
+#       on the public interface -- refused by the security group, but
+#       listening, and #3503's access model is that nothing but TCP 22 is
+#       reachable. The private address rather than 127.0.0.1 because the
+#       in-cluster `kubernetes` Service is built from the advertise address:
+#       pinned to loopback, every Pod that talks to the API server would
+#       dial its own loopback instead. "Loopback or private" is what the
+#       requirement asks for, and only one of the two is correct here.
+#   --tls-san
+#       So the serving certificate is valid for the address the kubeconfig
+#       below is rewritten to.
+#   --disable=traefik
+#       No ingress controller. k3s ships Traefik on by default and it binds
+#       host ports 80/443.
+#   --disable=servicelb
+#       No `Service: LoadBalancer` implementation. `k8s/*.yaml` declares no
+#       LoadBalancer Service (that is #3506's cluster-flavor-agnostic
+#       premise), so removing the controller costs nothing and makes the
+#       absence structural rather than a convention a later manifest could
+#       break silently.
+#
+# `local-storage` is deliberately LEFT ENABLED: the Cassandra and Ollama
+# StatefulSets declare `volumeClaimTemplates` with no `storageClassName`, so
+# they bind through whatever the cluster's default StorageClass is, and on
+# k3s that is `local-path`. Disabling it would leave both Pods Pending on
+# unbound PVCs.
+K3S_SERVER_FLAGS: tuple[str, ...] = (
+    "--bind-address=$NYXGPT_NODE_IP",
+    "--advertise-address=$NYXGPT_NODE_IP",
+    "--node-ip=$NYXGPT_NODE_IP",
+    "--tls-san=$NYXGPT_NODE_IP",
+    "--disable=traefik",
+    "--disable=servicelb",
+)
+
+KUBERNETES_LLM_RUNTIME_SECTION = """# --- Single-node Kubernetes (k3s) --------------------------------------
+# #3506's decision, implemented (#3956). Ollama is NOT installed on the host
+# in this mode -- k8s/statefulset-ollama.yaml runs it in the cluster.
+
+# The address k3s binds to. IMDSv2 first (this is an EC2 instance by
+# construction), falling back to the first address the kernel reports, which
+# is what makes this same text executable on a plain Linux machine -- the CI
+# proxy in .github/workflows/k3s-cloud-smoke.yml runs exactly this block.
+NYXGPT_IMDS_TOKEN=$(curl -sf -m 5 -X PUT "http://169.254.169.254/latest/api/token" \\
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null || true)
+NYXGPT_NODE_IP=""
+if [ -n "$NYXGPT_IMDS_TOKEN" ]; then
+  NYXGPT_NODE_IP=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $NYXGPT_IMDS_TOKEN" \\
+    "http://169.254.169.254/latest/meta-data/local-ipv4" 2>/dev/null || true)
+fi
+if [ -z "$NYXGPT_NODE_IP" ]; then
+  NYXGPT_NODE_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
+if [ -z "$NYXGPT_NODE_IP" ]; then
+  echo "could not determine this instance's private IPv4 address; k3s needs one to bind to" >&2
+  exit 1
+fi
+echo "==> k3s will bind to $NYXGPT_NODE_IP (private) -- nothing listens on the public interface"
+
+if ! command -v k3s >/dev/null 2>&1; then
+  curl -sfL https://get.k3s.io \\
+    | INSTALL_K3S_EXEC="server __K3S_SERVER_FLAGS__" sh -
+fi
+sudo systemctl enable --now k3s
+
+# A kubeconfig this login user owns, so `nyxgpt ops install --kubernetes
+# --local`, `nyxgpt canary` and `nyxgpt ops port-forward` all find the
+# cluster with no environment variable and no `sudo`. Read through `sudo
+# cat` and redirected as the user rather than loosening
+# /etc/rancher/k3s/k3s.yaml with --write-kubeconfig-mode: that file holds
+# cluster-admin credentials and world-readable is the wrong trade on a box
+# whose whole access model is "one port, one user".
+mkdir -p "$HOME/.kube"
+sudo cat /etc/rancher/k3s/k3s.yaml > "$HOME/.kube/config"
+chmod 600 "$HOME/.kube/config"
+# k3s writes `server: https://127.0.0.1:6443` regardless of --bind-address,
+# so a kubeconfig left as written points at an address nothing listens on.
+sed -i "s#https://127.0.0.1:6443#https://${NYXGPT_NODE_IP}:6443#" "$HOME/.kube/config"
+export KUBECONFIG="$HOME/.kube/config"
+
+echo "==> waiting for the k3s node to report Ready"
+NYXGPT_NODE_READY=0
+for _ in $(seq 1 60); do
+  if kubectl wait --for=condition=Ready node --all --timeout=10s >/dev/null 2>&1; then
+    NYXGPT_NODE_READY=1
+    break
+  fi
+  sleep 5
+done
+if [ "$NYXGPT_NODE_READY" -ne 1 ]; then
+  echo "the k3s node never reported Ready; 'kubectl get nodes' on the instance will say why" >&2
+  exit 1
+fi
+kubectl get nodes -o wide
+"""
+
+KUBERNETES_STACK_BRINGUP_SECTION = """# --- Bring the stack up, on the cluster --------------------------------
+# The EXISTING install mode, pointed at the box the cluster is on (#3506):
+# no cloud-specific deployment code path, and `k8s/*.yaml` is applied
+# unchanged by `_kubectl_apply_kustomization`.
+export KUBECONFIG="$HOME/.kube/config"
+if [ -n "$NYXGPT_PROFILES" ]; then
+  run_nyxgpt ops install --kubernetes --local
+else
+  run_nyxgpt ops install --kubernetes --local --skip-observability
+fi
+
+# --- The access bridge -------------------------------------------------
+# `k8s/`'s Services are ClusterIP-only -- no Ingress, no LoadBalancer, which
+# is #3506's premise and #3503's requirement -- so nothing binds
+# 127.0.0.1:8000/3000 on the instance the way the native services do. The
+# SSH tunnel forwards to the instance's loopback, so without a bridge from
+# loopback into the cluster a `--kubernetes` deploy would install a perfectly
+# healthy stack and then fail its own health check.
+#
+# Locally an operator runs `nyxgpt ops port-forward` in a terminal and leaves
+# it there. A cloud deployment is unattended by definition (the same reason
+# `self-heal enable` below exists), so the same wrapped command runs as a
+# systemd --user service instead: no raw `kubectl` in any operator-facing
+# flow (CLAUDE.md's wrapper requirement), and `Restart=always` reconnects the
+# forward when a Pod is replaced -- which a canary rollout does by design.
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/nyxgpt-k8s-bridge@.service" <<'UNIT'
+[Unit]
+Description=nyxGPT Kubernetes access bridge (%i)
+After=network-online.target
+
+[Service]
+Environment=KUBECONFIG=%h/.kube/config
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.nyxGPT/venv/bin/nyxgpt ops port-forward --target %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now nyxgpt-k8s-bridge@api.service
+systemctl --user enable --now nyxgpt-k8s-bridge@web.service
+if [ -n "$NYXGPT_PROFILES" ]; then
+  systemctl --user enable --now nyxgpt-k8s-bridge@observability.service
+fi
 """
 
 
@@ -695,13 +917,43 @@ def render_provision_script(plan: DeployPlan) -> str:
     """Render the instance provisioning script for `plan`.
 
     Kept a pure function so the repo-less guarantee (no clone, no checkout
-    copy) and the artifact version pin are unit-testable without an EC2
-    instance.
+    copy), the artifact version pin and -- since #3956 -- the k3s server
+    flags are unit-testable without an EC2 instance.
+
+    The substrate blocks are substituted rather than guarded at runtime on a
+    shell variable, so a native deploy's script contains no Kubernetes text
+    at all and a `--kubernetes` one contains no host Ollama or NodeSource
+    install. That is a property worth being able to assert directly.
     """
+    if plan.kubernetes:
+        node_section = ""
+        llm_section = render_k3s_bootstrap()
+        bringup_section = KUBERNETES_STACK_BRINGUP_SECTION
+    else:
+        node_section = NATIVE_NODE_SECTION
+        llm_section = NATIVE_LLM_RUNTIME_SECTION
+        bringup_section = NATIVE_STACK_BRINGUP_SECTION
     return (
         PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
+        .replace("__NODE_SECTION__", node_section)
+        .replace("__LLM_RUNTIME_SECTION__", llm_section)
+        .replace("__STACK_BRINGUP_SECTION__", bringup_section)
+    )
+
+
+def render_k3s_bootstrap() -> str:
+    """Return the k3s bootstrap block exactly as a `--kubernetes` deploy sends it.
+
+    Public and standalone so the executed-verification job
+    (`.github/workflows/k3s-cloud-smoke.yml`) can run *this* text on a real
+    Linux machine rather than a hand-copied approximation of it -- the
+    difference between proving the deploy's own bootstrap works and proving
+    that something like it does (D-006).
+    """
+    return KUBERNETES_LLM_RUNTIME_SECTION.replace(
+        "__K3S_SERVER_FLAGS__", " ".join(K3S_SERVER_FLAGS)
     )
 
 
@@ -788,8 +1040,16 @@ def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]
         raise CloudCommandError(_provision_failure_detail(output))
     # `self_heal_enabled` is safe to assert rather than re-probe: the script
     # runs under `set -euo pipefail`, so a failed `self-heal enable` would
-    # have made this a non-zero exit and raised above.
-    return {"version": plan.version, "profiles": list(plan.profiles), "self_heal_enabled": True}
+    # have made this a non-zero exit and raised above. The same reasoning
+    # covers `substrate`: in Kubernetes mode the script does not reach this
+    # point unless k3s came up, the node went Ready and `ops install
+    # --kubernetes --local` succeeded.
+    return {
+        "version": plan.version,
+        "profiles": list(plan.profiles),
+        "self_heal_enabled": True,
+        "substrate": plan.substrate,
+    }
 
 
 # --- The tunnel (the P6-4 access path) ---------------------------------
@@ -1038,6 +1298,12 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         # move an instance's sessions back to files because the flag was
         # omitted -- `resolve_plan` reads this back.
         "session_backend": plan.session_backend,
+        # #3956. Read back by `resolve_plan` so a bare re-deploy does not
+        # install a native stack beside the cluster, and reported by
+        # `deploy_status` so the dashboard can say which substrate is running
+        # rather than assuming the native one.
+        "kubernetes": plan.kubernetes,
+        "substrate": plan.substrate,
         "host": target.host,
         "instance_id": target.instance_id,
         "region": target.region,
@@ -1064,17 +1330,31 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
                 instance_id=target.instance_id,
                 region=target.region,
                 profiles=list(plan.profiles),
+                substrate=plan.substrate,
                 detail=(
                     f"stack installed but {health['url']} never returned 200 within "
                     f"{plan.health_timeout:.0f}s"
                 ),
+            )
+            # In Kubernetes mode the loopback address the tunnel forwards to
+            # is held by the access bridge, not by the API process, so the
+            # bridge is a distinct thing that can be down while every Pod is
+            # Running -- and an operator told only "the API did not answer"
+            # would go looking in the wrong place (#3956).
+            bridge_hint = (
+                "\nThis is a Kubernetes deployment: `127.0.0.1:8000` on the instance is held "
+                "by the access bridge, not by the API process, so `nyxgpt cloud canary status` "
+                "may well report healthy Pods while this probe fails. "
+                "`nyxgpt cloud ops doctor` reports both."
+                if plan.kubernetes
+                else ""
             )
             raise CloudCommandError(
                 f"The stack was installed but {health['url']} never returned 200 within "
                 f"{plan.health_timeout:.0f}s (last status: {health['status'] or 'unreachable'}).\n"
                 "The tunnel is still open -- `nyxgpt cloud status` and "
                 "`nyxgpt cloud ops doctor` (which runs the instance's own doctor over the "
-                "same SSH path) will say more."
+                f"same SSH path) will say more.{bridge_hint}"
             )
 
     record_history(
@@ -1085,6 +1365,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         instance_id=target.instance_id,
         region=target.region,
         profiles=list(plan.profiles),
+        substrate=plan.substrate,
         detail=(
             "healthy over the access tunnel"
             if health.get("healthy")
@@ -1104,7 +1385,20 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def destroy(args: argparse.Namespace) -> dict[str, Any]:
-    """Tear the whole deployment down: tunnel first, then the substrate."""
+    """Tear the whole deployment down: tunnel first, then the substrate.
+
+    A `--kubernetes` deployment needs no extra teardown step, and adding one
+    would be worse than useless (#3956). The k3s cluster is *on* the
+    instance: its control plane, its containerd image store, its
+    `local-path` PersistentVolumes and every Pod live on the root volume
+    Terraform is about to delete. Running `ops down --kubernetes` first would
+    spend minutes gracefully draining workloads off a machine that is being
+    terminated seconds later, and would add a way for the teardown to hang or
+    fail on a cluster that is already unreachable. The deploy record --
+    including the `kubernetes` substrate marker `resolve_plan` reads back --
+    is deleted with it, so the next deploy starts from a clean statement of
+    what is deployed rather than from a stale one.
+    """
     # Read before the teardown deletes it -- the history entry names what was
     # torn down, which is unrecoverable once `deploy.json` is gone.
     previous = load_deploy_state()
@@ -1162,6 +1456,12 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
     "self_heal": "nyxgpt cloud ops self-heal",
     "credentials": "nyxgpt cloud credentials",
     "allow_ip": "nyxgpt cloud allow-ip",
+    # #3956. Only meaningful on a `--kubernetes` deployment, and named
+    # unconditionally anyway: the dashboard reports the substrate beside it,
+    # and a pointer an operator can read is how they find out the capability
+    # exists at all.
+    "deploy_kubernetes": "nyxgpt cloud deploy --kubernetes",
+    "canary": "nyxgpt cloud canary status",
 }
 
 
@@ -1181,6 +1481,52 @@ REMOTE_OPS_COMMANDS: dict[str, str] = {
     # flag existed -- what the machine is *actually* running, rather than
     # what was last requested of it.
     "session-backend": "ops session-backend",
+}
+
+
+# `nyxgpt cloud canary <subcommand>` -- the capability #3506 was choosing a
+# substrate FOR, reachable on the cloud target (#3956).
+#
+# It runs the instance's own `nyxgpt canary`, over the same wrapped SSH path
+# `nyxgpt cloud ops` uses, for the reason that path exists at all: the
+# cluster's API server binds the instance's private address and is reachable
+# from nothing but that box, so the alternative would be tunnelling a
+# cluster-admin kubeconfig back to the workstation and pointing the
+# operator's own kubectl context at their cloud deployment -- more exposure,
+# and a context that then collides with any local cluster they have.
+#
+# Unlike `REMOTE_OPS_COMMANDS` this is deliberately NOT read-only, and the
+# distinction is worth stating because that allowlist's docstring says the
+# opposite about itself. `nyxgpt cloud ops` is an *inspection* surface, and
+# changing what runs on the instance is `nyxgpt cloud deploy`. Traffic
+# weighting is neither: `start`/`promote`/`rollback` move traffic between two
+# Deployments that a deploy already created, inside the cluster, without
+# touching the substrate -- the same class of action as `nyxgpt cloud deploy`
+# itself and explicitly not the class D-017 keeps in the CLI's hands for
+# self-hosting reasons, since a CLI on the operator's workstation is where
+# this runs.
+#
+# `deploy` is absent, and its absence is the point: `nyxgpt canary deploy`
+# builds a versioned image from the current checkout, and the instance has no
+# checkout by construction (CLAUDE.md's repo-less requirement). Rolling a new
+# release out to the cloud is `nyxgpt cloud deploy --version <release>`.
+REMOTE_CANARY_COMMANDS: tuple[str, ...] = (
+    "status",
+    "start",
+    "evaluate",
+    "promote",
+    "rollback",
+)
+
+# Optional pass-through flags per canary subcommand. An allowlist rather than
+# `*argv`: everything here is spliced into a remote shell command, and the
+# argument values are validated by type before they get there.
+CANARY_FLAGS: dict[str, tuple[str, ...]] = {
+    "status": ("component",),
+    "start": ("component", "weight"),
+    "evaluate": ("component",),
+    "promote": ("component", "step", "force"),
+    "rollback": ("component",),
 }
 
 
@@ -1350,6 +1696,16 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         # Empty when nothing was recorded -- a deploy from before #3865, or
         # no deploy at all -- which is not the same claim as "file".
         "session_backend": str(record.get("session_backend") or ""),
+        # What runs the stack on the instance (#3956). Observable, never
+        # operable, per the Definition of Done: the dashboard reports it and
+        # names `nyxgpt cloud deploy --kubernetes`, and never drives the
+        # change itself -- switching substrates is exactly the class of
+        # action D-017 keeps out of a UI the substrate is serving.
+        #
+        # Empty rather than "native" when nothing was recorded: a deploy from
+        # before this flag existed, or no deploy at all, is not the same
+        # claim as "this box runs the native stack".
+        "substrate": str(record.get("substrate") or ""),
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
@@ -1375,6 +1731,13 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     target = result["target"]
     plan = result["plan"]
     print(f"\nnyxGPT {plan['version']} deployed to {target['instance_id'] or target['host']}.")
+    if plan.get("kubernetes"):
+        print(
+            "Substrate: a single-node k3s cluster on the instance, running the same "
+            "k8s/*.yaml manifests as a local Kubernetes install.\n"
+            "Canary rollout is available here: `nyxgpt cloud canary status` (and start / "
+            "evaluate / promote / rollback) run the instance's own `nyxgpt canary`."
+        )
     backend = str(plan.get("session_backend") or DEFAULT_SESSION_BACKEND)
     if backend == "cassandra":
         print(
@@ -1624,6 +1987,76 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
     return completed.returncode
 
 
+def canary_argv(args: argparse.Namespace) -> list[str]:
+    """Build the `canary ...` argument list to run on the instance (#3956).
+
+    Every value is validated here rather than trusted from the namespace:
+    this is spliced into a remote shell command, and the numeric flags are
+    the only free-form input in it. `argparse` already types `--weight` and
+    `--step` as ints, so this is the second of two checks, not the only one.
+    """
+    subcommand = str(getattr(args, "canary_cmd", "") or "")
+    if subcommand not in REMOTE_CANARY_COMMANDS:
+        raise CloudCommandError(
+            f"{subcommand!r} is not a canary subcommand that can run against a cloud "
+            f"deployment. Available: {', '.join(REMOTE_CANARY_COMMANDS)}. "
+            "(`canary deploy` builds an image from a checkout, and the instance has none "
+            "by design -- roll a release out with `nyxgpt cloud deploy --version <release>`.)"
+        )
+    allowed = CANARY_FLAGS[subcommand]
+    argv = ["canary", subcommand]
+    component = getattr(args, "component", None)
+    if "component" in allowed and component:
+        argv += ["--component", str(component)]
+    for flag in ("weight", "step"):
+        value = getattr(args, flag, None)
+        if flag in allowed and value is not None:
+            argv += [f"--{flag}", str(int(value))]
+    if "force" in allowed and getattr(args, "force", False):
+        argv.append("--force")
+    return argv
+
+
+def remote_canary(target: DeployTarget, argv: list[str]) -> int:
+    """Run one `nyxgpt canary ...` invocation on the instance, over wrapped SSH.
+
+    Same transport contract as `remote_ops`: the command's own exit status is
+    the answer (`canary evaluate` exits 2 on a failing canary, which is a
+    result, not an error), and only a transport failure raises.
+    """
+    remote = " ".join(['"$HOME/.nyxGPT/venv/bin/nyxgpt"', *(shlex.quote(part) for part in argv)])
+    completed = run_remote(target, remote, stream=True, timeout=600)
+    stderr = (completed.stderr or "").strip()
+    if completed.returncode == 255:
+        raise CloudCommandError(
+            f"Could not reach {target.user}@{target.host} over SSH: {stderr or 'no detail'}. "
+            f"If your public IP has changed, run `{LIFECYCLE_COMMANDS['allow_ip']}`."
+        )
+    if completed.returncode == 127:
+        raise CloudCommandError(
+            f"{target.host} has no nyxGPT installed at ~/.nyxGPT/venv/bin/nyxgpt. "
+            f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
+        )
+    if stderr:
+        print(stderr, file=sys.stderr)
+    return completed.returncode
+
+
+def _canary_command(args: argparse.Namespace) -> int:
+    """`nyxgpt cloud canary <subcommand>` entry point (#3956)."""
+    record = load_deploy_state()
+    if record and not record.get("kubernetes"):
+        raise CloudCommandError(
+            "The recorded deployment does not run Kubernetes, and canary rollout needs a "
+            "cluster to weight traffic in. Re-deploy with `nyxgpt cloud deploy --kubernetes` "
+            "(see docs/cloud.md#kubernetes-on-the-cloud-target)."
+        )
+    argv = canary_argv(args)
+    target = resolve_access_target(args)
+    print(f"# {target.user}@{target.host}: nyxgpt {' '.join(argv)}\n")
+    return remote_canary(target, argv)
+
+
 def _ops_command(args: argparse.Namespace) -> int:
     """`nyxgpt cloud ops <inspection>` entry point."""
     inspection = str(getattr(args, "inspection", "") or "status")
@@ -1689,6 +2122,8 @@ def deploy_command(args: argparse.Namespace) -> int:
             return _status_command(args)
         if subcommand == "ops":
             return _ops_command(args)
+        if subcommand == "canary":
+            return _canary_command(args)
         if subcommand == "deploy":
             if getattr(args, "status", False):
                 # Kept working for anything already scripted against it, and

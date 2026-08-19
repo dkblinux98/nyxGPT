@@ -2760,6 +2760,29 @@ def cli(argv: list[str] | None = None) -> int:
             "whatever the last deploy used) -- see docs/session-storage.md"
         ),
     )
+    # #3956, implementing #3506's owner-approved decision: EC2 single-box with
+    # the existing k8s/*.yaml manifests optionally layered on a single-node
+    # k3s cluster. What that record rejected was a managed EKS control plane,
+    # not Kubernetes -- and canary rollout, which the whole `nyxgpt canary`
+    # surface implements, has no cluster to run in on the cloud target
+    # without it.
+    #
+    # BooleanOptionalAction, not store_true: the choice is recorded in
+    # deploy.json and carried forward, so a bare re-deploy does not install a
+    # native stack beside a running cluster -- and a carried-forward boolean
+    # with no way to say "off" is a trap. `--no-kubernetes` is how an
+    # operator moves a deployment back to the native substrate.
+    cloud_deploy_p.add_argument(
+        "--kubernetes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Run the stack on a single-node k3s cluster on the instance, applying the "
+            "same k8s/*.yaml manifests as a local Kubernetes install -- this is what "
+            "makes `nyxgpt cloud canary` available (default: whatever the last deploy "
+            "used, else the native stack). See docs/cloud.md and docs/kubernetes.md"
+        ),
+    )
     cloud_deploy_p.add_argument(
         "--no-tunnel",
         action="store_true",
@@ -2835,6 +2858,48 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
     _add_ssh_access_flags(cloud_ops_p)
+
+    # `cloud canary` (#3956): the capability #3506 was choosing a substrate
+    # FOR. It runs the instance's own `nyxgpt canary` over the same wrapped
+    # SSH path -- the cluster's API server binds the instance's private
+    # address and is reachable from nothing else, and tunnelling a
+    # cluster-admin kubeconfig back to the workstation would be both more
+    # exposure and a kubectl context that collides with any local cluster.
+    cloud_canary_p = cloud_sub.add_parser(
+        "canary",
+        help=(
+            "Run a canary rollout action against the Kubernetes cloud deployment "
+            "(status/start/evaluate/promote/rollback) over the wrapped SSH access path"
+        ),
+    )
+    cloud_canary_sub = cloud_canary_p.add_subparsers(dest="canary_cmd", required=True)
+    for _canary_name, _canary_help in (
+        ("status", "Rollout progress, stable/canary health and live per-track metrics"),
+        ("start", "Start a rollout at an initial traffic weight"),
+        ("evaluate", "Check the canary against the configured thresholds (rolls back on failure)"),
+        ("promote", "Increase the canary's traffic share by a step"),
+        ("rollback", "Cut all traffic back to stable, abandoning the canary"),
+    ):
+        _canary_p = cloud_canary_sub.add_parser(_canary_name, help=_canary_help)
+        _canary_p.add_argument(
+            "--component",
+            choices=["api", "web"],
+            help="Which stable/canary pair to act on (default: api)",
+        )
+        if _canary_name == "start":
+            _canary_p.add_argument(
+                "--weight", type=int, help="Initial canary traffic percentage (default: 10)"
+            )
+        if _canary_name == "promote":
+            _canary_p.add_argument(
+                "--step", type=int, help="Percentage points to add (default: from config)"
+            )
+            _canary_p.add_argument(
+                "--force",
+                action="store_true",
+                help="Promote even though the canary track has measurably served no traffic",
+            )
+        _add_ssh_access_flags(_canary_p)
 
     cloud_destroy_p = cloud_sub.add_parser(
         "destroy",
@@ -3404,6 +3469,7 @@ def cli(argv: list[str] | None = None) -> int:
         "credentials",
         "status",
         "ops",
+        "canary",
     ):
         return cloud_deploy_mod.deploy_command(args)
 

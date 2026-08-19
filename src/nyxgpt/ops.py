@@ -5910,31 +5910,40 @@ def _cp_details(cp: subprocess.CompletedProcess[str]) -> str:
 def _resolve_locality(args) -> str | None:
     """Validate the `--local`/`--cloud` locality flag shared by `--terraform`/`--kubernetes`.
 
-    Only `--local` is implemented today. `--cloud` is accepted by the CLI
-    surface (so it doesn't need a redesign later) but always rejected -- the
-    local deployment is the precursor to a future cloud target, not an
-    alternative to it (see issue #3344). The AWS substrate itself is
-    provisioned by `nyxgpt cloud infra` (#3509); deploying this stack onto
-    that instance is #3513, which is what will make `--cloud` meaningful
-    here.
+    `--local` is the only locality this command implements, and that is now a
+    statement about *where the work happens* rather than about what has
+    shipped. The cloud target is not a second mode of `ops install`: it is
+    `nyxgpt cloud deploy`, which provisions the substrate, reaches the
+    instance over the #3503 SSH path, and runs this very command *there*
+    (#3956 -- `--kubernetes` on that command puts a single-node k3s cluster on
+    the box and then runs `ops install --kubernetes --local` on it, which is
+    #3506's "no new deployment code path" in one sentence).
 
-    Returns "local" once implemented, or None (having already printed an
-    error) if the flag is missing or unimplemented.
+    So `--cloud` is refused by pointing at the command that does the job, not
+    by promising a future one. The old wording ("not yet implemented ... the
+    precursor to a future cloud target") was an expiry-dated world-state claim
+    of exactly the kind #3744 forbids, and by 2026-08-19 it had expired twice
+    over: `nyxgpt cloud deploy` shipped in #3513 and its Kubernetes mode in
+    #3956.
+
+    Returns "local", or None (having already printed an error) if the flag is
+    missing or names the cloud.
     """
     if getattr(args, "cloud", False):
         print(
-            "ERROR: --cloud is not yet implemented. Local Terraform/Kubernetes deployment "
-            "(--local) is the precursor to a future cloud target -- see docs/terraform.md "
-            "and docs/kubernetes.md. To provision the AWS substrate itself, use "
-            "`nyxgpt cloud infra apply` (see docs/cloud.md); deploying this stack onto "
-            "that instance lands with `nyxgpt cloud deploy`.",
+            "ERROR: --cloud is not a locality of `nyxgpt ops install`. Deploying to AWS is "
+            "`nyxgpt cloud deploy` (add --kubernetes for a single-node k3s cluster running "
+            "the same k8s/*.yaml manifests) -- it provisions the substrate, then runs this "
+            "same command on the instance over the SSH access path. See docs/cloud.md and "
+            "docs/kubernetes.md.",
             file=sys.stderr,
         )
         return None
     if not getattr(args, "local", False):
         print(
             "ERROR: --local is required with --terraform/--kubernetes "
-            "(the only locality implemented today; pass --local explicitly)",
+            "(this command deploys to the machine it runs on; pass --local explicitly). "
+            "To deploy to AWS, use `nyxgpt cloud deploy [--kubernetes]`.",
             file=sys.stderr,
         )
         return None
@@ -6830,6 +6839,15 @@ KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 KIND_DOWNLOAD_URL = (
     "https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-{os}-{arch}"
 )
+# How long `_k3s_import_image` will wait for one image to land in k3s's
+# containerd store. Generous: the api image is multi-GB and the import is a
+# decompress-and-write of the whole thing onto the instance's root volume, on
+# hardware an operator chose for running nyxGPT rather than for build
+# throughput. Bounded all the same (D-027) -- `install_kubernetes_local` is
+# reachable from an HTTP handler, and an unbounded pipe there is a worker held
+# forever.
+K3S_IMAGE_IMPORT_TIMEOUT_SECONDS = 900
+
 KUBECTL_STABLE_URL = "https://dl.k8s.io/release/stable.txt"
 KUBECTL_DOWNLOAD_URL = "https://dl.k8s.io/release/{version}/bin/{os}/{arch}/kubectl"
 
@@ -7134,10 +7152,19 @@ def _build_and_load_k8s_image(
     """Build `image` from `context` and load it into the current cluster's image cache.
 
     Docker Desktop's built-in cluster shares the host's image cache, so a
-    build alone is enough there. kind/minikube each need an explicit
+    build alone is enough there. kind/minikube/k3s each need an explicit
     load step; an unrecognized cluster type is treated the same way the
     documented manual flow would be -- skip the load and tell the operator
     to do it themselves if their cluster doesn't share the host cache.
+
+    k3s is the branch `nyxgpt cloud deploy --kubernetes` lands on (#3956):
+    it runs its own containerd, so a `docker build` on the same box produces
+    an image the cluster cannot see, and every `:local` tag in `k8s/*.yaml`
+    would `ImagePullBackOff`. It is detected by the `k3s` binary rather than
+    by the context name, because k3s's default context is called `default` --
+    a name that says nothing. Ordered last of the three so a machine that has
+    k3s installed but is currently pointed at a kind cluster still takes the
+    kind branch.
 
     `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
     install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` (via
@@ -7190,6 +7217,9 @@ def _build_and_load_k8s_image(
         else:
             results.append(OpsResult(True, f"Loaded {image} into minikube"))
         return results
+    if _which("k3s") is not None:
+        results += _k3s_import_image(image)
+        return results
     results.append(
         OpsResult(
             True,
@@ -7199,6 +7229,92 @@ def _build_and_load_k8s_image(
         )
     )
     return results
+
+
+def _k3s_import_image(image: str) -> list[OpsResult]:
+    """Import a locally-built docker image into k3s's containerd store (#3956).
+
+    k3s does not use docker: it runs its own containerd, with its own image
+    store, so an image `docker build` just produced is invisible to it. Every
+    `k8s/*.yaml` Deployment pins `imagePullPolicy: IfNotPresent` against a
+    `:local` tag that exists in no registry, so without this step the apply
+    succeeds, the Pods are created, and every one of them sits in
+    `ErrImagePull`/`ImagePullBackOff` forever.
+
+    That failure mode is why this is an `OpsResult(False)` on error rather
+    than the `True` the unrecognized-cluster branch above returns: there, the
+    operator was told to load the image themselves and a bring-your-own
+    cluster may genuinely share the host cache; here we know it does not, so
+    a failed import is a failed install, reported at the step that caused it
+    instead of eight minutes later as an unexplained Pending stack.
+
+    Piped rather than staged through a temp file: the two images together are
+    several GB, and a cloud instance's root volume is sized for the stack, not
+    for a second copy of it.
+
+    `sudo` unless already root -- containerd's socket
+    (`/run/k3s/containerd/containerd.sock`) is root-owned, and the login user
+    a cloud deploy runs as is not.
+    """
+    argv = [*_k3s_sudo_prefix(), "k3s", "ctr", "images", "import", "-"]
+    try:
+        with subprocess.Popen(  # nosec B603 - fixed argv, no shell
+            ["docker", "save", image], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ) as save:
+            cp = subprocess.run(  # nosec B603 - fixed argv, no shell
+                argv,
+                stdin=save.stdout,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=K3S_IMAGE_IMPORT_TIMEOUT_SECONDS,
+            )
+            # Close our handle so `docker save` sees EPIPE and exits if the
+            # import died early, instead of blocking the `with` on a full pipe.
+            if save.stdout is not None:
+                save.stdout.close()
+            save_stderr = (save.stderr.read() if save.stderr else "") or ""
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(
+            "ops: k3s image import failed for %s: %s",
+            image,
+            e,
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [OpsResult(False, f"Could not import {image} into k3s", f"{type(e).__name__}: {e}")]
+
+    if save.returncode != 0:
+        logger.warning(
+            "ops: docker save %s exited %s: %s",
+            image,
+            save.returncode,
+            save_stderr.strip(),
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [
+            OpsResult(
+                False,
+                f"docker save {image} failed -- nothing to import into k3s",
+                save_stderr.strip(),
+            )
+        ]
+    if cp.returncode != 0:
+        logger.warning(
+            "ops: k3s ctr images import exited %s for %s: %s",
+            cp.returncode,
+            image,
+            (cp.stderr or "").strip(),
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [OpsResult(False, f"k3s ctr images import failed for {image}", _cp_details(cp))]
+    return [OpsResult(True, f"Imported {image} into k3s's containerd", _cp_details(cp))]
+
+
+def _k3s_sudo_prefix() -> list[str]:
+    """`["sudo", "-n"]` unless this process is already root (or sudo is absent)."""
+    if os.geteuid() == 0 or _which("sudo") is None:
+        return []
+    return ["sudo", "-n"]
 
 
 def build_and_load_k8s_image(
