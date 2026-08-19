@@ -951,13 +951,15 @@ release_backlog_by_sprint() {
 
 # Machine marker stamped on every INFORMATIONAL sprint-autopilot comment
 # (park note, paused notice) -- anything that is a status report rather than
-# a dispatch kick. notify_scrum_ready.yml negates this marker in its job
-# `if:`, so an informational note can never trigger a dispatch run even if
-# its prose later drifts into naming the kick token (#3706 review finding:
-# the park note contained the token, and the dispatch trigger is a bare
-# substring test with the agent accounts on its actor allowlist -- so every
-# "park" was in fact a kick). Keep in sync with AUTOPILOT_INFO_MARKER in
-# lib/sprint_calc.py and the `if:` in .github/workflows/notify_scrum_ready.yml.
+# a dispatch kick. It was added for #3706, where the park note named the kick
+# token and the dispatch trigger was a bare substring test with the agent
+# accounts on its actor allowlist -- so every "park" was in fact a kick. That
+# particular hazard is gone: #3882 made the kick a repository_dispatch, which
+# prose cannot imitate. The marker is still load-bearing because these notes
+# name PAUSE_SPRINT, which remains a live token: the shared gate
+# (lib/comment_tokens.py, INFORMATIONAL_MARKERS) disqualifies any comment
+# carrying it. Keep in sync with AUTOPILOT_INFO_MARKER in lib/sprint_calc.py
+# and lib/comment_tokens.py.
 AUTOPILOT_INFO_MARKER="<!-- nyxgpt-autopilot-informational -->"
 
 # True if the most recent PAUSE_SPRINT/RESUME_SPRINT control comment on
@@ -1240,9 +1242,10 @@ drain_gate_release() {
       _warn "drain_gate_release: RELEASE_ISSUE_NUMBER not configured -- released the lane but cannot kick the queue."
     elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
       # Same rule as the autopilot: while PAUSE_SPRINT is in force nothing
-      # dispatches. The note must not name the kick token (a bare substring
-      # match triggers notify_scrum_ready.yml), so it carries the
-      # informational marker as well -- belt and braces, #3706.
+      # dispatches. The note names PAUSE_SPRINT, which is still a live
+      # token, so it carries the informational marker that
+      # disqualifies it at the shared gate (#3706; the kick token it also
+      # had to avoid is gone -- the kick is an event since #3882).
       issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Drain gate (#3730)**: acceptance round drained and ${refs% } moved to ${STATUS_BACKLOG}, but the sprint is paused (\`PAUSE_SPRINT\`) — no kick posted. Comment \`RESUME_SPRINT\` to continue.
 
 ${AUTOPILOT_INFO_MARKER}" \
@@ -1650,11 +1653,14 @@ sprint_autopilot_kick() {
     _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
   elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
     echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
-    # Informational, NOT a kick: the note must neither spell out the kick
-    # token nor omit the informational marker, or posting it would itself
-    # trigger notify_scrum_ready.yml -- which is not gated on PAUSE_SPRINT,
-    # so a "paused" notice would dispatch work (#3706 review).
-    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or post the manual kick signal documented in \`docs/sprint-autopilot.md\` to kick manually.
+    # Informational, NOT a kick. The kick is now a repository_dispatch
+    # (#3882), which no comment can imitate, so the old hazard this note
+    # guarded against -- a "paused" notice whose own text re-triggered the
+    # then-comment-driven kick, which was not gated on PAUSE_SPRINT (#3706
+    # review) -- cannot recur. The marker stays because this note names
+    # `PAUSE_SPRINT`, which IS still a live token: it is what tells the
+    # shared comment-token gate this is a status report, not a command.
+    issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: ${event_phrase}, but autopilot is paused (\`PAUSE_SPRINT\`) -- no next issue dispatched. Comment \`RESUME_SPRINT\` to continue, or start an issue by hand by assigning the developer agent to it (\`docs/sprint-autopilot.md\`).
 
 ${AUTOPILOT_INFO_MARKER}" \
       || _warn "Failed to post autopilot-paused notice."

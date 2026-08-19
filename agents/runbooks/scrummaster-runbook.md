@@ -248,25 +248,31 @@ a real work boundary, not bookkeeping:
   loud note** on the release tracking issue: which park state it is in (see
   "Park semantics"), what remains in the release per future sprint (and how
   much has no sprint at all), any parked issues waiting on gates, and that
-  work resumes when the next sprint's window opens or a human posts a kick.
+  work resumes when the next sprint's window opens or a human starts an
+  issue by assigning the developer agent to it.
   The boundary is an **acceptance gate** (owner context 2026-08-10: sprint
   completes -> owner runs acceptance testing -> next sprint begins), so
   nothing resumes the loop by itself -- a new window opening does not
-  dispatch work, because only a kick starts selection and agents post kicks
-  only after a merge.
+  dispatch work, because only a kick starts selection and agents send the
+  `dispatch-next-issue` event only after a merge, escalation or anomaly.
 - **Informational notes are inert by construction.** While the kick was a
   comment token, the workflow's job `if:` could only substring-test it, and
   the agents were on its actor allowlist -- so a park or `PAUSE_SPRINT`
   notice that merely *named* the token dispatched work: a "park" that was
-  really a kick. (#3882 removed the class outright by making the kick an
-  event; the convention below stays because the retry token is still a
-  comment command.) Such notes now avoid the token entirely and
-  carry `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`),
-  which the workflow's job `if:` negates. Since #3790 the workflow also has a
-  `comment_gate` job: the token dispatches only where it *opens a line*
-  (`scripts/agents/lib/comment_tokens.py`), so a mid-sentence mention is
-  inert even unmarked. When adding any agent-posted status comment, follow
-  the same rule -- and see `docs/agent-comment-tokens.md`.
+  really a kick. **#3882 removed that class outright**: the kick is a
+  `repository_dispatch` and the developer's start/resume is an assignment,
+  and prose cannot fire either. The convention still applies to the tokens
+  that remain (`COMMAND_TOKENS`) — `PAUSE_SPRINT`,
+  `CONFLICT_REQUIRES_OWNER_DECISION`, `@acceptance-failure`,
+  `@improvement`. So a note that has to name one still carries
+  `<!-- nyxgpt-autopilot-informational -->` (`AUTOPILOT_INFO_MARKER`) or
+  `<!-- nyxgpt-token-mention -->`, which the shared gate
+  (`.github/actions/comment-token-gate`, backed by
+  `scripts/agents/lib/comment_tokens.py`) treats as disqualifying for the
+  whole comment; and since #3790 that gate honours a token only where it
+  *opens a line*, so a mid-sentence mention is inert even unmarked. When
+  adding any agent-posted status comment, follow the same rule -- and see
+  `docs/agent-comment-tokens.md`.
 - **Human override stays.** A dispatch sent by the owner runs unscoped
   (`developer_pull_next_issue.yml`), and assigning the developer agent to an
   issue directly starts it outright -- so the owner can deliberately pull

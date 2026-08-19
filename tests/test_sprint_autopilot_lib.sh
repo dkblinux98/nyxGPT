@@ -329,7 +329,10 @@ _assert_not_contains "in-flight park note never says sprint complete" "$body" "s
 _assert_contains "park note reports what waits in a future sprint" "$body" "- Sprint 9: 11 open Backlog issue(s)"
 _assert_contains "park note reports the no-sprint bucket" "$body" "- _No sprint set_: 2 open Backlog issue(s)"
 _assert_contains "park note totals the work waiting outside the sprint" "$body" "**13**"
-_assert_contains "park note points at the docs for the manual-kick override" "$body" 'documented in `docs/sprint-autopilot.md`'
+# The owner override is the assignment lever (#3882), not a comment kick:
+# the note must name the action and still point at the doc explaining it.
+_assert_contains "park note names the manual-start override" "$body" "assigns the developer agent to an issue"
+_assert_contains "park note points at the docs for the manual-start override" "$body" 'docs/sprint-autopilot.md'
 
 # Test 8b (#3709): everything closed, but not everything accepted ->
 # "agentic work complete", explicitly NOT sprint completion (owner

@@ -457,10 +457,12 @@ comment on the release tracking issue.
 
 ## Verifying the kill switch
 
-With `SPRINT_AUTOPILOT` unset or `false`: `review_accept_and_merge.sh`
-never posts `READY_FOR_NEXT_ISSUE`, and `scrummaster_next_issue.sh` without
-`--sprint-scoped` behaves exactly as before -- the manual `READY_FOR_NEXT_ISSUE`
-comment path in `notify_scrum_ready.yml` is untouched.
+With `SPRINT_AUTOPILOT` unset or `false`: `sprint_autopilot_kick` (called by
+`review_accept_and_merge.sh` after every merge, escalation and anomaly) logs
+"Sprint autopilot disabled" and sends no `dispatch-next-issue` event, so
+nothing selects or starts the next issue on its own. Starting work by hand is
+unaffected: assign `myGPT-developer-agent` to the issue you want, which is the
+only lever either way (#3882).
 
 With `SPRINT_AUTOPILOT=true`: post `PAUSE_SPRINT` on the release tracking
 issue; the next merge posts a paused notice instead of a kick. Post

@@ -2233,12 +2233,16 @@ jobs:
                code/script/workflow-file change, not just an issue-state
                action:** determine whether the failing step can actually see
                that fix on its NEXT run, not just whether the fix is
-               correct. `issue_comment`-triggered runs of THIS workflow (the
-               retry path) always execute the workflow definition, and any
-               scripts it shells out to (e.g.
-               scripts/agents/developer_analyze_failure.sh), from the
-               repository's **default branch** -- never from whatever
-               feature/fix branch the commit landed on (see
+               correct. The caveat did not go away when #3882 retired the
+               `issue_comment` retry path -- it now applies to EVERY run of
+               THIS workflow, because the only trigger left is
+               `issues`(assigned) and GitHub runs issue-event workflows from
+               the workflow definition on the repository's **default
+               branch**. The scripts it shells out to (e.g.
+               scripts/agents/developer_analyze_failure.sh) come from this
+               job's checkout, which is `${{ vars.RELEASE_BRANCH }}`. Either
+               way the next run cannot see a commit that is still sitting on
+               a feature/fix branch (see
                agents/runbooks/developer-runbook.md §3c). Check:
                ```bash
                git fetch origin ${{ vars.RELEASE_BRANCH }} --quiet
@@ -2491,9 +2495,12 @@ jobs:
             # (an unindented body line starting with e.g. `**` or `-` reads
             # as new YAML, not scalar content) -- build the body with printf
             # instead, keeping every source line normally indented.
-            # Trailing marker (#3790): this comment names the retry token as
-            # guidance for the owner, so it must never be able to trigger a
-            # retry itself.
+            # Trailing marker (#3790): this comment used to name the retry
+            # token in its "what to do" list, and the trigger substring-
+            # matched it. The token is gone (#3882) and the instruction is
+            # now "assign the developer agent", which no comment can do --
+            # the marker stays as the standing convention for any agent
+            # comment that quotes control words back at the owner.
             BODY="$(printf '%s\n\n**Failed step:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n**Same signature as immediately preceding run:** %s\n**Analysis:** %s\n\n%s\n\n**What to do:**\n1. Review the [failed workflow logs](https://github.com/%s/actions/runs/%s)\n2. Fix the underlying problem manually\n3. Comment on this issue (as the repo owner) to reset the budget, then assign @%s to try again\n\n**Note:** Only a comment from the repo owner resets this budget -- relabeling the error or a bot comment does not (#3689).\n\n%s\n' \
               "❌ **Developer Agent**: Auto-retry stopped -- unforgeable budget exhausted or signature disproof triggered." \
               "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$REASON" "$REPO" "$RUN_ID" "$DEV_AGENT_LOGIN" "<!-- nyxgpt-token-mention -->")"

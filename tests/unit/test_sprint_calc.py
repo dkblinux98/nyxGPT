@@ -265,15 +265,20 @@ class TestSprintParkNote:
     def test_explains_how_work_resumes_and_the_owner_override(self):
         note = self._note()
         assert "SPRINT_TIMEZONE" in note
-        assert "documented in `docs/sprint-autopilot.md`" in note
+        # The owner override is the assignment lever (#3882), not a comment
+        # kick: the note must name the actual action and still point at the
+        # doc that explains it.
+        assert "assigns the developer agent to an issue" in note
+        assert "`docs/sprint-autopilot.md`" in note
         assert "#3706" in note
 
     def test_never_contains_the_dispatch_kick_token(self):
-        # notify_scrum_ready.yml dispatches on a bare substring test of the
-        # comment body, with the agent accounts on its actor allowlist. A
-        # park note that names the kick token anywhere -- prose included --
-        # therefore starts the next issue, so "park" became "kick" (#3706
-        # review). Cover every rendered variant.
+        # The kick token is deleted (#3882) and the kick is a
+        # repository_dispatch, so no comment can start work. This assertion
+        # stays as the regression pin for #3706, where the park note named
+        # the then-live token and a bare substring test in the dispatch
+        # trigger turned every "park" into a kick. Cover every rendered
+        # variant.
         variants = [
             self._note(),
             self._note(sprint_title=""),
@@ -282,8 +287,9 @@ class TestSprintParkNote:
         ]
         for note in variants:
             assert "READY_FOR_NEXT_ISSUE" not in note
-            # Structural backstop: the marker notify_scrum_ready.yml negates,
-            # so the note stays undispatchable even if the prose drifts.
+            # Structural backstop: the marker the shared comment-token gate
+            # treats as disqualifying, so the note stays inert for the
+            # tokens that ARE still live even if the prose drifts.
             assert sprint_calc.AUTOPILOT_INFO_MARKER in note
 
     def test_note_without_a_park_state_claims_no_completion(self):
