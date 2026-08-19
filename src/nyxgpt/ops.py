@@ -11,6 +11,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 from __future__ import annotations
 
 import base64
+import configparser
 import contextlib
 import getpass
 import hashlib
@@ -55,6 +56,7 @@ from nyxgpt import metrics as prom_metrics
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
+    describe_config_parse_error,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_enabled,
@@ -11041,9 +11043,22 @@ def doctor(_args) -> int:
             parsed = ConfigParser()
             parsed.read(cfg)
             cfg_parser = parsed
+        except configparser.Error as e:
+            # A doctor that only logs "Failed to parse <path>" and moves on is
+            # not actionable: this is the single fault that takes the whole API
+            # down (every request loads config.ini), and the user needs the
+            # line to fix it (#3944). Report it as an issue, with the line.
+            #
+            # This is the one caller that opts into quoting the file's own text
+            # (`include_line_text`), and it is the reason the default is off:
+            # doctor is a local command, run by the owner of the file, printing
+            # to their terminal. The API's rendering of the same fault is
+            # redacted because it is reachable pre-auth, and it points here.
+            issues.append(describe_config_parse_error(cfg, e, include_line_text=True))
+            cfg_parser = None
         except Exception as e:
             logger.warning(
-                "Failed to parse %s, skipping config-dependent doctor checks: %s",
+                "Failed to read %s, skipping config-dependent doctor checks: %s",
                 cfg,
                 e,
                 extra={"component": "ops"},

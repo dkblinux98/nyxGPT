@@ -616,3 +616,160 @@ def test_apply_updates_never_deletes_anything():
 
     sig = inspect.signature(config_wizard.apply_updates)
     assert "remove" not in sig.parameters
+
+
+# --- case-insensitive key matching, and the write guard behind it (#3944) ---
+#
+# `ConfigParser` lowercases option names on read (`optionxform = str.lower`),
+# so `SLACK_BOT_TOKEN` and `slack_bot_token` are one option as far as every
+# reader in the app is concerned -- and uppercase is the owner's deliberate
+# convention for keys that mirror GitHub secret names. `_find_key_line`
+# compared raw file text case-*sensitively*, so an uppercase key was invisible
+# to it, a save inserted a *second* line for the same option, and the next
+# read of config.ini was a `DuplicateOptionError`. That error escaped
+# `load_config` unguarded, which meant every API request 500'd and a restarted
+# API could not boot at all. A UI click bricked the product.
+
+#: Non-secret wizard fields the wizard echoes to the form and posts back on
+#: *every* save -- so every one of them duplicated if spelled non-lowercase on
+#: disk. Not Slack-specific: parametrised so the whole class stays covered.
+_NON_SECRET_MONITORING_FIELDS = [
+    ("slack_bot_token", "xoxb-edited"),
+    ("grafana_ui_url", "http://localhost:4001"),
+    ("prometheus_ui_url", "http://localhost:9091"),
+]
+
+
+@pytest.mark.parametrize(("key", "new_value"), _NON_SECRET_MONITORING_FIELDS)
+def test_apply_updates_rewrites_an_uppercase_key_in_place(tmp_path, key, new_value):
+    """A save against an uppercase-spelled key updates it -- it does not duplicate it."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        f"[monitoring]\n{key.upper()} = original-value\nenabled = true\n", encoding="utf-8"
+    )
+
+    config_wizard.apply_updates(cfg_path, {"monitoring": {key: new_value}})
+
+    text = cfg_path.read_text(encoding="utf-8")
+    # (a) the file still parses -- the brick itself
+    parser = ConfigParser()
+    parser.read(cfg_path, encoding="utf-8")
+    assert parser.get("monitoring", key) == new_value
+    # ... and there is exactly one line for the option, not two
+    assert sum(1 for line in text.splitlines() if line.lower().startswith(key)) == 1
+    # (b) the file's own casing survives -- config.ini is the single source of
+    # truth (#3194) and the save is byte-preserving outside the value (#3388)
+    assert f"{key.upper()} = {new_value}" in text
+    assert f"\n{key} = " not in text
+    # untouched neighbours stay untouched
+    assert parser.get("monitoring", "enabled") == "true"
+
+
+def test_apply_updates_uppercase_key_is_not_duplicated_across_repeated_saves(tmp_path):
+    """The trap re-arms on every save until the matcher is fixed -- prove it does not."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[monitoring]\nSLACK_BOT_TOKEN = v0\n", encoding="utf-8")
+
+    for i in range(3):
+        config_wizard.apply_updates(cfg_path, {"monitoring": {"slack_bot_token": f"v{i + 1}"}})
+
+    text = cfg_path.read_text(encoding="utf-8")
+    assert text.lower().count("slack_bot_token") == 1
+    assert "SLACK_BOT_TOKEN = v3" in text
+
+
+def test_apply_updates_matches_a_colon_delimited_key(tmp_path):
+    """`ConfigParser` accepts `key: value` too, so the matcher must -- same duplicate risk."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[monitoring]\nGrafana_UI_URL: http://old:3001\n", encoding="utf-8")
+
+    config_wizard.apply_updates(cfg_path, {"monitoring": {"grafana_ui_url": "http://new:3001"}})
+
+    text = cfg_path.read_text(encoding="utf-8")
+    assert text.lower().count("grafana_ui_url") == 1
+    assert "Grafana_UI_URL: http://new:3001" in text
+
+
+@pytest.mark.parametrize(("key", "_new_value"), _NON_SECRET_MONITORING_FIELDS)
+def test_remove_keys_deletes_an_uppercase_spelled_key(tmp_path, key, _new_value):
+    """Clicking Remove on an uppercase key removed nothing and reported success (#3944)."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(f"[monitoring]\n{key.upper()} = x\nenabled = true\n", encoding="utf-8")
+
+    removed = config_wizard.remove_keys(cfg_path, {"monitoring": [key]})
+
+    assert removed == {"monitoring": [key]}
+    text = cfg_path.read_text(encoding="utf-8")
+    assert key.lower() not in text.lower()
+    assert "enabled = true" in text
+
+
+def test_apply_updates_leaves_the_file_untouched_when_the_merge_would_not_parse(
+    tmp_path, monkeypatch
+):
+    """Defence in depth: a *future* merge bug must not be able to brick the API.
+
+    The matcher fix removes the known way to get here; this asserts the
+    property the fix is not allowed to depend on -- an unparseable merge
+    result never reaches disk, and config.ini stays byte-identical.
+    """
+    cfg_path = tmp_path / "config.ini"
+    original = "[monitoring]\nslack_bot_token = keep-me\n"
+    cfg_path.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(
+        config_wizard,
+        "_merge_ini_text",
+        lambda *_a, **_k: ("[monitoring]\nslack_bot_token = a\nslack_bot_token = b\n", {}),
+    )
+
+    with pytest.raises(config_wizard.ConfigWriteError) as excinfo:
+        config_wizard.apply_updates(cfg_path, {"monitoring": {"slack_bot_token": "b"}})
+
+    assert cfg_path.read_text(encoding="utf-8") == original
+    assert "config.ini is unchanged" in str(excinfo.value)
+    assert "line 3" in str(excinfo.value)
+    # No temp file left behind next to the real one.
+    assert [p.name for p in tmp_path.iterdir()] == ["config.ini"]
+
+
+def test_remove_keys_is_guarded_by_the_same_write_check(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    original = "[monitoring]\nretired = x\n"
+    cfg_path.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(
+        config_wizard,
+        "_merge_ini_text",
+        lambda *_a, **_k: ("retired = x\n", {"monitoring": ["retired"]}),
+    )
+
+    with pytest.raises(config_wizard.ConfigWriteError):
+        config_wizard.remove_keys(cfg_path, {"monitoring": ["retired"]})
+
+    assert cfg_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_updates_refuses_and_says_so_when_the_file_was_already_broken(tmp_path):
+    """A hand-damaged config.ini is reported as pre-existing, not blamed on this save."""
+    cfg_path = tmp_path / "config.ini"
+    original = "[monitoring]\nSLACK_BOT_TOKEN = a\nslack_bot_token = b\n"
+    cfg_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(config_wizard.ConfigWriteError) as excinfo:
+        config_wizard.apply_updates(cfg_path, {"monitoring": {"enabled": True}})
+
+    message = str(excinfo.value)
+    assert "already in this state before this save" in message
+    assert "line 3" in message
+    assert cfg_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_updates_write_lands_0600_through_the_atomic_replace(tmp_path):
+    """`os.replace` must not carry the temp file's default permissions onto config.ini."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[auth]\nenabled = false\n", encoding="utf-8")
+
+    config_wizard.apply_updates(cfg_path, {"auth": {"api_key": "supersecret"}})
+
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"

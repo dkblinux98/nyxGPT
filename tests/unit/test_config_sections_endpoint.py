@@ -444,3 +444,155 @@ def test_stale_keys_remove_rejects_non_object_payload(_isolated_config):
     client = TestClient(app)
     resp = client.post("/api/v1/config/sections/stale-keys/remove", json={"remove": "nope"})
     assert resp.status_code == 400
+
+
+# --- the #3944 brick, driven end-to-end through the real endpoint ---
+#
+# The owner clicked Remove on stale keys, then Save. The save returned
+# "Internal server error" and every panel of the dashboard went 500/502 --
+# because `apply_updates` had already written a config.ini with a duplicate
+# option, and the endpoint's *next* statement, `load_config`, could not read
+# it back. These tests drive the same two clicks against a config.ini seeded
+# with the uppercase spelling the owner's file uses, and assert that the API
+# keeps answering afterwards.
+
+
+def _uppercase_monitoring_config(cfg_path, key="SLACK_BOT_TOKEN", value="xoxb-original"):
+    cfg_path.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n\n"
+        f"[monitoring]\nenabled = true\n{key} = {value}\nretired_option = stale\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("SLACK_BOT_TOKEN", "xoxb-original"),
+        ("GRAFANA_UI_URL", "http://localhost:3001"),
+        ("PROMETHEUS_UI_URL", "http://localhost:9090"),
+    ],
+)
+def test_post_sections_survives_an_uppercase_key_on_disk(_isolated_config, key, value):
+    _uppercase_monitoring_config(_isolated_config, key, value)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/v1/config/sections",
+        json={"monitoring": {key.lower(): value}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    text = _isolated_config.read_text(encoding="utf-8")
+    assert text.lower().count(key.lower()) == 1
+    assert f"{key} = " in text
+    # The API still answers -- the actual regression. Before the fix this
+    # (and every other endpoint) returned 500 from the same parse error.
+    assert client.get("/api/v1/config/sections").status_code == 200
+
+
+def test_remove_then_save_is_the_sequence_that_bricked_the_api(_isolated_config):
+    """The owner's exact two clicks: Remove the stale keys, then Save."""
+    _uppercase_monitoring_config(_isolated_config)
+    client = TestClient(app)
+
+    removed = client.post(
+        "/api/v1/config/sections/stale-keys/remove",
+        json={"remove": {"monitoring": ["retired_option"]}},
+    )
+    assert removed.status_code == 200, removed.text
+
+    saved = client.post(
+        "/api/v1/config/sections",
+        json={"monitoring": {"slack_bot_token": "xoxb-edited"}},
+    )
+    assert saved.status_code == 200, saved.text
+
+    text = _isolated_config.read_text(encoding="utf-8")
+    assert "retired_option" not in text
+    assert text.count("SLACK_BOT_TOKEN = xoxb-edited") == 1
+    assert "\nslack_bot_token = " not in text
+    assert client.get("/api/v1/config/sections").status_code == 200
+
+
+def test_every_endpoint_reports_a_damaged_config_as_itself_not_internal_error(
+    _isolated_config,
+):
+    """A config.ini damaged by other means (hand-edit) must still name its cause.
+
+    `load_cfg_and_refresh_logging` runs before every handler, so this is what
+    the *whole* API returns while config.ini is unreadable. "Internal server
+    error" -- the pre-#3944 answer -- told the owner nothing.
+    """
+    _isolated_config.write_text(
+        "[monitoring]\nSLACK_BOT_TOKEN = a\nslack_bot_token = b\n", encoding="utf-8"
+    )
+    config_module._CACHED_CFG = None
+    config_module._CACHED_PATH = None
+    config_module._CACHED_MTIME_NS = None
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/config/sections")
+
+    assert resp.status_code == 500
+    error = resp.json()["error"]
+    assert error["code"] == "config_unreadable"
+    assert "DuplicateOptionError" in error["message"]
+    assert "line 3" in error["message"]
+
+
+def test_config_unreadable_never_returns_the_raw_offending_line(_isolated_config):
+    """The stated cause must not carry the file's own bytes to an anonymous caller.
+
+    `config_unreadable_guard` is the outermost middleware and has to be:
+    `api_key_auth` calls `load_config` itself, before it can read
+    `[auth] enabled` or compare a key, so while config.ini is malformed there
+    is no request on which auth is enforceable. This response therefore goes
+    to anyone who can reach the port -- and for the `MissingSectionHeader`
+    shape (a hand-edit that drops a `[section]` line, the exact repair the
+    recovery docs walk a user through) the offending line is the *next* one,
+    which here is a live credential. Naming the class and the line is the
+    diagnosis; quoting the line is a disclosure.
+    """
+    _isolated_config.write_text(
+        "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n", encoding="utf-8"
+    )
+    config_module._CACHED_CFG = None
+    config_module._CACHED_PATH = None
+    config_module._CACHED_MTIME_NS = None
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/config/sections")
+
+    assert resp.status_code == 500
+    error = resp.json()["error"]
+    assert error["code"] == "config_unreadable"
+    # Still a stated cause, not "Internal server error".
+    assert "MissingSectionHeaderError" in error["message"]
+    assert "line 1" in error["message"]
+    # ...but nothing from the file itself.
+    assert "sk-live-VERYSECRETVALUE" not in resp.text
+    assert "api_key = " not in resp.text
+    # And it says where the full line *can* be seen, locally.
+    assert "nyxgpt ops doctor" in error["message"]
+
+
+def test_config_write_refused_never_returns_the_raw_offending_line(_isolated_config):
+    """Same redaction on the wizard's own refusal path (`config_write_refused`).
+
+    The refused text is the merge of the file and the payload just posted, so
+    the line it names can be a credential from either.
+    """
+    _isolated_config.write_text(
+        "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n", encoding="utf-8"
+    )
+    client = TestClient(app)
+
+    resp = client.post("/api/v1/config/sections", json={"nyxgpt": {"default_model": "a"}})
+
+    assert resp.status_code == 500
+    error = resp.json()["error"]
+    assert error["code"] in {"config_write_refused", "config_unreadable"}
+    assert "sk-live-VERYSECRETVALUE" not in resp.text
+    # The file was already broken, so nothing may have been written to it.
+    assert _isolated_config.read_text(encoding="utf-8").startswith("api_key = sk-live")

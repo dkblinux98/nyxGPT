@@ -20,14 +20,18 @@ silently -- `apply_updates` itself never deletes anything.
 
 from __future__ import annotations
 
+import configparser
 import importlib.resources
 import os
 import re
+import tempfile
 from collections.abc import Callable
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from nyxgpt.config import describe_config_parse_error
 
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -888,17 +892,67 @@ def _section_line_ranges(lines: list[str]) -> dict[str, tuple[int, int]]:
     return ranges
 
 
+#: The delimiters `ConfigParser` accepts between an option and its value, in
+#: the order it looks for them: whichever appears *first* on the line wins
+#: (its `OPTCRE` matches the option name non-greedily).
+_DELIMITERS = ("=", ":")
+
+
+def _split_option_line(line: str) -> tuple[str, str, str] | None:
+    """Split an INI line into `(name, delimiter, raw_prefix)`, or None if it has neither.
+
+    Matches `ConfigParser`'s own reading: the first `=` or `:` on the line
+    ends the option name. `name` is stripped for comparison; `raw_prefix` is
+    the untouched text before the delimiter (indentation, spelling, spacing),
+    so a caller can rewrite the value and leave the rest of the line exactly
+    as the user wrote it.
+    """
+    positions = [line.find(d) for d in _DELIMITERS]
+    found = [p for p in positions if p != -1]
+    if not found:
+        return None
+    pos = min(found)
+    return line[:pos].strip(), line[pos], line[:pos]
+
+
+def _option_name(name: str) -> str:
+    """Normalise an option name the way `ConfigParser.optionxform` does.
+
+    `nyxgpt.config.load_config` builds a plain `ConfigParser()`, whose default
+    `optionxform` is `str.lower` -- so config.ini option names are
+    **case-insensitive**, and `SLACK_BOT_TOKEN` is a valid spelling of the
+    option the whole application reads as `slack_bot_token`. This matcher
+    compared raw file text case-*sensitively*, so an uppercase key on disk
+    was invisible to it: a save fell through to its insert branch and wrote a
+    *second* line for the same option, which is a hard `DuplicateOptionError`
+    on the next read -- the API-bricking defect in #3944. `remove_keys`
+    shared the matcher and therefore silently removed nothing.
+
+    Section names are deliberately *not* normalised here: `ConfigParser`
+    treats those case-sensitively, so `[Monitoring]` and `[monitoring]` really
+    are two different sections and `_section_line_ranges` matching them
+    exactly is correct.
+    """
+    return name.lower()
+
+
 def _find_key_line(lines: list[str], start: int, end: int, key: str) -> int | None:
-    """Return the index of the last active `key = ...` line in `lines[start:end]`."""
+    """Return the index of the last active `key = ...` line in `lines[start:end]`.
+
+    Comparison is case-insensitive (`_option_name`) so the line is found
+    whatever its spelling on disk; the caller rewrites it *in place*, keeping
+    that spelling (#3944).
+    """
     found = None
+    wanted = _option_name(key)
     for i in range(start, end):
         stripped = lines[i].strip()
         if not stripped or stripped.startswith(("#", ";", "[")):
             continue
-        if "=" not in lines[i]:
+        parsed = _split_option_line(lines[i])
+        if parsed is None:
             continue
-        existing_key = lines[i].split("=", 1)[0].strip()
-        if existing_key == key:
+        if _option_name(parsed[0]) == wanted:
             found = i
     return found
 
@@ -925,6 +979,13 @@ def _merge_ini_text(
     to guarantee (#3388). Limitation: relies on one `key = value` per line
     (no multi-line continuation values), which matches every active key in
     `example.config.ini` today.
+
+    Key matching is case-insensitive and accepts either `=` or `:`, i.e. the
+    same way `ConfigParser` reads the file. Any narrower match makes an
+    existing option invisible to the update branch, which then *inserts* a
+    duplicate -- an unparseable file, and (before `_write_ini_checked`) a
+    bricked API (#3944). Callers do not, and must not, need to know how the
+    user spelled the key.
     """
     lines = text.splitlines()
     remove = remove or {}
@@ -959,8 +1020,16 @@ def _merge_ini_text(
         for key, value in fields.items():
             idx = _find_key_line(lines, start, end, key)
             if idx is not None:
-                prefix = lines[idx].split("=", 1)[0]
-                lines[idx] = f"{prefix}= {_ini_value_str(value)}"
+                # Rewrite in place, keeping the line's own spelling and
+                # delimiter. Normalising `SLACK_BOT_TOKEN` down to
+                # `slack_bot_token` here would be a second, quieter defect:
+                # config.ini is the single source of truth (#3194) and the
+                # save is contractually byte-preserving outside the value
+                # being changed (#3388, #3944).
+                # The `or` fallback is unreachable -- `_find_key_line` only
+                # ever matches lines `_split_option_line` could split.
+                _name, delimiter, raw_prefix = _split_option_line(lines[idx]) or (key, "=", key)
+                lines[idx] = f"{raw_prefix}{delimiter} {_ini_value_str(value)}"
             else:
                 insert_at = _last_nonblank(lines, start, end)
                 lines.insert(insert_at, f"{key} = {_ini_value_str(value)}")
@@ -971,6 +1040,82 @@ def _merge_ini_text(
     if lines:
         text_out += "\n"
     return text_out, removed
+
+
+class ConfigWriteError(RuntimeError):
+    """A wizard write was refused because the merged text would not parse (#3944).
+
+    Carries a `describe_config_parse_error` diagnosis. Raised *before* the
+    real config.ini is touched, so the file on disk is unchanged when a
+    caller sees this.
+
+    The diagnosis is taken in its redacted form (the default -- see
+    `describe_config_parse_error`): this message is rendered into an HTTP
+    body as `config_write_refused`, and the offending line can be a
+    credential either from the file or from the payload just posted. The
+    line number and the option/section names are enough to act on, and
+    `nyxgpt ops doctor` shows the text locally.
+    """
+
+
+def _write_ini_checked(cfg_path: Path, new_text: str, original_text: str) -> None:
+    """Write `new_text` to `cfg_path` only if `ConfigParser` can read it back.
+
+    Defence in depth for the #3944 brick, and the reason it is defence rather
+    than the fix: `apply_updates` used to `write_text` the merged result with
+    nothing between the merge and the disk. When the merge produced a
+    duplicate option, the unparseable file landed, the endpoint's *next*
+    statement (`load_config`) raised, and the owner was left with an API that
+    could not serve a request or boot -- from a successful-looking UI click,
+    with no backup to fall back to.
+
+    The write is staged into a temp file in the same directory, parsed there,
+    and only then `os.replace`d over the target. `os.replace` is atomic
+    within a filesystem, so config.ini is never observed half-written either
+    -- the API reads it on every request and a torn read is the same brick by
+    another route. On a parse failure nothing is replaced and the original
+    bytes stand untouched.
+
+    A file that was *already* unparseable before this save is reported as
+    such: the user needs to know the wizard did not cause it, and that no
+    save can succeed until they repair the line.
+    """
+    if original_text.strip():
+        try:
+            ConfigParser().read_string(original_text, source=str(cfg_path))
+        except configparser.Error as e:
+            raise ConfigWriteError(
+                "Refusing to save: "
+                + describe_config_parse_error(cfg_path, e)
+                + " The file was already in this state before this save; "
+                "nothing has been written."
+            ) from e
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(cfg_path.parent), prefix=f".{cfg_path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            ConfigParser().read(tmp_path, encoding="utf-8")
+        except configparser.Error as e:
+            raise ConfigWriteError(
+                "Refusing to save: the updated configuration would not be readable. "
+                + describe_config_parse_error(cfg_path, e)
+                + " config.ini is unchanged."
+            ) from e
+        # 0600 before the swap, not after: the general wizard-save endpoint
+        # can carry `[auth] api_key`, and a window where the real path is
+        # world-readable is a window an attacker can use.
+        tmp_path.chmod(0o600)
+        os.replace(tmp_path, cfg_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def apply_updates(
@@ -985,16 +1130,18 @@ def apply_updates(
     deletes a key -- that's `remove_keys`'s job, only invoked once a user
     confirms a key `find_stale_keys` reported. Returns the values written.
 
-    Chmods to 0600 after every write (not just on creation): this is the
+    Chmods to 0600 on every write (not just on creation): this is the
     general wizard-save endpoint (`POST /config/sections`) and `validated`
     can include `[auth] api_key`, so a config.ini created here must never be
-    left at the default umask (typically world-readable).
+    left at the default umask (typically world-readable). The write itself
+    goes through `_write_ini_checked`, which refuses to replace config.ini
+    with text `ConfigParser` cannot read back (#3944), raising
+    `ConfigWriteError` and leaving the original file untouched.
     """
     cfg_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     original_text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
     new_text, _removed = _merge_ini_text(original_text, validated, None)
-    cfg_path.write_text(new_text, encoding="utf-8")
-    cfg_path.chmod(0o600)
+    _write_ini_checked(cfg_path, new_text, original_text)
 
     return {section: dict(fields) for section, fields in validated.items()}
 
@@ -1012,7 +1159,9 @@ def remove_keys(cfg_path: Path, keys_by_section: dict[str, list[str]]) -> dict[s
     original_text = cfg_path.read_text(encoding="utf-8")
     new_text, removed = _merge_ini_text(original_text, {}, keys_by_section)
     if removed:
-        cfg_path.write_text(new_text, encoding="utf-8")
+        # Same guard as `apply_updates`: this is the same `_merge_ini_text`
+        # over the same file, so it has the same power to brick the API (#3944).
+        _write_ini_checked(cfg_path, new_text, original_text)
     return removed
 
 

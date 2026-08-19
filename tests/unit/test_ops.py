@@ -793,6 +793,69 @@ def test_ops_doctor_fail_when_missing_config(monkeypatch, capsys, tmp_path):
 
 
 @pytest.mark.unit
+def test_ops_doctor_names_the_line_of_an_unparseable_config(monkeypatch, capsys, tmp_path):
+    """A user whose config.ini is damaged needs the line, not "Failed to parse" (#3944).
+
+    This is the recovery path: config.ini being unreadable takes the whole
+    API down, so `nyxgpt ops doctor` is the only surface left that can say
+    what is wrong with it. Reporting it as a warning in a log the user never
+    sees -- which is what it did -- is not a recovery path.
+    """
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "[monitoring]\nSLACK_BOT_TOKEN = a\nslack_bot_token = b\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "doctor: FAIL" in out
+    assert "Cannot parse" in out
+    assert "DuplicateOptionError" in out
+    assert "line 3" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_shows_the_offending_line_text(monkeypatch, capsys, tmp_path):
+    """Doctor is the one caller that opts into quoting the file (#3944 review).
+
+    The API's rendering of the same fault is redacted, because
+    `config_unreadable_guard` answers before auth can be enforced and the
+    offending line can be a credential. Doctor has neither problem: it is a
+    local command run by the owner of the file, and it is where the recovery
+    documentation sends a user whose API is down. If this ever redacts too,
+    the recovery path loses the only thing that makes it actionable.
+    """
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "MissingSectionHeaderError" in out
+    assert "line 1" in out
+    assert "sk-live-VERYSECRETVALUE" in out
+
+
+@pytest.mark.unit
 def test_ops_doctor_warns_when_cassandra_container_missing(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)

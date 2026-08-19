@@ -1023,6 +1023,15 @@ Checks include:
   reported as exactly that, rather than as a clean bill of health. Fix:
   `nyxgpt up` (add `--dev` from a checkout), which reconciles them.
 - Required files under `~/.nyxGPT/`
+- **Whether `config.ini` parses at all**, and if not, *why* — the error class
+  and the line number, e.g. `DuplicateOptionError at line 134: option
+  'slack_bot_token' in section 'monitoring' is defined more than once`. This
+  is the one fault that takes the whole API down (every request loads
+  `config.ini`, so a malformed line means `500` everywhere and a restarted
+  API that cannot boot), which makes `doctor` the only surface left that can
+  say what is wrong. Reported as a FAIL, not a log line (#3944). Fix the
+  named line and the API recovers on its next request. See
+  [configuration.md](configuration.md#when-configini-will-not-parse)
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services
 - Docker daemon availability
