@@ -1,0 +1,677 @@
+name: Review Huddle - Session
+
+# One run, one huddle (#3911).
+#
+# The #3687 protocol was three comment-triggered workflows in a chain: the
+# review agent posted HUDDLE_TRIGGERED, which woke a developer-position run,
+# which posted HUDDLE_MEDIATION_REQUESTED, which woke a mediation run. Each
+# leg's *essay* was also its trigger, so three long structured comments landed
+# on every huddled PR, and the chain needed race guards added after the fact
+# when a duplicated trigger produced two positions and two mediations (#3728,
+# #3733, guarded in #3736).
+#
+# This is that chain as a single job. The races are structurally impossible
+# now -- one concurrency group per PR, and no leg can be started twice because
+# no leg is started by a comment. What replaces the comment bus is a Slack
+# thread (#3910): the conversation happens there under each agent's own
+# identity, and the PR keeps only the short decision summary plus the full
+# transcript in a collapsed block.
+#
+# What is deliberately preserved:
+#
+#   * **Memorylessness.** Every turn is its own `claude-code-action`
+#     invocation. #3687 relies on each agent reasoning from what is written
+#     down rather than from a conversation it remembers, and one long-lived
+#     context would quietly remove that. One job is not one session.
+#   * **`huddle_decision_dispatch.yml` is untouched.** It keys on the
+#     `HUDDLE_DECISION:` line in a scrummaster comment, and this workflow
+#     still posts exactly that.
+#   * **`escalate` still escalates**, through the same helpers.
+#
+# Crash safety: HUDDLE_SESSION_STARTED (carrying the thread id) is posted
+# before round 1 and HUDDLE_FAILED on failure, so a session that dies
+# mid-round leaves a recoverable record instead of a half-written Slack thread
+# nothing on the PR refers to.
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  # The #3736 guards existed because two triggers could each start a leg.
+  # A single non-cancelling group per PR makes that impossible rather than
+  # detectable: a second trigger queues and finds the huddle already recorded.
+  group: huddle-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  huddle:
+    if: >-
+      vars.AGENTS_ENABLED == 'true' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'HUDDLE_TRIGGERED') &&
+      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
+      github.event.comment.user.login == vars.REVIEW_AGENT
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    env:
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+      SLACK_HUDDLE_CHANNEL: ${{ vars.SLACK_HUDDLE_CHANNEL }}
+      SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+      SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+      SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+      HUDDLE_DIR: ${{ github.workspace }}/.huddle
+      PR_NUMBER: ${{ github.event.issue.number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Auth gh
+        run: gh auth status
+
+      - name: Validate required secrets
+        env:
+          # #3837: read secrets as data, never as shell source.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          REVIEW_AGENT_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          DEVELOPER_AGENT_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          SCRUMMASTER_AGENT_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          for name in CLAUDE_CODE_OAUTH_TOKEN REVIEW_AGENT_TOKEN \
+                      DEVELOPER_AGENT_TOKEN SCRUMMASTER_AGENT_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::$name secret is not configured"
+              exit 1
+            fi
+          done
+          # Slack is NOT validated here on purpose: an unconfigured channel
+          # degrades to a transcript-only huddle (#3910), and refusing to
+          # huddle because a chat integration is missing would be a worse
+          # failure than the one it reports.
+
+      - name: Resolve the PR, its issue, and why the huddle fired
+        id: context
+        run: |
+          set -euo pipefail
+          mkdir -p "$HUDDLE_DIR"
+          ISSUE=$(gh pr view "$PR_NUMBER" --json body \
+            --jq '.body // ""' | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          if [[ -z "$ISSUE" ]]; then
+            echo "::error::PR #$PR_NUMBER links no issue (no 'Closes #N') -- a huddle needs the acceptance criteria"
+            exit 1
+          fi
+          echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Huddle on PR #$PR_NUMBER (issue #$ISSUE)"
+
+      - name: Open the huddle thread
+        id: thread
+        env:
+          REASON: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          # First line of the trigger comment, trimmed: enough for a thread
+          # head, and it keeps an arbitrarily long comment body out of argv.
+          SUMMARY=$(printf '%s' "$REASON" | tr '\n' ' ' | cut -c1-280)
+          TS=$(python3 scripts/agents/lib/huddle_channel.py open \
+                 "$PR_NUMBER" "${{ steps.context.outputs.issue_number }}" "$SUMMARY")
+          echo "ts=$TS" >> "$GITHUB_OUTPUT"
+          if [[ -n "$TS" ]]; then
+            echo "::notice::Huddle thread $TS opened"
+          else
+            echo "::warning::No huddle thread (Slack unconfigured or unreachable) -- the transcript still lands on the PR"
+          fi
+
+      # Crash safety: the marker goes up BEFORE round 1, carrying the thread
+      # id, so a session that dies mid-round leaves something that names where
+      # the conversation went.
+      - name: Record that the session started
+        env:
+          TS: ${{ steps.thread.outputs.ts }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \
+            ':speech_balloon: **Review huddle**: session started; the conversation is running now.' \
+            "<!-- HUDDLE_SESSION_STARTED thread=${TS:-none} run=${GITHUB_RUN_ID} -->" \
+            '<!-- nyxgpt-token-mention -->')"
+
+      - name: "Round 1 - dev turn"
+        id: dev1
+        if: >-
+          !cancelled()
+          && steps.thread.outcome == 'success'
+          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 1
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are the developer agent in a review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}), round 1 of at most
+            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+
+            This invocation is memoryless on purpose (#3687): reason from what is
+            written down, not from anything you believe about earlier rounds.
+
+            1. Read the PR thread and diff:
+               `gh pr view ${{ env.PR_NUMBER }} --comments` and
+               `gh pr diff ${{ env.PR_NUMBER }}`.
+            2. Read issue #${{ steps.context.outputs.issue_number }} for the acceptance
+               criteria the work is actually judged against.
+            3. Read every earlier turn of THIS huddle: the files already in
+               `${{ env.HUDDLE_DIR }}/` (empty on round 1, turn by turn after that).
+            4. Write your turn -- and nothing else -- to
+               `${{ env.HUDDLE_DIR }}/01-dev.md`:
+
+               ## Developer Position (round 1)
+
+               ### What I believe the problem is
+               [your diagnosis]
+
+               ### What was tried
+               [prior attempts and why they did not land]
+
+               ### What I propose
+               [proceed as-is / a specific different approach / a specific descope /
+               escalate -- be concrete; a fresh reviewer reads this next]
+
+            Do NOT write, edit or commit any project code. Do NOT post comments, change
+            issue status, or change assignments. Writing that one file is the whole task;
+            the workflow posts it to the huddle thread for you.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: "Round 1 - post the dev turn"
+        if: >-
+          !cancelled() && steps.dev1.outcome == 'success'
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/01-dev.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::warning::round 1 dev turn wrote no file -- nothing to post"
+            exit 0
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" dev < "$FILE"
+
+      - name: "Round 1 - review turn"
+        id: rev1
+        if: >-
+          !cancelled()
+          && steps.thread.outcome == 'success'
+          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 1
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are the review agent in a review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}), round 1 of at most
+            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+
+            This invocation is memoryless on purpose (#3687): reason from what is
+            written down, not from anything you believe about earlier rounds.
+
+            1. Read the PR thread and diff:
+               `gh pr view ${{ env.PR_NUMBER }} --comments` and
+               `gh pr diff ${{ env.PR_NUMBER }}`.
+            2. Read issue #${{ steps.context.outputs.issue_number }} for the acceptance
+               criteria the work is actually judged against.
+            3. Read every earlier turn of THIS huddle: the files already in
+               `${{ env.HUDDLE_DIR }}/` (empty on round 1, turn by turn after that).
+            4. Write your turn -- and nothing else -- to
+               `${{ env.HUDDLE_DIR }}/02-review.md`:
+
+               ## Review Position (round 1)
+
+               ### Where I still disagree
+               [the specific finding, or "nothing -- settled" if the developer's
+               round has answered it]
+
+               ### What would satisfy me
+               [concretely: the change, the test, or the evidence you need]
+
+               If the developer's position has resolved your finding, end the file
+               with the single line `HUDDLE_SETTLED` -- that closes the huddle early
+               instead of spending the remaining rounds.
+
+            Do NOT write, edit or commit any project code. Do NOT post comments, change
+            issue status, or change assignments. Writing that one file is the whole task;
+            the workflow posts it to the huddle thread for you.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: "Round 1 - post the review turn"
+        if: >-
+          !cancelled() && steps.rev1.outcome == 'success'
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/02-review.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::warning::round 1 review turn wrote no file -- nothing to post"
+            exit 0
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" review < "$FILE"
+
+      - name: "Round 1 - has it settled?"
+        id: settle1
+        if: "!cancelled()"
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/02-review.md"
+          if [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Huddle settled in round 1"
+          else
+            echo "settled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Round 2 - dev turn"
+        id: dev2
+        if: >-
+          !cancelled()
+          && steps.thread.outcome == 'success'
+          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 2
+          && steps.settle1.outputs.settled != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are the developer agent in a review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}), round 2 of at most
+            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+
+            This invocation is memoryless on purpose (#3687): reason from what is
+            written down, not from anything you believe about earlier rounds.
+
+            1. Read the PR thread and diff:
+               `gh pr view ${{ env.PR_NUMBER }} --comments` and
+               `gh pr diff ${{ env.PR_NUMBER }}`.
+            2. Read issue #${{ steps.context.outputs.issue_number }} for the acceptance
+               criteria the work is actually judged against.
+            3. Read every earlier turn of THIS huddle: the files already in
+               `${{ env.HUDDLE_DIR }}/` (empty on round 1, turn by turn after that).
+            4. Write your turn -- and nothing else -- to
+               `${{ env.HUDDLE_DIR }}/03-dev.md`:
+
+               ## Developer Position (round 2)
+
+               ### What I believe the problem is
+               [your diagnosis]
+
+               ### What was tried
+               [prior attempts and why they did not land]
+
+               ### What I propose
+               [proceed as-is / a specific different approach / a specific descope /
+               escalate -- be concrete; a fresh reviewer reads this next]
+
+            Do NOT write, edit or commit any project code. Do NOT post comments, change
+            issue status, or change assignments. Writing that one file is the whole task;
+            the workflow posts it to the huddle thread for you.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: "Round 2 - post the dev turn"
+        if: >-
+          !cancelled() && steps.dev2.outcome == 'success'
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/03-dev.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::warning::round 2 dev turn wrote no file -- nothing to post"
+            exit 0
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" dev < "$FILE"
+
+      - name: "Round 2 - review turn"
+        id: rev2
+        if: >-
+          !cancelled()
+          && steps.thread.outcome == 'success'
+          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 2
+          && steps.settle1.outputs.settled != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are the review agent in a review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}), round 2 of at most
+            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+
+            This invocation is memoryless on purpose (#3687): reason from what is
+            written down, not from anything you believe about earlier rounds.
+
+            1. Read the PR thread and diff:
+               `gh pr view ${{ env.PR_NUMBER }} --comments` and
+               `gh pr diff ${{ env.PR_NUMBER }}`.
+            2. Read issue #${{ steps.context.outputs.issue_number }} for the acceptance
+               criteria the work is actually judged against.
+            3. Read every earlier turn of THIS huddle: the files already in
+               `${{ env.HUDDLE_DIR }}/` (empty on round 1, turn by turn after that).
+            4. Write your turn -- and nothing else -- to
+               `${{ env.HUDDLE_DIR }}/04-review.md`:
+
+               ## Review Position (round 2)
+
+               ### Where I still disagree
+               [the specific finding, or "nothing -- settled" if the developer's
+               round has answered it]
+
+               ### What would satisfy me
+               [concretely: the change, the test, or the evidence you need]
+
+               If the developer's position has resolved your finding, end the file
+               with the single line `HUDDLE_SETTLED` -- that closes the huddle early
+               instead of spending the remaining rounds.
+
+            Do NOT write, edit or commit any project code. Do NOT post comments, change
+            issue status, or change assignments. Writing that one file is the whole task;
+            the workflow posts it to the huddle thread for you.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: "Round 2 - post the review turn"
+        if: >-
+          !cancelled() && steps.rev2.outcome == 'success'
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/04-review.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::warning::round 2 review turn wrote no file -- nothing to post"
+            exit 0
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" review < "$FILE"
+
+      - name: "Round 2 - has it settled?"
+        id: settle2
+        if: "!cancelled()"
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/04-review.md"
+          if [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Huddle settled in round 2"
+          else
+            echo "settled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Round 3 - dev turn"
+        id: dev3
+        if: >-
+          !cancelled()
+          && steps.thread.outcome == 'success'
+          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 3
+          && steps.settle2.outputs.settled != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are the developer agent in a review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}), round 3 of at most
+            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+
+            This invocation is memoryless on purpose (#3687): reason from what is
+            written down, not from anything you believe about earlier rounds.
+
+            1. Read the PR thread and diff:
+               `gh pr view ${{ env.PR_NUMBER }} --comments` and
+               `gh pr diff ${{ env.PR_NUMBER }}`.
+            2. Read issue #${{ steps.context.outputs.issue_number }} for the acceptance
+               criteria the work is actually judged against.
+            3. Read every earlier turn of THIS huddle: the files already in
+               `${{ env.HUDDLE_DIR }}/` (empty on round 1, turn by turn after that).
+            4. Write your turn -- and nothing else -- to
+               `${{ env.HUDDLE_DIR }}/05-dev.md`:
+
+               ## Developer Position (round 3)
+
+               ### What I believe the problem is
+               [your diagnosis]
+
+               ### What was tried
+               [prior attempts and why they did not land]
+
+               ### What I propose
+               [proceed as-is / a specific different approach / a specific descope /
+               escalate -- be concrete; a fresh reviewer reads this next]
+
+            Do NOT write, edit or commit any project code. Do NOT post comments, change
+            issue status, or change assignments. Writing that one file is the whole task;
+            the workflow posts it to the huddle thread for you.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: "Round 3 - post the dev turn"
+        if: >-
+          !cancelled() && steps.dev3.outcome == 'success'
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/05-dev.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::warning::round 3 dev turn wrote no file -- nothing to post"
+            exit 0
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" dev < "$FILE"
+
+      - name: "Round 3 - review turn"
+        id: rev3
+        if: >-
+          !cancelled()
+          && steps.thread.outcome == 'success'
+          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 3
+          && steps.settle2.outputs.settled != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are the review agent in a review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}), round 3 of at most
+            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+
+            This invocation is memoryless on purpose (#3687): reason from what is
+            written down, not from anything you believe about earlier rounds.
+
+            1. Read the PR thread and diff:
+               `gh pr view ${{ env.PR_NUMBER }} --comments` and
+               `gh pr diff ${{ env.PR_NUMBER }}`.
+            2. Read issue #${{ steps.context.outputs.issue_number }} for the acceptance
+               criteria the work is actually judged against.
+            3. Read every earlier turn of THIS huddle: the files already in
+               `${{ env.HUDDLE_DIR }}/` (empty on round 1, turn by turn after that).
+            4. Write your turn -- and nothing else -- to
+               `${{ env.HUDDLE_DIR }}/06-review.md`:
+
+               ## Review Position (round 3)
+
+               ### Where I still disagree
+               [the specific finding, or "nothing -- settled" if the developer's
+               round has answered it]
+
+               ### What would satisfy me
+               [concretely: the change, the test, or the evidence you need]
+
+               If the developer's position has resolved your finding, end the file
+               with the single line `HUDDLE_SETTLED` -- that closes the huddle early
+               instead of spending the remaining rounds.
+
+            Do NOT write, edit or commit any project code. Do NOT post comments, change
+            issue status, or change assignments. Writing that one file is the whole task;
+            the workflow posts it to the huddle thread for you.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: "Round 3 - post the review turn"
+        if: >-
+          !cancelled() && steps.rev3.outcome == 'success'
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/06-review.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::warning::round 3 review turn wrote no file -- nothing to post"
+            exit 0
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" review < "$FILE"
+
+      - name: "Round 3 - has it settled?"
+        id: settle3
+        if: "!cancelled()"
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/06-review.md"
+          if [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Huddle settled in round 3"
+          else
+            echo "settled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+
+      - name: The scrummaster's decision
+        id: decision
+        if: "!cancelled() && steps.thread.outcome == 'success'"
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          allowed_bots: "claude"
+          track_progress: false
+          prompt: |
+            You are mediating the review huddle on PR #${{ env.PR_NUMBER }}
+            (issue #${{ steps.context.outputs.issue_number }}). Fresh and memoryless on
+            purpose: decide from what is written down.
+
+            1. Read every turn of this huddle: the files in `${{ env.HUDDLE_DIR }}/`,
+               in name order. They are the developer's and reviewer's positions.
+            2. Read `gh pr view ${{ env.PR_NUMBER }} --comments`, `gh pr diff
+               ${{ env.PR_NUMBER }}`, and issue #${{ steps.context.outputs.issue_number }}
+               for the acceptance criteria.
+            3. Decide exactly one of:
+               - **proceed** -- the developer's approach is right; continue as-is.
+               - **change-approach** -- state the specific different approach.
+               - **descope** -- state the specific descope (a named test dropped, a
+                 follow-up split off) that resolves the disagreement.
+               - **escalate** -- only the owner can resolve this (spec ambiguity or a
+                 real deadlock). If and ONLY if you choose escalate, also run:
+                 `bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && assign_issue_verified '${{ steps.context.outputs.issue_number }}' \"\$HUMAN_OWNER\" && gh pr edit ${{ env.PR_NUMBER }} --add-assignee \"\$HUMAN_OWNER\" && sprint_autopilot_kick '${{ steps.context.outputs.issue_number }}' escalated"`
+            4. Write the decision to `${{ env.HUDDLE_DIR }}/90-decision.md`, structured as:
+
+               ## Huddle Decision
+
+               **Decision:** [proceed|change-approach|descope|escalate]
+
+               ### Rationale
+               [why, referencing the positions above]
+
+               ### What happens next
+               [for proceed/change-approach/descope: what the developer does in the
+               next fix cycle; for escalate: note that the owner has been assigned]
+
+               HUDDLE_DECISION: [proceed|change-approach|descope|escalate]
+
+            The `HUDDLE_DECISION:` line must be exactly one of those four words --
+            huddle_decision_dispatch.yml keys on it and starts the next fix cycle.
+            Do not post the comment yourself; the workflow posts it, so it carries the
+            thread link.
+          claude_args: >-
+            --model ${{ vars.AGENT_MODEL_HUDDLE || 'claude-fable-5' }}
+            --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(bash -lc*),Read,Grep,Write"
+          show_full_output: true
+
+      - name: Post the decision to the thread and the PR
+        if: "!cancelled() && steps.decision.outcome == 'success'"
+        run: |
+          set -euo pipefail
+          FILE="$HUDDLE_DIR/90-decision.md"
+          if [[ ! -s "$FILE" ]]; then
+            echo "::error::the mediation turn wrote no decision -- nothing to dispatch"
+            exit 1
+          fi
+          python3 scripts/agents/lib/huddle_channel.py post \
+            "${{ steps.thread.outputs.ts }}" scrum < "$FILE"
+
+          PERMALINK=$(python3 scripts/agents/lib/huddle_channel.py permalink \
+            "${{ steps.thread.outputs.ts }}")
+          {
+            cat "$FILE"
+            printf '\n\n'
+            if [[ -n "$PERMALINK" ]]; then
+              printf '[Huddle thread](%s)\n' "$PERMALINK"
+            fi
+          } > "$HUDDLE_DIR/decision-comment.md"
+          gh pr comment "$PR_NUMBER" --body-file "$HUDDLE_DIR/decision-comment.md"
+
+      # The record has to survive Slack: retention is somebody else's setting,
+      # and a decision whose reasoning is unreachable to a future session is
+      # exactly what agents/LEDGER.md exists to prevent. Assembled from the
+      # turn files, not read back from Slack, so it is complete even when the
+      # channel was unavailable for the whole huddle.
+      - name: Append the transcript to the PR
+        if: "!cancelled()"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          TURNS=("$HUDDLE_DIR"/[0-9][0-9]-*.md)
+          if [[ ${#TURNS[@]} -eq 0 ]]; then
+            echo "::notice::no huddle turns were written -- nothing to transcribe"
+            exit 0
+          fi
+          {
+            printf '<details>\n<summary>Huddle transcript (%d turns)</summary>\n\n' "${#TURNS[@]}"
+            for turn in "${TURNS[@]}"; do
+              printf '### %s\n\n' "$(basename "$turn" .md)"
+              cat "$turn"
+              printf '\n\n'
+            done
+            printf '</details>\n\n<!-- nyxgpt-token-mention -->\n'
+          } > "$HUDDLE_DIR/transcript.md"
+          gh pr comment "$PR_NUMBER" --body-file "$HUDDLE_DIR/transcript.md"
+
+      - name: Record a failed session
+        if: failure()
+        run: |
+          gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \
+            ':warning: **Review huddle**: the session failed part-way through. The transcript above (if any) is what was written before it stopped.' \
+            "<!-- HUDDLE_FAILED thread=${{ steps.thread.outputs.ts }} run=${GITHUB_RUN_ID} -->" \
+            '<!-- nyxgpt-token-mention -->')" || true

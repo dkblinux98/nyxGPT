@@ -115,15 +115,16 @@ issue. While that record is open:
 
 ## Review huddle mediation (owner-ratified 2026-08-09, #3687)
 
-When `developer_huddle_position.yml` posts `HUDDLE_MEDIATION_REQUESTED` on
-a PR (see `agents/runbooks/review-runbook.md` §6b for the full taxonomy and
-huddle trigger conditions), `scrummaster_huddle_mediation.yml` runs a
-**fresh** scrummaster invocation -- fresh context is structural, every
-invocation starts memoryless, so the decision is based only on what's
-actually in the PR thread, never an assumption carried from a prior
-session. It reads the developer's `## Developer Position` comment and the
-review agent's code review comment (the review's position), then posts
-exactly one `## Huddle Decision` comment choosing:
+The huddle is one workflow run (`huddle_session.yml`, #3911): bounded rounds
+of a developer turn and a review turn in a Slack thread, then your decision.
+See `agents/runbooks/review-runbook.md` §6b for the trigger conditions.
+
+Your turn is the last step of that run, and it is still a **fresh,
+memoryless invocation** -- that is structural and deliberate, so the decision
+rests only on what is written down, never on an assumption carried from a
+prior session. You read every turn file of the huddle plus the PR thread, the
+diff and the linked issue, and write exactly one `## Huddle Decision`
+choosing:
 
 - **proceed** -- the existing approach is right, continue as-is.
 - **change-approach** -- a specific different approach, stated concretely.

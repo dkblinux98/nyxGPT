@@ -604,17 +604,20 @@ over-escalating.
 huddle" step posts the `HUDDLE_TRIGGERED` marker):
 1. The review agent's position is the code review comment already posted —
    nothing further to do here.
-2. `developer_huddle_position.yml` runs the developer agent to post a
-   written position (what it believes the problem is, what was tried, what
-   it proposes) instead of attempting another fix, then posts
-   `HUDDLE_MEDIATION_REQUESTED`.
-3. `scrummaster_huddle_mediation.yml` runs a **fresh** scrummaster
-   invocation — fresh context is structural, every invocation starts
-   memoryless — that reads only the PR thread and posts a
-   `## Huddle Decision` comment choosing one of: **proceed** / **change
+2. `huddle_session.yml` runs the whole conversation in **one job** (#3911):
+   bounded rounds (`vars.HUDDLE_MAX_ROUNDS`, default 3) of a developer turn
+   and a review turn, then the scrummaster's decision. The conversation
+   happens in a Slack thread under each agent's own identity (#3910); the PR
+   gets the decision comment and the full transcript in a collapsed block.
+   Each turn is still its **own** invocation — one job is not one session,
+   and the memorylessness #3687 relies on is preserved deliberately. A
+   review turn may end `HUDDLE_SETTLED` to close the huddle early.
+3. The scrummaster's decision chooses one of: **proceed** / **change
    approach** (stated) / **descope** (e.g. drop a named test, split the
    issue) / **escalate to owner** (runs the same `assign_issue_verified` +
-   `sprint_autopilot_kick` escalation primitives §6 uses).
+   `sprint_autopilot_kick` escalation primitives §6 uses), and lands on the
+   PR carrying its rationale, a thread permalink, and the `HUDDLE_DECISION:`
+   line.
 4. `huddle_decision_dispatch.yml` executes the decision's "what happens
    next": **proceed** / **change-approach** / **descope** put the issue back
    to **In Progress** and hand it to the developer agent
@@ -640,11 +643,14 @@ dispatch-mode backstop so the two can never disagree):
   verdict twice (the `pull_request_review` event and the structured-comment
   fallback), and on PR #3728 both posted a trigger: two developer-position
   runs, two mediations, the second diagnosing the duplication itself. The
-  fallback's footprint check now includes `HUDDLE_TRIGGERED`, the trigger
-  step re-reads the state immediately before posting, and — the guard that
-  holds even if one still lands — `developer_huddle_position.yml` and
-  `scrummaster_huddle_mediation.yml` act only for the round's *first* marker
-  comment.
+  fallback's footprint check now includes `HUDDLE_TRIGGERED`, and the trigger
+  step re-reads the state immediately before posting. Since #3911 the
+  downstream half of that race is gone rather than guarded: the position and
+  mediation legs are steps of one job, so a second trigger cannot start a
+  second position — it queues on the huddle's concurrency group and finds the
+  huddle already recorded. The marker dedupe survives only where a race
+  still exists: `huddle_decision_dispatch.yml`, since a decision comment can
+  be re-posted.
 - **A decision re-arms the cycle counter.** proceed / change-approach /
   descope mean the disagreement was resolved, so only REQUEST_CHANGES
   reviews submitted *after* the decision count toward §6's 3-cycle breaker

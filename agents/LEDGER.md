@@ -585,6 +585,34 @@ rather than mechanism, and nothing can enforce them.
   an earlier collision here. IDs are never reused.)
   Source: #3824.
 
+- **D-025** · 2026-08-19 · developer session (#3911) — **The review huddle is one
+  workflow run, and its venue is a Slack thread, not the PR thread.** The #3687
+  protocol chained three comment-triggered workflows, so each leg's essay *was*
+  its trigger: three long structured comments on every huddled PR, and two races
+  that had to be guarded after the fact when a duplicated trigger produced two
+  positions and two mediations (#3728/#3733, guarded in #3736). `huddle_session.yml`
+  runs the whole huddle in one job — bounded rounds (`vars.HUDDLE_MAX_ROUNDS`,
+  default 3) of a developer turn and a review turn, then the scrummaster's
+  decision — with the conversation in a Slack thread under each agent's own
+  identity (#3910) and only the decision plus a collapsed transcript on the PR.
+
+  **Why the #3736 guards were removed, so a future session does not restore them
+  on sight:** they detected a race that no longer exists. The position and
+  mediation legs are steps of one job now, and one non-cancelling concurrency
+  group per PR means a second trigger queues and finds the huddle already
+  recorded — structurally impossible rather than caught. What survives is
+  `is_primary_marker_comment`, still called by `huddle_decision_dispatch.yml`
+  for a race that did **not** go away: a decision comment can be re-posted by a
+  human, and only the round's first may start a fix cycle.
+
+  Preserved deliberately: each turn is its own `claude-code-action` invocation
+  (one job is not one session — #3687's memorylessness is the reason a fresh
+  agent re-reads the thread instead of trusting what it remembers);
+  `huddle_decision_dispatch.yml` is untouched and still keys on
+  `HUDDLE_DECISION:`; `escalate` runs the same escalation primitives. The
+  transcript is assembled from the turn files rather than read back from Slack,
+  so the record survives both an outage and Slack's retention setting.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

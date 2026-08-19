@@ -39,7 +39,6 @@ fails if it drifts. Do not hand-edit.
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
 | `developer_auto_implement.yml` | issues, issue_comment | Developer Agent Auto-Implement |
-| `developer_huddle_position.yml` | issue_comment | Developer Agent - Huddle Position |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
 | `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
@@ -48,6 +47,7 @@ fails if it drifts. Do not hand-edit.
 | `handle_acceptance_failure.yml` | issue_comment | Handle Acceptance Failure |
 | `handle_improvement.yml` | issue_comment | Handle Improvement |
 | `huddle_decision_dispatch.yml` | issue_comment | Huddle Decision Dispatch |
+| `huddle_session.yml` | issue_comment | Review Huddle - Session |
 | `issue-relationships-smoke.yml` | push, pull_request, workflow_dispatch | Issue Relationships Smoke |
 | `k8s-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Artifact Smoke |
 | `k8s-capacity-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Capacity Smoke |
@@ -78,7 +78,6 @@ fails if it drifts. Do not hand-edit.
 | `retro_spend_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Spend Telemetry |
 | `review_agent_auto_review.yml` | issue_comment, pull_request_review | Review Agent Execute Decision |
 | `scrummaster_groom_sprint.yml` | workflow_dispatch | Scrummaster Agent - Groom the Sprint |
-| `scrummaster_huddle_mediation.yml` | issue_comment | Scrummaster Agent - Huddle Mediation |
 | `scrummaster_sprint_reorg_apply.yml` | issue_comment | Scrummaster Agent - Apply Sprint Reorg |
 | `scrummaster_sprint_report.yml` | schedule, workflow_dispatch | Scrummaster Agent - Sprint Report |
 | `security-scan.yml` | pull_request, push | Security Scan |
