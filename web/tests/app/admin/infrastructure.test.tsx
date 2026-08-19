@@ -989,7 +989,7 @@ describe('InfrastructurePage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/No observability workloads in the/)).toBeInTheDocument();
     expect(
-      screen.getByText('nyxgpt ops observability --kubernetes --local')
+      screen.getByText('nyxgpt ops observability --kubernetes')
     ).toBeInTheDocument();
     expect(
       screen.queryByText('nyxgpt ops port-forward --target observability')
@@ -1023,7 +1023,7 @@ describe('InfrastructurePage', () => {
     expect(within(block).getByText(/No node had enough unreserved memory or CPU/)).toBeInTheDocument();
     // Reporting only, and the cure is a `nyxgpt` command -- never raw kubectl.
     expect(
-      within(block).getByText('nyxgpt ops install --kubernetes --local')
+      within(block).getByText('nyxgpt ops install --kubernetes')
     ).toBeInTheDocument();
     expect(within(block).queryByText(/kubectl/)).not.toBeInTheDocument();
   });
@@ -1310,6 +1310,57 @@ describe('InfrastructurePage', () => {
       ).toBeInTheDocument();
     });
     expect(screen.getByText(/nyxgpt cloud ops session-backend/)).toBeInTheDocument();
+  });
+
+  it('names which target OS provisioned the instance, and separates "not recorded" from "linux" (#3867)', async () => {
+    // The two target OSes do not leave an instance in the same shape: an EC2
+    // Mac runs the Homebrew formulas under launchd with no observability
+    // stack and no self-heal watchdog, and nothing else on this page
+    // distinguishes them. Three distinct claims, and the third is the one
+    // that is easy to get wrong -- a deploy record written before `--os`
+    // existed says *nothing* about the target OS, which is not the same as
+    // saying it was Linux.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () => HttpResponse.json({ ...deployed, os_family: 'macos' }))
+    );
+    const first = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/macOS \(EC2 Mac\) — remote Homebrew tap \+ brew services/)
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/no self-heal watchdog/)).toBeInTheDocument();
+    first.unmount();
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () => HttpResponse.json({ ...deployed, os_family: 'linux' }))
+    );
+    const second = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Linux — published PyPI release \+ systemd --user/)
+      ).toBeInTheDocument();
+    });
+    second.unmount();
+
+    // No key at all: the page says so rather than defaulting to Linux.
+    server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(deployed)));
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag/)
+      ).toBeInTheDocument();
+    });
   });
 
   it('reads "not provisioned" only when this machine has Terraform state that records no instance', async () => {
@@ -1713,7 +1764,7 @@ describe('InfrastructurePage', () => {
                   name: 'glitchtip',
                   state: 'failed',
                   summary: 'absent',
-                  details: 'Re-run `nyxgpt ops observability --kubernetes --local`.',
+                  details: 'Re-run `nyxgpt ops observability --kubernetes`.',
                 },
               ],
             },

@@ -6,8 +6,13 @@
 # flow docs/homebrew.md documents for local macOS installs
 # (`brew tap`/`brew tap-trust`/`brew install nyxgpt-api nyxgpt-web`/
 # `brew services start`).
-# Run via EC2 Mac's `ec2-macos-init` first-boot user-data support (AWS's own
-# agent for Mac instances -- there is no cloud-init on macOS).
+# Two ways in, and it must run as root either way:
+#   * `nyxgpt cloud deploy --os macos --host <mac>` pipes it over SSH and
+#     elevates with `sudo -n` in ec2-macos-init's place (#3867). This is the
+#     wrapped, user-facing path -- nothing is ever pasted anywhere.
+#   * EC2 Mac's `ec2-macos-init` first-boot user-data support (AWS's own
+#     agent for Mac instances -- there is no cloud-init on macOS), for an
+#     instance launched by something other than nyxGPT.
 #
 # Repo-less (CLAUDE.md, 2026-08-01): this script never runs `git clone` --
 # the remote Homebrew tap is the only source of the application, so it works
@@ -17,7 +22,9 @@
 # exist on a fresh instance -- the documented remote-tap flow below is the
 # one already proven repo-less (docs/homebrew.md#remote-tap).
 #
-# Rendered by `nyxgpt cloud user-data --os macos` (src/nyxgpt/cloud_provision.py).
+# Rendered by `nyxgpt cloud user-data --os macos` and by `nyxgpt cloud deploy
+# --os macos` (src/nyxgpt/cloud_provision.py's render_user_data, called by
+# cloud_deploy.render_provision_script -- one renderer, not two copies).
 # --version is accepted for interface parity with the Linux template's
 # --version flag and recorded in NYXGPT_VERSION below, but only for
 # reference: Homebrew formulas track the tap's current formula, not an
@@ -25,9 +32,11 @@
 # `dkblinux98/homebrew-nyxgpt` currently serves.
 #
 # Supported instance types and macOS versions: see docs/cloud.md's
-# target-OS support matrix (EC2 Mac requires a Dedicated Host, allocated for
+# target-OS support matrix. EC2 Mac requires a Dedicated Host, allocated for
 # a 24-hour minimum -- an AWS billing/allocation constraint, not a nyxGPT
-# one; provisioning the host itself is P6-8/P6-11 scope, not this script's).
+# one. nyxGPT deliberately does not allocate one: `nyxgpt cloud deploy --os
+# macos` refuses, naming the constraint, rather than spending that on a
+# resource the substrate could not then release (#3867).
 set -euxo pipefail
 
 # nyxgpt version requested at render time (informational only -- see above).

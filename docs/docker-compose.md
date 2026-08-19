@@ -203,7 +203,7 @@ for the torn-down services instead.
 > stack on one network, deriving the container config from your real
 > `~/.nyxGPT/config.ini`. There is no raw `docker compose up` full-stack path.
 > The Compose file here defines the observability profiles (which the terraform
-> `--local` install brings up) and is the source those container definitions are
+> install brings up) and is the source those container definitions are
 > built from; the raw-Compose notes below are for debugging individual services.
 
 ## Quickstart (observability profiles / individual-service debugging)
@@ -227,7 +227,7 @@ nyxgpt ops migrate-volumes
 
 After `env-sync` has generated `docker/config.docker.ini`, individual Compose
 services can be driven directly for debugging (e.g. `docker compose up -d
-grafana`). For the full stack, use the terraform `--local` install above.
+grafana`). For the full stack, use the terraform install above.
 
 First boot takes a few minutes: Cassandra needs time to become healthy, and
 the `ollama` service pulls the models before it reports healthy. It pulls both

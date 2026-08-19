@@ -199,8 +199,8 @@ had no way to tell that apart from a crash: a plain `ops down` stopped
 stopped — exactly what a crash looks like from the outside. The very next
 heal pass would see them unhealthy and restart them right back
 (`brew services restart`/`docker restart`), undoing the teardown; worse,
-the re-occupied ports then made a subsequent `nyxgpt ops install --terraform
---local` fail with a spurious port collision.
+the re-occupied ports then made a subsequent `nyxgpt ops install --terraform`
+fail with a spurious port collision.
 
 The fix is an **intentional-stop registry**, separate from the `enabled`
 flag, persisted in the same `~/.nyxGPT/self_heal_state.json`:

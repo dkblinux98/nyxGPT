@@ -504,9 +504,10 @@ rather than mechanism, and nothing can enforce them.
   Source: #3809; owner acceptance round 2026-08-16 (testing #3745).
 
 - **D-020** · 2026-08-18 · owner — **`claude[bot]` is an allowed author for
-  the sanctioned comment triggers** (`READY_FOR_NEXT_ISSUE` on
-  `notify_scrum_ready.yml`, `@review` on `claude-code-review.yml`, which also
-  passes `allowed_bots: "claude"` to the review action). Every GitHub write
+  the sanctioned comment triggers** (`@review` on `claude-code-review.yml`,
+  which also passes `allowed_bots: "claude"` to the review action).
+  **The `READY_FOR_NEXT_ISSUE`/`notify_scrum_ready.yml` half of this entry is
+  superseded — see S-006.** What remains true is the identity fact. Every GitHub write
   from a Claude remote session carries that App identity — the session proxy
   rewrites all credentials, so no PAT changes it (verified 2026-08-18: a
   PAT-signed reviewer request still produced a `claude[bot]`-actored run).
@@ -956,7 +957,18 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_install_identity.py`;
   `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
 
-- **D-033** · 2026-08-19 · owner (#3948) — **`--local` is the default locality
+- **D-033** · 2026-08-19 · developer-agent (#3867) — `nyxgpt cloud deploy --os
+  {auto,linux,macos}` is the single provisioning entry point for both target
+  OSes: it renders the target's bootstrap and delivers it to the instance over
+  the wrapped SSH path itself. `nyxgpt cloud user-data` stays as the renderer's
+  own command for the first-boot `user_data` case a deploy cannot serve and for
+  the CI jobs that execute a rendered bootstrap; it is no longer a user-facing
+  provisioning instruction, and there is one renderer behind both.
+  Source: #3867; `src/nyxgpt/cloud_deploy.py` (`resolve_os_family`,
+  `render_provision_script`, `provision_remote_command`); `docs/cloud.md`
+  §EC2 Mac targets; `.github/workflows/cloud-target-os-smoke.yml`.
+
+- **D-034** · 2026-08-19 · owner (#3948) — **`--local` is the default locality
   for `ops install --terraform/--kubernetes`, not a requirement**, and it stays
   accepted as an explicit no-op so existing scripts and docs keep working. It
   had been mandatory while also being the only legal value, which made the CLI
@@ -1000,6 +1012,27 @@ rather than mechanism, and nothing can enforce them.
   Revisit when: the intelligent watcher is in place and demonstrably fails to
   catch a spend runaway.
   Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
+
+- **P-003** · 2026-08-19 · developer-agent (#3867) — Allocating the EC2
+  Dedicated Host an EC2 Mac requires (an `aws_ec2_host` in
+  `terraform/aws/modules/compute`, mac AMI resolution, host/subnet AZ pinning)
+  is **deliberately not built**. `nyxgpt cloud deploy --os macos` provisions a
+  Mac the operator already has, named with `--host`, and refuses — before
+  applying anything — when there is none.
+  Reason: an allocated host bills a 24-hour minimum whether or not an instance
+  runs on it and cannot be released inside that window, so a `terraform destroy`
+  within the first day fails and leaves the operator paying for a resource this
+  configuration cannot tear down. No CI job can execute any of it (no macOS EC2
+  runner, no macOS in a container), so it would ship unverified and cost real
+  money per attempt to find out. #3867's acceptance criterion offers this
+  branch explicitly: "works end-to-end ... **or** fails fast with a wrapped,
+  documented story".
+  Revisit when: the owner wants nyxGPT to allocate billable Dedicated Hosts,
+  or AWS removes the 24-hour minimum. A wrapped `nyxgpt cloud host
+  allocate/release` (boto3, cost surfaced, explicit `--yes`) is the shape to
+  build then — not Terraform, whose destroy path is where the trap is.
+  Source: #3867; `cloud_deploy.MACOS_NO_TARGET_MESSAGE`; `docs/cloud.md`
+  §EC2 Mac targets.
 
 ## Open questions
 
@@ -1181,3 +1214,21 @@ them.
   prior release never uninstalled; `_remove_dev_launchagents` was never invoked
   on that machine at all, since `_reconcile_install_mode` gates on a mode
   change that never occurred. Replacement explanation is open — see **Q-004**.
+
+- **S-006** — ~~"The developer queue is kicked by posting
+  `READY_FOR_NEXT_ISSUE` as a comment on the release tracking issue."~~
+  Superseded 2026-08-19 by **D-028** (#3882/#3917): the token was **deleted,
+  not deprecated**. `developer_pull_next_issue.yml` subscribes to
+  `repository_dispatch: [dispatch-next-issue]` and to nothing else, so the
+  comment is inert — it posts, it reads like an action, and no run starts.
+  **The kick is `dispatch_next_issue` (`scripts/agents/lib/gh_project.sh`),
+  and the way to start work on a specific issue is to assign
+  `myGPT-developer-agent` to it** (claimable from `Backlog`, `In Review` or
+  `In Progress`; the held lanes stay held per **D-001**/**D-008**).
+
+  Listed because the belief outlived the mechanism by a day and cost a real
+  stall: on 2026-08-19 a shepherding session posted comment kicks across
+  several hours, reported them as dispatches, and none of them fired. A
+  session reading **D-020** alone would repeat it.
+  ID from `ledger_ids.py next S` (S-003 is taken: it was relocated to the
+  private annex, and IDs are never reused).

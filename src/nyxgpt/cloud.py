@@ -9,17 +9,18 @@ out of the instance (including SSH itself) until the rule is refreshed. This
 command talks only to the AWS EC2 API (never the instance), so it works even
 while fully locked out.
 
-AWS provisioning itself (`nyxgpt cloud deploy`/`destroy`, P6-11/#3513, and
-the AWS Terraform module, P6-8) is separate, not-yet-implemented scope. This
-module identifies the target security group via `--security-group-id`/
-`--region`, or by reading `CLOUD_STATE_FILE` -- the contract future
-`nyxgpt cloud deploy` work should write to (`{"security_group_id": ...,
-"region": ...}`) so `allow-ip` keeps working unmodified once that lands.
+AWS provisioning itself lives in sibling modules: the Terraform substrate in
+`nyxgpt.cloud_infra` (P6-8/#3509) and the one-command deploy in
+`nyxgpt.cloud_deploy` (P6-11/#3513). This module identifies the target
+security group via `--security-group-id`/`--region`, or by reading
+`CLOUD_STATE_FILE` -- the handoff `nyxgpt cloud infra apply` writes
+(`{"security_group_id": ..., "region": ...}`) -- so `allow-ip` needs no
+arguments after a deploy.
 
-`nyxgpt cloud user-data` (P6-12/#3511, `nyxgpt.cloud_provision`) is a
-separate module: it renders the EC2 user-data bootstrap script the
-not-yet-implemented deploy/Terraform work above will eventually embed as an
-instance's `user_data`.
+`nyxgpt cloud user-data` (P6-12/#3511, `nyxgpt.cloud_provision`) renders the
+per-target-OS bootstrap script. `nyxgpt cloud deploy --os` is what delivers
+it to an instance (#3867); the substrate still attaches no Terraform
+`user_data`.
 """
 
 from __future__ import annotations
@@ -37,8 +38,8 @@ from nyxgpt.optional_imports import try_import
 
 NYXGPT_HOME = Path.home() / ".nyxGPT"
 
-# Written by future `nyxgpt cloud deploy` work; read here as a fallback when
-# --security-group-id/--region aren't passed explicitly.
+# Written by `nyxgpt cloud infra apply` (and so by `nyxgpt cloud deploy`);
+# read here as a fallback when --security-group-id/--region aren't passed.
 CLOUD_STATE_FILE = NYXGPT_HOME / "cloud" / "state.json"
 
 # AWS's own plain-text IP echo service -- no third-party dependency, and a
