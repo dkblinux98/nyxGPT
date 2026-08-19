@@ -140,7 +140,7 @@ class TestTheErrorNoLongerDemandsTheSentence:
 
 
 class TestAnIssuelessPRCanStillBeMerged:
-    """"Bubble up" has to mean a human decides, not that the pipeline jams.
+    """ "Bubble up" has to mean a human decides, not that the pipeline jams.
 
     The first cut of this change kept the `exit 1` for a PR with no linked
     issue, in a step that runs ahead of EVERY verdict branch. That made an
@@ -161,9 +161,7 @@ class TestAnIssuelessPRCanStillBeMerged:
         # The old shape: an unconditional stop before any decision ran.
         # Comments are stripped -- this file explains the retired `exit 1`
         # in prose, and the prose is not the code.
-        code = "\n".join(
-            line for line in step.splitlines() if not line.strip().startswith("#")
-        )
+        code = "\n".join(line for line in step.splitlines() if not line.strip().startswith("#"))
         assert "exit 1" not in code
 
     def test_the_hand_back_decisions_are_gated_on_having_one(self):
@@ -196,7 +194,7 @@ class TestAnIssuelessPRCanStillBeMerged:
         # Only the PR number is required.
         assert 'if [[ -z "$PR" ]]; then usage >&2; exit 2; fi' in body
         assert 'if [[ -z "$PR" || -z "$ISSUE" ]]' not in body
-        assert 'HAS_ISSUE=0' in body
+        assert "HAS_ISSUE=0" in body
 
     def test_every_issue_side_step_in_the_merge_script_is_guarded(self):
         body = (SCRIPTS / "review_accept_and_merge.sh").read_text(encoding="utf-8")
