@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-18T10:18:33+00:00",
+ "generated_at": "2026-08-19T10:19:41+00:00",
  "issues": [
   {
    "n": 2587,
@@ -4830,17 +4830,6 @@
    "closed": "2026-08-11T04:39:29Z"
   },
   {
-   "n": 3634,
-   "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-   "created": "2026-08-05T03:02:46Z",
-   "state": "closed",
-   "closed": "2026-08-09T03:59:01Z"
-  },
-  {
    "n": 3633,
    "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
    "labels": [
@@ -4850,6 +4839,17 @@
    "created": "2026-08-05T03:02:46Z",
    "state": "closed",
    "closed": "2026-08-09T03:51:26Z"
+  },
+  {
+   "n": 3634,
+   "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-05T03:02:46Z",
+   "state": "closed",
+   "closed": "2026-08-09T03:59:01Z"
   },
   {
    "n": 3635,
@@ -5618,8 +5618,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T03:53:51Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T12:24:03Z"
   },
   {
    "n": 3807,
@@ -5640,8 +5640,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:10:16Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T10:46:54Z"
   },
   {
    "n": 3809,
@@ -5673,8 +5673,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T05:20:56Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T13:22:44Z"
   },
   {
    "n": 3813,
@@ -5684,8 +5684,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T05:27:50Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T12:32:43Z"
   },
   {
    "n": 3814,
@@ -5750,8 +5750,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:13:04Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T01:24:11Z"
   },
   {
    "n": 3825,
@@ -5772,8 +5772,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:58:49Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T14:11:12Z"
   },
   {
    "n": 3827,
@@ -5783,8 +5783,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:59:19Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T00:24:08Z"
   },
   {
    "n": 3828,
@@ -5794,8 +5794,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:59:49Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T15:49:30Z"
   },
   {
    "n": 3829,
@@ -5805,16 +5805,14 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:00:23Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T00:59:11Z"
   },
   {
    "n": 3830,
    "title": "bug: canary evaluate gates on the serving pod's metrics, not canary track",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "labels": [],
+   "milestone": "Phase X: Rejected",
    "created": "2026-08-17T05:01:00Z",
    "state": "closed",
    "closed": "2026-08-17T05:05:41Z"
@@ -5827,8 +5825,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:01:32Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T17:20:56Z"
   },
   {
    "n": 3832,
@@ -5838,8 +5836,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:02:05Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T21:42:01Z"
   },
   {
    "n": 3833,
@@ -5849,8 +5847,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:02:44Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T18:31:05Z"
   },
   {
    "n": 3834,
@@ -5860,8 +5858,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:03:14Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T19:50:09Z"
   },
   {
    "n": 3835,
@@ -5871,8 +5869,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:03:50Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T20:23:31Z"
   },
   {
    "n": 3836,
@@ -5893,8 +5891,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:31:07Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T05:10:30Z"
   },
   {
    "n": 3850,
@@ -5904,8 +5902,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:35:03Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T19:06:47Z"
   },
   {
    "n": 3851,
@@ -5915,8 +5913,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:35:28Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-18T16:34:44Z"
   },
   {
    "n": 3853,
@@ -5926,8 +5924,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:49:42Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T06:42:56Z"
   },
   {
    "n": 3854,
@@ -5937,8 +5935,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:52:02Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T05:52:46Z"
   },
   {
    "n": 3855,
@@ -5948,8 +5946,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:12:00Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T00:01:12Z"
   },
   {
    "n": 3856,
@@ -5968,8 +5966,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:23:13Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T03:15:30Z"
   },
   {
    "n": 3858,
@@ -5979,8 +5977,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:24:04Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T02:34:22Z"
   },
   {
    "n": 3859,
@@ -5990,8 +5988,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:35:04Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T05:21:24Z"
   },
   {
    "n": 3860,
@@ -6001,8 +5999,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:35:37Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T02:00:52Z"
   },
   {
    "n": 3861,
@@ -6012,30 +6010,30 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:39:42Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T09:08:30Z"
   },
   {
    "n": 3862,
    "title": "fix: work reaches the remote without a PR, so it is never reviewed, never merged and never cleaned up",
    "labels": [
-    "Acceptance Failure"
+    "Agent"
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:27:58Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T07:10:49Z"
   },
   {
    "n": 3863,
    "title": "fix: recover 438 lines of unlanded test coverage stranded on two abandoned branches",
    "labels": [
-    "Acceptance Failure"
+    "Agent"
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:28:32Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T02:37:12Z"
   },
   {
    "n": 3864,
@@ -6045,8 +6043,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:29:05Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T00:18:47Z"
   },
   {
    "n": 3865,
@@ -6056,8 +6054,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:30:07Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T04:54:34Z"
   },
   {
    "n": 3867,
@@ -6074,7 +6072,7 @@
    "n": 3868,
    "title": "bug: escalation pause backstop counts the release tracking issue, halting dispatch at 1 real escalation",
    "labels": [
-    "Acceptance Failure"
+    "Agent"
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T04:30:59Z",
@@ -6090,7 +6088,7 @@
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T05:36:12Z",
    "state": "closed",
-   "closed": "2026-08-18T05:43:44Z"
+   "closed": "2026-08-18T12:28:11Z"
   },
   {
    "n": 3871,
@@ -6100,6 +6098,180 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T05:48:32Z",
+   "state": "closed",
+   "closed": "2026-08-19T01:15:18Z"
+  },
+  {
+   "n": 3882,
+   "title": "feat: assignment is the workflow lever - native transitions replace comment tokens",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T11:38:30Z",
+   "state": "closed",
+   "closed": "2026-08-19T03:38:37Z"
+  },
+  {
+   "n": 3883,
+   "title": "feat: developers pull their next issue; the scrummaster stops pushing",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T11:44:22Z",
+   "state": "closed",
+   "closed": "2026-08-18T23:08:32Z"
+  },
+  {
+   "n": 3892,
+   "title": "perf: scope agent context loading - index replaces exhaustive bootstrap reads",
+   "labels": [
+    "Feature"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T15:51:52Z",
+   "state": "closed",
+   "closed": "2026-08-18T16:09:20Z"
+  },
+  {
+   "n": 3895,
+   "title": "perf: split the ledger into a hot ledger and an on-demand archive",
+   "labels": [],
+   "milestone": "Phase X: Rejected",
+   "created": "2026-08-18T15:52:53Z",
+   "state": "closed",
+   "closed": "2026-08-18T21:55:43Z"
+  },
+  {
+   "n": 3896,
+   "title": "perf: scope test runs to the change's blast radius (P-001, unparked)",
+   "labels": [
+    "Feature"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T15:52:54Z",
+   "state": "closed",
+   "closed": "2026-08-18T20:48:01Z"
+  },
+  {
+   "n": 3904,
+   "title": "fix: v3.0.0 unit gate red - duplicate ledger ID and rglob workspace scan block all reviews",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T17:26:28Z",
+   "state": "closed",
+   "closed": "2026-08-18T18:05:19Z"
+  },
+  {
+   "n": 3906,
+   "title": "fix: ledger entry IDs collide under parallel streams; closed-issue dispatch strands fixes",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T17:27:14Z",
+   "state": "closed",
+   "closed": "2026-08-18T22:34:03Z"
+  },
+  {
+   "n": 3908,
+   "title": "feat: scrummaster grooms the sprint - ordered scope, relationships, effort, expected files",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T17:55:19Z",
+   "state": "closed",
+   "closed": "2026-08-19T01:46:49Z"
+  },
+  {
+   "n": 3909,
+   "title": "fix: transient API overload (HTTP 529) escalates as FATAL; Phase 1 overrides its own Phase 3 diagnosis",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T18:11:29Z",
+   "state": "closed",
+   "closed": "2026-08-18T22:20:19Z"
+  },
+  {
+   "n": 3910,
+   "title": "feat: give the agents their Slack identities and a huddle channel",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T18:15:31Z",
+   "state": "open",
+   "closed": null
+  },
+  {
+   "n": 3911,
+   "title": "refactor: consolidate the review huddle into one session workflow",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-18T18:16:02Z",
+   "state": "closed",
+   "closed": "2026-08-19T03:59:22Z"
+  },
+  {
+   "n": 3940,
+   "title": "fix: clear the 114 eslint errors in web/ so the lint gate can block again",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-19T04:24:48Z",
+   "state": "closed",
+   "closed": "2026-08-19T05:22:54Z"
+  },
+  {
+   "n": 3944,
+   "title": "bug: wizard save writes an unparseable config.ini and bricks the API",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-19T05:32:52Z",
+   "state": "open",
+   "closed": null
+  },
+  {
+   "n": 3947,
+   "title": "bug: wizard returns the Slack bot token in cleartext -- secret=False on a secret",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-19T05:49:30Z",
+   "state": "open",
+   "closed": null
+  },
+  {
+   "n": 3948,
+   "title": "bug: ops -h misstates locality -- claims cloud is unimplemented, requires --local",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-19T06:09:46Z",
+   "state": "open",
+   "closed": null
+  },
+  {
+   "n": 3950,
+   "title": "bug: dev mode is local-only -- no way to deploy a working tree to cloud",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-19T07:07:45Z",
    "state": "open",
    "closed": null
   }
