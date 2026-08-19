@@ -68,9 +68,10 @@ SELECT_OPTIONS = {
     ],
     "Priority": ["P0 - Critical", "P1 - High", "P2 - Medium", "P3 - Low"],
     "Effort": ["XS", "S", "M", "L", "XL"],
-    # `Phase X` is the closure rule's target (#3871); the stub carries a
-    # couple of real phases alongside it so "the option is missing" can be
-    # tested by removing it, not by the field being absent entirely.
+    # Phase is one of the fields the closure rule CLEARS (#3871, owner rule
+    # 2026-08-19) -- the marker moved to the `Phase X: Rejected` milestone,
+    # so no Phase *option* is load-bearing any more. The options are here
+    # only so a closed issue has a Phase value to be stripped of.
     "Phase": ["Phase 6", "Phase 7", "Phase X"],
     "Module": [
         "web-ui",
@@ -216,14 +217,8 @@ def _maybe_race(state: dict) -> None:
 # GraphQL
 # --------------------------------------------------------------------------
 def _fields_payload() -> dict:
-    # GH_STUB_NO_PHASE_X models a board whose Phase field exists but has no
-    # `Phase X` option -- the case the closure rule must fail loudly on
-    # rather than create the option (#3871).
-
     nodes = []
     for name, options in SELECT_OPTIONS.items():
-        if name == "Phase" and os.environ.get("GH_STUB_NO_PHASE_X"):
-            options = [o for o in options if o != "Phase X"]
         nodes.append(
             {
                 "__typename": "ProjectV2SingleSelectField",
@@ -425,7 +420,12 @@ def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
         state["milestone"] = matches[0]["title"]
         _log("issue_edit.log", f"--milestone-number\t{wanted}")
         _save(state)
+        # Return rather than fall through to the generic issue-read branch
+        # below: that branch increments `issue_reads`, which the race
+        # injection counts against `after_issue_reads`, and a write must not
+        # look like a read to it.
         _emit(_issue_payload(state), jq_filter)
+        return
 
     if len(parts) == 5 and parts[3] == "issues" and method == "PATCH":
         replacement = [v for k, v in params.items() if k.startswith("assignees")]

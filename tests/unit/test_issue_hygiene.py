@@ -199,12 +199,21 @@ class TestWorkflowWiring:
 
 
 class TestClosureRule:
-    """The non-completed closure rule (#3871): Phase X, owner, Sprint cleared.
+    """The non-completed closure rule (#3871): the milestone is the marker.
+
+    An issue closed as anything but a completion ends up carrying the
+    `Phase X: Rejected` milestone, with the owner as its sole assignee and
+    EVERY project field cleared -- Status, Priority, Effort, Module, Phase,
+    Sprint. That is the whole purpose of Phase X (owner rule, 2026-08-19):
+    take dead issues out of the picture. A field left behind keeps them in
+    somebody's lane, sprint or statistic.
 
     Deliberately not fill-if-missing -- it overwrites, because a closure that
-    was not a completion is a decision the fields have to reflect. What it may
-    never do is touch Status (parked `Acceptance Failed` placements are owner
-    signal, D-001/D-008) or create the `Phase X` option.
+    was not a completion is a decision the board has to reflect. Status IS
+    written here, and only here: the D-001/D-008 rule that lane placement is
+    owner signal governs *live* work, and a rejected issue has no lane to be
+    signalled about. What it may never do is create the milestone if it is
+    absent -- agents do not create project metadata, so that fails loudly.
     """
 
     def test_the_closure_job_runs_the_script_in_closure_mode(self):

@@ -147,8 +147,10 @@ apply_closure_rule() {
       echo "::error::Failed listing milestones for issue #$ISSUE: $milestones_json"
       return 1
     fi
+    # `--paginate` emits one JSON array per page, so an aggregate like
+    # `first` would run per page. Slurp first (AGENTS.md's documented form).
     phase_milestone_number="$(printf '%s' "$milestones_json" \
-      | jq -r --arg t "$phase_milestone" '[.[] | select(.title == $t) | .number] | first // empty')"
+      | jq -rs --arg t "$phase_milestone" '[.[][] | select(.title == $t) | .number] | first // empty')"
     if [[ -z "$phase_milestone_number" ]]; then
       echo "::error::Milestone '${phase_milestone}' does not exist -- cannot apply the closure rule to #$ISSUE."
       echo "Create it by hand (agents never create milestones), then re-run."
