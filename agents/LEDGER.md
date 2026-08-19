@@ -769,7 +769,7 @@ rather than mechanism, and nothing can enforce them.
   Source: #3911; `.github/workflows/huddle_session.yml`;
   `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
 
-- **D-030** · 2026-08-19 · developer agent (#3862) — **A branch may be deleted
+- **D-031** · 2026-08-19 · developer agent (#3862) — **A branch may be deleted
   only when its content is provably on the target branch, and an issue may be
   closed as `completed` only on the same proof.** "Provably" means blob-level:
   an ancestor, or every path the branch touches already identical there (or a
@@ -798,9 +798,17 @@ rather than mechanism, and nothing can enforce them.
   passes verification. Without that loop the rescue would trade an orphan branch
   for a stranded draft PR, which is worse — an open PR shields its head branch
   from every cleanup there is.
-  (Filed as `D-030`, allocated by `python3 scripts/agents/lib/ledger_ids.py
-  next D --base origin/v3.0.0` — run, not eyeballed. If it collides at merge,
-  `review_accept_and_merge.sh` renumbers this entry rather than a human.)
+  (Filed as `D-030`, renumbered to `D-031` by `ledger_ids.py reallocate
+  --write --base origin/v3.0.0` when `v3.0.0` landed #3853's `D-030` first —
+  this entry's own machinery, run on the collision it was written for, and the
+  first time that renumber was not done by hand. It rewrites the ledger only:
+  the four cross-references this change had planted in
+  `agents/runbooks/review-runbook.md`, `scripts/branch-guard-smoke.sh`,
+  `scripts/closure-gate-smoke.sh` and
+  `.github/workflows/delete_branch_on_pr_close.yml` were carried by hand,
+  because a tree-wide rewrite cannot tell them from the base's *own*
+  `D-030` reference in `macos-brew-smoke.yml`, which must not move. IDs are
+  never reused.)
   Source: #3862; `scripts/agents/lib/branch_content.py`;
   `scripts/agents/developer_ensure_pr_exists.sh`.
 

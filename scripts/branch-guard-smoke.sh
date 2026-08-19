@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Executed evidence for #3862's branch-deletion guard (ledger D-006, D-030).
+# Executed evidence for #3862's branch-deletion guard (ledger D-006, D-031).
 #
 # The question this answers by RUNNING, not by reading: given three branches
 # that are indistinguishable from the outside -- same author, no PR, closed

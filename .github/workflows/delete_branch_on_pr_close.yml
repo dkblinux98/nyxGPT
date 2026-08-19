@@ -12,7 +12,7 @@ name: Delete Branch on PR Close Without Merge
 # branches for being 14 days old and would have destroyed 438 lines of test
 # coverage held nowhere else.
 #
-# A closed-without-merge PR is the one deletion D-030's content check does not
+# A closed-without-merge PR is the one deletion D-031's content check does not
 # gate, and deliberately: it is an explicit human decision to discard, and the
 # commits stay readable on the closed PR either way.
 #

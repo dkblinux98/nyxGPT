@@ -958,7 +958,7 @@ Branch deletion happens in `review_accept_and_merge.sh` via `--delete-branch`, n
 
 Everywhere else, a branch is deleted **only when its content is provably on
 the target branch** — an ancestor, or every path it touches already identical
-there (`scripts/agents/lib/branch_content.py`; ledger D-030). Commit ancestry,
+there (`scripts/agents/lib/branch_content.py`; ledger D-031). Commit ancestry,
 commit count, `git branch --merged`, mergeability, branch age, "no PR exists"
 and "its issue is closed" are all unusable as signals; each was disproven
 against a real branch set, where the branch whose every byte had landed looked

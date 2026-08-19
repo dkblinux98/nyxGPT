@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Executed evidence for #3862's closure gate (ledger D-006, D-030).
+# Executed evidence for #3862's closure gate (ledger D-006, D-031).
 #
 # #3789 and #3815 were both closed as `completed` while their fixes sat on
 # branches that never reached the release branch. Whatever closed them was
