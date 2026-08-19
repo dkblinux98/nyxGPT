@@ -1929,6 +1929,34 @@ _ESCALATION_PAUSE_MARKER="<!-- escalation-pause-backstop:3687 -->"
 # would permanently inflate the escalation count by one and drop the pause
 # gate's effective threshold from 2 to 1 (#3868) -- the same exemption the
 # drain gate applies (drain_gate_release's release_issue_exempt).
+# Lanes that legitimately hold owner-assigned work, and are therefore NOT
+# escalations. This is the distinction the first cut of this backstop
+# missed: it counted by *assignee* alone, and the pipeline itself assigns
+# the owner on every successful merge (`review_accept_and_merge.sh` ends
+# with Status -> Acceptance Testing, assignee -> HUMAN_OWNER). So the gate
+# tripped as a function of throughput -- two accepted-and-unclosed items,
+# a normal healthy state, were enough to stop all dispatch. Observed
+# 2026-08-19: the queue sat paused for ~10 hours on #3910 (owner'"'"'s own
+# scheduled work) and #3814 (sitting in For Release, i.e. done and awaiting
+# the release ceremony), while three claimable issues went unworked.
+#
+# The hard-coded RELEASE_ISSUE_NUMBER exemption below was the same
+# false-positive class, special-cased one instance at a time. This
+# generalises it: an escalation is owner-assigned work in a lane the
+# *agents* were driving, not work the pipeline handed the owner on purpose.
+_escalation_exempt_lane() {
+  local lane="$1"
+  [[ -n "$lane" ]] || return 1
+  case "$lane" in
+    "${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}") return 0 ;;
+    "${STATUS_FOR_RELEASE:-For Release}") return 0 ;;
+    # Open items here are held by the drain gate (#3730, D-001/D-008),
+    # waiting on the round to finish -- held is not escalated.
+    "${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}") return 0 ;;
+  esac
+  return 1
+}
+
 unresolved_escalation_issues() {
   local owner="${1:-${HUMAN_OWNER:-}}"
   require_cmd jq
@@ -1939,11 +1967,32 @@ unresolved_escalation_issues() {
   # Raw fetch and jq filtering are separate commands (rather than gh's
   # own --jq) so tests can stub the `gh` call with canned JSON and let the
   # real jq filter run -- same split as real_label_names above.
-  _open_issues_assigned_to "$owner" \
+  local candidates
+  candidates="$(_open_issues_assigned_to "$owner" \
     | jq -r --arg release "${RELEASE_ISSUE_NUMBER:-}" \
       '.[] | select(.pull_request == null)
            | select(($release == "") or ((.number | tostring) != $release))
-           | "#\(.number) \(.title)"'
+           | "#\(.number) \(.title)"')"
+  [[ -n "$candidates" ]] || return 0
+
+  local line num lane rc
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    num="${line#\#}"; num="${num%% *}"
+    rc=0
+    lane="$(issue_status "$num")" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      # Deliberately fail OPEN: an unreadable Status does not count as an
+      # escalation. Over-counting stalls the entire pipeline (the failure
+      # this function was rewritten for); under-counting dispatches a few
+      # issues while the owner has a real queue. The first is far more
+      # expensive, and a transient GraphQL blip must not stop the line.
+      _warn "unresolved_escalation_issues: could not read Status for #${num}; not counting it as an escalation."
+      continue
+    fi
+    _escalation_exempt_lane "$lane" && continue
+    echo "$line"
+  done <<<"$candidates"
 }
 
 # Raw (unfiltered) JSON array of open issues/PRs assigned to `owner`. Split
