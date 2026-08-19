@@ -408,8 +408,7 @@ def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     if len(parts) == 5 and parts[3] == "issues" and method == "PATCH" and "milestone" in params:
         wanted = str(params["milestone"])
         matches = [
-            m for m in _read_json("milestones.json", [])
-            if str(m.get("number", "")) == wanted
+            m for m in _read_json("milestones.json", []) if str(m.get("number", "")) == wanted
         ]
         if not matches:
             print(
