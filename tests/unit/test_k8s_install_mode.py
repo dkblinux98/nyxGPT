@@ -26,6 +26,7 @@ conftest.py, so nothing here reads or writes the developer's real ~/.nyxGPT.
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import tarfile
 from pathlib import Path
@@ -419,6 +420,26 @@ def test_install_kubernetes_cli_passes_dev_through(monkeypatch):
 
 
 def _status_stubs(monkeypatch, native, pods):
+    """`pods` is a list of Pod names -- `ops status` reads `-o json`, not the table.
+
+    It classifies each Pod into ready/pending/failed rather than echoing
+    `kubectl get pods --no-headers` (#3827), so a stub that returns the raw
+    table makes `status` report no Kubernetes section at all.
+    """
+    pod_json = json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": name},
+                    "status": {
+                        "phase": "Running",
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                    },
+                }
+                for name in pods
+            ]
+        }
+    )
     monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         ops,
@@ -437,7 +458,7 @@ def _status_stubs(monkeypatch, native, pods):
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=True, **_k: _cp(stdout="\n".join(pods) + "\n" if pods else ""),
+        lambda cmd, check=True, **_k: _cp(stdout=pod_json if pods else ""),
     )
 
 
@@ -451,7 +472,7 @@ def test_status_reports_the_kubernetes_deployments_own_mode(monkeypatch, capsys)
     _status_stubs(
         monkeypatch,
         native={"api": "none", "web": "none", "ollama": "none"},
-        pods=["nyxgpt-api-stable-abc   1/1   Running   0   1m"],
+        pods=["nyxgpt-api-stable-abc"],
     )
 
     assert ops.status(SimpleNamespace()) == 0
@@ -475,7 +496,7 @@ def test_status_warns_when_a_dev_kubernetes_checkout_is_gone(monkeypatch, capsys
     _status_stubs(
         monkeypatch,
         native={"api": "none", "web": "none", "ollama": "none"},
-        pods=["nyxgpt-api-stable-abc   1/1   Running   0   1m"],
+        pods=["nyxgpt-api-stable-abc"],
     )
 
     assert ops.status(SimpleNamespace()) == 0

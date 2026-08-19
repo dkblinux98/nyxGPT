@@ -1,5 +1,14 @@
 # Sprint Autopilot (#3480)
 
+> **Reading note (2026-08-18).** From "## What the owner needs to apply by
+> hand" onward this document is a **change record**: diffs and prose written when
+> #3480 shipped, kept for the reasoning. Two mechanisms it describes are
+> retired since — the `READY_FOR_NEXT_ISSUE` comment kick, which #3882 made a
+> `repository_dispatch` (`developer_pull_next_issue.yml`), and
+> `scrummaster_next_issue.sh`, which #3883 replaced with the developer's pull
+> (`developer_pull_next.sh`). Passages naming them describe how it worked
+> then, not how it works now. The sections above this line are kept current.
+
 Implements the owner requirement (2026-07-31): stop requiring a human to
 watch every merge to kick off the next issue, have the scrummaster continue
 working a sprint until it's done, report on sprint standing against the
@@ -15,12 +24,15 @@ this PR:
   `count_sprint_backlog_open`, `sprint_autopilot_paused`,
   `clear_project_field_value`.
 - `scripts/agents/lib/summarize_backlog_page.py` -- the sprint-scoped
-  selection guard, shared by `scrummaster_next_issue.sh` and
-  `count_sprint_backlog_open`.
+  guard behind `count_sprint_backlog_open`. (It was shared with
+  `scrummaster_next_issue.sh` until #3883 retired that selector; the pull
+  reads the board through `lib/board_pull_state.py` instead.)
 - `scripts/agents/lib/sprint_calc.py` -- pure sprint math (velocity,
   verdict, reorg candidate selection, autopilot stop condition) and the
   markdown report renderer.
-- `scripts/agents/scrummaster_next_issue.sh` -- new `--sprint-scoped` flag.
+- `scripts/agents/developer_pull_next.sh` -- carries the `--sprint-scoped`
+  flag now (it was added to `scrummaster_next_issue.sh`, which #3883
+  deleted).
 - `scripts/agents/review_accept_and_merge.sh` -- post-merge autopilot kick
   (or sprint-drained park note, #3706), gated on `SPRINT_AUTOPILOT` and
   `PAUSE_SPRINT`.
@@ -50,8 +62,8 @@ boundary rather than bookkeeping.
   boundary. Agent-posted kicks cannot.
 - **Drift caveat:** the boundary is load-bearing, so iteration date windows
   must be kept current. With no active iteration, both the autopilot and
-  `scrummaster_next_issue.sh --sprint-scoped` stop (conservative stop) --
-  the selector exits 1 rather than falling back to release-wide selection,
+  `developer_pull_next.sh --sprint-scoped` stop (conservative stop) --
+  the pull exits 1 rather than falling back to release-wide work,
   so a kick that lands after the window closes cannot dispatch
   future-sprint work.
 
@@ -125,11 +137,14 @@ owner's acceptance window: it only restarts work the sprint already owns.
 
 ### Informational notes must never look like a kick
 
-`notify_scrum_ready.yml`'s job `if:` can only substring-match the comment
-body, and the agent accounts are on its actor allowlist -- so on its own,
-any agent comment that *named* the kick token started the next issue, even
-one whose whole point was that work had stopped (#3706). Three rules keep
-status reports inert:
+While the kick was a comment token, the dispatching workflow's job `if:`
+could only substring-match the comment body, and the agent accounts were on
+its actor allowlist -- so any agent comment that *named* the token started
+the next issue, even one whose whole point was that work had stopped
+(#3706). #3882 removed that class outright by making the kick a
+`repository_dispatch`: an event cannot be fired by prose that mentions it.
+The three rules below still govern the comment commands that remain (the
+retry token), and still describe why the park notes are written as they are:
 
 1. Informational autopilot comments (the park note, the `PAUSE_SPRINT`
    notice) never spell the token out -- they point here instead.

@@ -83,6 +83,37 @@ def test_a_kubectl_path_is_recognized_by_its_program_name_not_its_argv0():
     assert argv[1] == "--request-timeout=5s"
 
 
+@pytest.mark.unit
+def test_the_watch_exemption_reads_subcommands_not_any_matching_token():
+    """A flag *value* spelling a streaming subcommand must not suppress the bound.
+
+    `-n logs` is a namespace called "logs", not `kubectl logs`; a scan over
+    every argv token would drop the flag for it.
+    """
+    for argv_in in (
+        ["kubectl", "get", "pods", "-n", "logs"],
+        ["kubectl", "-n", "logs", "get", "pods"],
+        ["kubectl", "--namespace=wait", "get", "deployment", "x"],
+        ["kubectl", "get", "pods", "-o", "wait"],
+    ):
+        assert bounded_argv(argv_in, 5.0)[1] == "--request-timeout=5s", argv_in
+
+    # The real watches stay exempt, wherever their global flags sit.
+    for watch in (
+        ["kubectl", "-n", "nyxgpt", "rollout", "status", "deployment/x"],
+        ["kubectl", "logs", "-n", "nyxgpt", "pod/x"],
+        ["kubectl", "wait", "--for=condition=Ready", "pod/x"],
+    ):
+        assert bounded_argv(watch, 5.0) == watch
+
+
+@pytest.mark.unit
+def test_a_sub_second_bound_never_renders_as_the_no_timeout_value():
+    """kubectl reads `--request-timeout=0s` as *no* timeout, so rounding down disarms it."""
+    assert bounded_argv(["kubectl", "get", "pods"], 0.4)[1] == "--request-timeout=1s"
+    assert bounded_argv(["kubectl", "get", "pods"], 1.2)[1] == "--request-timeout=2s"
+
+
 # --- canary ------------------------------------------------------------------
 
 

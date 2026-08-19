@@ -78,6 +78,7 @@ Not reachable from a handler (CLI-only, no bound needed):
 
 from __future__ import annotations
 
+import math
 import subprocess
 from pathlib import Path
 
@@ -107,6 +108,54 @@ TIMEOUT_RETURNCODE = 124
 _KUBECTL_STREAMING_SUBCOMMANDS = frozenset(
     {"attach", "exec", "logs", "port-forward", "proxy", "rollout", "wait"}
 )
+
+# kubectl global flags that consume the following argv token as their value.
+# Needed so `kubectl get pods -n logs` (a namespace named "logs") is not read
+# as the streaming `logs` subcommand. Only the value-taking ones matter: an
+# unlisted boolean flag simply doesn't hide the token after it, and an
+# unlisted value-taking flag can at worst make a positional out of its value,
+# which errs toward *skipping* the flag rather than adding it to a watch.
+_KUBECTL_VALUE_FLAGS = frozenset(
+    {
+        "-n",
+        "--namespace",
+        "--context",
+        "--cluster",
+        "--kubeconfig",
+        "--user",
+        "-s",
+        "--server",
+        "--token",
+        "--as",
+        "--as-group",
+        "--cache-dir",
+        "--certificate-authority",
+        "--client-certificate",
+        "--client-key",
+        "--tls-server-name",
+        "-o",
+        "--output",
+        "-v",
+        "--v",
+    }
+)
+
+
+def _positional_args(args: list[str]) -> list[str]:
+    """The argv tokens that are subcommands/operands rather than flags or flag values."""
+    positionals: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith("-"):
+            # `--namespace=logs` carries its own value; `--namespace logs` eats
+            # the next token.
+            skip_next = "=" not in arg and arg in _KUBECTL_VALUE_FLAGS
+            continue
+        positionals.append(arg)
+    return positionals
 
 
 def timeout_message(timeout: float) -> str:
@@ -149,6 +198,14 @@ def bounded_argv(cmd: list[str], timeout: float | None) -> list[str]:
     polled canary/infra probes actually dial a network with. An argv that
     already sets the flag is left alone, as is any streaming subcommand (see
     `_KUBECTL_STREAMING_SUBCOMMANDS`) and any unbounded call.
+
+    The streaming check reads *positional* tokens only, so a flag value that
+    happens to spell a streaming subcommand (`-n logs`) doesn't suppress the
+    bound. It scans every positional rather than just the first because an
+    unlisted value-taking global flag would shift which token that is, and
+    wrongly bounding a watch is the worse of the two mistakes: it cuts a
+    healthy slow rollout short and reports it as a failure, whereas wrongly
+    skipping the flag still leaves the Python `timeout=` in force.
     """
     if timeout is None or not cmd:
         return cmd
@@ -156,6 +213,9 @@ def bounded_argv(cmd: list[str], timeout: float | None) -> list[str]:
         return cmd
     if any(arg.startswith("--request-timeout") for arg in cmd[1:]):
         return cmd
-    if any(arg in _KUBECTL_STREAMING_SUBCOMMANDS for arg in cmd[1:]):
+    if any(arg in _KUBECTL_STREAMING_SUBCOMMANDS for arg in _positional_args(cmd[1:])):
         return cmd
-    return [cmd[0], f"--request-timeout={timeout:.0f}s", *cmd[1:]]
+    # Rounded *up*, and never below 1: kubectl reads `--request-timeout=0s` as
+    # "no timeout", so a sub-second bound formatted naively would silently
+    # remove the very bound it was asked to add.
+    return [cmd[0], f"--request-timeout={max(1, math.ceil(timeout))}s", *cmd[1:]]

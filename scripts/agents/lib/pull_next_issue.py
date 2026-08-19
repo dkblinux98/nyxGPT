@@ -91,8 +91,11 @@ def _ordered_candidates(candidates: list[dict[str, Any]], order: list[int]) -> l
 
     A candidate absent from the plan is not refused. The plan is the intended
     order, not an allowlist -- refusing would mean a sprint stalls completely
-    until it is groomed, and an ungroomed issue with no expected-files is
-    exactly the case the overlap check already handles conservatively.
+    until it is groomed. Note the tradeoff this accepts: an ungroomed issue
+    usually has no expected-files, and the overlap check is *permissive*
+    there -- it pulls, and says in its reason that overlap could not be
+    checked. Blocking instead would make an unfilled field able to stop the
+    queue.
     """
     position = {issue: index for index, issue in enumerate(order)}
     planned = [c for c in candidates if int(c["issue"]) in position]

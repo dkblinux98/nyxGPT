@@ -1522,6 +1522,48 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/Insufficient memory/)).toBeInTheDocument();
   });
 
+  it('badges the observability workloads with the same three states as the Pods (#3827)', async () => {
+    // The card badged every Pod READY/PENDING/FAILED and then, a section
+    // lower, printed the observability workloads as grey `0/1 ready` text --
+    // one screen giving two different verdicts on the same condition, which
+    // is the contradiction this issue is about.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            observability: {
+              ...observabilityDeployed,
+              workload_states: [
+                { name: 'grafana', state: 'ready', summary: '1/1 ready', details: '' },
+                { name: 'prometheus', state: 'pending', summary: '0/1 ready', details: '' },
+                {
+                  name: 'glitchtip',
+                  state: 'failed',
+                  summary: 'absent',
+                  details: 'Re-run `nyxgpt ops observability --kubernetes --local`.',
+                },
+              ],
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'In-cluster observability' })
+    ).toBeInTheDocument();
+    expect(screen.getByText('READY')).toBeInTheDocument();
+    // The one the card used to call healthy alongside a `[FAIL]` from the
+    // install for the same zero-ready condition.
+    expect(screen.getByText('PENDING')).toBeInTheDocument();
+    expect(screen.getByText('0/1 ready')).toBeInTheDocument();
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
+  });
+
   it('falls back to the plain pod lines when the api predates pod_states', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
 

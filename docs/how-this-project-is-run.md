@@ -12,12 +12,15 @@ Four roles carry the work, each restricted to a fixed set of allowed
 actions — see [AGENTS.md](../AGENTS.md) for the authoritative permission
 matrix; nothing not explicitly allowed there may be done by an agent.
 
-- **scrummaster-agent** — selects the next backlog issue (lowest Phase,
-  then lowest issue number) and hands it to the developer agent. Charter:
+- **scrummaster-agent** — grooms the sprint: scope, order, relationships,
+  effort, and the per-issue expected-files list, written to
+  `product_management/sprint_planning/sprint_<N>/PLAN.md`. It no longer
+  selects or dispatches (#3883) — developers pull from that plan. Charter:
   [agents/charters/scrummaster-agent.md](../agents/charters/scrummaster-agent.md) ·
   runbook: [agents/runbooks/scrummaster-runbook.md](../agents/runbooks/scrummaster-runbook.md).
-- **developer-agent** — implements the issue, writes/updates tests, and
-  opens a PR. Charter:
+- **developer-agent** — pulls its next issue from the groomed plan (order,
+  relationships, WIP limit, file-overlap check), claims it, implements it,
+  writes/updates tests, and opens a PR. Charter:
   [agents/charters/developer-agent.md](../agents/charters/developer-agent.md) ·
   runbook: [agents/runbooks/developer-runbook.md](../agents/runbooks/developer-runbook.md).
 - **review-agent** — reviews the PR against the issue's acceptance

@@ -191,14 +191,16 @@ definitions, permissions, and state-transition rules.
 ./scripts/agents/scrummaster_dispatch_next.sh
 ```
 
-Or manually post a comment on the **Release tracking issue** that *starts a
-line* with `READY_FOR_NEXT_ISSUE`. Since #3790 the token dispatches only where
-it opens a line, so naming it mid-sentence is inert -- see
-[agent-comment-tokens.md](agent-comment-tokens.md).
+The comment kick is gone (#3882): `developer_pull_next_issue.yml` runs on a
+`repository_dispatch` of type `dispatch-next-issue`. To start one issue by
+hand, **assign the developer agent to it** — the workflow claims it and sets
+Status itself.
 
 The workflow will:
-1. Select the next backlog issue (lowest Phase, lowest issue number)
-2. Move it to In Progress and assign it to developer-agent
+1. Pull the next issue: sprint-plan order (#3908), filtered by relationships
+   eligibility, the WIP limit, and a file-overlap check against work already
+   in flight — an overlapping candidate is deferred, never pulled in parallel
+2. Move it to In Progress and assign developer-agent
 3. Auto-implement the issue with Claude Code
 4. Create a PR and submit it for review
 

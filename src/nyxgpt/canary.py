@@ -263,12 +263,15 @@ def _run(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        assert timeout is not None  # nosec B101 - only a set bound can expire
+        # Only a set bound can expire, but read the value back off the
+        # exception rather than asserting it: `assert` is stripped under
+        # `python -O`, and the narrowing has to hold in that build too.
+        expired = timeout if timeout is not None else exc.timeout
         logger.warning(
-            f"Subprocess {timeout_message(timeout)}: {' '.join(cmd)}",
-            extra={"component": "canary", "cmd": cmd, "timeout_seconds": timeout},
+            f"Subprocess {timeout_message(expired)}: {' '.join(cmd)}",
+            extra={"component": "canary", "cmd": cmd, "timeout_seconds": expired},
         )
-        return timeout_result(cmd, exc, timeout)
+        return timeout_result(cmd, exc, expired)
     if result.returncode != 0:
         level = logging.DEBUG if expected else logging.WARNING
         logger.log(
