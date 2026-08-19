@@ -1380,6 +1380,62 @@ describe('InfrastructurePage', () => {
     expect(screen.queryByText('DEV BUILD')).not.toBeInTheDocument();
   });
 
+  it('names the substrate, and separates "not recorded" from "native" (#3956)', async () => {
+    // Three distinct claims, and the third is the one that is easy to get
+    // wrong: a deploy record written before `--kubernetes` existed says
+    // *nothing* about the substrate, which is not the same as saying it was
+    // native. Only the k3s answer makes canary rollout available, so an
+    // operator reading this row is deciding whether `nyxgpt cloud canary`
+    // is even a thing they can run.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, substrate: 'kubernetes' })
+      )
+    );
+    const k8s = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/single-node k3s cluster on the instance/)).toBeInTheDocument();
+    });
+    // The row earns its place by saying what the substrate *enables*.
+    expect(screen.getByText(/canary rollout available/)).toBeInTheDocument();
+    k8s.unmount();
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, substrate: 'native' })
+      )
+    );
+    const native = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/native services on the instance/)).toBeInTheDocument();
+    });
+    // And what it would take to get canary, rather than leaving the operator
+    // to infer that native means "no".
+    expect(screen.getByText(/--kubernetes` deploys onto a cluster instead/)).toBeInTheDocument();
+    native.unmount();
+
+    // A record predating the flag: silence about the substrate, not a claim
+    // that it was native.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () => HttpResponse.json({ ...deployed, substrate: '' }))
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/not recorded — this deploy predates the substrate record/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/single-node k3s cluster/)).not.toBeInTheDocument();
+  });
+
   it('names which target OS provisioned the instance, and separates "not recorded" from "linux" (#3867)', async () => {
     // The two target OSes do not leave an instance in the same shape: an EC2
     // Mac runs the Homebrew formulas under launchd with no observability
