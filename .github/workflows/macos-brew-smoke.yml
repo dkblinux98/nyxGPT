@@ -921,6 +921,66 @@ jobs:
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the stable install attempt"; exit 1; }
           nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the stable install attempt"; exit 1; }
 
+      - name: "Measure: the same conflict after the candidate is retired from the tap"
+        # An open question, measured rather than guessed (#3853, ledger Q-007).
+        #
+        # The release ceremony deletes a shipped line's candidate formulas from
+        # the tap (`scripts/retire_rc_formulas.sh`), so after 3.0.0 ships the
+        # stable formula's `conflicts_with "nyxgpt-api@3.0.0rc"` names a formula
+        # the tap no longer carries -- while an operator's machine may still
+        # have that KEG installed. Two things follow, and neither is knowable
+        # from reading Homebrew's source:
+        #
+        #   1. does the conflict still hold, because `Formulary` can load the
+        #      formula back from the installed keg's own `.brew/*.rb`; and
+        #   2. what does a user with no candidate installed see -- an absent
+        #      counterpart is documented as a benign warning (#3753), but on the
+        #      STABLE formula that warning lands on the main install path, and
+        #      Homebrew's wording for it ("should be removed from ...") is
+        #      advice this project must not follow.
+        #
+        # This step reproduces exactly that state and prints the answer. It is
+        # NOT a hard assertion, because nothing has established what the answer
+        # should be yet -- per ledger D-026, a gate records what is open and
+        # fails on what is settled. The machine-left-usable checks stay hard.
+        # When the run answers it, that answer closes Q-007 and this step
+        # becomes an assertion.
+        run: |
+          set -uo pipefail
+          TAP_DIR="$(brew --repository nyxgpt/both-channels)"
+
+          # Reach the state: candidate installed, stable not, rc formula gone
+          # from the tap.
+          brew uninstall nyxgpt-api 2>&1 | tail -5 || true
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api@3.0.0rc 2>&1 | tail -10
+          brew list --versions nyxgpt-api@3.0.0rc || {
+            echo "::warning::could not stage the candidate, so this measurement did not run"
+            exit 0
+          }
+          rm -f "$TAP_DIR/Formula/nyxgpt-api@3.0.0rc.rb"
+          echo "tap now carries:"; ls -1 "$TAP_DIR/Formula/"
+
+          rc=0
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api > retired-counterpart.log 2>&1 || rc=$?
+          echo "stable install exited $rc with the candidate formula retired"
+          tail -40 retired-counterpart.log
+
+          stable_installed=0
+          brew list --versions nyxgpt-api > /dev/null 2>&1 && stable_installed=1
+          echo "MEASURED: stable installed after retirement: $stable_installed"
+          if grep -qi 'conflicting formulae are installed' retired-counterpart.log; then
+            echo "MEASURED: the conflict still held -- brew resolved the retired formula (installed keg)"
+          elif grep -qi 'should be removed from' retired-counterpart.log; then
+            echo "MEASURED: brew could not resolve the retired formula and advised removing the declaration"
+            echo "::warning::#3853/Q-007: with the candidate formula retired from the tap, the stable formula's conflicts_with does not resolve. Read this step's log before changing the declaration -- the advice brew prints must not be followed blindly."
+          else
+            echo "MEASURED: neither wording appeared -- read retired-counterpart.log above"
+          fi
+
+          # Whatever it turns out to be, the machine has to stay usable.
+          command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the retired-counterpart install attempt"; exit 1; }
+          nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the retired-counterpart install attempt"; exit 1; }
+
       - name: Install logs on failure
         if: failure()
         run: |
@@ -928,7 +988,7 @@ jobs:
           # its `tail`, these carry the reason brew gave, and Homebrew's own
           # per-formula logs do not (they only exist for installs that got as
           # far as building).
-          for log in candidate.log stable-on-top.log; do
+          for log in candidate.log stable-on-top.log retired-counterpart.log; do
             [ -f "$log" ] || continue
             echo "--- $log ---"
             cat "$log" || true

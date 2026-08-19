@@ -52,10 +52,12 @@ Homebrew spells this subcommand `brew tap-trust <tap>` on some builds and
 `brew trust <tap>` on others; if one is rejected as an unknown command, run
 the other — the error `brew install` prints names the spelling your Homebrew
 wants. Take the whole-tap form either way. Homebrew also offers a grant
-scoped to a single formula, and it is not enough here: installing a
-candidate makes brew resolve
-`conflicts_with "nyxgpt-api"` and load the *stable* formula, which a grant
-scoped to the candidate leaves untrusted, and the install aborts (#3770).
+scoped to a single formula, and it is not enough here: resolving a
+`conflicts_with` **loads** the formula it names, and a grant scoped to the
+formula on the command line leaves that counterpart untrusted, so the install
+aborts (#3770). That applies to both channels since #3853 — installing a
+candidate loads the stable formula, and installing the stable loads its
+line's candidate.
 
 `dkblinux98/nyxgpt` is the tap's name everywhere Homebrew asks for one. The
 repository behind it is `dkblinux98/homebrew-nyxgpt` — Homebrew's naming

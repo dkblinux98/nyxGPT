@@ -940,6 +940,31 @@ rather than mechanism, and nothing can enforce them.
   is one that gets rebuilt, and the two paths it would have to hedge across
   differ in where the product is hosted, not in a detail.
 
+- **Q-007** · 2026-08-19 · developer agent (#3853) — After the release
+  ceremony retires a shipped line's candidate formulas from the tap
+  (`scripts/retire_rc_formulas.sh`), the stable formula's new
+  `conflicts_with "<name>@<line>rc"` (**D-030**) names a formula the tap no
+  longer carries. Two things follow and neither is established: (a) does the
+  conflict still hold for a machine that still has that **keg** installed —
+  i.e. can Homebrew's `Formulary` load the formula back from the keg's own
+  `.brew/*.rb` — and (b) what does a user with no candidate installed see?
+  An absent counterpart is documented as a benign warning (#3753), but on the
+  *stable* formula that warning lands on the main install path, and
+  Homebrew's wording for it advises removing the declaration, which is
+  advice this project must not follow. Do not act on either by reading
+  Homebrew's source: #3853 exists because a behavior everyone believed was
+  never run.
+  Needs: the `Measure: the same conflict after the candidate is retired from
+  the tap` step in `macos-brew-smoke.yml`'s `stable-over-candidate` job,
+  which reproduces exactly that state on a clean `macos-15` runner and prints
+  the answer. It runs on every formula PR; read its `MEASURED:` lines.
+  Blocks: nothing today. It cannot be reached before 3.0.0 ships and its
+  candidates are retired, and until then both directions of the conflict are
+  hard-asserted. If (b) turns out noisy, the candidate answer is retiring an
+  rc formula by replacing it with a disabled stub rather than deleting it —
+  which keeps the name resolvable and gives a better error than "No available
+  formula" — not dropping the declaration.
+
 ## Superseded
 
 Retired beliefs. Listed because this project asserted each of them, and a

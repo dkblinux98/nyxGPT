@@ -635,6 +635,68 @@ def test_the_reverse_direction_is_a_hard_assertion_again() -> None:
         )
 
 
+RETIRED_COUNTERPART_STEP = "Measure: the same conflict after the candidate is retired from the tap"
+
+
+def test_the_job_measures_the_retired_counterpart_case_instead_of_assuming_it() -> None:
+    """Ledger Q-007: what happens once the ceremony deletes the rc formula.
+
+    #3853's packaging fix makes the *stable* formula declare
+    `conflicts_with "<name>@<line>rc"`, and the release ceremony deletes that
+    formula from the tap once the line ships
+    (`scripts/retire_rc_formulas.sh`). Whether the conflict still holds for a
+    machine that still has the keg, and what a clean machine is shown, are
+    both unestablished -- and #3853 exists precisely because a behaviour
+    everyone believed was never run. So the job reproduces the state and
+    prints the answer rather than either guessing or ignoring it.
+
+    Recorded, not asserted, per ledger D-026: a gate fails on what is settled
+    and records what is open. The machine-left-usable checks stay hard,
+    because no open question excuses a broken CLI.
+    """
+    run = _conflict_step(RETIRED_COUNTERPART_STEP)["run"]
+
+    assert "rm -f" in run and "nyxgpt-api@3.0.0rc.rb" in run, (
+        "the step no longer removes the candidate formula from the tap, so it "
+        "measures the counterpart-present case the previous step already covers"
+    )
+    assert "MEASURED:" in run, (
+        "the step no longer prints its findings under a greppable marker, so "
+        "the answer to Q-007 would be buried in a brew log"
+    )
+    for hard in (
+        "no nyxgpt on PATH after the retired-counterpart install attempt",
+        "nyxgpt is on PATH but does not run after the retired-counterpart install attempt",
+    ):
+        assert re.search(rf"::error::{re.escape(hard)}[^\n]*exit 1", run), (
+            f"the machine-left-usable assertion {hard!r} is no longer hard; an "
+            "open question does not excuse a broken CLI"
+        )
+    assert "should be removed from" in run, (
+        "the step no longer recognises Homebrew's own advice to delete the "
+        "declaration -- that wording is the outcome the ledger entry warns "
+        "against following, so it has to be detected by name"
+    )
+
+
+def test_the_open_question_about_retirement_is_recorded_in_the_ledger() -> None:
+    """A measurement nobody reads is a measurement that was not taken.
+
+    The step above prints an answer on every formula PR; this pins the entry
+    that tells a future session the question exists and where the answer
+    appears.
+    """
+    ledger = (REPO_ROOT / "agents" / "LEDGER.md").read_text(encoding="utf-8")
+    assert "**Q-007**" in ledger, "the retired-counterpart question is not in the ledger"
+    question = ledger[ledger.index("**Q-007**") :]
+    question = question[: question.index("\n\n")]
+    # The ledger wraps at ~78 columns, so the step name is split across lines.
+    assert RETIRED_COUNTERPART_STEP in " ".join(question.split()), (
+        "the Q-007 entry no longer names the step that answers it, so a future "
+        "session has the question and no way to close it"
+    )
+
+
 def test_the_reverse_direction_comment_records_what_was_measured() -> None:
     """The comment carries the evidence, not an instruction to the next session.
 
