@@ -1150,6 +1150,50 @@ rather than mechanism, and nothing can enforce them.
   PR's `--kubernetes` half so both the help and the error name the whole cloud
   path.
 
+- **D-038** · 2026-08-19 · developer agent (#3814) — **A symptom repair that
+  lets a broken interpreter keep going is worse than a refusal, and #3753 and
+  #3788 were never two defects.** Both were one `python@3.12` keg whose
+  `pyexpat` would not load: `plistlib` imports it, so `platform.mac_ver()`
+  answered `('', ('', '', ''), '')` (#3753); pip's vendored distlib reaches it
+  through `xmlrpc.client`, so pip's eager pre-import swallowed the dlopen
+  error and its audit hook re-raised `No module named
+  'pip._internal.operations.install.wheel'` (#3788) — a module that was
+  present the whole time. Three release candidates were spent debugging pip.
+  The **correction to retire**: the account written into
+  `homebrew/nyxgpt-api.rb`, its tap template and `docs/homebrew.md` that "this
+  pip installation cannot import its own wheel installer". It is wrong, it
+  reads as a diagnosis, and it is what the next reader would have built on.
+  Three things follow, and the third is the general one:
+  (a) *nyxGPT refuses rather than repairs.* The api formulas preflight the
+  resolved `python@3.12` before any work — inside `install`, because Homebrew
+  calls that only after dependencies are resolved, so it is the interpreter
+  the build will really use — and `odie` with the keg path, the loader's error
+  verbatim, the measured macOS/SDK pair and the operator action. It fails
+  **closed**: anything but the ok line refuses, including no output at all.
+  (b) *the `sitecustomize` mac_ver shim was narrowed, not deleted.* It now
+  declines to repair when `plistlib` will not import and says why; what is
+  left for it is the case it was written for, a healthy interpreter and an
+  unreadable SystemVersion.plist. Making pip *start* on a broken keg is what
+  carried rc12 past the fault and into an opaque failure.
+  (c) *the environment condition is describable, not exotic:* Homebrew tags
+  bottles by macOS **major** version, so a machine behind the **minor**
+  release its bottle was built against gets an extension linked to an expat
+  the system does not export. Neither `brew reinstall python@3.12` (same
+  bottle) nor `brew reinstall --build-from-source python@3.12` (pyexpat will
+  not compile against the newer SDK) fixes it — updating macOS did, on the
+  reporting machine. Do not add a third workaround for a symptom of this.
+  The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_build_homebrew_artifacts.py` (the preflight section),
+  `validate_interpreter_preflight` in `scripts/build_homebrew_artifacts.py`
+  (which refuses to publish a formula that starts the brewed interpreter
+  without one), and `macos-brew-smoke.yml`'s "Reproduce the broken pyexpat…"
+  step, which injects an unloadable `pyexpat` at its realpath and proves both
+  halves with the real `brew install` — per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3814; #3753; #3788; **D-012** (the first principle this is the
+  motivating incident for).
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
