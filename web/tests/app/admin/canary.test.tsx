@@ -861,6 +861,67 @@ describe('CanaryPage', () => {
     expect(screen.queryByLabelText(/Promote despite no canary traffic/i)).not.toBeInTheDocument();
   });
 
+  it('does not let a ticked override outlive the situation it was ticked for', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await user.click(await screen.findByLabelText(/Promote despite no canary traffic/i));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).toBeChecked();
+
+    // The canary starts serving: the override is withdrawn, and the tick must
+    // go with it -- not sit in state waiting to ride along on a later promote.
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
+    await user.click(screen.getByRole('button', { name: /refresh/i }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/Promote despite no canary traffic/i)).not.toBeInTheDocument();
+    });
+
+    let promoteBody: unknown = null;
+    server.use(
+      http.post('/api/v1/canary/promote', async ({ request }) => {
+        promoteBody = await request.json();
+        return HttpResponse.json({});
+      })
+    );
+    await user.click(screen.getByRole('button', { name: /^promote$/i }));
+    await waitFor(() => {
+      expect(promoteBody).toEqual({ component: 'api', force: false });
+    });
+
+    // And back to idle: the checkbox returns unchecked, so forcing is always a
+    // fresh decision about the situation on screen.
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    await user.click(screen.getByRole('button', { name: /refresh/i }));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).not.toBeChecked();
+  });
+
+  it('clears the override when the operator switches to another component', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockIdleCanaryStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await user.click(await screen.findByLabelText(/Promote despite no canary traffic/i));
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).toBeChecked();
+
+    // The switch keeps rendering the previous component's status until the new
+    // one lands, so the effect cannot see the change yet. A second component
+    // that also reads measurably-idle must not inherit the tick the operator
+    // made about api -- the override is per-situation, not per-session.
+    server.use(
+      http.get('/api/v1/canary/status', () =>
+        HttpResponse.json({ ...mockIdleCanaryStatus, component: 'web' })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /^web$/i }));
+
+    expect(await screen.findByLabelText(/Promote despite no canary traffic/i)).not.toBeChecked();
+  });
+
   it('degrades a pre-per-track status payload to a named placeholder instead of blanking', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     // The rolling-upgrade window: this build talking to an api still serving

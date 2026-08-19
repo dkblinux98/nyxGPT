@@ -132,6 +132,13 @@ export default function CanaryPage() {
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [logAggregation, setLogAggregation] = useState<LogAggregationStatus | null>(null);
 
+  const canaryMetrics = trackPanel('canary', status?.metrics);
+  const stableMetrics = trackPanel('stable', status?.stable_metrics);
+  // The no-traffic override is offered only where the canary's traffic is
+  // MEASURABLE and measured at zero. "Unmeasurable" is not "idle" -- offering
+  // it there would wave through a canary nothing can reach (#3829).
+  const offerForcePromote = canaryMetrics.attributable && canaryMetrics.total_requests === 0;
+
   const loadStatus = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -156,6 +163,15 @@ export default function CanaryPage() {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  // The override is a decision about the situation in front of the operator,
+  // so it does not outlive it: once the canary is serving traffic (or its
+  // traffic stops being measurable) the checkbox disappears, and without this
+  // a tick left behind would still ride along on the next promote and would
+  // re-render pre-checked the next time the override is offered.
+  useEffect(() => {
+    if (!offerForcePromote) setForcePromote(false);
+  }, [offerForcePromote]);
 
   useEffect(() => {
     let cancelled = false;
@@ -265,9 +281,6 @@ export default function CanaryPage() {
     );
   }
 
-  const canaryMetrics = trackPanel('canary', status?.metrics);
-  const stableMetrics = trackPanel('stable', status?.stable_metrics);
-
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
       <div
@@ -304,7 +317,14 @@ export default function CanaryPage() {
         {COMPONENTS.map(({ key, label }) => (
           <button
             key={key}
-            onClick={() => setComponent(key)}
+            onClick={() => {
+              // Switching components carries the previous component's status
+              // until the new one loads, so the effect above cannot see the
+              // change yet; clear the override here rather than let it survive
+              // the switch on stale metrics.
+              setForcePromote(false);
+              setComponent(key);
+            }}
             style={{
               padding: '0.5rem 1rem',
               border: 'none',
@@ -735,7 +755,7 @@ export default function CanaryPage() {
                   nothing can reach, so the override is offered here -- off by
                   default, and only shown once traffic is measurable at all.
                 */}
-                {canaryMetrics.attributable && canaryMetrics.total_requests === 0 && (
+                {offerForcePromote && (
                   <label
                     style={{
                       display: 'flex',
