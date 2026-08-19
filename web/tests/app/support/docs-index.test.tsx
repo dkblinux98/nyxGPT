@@ -77,13 +77,48 @@ describe('Support docs index page', () => {
     expect(headings).toEqual(['Getting started', 'Using nyxGPT', 'Configuration']);
   });
 
-  it('renders a backend that only returns a flat list as one unnamed group', async () => {
+  it('gives each section a heading that outweighs the documents under it', async () => {
+    // #3809 acceptance failure: the sections were headings in the DOM but were
+    // painted as a 13px uppercase 60%-opacity caption -- smaller and fainter
+    // than the 15px document titles beneath them -- so the page still read as
+    // one continuous list and the owner reported the grouping as unbuilt. A
+    // heading has to be more prominent than what it groups, not less.
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
+    serveContext(CONTEXT);
+    render(<SupportDocsIndexPage />);
+
+    const docLink = await screen.findByRole('link', { name: 'Documentation' });
+    const heading = screen.getByRole('heading', { level: 2, name: 'Getting started' });
+
+    const headingSize = parseFloat(heading.style.fontSize);
+    const docSize = parseFloat(docLink.style.fontSize);
+    expect(headingSize).toBeGreaterThan(docSize);
+    // Not dimmed: an opacity below 1 is what made it read as a caption.
+    const opacity = heading.style.opacity === '' ? 1 : parseFloat(heading.style.opacity);
+    expect(opacity).toBe(1);
+    // And visibly separated from the group above it.
+    expect(heading.style.borderBottom).not.toBe('');
+  });
+
+  it('renders a backend that only returns a flat list as one unnamed group, and says so', async () => {
+    // An API older than this UI cannot group; the page must name that rather
+    // than silently showing the unlabelled flat list #3809 removed.
     serveDocs({ documents: DOCUMENTS });
     serveContext(CONTEXT);
     render(<SupportDocsIndexPage />);
 
     expect(await screen.findByRole('link', { name: 'Configuration' })).toBeInTheDocument();
     expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0);
+    expect(screen.getByRole('status')).toHaveTextContent(/did not send the grouped index/i);
+  });
+
+  it('does not claim a missing index when the backend did group the documents', async () => {
+    serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
+    serveContext(CONTEXT);
+    render(<SupportDocsIndexPage />);
+
+    await screen.findByRole('link', { name: 'Documentation' });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   it('shows the running version and the issue link once the context resolves', async () => {
