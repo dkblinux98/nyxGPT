@@ -232,3 +232,71 @@ class TestInterfaceIsTransportFree:
         for implementation in (hc.SlackChannel("C1"), hc.NullChannel("why")):
             for operation in ("open_thread", "post", "read", "permalink"):
                 assert callable(getattr(implementation, operation))
+
+
+class TestTheWorkflowCLI:
+    """`_main` is the only caller the workflow has, and it had no coverage.
+
+    Its exit codes are a contract with a `set -e` shell step: a Slack failure
+    must not take the huddle down with it (#3910), and a genuine usage error
+    must not be swallowed into a silent no-op.
+    """
+
+    @pytest.fixture
+    def unconfigured(self, monkeypatch):
+        """No channel and no tokens: the degradation path, end to end."""
+        monkeypatch.delenv(hc.CHANNEL_ENV, raising=False)
+        for env in hc.SPEAKER_TOKEN_ENV.values():
+            monkeypatch.delenv(env, raising=False)
+
+    def test_a_failed_post_still_exits_zero(self, unconfigured, monkeypatch, capsys):
+        """The turn is already safe in the PR transcript; failing the step
+        here would abandon the remaining rounds and the decision over a chat
+        integration being unavailable."""
+        monkeypatch.setattr("sys.stdin", __import__("io").StringIO("## Developer Position"))
+        assert hc._main(["post", "1700000000.000100", "dev"]) == 0
+        assert "no huddle channel" in capsys.readouterr().err
+
+    def test_post_takes_the_text_from_argv_when_given(self, monkeypatch, capsys):
+        sent = []
+        monkeypatch.setattr(
+            hc, "get_channel", lambda: type("C", (), {"post": lambda _s, *a: sent.append(a)})()
+        )
+        assert hc._main(["post", "ts-1", "review", "inline text"]) == 0
+        assert sent == [("ts-1", "review", "inline text")]
+
+    def test_open_prints_the_thread_id_for_the_step_output(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            hc,
+            "get_channel",
+            lambda: type("C", (), {"open_thread": lambda _s, *a: "1700.0001"})(),
+        )
+        assert hc._main(["open", "3933", "3911", "why"]) == 0
+        assert capsys.readouterr().out.strip() == "1700.0001"
+
+    def test_open_prints_an_empty_line_when_the_thread_could_not_open(self, unconfigured, capsys):
+        """The empty thread id is the signal the session checks for."""
+        assert hc._main(["open", "1", "2", "why"]) == 0
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_permalink_prints_the_url(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            hc, "get_channel", lambda: type("C", (), {"permalink": lambda _s, _t: "https://s/x"})()
+        )
+        assert hc._main(["permalink", "ts-1"]) == 0
+        assert capsys.readouterr().out.strip() == "https://s/x"
+
+    def test_read_prints_the_rendered_transcript(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            hc,
+            "get_channel",
+            lambda: type("C", (), {"read": lambda _s, _t: [hc.Turn("dev", "my position")]})(),
+        )
+        assert hc._main(["read", "ts-1"]) == 0
+        assert "my position" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("argv", [[], ["sing"]])
+    def test_a_usage_error_is_a_nonzero_exit(self, argv, unconfigured):
+        """Distinct from a Slack failure: a mistyped command is a bug in the
+        workflow, and a silent 0 would hide it behind a missing turn."""
+        assert hc._main(argv) == 2

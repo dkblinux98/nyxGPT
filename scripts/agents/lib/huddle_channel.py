@@ -278,7 +278,13 @@ def _main(argv: list[str]) -> int:
     if command == "post":
         thread, speaker = rest[0], rest[1]
         text = rest[2] if len(rest) > 2 else sys.stdin.read()
-        return 0 if channel.post(thread, speaker, text) else 0
+        channel.post(thread, speaker, text)
+        # Success ALWAYS, and deliberately: the caller is a `set -e` workflow
+        # step, and a huddle whose Slack post failed must still finish its
+        # rounds and post its decision (#3910's degradation contract). The
+        # failure is already on stderr as a warning, and the turn itself
+        # survives in the PR transcript. Do not "fix" this to return 1.
+        return 0
     if command == "read":
         print(render_transcript(channel.read(rest[0])))
         return 0

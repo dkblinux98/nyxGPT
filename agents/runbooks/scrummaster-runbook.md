@@ -130,10 +130,11 @@ choosing:
 - **change-approach** -- a specific different approach, stated concretely.
 - **descope** -- a specific descope (e.g. drop a named flaky test, split
   off a follow-up issue) that resolves the disagreement.
-- **escalate** -- only the owner can resolve this; the mediation run itself
-  performs the standard escalation (`assign_issue_verified` +
-  `sprint_autopilot_kick`, the same primitives the 3-cycle breaker uses)
-  rather than deferring it to a later step.
+- **escalate** -- only the owner can resolve this; your own turn performs the
+  standard escalation (`assign_issue_verified` + `sprint_autopilot_kick`, the
+  same primitives the 3-cycle breaker uses) rather than deferring it to a
+  later step. That step runs under `SCRUMMASTER_AGENT_TOKEN`, so the
+  escalation is recorded as yours.
 
 The decision's content is advisory text the next fix cycle
 (`developer_auto_implement.yml`) reads and executes; mediation does not
@@ -143,7 +144,11 @@ for proceed / change-approach / descope, puts the issue back to In Progress
 and hands it to the developer agent. Before that workflow existed the
 decision just sat there -- on PR #3733 the thing that eventually moved was
 the 3-cycle escalation firing six minutes after a "proceed", parking the
-issue on the owner. Post exactly one decision comment; a duplicated or
+issue on the owner. **Do not post the decision comment yourself** -- write
+the decision file and the workflow posts it, under your identity and with the
+thread permalink attached. That identity is load-bearing: the dispatcher acts
+only on a decision comment authored by the scrummaster, so a decision posted
+by anything else lands, reads correctly, and starts nothing. A duplicated or
 re-posted decision is ignored by the dispatcher (only the round's first
 decision runs, and only once).
 

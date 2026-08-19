@@ -36,22 +36,98 @@ name: Review Huddle - Session
 on:
   issue_comment:
     types: [created]
+  # Executed verification (#3775). The session's shell control flow is
+  # executed on every change by `huddle-session-smoke.yml`; this input is how
+  # a *live* huddle -- real turns, real Slack identities, a real decision
+  # comment -- is run on a chosen PR on demand. GitHub only offers
+  # workflow_dispatch for workflows present on the default branch, so this
+  # becomes available once the file lands there.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to huddle on"
+        required: true
 
 concurrency:
   # The #3736 guards existed because two triggers could each start a leg.
-  # A single non-cancelling group per PR makes that impossible rather than
-  # detectable: a second trigger queues and finds the huddle already recorded.
-  group: huddle-${{ github.event.issue.number }}
+  # A single non-cancelling group per PR replaces them for the *within-run*
+  # races: no leg can be started twice, because no leg is started by a
+  # comment. What the group alone does NOT do is stop a duplicated trigger --
+  # it serializes the second run rather than cancelling it, and a queued run
+  # left to itself would open a second thread and spend a second huddle's
+  # invocations. That is what the `gate` job below is for.
+  group: huddle-${{ github.event.issue.number || inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
-  huddle:
+  # The dedupe of last resort, kept from #3736 and reduced to one question.
+  #
+  # #3728 happened because both of `review_agent_auto_review.yml`'s trigger
+  # paths passed their check-before-post guards minutes apart and each posted
+  # a HUDDLE_TRIGGERED comment; those upstream guards are unchanged, so the
+  # duplicate trigger is a live shape, not a historical one. Only the round's
+  # first marker comment owns the round -- precisely what
+  # `is_primary_marker_comment` answers -- and asking it in a *job* rather
+  # than a step is deliberate: a stand-down that depends on every one of ~20
+  # steps remembering a condition is one forgotten `if:` away from running a
+  # whole second huddle.
+  gate:
     if: >-
       vars.AGENTS_ENABLED == 'true' &&
-      github.event.issue.pull_request &&
-      contains(github.event.comment.body, 'HUDDLE_TRIGGERED') &&
-      !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
-      github.event.comment.user.login == vars.REVIEW_AGENT
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.issue.pull_request &&
+        contains(github.event.comment.body, 'HUDDLE_TRIGGERED') &&
+        !contains(github.event.comment.body, 'nyxgpt-token-mention') &&
+        github.event.comment.user.login == vars.REVIEW_AGENT))
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+
+    outputs:
+      primary: ${{ steps.primary.outputs.primary }}
+
+    env:
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          fetch-depth: 1
+
+      - name: Is this the round's first trigger?
+        id: primary
+        env:
+          # #3837: every event value the shell reads arrives as data.
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number || inputs.pr_number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            # A manual run has no trigger comment to be second to.
+            echo "primary=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PRIMARY=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[]' \
+            | jq -s '{comments: .}' \
+            | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/huddle_state.py" \
+                guard HUDDLE_TRIGGERED "$COMMENT_ID")
+          echo "primary=$PRIMARY" >> "$GITHUB_OUTPUT"
+          if [[ "$PRIMARY" == "true" ]]; then
+            echo "::notice::Comment $COMMENT_ID owns this review round's huddle"
+          else
+            echo "::notice::Comment $COMMENT_ID is not this round's first HUDDLE_TRIGGERED -- standing down"
+          fi
+
+  huddle:
+    needs: gate
+    if: needs.gate.outputs.primary == 'true'
     runs-on: ubuntu-latest
 
     permissions:
@@ -66,7 +142,11 @@ jobs:
       SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
       SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
       HUDDLE_DIR: ${{ github.workspace }}/.huddle
-      PR_NUMBER: ${{ github.event.issue.number }}
+      PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
+      # The cap is configurable downward only: the rounds are three explicit
+      # pairs of steps, so a value above 3 behaves as 3. Lowering it to 1 or 2
+      # is the useful direction (a cheaper huddle); raising it needs steps.
+      MAX_ROUNDS: ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}
 
     steps:
       - name: Checkout
@@ -123,7 +203,7 @@ jobs:
           set -euo pipefail
           # First line of the trigger comment, trimmed: enough for a thread
           # head, and it keeps an arbitrarily long comment body out of argv.
-          SUMMARY=$(printf '%s' "$REASON" | tr '\n' ' ' | cut -c1-280)
+          SUMMARY=$(printf '%s' "${REASON:-manual dispatch}" | tr '\n' ' ' | cut -c1-280)
           TS=$(python3 scripts/agents/lib/huddle_channel.py open \
                  "$PR_NUMBER" "$ISSUE_NUMBER" "$SUMMARY")
           echo "ts=$TS" >> "$GITHUB_OUTPUT"
@@ -138,12 +218,12 @@ jobs:
       # the conversation went.
       - name: Record that the session started
         env:
-          TS: ${{ steps.thread.outputs.ts }}
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \
             ':speech_balloon: **Review huddle**: session started; the conversation is running now.' \
-            "<!-- HUDDLE_SESSION_STARTED thread=${TS:-none} run=${GITHUB_RUN_ID} -->" \
+            "<!-- HUDDLE_SESSION_STARTED thread=${THREAD_TS:-none} run=${GITHUB_RUN_ID} -->" \
             '<!-- nyxgpt-token-mention -->')"
 
       - name: "Round 1 - dev turn"
@@ -151,7 +231,7 @@ jobs:
         if: >-
           !cancelled()
           && steps.thread.outcome == 'success'
-          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 1
+          && fromJSON(env.MAX_ROUNDS) >= 1
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -161,7 +241,7 @@ jobs:
           prompt: |
             You are the developer agent in a review huddle on PR #${{ env.PR_NUMBER }}
             (issue #${{ steps.context.outputs.issue_number }}), round 1 of at most
-            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+            ${{ env.MAX_ROUNDS }}.
 
             This invocation is memoryless on purpose (#3687): reason from what is
             written down, not from anything you believe about earlier rounds.
@@ -216,7 +296,7 @@ jobs:
         if: >-
           !cancelled()
           && steps.thread.outcome == 'success'
-          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 1
+          && fromJSON(env.MAX_ROUNDS) >= 1
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -226,7 +306,7 @@ jobs:
           prompt: |
             You are the review agent in a review huddle on PR #${{ env.PR_NUMBER }}
             (issue #${{ steps.context.outputs.issue_number }}), round 1 of at most
-            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+            ${{ env.MAX_ROUNDS }}.
 
             This invocation is memoryless on purpose (#3687): reason from what is
             written down, not from anything you believe about earlier rounds.
@@ -295,7 +375,7 @@ jobs:
         if: >-
           !cancelled()
           && steps.thread.outcome == 'success'
-          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 2
+          && fromJSON(env.MAX_ROUNDS) >= 2
           && steps.settle1.outputs.settled != 'true'
         uses: anthropics/claude-code-action@v1
         with:
@@ -306,7 +386,7 @@ jobs:
           prompt: |
             You are the developer agent in a review huddle on PR #${{ env.PR_NUMBER }}
             (issue #${{ steps.context.outputs.issue_number }}), round 2 of at most
-            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+            ${{ env.MAX_ROUNDS }}.
 
             This invocation is memoryless on purpose (#3687): reason from what is
             written down, not from anything you believe about earlier rounds.
@@ -361,7 +441,7 @@ jobs:
         if: >-
           !cancelled()
           && steps.thread.outcome == 'success'
-          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 2
+          && fromJSON(env.MAX_ROUNDS) >= 2
           && steps.settle1.outputs.settled != 'true'
         uses: anthropics/claude-code-action@v1
         with:
@@ -372,7 +452,7 @@ jobs:
           prompt: |
             You are the review agent in a review huddle on PR #${{ env.PR_NUMBER }}
             (issue #${{ steps.context.outputs.issue_number }}), round 2 of at most
-            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+            ${{ env.MAX_ROUNDS }}.
 
             This invocation is memoryless on purpose (#3687): reason from what is
             written down, not from anything you believe about earlier rounds.
@@ -423,13 +503,23 @@ jobs:
           python3 scripts/agents/lib/huddle_channel.py post \
             "$THREAD_TS" review < "$FILE"
 
+      # Settling is sticky, and it has to be: round N gates on round N-1's
+      # answer alone, so a huddle that settled in round 1 skips round 2 --
+      # which means 04-review.md is never written, which read naively says
+      # "not settled" and would run round 3 on a closed disagreement. Two
+      # paid invocations, on a question nobody is still asking.
       - name: "Round 2 - has it settled?"
         id: settle2
         if: "!cancelled()"
+        env:
+          ALREADY: ${{ steps.settle1.outputs.settled }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/04-review.md"
-          if [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
+          if [[ "$ALREADY" == "true" ]]; then
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Huddle already settled in an earlier round"
+          elif [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
             echo "settled=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Huddle settled in round 2"
           else
@@ -441,7 +531,7 @@ jobs:
         if: >-
           !cancelled()
           && steps.thread.outcome == 'success'
-          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 3
+          && fromJSON(env.MAX_ROUNDS) >= 3
           && steps.settle2.outputs.settled != 'true'
         uses: anthropics/claude-code-action@v1
         with:
@@ -452,7 +542,7 @@ jobs:
           prompt: |
             You are the developer agent in a review huddle on PR #${{ env.PR_NUMBER }}
             (issue #${{ steps.context.outputs.issue_number }}), round 3 of at most
-            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+            ${{ env.MAX_ROUNDS }}.
 
             This invocation is memoryless on purpose (#3687): reason from what is
             written down, not from anything you believe about earlier rounds.
@@ -507,7 +597,7 @@ jobs:
         if: >-
           !cancelled()
           && steps.thread.outcome == 'success'
-          && fromJSON(vars.HUDDLE_MAX_ROUNDS || '3') >= 3
+          && fromJSON(env.MAX_ROUNDS) >= 3
           && steps.settle2.outputs.settled != 'true'
         uses: anthropics/claude-code-action@v1
         with:
@@ -518,7 +608,7 @@ jobs:
           prompt: |
             You are the review agent in a review huddle on PR #${{ env.PR_NUMBER }}
             (issue #${{ steps.context.outputs.issue_number }}), round 3 of at most
-            ${{ vars.HUDDLE_MAX_ROUNDS || '3' }}.
+            ${{ env.MAX_ROUNDS }}.
 
             This invocation is memoryless on purpose (#3687): reason from what is
             written down, not from anything you believe about earlier rounds.
@@ -572,10 +662,15 @@ jobs:
       - name: "Round 3 - has it settled?"
         id: settle3
         if: "!cancelled()"
+        env:
+          ALREADY: ${{ steps.settle2.outputs.settled }}
         run: |
           set -euo pipefail
           FILE="$HUDDLE_DIR/06-review.md"
-          if [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
+          if [[ "$ALREADY" == "true" ]]; then
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Huddle already settled in an earlier round"
+          elif [[ -s "$FILE" ]] && grep -qx 'HUDDLE_SETTLED' "$FILE"; then
             echo "settled=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Huddle settled in round 3"
           else
@@ -586,6 +681,15 @@ jobs:
       - name: The scrummaster's decision
         id: decision
         if: "!cancelled() && steps.thread.outcome == 'success'"
+        env:
+          # The escalate path shells out to `gh` (assign_issue_verified,
+          # `gh pr edit`, sprint_autopilot_kick), and `gh` reads the ambient
+          # GH_TOKEN -- which at job level is the *review* agent's. The old
+          # `scrummaster_huddle_mediation.yml` ran wholly under the
+          # scrummaster's token; this step is that run, so it carries that
+          # identity too. Step env wins over job env for the tools this
+          # action spawns.
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -634,9 +738,20 @@ jobs:
             --allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh issue view:*),Bash(bash -lc*),Read,Grep,Write"
           show_full_output: true
 
+      # Posted as the SCRUMMASTER, and that is load-bearing, not cosmetic:
+      # `huddle_decision_dispatch.yml` fires only for a HUDDLE_DECISION
+      # comment authored by `vars.SCRUM_AGENT` or the owner. Under the job's
+      # review-agent token the decision would land, look right, and dispatch
+      # nothing -- the issue would sit In Review exactly as it did on #3733,
+      # which is the stall that workflow was built to close. The old
+      # `scrummaster_huddle_mediation.yml` satisfied the gate by construction
+      # (the whole run was the scrummaster); here it is this one override.
+      # `tests/unit/test_huddle_session.py::TestTheDecisionCanActuallyDispatch`
+      # pins the two ends together.
       - name: Post the decision to the thread and the PR
         if: "!cancelled() && steps.decision.outcome == 'success'"
         env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
@@ -648,8 +763,7 @@ jobs:
           python3 scripts/agents/lib/huddle_channel.py post \
             "$THREAD_TS" scrum < "$FILE"
 
-          PERMALINK=$(python3 scripts/agents/lib/huddle_channel.py permalink \
-            "$THREAD_TS")
+          PERMALINK=$(python3 scripts/agents/lib/huddle_channel.py permalink "$THREAD_TS")
           {
             cat "$FILE"
             printf '\n\n'
@@ -688,6 +802,9 @@ jobs:
       - name: Record a failed session
         if: failure()
         env:
+          # Same shape as the started marker, including the `:-none` default:
+          # a session that died before the thread opened still has to say so,
+          # and `thread=` with nothing after it reads as a truncated marker.
           THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \

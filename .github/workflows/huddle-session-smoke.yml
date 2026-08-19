@@ -1,0 +1,95 @@
+name: Huddle Session Smoke
+
+# Executed verification for `huddle_session.yml` (#3911, CLAUDE.md #3775).
+#
+# The huddle is a workflow, and a workflow's shell is the part inspection
+# cannot see. The consolidation's first review round found a settle-gating
+# defect -- a huddle that closed in round 1 still ran round 3, two paid
+# invocations on a resolved disagreement -- that no amount of reading the YAML
+# had caught and that running the bodies once catches immediately. That is the
+# #3775 lesson, so the bodies now get run on every change.
+#
+# Two jobs, the `github-script-injection-smoke.yml` shape:
+#
+#   1. the real workflow's `run:` bodies are executed on ubuntu with the
+#      environment the runner would hand them, and their outcomes asserted;
+#   2. the pre-fix settle body is planted into a copy and the probe is
+#      REQUIRED to fail on it -- a guard that cannot fail is not a guard.
+#
+# Neither job touches GitHub (a recording `gh` shim is first on PATH) or Slack
+# (unconfigured on purpose, so the adapter runs its real degradation path).
+# What genuinely cannot run here is live Slack delivery under three user
+# identities -- that needs the app, three user tokens and channel invites only
+# the owner can create, and it is deferred to acceptance per
+# docs/live-verification-ci.md.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/huddle_session.yml"
+      - ".github/workflows/huddle-session-smoke.yml"
+      - "scripts/agents/lib/huddle_session_probe.py"
+      - "scripts/agents/lib/huddle_channel.py"
+  pull_request:
+    paths:
+      - ".github/workflows/huddle_session.yml"
+      - ".github/workflows/huddle-session-smoke.yml"
+      - "scripts/agents/lib/huddle_session_probe.py"
+      - "scripts/agents/lib/huddle_channel.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  session-shell-behaves:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      - name: Execute the session's shell bodies
+        run: python scripts/agents/lib/huddle_session_probe.py
+
+      # Fault injection: the probe re-plants the pre-fix settle check (its own
+      # round's file, ignoring whether an earlier round already settled) and
+      # requires its own assertions to reject it. Without this the probe could
+      # silently rot into a set of assertions nothing can violate.
+      - name: Probe rejects the pre-fix settle gating
+        run: python scripts/agents/lib/huddle_session_probe.py --prove-it-fails
+
+  session-structure-holds:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --quiet pytest pyyaml
+
+      # The properties that live in `if:` expressions and job wiring rather
+      # than in shell -- the dispatch identity, the stand-down gate, the
+      # settle chain -- which the probe structurally cannot execute.
+      #
+      # `--noconftest` so this job costs a two-package install instead of the
+      # whole editable package: `tests/conftest.py` imports psutil and
+      # `nyxgpt.config`, and none of these three files use a fixture from it.
+      # If one ever does, drop the flag and install `-e ".[dev]"` here.
+      - name: The structural contract the session must keep
+        run: >-
+          python -m pytest tests/unit/test_huddle_session.py
+          tests/unit/test_huddle_channel.py tests/unit/test_huddle_state.py
+          --noconftest -p no:cacheprovider -q --no-header

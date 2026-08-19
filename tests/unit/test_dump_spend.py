@@ -132,7 +132,7 @@ class TestCollect:
 
     def test_dynamic_workflow_derives_claude_steps_and_retry_cycles(self, dump_spend):
         runs_by_workflow = {
-            dump_spend.CLAUDE_WORKFLOW_DYNAMIC: [
+            "developer_auto_implement.yml": [
                 {"id": 5, "status": "completed", "head_branch": "feat/8-thing"},
             ],
         }
@@ -152,7 +152,7 @@ class TestCollect:
 
     def test_dynamic_workflow_with_single_claude_step_has_no_retries(self, dump_spend):
         runs_by_workflow = {
-            dump_spend.CLAUDE_WORKFLOW_DYNAMIC: [
+            "developer_auto_implement.yml": [
                 {"id": 6, "status": "completed", "head_branch": "feat/9-thing"},
             ],
         }
@@ -166,6 +166,49 @@ class TestCollect:
             claude_steps_fn=claude_steps_fn,
         )
         assert issues[9]["retry_cycles"] == 0
+
+    def test_the_huddle_is_counted_dynamically_and_its_rounds_are_not_retries(self, dump_spend):
+        """#3911: a huddle's 7 possible invocations are rounds of one
+        conversation. Counting them statically would hide the huddle's real
+        cost; counting them as retry_cycles would report every huddle as a
+        6-retry implementation."""
+        assert "huddle_session.yml" in dump_spend.CLAUDE_WORKFLOWS_DYNAMIC
+        assert "huddle_session.yml" not in dump_spend.RETRY_WORKFLOWS
+        runs_by_workflow = {
+            "huddle_session.yml": [
+                {"id": 7, "status": "completed", "head_branch": "feat/11-thing"},
+            ],
+        }
+        list_runs_fn, run_minutes_fn, claude_steps_fn = self._fake_apis(
+            dump_spend, runs_by_workflow, {7: 12.0}, {7: 7}
+        )
+        issues, _ = dump_spend.collect(
+            "owner/repo",
+            list_runs_fn=list_runs_fn,
+            run_minutes_fn=run_minutes_fn,
+            claude_steps_fn=claude_steps_fn,
+        )
+        assert issues[11]["claude_steps"] == 7
+        assert issues[11]["retry_cycles"] == 0
+
+    @pytest.mark.parametrize(
+        "step_name",
+        [
+            "Round 1 - dev turn",
+            "Round 2 - review turn",
+            "Round 3 - dev turn",
+            "The scrummaster's decision",
+            "Run Claude Code to implement issue (Initial)",
+        ],
+    )
+    def test_the_dynamic_step_counter_recognises_every_paid_step_name(self, dump_spend, step_name):
+        """The Jobs-API counter matched on the name containing "claude". Not
+        one huddle step name does, so every huddle would have counted zero."""
+        assert dump_spend.CLAUDE_STEP_NAME_RE.search(step_name)
+
+    def test_the_retired_huddle_legs_are_no_longer_walked(self, dump_spend):
+        for retired in ("developer_huddle_position.yml", "scrummaster_huddle_mediation.yml"):
+            assert retired not in dump_spend.ALL_WORKFLOWS
 
 
 class TestBuildSnapshot:
