@@ -84,7 +84,7 @@ def test_nothing_recorded_under_a_running_stack_is_reported_as_unknown():
     assert state.short_label(deployed=True) == install_mode.INSTALL_MODE_UNRECORDED
     assert state.short_label(deployed=False) == install_mode.INSTALL_MODE_ARTIFACT
     # The way out is named, and it is a wrapped command (never raw terraform).
-    assert "nyxgpt up --terraform --local" in label
+    assert "nyxgpt up --terraform" in label
 
 
 def test_a_recorded_artifact_deployment_is_still_reported_as_artifact():
@@ -656,7 +656,7 @@ def test_doctor_reports_a_running_terraform_deployment_that_recorded_nothing(mon
     assert issues == []
     assert "not recorded" in out
     assert "nothing recorded what these containers were built from" in out
-    assert "nyxgpt up --terraform --local" in out
+    assert "nyxgpt up --terraform" in out
 
 
 def test_doctor_says_nothing_about_an_undeployed_machine_with_no_marker(monkeypatch, capsys):

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Executed verification for the local Kubernetes deployment (#3786, #3775).
 #
-# The question this answers: after `nyxgpt ops install --kubernetes --local`,
+# The question this answers: after `nyxgpt ops install --kubernetes`,
 # can a user actually chat? Not "are the Pods Running" -- #3786 was filed
 # against a stack where every api and web Pod ran and the web UI still
 # showed "Failed to load sessions" and could not answer a single message,
@@ -50,7 +50,7 @@
 # the app tier, on one node, in the default install, with nothing left Pending.
 #
 # Prerequisites: Docker, and a `nyxgpt` on PATH (`pip install -e .`). kubectl
-# and kind are installed by `nyxgpt ops install --kubernetes --local` itself
+# and kind are installed by `nyxgpt ops install --kubernetes` itself
 # when missing (#3724), so this script does not install them. To reproduce the
 # capacity claim on a machine larger than a stock 8GiB Docker Desktop VM,
 # create the cluster first and run `scripts/k8s-node-ballast.sh` against it --
@@ -154,12 +154,17 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/9 Bring the stack up: nyxgpt ops install --kubernetes --local"
+step "1/9 Bring the stack up: nyxgpt ops install --kubernetes"
 # No --skip-observability: this is the command as a user types it (#3826).
 # The layer that flag used to hide is also the one that did not fit the node
 # (#3825), so a gate that installs less than the default cannot see either.
-nyxgpt ops install --kubernetes --local --api-key "$API_KEY"
-ok "install --kubernetes --local completed"
+#
+# And no --local either (#3948): local is the default locality now, and this
+# is the executed evidence for it -- a real deploy driven by the command with
+# no locality flag at all. `--local` stays accepted as a no-op, which
+# k8s-artifact-smoke.sh still passes.
+nyxgpt ops install --kubernetes --api-key "$API_KEY"
+ok "install --kubernetes completed with no locality flag"
 
 step "2/9 Every Pod of the default stack was scheduled"
 # #3825: `install` reported success on a node whose memory was 99% reserved,
@@ -303,4 +308,4 @@ fi
 ok "without the data/LLM tier the chat round-trip fails, as it must"
 
 echo
-echo "[PASS] k8s --local deploys a stack that can actually chat (#3786)"
+echo "[PASS] k8s local deploy produces a stack that can actually chat (#3786)"

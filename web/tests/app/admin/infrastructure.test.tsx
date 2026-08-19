@@ -989,7 +989,7 @@ describe('InfrastructurePage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/No observability workloads in the/)).toBeInTheDocument();
     expect(
-      screen.getByText('nyxgpt ops observability --kubernetes --local')
+      screen.getByText('nyxgpt ops observability --kubernetes')
     ).toBeInTheDocument();
     expect(
       screen.queryByText('nyxgpt ops port-forward --target observability')
@@ -1023,7 +1023,7 @@ describe('InfrastructurePage', () => {
     expect(within(block).getByText(/No node had enough unreserved memory or CPU/)).toBeInTheDocument();
     // Reporting only, and the cure is a `nyxgpt` command -- never raw kubectl.
     expect(
-      within(block).getByText('nyxgpt ops install --kubernetes --local')
+      within(block).getByText('nyxgpt ops install --kubernetes')
     ).toBeInTheDocument();
     expect(within(block).queryByText(/kubectl/)).not.toBeInTheDocument();
   });
@@ -1813,7 +1813,7 @@ describe('InfrastructurePage', () => {
                   name: 'glitchtip',
                   state: 'failed',
                   summary: 'absent',
-                  details: 'Re-run `nyxgpt ops observability --kubernetes --local`.',
+                  details: 'Re-run `nyxgpt ops observability --kubernetes`.',
                 },
               ],
             },

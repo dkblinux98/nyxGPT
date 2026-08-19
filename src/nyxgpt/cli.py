@@ -1629,13 +1629,12 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         "--dev",
         action="store_true",
         help=(
-            "Install the api/web services from the current checkout -- an editable venv "
-            "(pip install -e) plus the Next dev server -- instead of building/downloading "
-            "artifacts, so the stack runs the working tree at HEAD (#3789). With "
-            "--kubernetes it builds the two container images from the working tree "
-            "instead of from the published artifacts (#3834); with --terraform it builds "
-            "the api/web images from that tree instead of pulling the published ones "
-            "(#3835). Requires a checkout; without this flag the artifact path is used. "
+            "SOURCE OF THE CODE: deploy this checkout's working tree instead of the "
+            "published artifacts (the default). Natively that is an editable venv "
+            "(pip install -e) plus the Next dev server, so api/web run the tree at HEAD "
+            "(#3789); with --kubernetes it builds the two container images from that tree "
+            "rather than pulling the published ones (#3834), and with --terraform the "
+            "api/web images likewise (#3835). Requires a checkout. "
             "Where --dev is accepted: here (this machine, all three modes) and on "
             "`nyxgpt cloud deploy` (the AWS EC2 target, #3950) -- see docs/cloud.md"
         ),
@@ -1644,8 +1643,10 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         "--terraform",
         action="store_true",
         help=(
-            "Deploy the core stack via Terraform (init/plan/apply) instead of native/Homebrew "
-            "reconciliation -- requires --local"
+            "Deploy the core stack to this machine via Terraform (init/plan/apply) instead "
+            "of native/Homebrew reconciliation; add --dev to build its api/web images from "
+            "your working tree. (Terraform also provisions the AWS substrate, but through "
+            "`nyxgpt cloud infra apply` -- not this flag)"
         ),
     )
     parser.add_argument(
@@ -1653,9 +1654,11 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "Deploy the full stack (api, web, Cassandra, Ollama) to a local Kubernetes "
-            "cluster instead of native/Homebrew "
-            "reconciliation -- requires --local. Uses an existing reachable cluster if "
-            "kubectl is already configured, otherwise provisions a local kind cluster"
+            "cluster instead of native/Homebrew reconciliation; add --dev to build the two "
+            "container images from your working tree. Uses an existing reachable cluster if "
+            "kubectl is already configured, otherwise provisions a local kind cluster. "
+            "The cloud path is not a cluster: `nyxgpt cloud deploy` runs the stack on an "
+            "AWS instance with Compose (see docs/cloud.md)"
         ),
     )
     locality = parser.add_mutually_exclusive_group()
@@ -1663,14 +1666,17 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         "--local",
         action="store_true",
         help=(
-            "Target the local machine (required with --terraform/--kubernetes; the only "
-            "locality implemented today)"
+            "Target the local machine -- the default for --terraform/--kubernetes, and "
+            "accepted explicitly (a no-op) so existing scripts keep working"
         ),
     )
     locality.add_argument(
         "--cloud",
         action="store_true",
-        help="Target a cloud deployment (not yet implemented -- --local is the precursor)",
+        help=(
+            "Not implemented for this flag, which deploys to the local machine: "
+            f"{ops_mod.CLOUD_DEPLOY_POINTER}"
+        ),
     )
     parser.add_argument(
         "--api-key",
@@ -2263,14 +2269,17 @@ def cli(argv: list[str] | None = None) -> int:
         "--kubernetes",
         action="store_true",
         help=(
-            "Deploy the observability layer into the Kubernetes cluster (k8s/observability/) "
-            "instead of the Compose profiles -- requires --local"
+            "Deploy the observability layer into the local Kubernetes cluster "
+            "(k8s/observability/) instead of the Compose profiles"
         ),
     )
     ops_observability.add_argument(
         "--local",
         action="store_true",
-        help="Target the local machine (required with --kubernetes)",
+        help=(
+            "Target the local machine -- the default for --kubernetes, and accepted "
+            "explicitly (a no-op) so existing scripts keep working"
+        ),
     )
     _add_quiet_flag(ops_observability)
 

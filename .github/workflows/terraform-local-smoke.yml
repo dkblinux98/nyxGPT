@@ -4,7 +4,7 @@ name: Terraform Local Smoke
 permissions:
   contents: read
 
-# The full-stack `--local` deploy is `nyxgpt ops install --terraform --local`
+# The full-stack local deploy is `nyxgpt ops install --terraform`
 # (there is no raw `docker compose up` full-stack path). This gate exercises
 # that command end-to-end -- a real deploy of the Terraform stack + Docker
 # images + observability -- to catch the class of integration defects that
@@ -32,7 +32,7 @@ permissions:
 #                             at all? It is the executed evidence for #3835's
 #                             repo-less acceptance criterion.
 
-# Scoped to Terraform changes only. Standing up the full `--terraform --local`
+# Scoped to Terraform changes only. Standing up the full `--terraform`
 # stack is expensive, so this must not gate every code review -- it runs only
 # when the Terraform config, the packaged copy of it, the install-mode marker
 # or this workflow changes. Trade-off: it will NOT catch app-code (src/**,
@@ -91,7 +91,7 @@ jobs:
           # as root, so the non-root users inside the observability containers
           # (prometheus=nobody, grafana=472, loki=10001, postgres=999) can't
           # write their data dir and the container crash-loops -> unhealthy ->
-          # the whole `--terraform --local` deploy fails. Docker Desktop on
+          # the whole `--terraform` deploy fails. Docker Desktop on
           # macOS maps these to the invoking user, so this only bites CI. Pre-
           # create them world-writable before bring-up so every container's
           # user can write regardless of its uid.
@@ -104,8 +104,14 @@ jobs:
       # --dev is what this job has always tested (#3835): images built from
       # the checked-out tree. Without the flag it would deploy the published
       # images instead, and this job would stop covering the ref under test.
-      - name: nyxgpt ops install --terraform --local --dev
-        run: nyxgpt ops install --terraform --local --dev
+      #
+      # And no --local: local is the default locality since #3948, so the
+      # command a user now types carries no locality flag. This deploy is the
+      # executed evidence for that default -- the artifact job below still
+      # passes --local explicitly, which is the evidence that it remains
+      # accepted as a no-op.
+      - name: nyxgpt ops install --terraform --dev
+        run: nyxgpt ops install --terraform --dev
 
       - name: The deployment must report its own install mode, not the native one
         run: |
@@ -118,7 +124,7 @@ jobs:
         run: |
           set -uo pipefail
           fail=0
-          # `nyxgpt ops install --terraform --local` returns once its own
+          # `nyxgpt ops install --terraform` returns once its own
           # internal health-waits (Grafana's Compose healthcheck, etc.) are
           # satisfied, but that doesn't cover every container's own startup
           # tail (e.g. a container reporting healthy just as its app finishes
@@ -160,7 +166,7 @@ jobs:
       - name: First chat must work with no manual model pull
         run: |
           python3 scripts/first-chat-smoke.py \
-            --install-cmd "nyxgpt ops install --terraform --local --dev" \
+            --install-cmd "nyxgpt ops install --terraform --dev" \
             --skip-fault-injection
 
       - name: Dump diagnostics on failure
@@ -274,6 +280,9 @@ jobs:
 
       # Run from an empty directory: nothing here resolves relative to the
       # checkout, and a regression that reintroduces such a lookup fails.
+      # --local is passed deliberately here (#3948): it is now a no-op, and
+      # this is the executed proof that the flag existing scripts and docs
+      # still carry is accepted rather than rejected as unrecognized.
       - name: nyxgpt ops install --terraform --local (artifact path, no checkout)
         working-directory: /tmp/clean
         env:

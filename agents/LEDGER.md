@@ -1045,6 +1045,27 @@ rather than mechanism, and nothing can enforce them.
   showed #3811 had taken *that* one. IDs are never reused and every entry
   stands.)
   Source: #3950; #3506; extends **D-009**; interacts with **D-033**.
+- **D-036** · 2026-08-19 · owner (#3948) — **`--local` is the default locality
+  for `ops install --terraform/--kubernetes`, not a requirement**, and it stays
+  accepted as an explicit no-op so existing scripts and docs keep working. It
+  had been mandatory while also being the only legal value, which made the CLI
+  demand the one possible answer. `--cloud` is still refused by these flags,
+  but the refusal (and the help) now says what it means: *this flag* has no
+  cloud target — cloud deployment is `nyxgpt cloud infra apply` +
+  `nyxgpt cloud deploy`. The old "not yet implemented" wording read as "nyxGPT
+  cannot deploy to a cloud target at all", which was never true. One shared
+  constant (`ops.CLOUD_DEPLOY_POINTER`) backs both the error and the help so
+  they cannot drift, and `tests/unit/test_cli_locality_help.py` reads the
+  requirement claims out of the generated help and compares them against what
+  `_resolve_locality` enforces — a wording grep would not have caught this
+  drift and does not catch the next one.
+  Source: #3948; `src/nyxgpt/ops.py` (`_resolve_locality`);
+  `src/nyxgpt/cli.py` (`_add_install_arguments`);
+  `.github/workflows/cli-locality-smoke.yml`.
+  Filed as **D-033** on this branch and renumbered three times on the way
+  into `v3.0.0` — #3867 took `D-033`, #3811 then took `D-034`, and #3950 then
+  took `D-035`, each while this PR was in review. IDs are never reused and
+  every entry stands.
 
 ## Parked
 

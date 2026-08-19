@@ -32,7 +32,7 @@ canary adds the gradual shift and auto-rollback blue/green never had.)
 ## One-command bring-up (`nyxgpt ops`)
 
 ```bash
-nyxgpt ops install --kubernetes --local
+nyxgpt ops install --kubernetes
 ```
 
 Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
@@ -160,7 +160,7 @@ below reaches through `kubectl port-forward`.
 
 ## Install modes: artifact (default) and `--dev`
 
-`nyxgpt ops install --kubernetes --local` has the same two install modes the
+`nyxgpt ops install --kubernetes` has the same two install modes the
 native install has (#3789, #3834), and records which one this deployment is
 running so nothing has to guess:
 
@@ -216,10 +216,14 @@ Kubernetes artifact deployment at the same time. The Infrastructure page in
 the admin dashboard shows the same thing. `nyxgpt ops down --kubernetes`
 clears the record along with the deployment.
 
-`--local` is required and explicit — it's the only locality implemented
-today, and is the precursor to a future cloud deployment target. `--cloud`
-is accepted by the CLI surface but rejected with a "not yet implemented"
-message rather than silently doing the wrong thing.
+Locality: this flag deploys to a cluster on the local machine, and that is the
+default — `nyxgpt ops install --kubernetes` needs no locality flag (#3948).
+`--local` is still accepted as an explicit no-op, so the commands on this page
+and in your scripts keep working. `--cloud` is accepted by the CLI surface but
+rejected, and here that is more than a limit of the flag: the cloud path
+provisions an AWS instance (`nyxgpt cloud infra apply`) and runs the stack on it
+with Compose (`nyxgpt cloud deploy`, see [cloud.md](cloud.md)) — it is not a
+cluster deployment, so there is no cloud target for this flag to accept.
 
 The command refuses to start if the native/Compose stack already owns the
 `api` port — run `nyxgpt ops down` (or stop the conflicting components)
@@ -252,9 +256,9 @@ expected to type by hand.
   for what the deployment asks for and what the install does when it doesn't
   fit
 - `kubectl` (with `kustomize` support, built in since 1.14) -- installed for
-  you by `nyxgpt ops install --kubernetes --local` if it's missing (#3724)
+  you by `nyxgpt ops install --kubernetes` if it's missing (#3724)
 - [kind](https://kind.sigs.k8s.io/#installation) -- also installed for you,
-  and only needed if you want `nyxgpt ops install --kubernetes --local` to
+  and only needed if you want `nyxgpt ops install --kubernetes` to
   provision a cluster. If you already have a reachable cluster (minikube,
   Docker Desktop's built-in cluster, an existing kind cluster, or anything
   else `kubectl`'s current context points at), that's used as-is and `kind`
@@ -296,7 +300,7 @@ Two things are worth knowing about those figures:
   failure with a different word in it. The api requests 100m and is capped
   at a full core; the web tier requests 50m and is capped at 500m.
 
-`nyxgpt ops install --kubernetes --local` measures this **before it builds
+`nyxgpt ops install --kubernetes` measures this **before it builds
 the api and web images**, which is the expensive half of that command and the
 first thing it would otherwise spend twenty minutes on: it totals what the
 manifests will reserve, memory and CPU alike, compares each against the node's
@@ -311,7 +315,7 @@ resource —
   Settings → Resources), or install without the observability layer:
 
   ```bash
-  nyxgpt ops install --kubernetes --local --skip-observability
+  nyxgpt ops install --kubernetes --skip-observability
   ```
 
   The refusal names that second option only when dropping the layer would
@@ -333,7 +337,7 @@ looked, on that page, exactly like a stack still starting up.
 
 ## 0. Create a cluster (if you don't have one)
 
-`nyxgpt ops install --kubernetes --local` does this step for you automatically
+`nyxgpt ops install --kubernetes` does this step for you automatically
 (see [One-command bring-up](#one-command-bring-up-nyxgpt-ops) above) --
 provisioning a `kind` cluster named `nyxgpt-local` when kubectl's current
 context has no reachable cluster. This section documents what that step does
@@ -459,7 +463,7 @@ used.
 
 ## Observability in the cluster
 
-`nyxgpt ops install --kubernetes --local` deploys the observability tier
+`nyxgpt ops install --kubernetes` deploys the observability tier
 into the cluster alongside the app tier (#3787). The Compose observability
 profiles cannot serve this mode -- they scrape `host.docker.internal` and
 resolve Compose service names on a Docker network, neither of which exists
@@ -487,7 +491,7 @@ Commands (all wrapped -- no raw `kubectl`):
 
 ```bash
 # Deploy or re-apply the layer on its own, without touching the app tier
-nyxgpt ops observability --kubernetes --local
+nyxgpt ops observability --kubernetes
 
 # Publish Grafana (3001), Prometheus (9090), Jaeger (16686) and GlitchTip
 # (8080) on localhost -- the same ports the admin dashboard links to
@@ -497,7 +501,7 @@ nyxgpt ops port-forward --target observability
 nyxgpt ops status
 ```
 
-`nyxgpt ops install --kubernetes --local --skip-observability` opts out (the
+`nyxgpt ops install --kubernetes --skip-observability` opts out (the
 app tier only), and `nyxgpt ops down --kubernetes` removes the layer with
 everything else in the namespace.
 
@@ -561,7 +565,7 @@ Notes:
 
 Both live **inside the cluster** (#3786), so the deployment is complete on
 its own: no host Ollama, no bring-your-own Cassandra, no `hostAliases`
-pointing back at the workstation. `nyxgpt ops install --kubernetes --local`
+pointing back at the workstation. `nyxgpt ops install --kubernetes`
 stops the host's own services in this mode, so anything that depended on
 them could not work anyway — the previous configuration pointed the api at
 `host.docker.internal:11434`, which does not resolve from a Pod on a Linux
@@ -587,7 +591,7 @@ message.
   hand (#3824). The embedding model is gated on even though
   `enable_chat_context` ships false, because RAG is a per-session toggle the
   user can turn on at any moment. Neither Service gets endpoints before
-  that's true, and `nyxgpt ops install --kubernetes --local` waits for both
+  that's true, and `nyxgpt ops install --kubernetes` waits for both
   Pods to be Ready before it reports the stack healthy.
 - **Sessions are shared.** `k8s/configmap.yaml` sets
   `[nyxgpt] session_backend = cassandra`, so every api replica reads and
@@ -617,7 +621,7 @@ To point the deployment at an *external* Cassandra or Ollama instead, change
 corresponding manifest from `kustomization.yaml`.
 
 Edit the copy under `~/.nyxGPT/k8s/` — that is the one the wrapped command
-applies. Every `nyxgpt ops install --kubernetes --local` re-syncs that
+applies. Every `nyxgpt ops install --kubernetes` re-syncs that
 directory from the package's own manifests, so an edit there survives until the
 next install and is then replaced (`secret.yaml` is the exception: it holds the
 API key, is never packaged, and is left alone). From a source checkout, edit the
@@ -665,7 +669,7 @@ classification as the badges rather than from a second probe, so the two
 halves of the card cannot disagree about a Pod -- and one that has simply not
 been placed *yet* is PENDING and is not named here. Reporting only, as with
 everything else on this page -- the cure is more memory or CPU on the cluster
-VM and a re-run of `nyxgpt ops install --kubernetes --local`, which checks the
+VM and a re-run of `nyxgpt ops install --kubernetes`, which checks the
 node's capacity against the stack before it applies anything (see [Node
 capacity: what the stack reserves](#node-capacity-what-the-stack-reserves)).
 
