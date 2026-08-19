@@ -36,11 +36,12 @@ has to be the outermost middleware, because `api_key_auth` calls `load_config`
 itself before it can read `[auth] enabled` or compare a key -- so while the
 file is unparseable there is no request on which auth is enforceable, and that
 diagnosis reaches anyone who can reach the port. With auth switched on and a
-credential in the file, the API is booted on a good config, the file is then
-hand-damaged so a secret-bearing line sits above the first section header, and
-an *anonymous* request must come back naming the error class and the line
-number and quoting none of the file. The leaking rendering is injected first
-and required to leak, for the same reason as above.
+unique canary standing in for the `[auth] api_key` value, the API is booted on
+a good config, the file is then hand-damaged so the canary-bearing line sits
+above the first section header, and an *anonymous* request must come back
+naming the error class and the line number and quoting none of the file. The
+leaking rendering is injected first and required to leak, for the same reason
+as above.
 
 Run: `python3 scripts/config-wizard-save-smoke.py` (no arguments; needs the
 package importable, e.g. `pip install -e .`).
@@ -102,8 +103,17 @@ w._find_key_line = _prefix_find_key_line
 w._write_ini_checked = _prefix_write
 """
 
-#: A credential seeded into config.ini, used by the disclosure half below.
-SECRET_ON_DISK = "sk-live-SMOKE-SECRET-VALUE"
+#: A unique marker seeded into config.ini, used by the disclosure half below.
+#:
+#: The property under test is content-agnostic -- the pre-review rendering
+#: quotes the raw offending line whatever it holds -- so all this value needs
+#: to be is unlikely to occur anywhere else in an HTTP body. It deliberately
+#: does **not** look like a live credential: the earlier `sk-live-...` shape
+#: bound to a `SECRET_ON_DISK` name tripped CodeQL's clear-text-storage query
+#: on the two `write_text` calls below, reporting a hard-coded test marker
+#: written to an isolated temp dir as a leaked secret. A marker that reads as
+#: a marker costs the assertions nothing and keeps the scanner honest.
+CANARY_ON_DISK = "NYXGPT-3944-SMOKE-CANARY"
 
 # Restores the pre-review rendering of a parse error: one that quotes the raw
 # offending line. `MissingSectionHeaderError.line` is the setting that appears
@@ -379,10 +389,15 @@ def check_injection_reproduces() -> None:
 
 
 def seed_config_with_auth_enabled(home: Path) -> Path:
-    """Seed the same config.ini, with API-key auth on and a real secret in it."""
+    """Seed the same config.ini, with API-key auth on and the canary marker in it.
+
+    The marker stands in for whatever the `[auth] api_key` line really holds on
+    a user's machine; the assertions only need it to be unique, not to look
+    like a key (see `CANARY_ON_DISK`).
+    """
     cfg_path = seed_config(home)
     text = cfg_path.read_text(encoding="utf-8")
-    text += f"\n[auth]\nenabled = true\napi_key = {SECRET_ON_DISK}\nheader = X-API-Key\n"
+    text += f"\n[auth]\nenabled = true\napi_key = {CANARY_ON_DISK}\nheader = X-API-Key\n"
     cfg_path.write_text(_dedupe_section(text, "auth"), encoding="utf-8")
     cfg_path.chmod(0o600)
     configparser.ConfigParser().read(cfg_path, encoding="utf-8")
@@ -428,9 +443,9 @@ def disclosure_scenario(*, inject_leak: bool) -> dict:
 
             # The hand-edit slip the recovery docs walk a user through: a
             # setting ends up above its section header. `configparser` reports
-            # line 1 -- and line 1 is a credential.
+            # line 1 -- and on a real machine line 1 is a credential.
             cfg_path.write_text(
-                f"api_key = {SECRET_ON_DISK}\n" + cfg_path.read_text(encoding="utf-8"),
+                f"api_key = {CANARY_ON_DISK}\n" + cfg_path.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
             status, body = http_status_and_text(port, "/api/v1/config/sections")
@@ -441,6 +456,7 @@ def disclosure_scenario(*, inject_leak: bool) -> dict:
             "status_before_damage": authed_status,
             "status": status,
             "body": body,
+            "home": str(home),
             "log": api_log,
         }
 
@@ -463,15 +479,32 @@ def check_no_pre_auth_disclosure() -> None:
         failures.append("the response no longer names its cause -- redaction cost the diagnosis")
     if "MissingSectionHeaderError" not in r["body"] or "line 1" not in r["body"]:
         failures.append("the error class and line number must survive redaction")
-    if SECRET_ON_DISK in r["body"]:
+    if CANARY_ON_DISK in r["body"]:
         failures.append(
-            "the response body contains a credential read out of config.ini: " f"{r['body'][:400]}"
+            "the response body contains a line read out of config.ini: " f"{r['body'][:400]}"
+        )
+    # The path is the same channel on a smaller scale: an absolute
+    # `/Users/<name>/.nyxGPT/config.ini` names the OS account to an anonymous
+    # caller. `$HOME` is this run's temp dir, so its absolute form appearing
+    # in the body is exactly the leak a real user's home directory would be.
+    if "~/.nyxGPT/config.ini" not in r["body"]:
+        failures.append(
+            "the response no longer names the file home-relative, so it cannot "
+            f"be checked for the account name: {r['body'][:400]}"
+        )
+    if r["home"] in r["body"]:
+        failures.append(
+            f"the response body spells out the home directory ({r['home']}), which on a "
+            f"real machine is the OS account name: {r['body'][:400]}"
         )
     if failures:
         raise AssertionError(
             "the anonymous config_unreadable response is wrong:\n  - " + "\n  - ".join(failures)
         )
-    log("PASS: anonymous 500 names the class and line, and carries no line content")
+    log(
+        "PASS: anonymous 500 names the class and line, and carries neither line "
+        "content nor the account's home path"
+    )
 
 
 def check_leak_injection_reproduces() -> None:
@@ -479,14 +512,22 @@ def check_leak_injection_reproduces() -> None:
     log("injected pre-review diagnosis: the same anonymous request must leak the line")
     r = disclosure_scenario(inject_leak=True)
 
-    if SECRET_ON_DISK not in r["body"]:
+    if CANARY_ON_DISK not in r["body"]:
         raise AssertionError(
-            "injecting the line-quoting diagnosis did NOT leak the credential, so this "
+            "injecting the line-quoting diagnosis did NOT leak the marker, so this "
             "job cannot tell a redacted build from a leaking one. Either the injection no "
             "longer matches the pre-review rendering or the fixture stopped reaching it "
             f"(status={r['status']}, body={r['body'][:400]})"
         )
-    log(f"PASS: pre-review rendering discloses the line (status={r['status']})")
+    # The same injection carries the absolute path, which is the inverse proof
+    # for the home-relative rendering asserted above.
+    if r["home"] not in r["body"]:
+        raise AssertionError(
+            "injecting the pre-review rendering did NOT put the absolute home path in "
+            "the body, so the home-relative assertion above cannot fail on a regression "
+            f"(status={r['status']}, body={r['body'][:400]})"
+        )
+    log(f"PASS: pre-review rendering discloses the line and the home path (status={r['status']})")
 
 
 def main() -> int:

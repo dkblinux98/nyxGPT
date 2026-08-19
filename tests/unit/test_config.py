@@ -2686,6 +2686,40 @@ def test_describe_config_parse_error_redacts_the_offending_line_by_default() -> 
         assert "nyxgpt ops doctor" in rendered
 
 
+def test_describe_config_parse_error_names_the_file_home_relative(monkeypatch) -> None:
+    """The path is the same pre-auth channel on a smaller scale (#3944 review).
+
+    `Cannot parse /Users/darla/.nyxGPT/config.ini: ...` reaches unauthenticated
+    callers and spells out the OS account name. `~/.nyxGPT/config.ini` names
+    the file just as usefully and names nobody. A path *outside* home is the
+    operator's explicit choice and is left intact -- shortening it would only
+    hide which file failed.
+    """
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/darla")))
+
+    try:
+        configparser.ConfigParser().read_string("[a]\nx = 1\nx = 2\n")
+    except configparser.Error as e:
+        exc: configparser.Error = e
+    else:  # pragma: no cover - the fixture above is invalid
+        raise AssertionError("expected a parse error")
+
+    for include_line_text in (False, True):
+        rendered = describe_config_parse_error(
+            Path("/home/darla/.nyxGPT/config.ini"), exc, include_line_text=include_line_text
+        )
+        assert "~/.nyxGPT/config.ini" in rendered
+        assert "/home/darla" not in rendered
+
+    # Outside home: left exactly as given, so the operator can see which file.
+    elsewhere = describe_config_parse_error(Path("/etc/nyxgpt/config.ini"), exc)
+    assert "/etc/nyxgpt/config.ini" in elsewhere
+
+
 def test_describe_config_parse_error_quotes_the_line_only_when_opted_in() -> None:
     """`nyxgpt ops doctor` is local and does opt in -- that split is the fix."""
     import configparser

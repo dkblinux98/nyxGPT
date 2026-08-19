@@ -236,6 +236,29 @@ class ConfigParseError(RuntimeError):
     """
 
 
+def _display_config_path(config_path: Path | str) -> str:
+    """Render `config_path` home-relative (``~/.nyxGPT/config.ini``) when it is.
+
+    The parse diagnosis travels to unauthenticated callers (see
+    `describe_config_parse_error`), and an absolute path under `/home` or
+    `/Users` spells out the OS account name. Collapsing the home prefix keeps
+    the message just as actionable -- the file is still named, and the user
+    knows where their own home is -- while carrying no account identifier. A
+    path outside home is left alone: it is the operator's explicit
+    `NYXGPT_CONFIG` choice and shortening it would only obscure which file
+    failed.
+    """
+    text = str(config_path)
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):  # pragma: no cover - no home on this host
+        return text
+    try:
+        return str(Path("~") / Path(text).relative_to(home))
+    except ValueError:
+        return text
+
+
 def describe_config_parse_error(
     config_path: Path | str,
     exc: configparser.Error,
@@ -268,6 +291,11 @@ def describe_config_parse_error(
     only caller that does is `nyxgpt ops doctor` -- a local command the user
     runs against their own file, which is where the recovery documentation
     already sends them. Redacted callers point at it rather than guessing.
+
+    The path itself is rendered home-relative on *both* paths
+    (`_display_config_path`): an absolute `/Users/<name>/.nyxGPT/config.ini`
+    names the OS account, and that is the same pre-auth channel on a smaller
+    scale. `~/.nyxGPT/config.ini` identifies the file just as well.
     """
     lineno = getattr(exc, "lineno", None)
     where = f" at line {lineno}" if isinstance(lineno, int) else ""
@@ -313,7 +341,8 @@ def describe_config_parse_error(
         else "Run `nyxgpt ops doctor` to see the offending line, fix it "
         "(or restore a known-good config.ini) and retry."
     )
-    return f"Cannot parse {config_path}: {type(exc).__name__}{where}: {detail}. {hint}"
+    where_file = _display_config_path(config_path)
+    return f"Cannot parse {where_file}: {type(exc).__name__}{where}: {detail}. {hint}"
 
 
 def load_config(path: str | Path | None = None) -> ConfigParser:

@@ -173,11 +173,14 @@ System Health screen and the admin dashboard, #3384, #3413.)
 - **A save can never leave `config.ini` unreadable.** The merged file is
   written to a temporary file alongside `config.ini`, parsed there, and only
   then swapped in atomically. If the result would not parse, nothing is
-  replaced: the save is refused, your file is untouched, and the wizard shows
-  the offending line rather than a generic error (#3944). The same applies to
-  the **Remove** button. A `config.ini` that is *already* unreadable — from a
-  hand-edit, say — is reported as such, by the wizard and by
-  `nyxgpt ops doctor`, naming the error and the line number.
+  replaced: the save is refused, your file is untouched, and the wizard names
+  the error and the offending line's *number* rather than showing a generic
+  error (#3944). The same applies to the **Remove** button. A `config.ini` that
+  is *already* unreadable — from a hand-edit, say — is reported as such, by the
+  wizard and by `nyxgpt ops doctor`. `nyxgpt ops doctor` is the only surface
+  that shows the offending line's *text*, and
+  [When `config.ini` will not parse](#when-configini-will-not-parse) explains
+  why.
 - **Single-user scope.** The wizard edits one global `config.ini` — there is
   no per-session configuration.
 
@@ -1309,7 +1312,7 @@ restarted API cannot start at all (which the web tier reports as `502`).
 Run `nyxgpt ops doctor`: it names the file, the error and the line, e.g.
 
 ```
-Cannot parse /Users/you/.nyxGPT/config.ini: DuplicateOptionError at line 134:
+Cannot parse ~/.nyxGPT/config.ini: DuplicateOptionError at line 134:
 option 'slack_bot_token' in section 'monitoring' is defined more than once ...
 ```
 
@@ -1321,5 +1324,7 @@ the only one: the API's `config_unreadable` response names the error class and
 the line number but never quotes the line. While `config.ini` cannot be parsed,
 API-key authentication cannot be enforced either (the auth check has to load
 the config before it can compare a key), so that response is readable by
-anyone who can reach the port — and the line it points at can be a secret. The
-doctor runs on the host, against your own file, and has neither problem.
+anyone who can reach the port — and the line it points at can be a secret. For
+the same reason the file is named home-relative (`~/.nyxGPT/config.ini`), not
+as an absolute path that would spell out your account name. The doctor runs on
+the host, against your own file, and has neither problem.

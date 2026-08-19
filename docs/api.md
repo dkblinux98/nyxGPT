@@ -4717,8 +4717,10 @@ contributor documents stay in the repository and are absent from the artifact
   line: while config.ini is unparseable, API-key auth cannot be enforced at
   all — the auth middleware has to load config before it can check a key — so
   this response is readable by anyone who can reach the port, and the
-  offending line can be a secret. Run `nyxgpt ops doctor` on the host to see
-  the line itself.
+  offending line can be a secret. For the same reason the file is named
+  home-relative (`~/.nyxGPT/config.ini`) rather than absolutely, so the
+  message carries no OS account name. Run `nyxgpt ops doctor` on the host to
+  see the line itself.
 
 ---
 
