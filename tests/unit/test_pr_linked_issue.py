@@ -66,7 +66,7 @@ class TestTheHelper:
 class TestNoConsumerGrepsTheBodyItself:
     def test_every_caller_goes_through_the_helper(self):
         offenders = []
-        sources = [p for p in SCRIPTS.rglob("*.sh")] + sorted(WORKFLOWS.glob("*.yml"))
+        sources = list(SCRIPTS.rglob("*.sh")) + sorted(WORKFLOWS.glob("*.yml"))
         for path in sources:
             if path.name == "gh_project.sh":
                 continue  # the helper's own fallback lives here
