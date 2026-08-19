@@ -42,6 +42,10 @@ INSTALL_STEP_FUNCS: tuple[str, ...] = (
     # Added to `ops.install()` by #3859 and not to this list, which is what
     # this list's own guard test exists to catch: an unlisted step is not
     # patched out, so it runs for real in every test that patches "all" steps.
+    # Here that step shells out to `launchctl` to find jobs a previous install
+    # left loaded. It is inert off macOS, which is why the isolation tests
+    # passed on the runner without it -- but on a developer's Mac an unpatched
+    # step queries real launchd, which is the #3789 hazard this list closes.
     "_report_orphaned_launchd_jobs",
     "_reconcile_install_mode",
     # Stops an api/web brew service belonging to a *different* formula than

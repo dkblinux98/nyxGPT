@@ -282,20 +282,27 @@ Two things are worth knowing about those figures:
   failure with a different word in it. The api requests 100m and is capped
   at a full core; the web tier requests 50m and is capped at 500m.
 
-`nyxgpt ops install --kubernetes --local` measures this before it applies
-anything: it totals what the manifests will reserve, memory and CPU alike,
-compares each against the node's allocatable capacity minus what other
-namespaces already hold, and — per resource —
+`nyxgpt ops install --kubernetes --local` measures this **before it builds
+the api and web images**, which is the expensive half of that command and the
+first thing it would otherwise spend twenty minutes on: it totals what the
+manifests will reserve, memory and CPU alike, compares each against the node's
+allocatable capacity minus what other namespaces already hold, and — per
+resource —
 
 - **refuses**, naming the shortfall and the resource, if the stack cannot
   fit — rather than applying it and leaving a Pod `Pending /
-  FailedScheduling: Insufficient memory` for you to find. Give the cluster VM
-  more of whichever it named (Docker Desktop: Settings → Resources), or
-  install without the observability layer:
+  FailedScheduling: Insufficient memory` for you to find. Nothing is built,
+  loaded or applied, so the refusal costs seconds and leaves the machine as it
+  found it. Give the cluster VM more of whichever it named (Docker Desktop:
+  Settings → Resources), or install without the observability layer:
 
   ```bash
   nyxgpt ops install --kubernetes --local --skip-observability
   ```
+
+  The refusal names that second option only when dropping the layer would
+  actually close the shortfall — if the app tier alone is still too big for
+  the node, more memory is the only thing that helps and it says so.
 
 - **warns** if it fits but a canary rollout would not, so
   `nyxgpt canary start` failing later is a known constraint rather than a

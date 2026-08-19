@@ -8656,6 +8656,7 @@ def _evaluate_k8s_capacity(
     committed: int,
     skip_observability: bool,
     canary_pool_ceiling: int = 1,
+    observability_objects: list[dict[str, Any]] | None = None,
 ) -> OpsResult:
     """Compare one resource's requests against what the cluster has left.
 
@@ -8674,6 +8675,11 @@ def _evaluate_k8s_capacity(
     which no single Pod can draw on, so a shortfall there is reported as a
     warning rather than a refusal -- summed capacity proves a stack cannot
     fit, but never that it can.
+
+    `observability_objects` is the subset of `objects` the `--skip-observability`
+    flag would drop. It is what decides whether the refusal may offer that
+    flag: advice the operator can follow and still be refused is worse than no
+    advice, because they spend a second install finding that out (#3825).
     """
     requested, standby, breakdown = _workload_resource_requests(
         objects,
@@ -8702,10 +8708,22 @@ def _evaluate_k8s_capacity(
             "re-run this install)"
         )
         if not skip_observability:
-            remedy += (
-                ", or install without the observability layer: "
-                "`nyxgpt ops install --kubernetes --local --skip-observability`"
+            # Only when dropping the layer actually closes the gap. Offering
+            # it unconditionally sent an operator whose shortfall is larger
+            # than the layer into a second install that refuses them again --
+            # and reads as "nyxGPT told me to do this and it did not work".
+            layer, _, _ = _workload_resource_requests(
+                observability_objects or [],
+                node_count=node_count,
+                resource=resource,
+                canary_pool_ceiling=canary_pool_ceiling,
             )
+            if layer and requested - layer <= free:
+                remedy += (
+                    f", or install without the observability layer, which is {show(layer)} "
+                    "of the above: `nyxgpt ops install --kubernetes --local "
+                    "--skip-observability`"
+                )
         message = (
             f"Not enough node {resource}: the stack requests {show(requested)} but only "
             f"{show(free)} is free"
@@ -8767,11 +8785,17 @@ def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResu
         directories.append(K8S_OBSERVABILITY_DIR)
 
     objects: list[dict[str, Any]] = []
+    # Kept apart as well as summed: a refusal may only name
+    # `--skip-observability` as a way out once it knows this subset is big
+    # enough to be one.
+    observability_objects: list[dict[str, Any]] = []
     for directory in directories:
         rendered, error = _k8s_render_kustomization(directory)
         if error is not None:
             return [OpsResult(True, "Skipped capacity preflight", error)]
         objects += rendered
+        if directory == K8S_OBSERVABILITY_DIR:
+            observability_objects += rendered
 
     committed, error = _k8s_committed_requests(K8S_NAMESPACE)
     if error is not None:
@@ -8797,6 +8821,7 @@ def _preflight_k8s_capacity(*, skip_observability: bool = False) -> list[OpsResu
             committed=committed.get(resource, 0),
             skip_observability=skip_observability,
             canary_pool_ceiling=ceiling,
+            observability_objects=observability_objects,
         )
         for resource in _K8S_PREFLIGHT_RESOURCES
     ]
@@ -8985,17 +9010,29 @@ def _install_kubernetes_steps(
         # which is why it used to run here only when observability was on.
         ("sync packaged resources", _sync_packaged_resources),
         ("cluster prerequisites", _ensure_kubectl_and_cluster),
-        ("build/load api image", lambda: _build_and_load_k8s_api_image(dev=dev)),
-        ("build/load web image", lambda: _build_and_load_k8s_web_image(dev=dev)),
+        # BEFORE THE IMAGE BUILDS, not merely before the first apply (#3825).
+        # The preflight needs a node to measure, so it cannot precede the step
+        # above; it needs nothing at all from the two builds below, and those
+        # are the expensive half of this command -- a from-scratch
+        # `nyxgpt ops install --kubernetes --local` spends ~20 minutes there.
+        # Sitting behind them meant an operator whose VM cannot hold the stack
+        # paid for two container images and a provisioned cluster before being
+        # told so, which is the "refuse before provisioning" this issue asked
+        # for in name only. Now the refusal costs seconds and leaves no built
+        # image behind.
+        #
+        # The secret bootstrap moves up with it, because the render the
+        # preflight does resolves the Secret both kustomizations reference.
+        # Moving it earlier is independently better: when it has no `--api-key`
+        # to use it PROMPTS, and a prompt is worth more before a 20-minute
+        # build than after one.
         ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
-        # Before the first apply, and after the secrets both kustomizations
-        # reference exist so the render can resolve them: a node that cannot
-        # hold the stack is reported here rather than as a Pod left Pending
-        # (#3825).
         (
             "node capacity preflight",
             lambda: _preflight_k8s_capacity(skip_observability=skip_observability),
         ),
+        ("build/load api image", lambda: _build_and_load_k8s_api_image(dev=dev)),
+        ("build/load web image", lambda: _build_and_load_k8s_web_image(dev=dev)),
         ("apply kustomization", _kubectl_apply_kustomization),
         ("record install mode", lambda: _record_k8s_install_mode(dev)),
         ("wait for data/LLM tier", _wait_for_k8s_data_tier),
