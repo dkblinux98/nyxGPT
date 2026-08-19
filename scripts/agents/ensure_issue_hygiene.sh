@@ -82,12 +82,17 @@ require_gh_auth
 # structurally could not finish it.
 apply_closure_rule() {
   local state reason item_id current_phase current_sprint assignees rc
+  local issue_state_line
   local phase_option="Phase X"
 
-  read -r state reason < <(
+  # Read into a variable first, then split: a `read < <(gh api …)` process
+  # substitution reports the *read's* status, so a failing `gh api` dies under
+  # `set -e` with no context instead of this function's `::error::` form.
+  issue_state_line="$(
     gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" \
       --jq '"\(.state) \(.state_reason // "")"'
-  )
+  )" || { echo "::error::Failed reading state of issue #$ISSUE"; return 1; }
+  read -r state reason <<<"$issue_state_line"
 
   if [[ "$state" != "closed" ]]; then
     echo "Issue #$ISSUE is $state, not closed -- the closure rule does not apply."
