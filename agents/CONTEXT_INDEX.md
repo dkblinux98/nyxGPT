@@ -34,6 +34,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
+| `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
@@ -107,7 +108,7 @@ fails if it drifts. Do not hand-edit.
 | `developer_submit_for_review.sh` | "<SingleLabel>: <Issue Title> (#<N>)" |
 | `dispatch_conflict_resolution.sh` | route a conflicted PR (#3801) |
 | `drain_gate.sh` | acceptance drain gate watcher (#3730) |
-| `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue |
+| `ensure_issue_hygiene.sh` | fill-if-missing project hygiene for one issue, and the non-completed closure rule (--closure) |
 | `groom_sprint.sh` | Grooming: write the sprint plan doc the developers pull from (#3908) |
 | `manually_trigger_pr_review.sh` | Manually triggers a code review for a PR. This is useful for: |
 | `pr_close_project_status.sh` | stamp a merged/closed PR's project item to the terminal PR lane (STATUS_CLOSED) |

@@ -320,6 +320,21 @@ This command:
   container uses, via `OLLAMA_MODELS` (never a symlink), merging in any
   models already pulled natively so they aren't orphaned — see
   [Ollama model store](homebrew.md#ollama-model-store)
+- Pulls the models the stack needs into Ollama, if they are not already
+  there: the configured chat model (`[nyxgpt] default_model`) and the
+  configured embedding model (`[rag] embedding_model`). Both, whether or not
+  RAG is enabled — `rag_enabled` is a per-session toggle a user can turn on
+  at any moment, and turning it on must not stall on a download. This step
+  is what makes the first chat message work on a machine where nobody ran a
+  model pull by hand (#3824). It cannot be skipped: there is no flag for it,
+  because an install that reports success while chat is broken is the exact
+  state it exists to prevent. Idempotent — a model already in the store is
+  reported present and nothing is downloaded — and a pull that fails is a
+  `[FAIL]` line, so `nyxgpt up` does not report the stack healthy. The
+  container-run modes carry the same behavior in their own manifests (the
+  Compose `ollama` service's pre-pull and healthcheck, the Kubernetes
+  StatefulSet's postStart hook and readiness probe), because no `nyxgpt`
+  process runs on the host there to do it for them.
 - Verifies Docker availability
 - Creates the local Cassandra container if it doesn't exist yet (name
   `nyxgpt-cassandra`, image `cassandra:5.0`, bound to
@@ -524,6 +539,11 @@ Reports:
 - Docker container state for Cassandra
 - Log-follower agent load state (LaunchAgent on macOS, systemd --user unit
   on Linux)
+- **Required models** — the configured chat and embedding models, and whether
+  Ollama has each (`PRESENT`/`MISSING`, or `UNKNOWN` when Ollama itself did
+  not answer). A missing one is printed with the `nyxgpt` command that fixes
+  it. The same readiness view the SRE/admin dashboard's Required Models panel
+  renders, and the one `/api/v1/models/required` returns (#3824)
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
   stack) for cleanup
@@ -760,6 +780,12 @@ Checks include:
 - Docker daemon availability
 - Local Cassandra container presence (flags a missing `nyxgpt-cassandra`
   container and suggests `nyxgpt ops install` to create it)
+- Required-model presence: whether Ollama actually holds the configured chat
+  and embedding models. A missing one is reported with the `nyxgpt` command
+  that fixes it (`nyxgpt ops install`, or `nyxgpt models pull <model>`) —
+  never a raw `ollama pull`. Silent when Ollama itself is unreachable: that
+  is the ollama service's failure, reported by `status`/self-heal, and
+  calling it a missing model would misname the fault (#3824)
 - Log directory writability
 - (when log aggregation is enabled) whether the *running* promtail
   container actually has the native-logs bind mount, via `docker inspect`

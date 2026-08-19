@@ -59,6 +59,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/ops/portability` | GET | Repo-less portability matrix per deployment target, its mechanical checks and open gaps, plus the clean-machine acceptance sequence |
 | `/api/v1/ops/release-candidate` | GET | Release-candidate plan for the release branch: published RCs, the next RC version, guardrails, and the pinned commands that point an acceptance install at it |
 | `/api/v1/models` | GET | List Ollama models |
+| `/api/v1/models/required` | GET | Whether Ollama holds the configured chat and embedding models (dashboard model-readiness panel) |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
 | `/api/v1/models/{model_name}/info` | GET | Get model details |
@@ -423,6 +424,37 @@ List all available Ollama models.
 ```json
 {
   "models": ["llama3.1:8b", "mistral:7b", "codellama:13b"]
+}
+```
+
+### `GET /api/v1/models/required`
+
+Report whether Ollama holds the models this install requires: the configured
+chat model (`[nyxgpt] default_model`) and the configured embedding model
+(`[rag] embedding_model`). Both are required whether or not RAG is currently
+enabled, because `rag_enabled` is a per-session toggle.
+
+`nyxgpt ops install` pulls both before it reports the stack up (#3824), so
+this normally reads ready. It is what the SRE/admin dashboard's Required
+Models panel renders and what `nyxgpt ops status` prints, so the three cannot
+disagree.
+
+An unreachable Ollama is reported as `reachable: false` with `present: null`
+per model — "cannot tell" is not "missing" — rather than as an error status.
+
+**Response:**
+
+```json
+{
+  "base_url": "http://127.0.0.1:11434",
+  "reachable": true,
+  "error": "",
+  "ready": true,
+  "remediation": "",
+  "models": [
+    {"role": "chat", "model": "qwen3:0.6b", "setting": "[nyxgpt] default_model", "present": true},
+    {"role": "embedding", "model": "nomic-embed-text", "setting": "[rag] embedding_model", "present": true}
+  ]
 }
 ```
 

@@ -52,9 +52,16 @@ def _validate_ollama_connection(
     try:
         models = list_models(base_url=base_url)
         if not models:
+            # Not a failure (#3824): a fresh machine's Ollama has an empty
+            # model store, and `nyxgpt ops install` pulls the configured chat
+            # and embedding models before it reports the stack up. Refusing
+            # here used to leave the operator with a raw `ollama pull` as the
+            # only way forward -- on the one path that exists precisely to
+            # avoid that.
             return (
-                False,
-                "Connected to Ollama but no models found. Please pull a model first.",
+                True,
+                f"Connected to Ollama, which has no models yet -- defaulting to "
+                f"{SHIPPED_DEFAULT_MODEL}; `nyxgpt ops install` pulls it.",
                 [],
             )
 
@@ -67,7 +74,13 @@ def _validate_ollama_connection(
         return False, f"Ollama connection error: {error_msg}", []
 
 
-def _select_model(models: list[dict[str, Any]], default: str = "qwen2.5:0.5b") -> str:
+# The chat model a fresh install ends up with when Ollama has nothing to pick
+# from -- `nyxgpt ops install` pulls it (#3824). Keep identical to
+# `[nyxgpt] default_model` in example.config.ini.
+SHIPPED_DEFAULT_MODEL = "qwen3:0.6b"
+
+
+def _select_model(models: list[dict[str, Any]], default: str = SHIPPED_DEFAULT_MODEL) -> str:
     """Prompt user to select a model from available models."""
     if not models:
         return default
@@ -318,12 +331,18 @@ def run_wizard(output_path: Path | None = None) -> int:
 
     success, message, models = _validate_ollama_connection(ollama_base_url)
     if not success:
-        print(f"\n❌ {message}")
-        print("\nPlease ensure Ollama is running:")
-        print("  - Install: https://ollama.ai")
-        print("  - Start: ollama serve")
-        print("  - Pull a model: ollama pull qwen2.5:0.5b")
-        return 1
+        # Ollama being absent on a fresh machine is the normal case, not an
+        # error: `nyxgpt ops install` installs it, starts it, and pulls the
+        # configured models (#3824). Say so and carry on with the shipped
+        # default rather than dead-ending the one command that would fix it.
+        print(f"\n⚠️  {message}")
+        print(
+            f"\nContinuing with the default model {SHIPPED_DEFAULT_MODEL}. "
+            "`nyxgpt ops install` (or `nyxgpt up`) installs and starts Ollama and "
+            "pulls the chat and embedding models this config names."
+        )
+    elif not models:
+        print(f"\nℹ️  {message}")
 
     # Select model
     print("\n" + "=" * 60)

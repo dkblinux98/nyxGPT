@@ -62,10 +62,15 @@ This command verifies:
    ollama list
    ```
 
-   If your configured model is missing:
+   If your configured model is missing, re-run the install -- it pulls the
+   configured chat and embedding models and fails if it cannot:
    ```bash
-   ollama pull llama3.1:8b  # Or your preferred model
+   nyxgpt ops install
    ```
+
+   `nyxgpt ops status` lists both required models and whether Ollama has
+   them, and `nyxgpt ops doctor` reports a missing one as a problem. To fetch
+   a single model directly: `nyxgpt models pull <model>`.
 
 4. **Check network/firewall:**
    - Ensure localhost connections are allowed
@@ -525,10 +530,12 @@ offering the restart (#3806).
    nyxgpt models pull nomic-embed-text
    ```
 
-   nyxGPT normally pulls it for you on the first ingest (`[rag]
-   embedding_auto_pull = true`). Pull it by hand when that setting is
-   disabled, or when the auto-pull failed and ingestion reported
-   `Embedding model '...' is not installed in Ollama`.
+   `nyxgpt ops install` pulls it (and the chat model) before it reports the
+   stack up, and a collection on a *different* embedding model is pulled on
+   first use, so this should not normally be missing. Pull it by hand when
+   an earlier pull failed and ingestion reported `Embedding model '...' is
+   not installed in Ollama` -- `nyxgpt ops doctor` reports the same
+   condition.
 
 4. **Check similarity threshold:**
    - RAG filters results by similarity score

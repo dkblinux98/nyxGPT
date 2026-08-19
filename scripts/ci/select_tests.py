@@ -190,6 +190,22 @@ def _is_doc(path: str) -> bool:
     return path.endswith(DOC_SUFFIXES) or path.startswith(DOC_DIRS)
 
 
+def _is_test_module(path: str) -> bool:
+    """Would pytest collect this file if it were merely *found*?
+
+    pytest's `python_files` default. Anything else under `tests/` is a helper --
+    a stub, a fixture library -- and naming one on the command line is not the
+    same as leaving it in the tree for collection: an explicit argument is
+    imported whatever its name. `tests/gh_stub_issue_hygiene.py` reads
+    `os.environ["GH_STUB_DIR"]` at import because the shell suite that runs it
+    always sets it, so being handed to pytest raised KeyError *during
+    collection*, which interrupts the whole run -- the gate reported a failure
+    about a stub and executed zero tests (#3871).
+    """
+    name = Path(path).name
+    return name.startswith("test_") or name.endswith("_test.py")
+
+
 def select(changed: list[str]) -> Selection:
     """Map a changed-file list onto the suites that can see its effects."""
     sel = Selection(full=False, run_python=False, python_targets=list(FLOOR_TESTS))
@@ -228,8 +244,19 @@ def select(changed: list[str]) -> Selection:
         if path.startswith("tests/"):
             if path.endswith(".py"):
                 sel.run_python = True
-                sel.python_targets.append(path)
-                sel.reasons.append(f"{path}: changed test runs itself")
+                if _is_test_module(path):
+                    sel.python_targets.append(path)
+                    sel.reasons.append(f"{path}: changed test runs itself")
+                else:
+                    # A helper cannot run itself, and which suites reach it is
+                    # not something path analysis knows -- the shell suites
+                    # invoke their stubs through a subprocess, so there is no
+                    # import edge to follow. Unknown means everything, which is
+                    # the call `FULL_SUITE_PATHS` already makes by hand for
+                    # tests/log_guard.py; the hand list just never covered the
+                    # rest. Not `run_web`: a Python helper cannot move the UI.
+                    sel.full = True
+                    sel.reasons.append(f"{path}: test helper, not a test module -- full suite")
             continue
 
         module = _module_name(path)

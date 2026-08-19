@@ -229,16 +229,14 @@ terraform apply -var=api_image=ghcr.io/dkblinux98/nyxgpt-api:latest \
 the images from a working tree instead — the dev-mode equivalent of `docker
 compose up --build`.)
 
-This starts all four containers on a dedicated
-`nyxgpt-terraform` bridge network. First boot still needs a model pulled into
-the `ollama` container once (state persists in `~/.nyxGPT/volumes/ollama` --
-the same host directory `docker-compose.yml` uses, so a model already pulled
-there doesn't need re-downloading here, and vice versa; see
-[docker-compose.md#volumes](docker-compose.md#volumes)):
-
-```bash
-docker exec nyxgpt-tf-ollama ollama pull qwen2.5:0.5b
-```
+This starts all four containers on a dedicated `nyxgpt-terraform` bridge
+network. Models are not pulled by this raw-Terraform path: `nyxgpt ops install
+--terraform --local` (above) runs a `required models` step after `apply` that
+pulls the configured chat and embedding models into the `ollama` container and
+fails the install if it cannot (#3824). Blobs persist in
+`~/.nyxGPT/volumes/ollama` -- the same host directory `docker-compose.yml`
+uses, so a model already pulled there is not re-downloaded here, and vice
+versa; see [docker-compose.md#volumes](docker-compose.md#volumes).
 
 Then verify using the outputs Terraform prints (`api_url`, `web_url`,
 `ollama_url`):

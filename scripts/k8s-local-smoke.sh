@@ -62,7 +62,11 @@ NAMESPACE="nyxgpt"
 API_KEY="${NYXGPT_SMOKE_API_KEY:-k8s-smoke-key}"
 WEB_PORT="${NYXGPT_SMOKE_WEB_PORT:-3000}"
 SESSION="k8s-smoke-$$"
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen2.5:0.5b}"
+# Must match k8s/configmap.yaml's `[nyxgpt] default_model` / `[rag]
+# embedding_model` -- the StatefulSet pulls both and its readiness probe gates
+# on both (#3824), so a mismatch here would assert on a model nothing pulls.
+MODEL="${NYXGPT_SMOKE_MODEL:-qwen3:0.6b}"
+EMBEDDING_MODEL="${NYXGPT_SMOKE_EMBEDDING_MODEL:-nomic-embed-text}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 PF_PID=""
 
@@ -77,6 +81,12 @@ cleanup() {
         echo "--- diagnostics ---" >&2
         kubectl -n "$NAMESPACE" get pods -o wide >&2 2>/dev/null || true
         kubectl -n "$NAMESPACE" describe pods >&2 2>/dev/null | tail -80 || true
+        # Ollama's own log, which the describe does not carry: the model pulls
+        # this smoke asserts on happen in the postStart hook, so when a model
+        # assertion fails this is the only record of what the pull did. The
+        # workflow-level "Diagnostics on failure" step cannot supply it -- the
+        # cleanup below has already torn the cluster down by then.
+        kubectl -n "$NAMESPACE" logs ollama-0 --tail=100 >&2 2>/dev/null || true
     fi
     if [ "${NYXGPT_SMOKE_KEEP_UP:-0}" != "1" ]; then
         nyxgpt ops down --kubernetes >/dev/null 2>&1 || true
@@ -163,9 +173,27 @@ for workload in cassandra ollama; do
         fail "${workload} never became Ready"
     ok "${workload} StatefulSet Ready"
 done
-kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list | grep -q "$MODEL" ||
+# Read the store ONCE and match against the captured text. Piping `kubectl
+# exec` straight into `grep -q` is a race under `set -o pipefail`: grep exits
+# on its first match, kubectl takes EPIPE writing the rows it has not streamed
+# yet, and a *successful* match becomes a failed pipeline. `ollama list` is
+# newest-first, so the embedding model (pulled last) is the first data row and
+# lost that race deterministically; the chat model, last in the list, never
+# did. One capture removes the race for both -- and halves the execs.
+OLLAMA_MODELS=$(kubectl -n "$NAMESPACE" exec ollama-0 -- ollama list)
+grep -q "$MODEL" <<<"$OLLAMA_MODELS" ||
     fail "Ollama is Ready but the default model ${MODEL} was never pulled -- chat would 404"
 ok "default model ${MODEL} present in the in-cluster Ollama"
+# The embedding model too (#3824): RAG is a per-session toggle, so a user can
+# turn it on at any moment, and a Ready Ollama without it would stall that
+# first RAG-enabled message on a ~275 MB download inside the request.
+grep -q "$EMBEDDING_MODEL" <<<"$OLLAMA_MODELS" ||
+    fail "Ollama is Ready but the embedding model ${EMBEDDING_MODEL} was never pulled -- \
+the first RAG-enabled message would block on downloading it"
+ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
+# The readiness probe in k8s/statefulset-ollama.yaml gates on both models, so
+# the rollout-status wait above only returned because both were there -- this
+# assertion names which model, so a probe regression fails with the reason.
 
 step "4/9 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the

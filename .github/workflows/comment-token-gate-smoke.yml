@@ -121,8 +121,6 @@ jobs:
           INCIDENT: ${{ steps.incident.outputs.proceed }}
           AUTO_RETRY: ${{ steps.auto_retry.outputs.proceed }}
           ESCALATION: ${{ steps.escalation.outputs.proceed }}
-          KICK: ${{ steps.kick.outputs.proceed }}
-          PARK: ${{ steps.park.outputs.proceed }}
           IMPROVEMENT: ${{ steps.improvement.outputs.proceed }}
           IMPROVEMENT_PROSE: ${{ steps.improvement_prose.outputs.proceed }}
           QUOTED: ${{ steps.quoted.outputs.proceed }}
@@ -131,7 +129,15 @@ jobs:
           fail=0
           check() {
             local name="$1" actual="$2" expected="$3"
-            if [[ "$actual" == "$expected" ]]; then
+            if [[ -z "$actual" ]]; then
+              # `steps.<id>.outputs.proceed` for a step that no longer exists
+              # expands to the empty string, so deleting a gate step without
+              # its assertion reds this job with no hint of why. #3917 retired
+              # READY_FOR_NEXT_ISSUE and removed its two steps but left the
+              # `kick`/`park` checks behind; say what happened instead.
+              echo "FAIL $name -> no verdict (its gate step is missing -- delete this check or restore the step)"
+              fail=1
+            elif [[ "$actual" == "$expected" ]]; then
               echo "ok   $name -> proceed=$actual"
             else
               echo "FAIL $name -> proceed=$actual (expected $expected)"
@@ -141,8 +147,6 @@ jobs:
           check "incident stop message"        "$INCIDENT"          false
           check "auto-retry command"           "$AUTO_RETRY"        true
           check "escalation guidance"          "$ESCALATION"        false
-          check "owner kick"                   "$KICK"              true
-          check "park note"                    "$PARK"              false
           check "@improvement issued"          "$IMPROVEMENT"       true
           check "@improvement discussed"       "$IMPROVEMENT_PROSE" false
           check "quoted command"               "$QUOTED"            false

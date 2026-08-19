@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import RequiredModelsPanel from '../../../components/RequiredModelsPanel';
 import UsageAnalyticsSection from './UsageAnalyticsSection';
 import ResourceMetrics from './ResourceMetrics';
 
@@ -316,6 +317,12 @@ export default function AdminHealthPage() {
                   })()
                 )}
               </section>
+
+              {/* Required Models -- Dependency Checks below reports whether
+                  Ollama answers; this reports whether it holds the models the
+                  first chat (and the first RAG-enabled) message needs, which a
+                  reachable-but-empty Ollama does not (#3824). */}
+              <RequiredModelsPanel />
 
               {/* Dependency Checks */}
               <section style={cardStyle} aria-label="Dependency checks">

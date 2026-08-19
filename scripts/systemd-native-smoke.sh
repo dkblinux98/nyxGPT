@@ -222,6 +222,24 @@ else
   log "ops doctor reported no issues outside the deliberately-skipped observability stack"
 fi
 
+# The acceptance question for #3824, asked the only way it can be answered:
+# send the first chat message. A stack whose units are all active and whose
+# /health returns 200 can still have an Ollama that never downloaded a model,
+# which is exactly the state that shipped. The script asserts both required
+# models are present and a chat answers, then DELETES the chat model and
+# asserts the chat fails, then re-runs the install and asserts it works again
+# -- so a runner that happened to have the model already cannot pass this
+# vacuously (#3753's fault-injection rule).
+#
+# Skipped in dev mode: it is the same install path and the same Ollama, and
+# the second pull would double that job's runtime for no additional coverage.
+if [[ "$DEV_MODE" -eq 0 ]]; then
+  log "Verifying the first chat message works, with no manual model pull"
+  python3 scripts/first-chat-smoke.py \
+    --install-cmd "nyxgpt ops install --skip-observability" \
+    || { echo "::error::the first chat did not work on a freshly installed stack"; fail_count=1; }
+fi
+
 # --- Dev mode: prove the running stack IS the checkout, then prove the
 # --- machine switches back to the artifact path cleanly (#3789).
 API_VENV_PY="$HOME/.nyxGPT/opt/nyxgpt-api/venv/bin/python3"

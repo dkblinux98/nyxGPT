@@ -78,6 +78,30 @@ class FakeHttp:
             return 200, "ok"
         if path == "/models":
             return 200, json.dumps({"models": ["llama3.1:8b"]})
+        if path == "/models/required":
+            return 200, json.dumps(
+                {
+                    "base_url": "http://127.0.0.1:11434",
+                    "reachable": True,
+                    "error": "",
+                    "ready": True,
+                    "remediation": "",
+                    "models": [
+                        {
+                            "role": "chat",
+                            "model": "llama3.1:8b",
+                            "setting": "[nyxgpt] default_model",
+                            "present": True,
+                        },
+                        {
+                            "role": "embedding",
+                            "model": "nomic-embed-text",
+                            "setting": "[rag] embedding_model",
+                            "present": True,
+                        },
+                    ],
+                }
+            )
         if path == "/rag/query":
             return 200, json.dumps({"results": [{"text": f"the phrase is {MARKER}."}]})
         if path == "/chat":
@@ -213,7 +237,7 @@ def test_smoke_deploys_verifies_and_tears_down(monkeypatch):
     assert deploy.destroys == 1
     assert result["teardown"]["destroyed"] is True
     # Chat and RAG are verified in that order, through the tunneled API.
-    assert http.paths() == ["/models", "/chat", "/rag/ingest", "/rag/query"]
+    assert http.paths() == ["/models/required", "/chat", "/rag/ingest", "/rag/query"]
 
 
 def test_verification_goes_through_the_tunnel_with_the_instances_api_key(monkeypatch):
@@ -398,27 +422,77 @@ def test_access_fails_when_the_stack_never_answers_through_the_tunnel(monkeypatc
     assert deploy.destroys == 1
 
 
-def test_the_default_model_is_pulled_when_it_is_missing(monkeypatch):
-    http = FakeHttp({"/models": (200, json.dumps({"models": []}))})
+def test_the_smoke_never_pulls_a_model_itself(monkeypatch):
+    """V-017: a smoke that pulls the model cannot catch an install that didn't.
+
+    The instance's own `nyxgpt ops install` pulls both required models
+    (#3824), so this run must only ever read readiness.
+    """
+    http = FakeHttp()
     _install(monkeypatch, deploy=FakeDeploy(), http=http)
 
     result = cloud_smoke.run_smoke(_args())
 
     assert result["passed"] is True
-    pull = next(c for c in http.calls if c["path"] == "/models/pull")
-    assert pull["payload"] == {"model": "llama3.1:8b"}
+    assert "/models/pull" not in http.paths()
+    assert "/models/required" in http.paths()
 
 
-def test_a_failed_model_pull_fails_the_run(monkeypatch):
-    http = FakeHttp({"/models": (200, json.dumps({"models": []})), "/models/pull": (502, "nope")})
+def test_a_missing_required_model_fails_the_run(monkeypatch):
+    """The defect this issue exists to catch: healthy stack, no chat model."""
+    missing = json.dumps(
+        {
+            "base_url": "http://127.0.0.1:11434",
+            "reachable": True,
+            "error": "",
+            "ready": False,
+            "remediation": "Re-run `nyxgpt ops install`",
+            "models": [
+                {
+                    "role": "chat",
+                    "model": "llama3.1:8b",
+                    "setting": "[nyxgpt] default_model",
+                    "present": False,
+                }
+            ],
+        }
+    )
+    http = FakeHttp({"/models/required": (200, missing)})
     deploy = FakeDeploy()
     _install(monkeypatch, deploy=deploy, http=http)
 
     result = cloud_smoke.run_smoke(_args())
 
     assert result["passed"] is False
-    assert "could not pull the default model" in result["failure"]
+    assert "missing required model(s) llama3.1:8b" in result["failure"]
     assert deploy.destroys == 1
+
+
+def test_an_unreachable_ollama_fails_the_run(monkeypatch):
+    unreachable = json.dumps(
+        {
+            "base_url": "http://127.0.0.1:11434",
+            "reachable": False,
+            "error": "RuntimeError: connection refused",
+            "ready": False,
+            "remediation": "",
+            "models": [
+                {
+                    "role": "chat",
+                    "model": "llama3.1:8b",
+                    "setting": "[nyxgpt] default_model",
+                    "present": None,
+                }
+            ],
+        }
+    )
+    http = FakeHttp({"/models/required": (200, unreachable)})
+    _install(monkeypatch, deploy=FakeDeploy(), http=http)
+
+    result = cloud_smoke.run_smoke(_args())
+
+    assert result["passed"] is False
+    assert "Ollama did not answer" in result["failure"]
 
 
 def test_every_forwarded_observability_ui_is_probed(monkeypatch):

@@ -2,7 +2,10 @@ name: Ensure Project Hygiene
 
 on:
   issues:
-    types: [opened]
+    # `opened` fills blanks; `closed` applies the non-completed closure rule
+    # (#3871). Deliberately not `edited`: re-running the fill on a live issue
+    # would re-open the clobber window #3816 closed.
+    types: [opened, closed]
   pull_request:
     types: [opened, reopened]
 
@@ -14,6 +17,7 @@ jobs:
     # loop entirely -- no project item, no field stamping, no sprint.
     if: >-
       github.event_name == 'issues'
+      && github.event.action == 'opened'
       && !contains(github.event.issue.labels.*.name, 'Support')
     runs-on: ubuntu-latest
     permissions:
@@ -65,6 +69,71 @@ jobs:
         # signature is a SUCCESSFUL run that overwrote a good value -- exactly
         # what a green run does not catch.
         run: bash scripts/agents/ensure_issue_hygiene.sh "${{ github.event.issue.number }}"
+
+  closure-hygiene:
+    # Owner rule (2026-08-18, #3871): an issue closed for any reason other
+    # than completion ends up with Phase = `Phase X`, assigned to the owner,
+    # and Sprint cleared. It was being done by hand -- a remote Claude session
+    # cannot do it itself, because Projects v2 is GraphQL-only and the session
+    # proxy blocks GraphQL, which is why #3870 needed the owner to finish it.
+    #
+    # The state_reason test is repeated inside the script rather than trusted
+    # from here alone: this `if:` is the cheap filter, and the script is what
+    # a test can execute.
+    #
+    # The null test is not redundant with the script's (#3871 review): the
+    # pipeline's DOMINANT closure path is `gh issue close` after a merge, which
+    # records `state_reason: null` (live on #3917/#3918/#3919). Without this
+    # clause every routine merge spins a runner, checks out the release branch
+    # and exits at the script's null branch -- a permanent per-merge cost for a
+    # guaranteed no-op. The script keeps its own null test, which is what
+    # protects a by-hand invocation.
+    if: >-
+      github.event_name == 'issues'
+      && github.event.action == 'closed'
+      && github.event.issue.state_reason != 'completed'
+      && github.event.issue.state_reason != null
+      && !contains(github.event.issue.labels.*.name, 'Support')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Setup environment
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: Apply the non-completed closure rule
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: bash scripts/agents/ensure_issue_hygiene.sh --closure "${{ github.event.issue.number }}"
 
   pr-hygiene:
     if: github.event_name == 'pull_request'

@@ -943,11 +943,17 @@ recovery, then tears the stack down.
 
 It only requires `cp .env.example .env` with a real `NYXGPT_AUTH_API_KEY`
 beforehand (see [docker-compose.md](docker-compose.md)): the script reads
-that key and sends it as the `X-API-Key` header on every API call, pulls the
-`default_model` from `docker/config.docker.ini` via `/api/v1/models/pull` if
-Ollama doesn't already have it, and passes `ensure_schema: true` on the first
-RAG ingest so the Cassandra keyspace/table are bootstrapped on a fresh
-deploy. For `ollama`, `cassandra`, and `web`, it asserts the watchdog
+that key and sends it as the `X-API-Key` header on every API call, and passes
+`ensure_schema: true` on the first RAG ingest so the Cassandra keyspace/table
+are bootstrapped on a fresh deploy. It does **not** pull any model: the
+Compose `ollama` service pre-pulls both configured models (the chat
+`default_model` and the `[rag] embedding_model` from
+`docker/config.docker.ini`) on start and gates its healthcheck on both, so the
+script instead asserts they are present via `/api/v1/models/required` and
+fails with the remediation text if they are not (#3824 — a smoke must not
+pre-satisfy what it verifies).
+
+For `ollama`, `cassandra`, and `web`, it asserts the watchdog
 restores the component to healthy automatically. For `api`, per the
 limitation above, it kills the container, confirms self-heal does *not*
 recover it (which is expected, not a bug), and then brings it back with

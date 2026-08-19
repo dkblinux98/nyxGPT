@@ -378,6 +378,9 @@ def _stub_install_steps(monkeypatch):
         "_ensure_terraform_binary",
         "_sync_local_terraform_config",
         "_generate_compose_config",
+        # The install-time model pull (#3824). Not stubbing it would send these
+        # unit tests at a real Ollama that isn't there, and time out.
+        "_ensure_required_models",
         "_ensure_glitchtip_secrets_dir",
         "_sync_grafana_slack_webhook_secret",
         "_start_observability_stack_terraform",

@@ -1,0 +1,68 @@
+name: Compose Model Pre-pull Smoke
+
+# The question this job answers: on the Docker Compose run mode, can a user's
+# first chat message work without anyone having pulled a model by hand?
+#
+# #3824 was the state where every service reported healthy and the first chat
+# failed, because nothing had ever pulled the configured model. On the Compose
+# path there is no `nyxgpt` process on the host to fix that, so the `ollama`
+# service pulls both configured models itself and its healthcheck gates on
+# them -- and `api` waits on that healthcheck. Neither property is visible to a
+# unit test or to YAML review; scripts/compose-model-prepull-smoke.sh runs the
+# real container, then restarts it pointed at an unpullable model and asserts
+# it does NOT report healthy, so a healthcheck that stopped gating on the
+# model could not pass this job green (the fault-injection rule, #3753).
+#
+# Only the `ollama` service is started -- the api/web image builds take
+# minutes and add nothing to this question -- so this is cheap enough to run
+# on every PR that touches the Compose file or the model bootstrap.
+on:
+  pull_request:
+    paths:
+      - 'docker-compose.yml'
+      - '.env.example'
+      - 'src/nyxgpt/model_bootstrap.py'
+      - 'scripts/compose-model-prepull-smoke.sh'
+      - '.github/workflows/compose-model-prepull-smoke.yml'
+  push:
+    paths:
+      - 'docker-compose.yml'
+      - '.env.example'
+      - 'src/nyxgpt/model_bootstrap.py'
+      - 'scripts/compose-model-prepull-smoke.sh'
+      - '.github/workflows/compose-model-prepull-smoke.yml'
+  workflow_dispatch:
+
+# Read-only: the job checks out the repo and drives local containers; it never
+# writes to the repository or its APIs (CodeQL #33,
+# actions/missing-workflow-permissions -- same pattern as linux-native-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  compose-model-prepull-smoke:
+    runs-on: ubuntu-latest
+    # Pulling the ollama image plus both models, then a second bring-up for
+    # the fault injection.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # docker-compose.yml bind-mounts ~/.nyxGPT/volumes/ollama. Docker would
+      # create it as root, which the container (running as root itself) can
+      # write, but pre-creating it keeps this consistent with the other smoke
+      # jobs and avoids a root-owned directory outliving the run.
+      - name: Pre-create the ollama volume dir
+        run: |
+          mkdir -p "$HOME/.nyxGPT/volumes/ollama"
+          chmod 777 "$HOME/.nyxGPT/volumes/ollama"
+
+      - name: Compose ollama must pre-pull both models and gate health on them
+        run: ./scripts/compose-model-prepull-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker logs nyxgpt-ollama --tail 200 || true
+          docker inspect --format '{{json .State.Health}}' nyxgpt-ollama || true
