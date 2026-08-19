@@ -567,7 +567,26 @@ def test_list_collections_parses_default_and_named_tables(monkeypatch):
     collections = store.list_collections()
 
     assert collections == ["default", "other"]
-    assert store._keyspace_ready is True
+    # Listing reads system_schema by keyspace name and must not select a
+    # keyspace: `USE` raises on a Cassandra that has never been ingested into,
+    # which is what 500'd the collections page on a clean deployment (#3864).
+    assert store._keyspace_ready is False
+    assert not any("USE " in str(call.args[0]) for call in mock_session.execute.call_args_list)
+
+
+@pytest.mark.unit
+def test_list_collections_returns_empty_when_keyspace_does_not_exist(monkeypatch):
+    """A fresh Cassandra with no keyspace lists no collections instead of raising (#3864)."""
+    store, mock_session = _make_store(monkeypatch, keyspace_ready=False)
+
+    def _execute(query, *args, **kwargs):
+        if "USE " in str(query):
+            raise InvalidRequest("Keyspace 'test_ks' does not exist")
+        return []
+
+    mock_session.execute.side_effect = _execute
+
+    assert store.list_collections() == []
 
 
 # ---------------------------------------------------------------------------

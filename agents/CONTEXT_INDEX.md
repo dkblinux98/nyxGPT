@@ -23,6 +23,7 @@ fails if it drifts. Do not hand-edit.
 | `bulk_set_issue_status.yml` | workflow_dispatch | Bulk Set Issue Status |
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
 | `canary-rollout-smoke.yml` | pull_request, push, workflow_dispatch | Canary Rollout Smoke |
+| `canary-track-metrics-smoke.yml` | pull_request, push, workflow_dispatch | Canary Track Metrics Smoke |
 | `ci-tests.yml` | push | CI - Tests & Type Check |
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
@@ -60,6 +61,7 @@ fails if it drifts. Do not hand-edit.
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
 | `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |
+| `rag-fresh-cassandra-smoke.yml` | pull_request, push, workflow_dispatch | RAG Fresh Cassandra Smoke |
 | `reconcile_closed_backlog_status.yml` | workflow_dispatch | Reconcile Closed Backlog Status |
 | `release-artifacts.yml` | release, workflow_dispatch | Release Artifacts |
 | `release-publish-pypi.yml` | workflow_dispatch | PyPI Publish (rc / stable) |

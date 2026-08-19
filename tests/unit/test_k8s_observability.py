@@ -357,14 +357,28 @@ def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     monkeypatch.setattr(ops, "_kubectl_context", lambda: ops.KIND_CONTEXT)
     monkeypatch.setattr(ops, "_run", lambda *a, **k: MagicMock(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(ops.self_heal, "compose_probe_available", lambda: True)
-    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {"grafana": "1/1 ready"})
+    monkeypatch.setattr(
+        ops,
+        "_k8s_observability_workload_state",
+        lambda: {"grafana": "1/1 ready", "prometheus": "0/1 ready", "loki": "absent"},
+    )
 
     observability = ops.infra_status()["kubernetes"]["observability"]
 
     assert observability["deployed"] is True
-    assert observability["workloads"] == {"grafana": "1/1 ready"}
+    assert observability["workloads"]["grafana"] == "1/1 ready"
     # Command wrapping: the dashboard tells the operator a `nyxgpt` command.
     assert observability["port_forward_command"].startswith("nyxgpt ops port-forward")
+
+    # ...and the same three states the Pod badges use (#3827). The raw
+    # `workloads` map rendered as undifferentiated grey text, so a workload
+    # that is up, one still rolling out and one that never deployed were
+    # indistinguishable on a card that badges every Pod READY/PENDING/FAILED.
+    by_name = {w["name"]: w for w in observability["workload_states"]}
+    assert by_name["grafana"]["state"] == ops.K8S_STATE_READY
+    assert by_name["prometheus"]["state"] == ops.K8S_STATE_PENDING
+    assert by_name["loki"]["state"] == ops.K8S_STATE_FAILED
+    assert by_name["prometheus"]["summary"] == "0/1 ready"
 
 
 # --- port-forward ----------------------------------------------------------
@@ -920,3 +934,248 @@ def test_observability_command_reports_a_failed_rollout_without_claiming_health(
 
     assert not all(r.ok for r in results)
     health.assert_not_called()
+
+
+# --- Per-workload wait budgets, and the reasons a wait may not fail fast (#3827) ---
+
+
+def _budget_recording_run(budgets: list[int]):
+    """A `_run` that records each `rollout status --timeout=Ns` slice it is asked for.
+
+    The slice is `min(remaining, K8S_ROLLOUT_POLL_SLICE_S)`, so the *first*
+    slice for a workload reveals how much budget that workload actually
+    started with once the budget is smaller than one slice.
+    """
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            timeout = next(a for a in cmd if a.startswith("--timeout="))
+            budgets.append(int(timeout.removeprefix("--timeout=").removesuffix("s")))
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+
+    return fake_run
+
+
+def test_each_workload_gets_its_own_budget_not_a_shared_start(monkeypatch) -> None:
+    """A slow first workload must not spend the second one's budget (#3827).
+
+    The waits run one after another, so stamping one `now + budget` up front
+    charged Ollama for however long Cassandra took -- and Ollama's larger
+    budget exists precisely because a cold default-model pull is the slowest
+    thing the install does. An install on a slow link then failed a workload
+    that was still making progress, which is this issue's own bug.
+    """
+    _advancing_clock(monkeypatch)
+    budgets: list[int] = []
+    monkeypatch.setattr(ops, "_run", _budget_recording_run(budgets))
+
+    results = ops._wait_for_k8s_rollouts(
+        [("deploy/first", "first", 60), ("deploy/second", "second", 60)],
+        remedy="",
+    )
+
+    # First one exhausts its own 60s and fails; the wait stops there, so the
+    # second workload's deadline never gets stamped from a used-up clock.
+    assert not results[-1].ok
+    assert "first did not become ready in time" in results[-1].message
+    # Each slice asked for is bounded by that workload's own remaining budget,
+    # never by a clock that started before it did.
+    assert budgets and all(b <= 60 for b in budgets)
+
+
+def test_second_workload_starts_with_a_full_budget(monkeypatch) -> None:
+    """The positive half, in the shape the defect actually had.
+
+    Cassandra takes minutes to bootstrap and then succeeds; Ollama is waited
+    on next. On the shared-start code Ollama's deadline had already passed
+    before its first poll, so it was reported as "did not become ready in
+    time" without ever being given a single slice -- a false install failure
+    on a workload that was fine.
+    """
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ops.time, "monotonic", lambda: clock["t"])
+
+    polled: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            ref = cmd[cmd.index("status") + 1]
+            polled.append(ref)
+            if ref == "deploy/slow" and clock["t"] < 300:
+                clock["t"] += 30  # a slice spent, still rolling out
+                return MagicMock(
+                    returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+                )
+            return MagicMock(returncode=0, stdout="rolled out", stderr="")
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return MagicMock(returncode=0, stdout=json.dumps({"items": []}), stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_rollouts(
+        [("deploy/slow", "slow", 600), ("deploy/next", "next", 60)],
+        remedy="",
+    )
+
+    assert all(r.ok for r in results)
+    # The point: the second workload was actually polled. Its 60s budget was
+    # stamped at t=300 when its own wait began, not at t=0 alongside the first
+    # one's -- under which it would have been 240s overdue before it started.
+    assert "deploy/next" in polled
+
+
+def test_observability_keeps_one_pooled_budget(monkeypatch) -> None:
+    """The deliberate exception: the observability layer's dozen small
+    workloads share one allowance, so it is passed explicitly rather than
+    each of them getting the full budget."""
+    _advancing_clock(monkeypatch)
+    budgets: list[int] = []
+    monkeypatch.setattr(ops, "_run", _budget_recording_run(budgets))
+
+    results = ops._wait_for_k8s_observability(budget_s=60)
+
+    assert not results[-1].ok
+    # One shared 60s, drained across the layer -- not 60s per workload.
+    assert sum(budgets) <= 60
+
+
+def test_data_tier_workloads_pass_budgets_not_deadlines() -> None:
+    """`K8S_DATA_TIER_WORKLOADS` reaches the wait as-is (`(ref, label, budget)`).
+
+    Pins the shape the per-workload stamping depends on: the moment a caller
+    pre-computes `now + timeout` again, every workload after the first is
+    silently short-changed.
+    """
+    with patch.object(ops, "_wait_for_k8s_rollouts", return_value=[]) as wait:
+        ops._wait_for_k8s_data_tier()
+
+    passed = wait.call_args.args[0]
+    assert passed == list(ops.K8S_DATA_TIER_WORKLOADS)
+    assert wait.call_args.kwargs.get("shared_deadline") is None
+
+
+def test_app_tier_install_wait_is_not_the_restart_budget() -> None:
+    """The install's app-tier budget and the restart rollout's are separate (#3827/#3834).
+
+    Both were named `K8S_APP_TIER_ROLLOUT_TIMEOUT_S`, landed by two PRs open
+    at the same time. Python rebinds silently, so the later assignment halved
+    the install wait -- reinstating exactly the false `[FAIL]` on a Pod that
+    was merely still starting that this issue removed.
+    """
+    assert ops.K8S_APP_TIER_ROLLOUT_TIMEOUT_S == 600
+    assert ops.K8S_APP_TIER_RESTART_TIMEOUT_S == 300
+
+    with patch.object(ops, "_wait_for_k8s_rollouts", return_value=[]) as wait:
+        ops._wait_for_k8s_app_tier()
+
+    assert all(budget == 600 for _ref, _label, budget in wait.call_args.args[0])
+
+
+def _crashloop_pod(name: str) -> dict:
+    return {
+        "metadata": {"name": name},
+        "status": {
+            "phase": "Running",
+            "conditions": [{"type": "Ready", "status": "False"}],
+            "containerStatuses": [
+                {
+                    "state": {
+                        "waiting": {
+                            "reason": "CrashLoopBackOff",
+                            "message": "back-off 5m0s restarting failed container",
+                        }
+                    }
+                }
+            ],
+        },
+    }
+
+
+def test_crashloopbackoff_needs_more_confirmations_than_a_dead_end(monkeypatch) -> None:
+    """`CrashLoopBackOff` is the one blocked reason a healthy bring-up passes
+    through -- kubelet escalates the restart delay to 5 minutes, so the reason
+    stays visible long after the attempt that will succeed is scheduled. Two
+    slices (60s) sits well inside that window."""
+    _advancing_clock(monkeypatch)
+    polls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            polls["n"] += 1
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout='{"app": "nyxgpt-api"}', stderr="")
+        return MagicMock(
+            returncode=0, stdout=json.dumps({"items": [_crashloop_pod("api-abc")]}), stderr=""
+        )
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_rollouts([("deploy/api", "api", 900)], remedy="")
+
+    assert not results[-1].ok
+    assert "api-abc" in results[-1].message
+    assert ops.K8S_CRASHLOOP_CONFIRMATIONS > ops.K8S_BLOCKED_CONFIRMATIONS
+    # It did give the Pod the longer grace before ruling -- the pre-fix count
+    # would have abandoned the rollout after two.
+    assert polls["n"] == ops.K8S_CRASHLOOP_CONFIRMATIONS
+
+
+def test_a_dead_end_reason_still_fails_fast(monkeypatch) -> None:
+    """The other half: nothing to wait for means the short count still applies.
+
+    The longer grace is for `CrashLoopBackOff` specifically -- extending it to
+    `Unschedulable` would put the install's one *real* failure back at the end
+    of the run, which is how #3827's genuine prometheus failure came to be
+    buried behind nine false ones.
+    """
+    _advancing_clock(monkeypatch)
+    polls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        if "rollout" in cmd:
+            polls["n"] += 1
+            return MagicMock(
+                returncode=1, stdout="", stderr="error: timed out waiting for the condition"
+            )
+        if any("jsonpath" in arg for arg in cmd):
+            return MagicMock(returncode=0, stdout='{"app": "prometheus"}', stderr="")
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {"name": "prom-abc"},
+                            "status": {
+                                "phase": "Pending",
+                                "conditions": [
+                                    {
+                                        "type": "PodScheduled",
+                                        "status": "False",
+                                        "reason": "Unschedulable",
+                                        "message": "0/1 nodes are available: Insufficient memory.",
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._wait_for_k8s_rollouts([("deploy/prom", "prom", 900)], remedy="")
+
+    assert not results[-1].ok
+    assert polls["n"] == ops.K8S_BLOCKED_CONFIRMATIONS

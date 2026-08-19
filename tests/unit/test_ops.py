@@ -5244,13 +5244,47 @@ def test_ops_status_shows_compose_components_without_conflict(monkeypatch, capsy
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(
+        ops, "_compose_stack_snapshot", lambda: {"grafana": "running", "api": "running"}
+    )
 
     rc = ops.status(MagicMock())
     assert rc == 0
     out = capsys.readouterr().out
     assert "compose grafana: running" in out
     assert "Compose components" in out
+
+
+@pytest.mark.unit
+def test_ops_status_omits_compose_config_hint_for_observability_only(monkeypatch, capsys):
+    """`COMPOSE_CONFIG_HINT` names a file only a Compose *core* tier reads (#3855).
+
+    The generality sweep's second site: this line used the same
+    whole-snapshot truthiness test `infra_status` did, so a native install
+    running the default observability stack was told to go edit
+    `config.docker.ini` -- a file nothing on that host reads, since the
+    observability containers take no nyxGPT config at all.
+    """
+
+    class CP:
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = 0
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    rc = ops.status(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The Compose rows are still listed -- only the config hint changed.
+    assert "compose grafana: running" in out
+    assert "Compose components" not in out
+    assert ops.COMPOSE_CONFIG_HINT not in out
 
 
 @pytest.mark.unit
@@ -12874,6 +12908,136 @@ def test_infra_status_detects_native_and_compose_modes(monkeypatch):
     assert ops.infra_status()["mode"] == "compose"
 
 
+# The Compose-sourced observability tier a native install runs by default:
+# `install()` starts it unless `--skip-observability` is passed, so this is
+# what the *correctly configured* native install looks like (#3855).
+_OBSERVABILITY_COMPOSE_SNAPSHOT = {
+    "grafana": "running",
+    "prometheus": "running",
+    "loki": "running",
+    "promtail": "running",
+    "jaeger": "running",
+    "otel-collector": "running",
+    "glitchtip": "running",
+    "glitchtip-postgres": "running",
+    "glitchtip-redis": "running",
+    "glitchtip-worker": "running",
+}
+
+
+@pytest.mark.unit
+def test_infra_status_observability_only_compose_is_still_native_mode(monkeypatch):
+    """Ten running observability containers are not a Compose *deployment* -- #3855.
+
+    The owner's rc12 acceptance install: native/artifact api/web/ollama plus
+    the ops-managed Cassandra container, with the observability stack up
+    under Compose. Testing the whole Compose snapshot for truthiness took the
+    `compose` branch before `native_running` was ever evaluated, so the
+    Infrastructure page labelled a Homebrew stack "Docker Compose" and sent
+    the operator down the Compose troubleshooting path.
+    """
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "started", "web": "started", "ollama": "started"},
+            compose=dict(_OBSERVABILITY_COMPOSE_SNAPSHOT),
+            conflicts=[],
+        ),
+    )
+
+    result = ops.infra_status()
+    assert result["mode"] == "native"
+    # The snapshot itself is unchanged -- the page still renders every
+    # observability container under its Compose panel; only the *mode*
+    # predicate stopped counting them as a core deployment.
+    assert result["compose"] == _OBSERVABILITY_COMPOSE_SNAPSHOT
+
+
+@pytest.mark.unit
+def test_infra_status_compose_mode_survives_when_a_core_component_is_composed(monkeypatch):
+    """A real Compose deployment still reports `compose`, observability alongside it."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={},
+            compose={**_OBSERVABILITY_COMPOSE_SNAPSHOT, "api": "running", "web": "running"},
+            conflicts=[],
+        ),
+    )
+    assert ops.infra_status()["mode"] == "compose"
+
+
+@pytest.mark.unit
+def test_compose_core_components_ignores_the_observability_tier():
+    """The core filter, asked directly -- #3855's generality sweep result."""
+    mode = ops.DeploymentMode(
+        native={},
+        compose={**_OBSERVABILITY_COMPOSE_SNAPSHOT, "api": "running", "cassandra": "exited"},
+        conflicts=[],
+    )
+    assert ops.compose_core_components(mode) == ["api", "cassandra"]
+    assert (
+        ops.compose_core_components(
+            ops.DeploymentMode(
+                native={}, compose=dict(_OBSERVABILITY_COMPOSE_SNAPSHOT), conflicts=[]
+            )
+        )
+        == []
+    )
+
+
+@pytest.mark.unit
+def test_infra_status_and_self_heal_agree_on_detected_mode(monkeypatch):
+    """The Infrastructure page and the Self-Heal page must not contradict each other (#3855).
+
+    Same host, same minute, same underlying probe: `list_component_status()`
+    tags api/web/ollama/cassandra `native` and the observability containers
+    `compose`. The disagreement between the two pages was the observable
+    symptom, so it is asserted directly rather than only via `infra_status`.
+    """
+    components = [
+        self_heal.ComponentStatus(
+            service=service,
+            container=service,
+            state="started",
+            health="healthy",
+            healthy=True,
+            source="native",
+        )
+        for service in ("api", "web", "ollama")
+    ] + [
+        self_heal.ComponentStatus(
+            service=service,
+            container=service,
+            state=state,
+            health="healthy",
+            healthy=True,
+            source="compose",
+        )
+        for service, state in _OBSERVABILITY_COMPOSE_SNAPSHOT.items()
+    ]
+
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={c.service: c.state for c in components if c.source == "native"},
+            compose={c.service: c.state for c in components if c.source == "compose"},
+            conflicts=[],
+        ),
+    )
+
+    assert ops.infra_status()["mode"] == self_heal.detected_mode(components) == "native"
+
+
 @pytest.mark.unit
 def test_infra_status_serving_reports_single_instance_outside_kubernetes(monkeypatch):
     """Native/Compose/Terraform run one instance each -- serving must say so, not defer to canary."""
@@ -13031,6 +13195,129 @@ def test_status_shows_terraform_stack_when_present(monkeypatch, capsys):
     assert "terraform api: running" in out
 
 
+def _status_pod(name: str, phase: str, **status) -> dict:
+    """One `kubectl get pods -o json` item, as `nyxgpt ops status` now reads them."""
+    return {"metadata": {"name": name}, "status": {"phase": phase, **status}}
+
+
+_STATUS_READY_POD_LIST = {
+    "items": [
+        _status_pod(
+            "nyxgpt-api-stable-abc",
+            "Running",
+            conditions=[{"type": "Ready", "status": "True"}],
+        )
+    ]
+}
+
+
+@pytest.mark.unit
+def test_status_classifies_pending_and_blocked_pods_apart(monkeypatch, capsys):
+    """`nyxgpt ops status` labels Pods, it does not echo `kubectl get pods` (#3827).
+
+    The raw table renders a Pod pulling an image and a Pod no node will take
+    identically -- both read `Pending` -- and `ops status` is the command
+    every install failure message points the operator at, so it is exactly
+    where that conflation does the most damage. Asserted together, because
+    the defect is not "an unhelpful line" but *two different conditions
+    reported the same way*.
+    """
+    pods = {
+        "items": [
+            _status_pod(
+                "ready-pod",
+                "Running",
+                conditions=[{"type": "Ready", "status": "True"}],
+            ),
+            _status_pod(
+                "pulling-pod",
+                "Pending",
+                conditions=[{"type": "PodScheduled", "status": "True"}],
+                containerStatuses=[{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+            ),
+            _status_pod(
+                "unschedulable-pod",
+                "Pending",
+                conditions=[
+                    {
+                        "type": "PodScheduled",
+                        "status": "False",
+                        "reason": "Unschedulable",
+                        "message": "0/1 nodes are available: 1 Insufficient memory.",
+                    }
+                ],
+            ),
+        ]
+    }
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout=json.dumps(pods))
+        return CP(stdout="")
+
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
+    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {})
+
+    assert ops.status(MagicMock()) == 0
+    out = capsys.readouterr().out
+
+    assert "[OK] pod ready-pod: Running" in out
+    assert "[PENDING] pod pulling-pod: Pending: ContainerCreating" in out
+    assert f"[FAIL] pod unschedulable-pod: {ops.K8S_SUMMARY_UNSCHEDULABLE}" in out
+    # The scheduler's own words, which is what tells the operator the remedy
+    # is a bigger node rather than a retry.
+    assert "Insufficient memory" in out
+    # The pre-fix behaviour: the raw table gave both Pending Pods the same
+    # single word and no verdict at all.
+    assert "[PENDING] pod unschedulable-pod" not in out
+    assert "[FAIL] pod pulling-pod" not in out
+
+
+@pytest.mark.unit
+def test_status_classifies_observability_workloads(monkeypatch, capsys):
+    """`0/1 ready` is PENDING in `ops status` too, not a bare count (#3827)."""
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
+        return CP(stdout="")
+
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
+    )
+    monkeypatch.setattr(
+        ops,
+        "_k8s_observability_workload_state",
+        lambda: {"grafana": "0/1 ready", "prometheus": "1/1 ready", "loki": "absent"},
+    )
+
+    assert ops.status(MagicMock()) == 0
+    out = capsys.readouterr().out
+
+    assert "[PENDING] grafana: 0/1 ready" in out
+    assert "[OK] prometheus: 1/1 ready" in out
+    assert "[FAIL] loki: absent" in out
+    # This is the exact contradiction the issue reported: the install called a
+    # zero-ready workload a failure while `status` printed it with a green tick.
+    assert "[OK] grafana" not in out
+
+
 @pytest.mark.unit
 def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     def fake_which(prog):
@@ -13038,7 +13325,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
 
     def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
-            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
+            return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
 
     monkeypatch.setattr(ops, "_which", fake_which)
@@ -13067,7 +13354,7 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
 
     def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
-            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
+            return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
 
     monkeypatch.setattr(ops, "_which", fake_which)

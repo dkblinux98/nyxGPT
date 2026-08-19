@@ -104,6 +104,7 @@ CLAUDE_STEP_RE = re.compile(
 
 # Round kind, first match wins (an acceptance-fix step also says "fix").
 ROUND_KIND_RULES = [
+    ("groom", r"groom"),
     ("huddle", r"position|mediation"),
     ("groom", r"groom"),
     ("acceptance-fix", r"acceptance"),

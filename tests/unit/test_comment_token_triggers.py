@@ -220,6 +220,45 @@ class TestClaudeBotIsAnAllowedTriggerAuthor:
         allowed = [(s.get("with") or {}).get("allowed_bots") for s in steps]
         assert "claude" in [a for a in allowed if a]
 
+    def test_every_action_call_site_reachable_by_a_bot_actor_permits_it(self):
+        """The pairing, stated once: a workflow that treats `claude[bot]` as a
+        permitted actor must also pass `allowed_bots` to `claude-code-action`.
+
+        These are two independent gates gating one identity, edited in
+        different places, and that is exactly how they drifted apart. #3870
+        fixed both for `claude-code-review.yml`. #3882 then made assignment
+        the dispatch and named `claude[bot]` a permitted *assigner* in
+        `developer_auto_implement.yml`'s claim step -- updating the workflow's
+        own gate but not the action's, which refuses a bot-actored run
+        outright. The lever half-worked: the issue was claimed and moved to In
+        Progress, then the run died at action init with "Workflow initiated by
+        non-human actor", leaving four issues (#3855/#3858/#3860/#3864) claimed
+        with nothing implementing them (2026-08-18).
+
+        Iterating every step of every job means a seventh call site added
+        later is covered without anyone remembering to extend this list.
+        """
+        for filename in ("developer_auto_implement.yml", "claude-code-review.yml"):
+            workflow = _load(WORKFLOWS / filename)
+            names_the_bot = "claude[bot]" in (WORKFLOWS / filename).read_text()
+            assert names_the_bot, (
+                f"{filename} no longer names claude[bot] as a permitted actor -- "
+                "if that is deliberate, remove it from this test with the reason"
+            )
+            for job, spec in (workflow.get("jobs") or {}).items():
+                for index, step in enumerate(spec.get("steps") or []):
+                    uses = str(step.get("uses", ""))
+                    if "anthropics/claude-code-action" not in uses:
+                        continue
+                    allowed = str((step.get("with") or {}).get("allowed_bots", ""))
+                    assert "claude" in allowed, (
+                        f"{filename}: job '{job}' step {index} calls "
+                        "claude-code-action without allowed_bots containing "
+                        "'claude', so a claude[bot]-actored run of this workflow "
+                        "is refused at action init even though the workflow's own "
+                        "gate lets it through"
+                    )
+
 
 class TestRealCommandPostsStillTrigger:
     """The scripts that legitimately POST a retry command keep working: their

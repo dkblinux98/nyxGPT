@@ -1,0 +1,76 @@
+name: Canary Track Metrics Smoke
+
+# The question this job answers: does the canary rollout gate judge the CANARY
+# track, or the nyxgpt-api Pod that happens to be serving the request?
+#
+# #3829 was an acceptance failure where nyxgpt-api-canary was 0/1, had zero
+# Service endpoints and had served zero requests, and `evaluate()` still
+# answered "safe to promote" -- on the *stable* Pod's 459 requests, because it
+# read the in-process ResourceMonitor of whichever Pod served the call. Unit
+# tests cannot reach that: it takes a real cluster with two tracks in
+# different states, and a call answered by one track about the other.
+#
+# scripts/canary-track-metrics-smoke.sh runs both halves on a kind cluster
+# (CLAUDE.md's fault-injection rule, #3753): it asserts the pre-fix INPUT is
+# still present -- the serving Pod's own /api/v1/metrics still reports a busy,
+# error-free process, which is exactly the snapshot that produced the bad
+# verdict -- and that the verdict is refused anyway. It then gives the canary
+# Pod traffic and asserts the verdict follows the canary's count, read from a
+# different Pod.
+#
+# Deliberately narrower than k8s-local-smoke.yml: no Cassandra, no Ollama, no
+# observability. None of them participate in the attribution question and they
+# cost tens of minutes. Path-filtered for the same reason -- it runs when the
+# canary layer, the manifests it reads, or this job change.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/canary.py'
+      - 'k8s/deployment-stable.yaml'
+      - 'k8s/deployment-canary.yaml'
+      - 'k8s/rbac.yaml'
+      - 'scripts/canary-track-metrics-smoke.sh'
+      - '.github/workflows/canary-track-metrics-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/canary.py'
+      - 'k8s/deployment-stable.yaml'
+      - 'k8s/deployment-canary.yaml'
+      - 'k8s/rbac.yaml'
+      - 'scripts/canary-track-metrics-smoke.sh'
+      - '.github/workflows/canary-track-metrics-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local kind cluster;
+# it never writes to the repository or its APIs (CodeQL #33,
+# actions/missing-workflow-permissions -- same pattern as k8s-local-smoke.yml).
+permissions:
+  contents: read
+
+jobs:
+  canary-track-metrics-smoke:
+    runs-on: ubuntu-latest
+    # One image build plus a two-Deployment kind cluster; no model pull and no
+    # data tier, so this is minutes rather than k8s-local-smoke.yml's hour.
+    timeout-minutes: 40
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Canary metrics are attributed to the canary track
+        run: ./scripts/canary-track-metrics-smoke.sh
