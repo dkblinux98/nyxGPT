@@ -2420,9 +2420,11 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     # nyxgpt cloud user-data (P6-12/#3511): renders the EC2 user-data
-    # bootstrap script for a target instance OS -- the OS-dispatch layer
-    # future `nyxgpt cloud deploy`/the Terraform AWS module (P6-11/P6-8)
-    # will embed as an instance's `user_data`. See
+    # bootstrap script for a target instance OS. `nyxgpt cloud deploy --os`
+    # is the provisioning command an operator runs -- it delivers these same
+    # scripts over SSH itself (#3867); this one prints the script, for the
+    # first-boot `user_data` case a deploy cannot serve and for the CI jobs
+    # that execute a rendered bootstrap directly. See
     # src/nyxgpt/cloud_provision.py and docs/cloud.md's target-OS support
     # matrix.
     cloud_user_data = cloud_sub.add_parser(

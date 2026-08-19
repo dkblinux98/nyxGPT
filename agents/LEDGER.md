@@ -956,6 +956,17 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_install_identity.py`;
   `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
 
+- **D-033** · 2026-08-19 · developer-agent (#3867) — `nyxgpt cloud deploy --os
+  {auto,linux,macos}` is the single provisioning entry point for both target
+  OSes: it renders the target's bootstrap and delivers it to the instance over
+  the wrapped SSH path itself. `nyxgpt cloud user-data` stays as the renderer's
+  own command for the first-boot `user_data` case a deploy cannot serve and for
+  the CI jobs that execute a rendered bootstrap; it is no longer a user-facing
+  provisioning instruction, and there is one renderer behind both.
+  Source: #3867; `src/nyxgpt/cloud_deploy.py` (`resolve_os_family`,
+  `render_provision_script`, `provision_remote_command`); `docs/cloud.md`
+  §EC2 Mac targets; `.github/workflows/cloud-target-os-smoke.yml`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -982,6 +993,27 @@ rather than mechanism, and nothing can enforce them.
   Revisit when: the intelligent watcher is in place and demonstrably fails to
   catch a spend runaway.
   Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
+
+- **P-003** · 2026-08-19 · developer-agent (#3867) — Allocating the EC2
+  Dedicated Host an EC2 Mac requires (an `aws_ec2_host` in
+  `terraform/aws/modules/compute`, mac AMI resolution, host/subnet AZ pinning)
+  is **deliberately not built**. `nyxgpt cloud deploy --os macos` provisions a
+  Mac the operator already has, named with `--host`, and refuses — before
+  applying anything — when there is none.
+  Reason: an allocated host bills a 24-hour minimum whether or not an instance
+  runs on it and cannot be released inside that window, so a `terraform destroy`
+  within the first day fails and leaves the operator paying for a resource this
+  configuration cannot tear down. No CI job can execute any of it (no macOS EC2
+  runner, no macOS in a container), so it would ship unverified and cost real
+  money per attempt to find out. #3867's acceptance criterion offers this
+  branch explicitly: "works end-to-end ... **or** fails fast with a wrapped,
+  documented story".
+  Revisit when: the owner wants nyxGPT to allocate billable Dedicated Hosts,
+  or AWS removes the 24-hour minimum. A wrapped `nyxgpt cloud host
+  allocate/release` (boto3, cost surfaced, explicit `--yes`) is the shape to
+  build then — not Terraform, whose destroy path is where the trap is.
+  Source: #3867; `cloud_deploy.MACOS_NO_TARGET_MESSAGE`; `docs/cloud.md`
+  §EC2 Mac targets.
 
 ## Open questions
 
