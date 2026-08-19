@@ -573,20 +573,7 @@ async def load_cfg_and_refresh_logging(request: Request, call_next):
     middleware/handlers.
     """
 
-    try:
-        cfg = load_config(None)
-    except nyxgpt.config.ConfigParseError as e:
-        # Handled here rather than left to `config_parse_error_handler`:
-        # Starlette runs registered exception handlers *inside* the user
-        # middleware stack, so an exception raised in this middleware never
-        # reaches them and would come back as an unadorned 500 (#3944). Every
-        # endpoint depends on this load, so this one branch is what a user
-        # with a damaged config.ini sees from the whole API.
-        log.error("config.ini is unreadable: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={"error": {"code": "config_unreadable", "message": str(e)}},
-        )
+    cfg = load_config(None)
     request.state.cfg = cfg
 
     # Hot-apply logging config (especially level) on every request.
@@ -815,6 +802,47 @@ async def prometheus_metrics_middleware(request: Request, call_next):
     return response
 
 
+def _config_unreadable_response(exc: Exception, req_id: str | None = None) -> JSONResponse:
+    """Render an unreadable config.ini as a `config_unreadable` 500 (#3944)."""
+    log.error("config.ini is unreadable (request_id=%s): %s", req_id, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "config_unreadable",
+                "message": str(exc),
+                "request_id": req_id,
+            }
+        },
+    )
+
+
+@app.middleware("http")
+async def config_unreadable_guard(request: Request, call_next):
+    """Turn a `ConfigParseError` raised anywhere below into a stated cause (#3944).
+
+    Registered last, so it is the *outermost* middleware -- deliberately
+    outside `api_key_auth` and `load_cfg_and_refresh_logging`, both of which
+    call `load_config` themselves. Starlette runs registered exception
+    handlers *inside* the user middleware stack, so `config_parse_error_handler`
+    below never sees a middleware-raised error; without this, a damaged
+    config.ini came back from every endpoint as an unadorned 500 with no
+    cause, which is exactly what left the owner staring at a dead dashboard.
+    Catching it here rather than in each middleware also means the next
+    middleware that reads config inherits the behaviour instead of
+    re-introducing the gap.
+
+    These responses are not counted in the HTTP metrics below (the exception
+    unwinds past `prometheus_metrics_middleware` before reaching here) --
+    acceptable, since a process that cannot read its config cannot serve
+    anything for those metrics to describe.
+    """
+    try:
+        return await call_next(request)
+    except nyxgpt.config.ConfigParseError as e:
+        return _config_unreadable_response(e, getattr(request.state, "request_id", None))
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Render raised `HTTPException`s in the API's standard error envelope.
@@ -851,18 +879,7 @@ async def config_parse_error_handler(request: Request, exc: Exception):
     the line number; pass it through verbatim. It is a curated diagnosis, not
     a traceback, and these endpoints are admin-authenticated.
     """
-    req_id = getattr(request.state, "request_id", None)
-    log.error("config.ini is unreadable (request_id=%s): %s", req_id, exc)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": {
-                "code": "config_unreadable",
-                "message": str(exc),
-                "request_id": req_id,
-            }
-        },
-    )
+    return _config_unreadable_response(exc, getattr(request.state, "request_id", None))
 
 
 @app.exception_handler(config_wizard.ConfigWriteError)

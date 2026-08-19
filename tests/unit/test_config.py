@@ -2574,3 +2574,75 @@ def test_cloud_secret_failure_debug_line_does_not_relog_the_provider(
     # The exception is the whole point of the DEBUG line -- redacting the
     # provider must not have taken the traceback with it.
     assert any(r.exc_info is not None for r in debug)
+
+
+# --- unparseable config.ini reports its real cause (#3944) ---
+#
+# `parser.read()` was completely unguarded, so a `configparser` error escaped
+# `load_config` and the API's catch-all handler flattened it to "Internal
+# server error". Every endpoint loads config, so one bad line took the entire
+# dashboard down while stating no cause at all.
+
+
+def test_load_config_raises_config_parse_error_naming_the_line(tmp_path: Path) -> None:
+    from nyxgpt.config import ConfigParseError
+
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[monitoring]
+SLACK_BOT_TOKEN = a
+slack_bot_token = b
+""".lstrip(),
+    )
+
+    with pytest.raises(ConfigParseError) as excinfo:
+        load_config(str(ini))
+
+    message = str(excinfo.value)
+    assert str(ini) in message
+    assert "DuplicateOptionError" in message
+    assert "line 3" in message
+    assert "slack_bot_token" in message
+    # The whole point: a user staring at two differently-cased lines is told
+    # why they collide.
+    assert "case-insensitive" in message
+
+
+def test_load_config_parse_error_is_not_a_bare_configparser_error(tmp_path: Path) -> None:
+    """Callers catch `ConfigParseError`; it must not also be a `configparser.Error`."""
+    import configparser
+
+    from nyxgpt.config import ConfigParseError
+
+    ini = tmp_path / "config.ini"
+    _write(ini, "not-a-header = 1\n")
+
+    with pytest.raises(ConfigParseError) as excinfo:
+        load_config(str(ini))
+    assert not isinstance(excinfo.value, configparser.Error)
+    assert isinstance(excinfo.value.__cause__, configparser.Error)
+
+
+def test_describe_config_parse_error_covers_each_configparser_shape(tmp_path: Path) -> None:
+    """The line number lives on a different attribute per subclass -- cover them."""
+    import configparser
+
+    from nyxgpt.config import describe_config_parse_error
+
+    cases = {
+        "[a]\nx = 1\n[a]\ny = 2\n": ("DuplicateSectionError", "line 3"),
+        "x = 1\n[a]\n": ("MissingSectionHeaderError", "line 1"),
+        "[a]\n x = 1\ny 2\n": ("ParsingError", "line 3"),
+    }
+    for text, (expected_type, expected_line) in cases.items():
+        try:
+            configparser.ConfigParser().read_string(text)
+        except configparser.Error as e:
+            rendered = describe_config_parse_error(tmp_path / "config.ini", e)
+        else:  # pragma: no cover - the fixtures above are all invalid
+            raise AssertionError(f"expected a parse error for {text!r}")
+        assert expected_type in rendered
+        assert expected_line in rendered
+        assert "config.ini" in rendered
