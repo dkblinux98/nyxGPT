@@ -319,15 +319,94 @@ jobs:
         run: |
           set -euo pipefail
 
-          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          # The link, not the sentence (owner rule, 2026-08-19): GitHub
+          # already stores which issue this PR closes, and that edge is what
+          # closes it on merge. Grepping the body for `Closes #N` was prose
+          # standing in for a native relationship -- the same mistake as
+          # driving workflows from comment tokens -- and it hard-failed the
+          # merge on PRs whose issue was linked but unspelled.
+          # Self-contained on purpose: no checkout, no config, no sourced
+          # library. A PR-triggered workflow runs the PR's copy of this file
+          # against a RELEASE_BRANCH checkout, so calling a helper the base
+          # branch does not have yet fails with exit 127 -- which is exactly
+          # how this step and pr-hygiene went red on the PR that introduced
+          # the helper. A query needs nothing checked out to work.
+          ISSUE=$(gh api graphql -f query='
+            query($owner:String!, $name:String!, $pr:Int!){
+              repository(owner:$owner, name:$name){
+                pullRequest(number:$pr){
+                  closingIssuesReferences(first:5){ nodes { number } }
+                }
+              }
+            }' -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY##*/}" \
+            -F pr="$PR" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' \
+            2>/dev/null || true)
+
+          # Fallback for PRs opened before the link existed. Read, never required.
+          if [[ -z "$ISSUE" ]]; then
+            ISSUE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.body // ""' \
+              | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          fi
 
           if [[ -z "$ISSUE" ]]; then
-            echo "::error::PR #$PR body does not contain 'Closes #N'"
-            exit 1
+            # A PR that closes no issue is legitimate but rare (owner rule,
+            # 2026-08-19). It used to `exit 1` here, ahead of EVERY verdict
+            # branch, so an issue-less PR could not be merged, sent back, or
+            # escalated -- the automation could not execute any decision at
+            # all, and each verdict re-produced the same red check (#3921,
+            # #3927, #3929, #3933 all needed a manual override).
+            #
+            # "Bubble up" has to mean a conscious decision reaches a human,
+            # not that the pipeline jams. So the split is by decision:
+            # APPROVE merges without the issue-side work (below), and the
+            # hand-back decisions -- which are ALL issue-side, they assign an
+            # issue to somebody -- still stop loudly, in their own step, with
+            # a comment on the PR saying why.
+            echo "::warning::PR #$PR closes no issue -- no linked issue, and no 'Closes #N' in the body. An APPROVE merges the PR without issue-side bookkeeping; a hand-back needs an issue."
+            echo "issue_number=" >> "$GITHUB_OUTPUT"
+            echo "has_issue=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "has_issue=true" >> "$GITHUB_OUTPUT"
           echo "Found issue #$ISSUE"
+
+      - name: Stop -- hand-back decision on a PR that closes no issue
+        # Name the hand-back decisions explicitly. `!= 'APPROVE'` also caught
+        # ALREADY_HANDLED -- the sentinel `parse_decision` resolves duplicated
+        # triggers to, documented in this file as matching no downstream step.
+        # The structured-comment fallback run fires on every review, so on an
+        # issue-less PR it would have posted "cannot execute ALREADY_HANDLED"
+        # onto a PR the primary path had just merged, and reddened the run:
+        # the #3728/#3733 false-escalation shape, re-created by a negation.
+        if: >-
+          steps.get_issue.outputs.has_issue == 'false' &&
+          (steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' ||
+           steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          DECISION: ${{ steps.parse_decision.outputs.decision }}
+        run: |
+          set -euo pipefail
+
+          # Every non-APPROVE outcome is issue-side: it assigns an issue to
+          # the developer, parks an issue in a lane, or opens a huddle on an
+          # issue. With no issue there is nothing to hand back to, and
+          # guessing one would be worse than stopping. Say so on the PR --
+          # a red check nobody reads is not a bubble-up.
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            -f body="🛑 **Cannot execute \`${DECISION}\` -- this PR closes no issue.**
+
+          Every outcome other than \`APPROVE\` is issue-side: it assigns an issue back to the developer, parks it in a lane, or opens a huddle on it. There is no issue here to hand this back to.
+
+          Either link the issue this work belongs to (GitHub's native closing-issue link, or \`Closes #N\` in the body), or take the decision by hand. An \`APPROVE\` on this PR *would* execute -- it merges without the issue-side bookkeeping." >/dev/null || true
+
+          echo "::error::PR #$PR closes no issue, so the '$DECISION' decision cannot be executed. Commented on the PR."
+          exit 1
 
       - name: Execute merge (if approved)
         if: steps.parse_decision.outputs.decision == 'APPROVE'
@@ -339,6 +418,35 @@ jobs:
           set -euo pipefail
 
           echo "::notice::Approved - executing merge"
+
+          # Transition guard, and it is the reason this PR can merge itself.
+          # This step runs the PR's copy of THIS workflow against a
+          # `ref: RELEASE_BRANCH` checkout, so the script it calls is the
+          # BASE's copy. Until the issue-optional `review_accept_and_merge.sh`
+          # lands, that copy still exits 2 on an empty issue -- which would
+          # leave an approved issue-less PR unmerged and red, the exact
+          # #3921/#3927/#3929/#3933 manual-override incident this change
+          # exists to end, reproduced on the change itself.
+          #
+          # So: when there is no issue AND the checked-out script predates the
+          # guard, do the minimal merge inline with the two things the base
+          # branch does have. Delete this block once `HAS_ISSUE` is on the
+          # release branch -- the grep makes it self-retiring, not a
+          # permanent fork.
+          if [[ -z "$ISSUE" ]] \
+             && ! grep -q 'HAS_ISSUE' scripts/agents/review_accept_and_merge.sh; then
+            echo "::notice::PR #$PR closes no issue and the base branch's merge script predates the issue-optional path -- merging inline (transition)."
+            bash -lc "cd '$GITHUB_WORKSPACE' && \
+              source scripts/agents/lib/gh_project.sh && \
+              load_config && \
+              gh pr merge '$PR' --merge --delete-branch && \
+              close_pr_project_item '$PR'"
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+              -f body="✅ **Merged** via the transition path: this PR closes no issue, and the release branch's \`review_accept_and_merge.sh\` still requires one. No issue-side bookkeeping ran, because there is no issue. This path retires itself once the issue-optional script is on the release branch." \
+              >/dev/null 2>&1 || true
+            exit 0
+          fi
+
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
@@ -431,7 +539,7 @@ jobs:
           esac
 
       - name: Escalate to human (if 3+ loops, or immediately on spec ambiguity)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}
@@ -551,7 +659,7 @@ jobs:
           exit 0
 
       - name: Return to developer (if changes requested and not escalated or huddling)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false' && steps.count.outputs.defer != 'true'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false' && steps.count.outputs.defer != 'true' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}
@@ -599,7 +707,7 @@ jobs:
           echo "✓ Issue returned to developer-agent, auto-fix triggered"
 
       - name: Trigger huddle (judgment call, or 2nd failed verifiable-defect cycle)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.huddle == 'true'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.huddle == 'true' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}
@@ -661,7 +769,7 @@ jobs:
           echo "✓ Huddle triggered for issue #${ISSUE} -- huddle_session.yml takes it from here"
 
       - name: Send to developer (human override after escalation)
-        if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER'
+        if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}

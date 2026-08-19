@@ -460,17 +460,22 @@ markers.**
 
 ## PR Rules
 
-- PRs are **submitted for review** only via developer_submit_for_review.sh, and
-  its PR body must include `Closes #ISSUE`.
+- PRs are **submitted for review** only via developer_submit_for_review.sh.
+- PRs are linked to their issue **natively** (GitHub's closing-issue link).
+  `Closes #ISSUE` in the body is one way to create that link, not a required
+  sentence: consumers read the link, never the prose (owner rule, 2026-08-19).
+  A PR with no issue behind it is legitimate and rare — on approval it merges
+  and skips the issue-side bookkeeping, rather than jamming the pipeline.
 - **One exception, and it is not a submission (#3862):**
   `developer_ensure_pr_exists.sh` runs `if: always()` at the end of every
   developer run and opens a **draft** PR for a branch that reached `origin`
   without one — the run died before the submit step, so its work would
   otherwise sit unreviewed, unmerged and invisible. That body carries
-  `Refs #ISSUE`, deliberately: an unfinished draft must not close its issue if
-  someone merges it. It becomes a submission only when a continuation run
-  passes verification, at which point the body is rewritten to `Closes #ISSUE`
-  and the PR is taken out of draft. No other path may create a PR.
+  `Refs #ISSUE`, deliberately: `Refs` creates **no** closing link, so an
+  unfinished draft cannot close its issue if someone merges it. It becomes a
+  submission only when a continuation run passes verification, at which point
+  the link is made closing and the PR is taken out of draft. No other path may
+  create a PR.
 - Issues close only on merge — and only on a merge whose content is verified
   onto the release branch (`review_accept_and_merge.sh`, #3862). "The merge
   command exited 0" is a report, not evidence.

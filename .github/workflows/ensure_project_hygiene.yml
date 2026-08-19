@@ -211,11 +211,29 @@ jobs:
           load_config
           require_gh_auth
 
-          # Linked issue from "Closes #N" in the body, if any (plain PR data
-          # -- REST; no Projects-v2 dependency).
-          BODY=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR}" --jq '.body // ""')
-          ISSUE=$(echo "$BODY" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          # Self-contained on purpose: no checkout, no config, no sourced
+          # library. A PR-triggered workflow runs the PR's copy of this file
+          # against a RELEASE_BRANCH checkout, so calling a helper the base
+          # branch does not have yet fails with exit 127 -- which is exactly
+          # how this step and pr-hygiene went red on the PR that introduced
+          # the helper. A query needs nothing checked out to work.
+          ISSUE=$(gh api graphql -f query='
+            query($owner:String!, $name:String!, $pr:Int!){
+              repository(owner:$owner, name:$name){
+                pullRequest(number:$pr){
+                  closingIssuesReferences(first:5){ nodes { number } }
+                }
+              }
+            }' -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY##*/}" \
+            -F pr="$PR" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' \
+            2>/dev/null || true)
 
+          # Fallback for PRs opened before the link existed. Read, never required.
+          if [[ -z "$ISSUE" ]]; then
+            ISSUE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.body // ""' \
+              | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          fi
           if [[ -n "$ISSUE" ]]; then
             echo "PR #$PR links issue #$ISSUE — full hygiene via ensure_pr_project_hygiene"
             ensure_pr_project_hygiene "$PR" "$ISSUE"

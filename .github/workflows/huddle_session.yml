@@ -183,10 +183,31 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HUDDLE_DIR"
-          ISSUE=$(gh pr view "$PR_NUMBER" --json body \
-            --jq '.body // ""' | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          # Self-contained on purpose: no checkout, no config, no sourced
+          # library. A PR-triggered workflow runs the PR's copy of this file
+          # against a RELEASE_BRANCH checkout, so calling a helper the base
+          # branch does not have yet fails with exit 127 -- which is exactly
+          # how this step and pr-hygiene went red on the PR that introduced
+          # the helper. A query needs nothing checked out to work.
+          ISSUE=$(gh api graphql -f query='
+            query($owner:String!, $name:String!, $pr:Int!){
+              repository(owner:$owner, name:$name){
+                pullRequest(number:$pr){
+                  closingIssuesReferences(first:5){ nodes { number } }
+                }
+              }
+            }' -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY##*/}" \
+            -F pr="$PR_NUMBER" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' \
+            2>/dev/null || true)
+
+          # Fallback for PRs opened before the link existed. Read, never required.
           if [[ -z "$ISSUE" ]]; then
-            echo "::error::PR #$PR_NUMBER links no issue (no 'Closes #N') -- a huddle needs the acceptance criteria"
+            ISSUE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""' \
+              | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          fi
+          if [[ -z "$ISSUE" ]]; then
+            echo "::error::PR #$PR_NUMBER closes no issue -- a huddle needs the acceptance criteria"
             exit 1
           fi
           echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"

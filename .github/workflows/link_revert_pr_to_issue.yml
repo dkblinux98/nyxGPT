@@ -60,11 +60,35 @@ jobs:
           echo "Original PR #$ORIGINAL_PR body:"
           echo "$ORIGINAL_BODY"
 
-          # Extract issue number from "Closes #123" pattern
-          ISSUE=$(echo "$ORIGINAL_BODY" | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          # The link, not the sentence (owner rule, 2026-08-19): read the
+          # original PR's native closing-issue edge, falling back to the body
+          # convention for PRs that predate it.
+          # Self-contained on purpose: no checkout, no config, no sourced
+          # library. A PR-triggered workflow runs the PR's copy of this file
+          # against a RELEASE_BRANCH checkout, so calling a helper the base
+          # branch does not have yet fails with exit 127 -- which is exactly
+          # how this step and pr-hygiene went red on the PR that introduced
+          # the helper. A query needs nothing checked out to work.
+          ISSUE=$(gh api graphql -f query='
+            query($owner:String!, $name:String!, $pr:Int!){
+              repository(owner:$owner, name:$name){
+                pullRequest(number:$pr){
+                  closingIssuesReferences(first:5){ nodes { number } }
+                }
+              }
+            }' -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY##*/}" \
+            -F pr="$ORIGINAL_PR" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' \
+            2>/dev/null || true)
+
+          # Fallback for PRs opened before the link existed. Read, never required.
+          if [[ -z "$ISSUE" ]]; then
+            ISSUE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${ORIGINAL_PR}" --jq '.body // ""' \
+              | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          fi
 
           if [[ -z "$ISSUE" ]]; then
-            echo "::warning::Original PR #$ORIGINAL_PR has no linked issue (no 'Closes #N' found)"
+            echo "::warning::Original PR #$ORIGINAL_PR closes no issue"
             echo "has_issue=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

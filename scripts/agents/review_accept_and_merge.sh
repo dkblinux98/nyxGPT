@@ -7,7 +7,7 @@ source "$DIR/lib/gh_project.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  review_accept_and_merge.sh [--dry-run] <pr_number_or_url> <issue_number>
+  review_accept_and_merge.sh [--dry-run] <pr_number_or_url> [issue_number]
 
 Merges the PR into the current release branch (merge commit) and deletes the PR branch, then:
   - If the issue has open native blocked-by dependencies (owner process rule,
@@ -17,6 +17,11 @@ Merges the PR into the current release branch (merge commit) and deletes the PR 
     (see sweep_parked_blocked_issues.sh).
   - Otherwise: Issue Status -> Acceptance Testing, Issue assignee ->
     HUMAN_OWNER, comment on issue with merge info
+
+<issue_number> may be empty for a PR that closes no issue (owner rule,
+2026-08-19: rare, but legitimate). The PR is then merged and its own card
+closed, every issue-side step is skipped, and a comment on the PR records
+that no issue-side bookkeeping ran.
 EOF
 }
 
@@ -30,15 +35,25 @@ DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
 
 PR="${1:-}"
+# An empty ISSUE is a supported input, not a usage error: a PR that closes no
+# issue is legitimate but rare (owner rule, 2026-08-19). Requiring one here
+# meant an approved issue-less PR could not be merged by the automation at
+# all -- the caller died before this script ran, and every retry reproduced
+# it. Only the PR number is genuinely required.
 ISSUE="${2:-}"
-if [[ -z "$PR" || -z "$ISSUE" ]]; then usage >&2; exit 2; fi
+if [[ -z "$PR" ]]; then usage >&2; exit 2; fi
+HAS_ISSUE=1
+if [[ -z "$ISSUE" ]]; then
+  HAS_ISSUE=0
+  echo "[review] PR #${PR} closes no issue -- merging without issue-side bookkeeping." >&2
+fi
 
 load_config
 require_gh_auth
 require_cmd gh
 require_cmd jq
 
-echo "[review] ===== Starting merge process for PR #${PR}, Issue #${ISSUE} =====" >&2
+echo "[review] ===== Starting merge process for PR #${PR}, Issue #${ISSUE:-(none)} =====" >&2
 
 # ---- Pre-merge validation ----
 echo "[review] Validating PR is mergeable..." >&2
@@ -87,6 +102,13 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   # after the automated rounds stop converging. This script used to run its
   # own one-round-then-assign-the-owner logic; that second copy is gone so
   # the two paths cannot drift apart.
+  if [[ "$HAS_ISSUE" == "0" ]]; then
+    # Conflict resolution is a hand-back: it assigns the developer agent to
+    # an issue. With no issue there is nobody to hand it to, so stop and say
+    # so rather than dispatching into the void.
+    echo "::error::PR #${PR} has merge conflicts and closes no issue -- conflict resolution is dispatched by assigning an issue, so this one needs a human. Resolve the conflict by hand, or link the issue this work belongs to." >&2
+    exit 1
+  fi
   conflict_out="$(DRY_RUN="$DRY_RUN" bash "$DIR/dispatch_conflict_resolution.sh" "$PR" "$ISSUE" || true)"
   echo "$conflict_out" >&2
   conflict_action="$(sed -n 's/^conflict-resolution: \([a-z]*\) .*/\1/p' <<<"$conflict_out" | tail -1)"
@@ -127,13 +149,17 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] pr_head_branch=$pr_head_branch" >&2
   echo "[dry-run] would: gh pr merge $PR --merge --delete-branch" >&2
   echo "[dry-run] would: set PR #$PR project Status -> '$STATUS_CLOSED'" >&2
-  echo "[dry-run] would: gh issue close $ISSUE" >&2
-  dry_run_open_blockers="$(open_blocked_by_issues "$ISSUE" 2>/dev/null || true)"
-  if [[ -n "$dry_run_open_blockers" ]]; then
-    echo "[dry-run] issue #$ISSUE has open blockers ($(echo "$dry_run_open_blockers" | tr '\n' ' ')) -- would park at '$STATUS_IN_REVIEW', skip owner assignment (#3631)" >&2
+  if [[ "$HAS_ISSUE" == "0" ]]; then
+    echo "[dry-run] PR closes no issue -- would skip every issue-side step and comment on the PR" >&2
   else
-    echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
-    echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
+    echo "[dry-run] would: gh issue close $ISSUE" >&2
+    dry_run_open_blockers="$(open_blocked_by_issues "$ISSUE" 2>/dev/null || true)"
+    if [[ -n "$dry_run_open_blockers" ]]; then
+      echo "[dry-run] issue #$ISSUE has open blockers ($(echo "$dry_run_open_blockers" | tr '\n' ' ')) -- would park at '$STATUS_IN_REVIEW', skip owner assignment (#3631)" >&2
+    else
+      echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
+      echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
+    fi
   fi
   exit 0
 fi
@@ -297,12 +323,35 @@ if verify_merged_content_landed >/dev/null; then
 fi
 
 if [[ "$work_landed" != "1" ]]; then
-  echo "::error::PR #${PR} reported a successful merge but its content is NOT verifiably on ${pr_base_branch}. Issue #${ISSUE} is deliberately left OPEN — closing it here is exactly how #3789 and #3815 were marked completed with their work stranded (#3862). Re-run the merge, or land the content, then close the issue." >&2
-  issue_comment "$ISSUE" "⚠️ **Not closed.** PR #${PR} reported a merge into \`${pr_base_branch}\`, but the content check could not confirm that the work is on that branch, so this issue was left open on purpose (#3862). See the review run's log for the paths that are missing." \
-    2>&1 || _warn "Failed to post the unverified-merge comment on #${ISSUE}."
+  # The gate itself is issue-independent -- it is about the PR's content --
+  # but its report is not: with an issue there is something to leave open and
+  # annotate, without one the PR is the only place to say so.
+  if [[ "$HAS_ISSUE" == "1" ]]; then
+    echo "::error::PR #${PR} reported a successful merge but its content is NOT verifiably on ${pr_base_branch}. Issue #${ISSUE} is deliberately left OPEN — closing it here is exactly how #3789 and #3815 were marked completed with their work stranded (#3862). Re-run the merge, or land the content, then close the issue." >&2
+    issue_comment "$ISSUE" "⚠️ **Not closed.** PR #${PR} reported a merge into \`${pr_base_branch}\`, but the content check could not confirm that the work is on that branch, so this issue was left open on purpose (#3862). See the review run's log for the paths that are missing." \
+      2>&1 || _warn "Failed to post the unverified-merge comment on #${ISSUE}."
+  else
+    echo "::error::PR #${PR} reported a successful merge but its content is NOT verifiably on ${pr_base_branch} (#3862). It closes no issue, so there is nothing to leave open -- the warning is on the PR." >&2
+    gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" \
+      -f body="⚠️ **Merge reported, content not verified.** PR #${PR} reported a merge into \`${pr_base_branch}\`, but the content check could not confirm the work is on that branch (#3862). See the review run's log for the paths that are missing." \
+      >/dev/null 2>&1 || _warn "Failed to post the unverified-merge comment on PR #${PR}."
+  fi
   exit 1
 fi
 
+# Everything from here to "Critical path complete" is issue-side. A PR that
+# closes no issue skips it entirely: the PR itself is merged and its card
+# closed above, and a comment on the PR records what did not happen, so the
+# gap is visible where somebody will read it.
+if [[ "$HAS_ISSUE" == "0" ]]; then
+  echo "[review] No linked issue -- skipping issue close, blocker check, status and owner handoff." >&2
+  if ! gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}/comments" \
+       -f body="✅ **Merged into \`${pr_base_branch}\`** and branch deleted.
+
+This PR closes no issue, so no issue-side bookkeeping ran -- nothing was closed, moved to ${STATUS_ACCEPTANCE_TESTING}, or assigned to @${HUMAN_OWNER}. That is the expected outcome for an issue-less PR (owner rule, 2026-08-19), recorded here rather than left silent." >/dev/null 2>&1; then
+    _warn "Failed to post the no-issue completion comment. The merge itself succeeded."
+  fi
+else
 # Close the issue (GitHub state) - required because merge to non-default branch doesn't auto-close
 echo "[review] Closing issue #${ISSUE}..." >&2
 if ! gh issue close "$ISSUE" --repo "${REPO_OWNER}/${REPO_NAME}" --comment "Merged via review-agent. Issue closed and moved to Acceptance Testing status for stakeholder acceptance." 2>&1; then
@@ -371,6 +420,8 @@ else
   fi
 fi
 
+fi
+
 echo "[review] ✓ Critical path complete" >&2
 
 # ---- OPTIONAL: Sprint autopilot kick (#3480) ----
@@ -386,7 +437,11 @@ echo "[review] ✓ Critical path complete" >&2
 # The gated kick itself lives in sprint_autopilot_kick (lib/gh_project.sh),
 # shared with the 3-cycle review escalation path so an escalation continues
 # the queue the same way a merge does.
-sprint_autopilot_kick "$ISSUE" merged || _warn "Autopilot: kick helper failed unexpectedly."
+if [[ "$HAS_ISSUE" == "1" ]]; then
+  sprint_autopilot_kick "$ISSUE" merged || _warn "Autopilot: kick helper failed unexpectedly."
+else
+  echo "[review] No linked issue -- skipping the sprint autopilot kick." >&2
+fi
 
 # ---- OPTIONAL: Branch cleanup ----
 echo "[review] ===== Performing optional cleanup =====" >&2
@@ -441,6 +496,11 @@ fi
 if [[ "$OWNER_ASSIGN_FAILED" == "1" ]]; then
   echo "FAILURE: Merged PR #${PR} and closed issue #${ISSUE}, but the @${HUMAN_OWNER} assignment could not be verified. See the ::error:: above — manual assignee fix required." >&2
   exit 1
+fi
+
+if [[ "$HAS_ISSUE" == "0" ]]; then
+  echo "SUCCESS: Merged PR #${PR}. No linked issue -- issue-side bookkeeping skipped, noted on the PR."
+  exit 0
 fi
 
 echo "SUCCESS: Merged PR #${PR}. Issue #${ISSUE} closed and set to ${STATUS_ACCEPTANCE_TESTING}, assigned to @${HUMAN_OWNER}."

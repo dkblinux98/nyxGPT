@@ -2234,6 +2234,47 @@ open_blocked_by_issues() {
 }
 
 # -------------------------
+# A PR's issue is a link, not a sentence (owner rule, 2026-08-19)
+# -------------------------
+# GitHub already knows which issue a PR closes: the "Development" sidebar
+# link, and the `closingIssuesReferences` edge behind it, which is what
+# actually closes the issue on merge. Every consumer here used to re-derive
+# that by grepping `Closes #N` out of the PR body -- prose standing in for a
+# relationship the platform stores natively, which is the same mistake as
+# driving workflows from comment tokens (#3882) and as the retired
+# `Related feature: #N` convention (D-002).
+#
+# The practical cost was a hard failure on PRs whose issue was linked but
+# whose body did not spell it out: "PR #N body does not contain 'Closes #N'"
+# stopped the merge automation dead on #3921, #3927, #3929 and #3933.
+#
+# Reads the native edge first, then falls back to the body convention for
+# PRs opened before this existed. Prints nothing when the PR closes no issue
+# -- which is a legitimate state (a machinery PR with no issue behind it),
+# and the caller decides what that means.
+pr_linked_issue() {
+  local pr="$1" q num
+
+  q='query($owner:String!, $name:String!, $pr:Int!){
+    repository(owner:$owner, name:$name){
+      pullRequest(number:$pr){
+        closingIssuesReferences(first:5){ nodes { number } }
+      }
+    }
+  }'
+  num="$(graphql "$q" -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$pr" 2>/dev/null \
+    | jq -r '.data.repository.pullRequest.closingIssuesReferences.nodes[0].number // empty' 2>/dev/null)"
+  if [[ -n "$num" && "$num" != "null" ]]; then
+    echo "$num"
+    return 0
+  fi
+
+  # Fallback: the body convention. Still read, never required.
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${pr}" --jq '.body // ""' 2>/dev/null \
+    | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true
+}
+
+# -------------------------
 # Native relationships as the ONLY relationship storage (#3731)
 # -------------------------
 # Owner decision 2026-08-12: the link between an issue filed during
@@ -3066,7 +3107,7 @@ ensure_pr_project_hygiene() {
     || _die "Failed to set Status on PR #${pr_number} after retries"
 
   # Link issue to PR in Development field (closedBy relationship)
-  # Note: "Closes #N" in PR body creates the link, but we verify it here
+  # Note: the closing link is what matters here; "Closes #N" is one way it
   _debug "Verifying PR #${pr_number} is linked to issue #${issue_number}"
   local linked_pr
   linked_pr="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue_number}" --jq '.pull_request.url // empty')"

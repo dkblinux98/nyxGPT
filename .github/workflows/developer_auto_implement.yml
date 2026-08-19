@@ -333,14 +333,34 @@ jobs:
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
 
-          # Check for existing PRs linked to this issue (including merged/closed
-          # ones). Look for a PR with "Closes #ISSUE" in the body via the REST
+          # Existing PRs linked to this issue, including merged and closed
+          # ones. The reverse of `pr_linked_issue`: GitHub stores this edge,
+          # so ask for it rather than searching prose (owner rule,
+          # 2026-08-19). `includeClosedPrs` is why this can see a merged PR at
+          # all -- the point of the check.
+          FOUND_PR=$(gh api graphql -f query='
+            query($owner:String!, $name:String!, $issue:Int!){
+              repository(owner:$owner, name:$name){
+                issue(number:$issue){
+                  closedByPullRequestsReferences(first:5, includeClosedPrs:true){
+                    nodes { number }
+                  }
+                }
+              }
+            }' -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY##*/}" \
+            -F issue="$ISSUE" \
+            --jq '.data.repository.issue.closedByPullRequestsReferences.nodes[0].number // empty' \
+            2>/dev/null || true)
+
+          # Prose fallback, for PRs opened before the link existed: the REST
           # Search API (its own rate pool, separate from GraphQL and core
-          # REST) instead of paging every PR in the repo via gh pr list.
-          FOUND_PR=$(gh api search/issues \
-            --method GET \
-            -f q="\"Closes #${ISSUE}\" in:body type:pr repo:${{ github.repository }}" \
-            --jq '.items[0].number // empty')
+          # REST) rather than paging every PR in the repo.
+          if [[ -z "$FOUND_PR" ]]; then
+            FOUND_PR=$(gh api search/issues \
+              --method GET \
+              -f q="\"Closes #${ISSUE}\" in:body type:pr repo:${GITHUB_REPOSITORY}" \
+              --jq '.items[0].number // empty' || true)
+          fi
 
           # The Search API index is not guaranteed to be immediately
           # consistent with a just-created/just-updated PR. Fall back to a
