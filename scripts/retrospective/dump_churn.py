@@ -87,7 +87,6 @@ CHURN_WORKFLOWS = [
     "scrummaster_huddle_mediation.yml",
     "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
-    "scrummaster_groom_sprint.yml",
 ]
 
 # Step names that ARE a Claude invocation. Deliberately stricter than
@@ -106,13 +105,11 @@ CLAUDE_STEP_RE = re.compile(
 ROUND_KIND_RULES = [
     ("groom", r"groom"),
     ("huddle", r"position|mediation"),
-    ("groom", r"groom"),
     ("acceptance-fix", r"acceptance"),
     ("review-fix", r"review fix|fix review issues"),
     ("self-heal", r"fix issues|attempt\s*\d|deep analysis"),
     ("implement", r"implement"),
     ("review", r"review"),
-    ("groom", r"groom"),
 ]
 
 # Usage keys emitted by claude-code-action's execution log.
