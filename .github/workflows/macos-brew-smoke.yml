@@ -22,9 +22,24 @@ name: macOS Brew Smoke
 #                fails to reproduce the bug -- which is exactly how the rc5
 #                candidate passed here and failed there.
 #   published-tap  Does what the owner actually types work? `brew tap` +
-#                `brew install` against the real published tap. Needs a
-#                published candidate, so it runs on dispatch and after an rc
-#                cut, never on a PR.
+#                `brew install` against the real published tap, and then --
+#                since #3860 -- the whole user path after it:
+#                `scripts/macos-user-path-smoke.sh` runs `nyxgpt --version`,
+#                `nyxgpt up`, the API's `/health` and `/api/v1/sessions`, the
+#                web UI on :3000, `nyxgpt ops status`, `nyxgpt down`,
+#                `brew uninstall`/`untap` and the launchd/plist residue check.
+#                Before that it proved a keg builds and never once invoked the
+#                product, which is how #3850/#3851/#3853/#3854/#3857/#3859 all
+#                reached owner acceptance over green runs. Needs a published
+#                candidate, so it runs on dispatch and after an rc cut, never
+#                on a PR.
+#   stable-over-candidate  Does `conflicts_with` hold when the counterpart is
+#                actually there? `keg-install`'s throwaway tap deliberately
+#                carries no stable formula, which covers the absent-counterpart
+#                case (#3753) and leaves the present-counterpart case -- stable
+#                installed, candidate on top -- covered nowhere. That is the
+#                case the owner hit (#3853). Builds both channels from the
+#                working tree, so it needs no publish and runs on PRs.
 #
 # Cost: macOS runners bill at a multiple of Linux, so the PR trigger is
 # paths-filtered down to the formulas, the stamping script and this file.
@@ -580,14 +595,151 @@ jobs:
             cat "$log" || true
           done
 
+  stable-over-candidate:
+    name: Install the candidate onto a machine that already has the stable
+    # The counterpart-present case (#3860). `keg-install`'s throwaway tap
+    # carries no stable formula on purpose, so the only `conflicts_with` shape
+    # under test there is the one where the named formula is absent -- benign,
+    # and not the case the owner hit. Both channels are stamped from this
+    # checkout, so this needs no publish and runs on every formula PR.
+    if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the formula's declared Python dependency
+        run: brew install python@3.12
+
+      - name: Stamp both channels from this checkout
+        run: |
+          set -euo pipefail
+          # A release version on the stable channel (the script's own guardrail
+          # refuses a pre-release there) and the matching candidate on the rc
+          # channel, so the rc formula's `conflicts_with "nyxgpt-api"` names a
+          # formula that is really in the tap.
+          python scripts/build_homebrew_artifacts.py 3.0.0 dist/stable \
+            "file://${PWD}/dist/stable/dist"
+          python scripts/build_homebrew_artifacts.py 3.0.0rc0 dist/rc \
+            "file://${PWD}/dist/rc/dist" --channel rc
+          ls -1 dist/stable/*.rb dist/rc/*.rb
+
+      - name: Create a tap carrying both channels
+        run: |
+          set -euo pipefail
+          brew tap-new nyxgpt/both-channels --no-git 2>/dev/null || brew tap-new nyxgpt/both-channels
+          TAP_DIR="$(brew --repository nyxgpt/both-channels)"
+          mkdir -p "$TAP_DIR/Formula"
+          # api only: the web formula's keg is a full Next.js build and adds
+          # nothing to what this job asks, which is what Homebrew does with two
+          # formulas that declare a conflict.
+          cp dist/stable/nyxgpt-api.rb "$TAP_DIR/Formula/"
+          cp dist/rc/nyxgpt-api@3.0.0rc.rb "$TAP_DIR/Formula/"
+          ls -1 "$TAP_DIR/Formula/"
+          grep -n 'conflicts_with' "$TAP_DIR/Formula/nyxgpt-api@3.0.0rc.rb"
+
+      - name: Install the stable, then the candidate on top of it
+        run: |
+          set -uo pipefail
+
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api 2>&1 | tail -40
+          command -v nyxgpt || { echo "::error::the stable keg leaves no nyxgpt on PATH"; exit 1; }
+          nyxgpt --version
+
+          echo "=== brew install <candidate> with the stable already installed ==="
+          # Deliberately not `set -e` around this: a refusal is a legitimate
+          # outcome (it is what `conflicts_with` promises), and the assertion
+          # below is about the *state the machine is left in*, not this exit
+          # code.
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api@3.0.0rc > candidate.log 2>&1
+          echo "candidate install exited $?"
+          tail -40 candidate.log
+
+          stable_installed=0
+          candidate_installed=0
+          brew list --versions nyxgpt-api > /dev/null 2>&1 && stable_installed=1
+          brew list --versions nyxgpt-api@3.0.0rc > /dev/null 2>&1 && candidate_installed=1
+          echo "stable installed: $stable_installed / candidate installed: $candidate_installed"
+          brew list --versions | grep -i nyxgpt || true
+
+          if [ "$stable_installed" = "1" ] && [ "$candidate_installed" = "1" ]; then
+            echo "Both channels are installed at once. The candidate formula declares"
+            echo "conflicts_with \"nyxgpt-api\" precisely so this state cannot exist, and"
+            echo "this is the state the owner's Mac was in: two kegs, one CLI name, and a"
+            echo "health probe looking for a service name only one of them registers."
+            echo "::error::stable and candidate are installed simultaneously despite conflicts_with (#3853)"
+            exit 1
+          fi
+
+          # Whatever Homebrew chose, the machine has to be left usable: a
+          # dangling `nyxgpt` after a refused install is the #3850 shape again.
+          command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the candidate install attempt"; exit 1; }
+          nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the candidate install attempt"; exit 1; }
+
+      - name: "Control: the same candidate installs once the stable is gone"
+        # Without this, a candidate that simply fails to build would pass the
+        # step above and read as "conflicts_with held".
+        run: |
+          set -euo pipefail
+          brew uninstall nyxgpt-api 2>&1 | tail -20 || true
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api@3.0.0rc 2>&1 | tail -40
+          brew list --versions nyxgpt-api@3.0.0rc
+          command -v nyxgpt
+          nyxgpt --version
+
+      - name: The other direction -- the stable onto an installed candidate
+        # The order the owner actually reached it by (#3853): the rc formula
+        # declares the conflict, the stable one does not, so this is the
+        # direction where "both installed" can happen. Asserted the same way,
+        # because a machine carrying both is broken regardless of the order it
+        # got there.
+        run: |
+          set -uo pipefail
+          brew install --verbose nyxgpt/both-channels/nyxgpt-api > stable-on-top.log 2>&1
+          echo "stable install exited $?"
+          tail -40 stable-on-top.log
+
+          stable_installed=0
+          candidate_installed=0
+          brew list --versions nyxgpt-api > /dev/null 2>&1 && stable_installed=1
+          brew list --versions nyxgpt-api@3.0.0rc > /dev/null 2>&1 && candidate_installed=1
+          echo "stable installed: $stable_installed / candidate installed: $candidate_installed"
+
+          if [ "$stable_installed" = "1" ] && [ "$candidate_installed" = "1" ]; then
+            echo "::error::installing the stable over the candidate leaves both installed (#3853)"
+            exit 1
+          fi
+          command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the stable install attempt"; exit 1; }
+          nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the stable install attempt"; exit 1; }
+
+      - name: Install logs on failure
+        if: failure()
+        run: |
+          for log in ~/Library/Logs/Homebrew/nyxgpt-api*/*; do
+            [ -f "$log" ] || continue
+            echo "--- $log ---"
+            cat "$log" || true
+          done
+
   published-tap:
     name: Install the published candidate from the real tap
     # The owner's literal command path. Needs a published candidate and a
     # configured tap, so it is dispatch/rc-cut only.
     if: ${{ inputs.formula_version != '' && vars.HOMEBREW_TAP_REPO != '' }}
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
+      # The user-path script lives in the repository (so it can be run by hand
+      # on a real Mac and pinned by a unit test), which is the only reason this
+      # job needs a checkout. Nothing below runs *from* it: the script `cd`s to
+      # $HOME before touching the product, so a command can still not resolve a
+      # path relative to a repo the user does not have (#3759).
+      - uses: actions/checkout@v4
+
       - name: Tap and install the candidate
         env:
           TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
@@ -634,7 +786,13 @@ jobs:
             echo "Benign: brew warns and installs anyway (docs/homebrew.md)."
             echo "::warning::no stable nyxgpt-api formula in the tap"
           fi
+          # Both formulas, because that is the documented candidate install
+          # (docs/homebrew.md: `brew install nyxgpt-api@X.Y.Zrc
+          # nyxgpt-web@X.Y.Zrc`) and because the user path below asks the web
+          # UI for a page (#3857). Installed as two commands so the log says
+          # which one failed.
           brew install --verbose "${TAP}/nyxgpt-api@${RELEASE}rc" 2>&1 | tail -80
+          brew install --verbose "${TAP}/nyxgpt-web@${RELEASE}rc" 2>&1 | tail -80
 
       - name: Verify the installed keg
         env:
@@ -660,6 +818,34 @@ jobs:
           # The installed version has to be the candidate that was asked for,
           # not whatever the tap happened to already carry.
           brew list --versions "nyxgpt-api@${RELEASE}rc" | grep -F "$VERSION"
+
+      # The half this workflow never had (#3860). Everything above proves an
+      # install produced files; this runs the product: version, up, API,
+      # session list, web UI, status, down, uninstall, untap, residue. The
+      # assertions and the one allowlist of what a hosted macOS runner cannot
+      # run live in the script, next to the reasons -- see
+      # scripts/macos-user-path-smoke.sh and docs/live-verification-ci.md.
+      - name: Run the user path end to end
+        env:
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+          VERSION: ${{ inputs.formula_version }}
+        run: |
+          set -euo pipefail
+          TAP="${TAP_REPO/homebrew-/}"
+          ./scripts/macos-user-path-smoke.sh "$VERSION" "$TAP"
+
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          for log in /opt/homebrew/var/log/nyxgpt-*.log /usr/local/var/log/nyxgpt-*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log ---"
+            tail -100 "$log" || true
+          done
+          echo "--- brew services list ---"
+          brew services list || true
+          echo "--- launchctl (nyxgpt) ---"
+          launchctl list | grep -i nyxgpt || echo "no nyxgpt launchd jobs"
 
       - name: Install logs on failure
         if: failure()

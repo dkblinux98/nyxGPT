@@ -546,6 +546,27 @@ rather than mechanism, and nothing can enforce them.
   and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
   Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
 
+- **D-023** · 2026-08-18 · developer agent (#3860) — **A green
+  `macos-brew-smoke.yml` run from before this entry is not evidence that a
+  macOS install works.** From the workflow's creation (#3753) until #3860, its
+  two jobs installed a keg and never invoked the product: no `nyxgpt` by name
+  from a shell, no `nyxgpt up`, no HTTP request to the API or the web UI, no
+  uninstall — and `brew test` asserted only that the keg venv existed and
+  `import nyxgpt.app` resolved, all of which is true of a keg carrying no
+  reachable CLI. That is the keg that shipped: #3850, #3851, #3853, #3854,
+  #3857 and #3859 all sit on the certified path and all passed. The Phase 6
+  capstone #3516, whose acceptance criterion *is* the clean-machine scenario,
+  closed as completed on that evidence. This is a correction, not a behavior
+  fact: the current coverage is enforced by
+  `tests/unit/test_macos_user_path_smoke.py` and by the job itself, and needs
+  no ledger copy — what a future session cannot re-derive is that the *older*
+  green runs certify nothing, so do not cite a pre-#3860 run of that workflow
+  as executed evidence, and do not read #3516's closure as proof the scenario
+  was ever run. The scenario rule that followed is
+  `agents/runbooks/review-runbook.md` §1c ("Scenario criteria need scenario
+  evidence") and §10.
+  Source: #3860; #3516; `scripts/macos-user-path-smoke.sh`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

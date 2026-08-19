@@ -124,10 +124,48 @@ PY
   end
 
   test do
-    # We only validate that the wrapper script and the production build it
-    # runs both exist. (The actual Next.js runtime is exercised by
-    # integration tests in the repo.)
     assert_predicate bin/"nyxgpt-web", :exist?
     assert_predicate libexec/".next", :exist?
+
+    # File existence is also true of a keg that crash-loops the moment launchd
+    # starts it, and this formula has shipped exactly that: `npm prune
+    # --omit=dev` took typescript away, `next start` could not transpile
+    # next.config.ts, and `.next` was present throughout (#3406). So start the
+    # wrapper the service runs and require the server to answer (#3860) --
+    # what the two assertions above cannot distinguish is a keg that serves
+    # from one that dies in a restart loop.
+    port = free_port
+    # The wrapper reads $HOME/.nyxGPT/config.ini for its host/port, so writing
+    # one is both how this test claims a free port and a test of that parsing.
+    # `brew test` runs with HOME pointed at a sandbox, so this never touches a
+    # real machine's config.
+    ENV["HOME"] = testpath
+    (testpath/".nyxGPT").mkpath
+    (testpath/".nyxGPT/config.ini").write <<~INI
+      [web]
+      host = 127.0.0.1
+      port = #{port}
+    INI
+
+    # Its own process group: the wrapper `exec`s npm, which runs `next` as a
+    # child, so signalling the group is what actually stops the server.
+    pid = spawn "/bin/bash", bin/"nyxgpt-web", pgroup: true
+    begin
+      code = "000"
+      60.times do
+        sleep 2
+        # `|| true`: until the port is listening curl exits non-zero, which
+        # shell_output would raise on -- a starting server is not a failure,
+        # a server that never answers is (and stays "000" here).
+        code = shell_output(
+          "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:#{port}/ || true",
+        ).strip
+        break if code == "200"
+      end
+      assert_equal "200", code
+    ensure
+      Process.kill "TERM", -Process.getpgid(pid)
+      Process.wait pid
+    end
   end
 end

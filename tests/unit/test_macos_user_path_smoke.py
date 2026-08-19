@@ -1,0 +1,245 @@
+"""The macOS smoke gate must execute the user path, not inspect an install (#3860).
+
+Why this file exists, rather than a ledger entry saying the same thing.
+`macos-brew-smoke.yml` had two install jobs and neither invoked the product:
+`keg-install` asserted the wrapper file existed and ran `brew test`,
+`published-tap` asserted the keg version and the wrapper file, and `brew test`
+itself asserted only that the keg's venv existed and `import nyxgpt.app`
+resolved. All three are true of a keg with no reachable CLI, no started
+service, no served request and no supported teardown -- which is exactly the
+keg that shipped. Six defects on the certified path (#3850, #3851, #3853,
+#3854, #3857, #3859) reached owner acceptance over green runs of that gate, and
+the Phase 6 capstone (#3516), whose acceptance criterion *is* that end-to-end
+scenario, closed on the same component-shaped evidence.
+
+The macOS half of that coverage cannot be exercised from this test suite -- it
+needs a real `macos-15` runner with Homebrew. What *can* be enforced here is
+that the coverage does not quietly disappear again: the script exists, it
+asserts every probe the issue's acceptance criteria name, the workflow runs it,
+the tolerated-failure allowlist stays narrow and stays mirrored in the document
+that justifies it, and the `test do` blocks run the product instead of stating
+that a file is present. Every assertion below is a specific way the gate was
+hollow before, so a regression reads as the original defect returning rather
+than as a cosmetic test failure.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+import yaml
+
+pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SMOKE_SCRIPT = REPO_ROOT / "scripts" / "macos-user-path-smoke.sh"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "macos-brew-smoke.yml"
+LIVE_VERIFICATION_DOC = REPO_ROOT / "docs" / "live-verification-ci.md"
+REVIEW_RUNBOOK = REPO_ROOT / "agents" / "runbooks" / "review-runbook.md"
+
+API_FORMULAS = (
+    REPO_ROOT / "homebrew" / "nyxgpt-api.rb",
+    REPO_ROOT / "homebrew" / "tap" / "nyxgpt-api.rb.tmpl",
+)
+WEB_FORMULAS = (
+    REPO_ROOT / "homebrew" / "nyxgpt-web.rb",
+    REPO_ROOT / "homebrew" / "tap" / "nyxgpt-web.rb.tmpl",
+)
+
+
+def _script() -> str:
+    return SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+
+def _workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _job_run_text(job: dict) -> str:
+    """Every `run:` body in a job, concatenated -- what the runner will execute."""
+    return "\n".join(step.get("run", "") for step in job["steps"])
+
+
+def _tolerated_steps() -> list[str]:
+    """The allowlist the script ships, parsed from its assignment line."""
+    for line in _script().splitlines():
+        if line.startswith("TOLERATED_STEPS='"):
+            return [s.strip() for s in line.split("'")[1].split(",") if s.strip()]
+    raise AssertionError("the tolerated-failure allowlist is gone from the script")
+
+
+def test_the_user_path_script_is_executable() -> None:
+    """The workflow invokes it directly, not through `bash <path>`."""
+    assert SMOKE_SCRIPT.exists(), f"{SMOKE_SCRIPT} is missing"
+    assert os.access(SMOKE_SCRIPT, os.X_OK), (
+        f"{SMOKE_SCRIPT} is not executable, so the workflow's "
+        "`./scripts/macos-user-path-smoke.sh` invocation would fail on the runner"
+    )
+
+
+# Each probe, and the defect that reached owner acceptance because the gate
+# never issued it.
+PROBES = (
+    ("nyxgpt --version", "#3850: the CLI was never invoked by name"),
+    ("nyxgpt up ", "#3516: the scenario's single command was never run"),
+    ("http://127.0.0.1:8000", "#3853: the API was never asked anything"),
+    ("/health", "#3853: the health probe was never issued"),
+    ("/api/v1/sessions", "#3851: a stack that starts but cannot reach its datastore"),
+    ("http://127.0.0.1:3000", "#3857: the web UI was never requested"),
+    ("nyxgpt ops status", "#3854: brew's own caveats point elsewhere"),
+    ("nyxgpt down", "#3859: the supported stop was never exercised"),
+    ("brew uninstall", "#3859: removal was never exercised"),
+    ("brew untap", "#3859: the tap was never removed"),
+    ("launchctl list", "#3859: leftover launchd jobs were never checked"),
+    ("Library/LaunchAgents", "#3859: leftover plists were never checked"),
+)
+
+
+@pytest.mark.parametrize(("probe", "why"), PROBES)
+def test_the_script_exercises_every_step_of_the_user_path(probe: str, why: str) -> None:
+    assert probe in _script(), (
+        f"scripts/macos-user-path-smoke.sh no longer exercises {probe} ({why}). "
+        "Each of these is a step the previous gate skipped; dropping one puts "
+        "that defect class back outside CI."
+    )
+
+
+def test_the_script_tolerates_only_the_container_steps_this_runner_cannot_run() -> None:
+    """A smoke test that shrugs at failures is the thing being replaced.
+
+    Hosted macOS images ship no Docker (and the Apple Silicon runners expose no
+    nested virtualisation, so Colima cannot substitute), so the Cassandra
+    container and the observability Compose profiles genuinely cannot start
+    there -- that boundary is named in `docs/live-verification-ci.md`. The
+    tolerance has to stop there: the api/web/ollama services, the config, the
+    install-mode record and the env sync are the user path itself, and a
+    failure in any of them is a defect, not a runner limit.
+    """
+    tolerated = _tolerated_steps()
+    never_tolerated = (
+        "native api service",
+        "native web service",
+        "ollama service",
+        "config",
+        "install mode",
+        "env sync",
+    )
+    for step in never_tolerated:
+        assert step not in tolerated, (
+            f"{step!r} was added to the tolerated-failure allowlist -- a failure "
+            "in that step is a defect on the user path, not a runner limit"
+        )
+
+
+def test_every_tolerated_step_is_justified_in_the_document_that_bounds_it() -> None:
+    """The allowlist and its rationale drift apart the moment they are separate.
+
+    `docs/live-verification-ci.md` is the owner-facing list of what CI cannot
+    produce, and the review contract (`review-runbook.md` §1c) lets a reviewer
+    accept a gap only when it is named there. An allowlist entry with no entry
+    in that document is an untested path nobody agreed to leave untested.
+    """
+    doc = LIVE_VERIFICATION_DOC.read_text(encoding="utf-8")
+    for step in _tolerated_steps():
+        assert step in doc, (
+            f"the script tolerates a failing {step!r} step but "
+            "docs/live-verification-ci.md does not say why CI cannot run it"
+        )
+
+
+def test_the_script_asserts_its_own_precondition_instead_of_degrading() -> None:
+    """`brew services` has to work here, or the run measures the runner.
+
+    The alternative -- quietly skipping the service checks when the launchd
+    domain is unavailable -- reproduces the exact failure this file exists to
+    stop: a job that reports green while asserting nothing about the product.
+    """
+    script = _script()
+    assert "brew services list" in script
+    assert "docs/live-verification-ci.md" in script, (
+        "the precondition failure must point at the documented what-CI-cannot-cover "
+        "list rather than inviting the next session to weaken the script"
+    )
+
+
+def test_the_published_tap_job_runs_the_user_path() -> None:
+    job = _workflow()["jobs"]["published-tap"]
+    runs = _job_run_text(job)
+    assert "scripts/macos-user-path-smoke.sh" in runs, (
+        "the published-tap job no longer drives the user-path script, so the "
+        "owner's literal command path is inspected again rather than executed"
+    )
+    assert any(
+        "actions/checkout" in (step.get("uses") or "") for step in job["steps"]
+    ), "published-tap runs a script out of the repository, so it needs a checkout"
+
+
+def test_the_stable_over_candidate_job_covers_the_present_counterpart_case() -> None:
+    """`keg-install`'s tap deliberately carries no stable formula (#3753).
+
+    That keeps the absent-counterpart case covered and leaves the case that
+    decides whether `conflicts_with` is load-bearing -- stable installed,
+    candidate attempted on top -- covered nowhere. It is the case the owner hit
+    (#3853, ledger Q-002).
+    """
+    jobs = _workflow()["jobs"]
+    assert "stable-over-candidate" in jobs, (
+        "the stable-installed-then-candidate job is gone; the only conflicts_with "
+        "shape under test would be the one where the named formula is absent"
+    )
+    runs = _job_run_text(jobs["stable-over-candidate"])
+    assert "build_homebrew_artifacts.py 3.0.0 " in runs and "--channel rc" in runs, (
+        "the job has to stamp both channels from this checkout, or the tap it "
+        "installs from has no stable counterpart to conflict with"
+    )
+    assert "brew uninstall nyxgpt-api" in runs, (
+        "the control that installs the same candidate once the stable is gone is "
+        "missing, so a candidate that simply fails to build would pass this job"
+    )
+
+
+@pytest.mark.parametrize("formula", API_FORMULAS, ids=lambda p: p.name)
+def test_api_formula_test_blocks_run_the_cli(formula: Path) -> None:
+    """`import nyxgpt.app` resolving is true of a keg with no reachable CLI."""
+    block = formula.read_text(encoding="utf-8").split("  test do")[-1]
+    assert 'shell_output("#{bin}/nyxgpt --version")' in block, (
+        f"{formula.name}'s test block no longer runs the CLI through bin/, so it "
+        "is back to asserting only that a Python import resolves (#3850)"
+    )
+
+
+@pytest.mark.parametrize("formula", WEB_FORMULAS, ids=lambda p: p.name)
+def test_web_formula_test_blocks_run_the_server(formula: Path) -> None:
+    """File existence is also true of a keg that crash-loops on start.
+
+    This formula has shipped exactly that: `npm prune --omit=dev` removed
+    typescript, `next start` could not transpile `next.config.ts`, and `.next`
+    existed throughout (#3406).
+    """
+    block = formula.read_text(encoding="utf-8").split("  test do")[-1]
+    assert (
+        'spawn "/bin/bash", bin/"nyxgpt-web"' in block
+    ), f"{formula.name}'s test block no longer starts the wrapper the service runs"
+    assert (
+        'assert_equal "200", code' in block
+    ), f"{formula.name}'s test block no longer requires the server to answer"
+
+
+def test_the_review_contract_refuses_component_evidence_for_a_scenario_criterion() -> None:
+    """#3516 closed on install evidence for a scenario criterion (#3860).
+
+    Without this rule the workflow improvements above can all be satisfied and
+    the next capstone can still close on the same partial evidence, because
+    nothing in the review contract said that a scenario criterion needs a job
+    that ran the scenario.
+    """
+    runbook = REVIEW_RUNBOOK.read_text(encoding="utf-8")
+    assert "Scenario criteria need scenario evidence" in runbook, (
+        "the review contract no longer distinguishes component evidence from "
+        "evidence that the user's own sequence was executed (#3860)"
+    )
+    assert "#3516" in runbook, (
+        "the rule lost the case that produced it, which is what makes it " "un-arguable in a review"
+    )

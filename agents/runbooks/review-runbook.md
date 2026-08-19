@@ -216,6 +216,31 @@ not the excuse — the developer contract requires a smoke job for a changed pat
 that has none (`agents/runbooks/developer-runbook.md` §4a), using the
 workflows above as templates.
 
+**Scenario criteria need scenario evidence (#3860).** Component evidence does
+not close an end-to-end acceptance criterion. Where an issue's criteria
+describe a *user scenario* — a phase capstone, a "from a clean machine" or
+"one command" criterion, or any criterion written as a sequence the user
+performs — the review agent must **cite the CI job that executed that
+scenario**, naming the job and the steps that ran the user's own commands. An
+install that produced files, a `brew test` block, an import that resolved, or a
+unit test of one component is evidence about a *component*, and a criterion
+that says "install → one command → working app reachable at ..." is not
+satisfied by any number of them.
+
+Closing a capstone on component evidence is a **Medium (blocking)** finding.
+This exists because it already happened: #3516 — the Phase 6 capstone, whose
+criterion *is* the clean-machine scenario — closed as completed on evidence
+from `macos-brew-smoke.yml`, a workflow that at the time installed a keg and
+never invoked the product. Six defects sitting on that exact path (#3850 no
+`nyxgpt` on `PATH`, #3851 a 500 from the session list, #3853 a health probe
+blind to its own services, #3854 caveats naming the wrong command, #3857 a web
+UI stuck on placeholders, #3859 a teardown that leaves services running) were
+all discoverable by running the scenario once, and all reached the owner
+instead. The scenario job for the macOS user path is now
+`macos-brew-smoke.yml`'s `published-tap` job, which runs
+`scripts/macos-user-path-smoke.sh`; cite it (or the equivalent for the
+platform under review) rather than an install job.
+
 **Explicitly exempt.**
 
 - **Pure-logic changes fully covered by unit tests** — the gate targets
@@ -887,6 +912,12 @@ rounds live inside each failure issue's history.
 ## 10) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
 - Notify human owner that phase is complete and ready for release
+
+**A capstone is reviewed against the scenario, not the parts (#3860).** Before
+approving or closing a phase capstone, apply §1c's scenario rule: read the
+capstone's own acceptance criterion, and cite the CI job whose steps executed
+that sequence end to end. If no job runs it, that is the finding — the capstone
+does not close, and the covering job is the work.
 
 ## 11) Configuration
 

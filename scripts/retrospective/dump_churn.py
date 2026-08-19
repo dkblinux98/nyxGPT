@@ -85,6 +85,7 @@ CHURN_WORKFLOWS = [
     "claude-code-review.yml",
     "developer_huddle_position.yml",
     "scrummaster_huddle_mediation.yml",
+    "scrummaster_groom_sprint.yml",
     "claude-md-binding-canary.yml",
 ]
 
@@ -92,17 +93,19 @@ CHURN_WORKFLOWS = [
 # dump_spend.py's "name contains claude": shell steps like "Check Claude
 # progress completion" and "Read Claude analysis result" mention Claude but
 # spend no tokens, and counting them would invent rounds. The huddle steps
-# ("Post developer position", "Run mediation") do not say "Claude" at all,
-# hence the explicit alternatives rather than a name-contains rule.
+# ("Post developer position", "Run mediation") and the sprint-grooming step
+# ("Groom the draft ...") do not say "Claude" at all, hence the explicit
+# alternatives rather than a name-contains rule.
 CLAUDE_STEP_RE = re.compile(
     r"^\s*(run claude|claude fix issues|deep analysis with claude"
-    r"|post developer position|run mediation)",
+    r"|post developer position|run mediation|groom the draft)",
     re.I,
 )
 
 # Round kind, first match wins (an acceptance-fix step also says "fix").
 ROUND_KIND_RULES = [
     ("huddle", r"position|mediation"),
+    ("groom", r"groom"),
     ("acceptance-fix", r"acceptance"),
     ("review-fix", r"review fix|fix review issues"),
     ("self-heal", r"fix issues|attempt\s*\d|deep analysis"),
