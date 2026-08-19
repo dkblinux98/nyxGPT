@@ -87,7 +87,13 @@ _assert_not_matches() {
 # Every keyword GitHub honours, in every case, immediately before the
 # reference. Kept next to its falsifiability check below -- the two are one
 # instrument.
-CLOSING_KEYWORD_RE='(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]]+#9201'
+#
+# The `:?` covers the colon form (`Closes: #N`), which the first cut of this
+# pattern let through. Deliberately a superset of what GitHub is known to
+# honour: the cost of matching one form GitHub might ignore is a rephrase, and
+# the cost of missing one it does honour is the defect this guard exists to
+# catch, silently, on every rescue draft.
+CLOSING_KEYWORD_RE='(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)):?[[:space:]]+#9201'
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -297,7 +303,8 @@ for _violation in \
   "this CLOSED #9201" \
   "fixes #9201" \
   "Fix #9201" \
-  "resolved  #9201"
+  "resolved  #9201" \
+  "Closes: #9201"
 do
   if printf '%s' "$_violation" | grep -Eiq "$CLOSING_KEYWORD_RE"; then
     echo "[ok] the keyword guard still catches: ${_violation}"
