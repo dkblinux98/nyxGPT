@@ -622,6 +622,19 @@ rather than mechanism, and nothing can enforce them.
   candidate, capture what Homebrew actually does. Prior context in #3753,
   #3763, #3770.
   Blocks: #3853's fix direction (packaging-level guard vs `ops.py` reconcile).
+  Narrowed 2026-08-19 (#3860) — the reproduction exists now:
+  `macos-brew-smoke.yml`'s `stable-over-candidate` job. On a clean `macos-15`
+  runner with both formulas in **one tap**, `conflicts_with` holds: brew
+  refuses with `Cannot install nyxgpt/both-channels/nyxgpt-api@3.0.0rc because
+  conflicting formulae are installed` and leaves `stable installed: 1 /
+  candidate installed: 0` (run 32202247518, job 95918316286). So the guard is
+  load-bearing in that shape and the owner's both-installed state came from
+  somewhere else — a differently-shaped tap, a formula predating the
+  `conflicts_with` injection, or an install that bypassed the check. What
+  remains open is which. Also learned there, and separate from the answer: a
+  `brew tap-new` tap is untrusted, and resolving `conflicts_with` *loads* the
+  named formula, so brew refuses on trust grounds before it ever evaluates the
+  conflict — #3770's shape, and why the job now trusts the whole tap.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a

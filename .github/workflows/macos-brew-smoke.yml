@@ -648,6 +648,20 @@ jobs:
           ls -1 "$TAP_DIR/Formula/"
           grep -n 'conflicts_with' "$TAP_DIR/Formula/nyxgpt-api@3.0.0rc.rb"
 
+          # Trust the WHOLE tap, for the reason #3770 established and this job
+          # reproduced (run 32202247518): brew implicitly trusts the formula
+          # named on the command line, but installing `nyxgpt-api@3.0.0rc`
+          # makes it resolve `conflicts_with "nyxgpt-api"`, which *loads* the
+          # stable formula -- and a `brew tap-new` tap is untrusted, so that
+          # load is refused with "Refusing to load formula ... from untrusted
+          # tap". Untrusted, this job measures the tap-trust gate instead of
+          # `conflicts_with`, which is the only thing it exists to measure.
+          # Two spellings because the subcommand is not the same on every
+          # Homebrew (the same pair the published-tap job uses); a Homebrew
+          # with neither has nothing to trust.
+          brew tap-trust nyxgpt/both-channels || brew trust nyxgpt/both-channels \
+            || echo "::warning::neither 'brew tap-trust' nor 'brew trust' accepted the tap -- proceeding untrusted"
+
       - name: Install the stable, then the candidate on top of it
         run: |
           set -uo pipefail
@@ -767,6 +781,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Tap and install the candidate
+        id: install
         env:
           TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
           VERSION: ${{ inputs.formula_version }}
@@ -851,7 +866,18 @@ jobs:
       # assertions and the one allowlist of what a hosted macOS runner cannot
       # run live in the script, next to the reasons -- see
       # scripts/macos-user-path-smoke.sh and docs/live-verification-ci.md.
+      #
+      # Runs even when the keg verification above failed, as long as something
+      # was installed to run against. That step's checks are a subset of this
+      # script's, so letting it gate this one means the *first* open defect
+      # hides the state of everything after it -- run 32202247518 stopped at
+      # `command -v nyxgpt` (#3850, reproduced against the published rc12) and
+      # never reached the user path at all. The script's own rule is that a
+      # failure is recorded rather than aborting; this is that rule at the job
+      # level. The job still fails: a failed step above is not un-failed by
+      # this one running.
       - name: Run the user path end to end
+        if: ${{ !cancelled() && steps.install.conclusion == 'success' }}
         env:
           TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
           VERSION: ${{ inputs.formula_version }}

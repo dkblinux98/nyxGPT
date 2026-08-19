@@ -305,6 +305,18 @@ def test_the_published_tap_job_runs_the_user_path() -> None:
         "actions/checkout" in (step.get("uses") or "") for step in job["steps"]
     ), "published-tap runs a script out of the repository, so it needs a checkout"
 
+    # The keg-verification step's checks are a subset of the script's, so a
+    # step-ordering gate there means the first open defect hides the state of
+    # everything after it. Run 32202247518 stopped at `command -v nyxgpt`
+    # (#3850, against the published rc12) and never reached the user path.
+    step = next(s for s in job["steps"] if s.get("name") == "Run the user path end to end")
+    condition = str(step.get("if", ""))
+    assert "cancelled()" in condition and "steps.install.conclusion" in condition, (
+        "the user-path step runs only when every earlier step passed, so the "
+        "gate reports the first defect on the path instead of the whole path -- "
+        "the same 'one broken step hides the rest' shape the script itself avoids"
+    )
+
 
 def test_the_stable_over_candidate_job_covers_the_present_counterpart_case() -> None:
     """`keg-install`'s tap deliberately carries no stable formula (#3753).
@@ -327,6 +339,12 @@ def test_the_stable_over_candidate_job_covers_the_present_counterpart_case() -> 
     assert "brew uninstall nyxgpt-api" in runs, (
         "the control that installs the same candidate once the stable is gone is "
         "missing, so a candidate that simply fails to build would pass this job"
+    )
+    assert "brew tap-trust nyxgpt/both-channels" in runs, (
+        "the throwaway tap is not trusted, so brew refuses to load the stable "
+        "formula when it resolves the candidate's conflicts_with (#3770's shape, "
+        "reproduced in run 32202247518) -- the job then measures the tap-trust "
+        "gate rather than conflicts_with"
     )
 
 
