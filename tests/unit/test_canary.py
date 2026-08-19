@@ -201,6 +201,15 @@ def _healthy(namespace_unused=None):
     return _fn
 
 
+def _kubernetes_mode(monkeypatch):
+    """Put `status()` in the one mode where it reads per-track health at all (#3858).
+
+    Outside Kubernetes mode `status()` skips `deployment_health` entirely, so a
+    test about what the tracks report has to say which mode it is testing.
+    """
+    monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+
+
 @pytest.mark.unit
 def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit(caplog):
     # #3415 gap 5: subprocess evidence must reach Loki even though canary's
@@ -683,6 +692,7 @@ def test_start_returns_error_when_stable_scale_fails(monkeypatch):
 
 @pytest.mark.unit
 def test_status_reports_active_state_and_health(monkeypatch):
+    _kubernetes_mode(monkeypatch)
     canary._save_state({"active": True, "weight_percent": 25, "history": []})
     monkeypatch.setattr(
         canary,
@@ -708,6 +718,7 @@ def test_status_reports_active_state_and_health(monkeypatch):
 @pytest.mark.unit
 def test_status_reports_the_elastic_pool(monkeypatch):
     """The dashboard has to be able to see what the rollout inflated, and to what (#3833)."""
+    _kubernetes_mode(monkeypatch)
     monkeypatch.setattr(
         canary,
         "deployment_health",
@@ -1398,6 +1409,7 @@ def test_rollback_logs_partial_failure_metric(monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_status_updates_rollout_gauges(monkeypatch):
+    _kubernetes_mode(monkeypatch)
     canary._save_state({"active": True, "weight_percent": 42, "history": []})
     monkeypatch.setattr(
         canary,
@@ -1639,6 +1651,7 @@ def test_web_component_records_ops_action_with_web_service_label(monkeypatch):
 @pytest.mark.unit
 def test_web_component_status_uses_component_labeled_metrics_only(monkeypatch):
     """The legacy api-only nyxgpt_canary_* metrics must not be touched by a web status call."""
+    _kubernetes_mode(monkeypatch)
     canary._save_state({"active": True, "weight_percent": 42, "history": []}, "web")
     monkeypatch.setattr(
         canary,
@@ -1917,6 +1930,10 @@ def test_evaluate_holds_when_the_canary_track_is_unattributable(monkeypatch, cap
 @pytest.mark.unit
 def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypatch):
     canary._save_state({"active": False, "weight_percent": 0, "history": []})
+    # The per-track reads are Kubernetes-mode behavior: outside it `status()`
+    # makes no cluster call at all (#3858), so the mode has to be declared for
+    # this test to be about metrics attribution rather than about that guard.
+    monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
     monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
     monkeypatch.setattr(
         canary,
@@ -1950,6 +1967,7 @@ def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypa
 @pytest.mark.unit
 def test_status_measures_both_tracks_during_a_rollout(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 25, "history": []})
+    monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
     monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
     monkeypatch.setattr(
         canary,

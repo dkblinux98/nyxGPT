@@ -60,6 +60,7 @@ from typing import Any
 
 from nyxgpt import cloud_provision, release_tarball
 from nyxgpt.cloud import NYXGPT_HOME, CloudCommandError
+from nyxgpt.subprocess_bounds import timeout_result
 
 # The distro the owner's cloud rounds actually run on. Overridable
 # (`--image`) so the same smoke can be pointed at another AMI family's base
@@ -239,13 +240,9 @@ def _run(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        captured = "".join(
-            part.decode("utf-8", "replace") if isinstance(part, bytes) else (part or "")
-            for part in (exc.stdout, exc.stderr)
-        )
-        return subprocess.CompletedProcess(
-            command, 124, captured, f"timed out after {timeout:.0f}s"
-        )
+        # Shared with every other bounded helper (#3858) so "timed out" means
+        # the same returncode and reads the same way everywhere.
+        return timeout_result(command, exc, timeout)
     except FileNotFoundError as exc:
         return subprocess.CompletedProcess(command, 127, "", str(exc))
 
