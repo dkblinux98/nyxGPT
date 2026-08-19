@@ -697,6 +697,10 @@ _open_issues_assigned_to() {
 JSON
 }
 
+# The counter is lane-aware now: default every candidate to a lane the
+# agents were driving, so these cases keep asserting what they always did.
+issue_status() { echo "In Review"; }
+
 ISSUES_OUT="$(unresolved_escalation_issues)"
 _assert_eq "unresolved_escalation_issues excludes PRs and lists both open issues" \
   "#201 spec ambiguity on auth flow
@@ -727,6 +731,53 @@ _assert_eq "unresolved_escalation_issues keeps every issue when no release issue
   "#3521 Release v3.0.0
 #201 spec ambiguity on auth flow" "$(unresolved_escalation_issues)"
 RELEASE_ISSUE_NUMBER="3521"
+
+# --- Test 13b: the escalation count is by LANE, not by assignee alone ---
+#
+# The first cut counted every open owner-assigned issue. But the pipeline
+# itself assigns the owner on every successful merge (Status -> Acceptance
+# Testing, assignee -> HUMAN_OWNER), so the gate tripped as a function of
+# throughput: two accepted-and-unclosed items -- a normal healthy state --
+# stopped all dispatch. Observed 2026-08-19, ~10 hours of stall on #3910
+# (owner's own scheduled work) and #3814 (in For Release, i.e. done).
+_open_issues_assigned_to() {
+  cat <<'JSON'
+[
+  {"number": 301, "title": "accepted, awaiting owner test", "pull_request": null},
+  {"number": 302, "title": "done, awaiting the release ceremony", "pull_request": null},
+  {"number": 303, "title": "held by the drain gate", "pull_request": null},
+  {"number": 304, "title": "a real escalation", "pull_request": null}
+]
+JSON
+}
+issue_status() {
+  case "$1" in
+    301) echo "Acceptance Testing" ;;
+    302) echo "For Release" ;;
+    303) echo "Acceptance Failed" ;;
+    *)   echo "In Review" ;;
+  esac
+}
+_assert_eq "lanes that legitimately hold owner-assigned work are not escalations" \
+  "#304 a real escalation" "$(unresolved_escalation_issues)"
+_assert_eq "and the count reflects it -- one, not four" \
+  "1" "$(count_unresolved_escalations)"
+
+# A Status that cannot be read must FAIL OPEN. Over-counting stalls the whole
+# pipeline; under-counting dispatches a few issues while the owner has a
+# queue. The first is what actually cost a day, so an unreadable lane is not
+# an escalation.
+issue_status() { return 1; }
+_assert_eq "an unreadable Status does not count as an escalation (fails open)" \
+  "" "$(unresolved_escalation_issues 2>/dev/null)"
+
+# The release tracking issue stays exempt without needing a Status read --
+# it is filtered before the lane lookup, so the gate costs nothing for it.
+RELEASE_ISSUE_NUMBER=304
+issue_status() { echo "In Review"; }
+_assert_eq "the release issue is still exempt, and nothing else is dropped" \
+  "" "$(RELEASE_ISSUE_NUMBER=304 unresolved_escalation_issues | grep -F '#304' || true)"
+unset RELEASE_ISSUE_NUMBER
 
 # --- Test 14: count_unresolved_escalations (#3687) -- always echoes a ---
 # --- number, including zero (grep -c's exit-1-on-no-match must not leak) ---
