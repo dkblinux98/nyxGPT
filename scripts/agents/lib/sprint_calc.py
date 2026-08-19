@@ -183,22 +183,23 @@ def _sprint_sort_key(title: str) -> tuple[int, int | str, str]:
 
 
 # Machine marker for autopilot notes that are INFORMATIONAL (park notes,
-# paused notices) rather than dispatch kicks. `notify_scrum_ready.yml`
-# negates this marker in its job `if:`, so such a note can never trigger a
-# dispatch run even if its prose later drifts back to naming the kick token
-# (#3706 review finding). Belt and braces: informational notes also avoid
-# writing the literal kick token at all -- see `_kick_token_ref()`.
+# paused notices) rather than dispatch kicks. It exists because of #3706: the
+# kick was then a comment token matched by a bare substring test with the
+# agent accounts on the actor allowlist, so a park note that merely *named*
+# the token dispatched work -- a "park" that was really a kick. #3882 removed
+# that class outright by making the kick a `repository_dispatch`, which prose
+# cannot fire. The marker stays for the tokens that are still live (these
+# notes name `PAUSE_SPRINT`): the shared gate `lib/comment_tokens.py`
+# disqualifies any comment carrying it. Keep in sync with the copies in
+# `lib/gh_project.sh` and `lib/comment_tokens.py`.
 AUTOPILOT_INFO_MARKER = "<!-- nyxgpt-autopilot-informational -->"
 
 
-# How an informational note refers to the manual kick signal WITHOUT
-# spelling it out. `notify_scrum_ready.yml` triggers on a bare
-# `contains(comment.body, "<kick token>")` substring test with the agent
-# accounts on its actor allowlist, so a note that names the token dispatches
-# work merely by being posted -- which is how a "park" became a kick (#3706
-# review). Never inline the token here, at source or by concatenation: what
-# matters is the RENDERED body.
-KICK_SIGNAL_REF = "the manual kick signal documented in `docs/sprint-autopilot.md`"
+# How a park note tells the owner to pull work forward across the sprint
+# boundary. There is no manual kick comment any more (#3882): the kick is an
+# event, and the one lever a human uses is assigning the developer agent to
+# the issue they want started, which that workflow claims into In Progress.
+MANUAL_START_REF = "assigns the developer agent to an issue here (see `docs/sprint-autopilot.md`)"
 
 
 def _issue_list(numbers: list[int]) -> str:
@@ -474,8 +475,8 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
         "`SPRINT_TIMEZONE`, default `America/New_York`) and a kick is posted, or"
     )
     lines.append(
-        f"- the owner posts {KICK_SIGNAL_REF} here to pull work forward deliberately "
-        f"— a human kick still overrides the sprint boundary."
+        f"- the owner {MANUAL_START_REF} to pull work forward deliberately "
+        f"— a human start still overrides the sprint boundary."
     )
     lines.append("")
     lines.append(AUTOPILOT_INFO_MARKER)

@@ -2,15 +2,19 @@ name: Comment token gate
 description: >-
   Decide whether an issue comment ISSUES a command token or merely names it
   (#3790). Every comment-driven trigger in this repo uses this gate, so the
-  rule is identical for RETRY_IMPLEMENTATION, READY_FOR_NEXT_ISSUE,
-  @acceptance-failure and @improvement.
+  rule is identical for @acceptance-failure, @improvement, PAUSE_SPRINT and
+  CONFLICT_REQUIRES_OWNER_DECISION.
 
 # Why this exists (2026-08-15, #3790): the job-level `if:` of a comment
 # trigger can only do a bare `contains()` substring test -- GitHub expressions
 # have no regex and cannot anchor a match to a line. That substring test is
-# what let the developer agent's own stop message ("...comment
-# `RETRY_IMPLEMENTATION` to resume") re-trigger the workflow that had just
-# posted it, ~500 times across #3782/#3784 in under two hours.
+# what let the developer agent's own stop message re-trigger the workflow that
+# had just posted it, ~500 times across #3782/#3784 in under two hours.
+#
+# The two triggers those incidents rode -- the queue kick and the retry token
+# -- were deleted outright by #3882 (a `repository_dispatch` and an assignment
+# replace them). What is left behind this gate authors content or stops work,
+# never starts it, which is why a comment is still the right surface for it.
 #
 # So the trigger is now two layers:
 #   1. the job `if:` keeps the cheap contains() test plus a negated
@@ -23,7 +27,7 @@ description: >-
 
 inputs:
   token:
-    description: The command token to test for, e.g. RETRY_IMPLEMENTATION.
+    description: The command token to test for, e.g. @improvement.
     required: true
   comment-body:
     description: github.event.comment.body (passed via env, never interpolated into shell).
@@ -47,8 +51,12 @@ inputs:
   check-stop-loop:
     description: >-
       Also consult the stop-without-progress loop guard
-      (scripts/agents/lib/stop_loop_guard.py). Only the developer agent's
-      retry trigger needs this.
+      (scripts/agents/lib/stop_loop_guard.py). No current caller sets this:
+      the developer retry trigger that needed it is now an assignment, and
+      developer_auto_implement.yml consults the guard directly in its claim
+      step (#3882). Kept because the guard is trigger-shaped, not
+      comment-shaped -- a future comment trigger that starts work would need
+      it again.
     required: false
     default: "false"
 

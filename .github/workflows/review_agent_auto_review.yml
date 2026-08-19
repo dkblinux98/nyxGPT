@@ -525,8 +525,8 @@ jobs:
           fi
           NOTIFY_ACTION="Review PR #$PR: merge if acceptable, give the developer specific guidance, or close it."
 
-          # Sprint-autopilot continuation kick: only merges used to post
-          # READY_FOR_NEXT_ISSUE, so an escalation starved dispatch even
+          # Sprint-autopilot continuation kick: only merges used to send the
+          # continue signal, so an escalation starved dispatch even
           # though nothing was blocked. The reviewer has handed this PR to
           # the owner — post the same gated kick a merge posts (identical
           # SPRINT_AUTOPILOT / pause / release-drained checks) so the queue
@@ -562,12 +562,16 @@ jobs:
 
           echo "::group::Returning issue #$ISSUE to developer"
 
-          # Set issue status to "In Progress" and assign to developer-agent (with workflow trigger)
+          # Assign it back; the developer moves it to In Progress when it
+          # picks the work up (#3882). The reviewer's job here is the
+          # findings and the hand-back -- the actor doing the work owns the
+          # status transition, exactly as a person would. This step used to
+          # stage the board on the developer's behalf and then post a token
+          # telling the workflow to start, because assignment alone was inert.
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
             assign_and_trigger_developer '$ISSUE'"
 
           # #3837: substituting the output straight into $(( )) made it
@@ -580,7 +584,7 @@ jobs:
           HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
             "🔄 **Review Agent**: Changes requested (review loop ${LOOP_NUM}/3)" \
-            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \
+            "Issue #${ISSUE} has been assigned back to @${DEV_AGENT}, which is the whole hand-back signal (#3882) -- the developer agent moves it to **In Progress** as it picks the work up." \
             "**Developer Instructions:**" \
             "1. Read the code review comment above to understand what needs to be fixed" \
             "2. Implement the necessary changes" \
@@ -661,12 +665,12 @@ jobs:
 
           echo "::group::Human override: sending issue #$ISSUE back to developer"
 
-          # Set issue status to "In Progress" and assign to developer-agent (with workflow trigger)
+          # Assignment is the hand-back (#3882); the developer claims the
+          # status itself.
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
             assign_and_trigger_developer '$ISSUE'"
 
           # Post comment to PR explaining human override
@@ -674,7 +678,7 @@ jobs:
           HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s' \
             "👤 **Human Override by @${COMMENTER}**: Sent back to developer" \
-            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \
+            "Issue #${ISSUE} has been assigned back to @${DEV_AGENT}; the developer agent moves it to **In Progress** as it picks the work up (#3882)." \
             "**Developer Instructions:**" \
             "1. Review the feedback from @${COMMENTER} above" \
             "2. Address all identified issues" \

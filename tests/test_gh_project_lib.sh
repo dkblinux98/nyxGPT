@@ -270,8 +270,11 @@ for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; do
 _assert_eq "fresh assignment never calls the unassign dance" "0" "$UNASSIGN_SEEN"
 
 # --- Test 10: assign_and_trigger_developer when the dev agent is already ---
-# --- assigned unassigns then reassigns (to force a real event) AND posts ---
-# --- a RETRY_IMPLEMENTATION fallback comment, per #3647's redispatch fix ---
+# --- assigned unassigns then reassigns (to force a real event) and posts ---
+# --- NOTHING. #3647 backed the reassignment with a retry-token comment as a ---
+# --- second trigger; #3882 deleted that token, so the verified reassignment ---
+# --- is the whole signal and no comment may be posted (a comment carries ---
+# --- findings, never control). ---
 GH_CALLS=()
 gh() {
   GH_CALLS+=("$*")
@@ -284,17 +287,83 @@ _issue_assignee_logins() { echo "$DEV_AGENT"; } # already assigned (REST-backed 
 ASSIGN_ONLY_CALLS=()
 COMMENT_CALLS=()
 sleep() { :; } # no real backoff in tests
+# assign_issue_verified re-reads the assignees to prove the write landed;
+# _issue_assignee_logins above already reports the dev agent, so the real
+# helper verifies on its first attempt.
 
 # shellcheck disable=SC2218 # exercises the real gh_project.sh function
 # sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "78"
 _assert_eq "redispatch calls issue_assign_only once (the reassignment)" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "redispatch targets the dev agent" "78 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
-_assert_eq "redispatch posts exactly one fallback comment" "1" "${#COMMENT_CALLS[@]}"
-_assert_eq "fallback comment body is the RETRY_IMPLEMENTATION marker" "78 RETRY_IMPLEMENTATION" "${COMMENT_CALLS[0]}"
+_assert_eq "redispatch posts no comment at all (#3882)" "0" "${#COMMENT_CALLS[@]}"
 UNASSIGN_SEEN=0
 for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; done
 _assert_eq "redispatch unassigns before reassigning" "1" "$UNASSIGN_SEEN"
+
+# --- Test 10a: developer_claim_issue -- the other end of the same lever. ---
+# --- Assignment IS the dispatch (#3882), so this decides which lanes an ---
+# --- assignment may claim and which identities may assign. Executed here ---
+# --- (and on a runner by assignment-dispatch-smoke.yml) rather than read: ---
+# --- it used to be inline YAML in developer_auto_implement.yml, which ---
+# --- nothing could run. ---
+HUMAN_OWNER="dkblinux98"
+SCRUM_AGENT="myGPT-scrummaster-agent"
+REVIEW_AGENT="myGPT-review-agent"
+STATUS_BACKLOG="Backlog"
+STATUS_IN_PROGRESS="In Progress"
+STATUS_IN_REVIEW="In Review"
+
+CLAIM_STATUS_STUB=""
+issue_status() { echo "$CLAIM_STATUS_STUB"; }
+# The claim runs inside a command substitution below, so a shell-array
+# recorder would be lost with that subshell -- the pitfall documented at the
+# top of this file. Record the writes in a temp file instead.
+CLAIM_WRITES="$(mktemp)"
+set_issue_status() { echo "$1 $2" >> "$CLAIM_WRITES"; }
+_claim_writes() { wc -l < "$CLAIM_WRITES" | tr -d ' '; }
+
+_claim() { # <status> <assigner> -> "<rc>:<stdout>"
+  CLAIM_STATUS_STUB="$1"
+  : > "$CLAIM_WRITES"
+  local out rc
+  out="$(developer_claim_issue "90" "$2" 2>/dev/null)" && rc=0 || rc=$?
+  echo "${rc}:${out}"
+}
+
+_assert_eq "an issue already In Progress proceeds untouched" \
+  "0:In Progress" "$(_claim "In Progress" "$REVIEW_AGENT")"
+_assert_eq "...and writes no status" "0" "$(_claim_writes)"
+
+_assert_eq "a Backlog issue assigned by the owner is claimed" \
+  "0:In Progress" "$(_claim "Backlog" "$HUMAN_OWNER")"
+
+_assert_eq "an In Review issue assigned by the review agent is claimed (rework)" \
+  "0:In Progress" "$(_claim "In Review" "$REVIEW_AGENT")"
+_assert_eq "...by writing the status itself -- the worker owns the transition" \
+  "1" "$(_claim_writes)"
+_assert_eq "...to In Progress" "90 In Progress" "$(cat "$CLAIM_WRITES")"
+
+_assert_eq "claude[bot] is a permitted assigner (D-020)" \
+  "0:In Progress" "$(_claim "Backlog" "claude[bot]")"
+
+_assert_eq "a stranger's assignment claims nothing" \
+  "3:" "$(_claim "Backlog" "some-drive-by")"
+_assert_eq "...and leaves the status alone" "0" "$(_claim_writes)"
+
+_assert_eq "the Acceptance Failed holding lane is never claimable (D-001/D-008)" \
+  "3:" "$(_claim "Acceptance Failed" "$HUMAN_OWNER")"
+_assert_eq "...even for the owner, whose placement there is the signal" "0" "$(_claim_writes)"
+
+_assert_eq "Acceptance Testing is not claimable either" \
+  "3:" "$(_claim "Acceptance Testing" "$REVIEW_AGENT")"
+_assert_eq "finished work is not claimable" \
+  "3:" "$(_claim "For Release" "$HUMAN_OWNER")"
+_assert_eq "an issue that is not on the board is not claimable" \
+  "3:" "$(_claim "" "$HUMAN_OWNER")"
+
+rm -f "$CLAIM_WRITES"
+unset -f issue_status set_issue_status
 
 # --- Test 11: classify_backlog_claim_state implements the #3665 start-guard ---
 # --- decision matrix -- distinguishing *who* holds the claim instead of ---

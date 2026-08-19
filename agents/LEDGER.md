@@ -663,6 +663,35 @@ rather than mechanism, and nothing can enforce them.
   Source: #3858; `src/nyxgpt/subprocess_bounds.py` (enumeration + rationale),
   `tests/unit/test_subprocess_bounds.py`.
 
+- **D-028** · 2026-08-19 · owner (issue #3882) — **Assignment is the workflow
+  lever; "process by comment" is retired.** A reviewer comments what they
+  found and **assigns the issue back**; the developer, on picking it up, moves
+  it to In Progress and works it. The comment carries findings, the assignment
+  carries the instruction, and **the actor doing the work owns the status
+  transition** — which is how people work, and what makes the state on the
+  board mean something. Both control tokens are **deleted, not deprecated**:
+  `READY_FOR_NEXT_ISSUE` became a `repository_dispatch` (#3917) and
+  `RETRY_IMPLEMENTATION` became the assignment itself, so
+  `developer_auto_implement.yml` subscribes to no comment event at all. Two
+  lanes are claimable by assignment — `Backlog` (new work) and `In Review`
+  (rework: REQUEST_CHANGES, huddle decision, conflict round, human override);
+  the held lanes stay held (**D-001**/**D-008**) and an unpermitted assigner
+  leaves the issue untouched. The stop-without-progress loop guard moved with
+  the lever, onto the claim step, and the owner is never gated by it. Same
+  move as **D-002** made for issue relationships: native mechanism, never body
+  prose. Do not re-introduce a comment token that *starts, resumes or routes*
+  work — that is the mechanism behind #3706 and #3790 (~500 runs in two
+  hours), not the wording. Tokens that author content (`@improvement`,
+  `@acceptance-failure`) or stop the loop (`PAUSE_SPRINT`,
+  `CONFLICT_REQUIRES_OWNER_DECISION`) are deliberately kept.
+  (Filed as `D-025` under #3882; renumbered to `D-028` when #3860, PR #3925's
+  huddle entry and #3858 took `D-025`, `D-026` and `D-027` on `v3.0.0` first.
+  The number came from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3882; `docs/agent-comment-tokens.md`;
+  `tests/unit/test_dispatch_is_an_event.py`;
+  `tests/unit/test_comment_token_triggers.py`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

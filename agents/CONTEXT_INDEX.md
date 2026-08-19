@@ -19,6 +19,7 @@ fails if it drifts. Do not hand-edit.
 | `admin_label_rename.yml` | workflow_dispatch | Admin - Rename Label |
 | `admin_set_fields.yml` | workflow_dispatch | Admin Set Item Fields |
 | `assign_backlog.yml` | issues | Assign Backlog Issues to scrummaster-agent |
+| `assignment-dispatch-smoke.yml` | push, pull_request, workflow_dispatch | Assignment Dispatch Smoke |
 | `auto-check-tasklist.yml` | issues, repository_dispatch | Auto-check Release Tracking Issues |
 | `bulk_set_issue_status.yml` | workflow_dispatch | Bulk Set Issue Status |
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
@@ -38,7 +39,7 @@ fails if it drifts. Do not hand-edit.
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
-| `developer_auto_implement.yml` | issues, issue_comment | Developer Agent Auto-Implement |
+| `developer_auto_implement.yml` | issues | Developer Agent Auto-Implement |
 | `developer_huddle_position.yml` | issue_comment | Developer Agent - Huddle Position |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
 | `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |

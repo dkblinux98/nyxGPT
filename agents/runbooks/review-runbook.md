@@ -580,7 +580,7 @@ for both verdicts:
 
 This closes the failure observed 2026-08-09/10, where dispatched
 REQUEST_CHANGES verdicts on PRs #3684, #3683 and #3606 produced zero fix
-activity for 9+ hours until a human posted `RETRY_IMPLEMENTATION` by hand.
+activity for 9+ hours until a human re-dispatched the developer by hand.
 
 ## 6) Review cycle escalation
 The review workflow tracks cumulative review cycles:
