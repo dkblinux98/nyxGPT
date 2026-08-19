@@ -54,7 +54,17 @@ Entry schema and granularity rules live in the ledger itself.
 ### Project Hygiene (All Agents)
 
 Every agent is responsible for verifying project hygiene before reassigning issues/PRs:
-- PRs must be linked to issues via `Closes #ISSUE` in PR body
+- **PRs are linked to issues natively** — GitHub's own closing-issue link
+  (the "Development" sidebar, and the `closingIssuesReferences` edge behind
+  it), which is what actually closes the issue on merge. `Closes #ISSUE` in
+  the body is one way to *create* that link and `developer_submit_for_review.sh`
+  still writes it, but nothing requires the text: every consumer reads the
+  link through `pr_linked_issue` (`lib/gh_project.sh`) and falls back to the
+  body only for PRs that predate this. Requiring the sentence was prose
+  standing in for a relationship the platform stores — the same mistake as
+  driving workflows from comment tokens (owner rule, 2026-08-19).
+- A PR that closes **no** issue is legitimate but rare; the issue-side
+  automation stops loudly rather than guessing.
 - Issues must have required project fields populated (Status, Priority, etc.)
 - Merged PRs without linked issues must be corrected before handoff
 - Project fields must be accurate and up-to-date before state transitions

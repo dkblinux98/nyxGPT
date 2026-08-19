@@ -175,7 +175,8 @@ if [[ "$(echo "$in_review_issues" | jq 'length')" -gt 0 ]]; then
   while IFS= read -r pr_num; do
     [[ -n "$pr_num" ]] || continue
     body="$(echo "$pr_bodies_json" | jq -r --argjson n "$pr_num" '.[] | select(.number == $n) | .body // ""')"
-    issue_num="$(echo "$body" | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)"
+    # The link, not the sentence (owner rule, 2026-08-19).
+    issue_num="$(pr_linked_issue "$pr_num")"
     [[ -n "$issue_num" ]] || continue
     is_in_review="$(jq --argjson n "$issue_num" 'index($n) != null' <<<"$in_review_issues")"
     [[ "$is_in_review" == "true" ]] || continue

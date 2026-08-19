@@ -319,10 +319,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          # The link, not the sentence (owner rule, 2026-08-19): GitHub
+          # already stores which issue this PR closes, and that edge is what
+          # closes it on merge. Grepping the body for `Closes #N` was prose
+          # standing in for a native relationship -- the same mistake as
+          # driving workflows from comment tokens -- and it hard-failed the
+          # merge on PRs whose issue was linked but unspelled.
+          ISSUE=$(bash -lc "source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && pr_linked_issue '$PR'")
 
           if [[ -z "$ISSUE" ]]; then
-            echo "::error::PR #$PR body does not contain 'Closes #N'"
+            # A PR that closes no issue is legitimate but rare, and the rest
+            # of this job is all issue-side. Stop loudly rather than guess.
+            echo "::error::PR #$PR closes no issue -- no linked issue, and no 'Closes #N' in the body"
             exit 1
           fi
 

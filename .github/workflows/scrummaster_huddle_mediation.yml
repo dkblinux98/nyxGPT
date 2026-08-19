@@ -70,11 +70,11 @@ jobs:
         run: |
           set -euo pipefail
           PR="${{ github.event.issue.number }}"
-          ISSUE=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.body // ""' \
-            | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          # The link, not the sentence (owner rule, 2026-08-19).
+          ISSUE=$(bash -lc "source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && pr_linked_issue '$PR'")
 
           if [[ -z "$ISSUE" ]]; then
-            echo "::error::PR #$PR body does not contain 'Closes #N' -- cannot mediate without a linked issue"
+            echo "::error::PR #$PR closes no issue -- cannot mediate without one"
             exit 1
           fi
 

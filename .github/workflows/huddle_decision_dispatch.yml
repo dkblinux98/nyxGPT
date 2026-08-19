@@ -142,10 +142,10 @@ jobs:
           esac
           echo "run=$RUN" >> "$GITHUB_OUTPUT"
 
-          ISSUE=$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""' \
-            | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          # The link, not the sentence (owner rule, 2026-08-19).
+          ISSUE=$(bash -lc "source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && pr_linked_issue '$PR'")
           if [[ -z "$ISSUE" && "$RUN" == "true" ]]; then
-            echo "::error::PR #$PR body does not contain 'Closes #N' -- cannot dispatch the huddle decision"
+            echo "::error::PR #$PR closes no issue -- cannot dispatch the huddle decision"
             exit 1
           fi
           echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"

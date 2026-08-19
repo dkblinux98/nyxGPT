@@ -60,11 +60,13 @@ jobs:
           echo "Original PR #$ORIGINAL_PR body:"
           echo "$ORIGINAL_BODY"
 
-          # Extract issue number from "Closes #123" pattern
-          ISSUE=$(echo "$ORIGINAL_BODY" | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          # The link, not the sentence (owner rule, 2026-08-19): read the
+          # original PR's native closing-issue edge, falling back to the body
+          # convention for PRs that predate it.
+          ISSUE=$(bash -lc "source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && pr_linked_issue '$ORIGINAL_PR'")
 
           if [[ -z "$ISSUE" ]]; then
-            echo "::warning::Original PR #$ORIGINAL_PR has no linked issue (no 'Closes #N' found)"
+            echo "::warning::Original PR #$ORIGINAL_PR closes no issue"
             echo "has_issue=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

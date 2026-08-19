@@ -117,7 +117,9 @@ done
 # Issue number: explicit argument wins, else the PR body's "Closes #N"
 # (the PR rule every PR in this repo follows).
 if [[ -z "$ISSUE" ]]; then
-  ISSUE="$(jq -r '.body' <<<"$pr_json" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)"
+  # The link, not the sentence (owner rule, 2026-08-19): the native edge
+  # first, the body convention only as a fallback.
+  ISSUE="$(pr_linked_issue "$PR")"
 fi
 
 echo "[conflict] PR #${PR}: state=${pr_state}, mergeable=${pr_mergeable}, head=${pr_head}, base=${pr_base}, issue=${ISSUE:-none}" >&2

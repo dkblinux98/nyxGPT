@@ -125,10 +125,11 @@ if [[ "${REVIEW_HANDOFF_DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
-ISSUE="$(gh api "repos/${REPO}/pulls/${PR}" --jq '.body // ""' \
-  | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)"
+# The link, not the sentence (owner rule, 2026-08-19): the native
+# closing-issue edge first, the body convention only as a fallback.
+ISSUE="$(pr_linked_issue "$PR")"
 if [[ -z "$ISSUE" ]]; then
-  echo "::error::PR #${PR} body does not contain 'Closes #N' -- cannot resolve the issue to hand off to" >&2
+  echo "::error::PR #${PR} closes no issue -- cannot resolve the issue to hand off to" >&2
   exit 1
 fi
 

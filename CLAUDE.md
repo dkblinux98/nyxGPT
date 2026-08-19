@@ -461,7 +461,10 @@ markers.**
 ## PR Rules
 
 - PRs are created only via developer_submit_for_review.sh
-- PR body must include: Closes #ISSUE
+- PRs are linked to their issue **natively** (GitHub's closing-issue link).
+  `Closes #ISSUE` in the body is one way to create that link, not a required
+  sentence: consumers read the link via `pr_linked_issue` (owner rule,
+  2026-08-19). A PR with no issue behind it is legitimate and rare.
 - Issues close only on merge
 
 ---
