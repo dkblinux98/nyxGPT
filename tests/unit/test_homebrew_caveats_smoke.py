@@ -227,7 +227,7 @@ def test_workflow_runs_the_checker_against_the_captured_install() -> None:
     steps = workflow["jobs"]["keg-install"]["steps"]
     run_blocks = "\n".join(step.get("run", "") for step in steps)
 
-    assert "tee \"$RUNNER_TEMP/install-nyxgpt-api.log\"" in run_blocks
+    assert 'tee "$RUNNER_TEMP/install-nyxgpt-api.log"' in run_blocks
     assert "scripts/homebrew-caveats-smoke.sh" in run_blocks
     assert "$RUNNER_TEMP/install-nyxgpt-api.log" in run_blocks
 

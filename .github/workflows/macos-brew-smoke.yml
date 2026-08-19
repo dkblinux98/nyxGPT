@@ -521,7 +521,9 @@ jobs:
         # The script injects the condition itself (strip `caveats`, ask brew
         # what it would print, require the check to fail), so this is not a
         # gate that only ever runs against a good formula. See its header.
-        run: ./scripts/homebrew-caveats-smoke.sh nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc "$RUNNER_TEMP/install-nyxgpt-api.log"
+        run: |
+          ./scripts/homebrew-caveats-smoke.sh nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc \
+            "$RUNNER_TEMP/install-nyxgpt-api.log"
 
       - name: Verify the keg venv was really built
         run: |
