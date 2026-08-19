@@ -598,6 +598,34 @@ def test_the_reverse_direction_comment_records_the_debt_not_a_refusal() -> None:
     )
 
 
+@pytest.mark.parametrize("formula", API_FORMULAS + WEB_FORMULAS, ids=lambda p: p.name)
+def test_every_formula_names_the_teardown_before_uninstall(formula: Path) -> None:
+    """`brew uninstall` is where the operator is standing when they remove it (#3859).
+
+    Homebrew has no uninstall hook, so the ordering cannot be enforced -- only
+    stated, at install time, in the one place the operator reads. Removing the
+    keg without the teardown leaves the service running from deleted files,
+    and after `brew untap` there is no formula name left to stop it with.
+    """
+    text = formula.read_text(encoding="utf-8")
+    assert "def caveats" in text, (
+        f"{formula.name} has no caveats block, so nothing tells the operator "
+        "that removal has a required first step (#3854, #3859)"
+    )
+    caveats = text.split("def caveats")[1].split("  end")[0]
+    assert "nyxgpt ops uninstall" in caveats, (
+        f"{formula.name}'s caveats no longer name the teardown command, so the "
+        "operator is back to `brew uninstall` with no way to stop what it orphans"
+    )
+    assert "brew uninstall" in caveats and caveats.index("nyxgpt ops uninstall") < caveats.index(
+        "brew uninstall"
+    ), (
+        f"{formula.name}'s caveats put `brew uninstall` before the teardown -- "
+        "the order is the whole point, since uninstalling first is what leaves "
+        "services running with no supported command to stop them"
+    )
+
+
 @pytest.mark.parametrize("formula", API_FORMULAS, ids=lambda p: p.name)
 def test_api_formula_test_blocks_run_the_cli(formula: Path) -> None:
     """`import nyxgpt.app` resolving is true of a keg with no reachable CLI."""
