@@ -60,6 +60,7 @@ service-manager-agnostic layer.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 
 __all__ = [
@@ -71,6 +72,7 @@ __all__ = [
     "parse_services_list",
     "resolve",
     "resolve_all",
+    "strip_ansi",
     "superseded",
     "unique",
     "variants",
@@ -102,8 +104,55 @@ VERSIONED_COMPONENTS: frozenset[str] = frozenset({"api", "web"})
 LIVE_STATES: frozenset[str] = frozenset({"started", "running"})
 
 
+# A CSI escape sequence: `ESC [` then parameter/intermediate bytes then a
+# final byte in `@`-`~`. Broader than the `\x1b\[[0-9;]*m` colour case on
+# purpose -- `strip_ansi` exists to make a comparison against brew's output
+# safe, and a comparison that is safe only against the escapes we happened to
+# think of is the defect it is fixing.
+_ANSI_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    """`text` with ANSI escape sequences removed.
+
+    **Every literal comparison against brew's output goes through here**, and
+    that is the point rather than a nicety. `brew services list` colours its
+    Status column on a real macOS runner, and the escapes survive a pipe.
+    `macos-brew-smoke.yml` run 32233162053 printed brew's rows through
+    `cat -v`, which settles it byte-for-byte (`ESC` standing for the 0x1b byte
+    the log carries literally):
+
+        nyxgpt-api         ESC[39mnoneESC[0m
+        nyxgpt-api@3.0.0rc ESC[31merror  ESC[0m3 runner ~/Library/...plist
+
+    Every state token is wrapped, `none` included, so a coloured token
+    compares equal to nothing -- `state == "started"` is False for a running
+    service, `state != "none"` is True for one brew is not running -- and
+    every consumer of a parsed state (`LIVE_STATES` in `_rank` and
+    `ops._restart_native_api_for`, `superseded`'s `registered_only` filter,
+    `ops`'s ollama and `native_running` reads, and `self_heal`'s
+    `healthy = state == "started"`, which `nyxgpt up`'s exit gate rides on)
+    silently inverts. This is the mechanism behind the misreads in runs
+    32222041921 and 32228088507, where a column-based read reported services
+    launchd had already forgotten; the competing "the column goes stale"
+    explanation is falsified by the same capture, in which the just-retired
+    `nyxgpt-api` reads `none` with an empty File field within the second.
+
+    Fixing it here rather than at each of those sites is deliberate: they read
+    a state they did not fetch, so none of them can know whether it was
+    coloured, and a per-site guard would have to be re-added every time a new
+    reader appears. `parse_services_list` is the one chokepoint every state
+    reaches them through (#3861).
+    """
+    return _ANSI_CSI.sub("", text)
+
+
 def parse_services_list(stdout: str) -> dict[str, str]:
     """Return `{service_name: state}` parsed from `brew services list` output.
+
+    Escapes are stripped first, so callers compare against `started`/`none`
+    and not against a colour-wrapped `error` -- see `strip_ansi` for why that
+    is not cosmetic.
 
     The header row (`Name Status User File`) parses to
     `{"Name": "Status"}` and is harmless: no component base name is `Name`,
@@ -111,7 +160,7 @@ def parse_services_list(stdout: str) -> dict[str, str]:
     couple this parser to Homebrew's column headings, which change.
     """
     snapshot: dict[str, str] = {}
-    for line in stdout.splitlines():
+    for line in strip_ansi(stdout).splitlines():
         parts = line.split()
         if len(parts) >= 2:
             snapshot[parts[0]] = parts[1]

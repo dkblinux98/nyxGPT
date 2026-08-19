@@ -40,6 +40,19 @@ type InfraStatus = {
     checkout: string | null;
     label: string;
     components: string[];
+    // WHICH build, not merely which mode (#3861). A mode cannot tell a 2.1.0
+    // keg from a 3.0.0rc12 one -- both are 'artifact' -- which is how four
+    // install identities accumulated on one machine unseen. `known: false`
+    // means the marker predates identities (or none exists); the page says
+    // so rather than presenting the mode as if it identified the build.
+    identity?: {
+      known: boolean;
+      manager: string;
+      services: Record<string, string>;
+      version: string;
+      channel: string;
+      detail: string;
+    };
   };
   native: Record<string, string>;
   compose: Record<string, string>;
@@ -577,6 +590,35 @@ export default function InfrastructurePage() {
                 </>
               )}
             </p>
+            {status.install_mode?.identity?.known ? (
+              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+                Installed build:{' '}
+                <code>
+                  {status.install_mode.identity.version || 'unknown version'} (
+                  {status.install_mode.identity.channel})
+                </code>
+                , registered with <code>{status.install_mode.identity.manager}</code> as{' '}
+                {Object.entries(status.install_mode.identity.services).map(
+                  ([component, service], index, all) => (
+                    <span key={component}>
+                      <code>
+                        {component}={service}
+                      </code>
+                      {index < all.length - 1 ? ', ' : ''}
+                    </span>
+                  ),
+                )}
+                .
+              </p>
+            ) : (
+              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+                No install identity recorded — this machine cannot say which build the native
+                api/web came from, only that they are {status.install_mode?.mode ?? 'artifact'}{' '}
+                installs. Run <code>nyxgpt up</code> (add <code>--dev</code> from a checkout) to
+                record one, and <code>nyxgpt ops doctor</code> to list any services left behind by
+                an earlier install.
+              </p>
+            )}
             <ComponentList components={status.native} />
           </div>
 

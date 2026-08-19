@@ -181,7 +181,24 @@ and screenshots make verifiable in the review loop:
   A formula, service-lifecycle or install change is therefore not exempt from
   the executed-verification gate (`agents/runbooks/review-runbook.md` §1c) on
   the grounds that this entry exists; what remains uncovered on that runner is
-  the Docker-backed set immediately below. The same boundary applies to the dev install mode's macOS
+  the Docker-backed set immediately below. The same workflow's
+  `stable-over-candidate` job additionally executes what happens when two
+  channels are installed at once: `brew services` really registers both keg's
+  services and the real install-identity reconcile (#3861) runs against them,
+  in both directions. Since #3853 that job also proves brew *refuses* the
+  second install in both orders, so the two-keg machine is staged there
+  deliberately rather than reached by installing: the candidate is
+  `brew unlink`ed, the stable installed beside it, and both undone afterwards.
+  That works because `conflicts_with` is checked against the **linked** keg
+  rather than the installed one -- measured, from brew's own refusal ("Please
+  `brew unlink nyxgpt-api@3.0.0rc` before continuing", run 32227410541), not
+  read off Homebrew's source. It is not a weaker proof of the reconcile, and
+  the same fact is why the reconcile still has to exist: packaging guards the
+  machines that install after the declaration ships, and two kegs on one
+  machine stay reachable regardless -- the local `file://` tap path, whose
+  checked-in formulas `build_homebrew_artifacts.py` never stamps, and every
+  machine already in the state. The same boundary
+  applies to the dev install mode's macOS
   LaunchAgents (`com.nyxgpt.api`/`com.nyxgpt.web`, see
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)):
   `launchctl bootstrap gui/<uid>` needs a real GUI session, which the hosted

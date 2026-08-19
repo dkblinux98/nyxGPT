@@ -735,6 +735,215 @@ def test_the_reverse_direction_comment_records_what_was_measured() -> None:
     )
 
 
+IDENTITY_STEP = "The install-identity reconcile leaves exactly one service set (#3861)"
+
+
+def test_the_conflict_job_also_proves_the_install_identity_reconcile() -> None:
+    """#3861's executed evidence rides this job rather than a second one.
+
+    The packaging steps above answer "can two channels be installed at once?".
+    They say nothing about what an install then *does* about the one it is
+    replacing -- which is the question #3861 is about, and the one whose
+    answer was "nothing" while two `keep_alive` service sets fought over
+    ports 8000/3000 on the owner's Mac. Since #3853 declared `conflicts_with`
+    in both directions the state is no longer reachable by installing, so the
+    step stages it (see the staging guard below) -- and it still has to be
+    covered, because packaging guards machines that install *after* that
+    declaration shipped, not the ones already in the state.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "brew services start nyxgpt-api@3.0.0rc" in run and (
+        "brew services start nyxgpt-api" in run
+    ), (
+        "the step no longer registers both service sets, so it reconciles a "
+        "machine that was never in the state the reconcile exists for"
+    )
+    assert "_reconcile_install_mode" in run, (
+        "the step no longer runs the real reconcile -- an assertion about the "
+        "registered services that nothing reconciled proves nothing"
+    )
+    for direction in (
+        "reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api",
+        "reconcile_from nyxgpt-api nyxgpt-api@3.0.0rc",
+    ):
+        assert direction in run, (
+            f"the {direction!r} direction is gone; `conflicts_with` is directional "
+            "and so is the leftover it leaves behind, so both are covered here"
+        )
+    assert "still registered after the reconcile (#3861)" in run and "exit 1" in run, (
+        "the step no longer fails when the previous install's service survives "
+        "the reconcile, which is the entire defect"
+    )
+
+
+def test_the_identity_step_stages_the_second_keg_by_unlinking_not_by_editing() -> None:
+    """The two-keg machine is staged, and the staging must not leak (#3853 merge).
+
+    Before #3853 this step relied on the stable install simply succeeding on
+    top of the candidate: `conflicts_with` was declared on one side only, so
+    that order was guarded by nothing (ledger Q-002). Both orders are now
+    refused, which is the fix -- and it takes away the state this step exists
+    to reconcile, so the step has to stage it.
+
+    *How* it stages it is the part a future session would get wrong. The first
+    attempt edited the tap's stable formula with `sed '/conflicts_with/d'` and
+    broke it outright (run 32227410541: the declaration spans two lines, so
+    deleting the first left an orphan `because:` and "syntax errors found").
+    The same run printed the right answer in brew's own refusal -- "Please
+    `brew unlink nyxgpt-api@3.0.0rc` before continuing" -- because
+    `conflicts_with` is checked against the **linked** keg, not the installed
+    one. So the staging unlinks and never edits: the tap keeps the formula
+    `render_stable_formula` produced, which is what the measurement step after
+    this one reads.
+
+    Both halves of the scaffolding also have to be undone, or that step starts
+    from a two-keg machine with the wrong `nyxgpt` on PATH.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "brew unlink nyxgpt-api@3.0.0rc" in run, (
+        "the step no longer stages the second keg. Since #3853 brew refuses "
+        "the stable onto a *linked* candidate, so without the unlink this step "
+        "reconciles a machine with one keg on it and proves nothing"
+    )
+    assert "sed -i" not in run, (
+        "the staging edits a file in place again. It must not: the only file "
+        "worth editing here is the tap's stable formula, the step after this "
+        "one measures that formula's own conflicts_with, and the two-line "
+        "declaration does not survive a line-wise edit (run 32227410541)"
+    )
+    for guard, why in (
+        (
+            "::error::could not stage the stable keg alongside the candidate",
+            "a staging install that silently did nothing would leave this step "
+            "reconciling a one-keg machine and passing",
+        ),
+        (
+            "::error::the candidate keg is gone",
+            "staging that *replaced* the candidate rather than joining it would "
+            "also leave one keg, and the retire assertions would then be about a "
+            "service no keg owns",
+        ),
+    ):
+        assert guard in run, f"{guard!r} is gone: {why}"
+    assert "brew uninstall --ignore-dependencies nyxgpt-api" in run, (
+        "the staged keg is no longer removed, so the measurement step after "
+        "this one starts from a two-keg machine instead of the "
+        "candidate-only one its own comment describes"
+    )
+    assert "brew link --overwrite nyxgpt-api@3.0.0rc" in run, (
+        "the candidate is never relinked, so every step after this one runs "
+        "with no `nyxgpt` on PATH -- the unlink is scaffolding and has to be "
+        "undone with the keg it was for"
+    )
+
+
+def test_the_identity_step_proves_the_old_gate_could_not_have_caught_it() -> None:
+    """Non-vacuity (#3775): a check that never sees the failing state is not a check.
+
+    The pre-#3861 gate was `previous.mode != target`, and both sides of this
+    scenario are `artifact` -- so the old code could not have acted, and this
+    step is genuine evidence rather than a demonstration of something already
+    working. The moment that stops being true the model has regressed to
+    something a mode comparison can see, and the step says so instead of
+    passing.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "previous.mode != target" in run, (
+        "the step no longer states which gate it is proving insufficient, so a "
+        "green run cannot be read as evidence about the artifact-to-artifact case"
+    )
+    assert "old_gate_would_have_acted" in run and "sys.exit" in run, (
+        "the step no longer FAILS when the two identities differ by mode; it "
+        "would then pass on a scenario the pre-#3861 code already handled"
+    )
+    assert "nothing would be retired" in run, (
+        "the step no longer checks that the recorded previous service is not "
+        "the target's own -- it would then assert the absence of a service the "
+        "reconcile was never asked to stop"
+    )
+
+
+def test_the_identity_step_asserts_the_launchagent_plist_is_gone() -> None:
+    """A "stopped" service is not a de-registered one (#3861 review).
+
+    The first run of this step (32222041921) passed `brew services stop` and
+    still read both services back as registered: brew exits 0 for a service
+    that is registered but not running and reports nothing either way about
+    the plist, and a plist left in ~/Library/LaunchAgents is what launchd
+    starts again at the next login. A check that reads only `brew services
+    list` would also pass the moment that output stopped matching what is on
+    disk -- in either direction -- so the file itself is asserted gone.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "plist_gone" in run and "homebrew.mxcl" in run, (
+        "the step no longer checks the LaunchAgent plist, so a retire that "
+        "stops a service and leaves it registered would pass again"
+    )
+    for formula in ("plist_gone nyxgpt-api", "plist_gone 'nyxgpt-api@3.0.0rc'"):
+        assert formula in run, (
+            f"{formula!r} is gone: both directions retire a service, so both "
+            "have to prove the registration went with it"
+        )
+
+
+def test_the_identity_step_captures_the_post_retire_column_verbatim() -> None:
+    """The measurement two red runs never took, and it settled them (#3861).
+
+    Runs 32222041921 and 32228088507 both showed a column-based read reporting
+    a service that launchd had already forgotten, and neither captured brew's
+    rows *after* the retire -- so the tree could name the observable but not
+    the mechanism, and two produce it identically: a Status column that
+    outlives the registration, or ANSI-coloured state text no literal
+    comparison matches. `cat -v` renders the escapes instead of letting the log
+    viewer swallow them, and run 32233162053 decided it -- the just-retired
+    service printed `nyxgpt-api ^[[39mnone^[[0m` with an empty File field, so
+    the column was current and the colour was the whole defect.
+
+    The capture stays as the standing witness rather than being retired with
+    the question: it is what would show brew changing its colourisation, or
+    wrapping a token `brew_services.strip_ansi` does not cover. Advisory, not
+    an assertion -- the plist checks are what pass or fail the step, and they
+    hold either way.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    capture = "brew services list 2>&1 | cat -v"
+    assert capture in run, (
+        "the post-retire `brew services list` capture is gone, so a change in "
+        "how brew colourises its rows would land unseen -- the escapes are "
+        "what `strip_ansi` is guarding against"
+    )
+    reconcile_at = run.index("reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api")
+    assert run.index(capture) > reconcile_at, (
+        "the verbatim capture no longer runs after the first reconcile, so it "
+        "reads the column before the retire it is supposed to measure"
+    )
+
+
+def test_the_rc_keg_is_stamped_so_the_channel_it_detects_is_its_own() -> None:
+    """The candidate keg has to declare a candidate version, or the step lies.
+
+    `ops._native_service_version` reads the installed distribution's metadata
+    to decide which channel's formula an artifact install resolves. The rc
+    tarball vendors `pyproject.toml` verbatim, so an unstamped checkout would
+    put the STABLE version inside the candidate keg -- and the identity step
+    would detect "stable" from inside the candidate's own venv, quietly
+    measuring the same channel twice.
+    """
+    run = _job_run_text(_workflow()["jobs"]["stable-over-candidate"])
+    assert 'version = "3.0.0rc0"' in run, (
+        "the rc build no longer stamps a candidate version into pyproject.toml, "
+        "so the candidate keg's venv declares the stable version"
+    )
+    assert "pyproject.toml.orig" in run, (
+        "the stamp is no longer restored, so every step after it sees a mutated " "checkout"
+    )
+    assert "trap 'cp \"$RUNNER_TEMP/pyproject.toml.orig\" pyproject.toml' EXIT" in run, (
+        "the restore is no longer guarded by a trap: under `set -e` a failed rc "
+        "build skips it, and every later step -- including the failure log dump "
+        "that would explain the build -- reads a mutated version"
+    )
+
+
 @pytest.mark.parametrize("formula", API_FORMULAS + WEB_FORMULAS, ids=lambda p: p.name)
 def test_every_formula_names_the_teardown_before_uninstall(formula: Path) -> None:
     """`brew uninstall` is where the operator is standing when they remove it (#3859).

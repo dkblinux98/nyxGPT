@@ -69,6 +69,21 @@ def _force_macos_native_path(monkeypatch):
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
 
 
+@pytest.fixture(autouse=True)
+def _no_registered_native_services(monkeypatch):
+    """Report an empty machine to the install-identity check, for this whole file.
+
+    Pinned to Darwin above, every `doctor` here reaches that check (#3861),
+    which reads what the service managers actually have registered. These
+    tests stub `_which` truthy for every tool but leave `_run` real, so
+    without this the read shells out to a `brew` the Linux runner does not
+    have. Empty is the right default: none of them is about services left
+    behind by an earlier install -- the ones that are live in
+    tests/unit/test_install_identity.py, which sets its own answer.
+    """
+    monkeypatch.setattr(ops, "_discover_native_services", lambda: [])
+
+
 @pytest.mark.unit
 def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed
@@ -7667,9 +7682,14 @@ def test_stop_brew_service_not_found(monkeypatch):
 
 
 @pytest.mark.unit
-def test_stop_brew_service_success(monkeypatch):
+def test_stop_brew_service_success(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
-    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    # Nothing registered afterwards: no plist under this home, and `launchctl
+    # print` cannot find the job. Both are pinned rather than left to the host,
+    # because "is it still registered?" is now answered from those two facts
+    # and a bare rc-0 stub would answer "loaded" (#3861).
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    _brew_list_stub(monkeypatch, ["nyxgpt-api none"])
     results = ops._stop_brew_service("nyxgpt-api")
     assert results[0].ok is True
     assert "Stopped brew service" in results[0].message
@@ -7701,6 +7721,223 @@ def test_stop_brew_service_exception(monkeypatch):
     results = ops._stop_brew_service("nyxgpt-api")
     assert results[0].ok is False
     assert "OSError" in results[0].details
+
+
+# --- _stop_brew_service: the stop that exits 0 without de-registering (#3861) ---
+#
+# `brew services stop` exits 0 for a service that is registered but not
+# running -- the state a crash-looping keg sits in -- and leaves its
+# LaunchAgent plist in place, so launchd starts it again at the next login.
+# Trusting the exit code reported "Stopped brew service: nyxgpt-api" on a
+# machine where `brew services list` still showed it registered
+# (macos-brew-smoke run 32222041921).
+
+
+def _brew_list_stub(monkeypatch, listings, *, launchd_loaded=False):
+    """Fake `_run` where `brew services list` returns each of `listings` in turn.
+
+    `launchctl print` answers non-zero unless `launchd_loaded` -- "the job is
+    not loaded" is the ordinary case, and it is the *other* half of the
+    registration question the Status column cannot answer (#3861).
+    """
+    remaining = list(listings)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["brew", "services", "list"]:
+            out = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+            return subprocess.CompletedProcess(cmd, 0, stdout=out)
+        if cmd[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(
+                cmd, 0 if launchd_loaded else 1, stderr="Could not find service"
+            )
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+
+@pytest.mark.unit
+def test_stop_brew_service_deregisters_a_service_brew_left_registered(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    la_dir = tmp_path / "Library" / "LaunchAgents"
+    la_dir.mkdir(parents=True)
+    plist = la_dir / "homebrew.mxcl.nyxgpt-api.plist"
+    plist.write_text("<plist/>", encoding="utf-8")
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    booted: list[str] = []
+    monkeypatch.setattr(
+        ops,
+        "_stop_launchagent",
+        lambda label: booted.append(label) or [ops.OpsResult(True, label)],
+    )
+    _brew_list_stub(
+        monkeypatch,
+        [
+            f"nyxgpt-api error 3 runner {plist}",  # after `brew services stop`
+            f"nyxgpt-api error 3 runner {plist}",  # read again to find the plist
+            "nyxgpt-api none",  # after the forced de-registration
+        ],
+    )
+
+    results = ops._stop_brew_service("nyxgpt-api")
+
+    assert all(r.ok for r in results), [r.message for r in results]
+    assert booted == ["homebrew.mxcl.nyxgpt-api"]
+    assert not plist.exists()
+    assert any("de-registered brew service" in r.message for r in results)
+    # The bare "Stopped brew service" claim is never made about a service
+    # that was still registered when brew said it had stopped it.
+    assert [r.message for r in results if r.message == "Stopped brew service: nyxgpt-api"] == []
+
+
+@pytest.mark.unit
+def test_stop_brew_service_reports_failure_when_it_stays_registered(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(ops, "_stop_launchagent", lambda label: [ops.OpsResult(True, label)])
+    # The job is still loaded after the stop and after the escalation, which
+    # is a registration whatever brew's column says -- and the caller must not
+    # be told the port is free.
+    _brew_list_stub(
+        monkeypatch,
+        ["nyxgpt-api error 3 runner ~/Library/LaunchAgents/x.plist"],
+        launchd_loaded=True,
+    )
+
+    results = ops._stop_brew_service("nyxgpt-api")
+
+    assert results[-1].ok is False
+    assert "still registered" in results[-1].message
+    assert "next login" in results[-1].details
+
+
+@pytest.mark.unit
+def test_stop_brew_service_leaves_a_clean_stop_alone(monkeypatch, tmp_path):
+    """A stop that really de-registered reports exactly as it always did."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    boot = MagicMock()
+    monkeypatch.setattr(ops, "_stop_launchagent", boot)
+    _brew_list_stub(monkeypatch, ["nyxgpt-api none\nnyxgpt-web started 501 ~/x.plist"])
+
+    results = ops._stop_brew_service("nyxgpt-api")
+
+    assert [(r.ok, r.message) for r in results] == [(True, "Stopped brew service: nyxgpt-api")]
+    boot.assert_not_called()
+
+
+@pytest.mark.unit
+def test_an_error_column_over_a_missing_plist_is_not_a_registration(monkeypatch, tmp_path):
+    """An `error <code>` row whose plist is gone is not a registration (#3861).
+
+    The observable measured on real runners (`macos-brew-smoke.yml` runs
+    32222041921 and 32228088507): a column-based read reported the service
+    registered while launchd said it was gone -- in the latter, the
+    reconcile's escalation found no plist to remove and no loaded job. Run
+    32233162053 traced that to ANSI-coloured state text rather than to a
+    column outliving the registration, but the mechanism is not what this
+    pins. What it pins is the rule that holds regardless: a state word says
+    whether the service RUNS, and `error` is a state of a *registered* one, so
+    the plist decides. Treating the column as "registered" reported
+    a successful retire as a failure -- the mirror image of trusting `brew
+    services stop`'s exit code, and just as wrong. Nothing will start this
+    service again, so the stop is a stop.
+    """
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    boot = MagicMock()
+    monkeypatch.setattr(ops, "_stop_launchagent", boot)
+    _brew_list_stub(monkeypatch, ["nyxgpt-api error 3 runner /gone/homebrew.mxcl.nyxgpt-api.plist"])
+
+    assert ops._brew_service_is_registered("nyxgpt-api") is False
+    results = ops._stop_brew_service("nyxgpt-api")
+
+    assert [(r.ok, r.message) for r in results] == [(True, "Stopped brew service: nyxgpt-api")]
+    boot.assert_not_called()
+
+
+@pytest.mark.unit
+def test_a_loaded_job_is_a_registration_even_with_no_plist(monkeypatch, tmp_path):
+    """The other half: no file on disk, but launchd is still running the job."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    _brew_list_stub(monkeypatch, ["nyxgpt-api none"], launchd_loaded=True)
+
+    assert ops._brew_service_is_registered("nyxgpt-api") is True
+
+
+@pytest.mark.unit
+def test_registration_is_not_probed_through_launchctl_off_macos(monkeypatch, tmp_path):
+    """`brew services` drives systemd --user on Linux; there is no gui domain."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/home/linuxbrew/.linuxbrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="nyxgpt-api error 3 runner /x.plist")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    assert ops._brew_service_is_registered("nyxgpt-api") is False
+    assert not any(c[:1] == ["launchctl"] for c in calls), calls
+
+
+@pytest.mark.unit
+def test_brew_service_registration_reads_the_state_and_the_plist_brew_named(monkeypatch):
+    """The File column *is* the registration, so it is read rather than guessed.
+
+    `brew services list` pads the status of a crashed service with its exit
+    code (`error  3`), so the file cannot be found by column index -- and the
+    label scheme is brew's to change, so it cannot be derived from the
+    formula name either.
+    """
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=(
+                "Name               Status  User   File\n"
+                "nyxgpt-api         error  3 runner ~/Library/LaunchAgents/"
+                "homebrew.mxcl.nyxgpt-api.plist\n"
+                "nyxgpt-api@3.0.0rc none\n"
+            ),
+        ),
+    )
+
+    state, plist = ops._brew_service_registration("nyxgpt-api")
+    assert state == "error"
+    assert plist is not None and plist.name == "homebrew.mxcl.nyxgpt-api.plist"
+    assert "~" not in str(plist)
+
+    # An unregistered keg names no file, and an unlisted formula is not there.
+    assert ops._brew_service_registration("nyxgpt-api@3.0.0rc") == ("none", None)
+    assert ops._brew_service_registration("nyxgpt-web") == ("none", None)
+
+
+@pytest.mark.unit
+def test_brew_service_registration_without_brew_is_not_registered(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+    assert ops._brew_service_registration("nyxgpt-api") == ("none", None)
+    assert ops._brew_service_is_registered("nyxgpt-api") is False
+
+
+@pytest.mark.unit
+def test_force_deregister_is_a_no_op_off_macos(monkeypatch):
+    """brew services on Linux drive systemd; there is no plist to remove."""
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    assert ops._force_deregister_brew_service("nyxgpt-api") == []
 
 
 # --- _stop_docker_container ---

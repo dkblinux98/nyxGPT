@@ -385,3 +385,124 @@ def test_the_superseded_reconcile_runs_before_the_api_and_web_installs():
     web_at = body.index('("native web service"')
 
     assert mode_at < superseded_at < api_at < web_at
+
+
+# --- ANSI-coloured state text (#3861, review round 3) ------------------------
+
+# What a real runner captured, byte-for-byte. `macos-brew-smoke.yml` run
+# 32233162053 printed `brew services list` through `cat -v` immediately after
+# a retire; the header, the `none` rows and the `error` row below are that
+# output with the component names re-pointed onto this file's fixture machine.
+# Two details are authentic and neither is one a hand-written fixture would
+# invent: the header is bolded, and the reset lands BEFORE the exit code
+# (`\x1b[31merror  \x1b[0m3`), so an unstripped split reads the exit code as
+# `\x1b[0m3` and every later column shifts with it. The `started` rows keep
+# green from the earlier capture in run 32228088507.
+#
+# Every state nyxGPT compares against a literal (`LIVE_STATES`, `state ==
+# "started"`, `state != "none"`) is read out of this, so if the escapes are not
+# stripped at the parser a running service reads as down and a de-registered
+# one reads as live -- in opposite directions, on the same machine.
+_COLOURED = (
+    "\x1b[1mName               Status   User   File\x1b[0m\n"
+    "nyxgpt-api         \x1b[31merror  \x1b[0m3 runner "
+    "~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api.plist\n"
+    "nyxgpt-api@3.0.0rc \x1b[32mstarted\x1b[0m  runner "
+    "~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api@3.0.0rc.plist\n"
+    "nyxgpt-web         \x1b[39mnone\x1b[0m            \n"
+    "nyxgpt-web@3.0.0rc \x1b[32mstarted\x1b[0m  runner "
+    "~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-web@3.0.0rc.plist\n"
+    "selenium-server    \x1b[39mnone\x1b[0m            \n"
+)
+
+
+def test_coloured_states_parse_to_the_bare_state():
+    """The chokepoint: no state reaches a comparison wearing an escape."""
+    snapshot = brew_services.parse_services_list(_COLOURED)
+
+    assert snapshot["nyxgpt-api"] == "error"
+    assert snapshot["nyxgpt-api@3.0.0rc"] == "started"
+    assert snapshot["nyxgpt-web"] == "none"
+    assert snapshot["selenium-server"] == "none"
+    assert not [state for state in snapshot.values() if "\x1b" in state]
+
+
+def test_a_coloured_started_still_wins_the_resolve():
+    """`_rank` prefers a live service by `LIVE_STATES` membership.
+
+    A coloured `started` is in no frozenset, so an unstripped snapshot ranks a
+    serving service level with a dead one and falls through to the
+    versioned-over-unversioned tie-break -- which is why this fixture puts the
+    running service on the *stable* name: that tie-break then resolves the
+    component to the candidate keg that is not running, and `nyxgpt ops
+    restart api` acts on it.
+    """
+    snapshot = brew_services.parse_services_list(
+        "Name               Status\n"
+        "nyxgpt-api         \x1b[32mstarted\x1b[0m\n"
+        "nyxgpt-api@3.0.0rc \x1b[39mnone\x1b[0m\n"
+    )
+
+    assert brew_services.resolve("api", "nyxgpt-api", snapshot) == "nyxgpt-api"
+
+
+def test_a_coloured_none_is_still_dropped_by_registered_only():
+    """`superseded`'s filter is `!= "none"` -- the other direction of the same bug.
+
+    Unstripped, a formula brew reports as having no service registered looks
+    like a registration and `nyxgpt ops install` stops a service that does not
+    exist.
+    """
+    snapshot = brew_services.parse_services_list(_COLOURED)
+
+    assert brew_services.superseded("nyxgpt-web", snapshot, keep="nyxgpt-web@3.0.0rc") == []
+
+
+def test_the_health_probe_is_not_inverted_by_a_coloured_status_column(monkeypatch):
+    """End to end through the real snapshot reader, not a stubbed one.
+
+    `healthy = state == "started"` in `list_component_status` is what
+    `_wait_for_stack_healthy` -- `nyxgpt up`'s exit gate -- rides on, so a
+    coloured column would make `nyxgpt up` burn its whole timeout and exit 2
+    on a healthy machine. That is #3853's symptom arriving by a second route,
+    which is why this goes through `_brew_services_snapshot` rather than
+    around it.
+    """
+    monkeypatch.setattr(self_heal.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: _cp(stdout=_COLOURED if "services" in cmd else ""),
+    )
+    monkeypatch.setattr(self_heal, "_dev_mode_active", lambda: False)
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+
+    by_service = {s.service: s for s in self_heal.list_component_status()}
+
+    assert by_service["api"].healthy is True
+    assert by_service["api"].container == "nyxgpt-api@3.0.0rc"
+    assert by_service["web"].healthy is True
+
+
+def test_the_registration_read_strips_colour_and_keeps_a_spaced_path(monkeypatch):
+    """`_brew_service_registration` parses brew's rows itself, so it strips too.
+
+    And the File column is matched as "the rest of the line from its leading
+    `/` or `~`" rather than as the last whitespace-separated field, so a home
+    directory with a space in it still yields the whole plist path instead of
+    its last word.
+    """
+    row = (
+        "Name       Status  User   File\n"
+        "nyxgpt-api \x1b[31merror 3\x1b[0m  runner "
+        "/Users/dar la/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api.plist\n"
+    )
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops, "_run", lambda *a, **k: _cp(stdout=row))
+
+    state, plist = ops._brew_service_registration("nyxgpt-api")
+
+    assert state == "error"
+    assert plist is not None
+    assert str(plist) == "/Users/dar la/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api.plist"

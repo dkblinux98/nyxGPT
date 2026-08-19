@@ -307,12 +307,22 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
-    # A machine that was on the candidate channel registers its services under
-    # the versioned formula name (#3853). The dev switch has to stop those too:
-    # they hold :8000/:3000 against the dev LaunchAgents and `keep_alive true`
-    # brings them straight back.
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    _record_identity(monkeypatch, install_mode.INSTALL_MODE_ARTIFACT, "brew", "nyxgpt-api")
+    # Both halves of the union, in one test, because this is the machine that
+    # needs both. The marker records the plain names -- what the last install
+    # through `nyxgpt ops` targeted -- while the machine also carries the
+    # versioned services a candidate-channel install registers (#3853), which
+    # no marker here describes. The dev switch has to stop *all four*: each
+    # holds :8000/:3000 against the dev LaunchAgents and `keep_alive true`
+    # brings it straight back. The marker alone would miss the `@3.0.0rc`
+    # pair; discovery alone would miss `nyxgpt-web`, which brew reports as
+    # nothing here at all. `nyxgpt-api` is `stopped` rather than `started`, so
+    # its plist is what makes it a registration (#3861).
+    _register_brew_plist(tmp_path, "nyxgpt-api")
     monkeypatch.setattr(
         ops,
         "_brew_services_snapshot",
@@ -334,18 +344,21 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
 
     assert all(r.ok for r in results), [r.message for r in results]
     assert stopped == [
-        "nyxgpt-api@3.0.0rc",
         "nyxgpt-api",
+        "nyxgpt-web",
+        "nyxgpt-api@3.0.0rc",
         "nyxgpt-web@3.0.0rc",
     ]
     assert not venv.exists()
     assert install_mode.read_install_mode().is_dev is True
 
 
-def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, tmp_path):
+def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, checkout, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
-    install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "co")
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    _record_identity(monkeypatch, install_mode.INSTALL_MODE_DEV, "launchd", "com.nyxgpt.api")
 
     la_dir = tmp_path / "Library" / "LaunchAgents"
     la_dir.mkdir(parents=True)
@@ -361,16 +374,111 @@ def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, tm
     assert install_mode.read_install_mode().is_dev is False
 
 
-def test_reconcile_is_a_no_op_record_when_the_mode_is_unchanged(monkeypatch, tmp_path):
+def _register_brew_plist(home, service):
+    """Put the LaunchAgent plist brew writes for `service` under `home`.
+
+    The plist *is* the registration (#3861): `brew services list`'s Status
+    column reports the last outcome and outlives the file, so a test about a
+    service launchd will start again has to put the file there rather than
+    only name a state.
+    """
+    la_dir = home / "Library" / "LaunchAgents"
+    la_dir.mkdir(parents=True, exist_ok=True)
+    plist = la_dir / f"homebrew.mxcl.{service}.plist"
+    plist.write_text("<plist/>", encoding="utf-8")
+    return plist
+
+
+def _record_identity(monkeypatch, mode, manager, api_service):
+    """Write a marker recording a *known* previous identity.
+
+    Without one the marker reads back as the unknown identity, which #3861
+    makes a deliberate mismatch -- so a test about a specific transition has
+    to say what the machine was, or it is testing the unknown-previous path
+    instead.
+    """
+    web_service = api_service.replace("api", "web")
+    identity = install_mode.InstallIdentity.build(
+        mode=mode,
+        manager=manager,
+        services={"api": api_service, "web": web_service},
+        version="0.0.0",
+        channel=install_mode.CHANNEL_DEV if mode == install_mode.INSTALL_MODE_DEV else "stable",
+    )
+    install_mode.write_install_mode(mode, None, identity=identity)
+    return identity
+
+
+def test_reconcile_retires_nothing_when_the_identity_and_the_machine_both_match(
+    monkeypatch, checkout, tmp_path
+):
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
     monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
     venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
     venv.mkdir(parents=True)
-    with patch.object(ops, "_stop_brew_service") as stop:
+    # Record exactly the identity this run is about to install, which is what
+    # a re-run of the same `nyxgpt up` on an already-installed machine leaves.
+    identity = ops._native_install_identity(dev=False)
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None, identity=identity)
+
+    with (
+        patch.object(ops, "_stop_brew_service") as stop,
+        patch.object(ops, "_brew_services_snapshot", return_value={}),
+    ):
         results = ops._reconcile_install_mode(dev=False)
+
     stop.assert_not_called()
-    # An unchanged mode must not bounce services or rebuild a healthy venv.
+    # An unchanged identity must not bounce services or rebuild a healthy venv.
     assert venv.exists()
+    assert [r.message for r in results if "changing" in r.message] == []
+
+
+def test_reconcile_retires_a_foreign_service_even_when_the_identity_is_unchanged(
+    monkeypatch, checkout, tmp_path
+):
+    """A matching marker is not evidence that the machine matches it (#3861 review).
+
+    The marker records what the last install *targeted*, not what is
+    registered now: a retire that failed, a keg's service started by hand, or
+    an install made outside `nyxgpt ops` all leave a foreign service beside a
+    marker that already names the target. Gating the subtraction on a changed
+    identity made `doctor`'s own remedy -- "re-run `nyxgpt up` ... to retire
+    the ones that are not this install's" -- a no-op in every state doctor
+    can fire in.
+    """
+    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    identity = ops._native_install_identity(dev=False)
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None, identity=identity)
+
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        ops,
+        "_stop_brew_service",
+        lambda name: stopped.append(name) or [ops.OpsResult(True, f"stopped {name}")],
+    )
+    # An older channel's keg, registered and crash-looping, under a marker
+    # that says the current build is the one installed. `error` is not by
+    # itself a registration -- a column-based read reported services launchd
+    # had already forgotten (#3861, runs 32222041921 and 32228088507) -- so
+    # the plist that makes it one is on disk, exactly as it is on a machine
+    # launchd keeps restarting.
+    _register_brew_plist(tmp_path, "nyxgpt-api@2.1.0")
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api@2.1.0": "error", **dict.fromkeys(identity.service_names, "started")},
+    )
+
+    results = ops._reconcile_install_mode(dev=False)
+
+    assert stopped == ["nyxgpt-api@2.1.0"]
+    # Reported as no identity *change* -- because there was none -- while the
+    # foreign service is still retired.
     assert [r.message for r in results if "changing" in r.message] == []
 
 
@@ -663,6 +771,7 @@ def _dev_machine(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_native_install_root", lambda c: tmp_path / "opt" / c)
     monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(ops, "_stop_brew_service", lambda name: [ops.OpsResult(True, name)])
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_emit_results", lambda action, results: True)
     monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))
     monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
@@ -682,7 +791,18 @@ def _dev_machine(monkeypatch, tmp_path):
     la_dir.mkdir(parents=True)
     for label in install_mode.DEV_LAUNCHD_LABELS.values():
         (la_dir / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
-    install_mode.write_install_mode(install_mode.INSTALL_MODE_DEV, tmp_path / "checkout")
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_DEV,
+        tmp_path / "checkout",
+        identity=install_mode.InstallIdentity.build(
+            mode=install_mode.INSTALL_MODE_DEV,
+            manager=install_mode.MANAGER_LAUNCHD,
+            services=dict(install_mode.DEV_LAUNCHD_LABELS),
+            version="0.0.0",
+            channel=install_mode.CHANNEL_DEV,
+            checkout=tmp_path / "checkout",
+        ),
+    )
 
     return venv, la_dir, booted_out
 

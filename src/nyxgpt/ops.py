@@ -68,11 +68,19 @@ from nyxgpt.config import (
     resolve_grafana_admin_password,
 )
 from nyxgpt.install_mode import (
+    CHANNEL_CANDIDATE,
+    CHANNEL_DEV,
+    CHANNEL_STABLE,
     DEV_LAUNCHD_LABELS,
     INSTALL_MODE_ARTIFACT,
     INSTALL_MODE_DEV,
+    MANAGER_BREW,
+    MANAGER_LAUNCHD,
+    MANAGER_SYSTEMD,
+    MANAGER_UNKNOWN,
     SUBSTRATE_KUBERNETES,
     SUBSTRATE_TERRAFORM,
+    InstallIdentity,
     InstallModeState,
     clear_install_mode,
     install_mode_file,
@@ -1233,6 +1241,117 @@ def _resolved_brew_service(component: str, snapshot: Mapping[str, str] | None = 
     return brew_services.resolve(component, NATIVE_BREW_SERVICES[component], snapshot)
 
 
+def _brew_service_registration(name: str) -> tuple[str, Path | None]:
+    """Return `(state, plist)` for brew service `name` from `brew services list`.
+
+    `state` is the Status column (`started`, `error`, `none`, ...), or
+    `"none"` when brew does not list the formula at all. `plist` is the File
+    column -- and that file *is* the registration: a plist sitting in
+    ~/Library/LaunchAgents is what launchd starts again at the next login,
+    which is why "did the stop take?" is a question about this path and not
+    about an exit code (#3861).
+
+    The File column is read rather than derived from the formula name on
+    purpose: brew has used more than one label scheme, and the column is
+    what this machine's brew actually wrote. `_brew_services_snapshot` stays
+    the cheap name->state map its many callers want; this is the one caller
+    that needs the file too.
+
+    This is the one place outside `brew_services.parse_services_list` that
+    reads brew's rows directly, so it strips escapes the same way: brew
+    colours the Status column and the escapes survive a pipe (#3861). The
+    path is matched as "the rest of the line from its leading `/` or `~`"
+    rather than taken as the last whitespace-separated field, so a home
+    directory containing a space still yields the whole plist path.
+    """
+    if _which("brew") is None:
+        return "none", None
+    cp = _run(
+        ["brew", "services", "list"],
+        check=False,
+        expected=True,
+        timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+    )
+    for line in brew_services.strip_ansi(cp.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == name:
+            path_match = re.search(r"([/~].*\.plist)\s*$", line)
+            plist = Path(path_match.group(1)).expanduser() if path_match else None
+            return parts[1], plist
+    return "none", None
+
+
+def _brew_service_will_restart(name: str, plist: Path | None = None) -> bool:
+    """Whether anything will start brew service `name` again.
+
+    The question belongs to launchd, not to brew: a plist in
+    ~/Library/LaunchAgents is what gets loaded at the next login, and a loaded
+    job is what is holding a port right now. Either one means the service is
+    still registered; neither means it is not, whatever brew says about it.
+
+    `brew services list`'s Status column deliberately does **not** decide it.
+    On two real runners a column-based read reported the service registered
+    while launchd said it was gone (`macos-brew-smoke.yml` runs 32222041921
+    and 32228088507 -- in the latter, the escalation below found no plist to
+    remove and no loaded job, and the read still reported it). Run 32233162053
+    then captured brew's rows verbatim and identified the mechanism: every
+    state token is ANSI-wrapped (`ESC[39mnoneESC[0m`), so an unstripped state
+    matches no literal, and `!= "none"` reads a de-registered service as
+    registered. It is *not* that the column goes stale -- the same capture
+    shows the just-retired service reading `none` with an empty File field
+    within the second. The escapes are now stripped at the parser
+    (`brew_services.strip_ansi`).
+
+    The column still does not decide registration here, for a reason that
+    outlives that bug: a state word answers "is it running", and `error`,
+    `stopped` and `scheduled` are all *registered*. Reading it as
+    de-registration is the mirror image of reading `brew services stop`'s exit
+    code as "de-registered" -- both consult a signal that is about something
+    else -- and it cost a *false* failure (a successful retire reported as
+    one) where the exit code cost a false success.
+
+    `plist` may be passed when the caller already has brew's File column, to
+    honour a label scheme other than `homebrew.mxcl.<name>` without paying a
+    second `brew services list`.
+    """
+    for candidate in (plist, _launchagents_dir() / f"homebrew.mxcl.{name}.plist"):
+        if candidate is not None and candidate.exists():
+            return True
+    if not _is_macos() or _which("launchctl") is None:
+        # `brew services` drives systemd --user on Linux, where there is no
+        # plist and no gui domain to ask; the systemd path answers there.
+        return False
+    label = plist.stem if plist is not None else f"homebrew.mxcl.{name}"
+    try:
+        cp = _run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        # A probe that cannot run has not found a registration. Reporting one
+        # here would fail a retire that succeeded.
+        return False
+    return cp.returncode == 0
+
+
+def _brew_service_is_registered(name: str) -> bool:
+    """Whether brew service `name` will still be started by launchd.
+
+    The plist at brew's conventional path settles it without asking brew
+    anything -- a file that exists is a registration, and this is the cheap
+    check. Only when it is absent is brew asked which path it actually chose,
+    since the label scheme is brew's to change; see
+    `_brew_service_will_restart` for why the Status column is not the signal
+    in either case.
+    """
+    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+        return True
+    _state, plist = _brew_service_registration(name)
+    return _brew_service_will_restart(name, plist)
+
+
 def _docker_container_state(name: str) -> str:
     """Return the docker state ('running', 'exited', ...) for a container, or 'absent'."""
     if _which("docker") is None:
@@ -1945,6 +2064,21 @@ def _service_source_tarball(dest_dir: Path, name: str, version: str) -> Path:
     return _download_release_tarball(dest_dir, name, version)
 
 
+def _homebrew_formula_template(name: str) -> Path | None:
+    """The checkout's formula template for `name`, or None on an artifact install.
+
+    Single-sourced because two callers must never disagree about it
+    (#3861): `_install_homebrew_api`/`_web` use its presence to decide
+    between building a local `file://` tap and installing from the published
+    tap, and `_native_install_identity` uses it to name the service that
+    decision will register. If identity detection guessed the routing
+    separately, a reconcile would compare against a formula name no install
+    ever used -- which is the same class of bug as recording no name at all.
+    """
+    template = REPO_ROOT / "homebrew" / f"{name}.rb"
+    return template if template.exists() else None
+
+
 def _remote_tap_formula(name: str, version: str) -> str:
     """The published tap's formula name for `name` at `version`.
 
@@ -2217,8 +2351,8 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     if _which("brew") is None:
         return [OpsResult(False, "Homebrew not found", "")]
 
-    template = REPO_ROOT / "homebrew" / "nyxgpt-api.rb"
-    if not template.exists():
+    template = _homebrew_formula_template("nyxgpt-api")
+    if template is None:
         # No checkout to build a local tap from -- an artifact install
         # (`pip install nyxgpt`) installs the published formula instead of
         # failing on a missing template (#3759).
@@ -2292,8 +2426,8 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     if _which("brew") is None:
         return [OpsResult(False, "Homebrew not found", "")]
 
-    template = REPO_ROOT / "homebrew" / "nyxgpt-web.rb"
-    if not template.exists():
+    template = _homebrew_formula_template("nyxgpt-web")
+    if template is None:
         # Artifact install -- see `_install_homebrew_api` above (#3759).
         return _install_from_remote_tap("nyxgpt-web")
 
@@ -3905,12 +4039,19 @@ def _remove_launchagents(labels: dict[str, str], kind: str) -> list[OpsResult]:
 def _remove_dev_launchagents() -> list[OpsResult]:
     """Unload and delete the dev-mode api/web LaunchAgents (macOS).
 
-    Run when switching *away* from dev mode: a still-loaded dev agent would
-    hold ports 8000/3000 against the brew services the artifact install is
-    about to start, and launchd would keep restarting it (KeepAlive) --
-    exactly the "orphaned install breaks the other path" failure the mode
-    switch has to prevent. `uninstall` runs it too (#3859): a mode switch
-    was only ever one of the situations that leaves these loaded.
+    Teardown only (#3859): `uninstall` clears these because a still-loaded
+    agent with `KeepAlive` outlives the install it belonged to and holds
+    ports 8000/3000 against whatever is installed next.
+
+    It is *not* the mode-switch cleanup any more (#3861). Until then this
+    function and `_stop_artifact_brew_services` were the two hand-written
+    halves of one transition pair (dev <-> artifact), and their existence as
+    a *pair* is what made artifact-to-artifact invisible: there was no third
+    function, so there was no third case. `_retire_previous_identity` now
+    subtracts the target's own services from everything registered, which
+    covers all three directions and any future one; the brew half was
+    deleted with the gate that called it, and this half survives only for
+    the teardown caller it also had.
     """
     return _remove_launchagents(DEV_LAUNCHD_LABELS, "dev-mode")
 
@@ -3925,32 +4066,6 @@ def _remove_support_launchagents() -> list[OpsResult]:
     complete uninstall.
     """
     return _remove_launchagents(SUPPORT_LAUNCHD_LABELS, "log/env")
-
-
-def _stop_artifact_brew_services() -> list[OpsResult]:
-    """Stop the artifact-path brew services for api/web (macOS).
-
-    Run when switching *to* dev mode. The kegs are left installed (switching
-    back is then just another `nyxgpt up`), but their services must not be
-    running: they would hold ports 8000/3000 against the dev LaunchAgents,
-    and `brew services` restarts them at login.
-
-    Every registered variant, not the stable name alone: a machine that was
-    on the candidate channel registers `nyxgpt-api@<line>rc`, and stopping a
-    name it never registered left the dev switch racing a `keep_alive true`
-    service it thought it had stopped (#3853).
-    """
-    if _which("brew") is None:
-        return []
-    snapshot = _brew_services_snapshot()
-    results: list[OpsResult] = []
-    for component in ("api", "web"):
-        for name in brew_services.unique(
-            [_resolved_brew_service(component, snapshot)]
-            + brew_services.variants(NATIVE_BREW_SERVICES[component], snapshot)
-        ):
-            results.extend(_stop_brew_service(name))
-    return results
 
 
 def _target_brew_formula(name: str) -> str:
@@ -3974,17 +4089,25 @@ def _target_brew_formula(name: str) -> str:
 def _stop_superseded_brew_services() -> list[OpsResult]:
     """Stop api/web brew services from a *different* formula than this install's.
 
-    The competing-install half of #3853, and the reason it is a step of its
-    own rather than part of `_reconcile_install_mode`: that function cleans up
-    only when the install **mode** changes (dev <-> artifact), and the owner's
-    machine never changed mode. What changed was the **formula** -- a prior
-    release's `nyxgpt-api` keg from 2.1.0 was still installed, with its
-    service still registered, when the candidate install registered
-    `nyxgpt-api@3.0.0rc` beside it. Homebrew treats a differently-named
-    formula as unrelated software, so nothing removed it, and both formulas
-    declare `keep_alive true`: launchd relaunched the loser of the :8000 race
-    every few seconds, indefinitely, filing `[Errno 48] address already in
-    use` into the error tracker the whole time.
+    The competing-install half of #3853. A prior release's `nyxgpt-api` keg
+    from 2.1.0 was still installed, with its service still registered, when
+    the candidate install registered `nyxgpt-api@3.0.0rc` beside it. Homebrew
+    treats a differently-named formula as unrelated software, so nothing
+    removed it, and both formulas declare `keep_alive true`: launchd
+    relaunched the loser of the :8000 race every few seconds, indefinitely,
+    filing `[Errno 48] address already in use` into the error tracker the
+    whole time.
+
+    It is a step of its own rather than part of `_reconcile_install_mode`
+    because of **when** it runs, not what it knows. Since #3861 the reconcile
+    subtracts the target's own services from everything registered, so it
+    sees this formula change too -- the two overlap by design, and stopping
+    an already-stopped service is a no-op. But the reconcile records the new
+    identity as part of the install, while this runs *ahead* of the api/web
+    install steps, which is where the port has to be free. (Before #3861 the
+    reconcile really was blind here: it gated on the install **mode**
+    changing, and the owner's machine never changed mode. That gate is gone;
+    this step no longer depends on its absence.)
 
     Runs *before* the api/web install steps, so the port is free when the
     service this install owns starts. Only the service is stopped -- the keg
@@ -4008,10 +4131,12 @@ def _stop_superseded_brew_services() -> list[OpsResult]:
     if not _is_macos() or _which("brew") is None:
         return []
     if read_install_mode().is_dev:
-        # Dev mode stops *every* api/web brew service on the mode switch
-        # (`_stop_artifact_brew_services`); there is no "the one this install
-        # owns" to keep, and treating the dev LaunchAgent's port-mate as
-        # superseded here would fight that path.
+        # A dev install owns no brew service at all, so "the one this install
+        # owns" has no referent and `keep` would be a formula name nothing
+        # registered. The `install mode` step above already retired every
+        # api/web brew service for this target (#3861); re-deriving a
+        # superseded set from a keep that does not exist would only invent
+        # findings about services it has just stopped.
         return []
 
     snapshot = _brew_services_snapshot()
@@ -4068,34 +4193,321 @@ def _drop_stale_api_venv() -> list[OpsResult]:
     return [OpsResult(True, "Removed the previous mode's nyxgpt-api venv", str(venv_dir))]
 
 
+def _native_artifact_service_name(name: str) -> str:
+    """The service name the artifact path will register `name` under.
+
+    macOS: brew names a service after its formula, and the formula depends on
+    which tap the install uses -- a checkout builds the local `file://` tap,
+    which always carries the plain `nyxgpt-api`/`nyxgpt-web`, while an
+    artifact install resolves the published tap's channel formula, where a
+    candidate is `nyxgpt-api@3.0.0rc` (`_remote_tap_formula`). Both branches
+    are read from the same predicate the installer branches on
+    (`_homebrew_formula_template`), never re-derived.
+    """
+    if _homebrew_formula_template(name) is not None:
+        return name
+    return _remote_tap_formula(name, _native_service_version())
+
+
+def _native_install_identity(dev: bool) -> InstallIdentity:
+    """The identity `install(dev=...)` is about to put on this machine (#3861).
+
+    Identity detection lives here rather than in `nyxgpt.install_mode`
+    because it needs the tap/formula/version routing above, and that module
+    must stay import-free of `ops` (`ops` imports it, and `self_heal` reads
+    it without importing `ops`).
+
+    The per-OS shapes are genuinely different, and flattening them is what
+    made this defect possible in the first place:
+
+    - **macOS artifact** -- `brew`, with the formula name per component, so
+      `nyxgpt-api` and `nyxgpt-api@3.0.0rc` are different identities.
+    - **macOS dev** -- `launchd`, with the `com.nyxgpt.*` labels.
+    - **Linux (both modes)** -- `systemd`, and the units are the *same*
+      `nyxgpt-api`/`nyxgpt-web` in either mode, so there the manager and the
+      service names do not disambiguate anything and the version/channel
+      fields carry the whole signal.
+    """
+    version = _native_service_version()
+    if dev:
+        services = dict(DEV_LAUNCHD_LABELS) if _is_macos() else _linux_api_web_units()
+        return InstallIdentity.build(
+            mode=INSTALL_MODE_DEV,
+            manager=MANAGER_LAUNCHD if _is_macos() else MANAGER_SYSTEMD,
+            services=services,
+            version=version,
+            channel=CHANNEL_DEV,
+            checkout=_dev_checkout_root(),
+        )
+    channel = CHANNEL_CANDIDATE if "rc" in version else CHANNEL_STABLE
+    if _is_macos():
+        manager = MANAGER_BREW
+        services = {
+            component: _native_artifact_service_name(NATIVE_BREW_SERVICES[component])
+            for component in ("api", "web")
+        }
+    elif _is_linux():
+        manager, services = MANAGER_SYSTEMD, _linux_api_web_units()
+    else:
+        # No native service manager on this OS -- `_unsupported_os_result`
+        # will say so. Record what is still true (mode, version, channel) and
+        # name no services rather than inventing macOS's.
+        manager, services = MANAGER_UNKNOWN, {}
+    return InstallIdentity.build(
+        mode=INSTALL_MODE_ARTIFACT,
+        manager=manager,
+        services=services,
+        version=version,
+        channel=channel,
+    )
+
+
+def _linux_api_web_units() -> dict[str, str]:
+    """The systemd --user units carrying api/web (identical in both modes)."""
+    return {component: NATIVE_SYSTEMD_SERVICES[component] for component in ("api", "web")}
+
+
+def _discover_native_services() -> list[tuple[str, str]]:
+    """`(manager, service name)` for every nyxGPT api/web service on this machine.
+
+    The answer to an *unknown* previous identity (#3861): a machine with no
+    marker, or one written before identities were recorded, may still be
+    carrying services from an install nothing described -- which is exactly
+    the owner's Mac, where two keg pairs and a LaunchAgent set were all
+    registered at once. Reading the managers is the only way to find them.
+
+    macOS only looks like the general case: `brew services list` names every
+    keg's service including a candidate's `nyxgpt-api@3.0.0rc`, and dev's
+    LaunchAgents are found as plists on disk rather than as loaded jobs,
+    because an unloaded plist with `KeepAlive` is reloaded at the next login
+    and is therefore still a live claim on the port. Linux contributes
+    nothing: both modes drive the same two unit names, so anything found
+    there is already the target's own and would be filtered out below.
+    """
+    if not _is_macos():
+        return []
+    found: list[tuple[str, str]] = [
+        (MANAGER_BREW, name)
+        # `nyxgpt-` covers both channels' formulas for both components and
+        # excludes `ollama`, which is the same brew service in every mode.
+        # `brew services list` lists every keg that *has* a service file,
+        # registered or not, so a name here is a candidate and
+        # `_brew_row_is_a_live_registration` decides.
+        for name, state in sorted(_brew_services_snapshot().items())
+        if name.startswith("nyxgpt-") and _brew_row_is_a_live_registration(name, state)
+    ]
+    la_dir = _launchagents_dir()
+    found.extend(
+        (MANAGER_LAUNCHD, label)
+        for label in sorted(DEV_LAUNCHD_LABELS.values())
+        if (la_dir / f"{label}.plist").exists()
+    )
+    return found
+
+
+def _brew_row_is_a_live_registration(name: str, state: str) -> bool:
+    """Whether a `brew services list` row is a live claim on this component's port.
+
+    `started` is decisive on its own: brew is reporting a running job. `none`
+    with no plist at brew's conventional path is decisive the other way --
+    brew says nothing is registered and there is no file for launchd to load,
+    so a keg that is merely installed is not reported as if it were running
+    and nothing is asked of launchd.
+
+    Everything between them (`error <code>`, `stopped`, `scheduled`,
+    `unknown`) is the ambiguity #3861 tripped on, twice and in both
+    directions. `error 3` is the crash-looping keg the owner's Mac had, and it
+    is a *registered* service: the state word answers "is it running", never
+    "will launchd start it again". (A column-based read also reported services
+    launchd had already forgotten, runs 32222041921 and 32228088507; run
+    32233162053 traced that to ANSI-coloured state text rather than to a stale
+    column, and the escapes are stripped at the parser now --
+    `_brew_service_will_restart`.) So those states are settled at the launchd
+    level rather than read off the column:
+    otherwise `doctor` names a service the last `nyxgpt up` retired and
+    prescribes re-running the retire that already worked.
+    """
+    if state == "started":
+        return True
+    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+        return True
+    if state == "none":
+        return False
+    return _brew_service_is_registered(name)
+
+
+def _retire_service(manager: str, name: str) -> list[OpsResult]:
+    """Stop `name` under `manager` so it stops competing for ports 8000/3000.
+
+    Stop and de-register, never uninstall: a keg or unit left in place is
+    harmless once nothing starts it, and removing it is a teardown decision
+    (#3859), not a reconcile one. What is *not* harmless is a registered
+    service -- `brew services` and launchd's `KeepAlive` both restart their
+    job at login, which is how the owner's machine kept two apis fighting
+    over port 8000 for seven hours.
+    """
+    if manager == MANAGER_BREW:
+        return _stop_brew_service(name)
+    if manager == MANAGER_LAUNCHD:
+        results = _stop_launchagent(name)
+        plist = _launchagents_dir() / f"{name}.plist"
+        if plist.exists():
+            try:
+                plist.unlink()
+                results.append(OpsResult(True, f"Removed LaunchAgent: {name}", str(plist)))
+            except OSError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to remove LaunchAgent: {name}",
+                        f"{type(e).__name__}: {e}",
+                    )
+                )
+        return results
+    if manager == MANAGER_SYSTEMD:
+        return _stop_systemd_service(name)
+    return [
+        OpsResult(
+            True,
+            f"Previous install registered {name} under an unknown service manager",
+            "Not stopped -- nyxGPT does not know how. Stop it by hand if it holds a port.",
+        )
+    ]
+
+
+def _retire_previous_identity(
+    previous: InstallIdentity, target: InstallIdentity
+) -> list[OpsResult]:
+    """Stop whatever the previous identity registered that the target will not.
+
+    One rule, not a table of transition pairs (the acceptance criterion is
+    explicit about this, and a pair list is what produced the defect): take
+    everything registered that is not the target's own service, and stop it.
+    That single subtraction covers dev -> artifact (launchd labels retire),
+    artifact -> dev (brew services retire), stable -> candidate
+    (`nyxgpt-api` retires while `nyxgpt-api@3.0.0rc` starts), candidate ->
+    stable, and any future artifact form, because none of them is a special
+    case of anything.
+
+    "Everything registered" is the recorded previous identity **union** what
+    the service managers actually report, and the union is load-bearing
+    rather than belt-and-braces. Each half alone misses a real machine: the
+    marker alone misses an install nothing recorded -- the owner's Mac
+    carried *four* identities and one marker -- and the managers alone miss
+    a previous install whose services are currently stopped but still
+    installed, which `brew services` restarts at the next login. The
+    target's own services are excluded from both halves, so an install never
+    retires what it is about to start.
+
+    Called on every install, including one whose recorded identity already
+    matches the target: the discovery half is the only thing that can see a
+    service no marker ever described, and that population does not appear
+    only on the runs where the identity changed.
+    """
+    keep = set(target.service_names)
+    stale = dict.fromkeys(
+        [(previous.manager, name) for name in previous.service_names] + _discover_native_services()
+    )
+    results: list[OpsResult] = []
+    for manager, name in stale:
+        if name in keep:
+            continue
+        results.extend(_retire_service(manager, name))
+    return results
+
+
 def _reconcile_install_mode(dev: bool) -> list[OpsResult]:
-    """Record the install mode this run targets, clearing the other mode's leftovers.
+    """Record the install identity this run targets, retiring the previous one.
 
     Runs before the api/web install steps so those steps -- and every
-    `restart`/`stop`/`status` afterwards -- see the mode the machine is
-    actually being reconciled to. When the mode is unchanged this is just the
-    record plus a status line; when it changed, the previous mode's running
-    services are stopped first (see `_remove_dev_launchagents` /
-    `_stop_artifact_brew_services`) and the shared api venv is rebuilt from
-    empty (`_drop_stale_api_venv`).
+    `restart`/`stop`/`status` afterwards -- see the identity the machine is
+    actually being reconciled to.
+
+    The gate is a whole-identity comparison, not `previous.mode != target`
+    (#3861). That older gate could not see an artifact-to-artifact switch at
+    all: installing `nyxgpt-api@3.0.0rc` over `nyxgpt-api` 2.1.0 wrote
+    `artifact` where `artifact` already stood, both kegs kept their
+    `keep_alive` services registered on ports 8000/3000, and the resulting
+    crash loop was invisible to every layer that consults this marker. It
+    was not a lax check -- it was the strongest check a two-value model can
+    support, which is why the model changed rather than the condition.
+
+    An *unknown* previous identity (no marker, or one written before #3861)
+    is treated as a possible mismatch and reconciled defensively, never as
+    "the same": reading unknown as unchanged is today's failure exactly.
+
+    What the comparison gates is the *reporting* of the change and the venv
+    rebuild it implies. The retire itself is unconditional, because a marker
+    that matches the target says nothing about what is actually registered
+    beside it -- see the comment on the `_retire_previous_identity` call.
     """
     previous = read_install_mode()
+    target_identity = _native_install_identity(dev)
     target = INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT
     checkout = _dev_checkout_root() if dev else None
     results: list[OpsResult] = []
 
-    if previous.mode != target:
-        results.append(OpsResult(True, f"Install mode changing: {previous.mode} -> {target}", ""))
-        if _is_macos():
-            results.extend(_stop_artifact_brew_services() if dev else _remove_dev_launchagents())
+    differences = previous.identity.differences(target_identity)
+    if differences:
+        results.append(
+            OpsResult(
+                True,
+                f"Install identity changing: {previous.identity.detail()} "
+                f"-> {target_identity.detail()}",
+                "\n".join(differences),
+            )
+        )
+    # Subtracting the target's own services from everything registered runs
+    # on *every* install, not only when the recorded identity changed. A
+    # matching marker is not evidence that the machine matches it: a retire
+    # that failed last time, a keg's service started by hand, an install made
+    # outside `nyxgpt ops` at all -- each leaves a foreign service registered
+    # under a marker that already says "this is what is installed". Gating
+    # the subtraction on `differences` made `doctor`'s own remedy ("re-run
+    # `nyxgpt up` to retire the ones that are not this install's") a no-op in
+    # exactly the states doctor fires in. The cost is one `brew services
+    # list` per install, and on a machine with nothing foreign registered the
+    # loop retires nothing.
+    results.extend(_retire_previous_identity(previous.identity, target_identity))
+    if differences and _identity_change_invalidates_api_venv(previous.identity, target_identity):
         results.extend(_drop_stale_api_venv())
 
     state = InstallModeState(
-        mode=target, checkout=str(checkout) if checkout else None, recorded=True
+        mode=target,
+        checkout=str(checkout) if checkout else None,
+        recorded=True,
+        identity=target_identity,
     )
-    marker = write_install_mode(target, checkout)
+    marker = write_install_mode(target, checkout, identity=target_identity)
     results.append(OpsResult(True, f"Install mode: {state.label()}", str(marker)))
     return results
+
+
+def _identity_change_invalidates_api_venv(
+    previous: InstallIdentity, target: InstallIdentity
+) -> bool:
+    """Whether `~/.nyxGPT/opt/nyxgpt-api/venv` must be rebuilt from empty.
+
+    The venv is shared between modes at one path, so a mode, manager or
+    service-name change can leave the previous install's `nyxgpt`
+    distribution in site-packages racing the new one for the import
+    (`_drop_stale_api_venv`). A *version* change within the same names is not
+    that hazard: it is the ordinary upgrade, which
+    `_install_native_api_systemd` performs by pip-installing the new tarball
+    into that same venv. Rebuilding there would add minutes to every Linux
+    upgrade to remove a race that cannot happen.
+
+    An unknown previous identity gets the rebuild, because it might be any of
+    the above -- and it costs nothing on a machine with no venv, which is
+    every genuinely fresh install.
+    """
+    if not previous.known:
+        return True
+    return (
+        previous.mode != target.mode
+        or previous.manager != target.manager
+        or previous.service_names != target.service_names
+    )
 
 
 def _install_native_api(dev: bool = False) -> list[OpsResult]:
@@ -9119,6 +9531,18 @@ def infra_status() -> dict[str, Any]:
         "checkout": install_mode_state.checkout,
         "label": install_mode_state.label(),
         "components": sorted(DEV_LAUNCHD_LABELS),
+        # Which build, not merely which mode (#3861). `known: false` is the
+        # honest answer for a machine whose marker predates identities -- the
+        # page says so rather than presenting the mode as if it identified
+        # the install.
+        "identity": {
+            "known": install_mode_state.identity.known,
+            "manager": install_mode_state.identity.manager,
+            "services": install_mode_state.identity.service_map,
+            "version": install_mode_state.identity.version,
+            "channel": install_mode_state.identity.channel,
+            "detail": install_mode_state.identity.detail(),
+        },
     }
 
     return {
@@ -9288,17 +9712,20 @@ def install(args) -> int:
         # report it before anything below tries to bind :8000/:3000 against
         # it (#3859, #3853).
         ("orphaned launchd jobs", _report_orphaned_launchd_jobs),
-        # Must run before the api/web steps: it records the mode they (and
-        # every later restart/stop/status) act in, and clears the other
-        # mode's services/venv when switching between them (#3789).
+        # Must run before the api/web steps: it records the install identity
+        # they (and every later restart/stop/status) act in, and retires
+        # every api/web service that identity does not own -- the previous
+        # mode's, the previous formula's, or anything registered that no
+        # marker recorded (#3789, #3861).
         ("install mode", lambda: _reconcile_install_mode(dev)),
-        # Must run before the api/web steps and after the mode is recorded:
-        # it frees :8000/:3000 from a *different formula's* service for the
-        # same component -- the leftover `nyxgpt-api` keg a candidate
+        # Must run before the api/web steps and after the identity is
+        # recorded: it frees :8000/:3000 from a *different formula's* service
+        # for the same component -- the leftover `nyxgpt-api` keg a candidate
         # install has no reason to touch and that launchd keeps restarting
-        # (#3853). `install mode` handles the dev <-> artifact transition;
-        # this handles the stable <-> candidate one, which is not a mode
-        # change and so was handled by nothing.
+        # (#3853). It overlaps `install mode` since #3861 rather than
+        # covering a case that step cannot see; what it adds is a second stop
+        # attempt sited immediately before the install, reported per
+        # component with the variants brew lists.
         ("superseded brew services", _stop_superseded_brew_services),
         # Everything container-backed below (Cassandra, the observability
         # stack) needs a working engine, and requiring the operator to
@@ -10384,6 +10811,45 @@ def _loki_recent_volume_by_logger(
     return volumes, None
 
 
+def _foreign_native_service_issues(identity: InstallIdentity) -> list[str]:
+    """Report api/web services registered by an install this machine did not record.
+
+    The detection half of #3861. The owner's Mac carried four concurrent
+    install identities -- two keg pairs and a LaunchAgent set -- two of them
+    with `keep_alive` services bound to the same ports, and no command in the
+    product could say so: `ops status` reported the *stable* names it
+    expected, `doctor` reported a mode. Comparing what the managers actually
+    have registered against the identity the marker records is what makes
+    that state nameable.
+
+    A machine whose marker predates identities has nothing to compare, so it
+    is reported as that rather than as a clean bill of health.
+    """
+    registered = _discover_native_services()
+    if not identity.known:
+        if registered:
+            names = ", ".join(sorted(f"{name} ({manager})" for manager, name in registered))
+            return [
+                "No install identity is recorded for the native api/web services, so nyxGPT "
+                f"cannot say which build these registered services belong to: {names}. Re-run "
+                "`nyxgpt up` (add --dev from a checkout) to reconcile them and record one."
+            ]
+        return []
+    foreign = sorted(
+        f"{name} ({manager})"
+        for manager, name in registered
+        if name not in set(identity.service_names)
+    )
+    if not foreign:
+        return []
+    return [
+        "Native api/web services are registered that the recorded install does not own: "
+        f"{', '.join(foreign)}. The recorded install is {identity.detail()}. Two installs "
+        "registered on the same ports keep restarting into each other (#3853); re-run "
+        "`nyxgpt up` (add --dev from a checkout) to retire the ones that are not this install's."
+    ]
+
+
 def _terraform_install_mode_issues() -> list[str]:
     """Print the Terraform deployment's install mode and return its issues (#3835).
 
@@ -10507,6 +10973,7 @@ def doctor(_args) -> int:
                 "(run: nyxgpt up --dev)"
             )
 
+    issues += _foreign_native_service_issues(install_mode.identity)
     issues += _terraform_install_mode_issues()
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
@@ -10851,20 +11318,74 @@ def restart(args) -> int:
 # --- Stop/down helpers ---
 
 
-def _stop_brew_service(name: str) -> list[OpsResult]:
-    """Stop Homebrew service `name` via `brew services stop`.
+def _force_deregister_brew_service(name: str) -> list[OpsResult]:
+    """Do by hand the two things a successful `brew services stop` does.
 
-    Returns a single-element list: an OpsResult reporting brew missing, the
-    stop command's success, or its failure with captured stdout/stderr.
+    Unload the job from the GUI domain and delete the LaunchAgent plist brew
+    copied into ~/Library/LaunchAgents, in that order -- booting a job out
+    without removing its plist reinstates it at the next login
+    (`_remove_launchagents` records the same ordering rule).
+
+    Only ever called after a stop that did not de-register (see
+    `_stop_brew_service`), and only on macOS: brew services on Linux drive
+    systemd units, where `launchctl` and ~/Library/LaunchAgents do not exist.
+    """
+    if not _is_macos():
+        return []
+    _, plist = _brew_service_registration(name)
+    if plist is None:
+        # brew named no file (it reports none for an unregistered service),
+        # so fall back to the label brew has used for its service plists.
+        plist = _launchagents_dir() / f"homebrew.mxcl.{name}.plist"
+    results = _stop_launchagent(plist.stem)
+    if plist.exists():
+        try:
+            plist.unlink()
+            results.append(OpsResult(True, f"Removed brew service plist: {name}", str(plist)))
+        except OSError as e:
+            results.append(
+                OpsResult(
+                    False,
+                    f"Failed to remove brew service plist: {name}",
+                    f"{plist}: {type(e).__name__}: {e}",
+                )
+            )
+    return results
+
+
+def _stop_brew_service(name: str) -> list[OpsResult]:
+    """Stop Homebrew service `name` and verify it is really de-registered.
+
+    Not `brew services stop` alone, and not its exit code. What the exit code
+    reports is that brew ran, not that launchd forgot the service: brew exits
+    0 for a service that is registered but not currently running -- the
+    `error` state a crash-looping keg sits in, which is exactly the state the
+    owner's Mac was in (#3853) -- and the exit code says nothing either way
+    about whether the LaunchAgent plist survived. Trusting it is what made
+    #3861's reconcile print `Stopped brew service: nyxgpt-api` on a machine
+    the step then read back as still registered (macos-brew-smoke run
+    32222041921, the evidence job for this very fix).
+
+    So the stop is *checked* -- against launchd, per
+    `_brew_service_is_registered` -- and escalated to
+    `_force_deregister_brew_service` when it did not take, and a service still
+    registered after that is reported as a failure rather than as a stop.
+
+    On every run this project has measured since the observation layer was
+    fixed, plain `brew services stop` **has** de-registered the `error`-state
+    service and the escalation has not fired (runs 32229751239 and
+    32233162053, four stops each across both reconcile directions and the
+    teardown). The escalation is
+    therefore a guard against a state that has not been observed here, not a
+    path known to be needed; the *check* is what is load-bearing, because
+    everything downstream -- the identity reconcile, `ops stop`, teardown --
+    acts on the claim that nothing will start this service again, and that
+    claim has to be verified or say it is not.
     """
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot stop {name}")]
     try:
         cp = _run(["brew", "services", "stop", name], check=False)
-        if cp.returncode == 0:
-            return [OpsResult(True, f"Stopped brew service: {name}")]
-        details = _output_excerpt(cp)
-        return [OpsResult(False, f"Failed to stop brew service: {name}", details.strip())]
     except Exception as e:
         return [
             OpsResult(
@@ -10873,6 +11394,38 @@ def _stop_brew_service(name: str) -> list[OpsResult]:
                 f"{type(e).__name__}: {e}",
             )
         ]
+
+    results: list[OpsResult] = []
+    if cp.returncode != 0:
+        results.append(
+            OpsResult(False, f"Failed to stop brew service: {name}", _output_excerpt(cp).strip())
+        )
+    if not _brew_service_is_registered(name):
+        if cp.returncode == 0:
+            results.append(OpsResult(True, f"Stopped brew service: {name}"))
+        return results
+
+    results.extend(_force_deregister_brew_service(name))
+    if _brew_service_is_registered(name):
+        results.append(
+            OpsResult(
+                False,
+                f"Brew service is still registered after stopping it: {name}",
+                "`brew services stop` exited without de-registering it, and unloading it by "
+                "hand did not either -- launchd will start it again at the next login. "
+                f"Check `brew services list` and ~/Library/LaunchAgents for {name}.",
+            )
+        )
+    else:
+        results.append(
+            OpsResult(
+                True,
+                f"Stopped and de-registered brew service: {name}",
+                "`brew services stop` left it registered (the state a crashed service sits "
+                "in); unloaded the job and removed its LaunchAgent plist.",
+            )
+        )
+    return results
 
 
 def _stop_docker_container(name: str) -> list[OpsResult]:

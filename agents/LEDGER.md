@@ -848,6 +848,114 @@ rather than mechanism, and nothing can enforce them.
   Source: #3862; `scripts/agents/lib/branch_content.py`;
   `scripts/agents/developer_ensure_pr_exists.sh`.
 
+- **D-032** · 2026-08-19 · developer agent (#3861) — **The native install
+  marker records an identity, and reconciliation is a comparison of whole
+  identities — never a list of transition pairs.** `mode` (`artifact`/`dev`)
+  is now one field of an `InstallIdentity` alongside the service **manager**,
+  the **concrete service name per component** (`nyxgpt-api@3.0.0rc`, not
+  `nyxgpt-api`), the **version** and the **channel**. This retires the belief
+  that a mode identifies an install: two artifact installs are indistinguishable
+  by mode, so `_reconcile_install_mode`'s `previous.mode != target` gate saw
+  `artifact` -> `artifact` and reconciled nothing while four install identities
+  accumulated on the owner's Mac, two of them `keep_alive` services fighting
+  over ports 8000/3000. That gate was not lax — it was the strongest check a
+  two-value model can support, which is why the model changed and not the
+  condition. Three consequences a future session must not undo: (a) the two
+  hand-written cleanup halves are **no longer the reconcile path**, replaced by
+  one subtraction (`_retire_previous_identity`: the recorded previous
+  identity's services **union** what the service managers actually report,
+  minus the target's own) — their existence as a *pair* is why there was no
+  third case, and the union is why a fourth one nothing recorded is retired as
+  well. `_stop_artifact_brew_services` is deleted outright;
+  `_remove_dev_launchagents` survives with **one** caller, `uninstall`
+  (#3859's teardown), which it acquired on `v3.0.0` while this change was in
+  review — it is a teardown helper now, not a transition half, and reconcile
+  must not start calling it again;
+  (b) an **unknown** previous identity (pre-#3861 marker, malformed, or
+  absent) is a possible mismatch reconciled defensively against what the
+  service managers actually report, never "the same"; (c) reconcile **stops
+  and de-registers, never uninstalls** — removal is a teardown decision
+  (#3859); (d) **registration is a launchd fact, and neither of brew's two
+  obvious signals reports it.** `brew services stop` exits 0 for a service
+  that is registered but not *running* — the `error` state a crash-looping keg
+  sits in, which is the state the owner's Mac was in — and reports nothing
+  either way about whether the plist survived, so the exit code cannot say
+  whether the stop took (trusting it printed `ok Stopped brew service:
+  nyxgpt-api` over a service the step then read back as registered, run
+  32222041921). **And `brew services list`'s Status column cannot say
+  either**: it answers "is it running", never "will launchd start it again" —
+  `error`, `stopped` and `scheduled` are all states of a *registered* service.
+  On two runs a column-based read also reported a service registered while
+  launchd said it was gone (32222041921, 32228088507 — in the latter the
+  escalation found no plist to remove and no loaded job); the mechanism was
+  left unestablished at the time and is now **measured**, run 32233162053,
+  which printed brew's rows through `cat -v`: every state token is
+  ANSI-wrapped (`ESC[39mnoneESC[0m`), so an unstripped `none` fails
+  `!= "none"` and reads as registered. The competing "the column outlives the
+  registration" explanation is **falsified** by that same capture — the
+  just-retired service reads `none` with an empty File field within the
+  second. Escapes are stripped at the parser now (see (f)). What launchd acts
+  on at the next login is
+  the **plist** in `~/Library/LaunchAgents`, plus whether the job is loaded, so
+  that pair is the test — in `_brew_service_will_restart`, used both to verify
+  a stop (escalate, then fail if it survives) and to decide what
+  `_discover_native_services` reports. `started` is taken on brew's word and
+  `none` with no plist is taken as unregistered; only the states between them
+  need the file. A future session must not "simplify" this back to the column:
+  it would make `doctor` name a service the last `nyxgpt up` retired and
+  prescribe re-running the retire that already worked. Note also that since
+  the check moved onto launchd, plain `brew services stop` has de-registered
+  every time and the escalation has never fired (runs 32229751239,
+  32233162053) — it is a guard, not an observed-necessary path;
+  (e) the subtraction runs on **every**
+  install, not only when the recorded identity differs. A matching marker
+  records what the last install *targeted*, not what is registered now
+  (a failed retire, a hand-started service, an install made outside `nyxgpt
+  ops`), and gating it on `differences` made `doctor`'s own remedy — "re-run
+  `nyxgpt up` … to retire the ones that are not this install's" — a no-op in
+  every state `doctor` can fire in. What the comparison gates is the
+  *reporting* of the change and the api-venv rebuild; (f) **every literal
+  comparison against a brew state goes through
+  `brew_services.parse_services_list`, which strips ANSI escapes first.**
+  `brew services list` colourises the Status column and the escapes survive a
+  pipe (`nyxgpt-api ESC[39mnoneESC[0m` and `nyxgpt-api@3.0.0rc ESC[31merror
+  ESC[0m3` were captured verbatim through `cat -v` in run 32233162053, and
+  `nyxgpt-api -> ESC[31merror` through `awk` in 32228088507), so a coloured
+  token compares equal to nothing — `state == "started"`
+  is False for a running service and `state != "none"` is True for one brew is
+  not running. That inverts `self_heal`'s `healthy = state == "started"`,
+  which `nyxgpt up`'s exit gate rides on, plus `LIVE_STATES`, `superseded`'s
+  `registered_only` filter and the ollama/`native_running` reads. The guard is
+  at the parser, not at each reader: readers receive a state they did not
+  fetch and cannot know whether it was coloured, so a per-site guard would
+  have to be re-added for every reader added later. Scope note: this is the
+  runtime half of #3853, and it now sits **beside** that issue's packaging
+  half rather than waiting on it — **D-030** landed on `v3.0.0` while this was
+  in review, declaring `conflicts_with` in both directions and paying
+  **D-026**'s debt. The two are defence in depth, not duplicates, and neither
+  makes the other removable: packaging refuses the *second install* on a
+  machine whose brew is up to date with both formulas, while this retires
+  what is already registered — on every machine that reached the bad state
+  before that declaration shipped, through a hand-installed keg, or through a
+  local `file://` tap whose checked-in formulas that script never stamps.
+  `_stop_superseded_brew_services` (D-030's install step) overlaps this
+  subtraction by design since #3861 rather than covering a case reconcile
+  cannot see; what it adds is a second stop attempt sited immediately before
+  the api/web installs. The fact that keeps the two from collapsing into one
+  was **measured** while merging them (run 32227410541): Homebrew checks
+  `conflicts_with` against the **linked** keg, not the installed one — its own
+  refusal says "Please `brew unlink nyxgpt-api@3.0.0rc` before continuing".
+  So D-030's declaration stops a second *linked* install; two kegs on one
+  machine stay reachable, and reconcile is what has to handle them. That is
+  also how the evidence job now stages the two-keg state, which no edit to the
+  tap could do safely — the declaration spans two lines, so a line-wise strip
+  breaks the formula. Extends **D-009**, whose "installing
+  either mode over the other stops the other's services" now reads as the
+  identity comparison's special case.
+  Source: #3861; `src/nyxgpt/install_mode.py` (`InstallIdentity`);
+  `tests/unit/test_install_identity.py`;
+  `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
