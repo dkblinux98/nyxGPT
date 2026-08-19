@@ -546,6 +546,20 @@ rather than mechanism, and nothing can enforce them.
   and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
   Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
 
+- **D-023** · 2026-08-18 · developer-agent — **A canary rollout gate reads
+  the canary track's own Pods, never the serving process's counters.** The
+  metrics behind `evaluate`/`promote`/`status` come from the Pods labelled
+  `track=canary`, read through the API server's Pod proxy, with `/health`
+  and `/metrics` requests excluded — kubelet probes alone would otherwise
+  carry an idle canary past `min_requests_for_evaluation` within minutes.
+  Two consequences that look like restrictions and are the point: `promote`
+  refuses a canary track measurably at zero traffic (`--force` for an idle
+  cluster), and `--component web` is reported as *not measurable* rather
+  than being given a number belonging to something else, because Next.js
+  Pods export no `/metrics`. Do not "restore" a process-wide metrics
+  snapshot here: it is the defect, not a fallback.
+  Source: #3829; `src/nyxgpt/canary.py`; `docs/kubernetes.md` §Metrics source.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

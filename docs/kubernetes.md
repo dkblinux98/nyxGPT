@@ -807,9 +807,12 @@ splitting:
    nyxgpt canary deploy
    ```
 2. **Gate**: start the rollout at a small initial traffic weight, then watch
-   live error-rate/p95-latency metrics (from `/api/v1/metrics`) against the
+   the **canary track's own** error-rate/p95-latency metrics (read from the
+   Pods labelled `track=canary`, see [Metrics
+   source](#metrics-source-the-canary-tracks-own-pods-3829)) against the
    configured thresholds -- `evaluate` automatically rolls the canary back
-   if either is breached:
+   if either is breached, and holds rather than passing while the canary has
+   taken too little traffic to judge:
    ```bash
    nyxgpt canary start --weight 10
    nyxgpt canary status
@@ -829,7 +832,10 @@ splitting:
    runs the promoted version at 100% traffic, and the cycle is complete.
    `promote` refuses to
    shift more traffic to the canary at every step (including this final
-   one) unless the canary is currently healthy, and if stable's rollout
+   one) unless the canary is currently healthy **and has actually served
+   requests** (`--force` overrides the traffic half on an idle cluster --
+   see [Metrics
+   source](#metrics-source-the-canary-tracks-own-pods-3829)), and if stable's rollout
    onto the new version fails, canary is left running untouched so you can
    retry or roll back.
 4. If something is wrong at any point, cut all traffic back to stable
@@ -844,11 +850,12 @@ splitting:
 ### CLI reference
 
 ```bash
-nyxgpt canary status                 # rollout progress, stable/canary health + version, live metrics
+nyxgpt canary status                 # rollout progress, stable/canary health + version, per-track metrics
 nyxgpt canary deploy                 # build a versioned image and deploy it to canary only
 nyxgpt canary start [--weight N]     # start a rollout at N% canary traffic (default: 10)
-nyxgpt canary evaluate               # check metrics vs thresholds; auto-rollback on regression
+nyxgpt canary evaluate               # check the canary track's metrics vs thresholds; auto-rollback on regression
 nyxgpt canary promote [--step N]     # add N percentage points to canary's traffic share (100% promotes)
+                       [--force]     # ... even though the canary track has served no traffic (idle cluster)
 nyxgpt canary rollback               # cut all traffic back to the stable deployment
 ```
 
@@ -908,16 +915,54 @@ has an `api`/`web` tab (#3419): `GET` takes `component` as a query param,
 the `POST` actions take it as a JSON body field (`{"component": "web"}`);
 both default to `api` when omitted.
 
-### Metrics source
+### Metrics source: the canary track's own Pods (#3829)
 
-`evaluate` reads the same process-wide `ResourceMonitor` that backs
-`/api/v1/metrics` (error rate over the last 1000 requests, HTTP 5xx; p95
-latency) rather than a dedicated Prometheus scrape, since per-pod Prometheus
-metrics haven't landed yet. This means `evaluate`'s error rate/latency
-reflect whichever `nyxgpt-api` process the dashboard/CLI talks to, not a
-canary-Pod-specific view -- true for both the `api` and `web` components,
-since it's always the api backend process serving the request that's
-measured, regardless of which component's canary is being evaluated.
+`evaluate`, `promote` and `status` read the metrics of the Pods labelled
+`track=canary` — not the counters of whichever `nyxgpt-api` process is
+serving the dashboard/CLI request. Each track's Pods are listed by that
+label (both Deployments' Pods share one `app` label and are told apart by
+`track`, see `k8s/deployment-stable.yaml` / `deployment-canary.yaml`), and
+each Pod's own Prometheus `/metrics` is read through the API server's Pod
+proxy — so no Prometheus server is required and the gate works whether or
+not the observability layer is installed. It needs `get` on `pods/proxy`,
+granted to the `nyxgpt-api` ServiceAccount in `k8s/rbac.yaml`.
+
+What this changes in practice:
+
+- **A canary that has taken no traffic can never be reported "safe to
+  promote".** When the canary track has no ready Pods, no readable
+  `/metrics`, or fewer than `min_requests_for_evaluation` requests,
+  `evaluate` holds and says which of those it is. Before #3829 it compared
+  the *serving* Pod's request count against the threshold, so a canary at
+  0/1 replicas with zero Service endpoints was green-lit on a stable Pod's
+  hundreds of requests, and the gate could not fail.
+- **`/health` and `/metrics` requests are excluded** from the judged
+  traffic. The kubelet probes `/health` every 10s and Prometheus (plus this
+  gate) reads `/metrics`, so counting them would let an idle canary cross
+  `min_requests_for_evaluation` on automated traffic alone within minutes.
+- **Auto-rollback triggers on the canary's own regression**, and load or
+  errors on the stable track neither provoke nor mask one.
+- **`promote` refuses a canary track that has measurably served no
+  traffic** — a build no request has reached has not been canaried, however
+  healthy its Pods look. On a cluster that is simply idle, `nyxgpt canary
+  promote --force` (or `{"force": true}` on `POST /api/v1/canary/promote`,
+  or the Canary page's "Promote despite no canary traffic" checkbox)
+  proceeds anyway and says so in the result.
+- **`--component web` is not gated on traffic**: Next.js Pods export no
+  `/metrics`, so web canary traffic is not measurable. `evaluate` says that
+  plainly instead of reporting a number belonging to something else, and
+  `promote` proceeds on Pod health with the caveat stated in its result.
+
+`nyxgpt canary status` and `/admin/canary` show the canary track's vitals —
+the exact input `evaluate` gates on — and, while a rollout is in progress,
+the stable track's for contrast. Each carries the Pods it was measured from,
+or the reason it could not be measured. (The stable track is only measured
+during a rollout: it costs one Pod-proxy read per stable Pod on every status
+poll, which is not worth spending with no canary to compare against.)
+
+Executed verification for all of the above runs on a real kind cluster in
+`scripts/canary-track-metrics-smoke.sh`
+(`.github/workflows/canary-track-metrics-smoke.yml`).
 
 ### Canary logging & metrics
 

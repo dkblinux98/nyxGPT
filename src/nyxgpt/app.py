@@ -2096,10 +2096,16 @@ def _canary_failure_detail(result: canary_module.CanaryResult) -> str:
 @api.get("/canary/status")
 def canary_status(request: Request, component: str = "api") -> dict[str, Any]:
     """Return canary rollout status: active flag, traffic weight, stable/canary health/version,
-    the currently detected deployment mode, and a metrics snapshot.
+    the currently detected deployment mode, and per-track metrics.
 
     `component` (query param, default `api`) selects which component's pair
     to report on -- `api` or `web` (see canary.py's `COMPONENTS`, #3419).
+
+    `metrics` is the canary track's own vitals (`attributable` false with a
+    `reason` when they cannot be tied to that track) and `stable_metrics` the
+    stable track's, measured only while a rollout is active -- neither is
+    this process's own request counters, which belong to whichever Pod
+    served this call and say nothing about either track (#3829).
     """
     cfg = _req_cfg(request)
     return canary_module.status(get_canary_namespace(cfg), component=component)
@@ -2150,13 +2156,17 @@ def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -
 
 @api.post("/canary/evaluate")
 def canary_evaluate(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Compare live error-rate/latency metrics against configured thresholds.
+    """Compare the CANARY TRACK's live error-rate/latency against configured thresholds.
 
-    Body: `{"component": str}` (default `api`, #3419). Automatically rolls
-    back the canary if either threshold is breached. Returns `409` if no
-    rollout is active. Returns ok=True with an "insufficient data" note
-    (rather than failing) when too few requests have been observed yet to
-    judge the canary. Records a `canary.evaluate` admin activity event.
+    Body: `{"component": str}` (default `api`, #3419). The metrics are read
+    from the Pods labelled `track=canary`, never from this process's own
+    counters (#3829), so a canary with no scheduled Pods cannot be green-lit
+    on the vitals of the Pod serving this request. Automatically rolls back
+    the canary if either threshold is breached. Returns `409` if no rollout
+    is active. Returns ok=True with an "insufficient data"/"cannot evaluate"
+    note (rather than failing) when the canary track's traffic cannot be
+    attributed or too few of its requests have been observed yet to judge
+    it. Records a `canary.evaluate` admin activity event.
     """
     cfg = _req_cfg(request)
     component = payload.get("component", "api")
@@ -2177,10 +2187,13 @@ def canary_evaluate(request: Request, payload: dict[str, Any] = Body(default={})
 def canary_promote(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Increase the canary's traffic share by `step_percent`, finalizing at 100%.
 
-    Body: `{"step_percent": int, "component": str}` (step defaults to the
-    configured `canary_step_percent` when omitted; component default `api`,
-    #3419). Returns `409` if no rollout is active or the scale operation
-    fails. Records a `canary.promote` admin activity event on success.
+    Body: `{"step_percent": int, "component": str, "force": bool}` (step
+    defaults to the configured `canary_step_percent` when omitted; component
+    default `api`, #3419). Returns `409` if no rollout is active, the canary
+    track is unhealthy, the scale operation fails, or the canary track has
+    measurably served no traffic -- a build no request reached has not been
+    canaried (#3829); `force: true` promotes anyway, for an idle cluster.
+    Records a `canary.promote` admin activity event on success.
     """
     cfg = _req_cfg(request)
     step_percent = payload.get("step_percent")
@@ -2192,6 +2205,7 @@ def canary_promote(request: Request, payload: dict[str, Any] = Body(default={}))
         ),
         total_replicas=get_canary_total_replicas(cfg),
         component=component,
+        force=bool(payload.get("force", False)),
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=_canary_failure_detail(result))
