@@ -1830,6 +1830,22 @@ def _print_status_summary(status: dict[str, Any]) -> None:
     _print_row("Region", status["region"] or "unknown")
     _print_row("Public IP", status["host"] or "unknown")
     _print_row("Profiles", ", ".join(status["profiles"]) or "none (core stack only)")
+    # #3956. "unknown" rather than "native" when nothing was recorded: a
+    # deploy from before the flag existed is not a claim about what the box is
+    # running, and D-018's rule is that a cloud status surface says *unknown*
+    # rather than an answer nothing checked.
+    substrate = status.get("substrate") or ""
+    if substrate == SUBSTRATE_KUBERNETES:
+        _print_row("Substrate", "single-node k3s cluster on the instance (k8s/*.yaml)")
+        _print_row("Canary", commands["canary"])
+    elif substrate == SUBSTRATE_NATIVE:
+        _print_row(
+            "Substrate",
+            f"native services on the instance -- {commands['deploy_kubernetes']} for a "
+            "cluster (enables canary rollout)",
+        )
+    else:
+        _print_row("Substrate", "unknown -- this deploy predates the record of it")
 
     access = infra.get("access_model") or {}
     if access.get("open_ports"):

@@ -53,6 +53,7 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
 | Docker / Compose | `ghcr.io/dkblinux98/nyxgpt-api`, `…/nyxgpt-web` | `pip install nyxgpt` | `nyxgpt up`, `nyxgpt ops observability` | `nyxgpt down` | **Gap** — see below |
 | Kubernetes | PyPI wheel + the `nyxgpt-api`/`nyxgpt-web` release tarballs | `pip install nyxgpt` | `nyxgpt ops install --kubernetes --local` | `nyxgpt ops down --kubernetes` | **Verified in CI** (`k8s-artifact-smoke.yml`) |
 | AWS EC2 (private access path) | PyPI wheel, workstation and instance | `pip install nyxgpt`<br>`nyxgpt cloud credentials-setup` | `nyxgpt cloud deploy`, `nyxgpt cloud tunnel` | `nyxgpt cloud destroy --yes` | Owner acceptance — CI has no billable AWS account |
+| AWS EC2 on Kubernetes (single-node k3s) | As above, plus the `nyxgpt-api`/`nyxgpt-web` release tarballs built into images on the instance | `pip install nyxgpt`<br>`nyxgpt cloud credentials-setup` | `nyxgpt cloud deploy --kubernetes`, `nyxgpt cloud tunnel`, `nyxgpt cloud canary` | `nyxgpt cloud destroy --yes` | Cluster bootstrap **verified in CI** (`k3s-cloud-smoke.yml`); the AWS half is owner acceptance, same as the row above |
 
 ### Evidence
 
@@ -244,6 +245,12 @@ nyxgpt up && nyxgpt ops status && nyxgpt down
 pip install nyxgpt
 nyxgpt ops install --kubernetes --local
 nyxgpt ops status && nyxgpt ops down --kubernetes
+
+# AWS EC2 on Kubernetes (single-node k3s installed on the instance)
+pip install nyxgpt
+nyxgpt cloud deploy --kubernetes
+nyxgpt cloud status && nyxgpt cloud canary status
+nyxgpt cloud destroy --yes
 ```
 
 Compose cannot be accepted from a clean machine until the gap above closes;

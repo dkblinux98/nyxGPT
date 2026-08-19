@@ -3171,9 +3171,22 @@ def cli(argv: list[str] | None = None) -> int:
     )
     _add_publish_arguments(release_rc, channelled=False)
 
-    # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
-    # the sole deployment model since #3409 retired blue/green in favor of it)
-    canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
+    # Add canary command (weighted-traffic canary rollout against the cluster
+    # kubectl's current context points at -- the sole deployment model since
+    # #3409 retired blue/green in favor of it).
+    #
+    # "Local" here means "the cluster this machine can reach", not "a cluster
+    # nyxGPT can only ever run on a workstation": since #3956 the same
+    # subcommands run against an AWS deployment through `nyxgpt cloud canary`,
+    # which invokes this command *on the instance*, where the single-node k3s
+    # cluster `nyxgpt cloud deploy --kubernetes` installed is the local one.
+    canary_p = sub.add_parser(
+        "canary",
+        help=(
+            "Canary deployment on the cluster this machine reaches "
+            "(kind/minikube/k3s/...) -- `nyxgpt cloud canary` for an AWS deployment"
+        ),
+    )
     canary_sub = canary_p.add_subparsers(dest="canary_cmd", required=True)
 
     # --component is shared by every canary subcommand (default "api"; "web" as of

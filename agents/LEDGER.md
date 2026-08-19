@@ -956,6 +956,58 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_install_identity.py`;
   `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
 
+- **D-033** · 2026-08-19 · developer agent (#3956) — **A decision record is a
+  requirement even where no issue transcribed it, and "the cloud target" is a
+  *place the existing install mode runs*, not a second install mode.**
+  `DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506, owner-approved 2026-08-04) chose
+  EC2 single-box **with the `k8s/*.yaml` manifests optionally layered on a
+  single-node k3s cluster for canary** — the question put to the owner was EC2
+  vs EKS, i.e. *how* to host Kubernetes on the cloud target. #3513's
+  acceptance criteria never mentioned k3s, Kubernetes or canary, so what
+  shipped had no `--kubernetes` flag and canary rollout was unavailable on the
+  cloud target entirely: the capability the substrate was being chosen *for*.
+  The correction that generalises is the reading rule, not the flag — when a
+  decision record and the issue implementing it disagree, the record is the
+  higher authority and the gap is a spec-to-issue transcription failure, which
+  is where the retrospective should count it rather than as a developer miss.
+
+  Two things a future session would otherwise re-derive wrongly, both settled
+  by measurement rather than by preference:
+
+  (a) *The apiserver binds the node's **private** address, not loopback.* The
+  obvious reading of "#3503 exposes nothing but TCP 22" is `--bind-address
+  127.0.0.1`, and it is wrong: k3s builds the in-cluster `kubernetes` Service
+  endpoint from the advertise address, so pinned to loopback every Pod that
+  talks to the API server dials its own loopback. k3s's *default* is equally
+  wrong in the other direction (0.0.0.0 is the instance's public NIC, refused
+  by the security group but listening). The private address is the only
+  correct answer, and `--tls-san` plus a kubeconfig rewrite are what make it
+  usable — k3s writes `server: https://127.0.0.1:6443` regardless of
+  `--bind-address`.
+
+  (b) *`--disable=traefik --disable=servicelb`, but **never**
+  `--disable=local-storage`.* The first two are the ingress controller and the
+  `Service: LoadBalancer` implementation #3506's premise says the manifests
+  need neither of. The third looks like more of the same trimming and is a
+  trap: the Cassandra and Ollama StatefulSets declare `volumeClaimTemplates`
+  with no `storageClassName`, so they bind through the cluster's default
+  StorageClass, which on k3s is `local-path` — disabling it leaves both Pods
+  Pending on unbound PVCs, which reads as a capacity problem and is not one.
+
+  What the change actually does is not recorded here — it is enforced by
+  `tests/unit/test_cloud_deploy_kubernetes.py`,
+  `tests/unit/test_k3s_image_import.py` and
+  `.github/workflows/k3s-cloud-smoke.yml`, which executes the deploy's own
+  bootstrap text on a real cluster, per the verification retirement. Related:
+  **D-023** (canary reads the canary track's own Pods) is what makes the
+  cloud canary surface meaningful; **D-017** is why `nyxgpt cloud canary` is a
+  CLI command and the dashboard only *reports* which substrate is running.
+  (Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3956; `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md`;
+  #3513 (the issue that under-specified it); `docs/cloud.md`
+  §Kubernetes on the instance.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
