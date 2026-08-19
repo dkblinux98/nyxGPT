@@ -397,6 +397,22 @@ def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     state = _state()
     parts = route.strip("/").split("/")
 
+    # PATCH repos/{o}/{r}/issues/{n} with assignees[] REPLACES the list --
+    # the only sanctioned way to assign, since an issue carries exactly one
+    # assignee. Must be answered before the plain issue-read branch below.
+    if len(parts) == 5 and parts[3] == "issues" and method == "PATCH":
+        replacement = [v for k, v in params.items() if k.startswith("assignees")]
+        # `-F "assignees[]="` sends one EMPTY login, not a clear -- the
+        # distinction the re-fire depends on, so the stub keeps it rather
+        # than smoothing it over. A real clear arrives as `{"assignees":[]}`
+        # through --input, which reaches here as no assignees param at all.
+        replacement = [login for login in replacement if login != ""]
+        if replacement or any(k.startswith("assignees") for k in params):
+            state["assignees"] = replacement
+            _log("assignees.log", "=" + ",".join(replacement))
+            _save(state)
+            _emit(_issue_payload(state), jq_filter)
+
     if len(parts) >= 6 and parts[3] == "issues" and parts[5] == "assignees":
         for login in [v for k, v in params.items() if k.startswith("assignees")]:
             if method == "POST" and login not in state["assignees"]:
