@@ -50,12 +50,53 @@ services:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ${HOME}/.nyxGPT/volumes/ollama:/root/.ollama
+    # The models a chat message needs, mirroring the Kubernetes deployment's
+    # postStart+readinessProbe pair (k8s/statefulset-ollama.yaml) and the
+    # native install's `required models` step (#3824). Derived from
+    # ~/.nyxGPT/config.ini's `[nyxgpt] default_model` / `[rag]
+    # embedding_model` by `nyxgpt ops env-sync` (which every `nyxgpt ops
+    # install` runs), so changing the configured model changes what this
+    # pulls; the literals here are only the fallback for a machine that has
+    # never run env-sync. Both are pulled even with RAG off: `rag_enabled` is
+    # a per-session toggle, and turning it on must not stall on a download.
+    environment:
+      NYXGPT_DEFAULT_MODEL: ${NYXGPT_DEFAULT_MODEL:-qwen3:0.6b}
+      NYXGPT_EMBEDDING_MODEL: ${NYXGPT_EMBEDDING_MODEL:-nomic-embed-text}
+    # `$$` is Compose's escape for a literal `$` -- these are shell variables
+    # read inside the container, not values Compose should interpolate.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /bin/ollama serve &
+        server=$$!
+        # PID 1 here is this shell, so `docker stop` / `nyxgpt ops stop ollama`
+        # delivers SIGTERM to it and not to the server. Forward it, or every
+        # stop would be a 10s wait followed by SIGKILL on a server holding an
+        # open model store.
+        trap 'kill -TERM $$server 2>/dev/null' TERM INT
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        for model in "$$NYXGPT_DEFAULT_MODEL" "$$NYXGPT_EMBEDDING_MODEL"; do
+          [ -n "$$model" ] || continue
+          ollama show "$$model" >/dev/null 2>&1 || ollama pull "$$model" || true
+        done
+        wait $$server
     healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      # Healthy means "can serve a chat with the configured model, and an
+      # embedding with the configured embedding model", not merely "the server
+      # answers": `api` waits on `service_healthy` below, so this is what stops
+      # the stack reporting itself up while a required model is absent (#3824).
+      test:
+        - CMD-SHELL
+        - >-
+          ollama show "$$NYXGPT_DEFAULT_MODEL" >/dev/null 2>&1 &&
+          ollama show "$$NYXGPT_EMBEDDING_MODEL" >/dev/null 2>&1
       interval: 10s
-      timeout: 5s
+      timeout: 10s
+      # A cold pull of both models over a slow link can take several minutes;
+      # `start_period` failures don't count against `retries`, so this waits
+      # out the download instead of marking the container unhealthy mid-pull.
       retries: 10
-      start_period: 30s
+      start_period: 600s
 
   cassandra:
     # Keep this pin identical to terraform/main.tf's docker_image.cassandra,

@@ -43,7 +43,7 @@ import httpx
 from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
-from nyxgpt import release_tarball, restart_state, self_heal, tracing
+from nyxgpt import model_bootstrap, release_tarball, restart_state, self_heal, tracing
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     get_error_tracking_config,
@@ -3951,6 +3951,67 @@ def _ensure_native_ollama_service() -> list[OpsResult]:
     return _unsupported_os_result("native ollama service")
 
 
+def _ensure_required_models(
+    base_url: str | None = None, *, wait_for_server_s: float = 180.0
+) -> list[OpsResult]:
+    """Pull the configured chat and embedding models into Ollama (#3824).
+
+    Until this ran, `nyxgpt ops install` reported every service healthy on a
+    machine whose Ollama had never downloaded a model, and the user's first
+    chat message failed. The models come from configuration -- `[nyxgpt]
+    default_model` and `[rag] embedding_model`, resolved by
+    `nyxgpt.model_bootstrap.required_models` -- not from literals here, so
+    pointing the config at a different model changes what the install pulls.
+
+    Both models, always: RAG is a per-session toggle, so "RAG is off" is not a
+    reason to leave the embedding model unpulled and make the first RAG-enabled
+    message block on a download.
+
+    Unconditional by design: there is no flag to skip it. An install already
+    needs network egress for the CLI, the service tarballs and Ollama's own
+    installer, so a skip flag would only create a supported way for this
+    command to report success while leaving chat broken.
+
+    Idempotent: a model already in the Ollama store is reported as such and
+    nothing is downloaded, so a re-install over a warm machine adds one
+    `/api/tags` request.
+    """
+    outcomes = model_bootstrap.ensure_required_models(
+        base_url=base_url, wait_for_server_s=wait_for_server_s
+    )
+    if not outcomes:
+        return [
+            OpsResult(
+                True,
+                "Skipped required-model pull (no models configured)",
+                "Set [nyxgpt] default_model in ~/.nyxGPT/config.ini.",
+            )
+        ]
+    results: list[OpsResult] = []
+    for outcome in outcomes:
+        model = outcome.model
+        if not outcome.ok:
+            results.append(
+                OpsResult(
+                    False,
+                    f"Required {model.role} model '{model.name}' is not installed",
+                    outcome.detail
+                    + "\nThe stack cannot serve "
+                    + ("chat" if model.role == model_bootstrap.CHAT_ROLE else "RAG")
+                    + " without it -- fix the cause and re-run `nyxgpt ops install`.",
+                )
+            )
+        elif outcome.already_present:
+            results.append(
+                OpsResult(True, f"{model.role.capitalize()} model present", outcome.detail)
+            )
+        else:
+            results.append(
+                OpsResult(True, f"Pulled {model.role} model '{model.name}'", outcome.detail)
+            )
+    return results
+
+
 def _install_cassandra_log_follower_service() -> list[OpsResult]:
     """Install the Cassandra log-follower agent via the OS-appropriate mechanism."""
     if _is_macos():
@@ -5878,6 +5939,12 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
         # the native services' (#3835).
         ("terraform install mode", lambda: _record_terraform_install_mode(dev, images)),
         ("terraform init/plan/apply", lambda: _terraform_init_plan_apply(images, dev)),
+        # Must run after apply (the ollama container has to exist) and before
+        # the stack is called up: `terraform apply` returns as soon as the
+        # container is created, so the pull waits for the server to answer on
+        # the host-published port first. Same required models, same config
+        # keys, as every other run mode (#3824).
+        ("required models", _ensure_required_models),
         # Must run before the observability stack starts: Grafana's Compose
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
@@ -8987,6 +9054,11 @@ def install(args) -> int:
         ("native api service", lambda: _install_native_api(dev=dev)),
         ("native web service", lambda: _install_native_web(dev=dev)),
         ("ollama service", _ensure_native_ollama_service),
+        # Must run after the ollama service step: it pulls into the server
+        # that step just started. Without it the install reported every
+        # component healthy on a machine with no chat model, and the user's
+        # first message failed (#3824).
+        ("required models", _ensure_required_models),
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
@@ -9126,6 +9198,95 @@ def up(args) -> int:
     else:
         print(f"nyxGPT is up: {WEB_URL}")
     return 0
+
+
+def required_models_status(
+    cfg: ConfigParser | None = None, cfg_path: Path | None = None
+) -> dict[str, Any]:
+    """Report whether Ollama holds every model this install requires (#3824).
+
+    Shared by `nyxgpt ops status`, which prints it, and the SRE/admin
+    dashboard's model-readiness panel, which renders it -- so the terminal and
+    the dashboard can never disagree about what "ready" means.
+
+    `reachable` is False when Ollama could not be asked at all; `present` is
+    then None per model rather than False, because "cannot tell" is not
+    "missing".
+    """
+    from nyxgpt.config import get_ollama_base_url, load_config
+
+    if cfg is None:
+        cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+        # An absent config reports against the shipped defaults, it does not
+        # raise: `load_config(None)` means "the default *path*", not "the
+        # defaults", so passing None here routed the no-config case straight
+        # into the FileNotFoundError the `exists()` check had just ruled out.
+        # `ops status` is the diagnostic a user runs on a not-yet-configured
+        # machine, and its contract is to always return 0 -- an empty parser
+        # makes every value fall through to its code default and the block
+        # degrades to reporting those as MISSING/UNKNOWN, which is the honest
+        # answer when there is no config to read.
+        cfg = load_config(cfg_path) if cfg_path.exists() else ConfigParser()
+    base_url = get_ollama_base_url(cfg)
+    wanted = model_bootstrap.required_models(cfg)
+
+    installed: set[str] | None
+    error = ""
+    try:
+        installed = model_bootstrap.installed_model_names(base_url=base_url)
+    except Exception as e:
+        installed = None
+        error = f"{type(e).__name__}: {e}"
+
+    missing = (
+        []
+        if installed is None
+        else [m for m in wanted if model_bootstrap.normalize_model_name(m.name) not in installed]
+    )
+    models = [
+        {
+            "role": m.role,
+            "model": m.name,
+            "setting": m.setting,
+            "present": None if installed is None else m not in missing,
+        }
+        for m in wanted
+    ]
+    return {
+        "base_url": base_url,
+        "reachable": installed is not None,
+        "error": error,
+        "models": models,
+        "ready": installed is not None and not missing,
+        # Built here rather than in each caller so the terminal, the dashboard
+        # and doctor all offer the same nyxgpt-wrapped remediation.
+        "remediation": model_bootstrap.missing_models_hint(missing) if missing else "",
+    }
+
+
+def _print_required_models_status() -> None:
+    """Print the required-model readiness block of `nyxgpt ops status`."""
+    info = required_models_status()
+    print(f"\nRequired models (Ollama at {info['base_url']}):")
+    # Reachable, though only one way: `required_models` falls back to the code
+    # default when the key is *absent*, so this branch is not the no-config
+    # case -- it is a config.ini that sets `default_model =` (and
+    # `embedding_model =`) to the empty string, which asks for no model at all.
+    if not info["models"]:
+        print("  none configured -- set [nyxgpt] default_model in ~/.nyxGPT/config.ini")
+        return
+    if not info["reachable"]:
+        for m in info["models"]:
+            print(f"  {m['role']}: {m['model']} -- UNKNOWN (Ollama unreachable)")
+        print(
+            f"  Ollama did not answer ({info['error']}) -- run `nyxgpt ops status` again "
+            "once the ollama service is up."
+        )
+        return
+    for m in info["models"]:
+        print(f"  {m['role']}: {m['model']} -- {'PRESENT' if m['present'] else 'MISSING'}")
+    if not info["ready"]:
+        print(f"  {info['remediation']}")
 
 
 def status(_args) -> int:
@@ -9312,6 +9473,8 @@ def status(_args) -> int:
 
     if _which("docker") is None:
         print("\nDocker: docker not found")
+
+    _print_required_models_status()
 
     tf_state = terraform_stack_state()
     if any(state != "absent" for state in tf_state.values()):
@@ -9792,6 +9955,42 @@ def _ollama_env_drift_issue() -> str | None:
     return None
 
 
+def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
+    """Report a configured chat/embedding model Ollama does not have (#3824).
+
+    `nyxgpt ops install` pulls both, so a machine missing one has either not
+    been installed since the models were configured, had the model deleted, or
+    is pointing at an Ollama whose store is not the one the install filled.
+    Whichever it is, the first chat message will fail against it -- so doctor
+    calls it a problem and names the `nyxgpt` command that fixes it.
+
+    Silent when Ollama is unreachable: that is the ollama service's own
+    failure, already reported by `nyxgpt ops status`/self-heal, and guessing
+    "model missing" from it would misname the fault.
+    """
+    from nyxgpt.config import get_ollama_base_url, load_config
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = load_config(cfg_path)
+        missing = model_bootstrap.missing_required_models(
+            base_url=get_ollama_base_url(cfg), cfg=cfg
+        )
+    except Exception as e:
+        logger.info(
+            "ops: skipping the required-model check, Ollama did not answer: %s: %s",
+            type(e).__name__,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return None
+    if not missing:
+        return None
+    return model_bootstrap.missing_models_hint(missing)
+
+
 def _linux_ollama_port_conflict_issue() -> str | None:
     """Detect the #3632 port-11434 conflict: a system-wide `ollama.service`
     contending with the `nyxgpt-ollama.service` nyxgpt owns.
@@ -10168,6 +10367,10 @@ def doctor(_args) -> int:
     linux_ollama_conflict_issue = _linux_ollama_port_conflict_issue()
     if linux_ollama_conflict_issue:
         issues.append(linux_ollama_conflict_issue)
+
+    missing_models_issue = _missing_required_models_issue()
+    if missing_models_issue:
+        issues.append(missing_models_issue)
 
     docker_access_issue = _docker_access_doctor_issue()
     if docker_access_issue:
@@ -12237,6 +12440,17 @@ COMPOSE_ENV_SECRET_MAP: dict[str, tuple[str, str]] = {
     "GRAFANA_ADMIN_PASSWORD": ("monitoring", "grafana_admin_password"),
 }
 
+# Non-secret `.env` variables derived from config.ini the same way, kept in
+# their own map so the "no secrets to sync" diagnostics above stay about
+# secrets (#3824). The Compose `ollama` service pre-pulls these two models and
+# gates its healthcheck on them, so they must follow config.ini rather than
+# being hand-edited into `.env` -- that is what makes the Compose run mode's
+# pull config-driven instead of a literal in docker-compose.yml.
+COMPOSE_ENV_MODEL_MAP: dict[str, tuple[str, str]] = {
+    "NYXGPT_DEFAULT_MODEL": ("nyxgpt", "default_model"),
+    "NYXGPT_EMBEDDING_MODEL": ("rag", "embedding_model"),
+}
+
 
 def sync_env_from_config(
     cfg_path: Path | None = None, env_path: Path | None = None
@@ -12278,19 +12492,43 @@ def sync_env_from_config(
     else:
         lines = []
 
+    def _set(var_name: str, value: str) -> None:
+        new_line = f"{var_name}={value}"
+        for i, line in enumerate(lines):
+            if line.startswith(f"{var_name}="):
+                lines[i] = new_line
+                return
+        lines.append(new_line)
+
     synced: list[str] = []
     for var_name, (section, key) in COMPOSE_ENV_SECRET_MAP.items():
         value = cfg.get(section, key, fallback="")
         if not value:
             continue
-        new_line = f"{var_name}={value}"
-        for i, line in enumerate(lines):
-            if line.startswith(f"{var_name}="):
-                lines[i] = new_line
-                break
-        else:
-            lines.append(new_line)
+        _set(var_name, value)
         synced.append(var_name)
+
+    # Derived, not secret: the Compose `ollama` service reads these to know
+    # which models to pre-pull and gate its healthcheck on (#3824). Written
+    # even when no secret was found -- the early returns below are about
+    # secrets -- and the resolved *chat* model is the fallback for an empty
+    # `[rag] embedding_model`, matching how RAG itself resolves it.
+    from nyxgpt.config import get_default_model
+
+    model_values = {
+        "NYXGPT_DEFAULT_MODEL": get_default_model(cfg),
+        "NYXGPT_EMBEDDING_MODEL": (
+            cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
+        ),
+    }
+    models_synced = [var for var, value in model_values.items() if value]
+    for var_name, value in model_values.items():
+        if value:
+            _set(var_name, value)
+    if models_synced and not synced:
+        _ensure_dir(env_path.parent)
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.chmod(env_path, 0o600)
 
     if not synced:
         if not cfg.getboolean("auth", "enabled", fallback=False):
@@ -12299,7 +12537,8 @@ def sync_env_from_config(
                     True,
                     "No secrets to sync (auth disabled)",
                     "[auth] enabled = false with no api_key set is a valid "
-                    "localhost-only configuration -- .env left untouched. Run "
+                    "localhost-only configuration -- no secret line written "
+                    f"({', '.join(models_synced)} still synced). Run "
                     "`nyxgpt wizard` to generate secrets before any networked "
                     "deploy, then re-run `nyxgpt ops env-sync`.",
                 )
@@ -12309,7 +12548,12 @@ def sync_env_from_config(
                 False,
                 "No secrets found in config.ini to sync",
                 f"Set [auth] api_key and/or [monitoring] grafana_admin_password in "
-                f"{cfg_path} (re-run `nyxgpt wizard` to generate them), then retry.",
+                f"{cfg_path} (re-run `nyxgpt wizard` to generate them), then retry"
+                + (
+                    f" -- {', '.join(models_synced)} were still written to {env_path}."
+                    if models_synced
+                    else "."
+                ),
             )
         ]
 
@@ -12320,7 +12564,7 @@ def sync_env_from_config(
     return [
         OpsResult(
             True,
-            f"Synced {', '.join(synced)} into {env_path} from {cfg_path}",
+            f"Synced {', '.join(synced + models_synced)} into {env_path} from {cfg_path}",
         )
     ]
 
