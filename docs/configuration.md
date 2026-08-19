@@ -346,15 +346,16 @@ Connection details for the Ollama server.
 ```ini
 [ollama]
 base_url = http://127.0.0.1:11434
-default_model = qwen2.5:latest
 ```
 
 | Key | Description |
 |---|---|
 | `base_url` | Base URL of the Ollama HTTP API (default: `http://127.0.0.1:11434`) |
-| `default_model` | Default model for Ollama (optional override of `nyxgpt.default_model`) |
 
-**Note:** If `default_model` is not set, nyxGPT uses `nyxgpt.default_model` instead.
+**Note:** there is no `[ollama] default_model`. The chat model is
+[`[nyxgpt] default_model`](#nyxgpt-section) and nothing reads an `[ollama]`
+override — it is also the model `nyxgpt ops install` pulls (#3824), so a
+second key here would name a model the install does not fetch.
 
 **Note:** `base_url` may carry credentials (`http://user:pass@host:11434`) for
 an Ollama behind basic auth. When startup validation rejects the value it
@@ -540,8 +541,6 @@ embedding_model = nomic-embed-text
 embedding_dim = 768
 embedding_batch_size = 16
 embedding_timeout_seconds = 120
-embedding_auto_pull = true
-embedding_pull_timeout_seconds = 600
 chunk_size = 800
 chunk_overlap = 100
 overlap_strategy = trailing
@@ -571,8 +570,6 @@ cassandra_table = rag_chunks
 | `embedding_dim` | Vector dimensionality (must match Cassandra VECTOR dimension) |
 | `embedding_batch_size` | Batch size for embedding requests (smaller = lower memory, slower) |
 | `embedding_timeout_seconds` | Timeout for each embedding batch request to Ollama |
-| `embedding_auto_pull` | Pull `embedding_model` into Ollama the first time it is needed (default: true). Without it, the first upload on a fresh install fails with `model "nomic-embed-text" not found, try pulling it first`. Set to false on air-gapped hosts and pull the model yourself with `nyxgpt models pull <model>` |
-| `embedding_pull_timeout_seconds` | Timeout for that automatic pull (default: 600); the first ingest blocks while the model downloads |
 | `embedding_async_enabled` | Enable async/parallel processing for embedding generation (default: false) |
 | `embedding_max_workers` | Maximum number of parallel workers for async embedding (default: 4, recommended: 2-8) |
 | `embedding_gpu_enabled` | Enable GPU optimization and detection (default: false, requires nvidia-smi for NVIDIA GPUs) |

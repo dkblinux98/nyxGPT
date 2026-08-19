@@ -270,6 +270,41 @@ jobs:
             fi
           fi
 
+          # ---- Nothing automatic may act on an already-merged PR (#3815) ----
+          # A merged PR has no fix cycle left: its head branch is gone, so a
+          # REQUEST_CHANGES round cannot be answered, and an APPROVE round has
+          # nothing to merge. Acting anyway is what happened on PR #3817 --
+          # a second, concurrent review run submitted its verdict two minutes
+          # after a parallel run had already approved and merged, and this
+          # workflow dutifully executed it: a duplicate "approved and merged"
+          # comment, the issue re-assigned away from the owner and back, a
+          # first-time finding mis-counted as an unconverged 2nd cycle, and a
+          # huddle convened on a merged PR. The counting artifact also lands
+          # in the review-round statistics the retrospective reports.
+          #
+          # Only the automatic paths are gated. A human trigger
+          # (@approve-merge / @request-changes / @send-to-developer) on a
+          # merged PR is deliberate and still runs.
+          #
+          # The read fails open on purpose: `|| echo ""` leaves $PR_MERGED
+          # empty on an API blip and the round proceeds, which is exactly the
+          # behaviour of every round before this guard existed. Failing closed
+          # would jam every review cycle in the pipeline on a transient GitHub
+          # outage to prevent a rare duplicate. Do not "fix" this into a hard
+          # failure.
+          if [[ "$TRIGGER_TYPE" == "auto" && "$DECISION" != "ALREADY_HANDLED" ]]; then
+            # $PR comes from this step's env: block (steps.get_pr.outputs.pr_number).
+            # A step output must never be interpolated into a run: body -- it is
+            # shell source at that point, not data (#3820/#3837, the
+            # no-interpolation-in-script-bodies guard).
+            PR_MERGED=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
+              --jq '.merged|tostring' 2>/dev/null || echo "")
+            if [[ "$PR_MERGED" == "true" ]]; then
+              echo "::notice::PR #$PR is already merged; skipping the automatic $DECISION round (stale or concurrent review)"
+              DECISION="ALREADY_HANDLED"
+            fi
+          fi
+
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "trigger_type=$TRIGGER_TYPE" >> "$GITHUB_OUTPUT"
           echo "Decision: $DECISION (trigger: $TRIGGER_TYPE)"
@@ -490,8 +525,8 @@ jobs:
           fi
           NOTIFY_ACTION="Review PR #$PR: merge if acceptable, give the developer specific guidance, or close it."
 
-          # Sprint-autopilot continuation kick: only merges used to post
-          # READY_FOR_NEXT_ISSUE, so an escalation starved dispatch even
+          # Sprint-autopilot continuation kick: only merges used to send the
+          # continue signal, so an escalation starved dispatch even
           # though nothing was blocked. The reviewer has handed this PR to
           # the owner — post the same gated kick a merge posts (identical
           # SPRINT_AUTOPILOT / pause / release-drained checks) so the queue
@@ -527,12 +562,16 @@ jobs:
 
           echo "::group::Returning issue #$ISSUE to developer"
 
-          # Set issue status to "In Progress" and assign to developer-agent (with workflow trigger)
+          # Assign it back; the developer moves it to In Progress when it
+          # picks the work up (#3882). The reviewer's job here is the
+          # findings and the hand-back -- the actor doing the work owns the
+          # status transition, exactly as a person would. This step used to
+          # stage the board on the developer's behalf and then post a token
+          # telling the workflow to start, because assignment alone was inert.
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
             assign_and_trigger_developer '$ISSUE'"
 
           # #3837: substituting the output straight into $(( )) made it
@@ -545,7 +584,7 @@ jobs:
           HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
             "🔄 **Review Agent**: Changes requested (review loop ${LOOP_NUM}/3)" \
-            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \
+            "Issue #${ISSUE} has been assigned back to @${DEV_AGENT}, which is the whole hand-back signal (#3882) -- the developer agent moves it to **In Progress** as it picks the work up." \
             "**Developer Instructions:**" \
             "1. Read the code review comment above to understand what needs to be fixed" \
             "2. Implement the necessary changes" \
@@ -626,12 +665,12 @@ jobs:
 
           echo "::group::Human override: sending issue #$ISSUE back to developer"
 
-          # Set issue status to "In Progress" and assign to developer-agent (with workflow trigger)
+          # Assignment is the hand-back (#3882); the developer claims the
+          # status itself.
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
             assign_and_trigger_developer '$ISSUE'"
 
           # Post comment to PR explaining human override
@@ -639,7 +678,7 @@ jobs:
           HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
           BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s' \
             "👤 **Human Override by @${COMMENTER}**: Sent back to developer" \
-            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \
+            "Issue #${ISSUE} has been assigned back to @${DEV_AGENT}; the developer agent moves it to **In Progress** as it picks the work up (#3882)." \
             "**Developer Instructions:**" \
             "1. Review the feedback from @${COMMENTER} above" \
             "2. Address all identified issues" \

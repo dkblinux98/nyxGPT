@@ -216,6 +216,31 @@ not the excuse — the developer contract requires a smoke job for a changed pat
 that has none (`agents/runbooks/developer-runbook.md` §4a), using the
 workflows above as templates.
 
+**Scenario criteria need scenario evidence (#3860).** Component evidence does
+not close an end-to-end acceptance criterion. Where an issue's criteria
+describe a *user scenario* — a phase capstone, a "from a clean machine" or
+"one command" criterion, or any criterion written as a sequence the user
+performs — the review agent must **cite the CI job that executed that
+scenario**, naming the job and the steps that ran the user's own commands. An
+install that produced files, a `brew test` block, an import that resolved, or a
+unit test of one component is evidence about a *component*, and a criterion
+that says "install → one command → working app reachable at ..." is not
+satisfied by any number of them.
+
+Closing a capstone on component evidence is a **Medium (blocking)** finding.
+This exists because it already happened: #3516 — the Phase 6 capstone, whose
+criterion *is* the clean-machine scenario — closed as completed on evidence
+from `macos-brew-smoke.yml`, a workflow that at the time installed a keg and
+never invoked the product. Six defects sitting on that exact path (#3850 no
+`nyxgpt` on `PATH`, #3851 a 500 from the session list, #3853 a health probe
+blind to its own services, #3854 caveats naming the wrong command, #3857 a web
+UI stuck on placeholders, #3859 a teardown that leaves services running) were
+all discoverable by running the scenario once, and all reached the owner
+instead. The scenario job for the macOS user path is now
+`macos-brew-smoke.yml`'s `published-tap` job, which runs
+`scripts/macos-user-path-smoke.sh`; cite it (or the equivalent for the
+platform under review) rather than an install job.
+
 **Explicitly exempt.**
 
 - **Pure-logic changes fully covered by unit tests** — the gate targets
@@ -224,13 +249,18 @@ workflows above as templates.
 - **Prose-only changes** (docs, runbooks, prompts, charters), including
   agent-process changes whose contract text is pinned by tests.
 - **What CI genuinely cannot produce** — the short documented list in
-  `docs/live-verification-ci.md` (the native launchd/brew-services *operate*
-  path, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, for
+  `docs/live-verification-ci.md` (Docker-backed components on the hosted macOS
+  runners, the setup wizard's prompts, what the web UI *renders*, Ollama model
+  pulls, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, for
   which no hosted runner exists (`docs/portability-matrix.md`). Name which
   item applies and what the owner must exercise; do not defer to it when the
-  condition could be injected instead, and note that the brew *install* half
-  is covered by `macos-brew-smoke.yml` — "macOS can't be tested in CI" is not
-  a valid excuse for a formula change.
+  condition could be injected instead. **The macOS brew path is not on this
+  list — neither the install nor the operate half.** Since #3860,
+  `macos-brew-smoke.yml`'s `published-tap` job runs `nyxgpt --version`,
+  `nyxgpt up`, `GET /health`, `GET /api/v1/sessions`, the web UI on :3000,
+  `nyxgpt ops status`, `nyxgpt down` and the uninstall/residue check on a real
+  `macos-15` runner. "macOS can't be tested in CI" is not a valid excuse for a
+  formula, install or service-lifecycle change.
 
 **Severity and symmetry.** Missing executed evidence on an in-scope change is a
 **Medium (blocking)** finding: cite the claim, name the platform it was never
@@ -419,13 +449,16 @@ review agent runs this harness itself, in CI, before deciding:**
 
 **What still defers to owner acceptance** — because CI genuinely cannot
 exercise it, not because it's inconvenient — is the short, explicit list
-`docs/live-verification-ci.md` documents: the Apple Silicon native
-brew-services *operate* path (this harness only exercises the Compose path;
-the keg **install** is executed on a real `macos-15` runner by
-`macos-brew-smoke.yml`, so it is not on this list), real Slack
-delivery (no real webhook secret in CI), and LLM response *quality* (CI's
-model is stubbed/tiny — the pipeline being intact end to end is what's
-asserted, not answer quality). List exactly which of these apply, explicitly,
+`docs/live-verification-ci.md` documents: the Docker-backed components on the
+hosted macOS runners (those images ship no Docker daemon), the setup wizard's
+interactive prompts, what a web *panel* renders on the brew path, Ollama model
+pulls, real Slack delivery (no real webhook secret in CI), and LLM response
+*quality* (CI's model is stubbed/tiny — the pipeline being intact end to end
+is what's asserted, not answer quality). The Apple Silicon brew-services
+**operate** path is *not* on this list any more: this harness only exercises
+the Compose path, but `macos-brew-smoke.yml`'s `published-tap` job executes
+the brew keg install *and* the user path after it on a real `macos-15` runner
+(#3860). List exactly which of these apply, explicitly,
 in the APPROVE review so the owner knows precisely what to exercise during
 acceptance. Do not REQUEST_CHANGES or burn escalation cycles demanding
 evidence the harness already produced, or evidence that's on the
@@ -547,7 +580,7 @@ for both verdicts:
 
 This closes the failure observed 2026-08-09/10, where dispatched
 REQUEST_CHANGES verdicts on PRs #3684, #3683 and #3606 produced zero fix
-activity for 9+ hours until a human posted `RETRY_IMPLEMENTATION` by hand.
+activity for 9+ hours until a human re-dispatched the developer by hand.
 
 ## 6) Review cycle escalation
 The review workflow tracks cumulative review cycles:
@@ -887,6 +920,12 @@ rounds live inside each failure issue's history.
 ## 10) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
 - Notify human owner that phase is complete and ready for release
+
+**A capstone is reviewed against the scenario, not the parts (#3860).** Before
+approving or closing a phase capstone, apply §1c's scenario rule: read the
+capstone's own acceptance criterion, and cite the CI job whose steps executed
+that sequence end to end. If no job runs it, that is the finding — the capstone
+does not close, and the covering job is the work.
 
 ## 11) Configuration
 

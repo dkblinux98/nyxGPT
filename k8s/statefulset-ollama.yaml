@@ -49,21 +49,28 @@ spec:
             # fails with a 404 from Ollama. tests/unit/test_k8s_manifests.py
             # asserts the two match.
             - name: NYXGPT_DEFAULT_MODEL
-              value: qwen2.5:0.5b
+              value: qwen3:0.6b
+            # The RAG embedding model, under the same contract against `[rag]
+            # embedding_model` in k8s/configmap.yaml (#3824). Pulled and gated
+            # on even though `enable_chat_context` ships false: RAG is a
+            # per-session toggle the user can turn on at any moment, and
+            # turning it on must not stall on a ~275 MB download.
+            - name: NYXGPT_EMBEDDING_MODEL
+              value: nomic-embed-text
           lifecycle:
             postStart:
               exec:
-                # Pull the default model once the server is up, so a fresh
-                # install can actually answer a chat message without the
-                # operator pulling a model by hand. `ollama pull` is a no-op
-                # when the blob is already in the volume, which makes this
-                # safe on every restart.
+                # Pull the required models once the server is up, so a fresh
+                # install can answer a chat message -- with RAG on or off --
+                # without the operator pulling anything by hand. `ollama pull`
+                # is a no-op when the blob is already in the volume, which
+                # makes this safe on every restart.
                 #
                 # Trailing `|| true`: a postStart that exits non-zero gets the
                 # container killed, so a transient registry failure -- or an
-                # offline restart of a Pod whose volume ALREADY has the model
+                # offline restart of a Pod whose volume ALREADY has the models
                 # -- must not turn into a crash loop. The readiness probe
-                # below, not this hook, is what reports whether the model is
+                # below, not this hook, is what reports whether they are
                 # actually there.
                 command:
                   - /bin/sh
@@ -71,19 +78,24 @@ spec:
                   - |
                     {
                       until ollama list >/dev/null 2>&1; do sleep 2; done
-                      ollama show "$NYXGPT_DEFAULT_MODEL" >/dev/null 2>&1 ||
-                        ollama pull "$NYXGPT_DEFAULT_MODEL"
+                      for model in "$NYXGPT_DEFAULT_MODEL" "$NYXGPT_EMBEDDING_MODEL"; do
+                        [ -n "$model" ] || continue
+                        ollama show "$model" >/dev/null 2>&1 || ollama pull "$model"
+                      done
                     } || true
           readinessProbe:
-            # Ready means "can serve a chat with the configured model", not
-            # merely "port is open" -- the Service must not get endpoints
-            # while the default model is still downloading, or the first chat
-            # request races the pull and fails.
+            # Ready means "can serve a chat with the configured model, and an
+            # embedding with the configured embedding model" -- not merely
+            # "port is open". The Service must not get endpoints while either
+            # is still downloading, or the first chat (or the first request
+            # after RAG is toggled on) races the pull and fails.
             exec:
               command:
                 - /bin/sh
                 - -c
-                - ollama show "$NYXGPT_DEFAULT_MODEL" >/dev/null 2>&1
+                - >-
+                  ollama show "$NYXGPT_DEFAULT_MODEL" >/dev/null 2>&1 &&
+                  ollama show "$NYXGPT_EMBEDDING_MODEL" >/dev/null 2>&1
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 10

@@ -463,9 +463,24 @@ export default function CanaryPage() {
                 gap: '1rem',
               }}
             >
+              {/* "unknown" is not a deployment mode -- it is the server saying
+                  the Kubernetes probe timed out, so it cannot claim canary
+                  does or doesn't apply here (#3858). Saying "canary doesn't
+                  apply to the current deployment mode (unknown)" would assert
+                  exactly what the server declined to. */}
               <span>
-                <strong>Canary doesn&apos;t apply to the current deployment mode ({status.mode}).</strong>{' '}
-                {status.mode_message}
+                {status.mode === 'unknown' ? (
+                  <>
+                    <strong>Could not determine the deployment mode.</strong> {status.mode_message}
+                  </>
+                ) : (
+                  <>
+                    <strong>
+                      Canary doesn&apos;t apply to the current deployment mode ({status.mode}).
+                    </strong>{' '}
+                    {status.mode_message}
+                  </>
+                )}
               </span>
               <button
                 onClick={loadStatus}

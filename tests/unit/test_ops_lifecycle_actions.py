@@ -198,6 +198,7 @@ def test_install_records_success_action():
         patch.object(ops, "_install_homebrew_api", return_value=ok),
         patch.object(ops, "_install_homebrew_web", return_value=ok),
         patch.object(ops, "_ensure_ollama_service", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
@@ -230,6 +231,7 @@ def test_install_records_failure_action():
         patch.object(ops, "_install_homebrew_api", return_value=ok),
         patch.object(ops, "_install_homebrew_web", return_value=ok),
         patch.object(ops, "_ensure_ollama_service", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
@@ -359,6 +361,7 @@ def test_install_terraform_steps_records_success():
         # ledger, not about building images (#3834).
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),

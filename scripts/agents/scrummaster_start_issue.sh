@@ -18,7 +18,7 @@ scrummaster agent), sets:
 For an issue that is NOT claimable (see classify_backlog_claim_state in
 lib/gh_project.sh), nothing is mutated except an optional loud comment for
 an unrecognized assignee. Exit codes distinguish the outcome so callers
-(e.g. notify_scrum_ready.yml) can fall through to the next candidate
+(e.g. developer_pull_next_issue.yml) can fall through to the next candidate
 instead of ending the dispatch on a single bad-state issue (#3665):
 
   0   started

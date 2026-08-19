@@ -9,7 +9,7 @@ set -euo pipefail
 # `claude-code-review.yml` runs via `workflow_dispatch` -- the recovery path
 # for PRs whose automatic review never fired -- an APPROVE lands fine but a
 # REQUEST_CHANGES has been observed to go nowhere: no fix cycle, no huddle,
-# no escalation, until a human posts RETRY_IMPLEMENTATION by hand (PRs #3684,
+# no escalation, until a human re-dispatched the developer by hand (PRs #3684,
 # #3683, #3606 on 2026-08-09/10).
 #
 # This script closes the loop from inside the review run itself: it waits for
@@ -42,7 +42,8 @@ Behavior:
   - Polls for up to REVIEW_HANDOFF_WAIT_SECONDS (default 240) for a handoff
     comment posted after the verdict, giving the normal event chain priority.
   - If none appears, executes the #3687 route itself:
-      normal   -> issue to In Progress + assigned to the developer agent
+      normal   -> issue assigned back to the developer agent (which claims
+                  it into In Progress itself)
       huddle   -> huddle trigger comment
       escalate -> issue and PR handed to the human owner
 
@@ -138,12 +139,12 @@ BACKSTOP_NOTE="_Posted by the dispatch-mode review handoff backstop (\`review_en
 
 case "$action" in
   return_to_developer)
-    set_issue_status "$ISSUE" "$STATUS_IN_PROGRESS"
+    # Assignment is the hand-back (#3882); the developer claims the status.
     assign_and_trigger_developer "$ISSUE"
 
     BODY="$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n\n%s\n\n%s' \
       "🔄 **Review Agent**: Changes requested (review loop ${loop_number}/3)" \
-      "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \
+      "Issue #${ISSUE} has been assigned back to @${DEV_AGENT}; the developer agent moves it to **In Progress** as it picks the work up (#3882)." \
       "**Developer Instructions:**" \
       "1. Read the code review comment above to understand what needs to be fixed" \
       "2. Implement the necessary changes" \

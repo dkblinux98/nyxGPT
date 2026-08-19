@@ -898,7 +898,10 @@ def test_the_known_callers_are_still_the_only_callers():
 
     The macOS smoke job (#3753) is the third: it stamps the working tree's
     formulas into a throwaway tap so a broken recipe fails on the PR that
-    wrote it. It is held to the same bar as the two publishing jobs by
+    wrote it. The fourth is that workflow's `stable-over-candidate` job
+    (#3860), which stamps *both* channels so `conflicts_with` is exercised
+    against a stable formula that is really present. Both are held to the same
+    bar as the two publishing jobs by
     `test_jobs_running_the_build_script_provide_what_it_imports` below, which
     iterates whatever this function finds.
     """
@@ -908,6 +911,7 @@ def test_the_known_callers_are_still_the_only_callers():
         ("release-artifacts.yml", "homebrew-tap"),
         ("release-publish-pypi.yml", "homebrew-tap-rc"),
         ("macos-brew-smoke.yml", "keg-install"),
+        ("macos-brew-smoke.yml", "stable-over-candidate"),
     }
 
 

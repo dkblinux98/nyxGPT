@@ -2898,7 +2898,7 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_smoke_p.add_argument(
         "--model-timeout",
         type=float,
-        help="Seconds to allow for pulling the default model on the instance (default: 1800)",
+        help="Seconds to allow for the instance's required-model readiness check (default: 1800)",
     )
     cloud_smoke_p.add_argument(
         "--chat-timeout",

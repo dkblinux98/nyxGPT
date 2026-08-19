@@ -7,8 +7,9 @@ name: Developer Agent - Huddle Position
 # is, what was tried, what it proposes -- instead of attempting another
 # blind fix. It then kicks off scrummaster mediation
 # (scrummaster_huddle_mediation.yml) via the HUDDLE_MEDIATION_REQUESTED
-# marker, the same comment-triggered-workflow pattern used throughout this
-# repo (READY_FOR_NEXT_ISSUE, RETRY_IMPLEMENTATION, PAUSE_SPRINT).
+# marker -- the marker-in-a-comment pattern the remaining comment triggers
+# use (`@improvement`, `PAUSE_SPRINT`). It is a *conversation* marker, not a
+# work lever: work is dispatched by assignment (#3882).
 
 on:
   issue_comment:

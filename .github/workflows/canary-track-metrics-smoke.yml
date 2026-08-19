@@ -22,10 +22,16 @@ name: Canary Track Metrics Smoke
 # observability. None of them participate in the attribution question and they
 # cost tens of minutes. Path-filtered for the same reason -- it runs when the
 # canary layer, the manifests it reads, or this job change.
+# `subprocess_bounds.py` is on the filter for a reason found the hard way
+# (#3858): it rewrites the argv of every kubectl call, and a rewrite that is
+# correct on a workstation can be fatal in a Pod -- `--request-timeout`
+# disabled kubectl's service-account fallback, and only this job saw it.
+# Unit tests stub subprocess below the rewrite, so they never can.
 on:
   pull_request:
     paths:
       - 'src/nyxgpt/canary.py'
+      - 'src/nyxgpt/subprocess_bounds.py'
       - 'k8s/deployment-stable.yaml'
       - 'k8s/deployment-canary.yaml'
       - 'k8s/rbac.yaml'
@@ -34,6 +40,7 @@ on:
   push:
     paths:
       - 'src/nyxgpt/canary.py'
+      - 'src/nyxgpt/subprocess_bounds.py'
       - 'k8s/deployment-stable.yaml'
       - 'k8s/deployment-canary.yaml'
       - 'k8s/rbac.yaml'

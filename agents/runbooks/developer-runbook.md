@@ -226,9 +226,23 @@ never rely on comment/body text alone (#3600, going-public hardening).
   (`vars.SCRUM_AGENT`/`vars.DEV_AGENT`/`vars.REVIEW_AGENT`) — a trigger
   phrase like `contains(comment.body, '@approve-merge')` with no author
   check fires for any commenter on a public repo.
-  `handle_acceptance_failure.yml` and `developer_auto_implement.yml`'s
-  retry path are the reference pattern (both now carry that gate on their
-  `comment_gate` job — see §3g).
+  `handle_acceptance_failure.yml` is the reference pattern (its gate lives
+  on the `comment_gate` job — see §3g). `developer_auto_implement.yml` is
+  no longer one: #3882 deleted its `issue_comment` retry path and its
+  `comment_gate` job with it, so it gates an `issues`(assigned) trigger on
+  `github.event.assignee.login == vars.DEV_AGENT` instead — see §3c for
+  where the rest of its actor check lives.
+- **When the gate needs board state, it cannot be an `if:`.** A trigger
+  whose legitimacy depends on something only an API call can answer (which
+  lane the issue is in, who performed the action versus who is assigned)
+  has to be checked in a step, before the job's first write, and stop the
+  run there. `developer_auto_implement.yml`'s claim step is the pattern:
+  the `if:` proves *who was assigned*, and `developer_claim_issue`
+  (`gh_project.sh`) proves *who assigned them* and *from which lane*,
+  because neither is in the event payload. Put that decision in a shell
+  function rather than inline YAML so it can be executed against stub
+  state (D-006) — `tests/test_gh_project_lib.sh`, run on a runner by
+  `assignment-dispatch-smoke.yml`.
 - **Match a command token at line start, never as a substring.** A
   `contains(comment.body, '<TOKEN>')` test also matches prose that merely
   names the token, so an agent's own guidance comment can start the very
@@ -301,7 +315,7 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `developer_pull_next_issue.yml` | `repository_dispatch`(dispatch-next-issue) | `DEVELOPER_AGENT_TOKEN`, runs the pull and claims the chosen issue | none on the trigger — `repository_dispatch` requires write access to send, so there is no public-actor path | Was `notify_scrum_ready.yml`. #3882 replaced the comment kick with an event: prose can name a token, it cannot fire an event, which is how #3706 and #3790 happened. #3883 moved selection here from the scrummaster — the pull decides, under the developer's token |
 | `claude-code-review.yml` | `pull_request`(review_requested,synchronize), `issue_comment`, `workflow_dispatch` | Bash/Write/Edit + `CLAUDE_CODE_OAUTH_TOKEN` | `@review` path: commenter ∈ `{HUMAN_OWNER, REVIEW_AGENT, DEV_AGENT, claude[bot]}` + fork-PR guard; other triggers already gated on `requested_reviewer`/`assignee==REVIEW_AGENT` | Fixed by #3600; widened by #3870 (D-020) — `claude[bot]` added, and the job passes `allowed_bots: "claude"` to `claude-code-action`, which otherwise refuses any bot-actored run; this path has no layer-2 anchored gate (see Verification below) |
 | `handle_acceptance_failure.yml` | `issue_comment` | issues/PR write, `DEV_AGENT_TOKEN` | `comment.user == HUMAN_OWNER`, on the `comment_gate` job | Reference pattern; gate moved to `comment_gate` by #3790 |
-| `developer_auto_implement.yml` | `issues`(assigned), `issue_comment` | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | assignee==DEV_AGENT (issues) / `author_association==OWNER` or `user.login` ∈ `{DEV_AGENT, REVIEW_AGENT}` on the `comment_gate` job (retry path) | #3647: extended to `REVIEW_AGENT` so `assign_and_trigger_developer`'s redispatch-fallback comment (posted whenever it has to unassign-then-reassign an already-assigned dev agent) actually starts a run. #3790: the comment path's actor + token tests moved to `comment_gate`, whose verdict `implement` requires |
+| `developer_auto_implement.yml` | `issues`(assigned) | `contents`/`issues`/PR write, `DEV_AGENT_TOKEN` | `github.event.assignee.login == vars.DEV_AGENT` on the job `if:`, **plus** the permitted-assigner check inside `developer_claim_issue` (`gh_project.sh`): the assigner must be one of `{HUMAN_OWNER, SCRUM_AGENT, REVIEW_AGENT, DEV_AGENT, claude[bot]}`, from a `Backlog` or `In Review` lane, or the run stops before any write | **#3882 retired the `issue_comment` retry trigger** and the `comment_gate` job with it — this workflow subscribes to `issues: [assigned]` only, so no comment can start it and the #3706/#3790 substring hazard is closed at the source rather than gated. The gate is split because the `if:` can only see the event payload: it proves *who was assigned*, and the claim step proves *who assigned them* and *from which lane*. The #3647 redispatch fallback is now a re-assignment (`assign_and_trigger_developer` unassigns and reassigns, then verifies the write), not a comment, so the old `REVIEW_AGENT` comment-author widening is gone with it. The #3790 stop-without-progress loop guard moved to the same claim step, ahead of the claim, and never gates the owner. Executed on a runner by `assignment-dispatch-smoke.yml` |
 | `scrummaster_sprint_reorg_apply.yml` | `issue_comment` | project field writes | `author_association==OWNER` + release-issue check | Unchanged |
 | `acceptance_plan.yml` | `issues`(edited) | issues write | `github.actor==HUMAN_OWNER` + plan marker in body | Unchanged |
 | `add-to-release-issue-on-milestone.yml` | `issues`(milestoned) | issues write (`GITHUB_TOKEN`) | none, but `milestoned` can only be produced by a user with write access — no public-actor path exists | Unchanged, no gate needed |
@@ -354,9 +368,9 @@ stable evidence (runs can be deleted or expire); run
 is one concrete example of this pattern firing on issue #3600, triggered by
 `myGPT-review-agent` re-invoking the developer-agent automation, and it
 completed successfully; and (2) per the issue's own acceptance criteria, the
-next `@approve-merge`, `READY_FOR_NEXT_ISSUE`, and `@review` invocations in
-normal agent-loop operation after merge exercise the new gates for real, for
-an allowed actor.
+next `@approve-merge` and `@review` invocations (and, since #3882, the next
+developer *assignment*) in normal agent-loop operation after merge exercise
+the new gates for real, for an allowed actor.
 
 ## 3d) Security scanning (#3501)
 
@@ -412,8 +426,7 @@ so the cap never actually bound anything. Three fixes:
   budget" step (`scripts/agents/lib/retry_budget.py`, called from
   `developer_auto_implement.yml`) counts markers for the current failed
   step since the last comment from `author_association == "OWNER"` --
-  the same signal the workflow's own `RETRY_IMPLEMENTATION` trigger gate
-  already uses for "human intervention" (§3b). Nothing else resets the
+  the same signal the stop-loop guard uses for "human intervention" (§3b). Nothing else resets the
   count: not a fresh Phase-3-invented error-type label, not a `STATUS`
   change, not this workflow's own bot comments. The cap is 3, hard-coded in
   `retry_budget.MAX_RETRIES`. Pure logic lives in `retry_budget.py`
@@ -531,17 +544,20 @@ problems, and the pipeline needed a way to see across issues.
   step within the window) now yields one diagnosis (the origin issue's
   Phase 1-3) and a dispatch pause, not five independent loops.
 
-## 3g) Comment tokens are commands, not substrings (#3790)
+## 3g) Assignment is the lever; comment tokens are commands, not substrings (#3790, #3882)
 
 Full reference: `docs/agent-comment-tokens.md`. The short version, because
-this defect has now fired twice (#3706 on the kick token, #3790 on the retry
-token):
+this defect fired twice (#3706 on the kick token, #3790 on the retry token)
+before the mechanism itself was removed:
 
-- **Resuming a stopped developer run.** Move the issue back to `In Progress`
-  and post a comment whose **first line is** `RETRY_IMPLEMENTATION` (nothing
-  else on that line). The stop comment the agent posts deliberately does not
-  spell the token out — an automated comment naming it is exactly what
-  produced ~500 runs across #3782/#3784 on 2026-08-15.
+- **Nothing this agent does is started by a comment.** The workflow's only
+  trigger is `issues: [assigned]`. **Resuming a stopped run, retrying a
+  failed one, or picking up a rework round is the same act: assign
+  `myGPT-developer-agent` to the issue.** The agent claims it and moves it to
+  `In Progress` itself — the actor doing the work owns the transition — from
+  `Backlog` (new work) or `In Review` (rework). Held lanes
+  (`Acceptance Failed`, `Acceptance Testing`, `For Release`) refuse the
+  claim, and so does an assigner who is not a permitted identity.
 - **A token counts only where it opens a line.** Fenced code blocks and
   quoted (`>`) lines are stripped first, so quoting an earlier comment
   cannot replay its command.
@@ -643,13 +659,17 @@ halves: the failure reproduces without the fix, and disappears with it. See
 the shim fixes it" step.
 
 **What genuinely cannot be executed in CI** is the short documented list in
-`docs/live-verification-ci.md` (the native launchd/brew-services *operate*
-path, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, which
+`docs/live-verification-ci.md` (Docker-backed components on the hosted macOS
+runners, the setup wizard's prompts, what the web UI *renders*, Ollama model
+pulls, real Slack delivery, LLM answer quality), plus EC2 Mac hardware, which
 has no hosted runner (`docs/portability-matrix.md`). Name which item applies
 and what the owner must exercise — and prefer injecting the condition over
-deferring to that list. Note what is *not* on it: the Homebrew keg install
-runs on a real `macos-15` runner in `macos-brew-smoke.yml`, so a formula
-change cannot claim macOS is untestable.
+deferring to that list. Note what is *not* on it: `macos-brew-smoke.yml` runs
+the Homebrew keg install *and*, since #3860, the user path after it —
+`nyxgpt --version`, `nyxgpt up`, the API and web requests, `ops status`,
+`nyxgpt down`, uninstall and residue — on a real `macos-15` runner, so
+neither a formula change nor a macOS service-lifecycle change can claim macOS
+is untestable.
 
 The reviewer runs the same gate (`agents/runbooks/review-runbook.md` §1c) and
 missing executed evidence is a Medium (blocking) finding.

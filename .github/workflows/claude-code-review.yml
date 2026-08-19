@@ -15,6 +15,29 @@ on:
         required: true
         type: number
 
+# One review run per pull request, newest wins (#3815).
+#
+# Without this, two runs can review the same head concurrently -- a
+# `review_requested` and a `synchronize`, or a re-review racing an @review
+# comment. On PR #3817 that produced CHANGES_REQUESTED and APPROVED from the
+# same author two seconds apart over head 6b72c2d9: one run approved and
+# merged while the other was still reading the diff and submitted its verdict
+# two minutes after the branch was already on the release branch. Downstream
+# that verdict re-entered review_agent_auto_review.yml, posted a duplicate
+# "approved and merged" comment, mis-counted a first-time finding as a second
+# unconverged REQUEST_CHANGES cycle, and burned a huddle on a merged PR --
+# also corrupting the review-round statistics the retrospective reports.
+#
+# cancel-in-progress because a review of a superseded head is worse than no
+# review: it is the stale verdict above, and the newer run re-reviews the same
+# PR anyway.
+concurrency:
+  group: >-
+    claude-review-${{ github.event.pull_request.number
+      || github.event.issue.number
+      || inputs.pr_number }}
+  cancel-in-progress: true
+
 jobs:
   claude-review:
     # Only run when:
@@ -698,7 +721,7 @@ jobs:
         # either link fired, and when one drops a REQUEST_CHANGES verdict
         # goes nowhere -- APPROVE merged fine on dispatch (PR #3613) while
         # REQUEST_CHANGES sat for 9+ hours with zero fix activity on PRs
-        # #3684/#3683/#3606 until a human posted RETRY_IMPLEMENTATION by
+        # #3684/#3683/#3606 until a human re-dispatched the developer by
         # hand (#3704).
         #
         # The script gives the event chain a head start and only acts if no

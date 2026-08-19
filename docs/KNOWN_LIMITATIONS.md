@@ -45,7 +45,7 @@ Developer attempt 3 → Review fails
 **Mechanical counting instead of intelligent analysis:**
 ```yaml
 # Current (dumb)
-retry_count = count(comments with "RETRY_IMPLEMENTATION")
+retry_count = count(auto-retry comments carrying the retry marker)
 if retry_count >= 3: escalate()
 
 # Needed (intelligent)

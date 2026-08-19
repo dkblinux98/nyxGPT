@@ -62,10 +62,15 @@ This command verifies:
    ollama list
    ```
 
-   If your configured model is missing:
+   If your configured model is missing, re-run the install -- it pulls the
+   configured chat and embedding models and fails if it cannot:
    ```bash
-   ollama pull llama3.1:8b  # Or your preferred model
+   nyxgpt ops install
    ```
+
+   `nyxgpt ops status` lists both required models and whether Ollama has
+   them, and `nyxgpt ops doctor` reports a missing one as a problem. To fetch
+   a single model directly: `nyxgpt models pull <model>`.
 
 4. **Check network/firewall:**
    - Ensure localhost connections are allowed
@@ -525,10 +530,12 @@ offering the restart (#3806).
    nyxgpt models pull nomic-embed-text
    ```
 
-   nyxGPT normally pulls it for you on the first ingest (`[rag]
-   embedding_auto_pull = true`). Pull it by hand when that setting is
-   disabled, or when the auto-pull failed and ingestion reported
-   `Embedding model '...' is not installed in Ollama`.
+   `nyxgpt ops install` pulls it (and the chat model) before it reports the
+   stack up, and a collection on a *different* embedding model is pulled on
+   first use, so this should not normally be missing. Pull it by hand when
+   an earlier pull failed and ingestion reported `Embedding model '...' is
+   not installed in Ollama` -- `nyxgpt ops doctor` reports the same
+   condition.
 
 4. **Check similarity threshold:**
    - RAG filters results by similarity score
@@ -922,6 +929,44 @@ for RAM guidance per model tag, or
 3. **Use correct API URL in web UI:**
    - Development: `http://localhost:8000`
    - Production: Update API_BASE_URL in web config
+
+---
+
+### Web UI Shows Loading Placeholders That Never Resolve
+
+**Symptoms:**
+- Skeleton rows in the session sidebar, a spinner in the chat pane, or a
+  page-level "Loading ..." line that stays on screen indefinitely
+- The API is healthy: `curl http://127.0.0.1:8000/health` returns 200 quickly
+
+**What it means:** the placeholders are chunk-loading fallbacks, not data
+fallbacks. The browser asked for JavaScript it never received, so either the
+lazily-loaded component never mounted or the page never hydrated at all.
+Nothing is hanging server-side, which is why every endpoint still answers.
+
+**Solutions:**
+
+1. **Use the on-screen surface.** Two guards produce it. A single chunk that
+   fails or does not arrive within 20 seconds replaces its placeholder with
+   "Failed to load the interface". If the client bundle never runs at all --
+   nothing on the page is interactive, and even non-lazy "Loading ..." lines
+   are stuck -- a watchdog that ships inside the HTML paints the same message
+   over the page after the same 20 seconds. Either way, the **Reload** button
+   unregisters the service worker and clears the caches on the way out, which
+   a plain refresh does not do, and the Details panel says whether a service
+   worker was involved.
+
+2. **Check for a second web tier on the same port.** Two builds serving
+   `:3000` hand out HTML from one build and 404 the other build's chunk URLs:
+   ```bash
+   nyxgpt ops status
+   ```
+   Stop whichever `nyxgpt-web` you did not intend to run, then reload.
+
+3. **Confirm the chunk requests themselves.** DevTools > Network, filter on
+   `/_next/static/chunks/`: pending or 404 requests confirm the diagnosis
+   above. DevTools > Application > Service Workers distinguishes a stale
+   cached client (a worker is registered) from missing chunk URLs (none is).
 
 ---
 

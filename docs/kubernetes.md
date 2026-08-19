@@ -11,7 +11,8 @@ Scope: this deploys a **self-contained, chattable stack** — the FastAPI
 backend (`nyxgpt-api`), the web UI (`nyxgpt-web`), and the data/LLM tier
 they need: an in-cluster **Cassandra** holding the chat sessions every api
 replica shares, and an in-cluster **Ollama** that answers them, pre-loaded
-with the configured default model (#3786). Nothing on the host is required
+with the configured chat model and the configured embedding model (#3786,
+#3824). Nothing on the host is required
 once the cluster is up, and nothing has to be pointed at your own database
 by hand. See [Data and LLM tier](#data-and-llm-tier) below. The
 observability tier — Prometheus, Grafana, Loki + promtail, the OTel
@@ -81,11 +82,12 @@ interactively, or pass `--api-key` — the value is never committed), applies th
 kustomization (which includes both the api and web stable/canary pairs, see
 [Canary Deployment](#canary-deployment), plus the [data and LLM
 tier](#data-and-llm-tier)), waits for Cassandra and Ollama to report Ready --
-which for Ollama includes the first pull of the default model, so the command
-returns only when a chat can actually be answered -- waits for the api and web
-Deployments, brings up the [observability tier](#observability-in-the-cluster)
-and waits for its ten workloads to roll out too, and only then snapshots
-Pod/Service health for all of them.
+which for Ollama includes the first pull of both the chat and the embedding
+model, so the command returns only when a chat can actually be answered, with
+RAG on or off -- waits for the api and web Deployments, brings up the
+[observability tier](#observability-in-the-cluster) and waits for its ten
+workloads to roll out too, and only then snapshots Pod/Service health for all
+of them.
 
 All three waits exist for the same reason: `kubectl apply` returns when the
 objects are accepted, not when they work, so without them the command reports
@@ -564,10 +566,13 @@ message.
   an Ollama canary pair — see [Ollama canary
   feasibility](#ollama-canary-feasibility)).
 - **Readiness means usable, not merely listening.** Cassandra's probe runs a
-  CQL query, and Ollama's probe checks that the configured
-  `[nyxgpt] default_model` is actually present — its `postStart` hook pulls
-  that model on first start, so a fresh install can answer a chat without
-  anyone pulling a model by hand. Neither Service gets endpoints before
+  CQL query, and Ollama's probe checks that *both* configured models —
+  `[nyxgpt] default_model` and `[rag] embedding_model` — are actually present;
+  its `postStart` hook pulls them on first start, so a fresh install can
+  answer a chat, and a RAG-enabled chat, without anyone pulling a model by
+  hand (#3824). The embedding model is gated on even though
+  `enable_chat_context` ships false, because RAG is a per-session toggle the
+  user can turn on at any moment. Neither Service gets endpoints before
   that's true, and `nyxgpt ops install --kubernetes --local` waits for both
   Pods to be Ready before it reports the stack healthy.
 - **Sessions are shared.** `k8s/configmap.yaml` sets

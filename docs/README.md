@@ -51,6 +51,10 @@ all driven through `nyxgpt`-wrapped commands, never a raw
 default; `nyxgpt up --dev` brings the same stack up from a checkout's working
 tree instead, for iterating on unreleased code
 ([ops.md](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)).
+Whichever mode brings the stack up, it pulls the configured chat and embedding
+models before reporting itself up, so the first chat message works — with RAG
+on or off — without anyone pulling a model by hand
+([ops.md](ops.md#nyxgpt-ops-install)).
 AWS deployments are `nyxgpt cloud`-wrapped, with
 an SSH-tunnel-only access path; `nyxgpt cloud status` says what is deployed
 and how to reach it, and `nyxgpt cloud ops` inspects the instance over that

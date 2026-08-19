@@ -43,7 +43,7 @@ import httpx
 from nacl import public as nacl_public
 
 from nyxgpt import metrics as prom_metrics
-from nyxgpt import release_tarball, restart_state, self_heal, tracing
+from nyxgpt import model_bootstrap, release_tarball, restart_state, self_heal, tracing
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     get_error_tracking_config,
@@ -83,6 +83,14 @@ from nyxgpt.release_tarball import (  # noqa: F401
     _sha256_file,
     _vendor_tree,
     build_release_dist_tarball,
+)
+from nyxgpt.subprocess_bounds import (
+    LOCAL_PROBE_TIMEOUT_SECONDS,
+    PROBE_TIMEOUT_SECONDS,
+    bounded_argv,
+    timed_out,
+    timeout_message,
+    timeout_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -752,6 +760,16 @@ def _apply_docker_socket_hop(cmd: list[str]) -> list[str]:
     return cmd
 
 
+# The backstop bound for an ops subprocess: half an hour is far longer than
+# any real step (the slowest observed are `terraform apply` against AWS and a
+# cold `npm ci`, both minutes), and far shorter than "forever", which is what
+# every one of these calls was before #3858. It exists to stop a wedged
+# process from holding a thread for the life of the API, not to police
+# latency; callers on a polled endpoint pass `PROBE_TIMEOUT_SECONDS` instead,
+# and a call that blocks by contract passes `timeout=None` deliberately.
+DEFAULT_RUN_TIMEOUT_SECONDS = 1800.0
+
+
 def _run(
     cmd: list[str],
     *,
@@ -761,6 +779,7 @@ def _run(
     expected_message: str | None = None,
     input: str | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -790,21 +809,52 @@ def _run(
     channel: `docker compose exec -e VAR` (bare, no `=value`) forwards VAR
     from this process's environment into the container without the value
     ever appearing on argv (CodeQL #105/#106).
+    Pass `timeout` to change the bound on how long this call may block, or
+    `None` to remove it (#3858). The default is a wedged-process backstop, not
+    a latency budget: `install`/`up` run `terraform apply`, `brew install` and
+    `docker pull` through here and those legitimately take minutes. Anything
+    reachable from a *polled* endpoint passes `PROBE_TIMEOUT_SECONDS` instead
+    -- see `subprocess_bounds` for why. An expired bound is reported the same
+    way any other failure is: `check=False` returns a `TIMEOUT_RETURNCODE`
+    result (see `timed_out`), `check=True` raises `CalledProcessError` with
+    that code, so no caller has to learn about `TimeoutExpired` and no handler
+    can be hit by one.
     """
     try:
         result = subprocess.run(
-            _apply_docker_socket_hop(cmd),
+            bounded_argv(_apply_docker_socket_hop(cmd), timeout),
             check=check,
             text=True,
             capture_output=True,
             input=input,
             env=env,
+            timeout=timeout,
         )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
             cmd, e.returncode, e.stdout, e.stderr, expected, expected_returncodes, expected_message
         )
         raise
+    except subprocess.TimeoutExpired as exc:
+        # Only a set bound can expire, but read the value back off the
+        # exception rather than asserting it: `assert` is stripped under
+        # `python -O`, and the narrowing has to hold in that build too.
+        expired = timeout if timeout is not None else exc.timeout
+        timed = timeout_result(cmd, exc, expired)
+        logger.warning(
+            f"Subprocess {timeout_message(expired)}: {' '.join(_redact_cmd(cmd))}",
+            extra={
+                "component": "ops",
+                "cmd": _redact_cmd(cmd),
+                "timeout_seconds": expired,
+                "stdout_tail": (timed.stdout or "")[-2000:],
+            },
+        )
+        if check:
+            raise subprocess.CalledProcessError(
+                timed.returncode, cmd, timed.stdout, timed.stderr
+            ) from exc
+        return timed
     if result.returncode != 0:
         _log_nonzero_exit(
             cmd,
@@ -1143,7 +1193,12 @@ def _brew_services_snapshot() -> dict[str, str]:
     """Return {brew_service_name: state} parsed from `brew services list`."""
     if _which("brew") is None:
         return {}
-    cp = _run(["brew", "services", "list"], check=False, expected=True)
+    cp = _run(
+        ["brew", "services", "list"],
+        check=False,
+        expected=True,
+        timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+    )
     snapshot: dict[str, str] = {}
     for line in (cp.stdout or "").splitlines():
         parts = line.split()
@@ -1160,6 +1215,10 @@ def _docker_container_state(name: str) -> str:
         ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
         check=False,
         expected=True,
+        # Polled by `/infra/status` on every dashboard refresh, and the one
+        # call here that can dial a daemon that is not answering (a socket
+        # hop to a host that stopped responding). Bounded tightly (#3858).
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
     out = (cp.stdout or "").strip()
     return out.splitlines()[0].strip() if out else "absent"
@@ -3496,7 +3555,10 @@ def _systemd_services_snapshot() -> dict[str, str]:
         if not (unit_dir / f"{unit}.service").exists():
             continue
         cp = _run(
-            ["systemctl", "--user", "is-active", f"{unit}.service"], check=False, expected=True
+            ["systemctl", "--user", "is-active", f"{unit}.service"],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
         )
         state = (cp.stdout or "").strip()
         snapshot[unit] = "started" if state == "active" else "none"
@@ -3889,6 +3951,67 @@ def _ensure_native_ollama_service() -> list[OpsResult]:
     return _unsupported_os_result("native ollama service")
 
 
+def _ensure_required_models(
+    base_url: str | None = None, *, wait_for_server_s: float = 180.0
+) -> list[OpsResult]:
+    """Pull the configured chat and embedding models into Ollama (#3824).
+
+    Until this ran, `nyxgpt ops install` reported every service healthy on a
+    machine whose Ollama had never downloaded a model, and the user's first
+    chat message failed. The models come from configuration -- `[nyxgpt]
+    default_model` and `[rag] embedding_model`, resolved by
+    `nyxgpt.model_bootstrap.required_models` -- not from literals here, so
+    pointing the config at a different model changes what the install pulls.
+
+    Both models, always: RAG is a per-session toggle, so "RAG is off" is not a
+    reason to leave the embedding model unpulled and make the first RAG-enabled
+    message block on a download.
+
+    Unconditional by design: there is no flag to skip it. An install already
+    needs network egress for the CLI, the service tarballs and Ollama's own
+    installer, so a skip flag would only create a supported way for this
+    command to report success while leaving chat broken.
+
+    Idempotent: a model already in the Ollama store is reported as such and
+    nothing is downloaded, so a re-install over a warm machine adds one
+    `/api/tags` request.
+    """
+    outcomes = model_bootstrap.ensure_required_models(
+        base_url=base_url, wait_for_server_s=wait_for_server_s
+    )
+    if not outcomes:
+        return [
+            OpsResult(
+                True,
+                "Skipped required-model pull (no models configured)",
+                "Set [nyxgpt] default_model in ~/.nyxGPT/config.ini.",
+            )
+        ]
+    results: list[OpsResult] = []
+    for outcome in outcomes:
+        model = outcome.model
+        if not outcome.ok:
+            results.append(
+                OpsResult(
+                    False,
+                    f"Required {model.role} model '{model.name}' is not installed",
+                    outcome.detail
+                    + "\nThe stack cannot serve "
+                    + ("chat" if model.role == model_bootstrap.CHAT_ROLE else "RAG")
+                    + " without it -- fix the cause and re-run `nyxgpt ops install`.",
+                )
+            )
+        elif outcome.already_present:
+            results.append(
+                OpsResult(True, f"{model.role.capitalize()} model present", outcome.detail)
+            )
+        else:
+            results.append(
+                OpsResult(True, f"Pulled {model.role} model '{model.name}'", outcome.detail)
+            )
+    return results
+
+
 def _install_cassandra_log_follower_service() -> list[OpsResult]:
     """Install the Cassandra log-follower agent via the OS-appropriate mechanism."""
     if _is_macos():
@@ -3941,7 +4064,9 @@ def _launchd_agent_loaded(label: str) -> bool:
     if _which("launchctl") is None:
         return False
     try:
-        cp = _run(["launchctl", "list"], check=False, expected=True)
+        cp = _run(
+            ["launchctl", "list"], check=False, expected=True, timeout=LOCAL_PROBE_TIMEOUT_SECONDS
+        )
     except Exception as e:
         logger.warning(
             "Could not query launchctl list for %s: %s", label, e, extra={"component": "ops"}
@@ -5728,6 +5853,25 @@ def _record_terraform_install_mode(dev: bool, images: dict[str, str]) -> list[Op
     return [OpsResult(True, f"Terraform install mode: {state.label()}", str(marker))]
 
 
+def _resolve_terraform_images(dev: bool, images: dict[str, str]) -> list[OpsResult]:
+    """Resolve the api/web images the terraform plan references.
+
+    Module scope, not nested inside `_install_terraform_steps`, because a
+    nested step cannot be patched by name: `patch.object(ops, ...)` only
+    reaches module attributes. While this was a local, the step-isolation
+    guard could not neutralize it, so every unit test that patched "all" the
+    install steps still ran a real `docker pull` against the runner -- six
+    minutes of network I/O per suite run, failing on any machine without a
+    docker daemon. Behavior is unchanged; only the binding moved, with `dev`
+    and the shared `images` dict now passed explicitly.
+    """
+    if dev:
+        return _build_terraform_docker_images()
+    resolved, results = _pull_terraform_published_images()
+    images.update(resolved)
+    return results
+
+
 def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[OpsResult]:
     """Run the Terraform bring-up steps and return structured results (no printing).
 
@@ -5768,13 +5912,6 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
     # the same `() -> list[OpsResult]` shape.
     images: dict[str, str] = {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE} if dev else {}
 
-    def _resolve_images() -> list[OpsResult]:
-        if dev:
-            return _build_terraform_docker_images()
-        resolved, results = _pull_terraform_published_images()
-        images.update(resolved)
-        return results
-
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         # Must run first: `_start_observability_stack_terraform` targets
@@ -5808,12 +5945,18 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
         # terraform's own build hits Docker's cache instead of doing the work
         # again; on the artifact path it pulls the published images, which is
         # what makes this deploy possible with no checkout at all (#3835).
-        ("api/web images", _resolve_images),
+        ("api/web images", lambda: _resolve_terraform_images(dev, images)),
         # After the images are known, before apply: the marker is what `ops
         # status`/`doctor` read to report this deployment's mode instead of
         # the native services' (#3835).
         ("terraform install mode", lambda: _record_terraform_install_mode(dev, images)),
         ("terraform init/plan/apply", lambda: _terraform_init_plan_apply(images, dev)),
+        # Must run after apply (the ollama container has to exist) and before
+        # the stack is called up: `terraform apply` returns as soon as the
+        # container is created, so the pull waits for the server to answer on
+        # the host-published port first. Same required models, same config
+        # keys, as every other run mode (#3824).
+        ("required models", _ensure_required_models),
         # Must run before the observability stack starts: Grafana's Compose
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
@@ -6323,7 +6466,12 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
 
 def _kubectl_context() -> str:
     """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset."""
-    cp = _run(["kubectl", "config", "current-context"], check=False, expected=True)
+    cp = _run(
+        ["kubectl", "config", "current-context"],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
     return (cp.stdout or "").strip()
 
 
@@ -6901,7 +7049,22 @@ def _k8s_pod_states(
         + (["-l", selector] if selector else []),
         check=False,
         expected=expected,
+        # `/infra/status` polls this, so it must not be able to hold a
+        # threadpool worker on a configured-but-unreachable cluster (#3858).
+        # A single `get pods` against a cluster that *is* answering is far
+        # inside this bound, install-time waits included.
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
+    if timed_out(cp):
+        # Reported as its own failure so the page says "the cluster did not
+        # answer" rather than leaving an operator to infer it from an empty
+        # pod list -- this is the "cannot determine" case (#3468), not
+        # "nothing is deployed".
+        return [], OpsResult(
+            False,
+            f"Could not read pod status: the cluster {timeout_message(PROBE_TIMEOUT_SECONDS)}",
+            _cp_details(cp),
+        )
     if cp.returncode != 0:
         return [], OpsResult(False, "Could not read pod status", _cp_details(cp))
     try:
@@ -8940,6 +9103,11 @@ def install(args) -> int:
         ("native api service", lambda: _install_native_api(dev=dev)),
         ("native web service", lambda: _install_native_web(dev=dev)),
         ("ollama service", _ensure_native_ollama_service),
+        # Must run after the ollama service step: it pulls into the server
+        # that step just started. Without it the install reported every
+        # component healthy on a machine with no chat model, and the user's
+        # first message failed (#3824).
+        ("required models", _ensure_required_models),
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
@@ -9079,6 +9247,95 @@ def up(args) -> int:
     else:
         print(f"nyxGPT is up: {WEB_URL}")
     return 0
+
+
+def required_models_status(
+    cfg: ConfigParser | None = None, cfg_path: Path | None = None
+) -> dict[str, Any]:
+    """Report whether Ollama holds every model this install requires (#3824).
+
+    Shared by `nyxgpt ops status`, which prints it, and the SRE/admin
+    dashboard's model-readiness panel, which renders it -- so the terminal and
+    the dashboard can never disagree about what "ready" means.
+
+    `reachable` is False when Ollama could not be asked at all; `present` is
+    then None per model rather than False, because "cannot tell" is not
+    "missing".
+    """
+    from nyxgpt.config import get_ollama_base_url, load_config
+
+    if cfg is None:
+        cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+        # An absent config reports against the shipped defaults, it does not
+        # raise: `load_config(None)` means "the default *path*", not "the
+        # defaults", so passing None here routed the no-config case straight
+        # into the FileNotFoundError the `exists()` check had just ruled out.
+        # `ops status` is the diagnostic a user runs on a not-yet-configured
+        # machine, and its contract is to always return 0 -- an empty parser
+        # makes every value fall through to its code default and the block
+        # degrades to reporting those as MISSING/UNKNOWN, which is the honest
+        # answer when there is no config to read.
+        cfg = load_config(cfg_path) if cfg_path.exists() else ConfigParser()
+    base_url = get_ollama_base_url(cfg)
+    wanted = model_bootstrap.required_models(cfg)
+
+    installed: set[str] | None
+    error = ""
+    try:
+        installed = model_bootstrap.installed_model_names(base_url=base_url)
+    except Exception as e:
+        installed = None
+        error = f"{type(e).__name__}: {e}"
+
+    missing = (
+        []
+        if installed is None
+        else [m for m in wanted if model_bootstrap.normalize_model_name(m.name) not in installed]
+    )
+    models = [
+        {
+            "role": m.role,
+            "model": m.name,
+            "setting": m.setting,
+            "present": None if installed is None else m not in missing,
+        }
+        for m in wanted
+    ]
+    return {
+        "base_url": base_url,
+        "reachable": installed is not None,
+        "error": error,
+        "models": models,
+        "ready": installed is not None and not missing,
+        # Built here rather than in each caller so the terminal, the dashboard
+        # and doctor all offer the same nyxgpt-wrapped remediation.
+        "remediation": model_bootstrap.missing_models_hint(missing) if missing else "",
+    }
+
+
+def _print_required_models_status() -> None:
+    """Print the required-model readiness block of `nyxgpt ops status`."""
+    info = required_models_status()
+    print(f"\nRequired models (Ollama at {info['base_url']}):")
+    # Reachable, though only one way: `required_models` falls back to the code
+    # default when the key is *absent*, so this branch is not the no-config
+    # case -- it is a config.ini that sets `default_model =` (and
+    # `embedding_model =`) to the empty string, which asks for no model at all.
+    if not info["models"]:
+        print("  none configured -- set [nyxgpt] default_model in ~/.nyxGPT/config.ini")
+        return
+    if not info["reachable"]:
+        for m in info["models"]:
+            print(f"  {m['role']}: {m['model']} -- UNKNOWN (Ollama unreachable)")
+        print(
+            f"  Ollama did not answer ({info['error']}) -- run `nyxgpt ops status` again "
+            "once the ollama service is up."
+        )
+        return
+    for m in info["models"]:
+        print(f"  {m['role']}: {m['model']} -- {'PRESENT' if m['present'] else 'MISSING'}")
+    if not info["ready"]:
+        print(f"  {info['remediation']}")
 
 
 def status(_args) -> int:
@@ -9265,6 +9522,8 @@ def status(_args) -> int:
 
     if _which("docker") is None:
         print("\nDocker: docker not found")
+
+    _print_required_models_status()
 
     tf_state = terraform_stack_state()
     if any(state != "absent" for state in tf_state.values()):
@@ -9745,6 +10004,42 @@ def _ollama_env_drift_issue() -> str | None:
     return None
 
 
+def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
+    """Report a configured chat/embedding model Ollama does not have (#3824).
+
+    `nyxgpt ops install` pulls both, so a machine missing one has either not
+    been installed since the models were configured, had the model deleted, or
+    is pointing at an Ollama whose store is not the one the install filled.
+    Whichever it is, the first chat message will fail against it -- so doctor
+    calls it a problem and names the `nyxgpt` command that fixes it.
+
+    Silent when Ollama is unreachable: that is the ollama service's own
+    failure, already reported by `nyxgpt ops status`/self-heal, and guessing
+    "model missing" from it would misname the fault.
+    """
+    from nyxgpt.config import get_ollama_base_url, load_config
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = load_config(cfg_path)
+        missing = model_bootstrap.missing_required_models(
+            base_url=get_ollama_base_url(cfg), cfg=cfg
+        )
+    except Exception as e:
+        logger.info(
+            "ops: skipping the required-model check, Ollama did not answer: %s: %s",
+            type(e).__name__,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return None
+    if not missing:
+        return None
+    return model_bootstrap.missing_models_hint(missing)
+
+
 def _linux_ollama_port_conflict_issue() -> str | None:
     """Detect the #3632 port-11434 conflict: a system-wide `ollama.service`
     contending with the `nyxgpt-ollama.service` nyxgpt owns.
@@ -10121,6 +10416,10 @@ def doctor(_args) -> int:
     linux_ollama_conflict_issue = _linux_ollama_port_conflict_issue()
     if linux_ollama_conflict_issue:
         issues.append(linux_ollama_conflict_issue)
+
+    missing_models_issue = _missing_required_models_issue()
+    if missing_models_issue:
+        issues.append(missing_models_issue)
 
     docker_access_issue = _docker_access_doctor_issue()
     if docker_access_issue:
@@ -12190,6 +12489,17 @@ COMPOSE_ENV_SECRET_MAP: dict[str, tuple[str, str]] = {
     "GRAFANA_ADMIN_PASSWORD": ("monitoring", "grafana_admin_password"),
 }
 
+# Non-secret `.env` variables derived from config.ini the same way, kept in
+# their own map so the "no secrets to sync" diagnostics above stay about
+# secrets (#3824). The Compose `ollama` service pre-pulls these two models and
+# gates its healthcheck on them, so they must follow config.ini rather than
+# being hand-edited into `.env` -- that is what makes the Compose run mode's
+# pull config-driven instead of a literal in docker-compose.yml.
+COMPOSE_ENV_MODEL_MAP: dict[str, tuple[str, str]] = {
+    "NYXGPT_DEFAULT_MODEL": ("nyxgpt", "default_model"),
+    "NYXGPT_EMBEDDING_MODEL": ("rag", "embedding_model"),
+}
+
 
 def sync_env_from_config(
     cfg_path: Path | None = None, env_path: Path | None = None
@@ -12231,19 +12541,43 @@ def sync_env_from_config(
     else:
         lines = []
 
+    def _set(var_name: str, value: str) -> None:
+        new_line = f"{var_name}={value}"
+        for i, line in enumerate(lines):
+            if line.startswith(f"{var_name}="):
+                lines[i] = new_line
+                return
+        lines.append(new_line)
+
     synced: list[str] = []
     for var_name, (section, key) in COMPOSE_ENV_SECRET_MAP.items():
         value = cfg.get(section, key, fallback="")
         if not value:
             continue
-        new_line = f"{var_name}={value}"
-        for i, line in enumerate(lines):
-            if line.startswith(f"{var_name}="):
-                lines[i] = new_line
-                break
-        else:
-            lines.append(new_line)
+        _set(var_name, value)
         synced.append(var_name)
+
+    # Derived, not secret: the Compose `ollama` service reads these to know
+    # which models to pre-pull and gate its healthcheck on (#3824). Written
+    # even when no secret was found -- the early returns below are about
+    # secrets -- and the resolved *chat* model is the fallback for an empty
+    # `[rag] embedding_model`, matching how RAG itself resolves it.
+    from nyxgpt.config import get_default_model
+
+    model_values = {
+        "NYXGPT_DEFAULT_MODEL": get_default_model(cfg),
+        "NYXGPT_EMBEDDING_MODEL": (
+            cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
+        ),
+    }
+    models_synced = [var for var, value in model_values.items() if value]
+    for var_name, value in model_values.items():
+        if value:
+            _set(var_name, value)
+    if models_synced and not synced:
+        _ensure_dir(env_path.parent)
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.chmod(env_path, 0o600)
 
     if not synced:
         if not cfg.getboolean("auth", "enabled", fallback=False):
@@ -12252,7 +12586,8 @@ def sync_env_from_config(
                     True,
                     "No secrets to sync (auth disabled)",
                     "[auth] enabled = false with no api_key set is a valid "
-                    "localhost-only configuration -- .env left untouched. Run "
+                    "localhost-only configuration -- no secret line written "
+                    f"({', '.join(models_synced)} still synced). Run "
                     "`nyxgpt wizard` to generate secrets before any networked "
                     "deploy, then re-run `nyxgpt ops env-sync`.",
                 )
@@ -12262,7 +12597,12 @@ def sync_env_from_config(
                 False,
                 "No secrets found in config.ini to sync",
                 f"Set [auth] api_key and/or [monitoring] grafana_admin_password in "
-                f"{cfg_path} (re-run `nyxgpt wizard` to generate them), then retry.",
+                f"{cfg_path} (re-run `nyxgpt wizard` to generate them), then retry"
+                + (
+                    f" -- {', '.join(models_synced)} were still written to {env_path}."
+                    if models_synced
+                    else "."
+                ),
             )
         ]
 
@@ -12273,7 +12613,7 @@ def sync_env_from_config(
     return [
         OpsResult(
             True,
-            f"Synced {', '.join(synced)} into {env_path} from {cfg_path}",
+            f"Synced {', '.join(synced + models_synced)} into {env_path} from {cfg_path}",
         )
     ]
 

@@ -59,6 +59,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/ops/portability` | GET | Repo-less portability matrix per deployment target, its mechanical checks and open gaps, plus the clean-machine acceptance sequence |
 | `/api/v1/ops/release-candidate` | GET | Release-candidate plan for the release branch: published RCs, the next RC version, guardrails, and the pinned commands that point an acceptance install at it |
 | `/api/v1/models` | GET | List Ollama models |
+| `/api/v1/models/required` | GET | Whether Ollama holds the configured chat and embedding models (dashboard model-readiness panel) |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
 | `/api/v1/models/{model_name}/info` | GET | Get model details |
@@ -423,6 +424,37 @@ List all available Ollama models.
 ```json
 {
   "models": ["llama3.1:8b", "mistral:7b", "codellama:13b"]
+}
+```
+
+### `GET /api/v1/models/required`
+
+Report whether Ollama holds the models this install requires: the configured
+chat model (`[nyxgpt] default_model`) and the configured embedding model
+(`[rag] embedding_model`). Both are required whether or not RAG is currently
+enabled, because `rag_enabled` is a per-session toggle.
+
+`nyxgpt ops install` pulls both before it reports the stack up (#3824), so
+this normally reads ready. It is what the SRE/admin dashboard's Required
+Models panel renders and what `nyxgpt ops status` prints, so the three cannot
+disagree.
+
+An unreachable Ollama is reported as `reachable: false` with `present: null`
+per model — "cannot tell" is not "missing" — rather than as an error status.
+
+**Response:**
+
+```json
+{
+  "base_url": "http://127.0.0.1:11434",
+  "reachable": true,
+  "error": "",
+  "ready": true,
+  "remediation": "",
+  "models": [
+    {"role": "chat", "model": "qwen3:0.6b", "setting": "[nyxgpt] default_model", "present": true},
+    {"role": "embedding", "model": "nomic-embed-text", "setting": "[rag] embedding_model", "present": true}
+  ]
 }
 ```
 
@@ -1129,17 +1161,35 @@ Deployment to; both are `0` when no rollout is in progress, since the pool
 only exists for the duration of one (#3833).
 
 `stable`/`canary.state` is one of `"not_deployed"` (cluster unreachable, the
-Deployment doesn't exist yet, or it's at 0 desired replicas -- neutral, not
-an alarm), `"unhealthy"` (Pods not all ready), `"healthy"`, or `"error"` (a
-genuine kubectl failure against a reachable cluster, distinguishable from
-"not deployed" -- see #3409). `available` is `false` when kubectl itself
-isn't reachable (e.g. under docker-compose, which has no cluster to reach —
-see [docker-compose.md](docker-compose.md#canary-deployment)); in that case
+Deployment doesn't exist yet, it's at 0 desired replicas, or the deployment
+mode isn't Kubernetes -- neutral, not an alarm), `"unhealthy"` (Pods not all
+ready), `"healthy"`, or `"error"` (a genuine kubectl failure against a
+reachable cluster, distinguishable from "not deployed" -- see #3409). The
+`"error"` state also covers a probe that **timed out** ("… health check timed
+out after 5s -- the cluster did not answer", #3858): a cluster that
+blackholes rather than refuses is a real fault worth showing, and every
+kubectl read behind this endpoint is bounded so a slow one degrades the
+reading instead of hanging the request or returning `500`.
+
+Outside Kubernetes mode the per-track reads are **not made at all** — the
+tracks report the mode message as their reason, so a native or Compose
+install dials no cluster on each poll (#3858, matching the guard
+`/infra/status` has applied since #3468).
+
+`available` is `false` when kubectl itself isn't reachable (e.g. under
+docker-compose, which has no cluster to reach — see
+[docker-compose.md](docker-compose.md#canary-deployment)); in that case
 `unavailable_reason` explains why. `mode` is the currently detected
-deployment mode (`"native"`/`"terraform"`/`"kubernetes"`/`"compose"`);
+deployment mode, one of
+`"native"`/`"terraform"`/`"kubernetes"`/`"compose"`/`"unknown"`;
 `mode_supported` is `false` outside Kubernetes mode, with `mode_message`
-explaining which mode provides canary — this is a positive mode detection,
-not an inference from a failed kubectl call.
+explaining which mode provides canary. The four named modes are a positive
+detection from the Compose marker, the Terraform stack state and a populated
+Kubernetes namespace — never an inference from a *failed* kubectl call.
+`"unknown"` is the one case where no mode could be established: the
+Kubernetes probe timed out, and `mode_message` says so rather than claiming
+`"native"`, which would assert something about the substrate that nothing
+managed to check (#3858).
 
 `metrics` is the **canary track's** own vitals -- read from the Pods
 labelled `track=canary`, never from the counters of the process answering
@@ -1151,7 +1201,12 @@ Pods, no readable `/metrics`, a component that exports none, no cluster).
 numbers came from. `/health` and `/metrics` requests are excluded from the
 counts so kubelet probes and Prometheus scrapes cannot read as canary
 traffic. `stable_metrics` is only measured while a rollout is active --
-otherwise it reports `attributable: false` with that as the reason. See
+otherwise it reports `attributable: false` with that as the reason. Outside
+Kubernetes mode neither track is measured at all: both report
+`attributable: false` naming the mode, for the same reason the per-track
+health reads are skipped there (#3858) -- there are no Pods to attribute
+traffic to, and dialing for them would spend a request thread on a cluster
+this deployment does not use. See
 [kubernetes.md](kubernetes.md#metrics-source-the-canary-tracks-own-pods-3829).
 
 ### `POST /api/v1/canary/deploy`

@@ -623,6 +623,7 @@ _INSTALL_STEPS = (
     "_install_native_api",
     "_install_native_web",
     "_ensure_native_ollama_service",
+    "_ensure_required_models",
     "_cleanup_stale_log_symlinks",
     "sync_env_from_config",
     "_generate_compose_config",

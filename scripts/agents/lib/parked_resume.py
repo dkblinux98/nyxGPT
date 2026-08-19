@@ -10,8 +10,8 @@ unit-testable without mocking the GitHub API.
 Background: an In Progress issue can end up *parked* -- no open PR closing
 it and no in-flight developer run -- e.g. it refused earlier because a prose
 "Blocked by: #N" gate was still open, or its runs died in an incident.
-Nothing picked those back up when the blockers merged, so a human posted
-RETRY_IMPLEMENTATION at every gate opening (the Sprint 8 cloud chain
+Nothing picked those back up when the blockers merged, so a human
+re-dispatched the developer at every gate opening (the Sprint 8 cloud chain
 #3509 -> #3510 -> #3513 -> #3514/#3515/#3516 was hand-walked that way). The
 owner's requirement is no babysitting: the loop drives its own chain.
 

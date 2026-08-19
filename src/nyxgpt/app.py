@@ -912,7 +912,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     """Apply a small set of hot config updates to ~/.nyxGPT/config.ini.
 
     Supported updates:
-    - default_model (str) -> [ollama] default_model
+    - default_model (str) -> [nyxgpt] default_model
     - rag_enabled (bool)  -> [rag] enable_chat_context
     - log_level (str)     -> [logging] level
 
@@ -2093,6 +2093,18 @@ def _canary_failure_detail(result: canary_module.CanaryResult) -> str:
 # Blue/green (deploy.py, `/api/v1/deploy/*`) was retired in favor of canary,
 # a strict superset for traffic purposes (0%/100% reproduces a cutover) plus
 # metrics-gated gradual shift and auto-rollback -- see #3409.
+#
+# These stay plain `def` -- deliberately, and this is the decision #3858 asked
+# to be recorded either way. FastAPI already runs a sync handler in Starlette's
+# threadpool, so rewriting them as `async def` + `run_in_threadpool` moves the
+# same subprocess onto the same pool and buys nothing: the worker is held for
+# exactly as long either way. What actually bounds the damage is bounding the
+# subprocess (`subprocess_bounds`), which is what this issue did -- a probe now
+# releases its worker in five seconds whether the handler is sync or async.
+# `async def` here would be strictly worse: every one of these bodies is
+# blocking, and one forgotten `await` in a future edit blocks the event loop
+# itself rather than one pool worker. Revisit only if a handler gains genuinely
+# concurrent I/O to overlap.
 @api.get("/canary/status")
 def canary_status(request: Request, component: str = "api") -> dict[str, Any]:
     """Return canary rollout status: active flag, traffic weight, stable/canary health/version,
@@ -2738,6 +2750,30 @@ def models_list(request: Request) -> dict[str, Any]:
         raise HTTPException(
             status_code=502, detail=f"Failed to list models from Ollama: {e}"
         ) from e
+
+
+@api.get("/models/required")
+def models_required(request: Request) -> dict[str, Any]:
+    """Report whether Ollama holds the models this install requires (#3824).
+
+    The models are the configured chat model (`[nyxgpt] default_model`) and the
+    configured embedding model (`[rag] embedding_model`) -- both, regardless of
+    whether RAG is currently enabled, because `rag_enabled` is a per-session
+    toggle a user can flip at any moment.
+
+    `nyxgpt ops install` pulls both before it reports the stack up, so this
+    should read ready; the SRE/admin dashboard surfaces it (and offers the
+    pull) for the machine where it does not -- a deleted model, an Ollama
+    pointed at a different store, or a config that named a new model after the
+    last install.
+
+    Answers from `nyxgpt.ops.required_models_status`, the same function
+    `nyxgpt ops status` prints, so the dashboard and the terminal cannot
+    disagree. Never 502s on an unreachable Ollama: `reachable: false` with
+    `present: null` per model is the honest answer, and the ollama service's
+    own health is reported elsewhere on the same page.
+    """
+    return ops_module.required_models_status(cfg=_req_cfg(request))
 
 
 @api.post("/models/pull")

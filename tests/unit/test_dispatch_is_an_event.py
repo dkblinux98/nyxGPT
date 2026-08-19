@@ -1,4 +1,4 @@
-"""The queue kick is an event, not prose (#3882).
+"""Dispatch is an event and rework is an assignment, not prose (#3882).
 
 `READY_FOR_NEXT_ISSUE` in an issue comment made prose into an API. A job `if:`
 can only substring-match, so any comment that *named* the token started work --
@@ -24,7 +24,10 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KICK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "developer_pull_next_issue.yml"
 LIB = REPO_ROOT / "scripts" / "agents" / "lib" / "gh_project.sh"
-TOKEN = "READY_FOR_NEXT" + "_ISSUE"  # split so this file is not itself a trigger
+DEV_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "developer_auto_implement.yml"
+# Split so this file is not itself a mention of either retired token.
+TOKEN = "READY_FOR_NEXT" + "_ISSUE"
+RETRY = "RETRY_" + "IMPLEMENTATION"
 
 
 def _triggers(path: Path) -> dict:
@@ -48,7 +51,8 @@ def test_the_kick_is_not_comment_triggered() -> None:
     )
 
 
-def test_no_producer_writes_the_token() -> None:
+@pytest.mark.parametrize("token", [TOKEN, RETRY])
+def test_no_producer_writes_the_token(token: str) -> None:
     """Deleted, not deprecated: nothing may post it, or it becomes live again."""
     offenders = []
     for path in sorted((REPO_ROOT / "scripts").rglob("*.sh")):
@@ -56,9 +60,30 @@ def test_no_producer_writes_the_token() -> None:
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue  # history in a comment is fine; issuing it is not
-            if TOKEN in stripped:
+            if token in stripped:
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{number}")
-    assert not offenders, f"the retired kick token is still issued at: {offenders}"
+    assert not offenders, f"the retired token {token} is still issued at: {offenders}"
+
+
+@pytest.mark.parametrize("token", [TOKEN, RETRY])
+def test_no_workflow_subscribes_to_the_token(token: str) -> None:
+    """A `contains()` on a comment body is a subscription, wherever it sits."""
+    offenders = []
+    for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "github.event.comment.body" in line and token in line:
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{number}")
+    assert not offenders, f"{token} still gates a workflow at: {offenders}"
+
+
+def test_rework_arrives_as_an_assignment() -> None:
+    """The developer picks work up on assignment and claims the status itself
+    -- the actor doing the work owns the transition. If this workflow ever
+    subscribes to comments again, the #3706/#3790 shape is back."""
+    loaded = yaml.safe_load(DEV_WORKFLOW.read_text(encoding="utf-8"))
+    triggers = loaded[True] if True in loaded else loaded["on"]
+    assert set(triggers) == {"issues"}
+    assert triggers["issues"]["types"] == ["assigned"]
 
 
 def test_the_dispatch_helper_exists_and_names_the_event() -> None:
