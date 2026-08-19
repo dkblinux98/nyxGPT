@@ -1345,6 +1345,25 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/not a published 3\.0\.0 release/)).toBeInTheDocument();
     devDeploy.unmount();
 
+    // A dev deploy whose record predates `source_dir` -- or was written by a
+    // path that never captured it -- still has to say *which* claim it is
+    // making. "working tree shipped from " with nothing after it reads as a
+    // rendering bug; naming the gap says the build is unverifiable rather
+    // than pretending the directory is known.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, dev: true, source_dir: '' })
+      )
+    );
+    const devNoDir = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('DEV BUILD')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/working tree shipped from an unrecorded checkout \(--dev\)/)
+    ).toBeInTheDocument();
+    devNoDir.unmount();
+
     // The artifact path makes the positive claim rather than staying silent:
     // "published release" is the thing an operator wants confirmed.
     server.use(
