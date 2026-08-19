@@ -372,6 +372,39 @@ for component in api web; do
   fi
 done
 
+# The same statement from the other end, and the one the owner actually saw.
+# `list_component_status` above IS what `_wait_for_stack_healthy` polls, so a
+# component missing from it is a component `nyxgpt up` waits its whole timeout
+# for and then names in `Still unhealthy:`. This runner cannot make `up`
+# return 0 -- it has no Docker daemon, so the `docker engine` step fails and
+# `up` returns install's exit code before the health wait ever runs (see
+# $TOLERATED_STEPS) -- so the exit code cannot be asserted here without
+# asserting something untrue. What CAN be asserted is that api/web never
+# appear in that line, which is non-vacuous exactly when the wait did run.
+if grep -q "Still unhealthy" "$WORK/up.log"; then
+  STILL_LINE="$(grep -h "Still unhealthy" "$WORK/up.log" | head -1)"
+  for component in api web; do
+    if printf '%s' "$STILL_LINE" | grep -qE "(^|[ ,:])${component}([,.]|$)"; then
+      fail "nyxgpt up reported $component unhealthy while its service was started: $STILL_LINE (#3853)"
+    else
+      pass "nyxgpt up's health wait did not report $component unhealthy"
+    fi
+  done
+fi
+
+# The resolution has to have engaged, not merely not-failed: on a candidate
+# install the started service is `nyxgpt-api@<line>rc`, so the probe agreeing
+# with `brew services list` is the whole fix. Printed either way -- a stable
+# install has no versioned service and this is simply absent, which is why it
+# is a log line rather than an assertion on the versioned name.
+log "the service names this install actually registered"
+brew services list | grep -E "^(nyxgpt-api|nyxgpt-web)" || true
+for formula in "nyxgpt-api@${RELEASE}rc" "nyxgpt-web@${RELEASE}rc"; do
+  if brew services list | grep -qE "^${formula}[[:space:]]+started"; then
+    pass "$formula is started, and the probe above resolved it (#3853)"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 8. Teardown (#3859).
 #

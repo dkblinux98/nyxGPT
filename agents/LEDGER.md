@@ -753,6 +753,42 @@ rather than mechanism, and nothing can enforce them.
   Source: #3911; `.github/workflows/huddle_session.yml`;
   `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
 
+- **D-030** · 2026-08-19 · developer agent (#3853) — **A service's name is read
+  from what is installed, never asserted from a constant, and a conflict
+  between two formulas is declared by both of them.** Two corrections in one
+  fix, and both are the kind a future session would re-derive wrongly.
+
+  (a) *`conflicts_with` is directional* — checked only when the formula that
+  declares it is the one being installed. Only the rc formula declared one, so
+  candidate-onto-stable was refused and stable-onto-candidate was checked by
+  nothing: brew built the keg to completion and failed at `brew link`, which
+  is **not a guard**, because the keg stays installed. This closes **Q-002**'s
+  practical half — the stable formula now declares its own line's candidate
+  (`build_homebrew_artifacts.render_stable_formula`), and both orders are hard
+  assertions in `macos-brew-smoke.yml`'s `stable-over-candidate` job. That
+  flip **pays the D-026 debt**; a candidate from a *different* release line is
+  not nameable by a formula stamped before it existed, and is handled at
+  runtime by the `superseded brew services` install step instead.
+
+  (b) *The candidate channel's documented caveat was never only about
+  `status`.* `ops install` printed "the service is named `nyxgpt-api@3.0.0rc`,
+  so `ops status` reports this component as not running" and the project read
+  that as an accepted trade. It was not: `nyxgpt up` gates on the **same**
+  probe, so on every rc install it waited its full timeout and exited 2 on a
+  healthy stack — and the candidate channel is the acceptance-testing path, so
+  the one install flow used to accept a release was the one where `up`
+  structurally could not succeed. **A documented caveat about a read-out is
+  not a caveat about the commands that gate on it**; when writing one, name
+  every consumer or fix the read-out. It was fixed rather than re-documented.
+
+  Which service name each caller resolves, and the sweep that found Homebrew
+  to be the only place a published artifact's name varies by channel, are not
+  recorded here — they are in `src/nyxgpt/brew_services.py` and
+  `tests/unit/test_brew_service_names.py`, per the verification retirement.
+  (Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3853; #3860 run 32202943938 (Q-002's reproduction); D-026.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -831,6 +867,10 @@ rather than mechanism, and nothing can enforce them.
   untrusted, and resolving `conflicts_with` *loads* the named formula, so brew
   refuses on trust grounds before it ever evaluates the conflict — #3770's
   shape, and why the job now trusts the whole tap.
+  **Acted on 2026-08-19 (#3853), so this question no longer blocks anything:**
+  the stable formula declares its own line's candidate, both directions are
+  hard assertions in CI, and a cross-line candidate is stopped at install time
+  rather than by packaging. See **D-030**.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a

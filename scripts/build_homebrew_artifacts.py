@@ -18,9 +18,11 @@ Two channels share that machinery (#3727, owner decision 2026-08-11):
   lives in the formula *names*: an rc publish therefore never writes a
   stable formula file at all, and `brew install nyxgpt-api` keeps resolving
   to the latest stable release no matter how many RCs are cut. The
-  candidate formulas declare `conflicts_with` their stable counterparts, so
-  switching channels on one machine is an explicit uninstall rather than a
-  silent clobber.
+  Each channel's formulas declare `conflicts_with` the other's, so switching
+  channels on one machine is an explicit uninstall rather than a silent
+  clobber. **Both** directions, since #3853: `conflicts_with` is checked only
+  when the formula declaring it is the one being installed, so one-sided it
+  guarded one install order and nothing at all in the other (ledger Q-002).
 
   The name carries the **release line** (owner decision 2026-08-12, #3735):
   `nyxgpt-api@3.0.0rc` is a candidate for 3.0.0 and can never silently
@@ -340,6 +342,77 @@ def validate_build_shim(formula_text: str, formula: str) -> None:
         raise ValueError(f"{formula}: the embedded build shim is not valid Python: {exc}") from exc
 
 
+def _insert_after_license(text: str, name: str, lines: list[str]) -> str:
+    """Splice `lines` in as their own stanza just below the formula's `license`.
+
+    Shared by both channels' conflict declarations so they are anchored the
+    same way and fail the same way -- an unanchorable template raises here
+    rather than publishing a formula that silently declares nothing.
+    """
+    match = _LICENSE_RE.search(text)
+    if match is None:
+        raise ValueError(f"{name}: template has no `license` line to anchor conflicts_with to")
+    indent = match.group(1)
+    block = "\n\n" + "\n".join(f"{indent}{line}" if line else "" for line in lines)
+    rest = text[match.end() :]
+    if not rest.startswith("\n\n"):
+        # The template puts `depends_on` straight after `license` -- keep the
+        # blank line the inserted block needs to read as its own stanza.
+        block += "\n"
+    return text[: match.end()] + block + rest
+
+
+def render_stable_formula(template_text: str, name: str, version: str) -> str:
+    """Declare the stable formula's conflict with its own line's candidate (#3853).
+
+    `conflicts_with` is **directional**, which ledger Q-002 established by
+    running it on a clean macos-15 runner (#3860, run 32202943938): only the
+    rc formula declared it, so `brew install nyxgpt-api@3.0.0rc` onto an
+    installed `nyxgpt-api` was correctly refused, while the *other* order was
+    checked by nothing at all. Brew built and installed the stable keg to
+    completion and only then failed `brew link` on the symlink collision --
+    and a failed link is not a guard, because the keg stays installed. That
+    left `stable installed: 1 / candidate installed: 1`: two complete stacks
+    for one component, each registering a `keep_alive true` service on the
+    same port, which is exactly the machine #3853 was reported from.
+
+    The counterpart is derived, never spelled by hand: it is the formula this
+    same script's rc channel stamps for this release line.
+
+    Naming only this line's candidate is deliberate. `nyxgpt-api@2.9.0rc` is a
+    different release line, retired by name at that line's release ceremony,
+    and a formula cannot enumerate candidates that do not exist yet. A
+    candidate from another line still on the machine is caught at runtime by
+    `ops._stop_superseded_brew_services`, which is the fallback for every
+    already-broken machine anyway.
+    """
+    candidate = formula_name(name, "rc", f"{release_line(version)}rc0")
+    return _insert_after_license(
+        template_text,
+        name,
+        [
+            "# The other direction of the candidate channel's own declaration (#3853).",
+            "# `conflicts_with` is directional: until this line existed, installing",
+            f"# {name} onto a machine already carrying {candidate} was checked by",
+            "# nothing -- brew built the keg to completion and only failed `brew link`",
+            "# on the symlink collision, leaving BOTH kegs installed, both registering",
+            "# a `keep_alive true` service on the same port. Established by running it,",
+            "# not by reading: ledger Q-002 / #3860, run 32202943938.",
+            "#",
+            f"# Names this release line's candidate only. Another line's ({name}@X.Y.Zrc",
+            "# for a different X.Y.Z) is retired by name at that line's release ceremony,",
+            "# and a formula cannot enumerate candidates that do not exist yet -- those",
+            "# are caught at runtime by `nyxgpt ops install`'s superseded-service step.",
+            "#",
+            f"# A tap not carrying {candidate}.rb makes brew warn that the conflict names",
+            "# an unknown formula, and warn is all it does (#3753) -- the same benign",
+            "# case the rc formula's own declaration has always had.",
+            f'conflicts_with "{candidate}",',
+            f'  because: "both install the same {name} wrapper and brew service"',
+        ],
+    )
+
+
 def render_rc_formula(template_text: str, name: str, version: str) -> str:
     """Turn a stamped stable formula into its release-candidate counterpart.
 
@@ -356,37 +429,32 @@ def render_rc_formula(template_text: str, name: str, version: str) -> str:
 
     text = text.replace('desc "', f'desc "Release candidate {version} -- ', 1)
 
-    match = _LICENSE_RE.search(text)
-    if match is None:
-        raise ValueError(f"{name}: template has no `license` line to anchor conflicts_with to")
-    indent = match.group(1)
     # The counterpart is derived, never spelled by hand: it is exactly the
     # formula the stable channel of *this* script stamps, so the reference can
     # never dangle at a name nothing publishes.
     stable = formula_name(name, "stable")
-    block = "\n\n" + "\n".join(
+    return _insert_after_license(
+        text,
+        name,
         [
-            f"{indent}# Acceptance-only channel (#3727): `brew install {stable}` must always",
-            f"{indent}# resolve to the latest stable release, so this is a separate formula",
-            f"{indent}# rather than a newer version of that one. Installing both would fight",
-            f"{indent}# over the same bin wrapper and the same brew service name.",
-            f"{indent}#",
-            f"{indent}# A tap that does not (yet) carry {stable}.rb makes brew warn that the",
-            f"{indent}# conflict names an unknown formula, and warn is all it does -- the",
-            f"{indent}# install proceeds (#3753). The declaration is deliberately kept",
-            f"{indent}# unconditional: Homebrew resolves conflicts_with at load time with no",
-            f"{indent}# way to make one tolerant, and dropping it to silence a warning would",
-            f"{indent}# trade a cosmetic message for the silent channel clobber it prevents.",
-            f'{indent}conflicts_with "{stable}",',
-            f'{indent}  because: "both install the same {stable} wrapper and brew service"',
-        ]
+            f"# Acceptance-only channel (#3727): `brew install {stable}` must always",
+            "# resolve to the latest stable release, so this is a separate formula",
+            "# rather than a newer version of that one. Installing both would fight",
+            "# over the same bin wrapper and the same brew service name.",
+            "#",
+            f"# A tap that does not (yet) carry {stable}.rb makes brew warn that the",
+            "# conflict names an unknown formula, and warn is all it does -- the",
+            "# install proceeds (#3753). The declaration is deliberately kept",
+            "# unconditional: Homebrew resolves conflicts_with at load time with no",
+            "# way to make one tolerant, and dropping it to silence a warning would",
+            "# trade a cosmetic message for the silent channel clobber it prevents.",
+            "#",
+            f"# The mirror of this lives on {stable} since #3853 -- one direction",
+            "# declared is not a guard, it is a guard on one of two orders.",
+            f'conflicts_with "{stable}",',
+            f'  because: "both install the same {stable} wrapper and brew service"',
+        ],
     )
-    rest = text[match.end() :]
-    if not rest.startswith("\n\n"):
-        # The template puts `depends_on` straight after `license` -- keep the
-        # blank line the inserted block needs to read as its own stanza.
-        block += "\n"
-    return text[: match.end()] + block + rest
 
 
 def build(
@@ -451,6 +519,8 @@ def build(
         )
         if channel == "rc":
             stamped = render_rc_formula(stamped, name, version)
+        else:
+            stamped = render_stable_formula(stamped, name, version)
         validate_build_shim(stamped, name)
         formula_path = out_dir / f"{formula_name(name, channel, version)}.rb"
         formula_path.write_text(stamped, encoding="utf-8")

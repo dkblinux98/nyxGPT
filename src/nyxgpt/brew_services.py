@@ -28,6 +28,34 @@ It lives in its own module rather than in either caller for the reason
 is installed cannot each keep a copy of the answer. `ops.py` already imports
 `self_heal.py`, so the shared vocabulary has to sit below both -- this module
 imports neither, and nothing else in the package.
+
+**The class sweep (#3853 AC5), and why it is confined to Homebrew.** The
+defect is "an artifact is resolved by a hard-coded name that a versioned
+install changes", so every other service/artifact name nyxGPT looks up was
+checked for the same shape:
+
+* **Linux systemd (`NATIVE_SYSTEMD_SERVICES`)** -- not affected. The unit name
+  is not derived from a package: `ops/systemd/nyxgpt-api.service` is a
+  template nyxGPT renders itself, identical in dev and artifact mode
+  (`_install_and_activate_native_systemd_unit`), and the Linux artifact
+  install is a tarball into `~/.nyxGPT/opt/<service>`, not a versioned
+  package manager entry. There is no `nyxgpt-api@3.0.0rc.service` for
+  anything to miss.
+* **Docker (`NATIVE_CASSANDRA_CONTAINER`, `TERRAFORM_CONTAINERS`)** and
+  **Kubernetes (`K8S_CORE_POD_APPS`)** -- not affected. Those names are
+  chosen by nyxGPT at `docker run --name` / in `k8s/*.yaml`; the image tag
+  carries the version, and the name does not.
+* **Homebrew launchd labels** -- already correct, and for this exact reason:
+  `ops._brew_service_launchd_labels` matches `homebrew.mxcl.nyxgpt*` by
+  prefix rather than against a known formula list, so a teardown reaches a
+  release line the running build has never heard of (#3859).
+* **Log paths** -- unaffected by design: both channels' formulas declare
+  `log_path var/"log/nyxgpt-api.log"`, so `nyxgpt ops logs api` needs no
+  channel-specific path.
+
+So Homebrew is the only place a *published artifact's* name varies with the
+release channel, which is why the resolution lives here and not in a
+service-manager-agnostic layer.
 """
 
 from __future__ import annotations

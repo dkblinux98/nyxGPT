@@ -234,6 +234,8 @@ Two guardrails make this safe to point at any tag:
 
 ---
 
+<a id="candidate-channel"></a>
+
 ## Release-candidate formulas (rc channel)
 
 Acceptance testing has to be able to install *unreleased* code on macOS the
@@ -273,11 +275,36 @@ scripts/supersede_incomplete_rc_releases.sh 3.0.0 --repo dkblinux98/nyxGPT --dry
 ```
 
 Everything past `brew install` is identical to the stable formulas -- same
-tarball contents, same self-contained Cellar keg, same wrappers, same
-service names. `scripts/build_homebrew_artifacts.py --channel rc` derives
-the candidate formulas from the same `homebrew/tap/*.rb.tmpl` templates, so
-the two channels cannot drift about what the keg installs; only the class
-name, the description and the conflict declaration differ.
+tarball contents, same self-contained Cellar keg, same wrappers.
+`scripts/build_homebrew_artifacts.py --channel rc` derives the candidate
+formulas from the same `homebrew/tap/*.rb.tmpl` templates, so the two
+channels cannot drift about what the keg installs; only the class name, the
+description and the conflict declaration differ.
+
+### The service is named after the formula
+
+Homebrew names a service after the formula that installed it, so a candidate
+install registers **`nyxgpt-api@3.0.0rc`**, not `nyxgpt-api`:
+
+```
+$ brew services list
+Name               Status
+nyxgpt-api@3.0.0rc started
+nyxgpt-web@3.0.0rc started
+```
+
+That is normal and correct — it is what lets both channels be installed and
+started independently. nyxGPT resolves a component's service name from
+`brew services list` rather than assuming the stable name, so
+`nyxgpt ops status`, `nyxgpt up`'s health wait, `nyxgpt ops restart/stop`
+and the self-heal watchdog all act on whichever formula is actually
+registered (`src/nyxgpt/brew_services.py`). When a machine carries both — an
+older release's keg alongside a candidate — the one that is **running** is
+the one reported.
+
+Log files are unchanged: both channels write
+`$(brew --prefix)/var/log/nyxgpt-api.log` and `nyxgpt-web.log`, so
+`nyxgpt ops logs api` needs no channel-specific path.
 
 ### `brew install nyxgpt-api` is never affected
 
@@ -318,10 +345,9 @@ an unloadable `@`, so that mistake cannot come back.
 
 ### Switching a machine between channels
 
-The candidate formulas declare `conflicts_with` their stable counterparts,
-because both install the same `nyxgpt-api`/`nyxgpt-web` wrappers and the
-same brew service names. Switching channels is an explicit uninstall, never
-a silent swap:
+Each channel's formulas declare `conflicts_with` the other's, in **both**
+directions, because both install the same `nyxgpt-api`/`nyxgpt-web`
+wrappers. Switching channels is an explicit uninstall, never a silent swap:
 
 ```bash
 # stable -> release candidate
@@ -341,16 +367,41 @@ install throughout, so the `com.nyxgpt.*` agents and the containers are meant
 to stay. Removing nyxGPT altogether is a different sequence — see
 [Removing nyxGPT](#removing-nyxgpt), and run `nyxgpt ops uninstall` first.
 
-If the tap does not carry the stable formula the candidate names — a tap
-whose stable formulas have not been published yet — `brew` warns that the
-conflict refers to an unknown formula and **carries on installing**. The
-warning is cosmetic and the declaration is deliberately left unconditional:
-Homebrew resolves `conflicts_with` when it loads the formula and offers no
-way to make one tolerant of a missing counterpart, so removing it to silence
-the warning would trade a cosmetic message for the silent channel clobber it
-exists to prevent. The name itself cannot go stale — it is derived from the
-stable formula the same publishing script stamps
-(`scripts/build_homebrew_artifacts.py`).
+**Both directions, deliberately.** `conflicts_with` is *directional*: it is
+checked when the formula that declares it is being installed, and not
+otherwise. Until #3853 only the candidate formula declared one, so
+`brew install nyxgpt-api@3.0.0rc` onto an installed `nyxgpt-api` was refused
+(`Cannot install ... because conflicting formulae are installed`) while the
+opposite order was checked by nothing at all — brew built the stable keg to
+completion and only then failed `brew link` on the symlink collision, which
+is not a guard, because the keg stays installed. The machine ends with two
+complete stacks for one component, each registering a `keep_alive true`
+service on the same port; launchd relaunches the loser of the port race
+forever. This is measured behaviour, not a reading of the docs:
+`macos-brew-smoke.yml`'s `stable-over-candidate` job runs both orders on a
+clean macOS runner and asserts each one.
+
+If the counterpart named by a conflict is **not in the tap** — a tap whose
+stable formulas have not been published yet, or a line whose candidates the
+release ceremony has already retired — `brew` warns that the conflict refers
+to an unknown formula and **carries on installing**. That is the absent-name
+case only, and it is cosmetic; it is not the case above, where the
+counterpart is installed. The declaration is deliberately left
+unconditional: Homebrew resolves `conflicts_with` when it loads the formula
+and offers no way to make one tolerant of a missing counterpart, so removing
+it to silence the warning would trade a cosmetic message for the silent
+channel clobber it exists to prevent. Neither name can go stale — each is
+derived from the formula the same publishing script stamps for the other
+channel (`scripts/build_homebrew_artifacts.py`).
+
+Because a formula can only name counterparts that exist when it is stamped,
+the stable formula names **its own release line's** candidate. A candidate
+from a *different* line left on the machine is caught at install time
+instead: `nyxgpt ops install` / `nyxgpt up` run a `superseded brew services`
+step that stops any api/web service belonging to a different formula than the
+one this install owns, before starting its own — so the port is free and
+nothing is left crash-looping. The keg is not removed; `nyxgpt ops uninstall`
+and `brew uninstall` are what remove software.
 
 Candidate formulas are **acceptance-only**. They are not upgraded on a
 schedule, carry no support expectation, and are removed from the tap by the
