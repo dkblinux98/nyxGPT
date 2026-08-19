@@ -504,9 +504,10 @@ rather than mechanism, and nothing can enforce them.
   Source: #3809; owner acceptance round 2026-08-16 (testing #3745).
 
 - **D-020** · 2026-08-18 · owner — **`claude[bot]` is an allowed author for
-  the sanctioned comment triggers** (`READY_FOR_NEXT_ISSUE` on
-  `notify_scrum_ready.yml`, `@review` on `claude-code-review.yml`, which also
-  passes `allowed_bots: "claude"` to the review action). Every GitHub write
+  the sanctioned comment triggers** (`@review` on `claude-code-review.yml`,
+  which also passes `allowed_bots: "claude"` to the review action).
+  **The `READY_FOR_NEXT_ISSUE`/`notify_scrum_ready.yml` half of this entry is
+  superseded — see S-003.** What remains true is the identity fact. Every GitHub write
   from a Claude remote session carries that App identity — the session proxy
   rewrites all credentials, so no PAT changes it (verified 2026-08-18: a
   PAT-signed reviewer request still produced a `claude[bot]`-actored run).
@@ -1141,6 +1142,22 @@ them.
 - **S-001** — ~~"master/main is human controlled: the owner runs the master
   fast-forward by hand."~~ Superseded 2026-08-12 by **D-003** — the ceremony runs
   unattended after the owner moves the tracking issue to `For Release`.
+
+- **S-003** — ~~"The developer queue is kicked by posting
+  `READY_FOR_NEXT_ISSUE` as a comment on the release tracking issue."~~
+  Superseded 2026-08-19 by **D-028** (#3882/#3917): the token was **deleted,
+  not deprecated**. `developer_pull_next_issue.yml` subscribes to
+  `repository_dispatch: [dispatch-next-issue]` and to nothing else, so the
+  comment is inert — it posts, it reads like an action, and no run starts.
+  **The kick is `dispatch_next_issue` (`scripts/agents/lib/gh_project.sh`),
+  and the way to start work on a specific issue is to assign
+  `myGPT-developer-agent` to it** (claimable from `Backlog`, `In Review` or
+  `In Progress`; the held lanes stay held per **D-001**/**D-008**).
+
+  Listed because the belief outlived the mechanism by a day and cost a real
+  stall: on 2026-08-19 a shepherding session posted comment kicks across
+  several hours, reported them as dispatches, and none of them fired. A
+  session reading **D-020** alone would repeat it.
 
 - **S-002** — ~~"Improvements never gate a feature's move to `For Release`"~~
   (owner decision, 2026-08-01). Superseded 2026-08-12 by **D-001**/**D-002**: an
