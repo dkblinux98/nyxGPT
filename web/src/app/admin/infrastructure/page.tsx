@@ -220,6 +220,9 @@ type CloudDeployStatus = {
   instance_type: string;
   region: string;
   profiles: string[];
+  // Where the deployment's chat sessions live (#3865). Empty when the deploy
+  // record predates the flag, which is not the same claim as 'file'.
+  session_backend: string;
   connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
@@ -999,6 +1002,23 @@ export default function InfrastructurePage() {
                 />
                 <Row label="Region" value={cloud.region} />
                 <Row label="Observability profiles" value={cloud.profiles.join(', ')} />
+                {/* #3865: a cloud deploy used to run the back-compat `file`
+                    backend silently, so chats lived as JSON on the instance's
+                    disk and no other mode could see them. Reported here
+                    because it is the kind of state that is invisible until
+                    someone goes looking for a session that is not there.
+                    Observed, never driven — the pointer below names the
+                    wrapped command that changes it. */}
+                <Row
+                  label="Chat sessions"
+                  value={
+                    cloud.session_backend === 'cassandra'
+                      ? 'Cassandra (nyxgpt.chat_sessions) — shared with every mode pointed at the same Cassandra'
+                      : cloud.session_backend === 'file'
+                        ? 'JSON files on the instance’s own disk — not shared with any other mode, and lost with the instance'
+                        : 'not recorded — this deploy predates the session-backend flag; `nyxgpt cloud ops session-backend` reports what the instance is actually running'
+                  }
+                />
                 <Row
                   label="Access tunnel"
                   value={
