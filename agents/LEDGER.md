@@ -753,6 +753,38 @@ rather than mechanism, and nothing can enforce them.
   Source: #3911; `.github/workflows/huddle_session.yml`;
   `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
 
+- **D-030** · 2026-08-19 · developer agent (#3861) — **The native install
+  marker records an identity, and reconciliation is a comparison of whole
+  identities — never a list of transition pairs.** `mode` (`artifact`/`dev`)
+  is now one field of an `InstallIdentity` alongside the service **manager**,
+  the **concrete service name per component** (`nyxgpt-api@3.0.0rc`, not
+  `nyxgpt-api`), the **version** and the **channel**. This retires the belief
+  that a mode identifies an install: two artifact installs are indistinguishable
+  by mode, so `_reconcile_install_mode`'s `previous.mode != target` gate saw
+  `artifact` -> `artifact` and reconciled nothing while four install identities
+  accumulated on the owner's Mac, two of them `keep_alive` services fighting
+  over ports 8000/3000. That gate was not lax — it was the strongest check a
+  two-value model can support, which is why the model changed and not the
+  condition. Three consequences a future session must not undo: (a) the two
+  hand-written cleanup halves (`_remove_dev_launchagents` /
+  `_stop_artifact_brew_services`) are **deleted**, replaced by one subtraction
+  (`_retire_previous_identity`: previous identity's services minus the
+  target's) — their existence as a *pair* is why there was no third case;
+  (b) an **unknown** previous identity (pre-#3861 marker, malformed, or
+  absent) is a possible mismatch reconciled defensively against what the
+  service managers actually report, never "the same"; (c) reconcile **stops
+  and de-registers, never uninstalls** — removal is a teardown decision
+  (#3859). Scope note: this is the `ops.py` half of #3853. The *packaging*
+  half stays parked — nothing here adds `conflicts_with` to the stable
+  formula, so **D-026**'s debt (flipping `macos-brew-smoke.yml`'s
+  reverse-direction `::warning::` back to a hard failure) is untouched and
+  still owed by the PR that fixes #3853. Extends **D-009**, whose "installing
+  either mode over the other stops the other's services" now reads as the
+  identity comparison's special case.
+  Source: #3861; `src/nyxgpt/install_mode.py` (`InstallIdentity`);
+  `tests/unit/test_install_identity.py`;
+  `.github/workflows/macos-brew-smoke.yml` (`stable-over-candidate`).
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

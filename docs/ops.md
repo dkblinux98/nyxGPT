@@ -426,7 +426,8 @@ Constraints, by design:
   [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) print `Install mode (native
   api/web): dev (editable checkout at …)` and tag a *running* `api`/`web`
   with `[dev]`, so a dev-mode pass can't be read as an artifact-path pass.
-  The mode is recorded in `~/.nyxGPT/install-mode.json`.
+  The mode is recorded in `~/.nyxGPT/install-mode.json`, as one field of the
+  [install identity](#the-install-identity) below.
 - **Per deployment.** `--dev` means the same thing for the Kubernetes and
   Terraform deployments — the api/web images built from the working tree
   instead of from the published ones (see
@@ -437,11 +438,15 @@ Constraints, by design:
   separate `Install mode (…)` lines because they are separate deployments,
   are often in different modes, and one machine can run all three at once;
   none ever speaks for another.
-- **Switching modes is reconciled, not layered.** Installing one mode over
-  the other stops the previous mode's services first (dev LaunchAgents are
-  unloaded and removed; the artifact path's brew services are stopped) and
-  rebuilds the shared api venv from empty, so nothing is left holding ports
-  8000/3000 or racing for the `nyxgpt` import.
+- **Switching installs is reconciled, not layered.** Installing anything
+  over anything else stops the previous install's services first (dev
+  LaunchAgents are unloaded and removed; brew services are stopped) and,
+  when the mode, the service manager or the service names changed, rebuilds
+  the shared api venv from empty — so nothing is left holding ports
+  8000/3000 or racing for the `nyxgpt` import. This is a comparison of whole
+  [install identities](#the-install-identity), not a mode switch: a
+  candidate keg installed over a stable one is reconciled exactly like a dev
+  install over an artifact one.
 - Self-heal follows the recorded mode too: in dev mode it restarts the
   LaunchAgents rather than `brew services`, so the watchdog can't start an
   old keg on top of a running dev process.
@@ -457,6 +462,47 @@ dev-server wrapper, mode recording, and the switch back to the artifact path)
 are executed on a real runner by `linux-native-smoke.yml`'s
 `linux-native-dev-smoke` job; the macOS launchd load is owner acceptance, for
 the reason in [live-verification-ci.md](live-verification-ci.md#what-ci-cannot-cover-owner-acceptance-only).
+
+### The install identity
+
+`~/.nyxGPT/install-mode.json` records **which build** the native `api`/`web`
+came from, not merely whether it was an artifact or a checkout:
+
+| Field | What it is | Example |
+|---|---|---|
+| `mode` | `artifact` or `dev` — one field of the identity, not the whole of it | `artifact` |
+| `manager` | the service manager that registered `api`/`web` | `brew`, `launchd`, `systemd` |
+| `services` | the **concrete** name each component is registered under | `api=nyxgpt-api@3.0.0rc` |
+| `version` | the version the services were installed at | `3.0.0rc12` |
+| `channel` | which published channel it came from | `stable`, `candidate`, `dev` |
+
+`nyxgpt ops status`, `nyxgpt ops doctor` and the dashboard's
+[Infrastructure](ui.md) page all print this, so `Install mode (native
+api/web): artifact …` now names the build rather than only its category.
+
+**Why it is an identity and not a mode.** Two artifact installs are
+indistinguishable by mode: installing `nyxgpt-api@3.0.0rc` over an existing
+`nyxgpt-api` 2.1.0 records `artifact` where `artifact` already stood. While
+that was the whole model, an install had nothing to compare and reconciled
+nothing, so both kegs kept `keep_alive` services registered on ports
+8000/3000 and restarted into each other indefinitely. Reconciliation is now a
+comparison of whole identities: *any* difference retires the services the
+previous identity registered that the new one will not — which covers a
+version bump, a stable↔candidate move, a re-tap and a dev↔artifact switch
+without any of them being enumerated anywhere.
+
+**An unrecorded identity is not a matching one.** A marker written before
+identities were recorded, a marker that cannot be parsed, and no marker at
+all all read as *unknown*, and an unknown previous identity is reconciled
+defensively against what the service managers actually report — never
+assumed to be the install about to happen. `nyxgpt ops doctor` reports the
+same reading from the other end: `api`/`web` services registered on the
+machine that the recorded install does not own are listed by name, which is
+what makes a second install visible instead of silent.
+
+On Linux the manager carries no signal — both modes drive the same
+`nyxgpt-api`/`nyxgpt-web` systemd `--user` units — so there the version and
+channel are the entire difference between two installs.
 
 ### `--terraform`/`--kubernetes`: the other local deployment paths
 
@@ -767,13 +813,22 @@ nyxgpt ops doctor
 Checks include:
 
 - The **install mode** each deployment on the machine is on (printed before
-  the findings, same vocabulary as `status`). In dev mode it FAILs when the
+  the findings, same vocabulary as `status`), including the native install's
+  full [identity](#the-install-identity) — which build, from which channel,
+  registered under which service names. In dev mode it FAILs when the
   recorded checkout is gone — the api/web services are then running code
   nothing can rebuild — or when that checkout has no `web/node_modules` for
   the dev server to start from. Fix: `nyxgpt up --dev` from a checkout, or
   `nyxgpt up` to return to the artifact path. A running dev-mode Terraform
   deployment whose checkout is gone FAILs for the same reason: its images
   cannot be rebuilt.
+- **`api`/`web` services no install on this machine claims.** A second keg
+  pair, or a leftover set from an earlier release, is listed by name against
+  the recorded identity — two installs registered on the same ports keep
+  restarting into each other, and until this check existed nothing in the
+  product could say so. A machine whose marker predates identities is
+  reported as exactly that, rather than as a clean bill of health. Fix:
+  `nyxgpt up` (add `--dev` from a checkout), which reconciles them.
 - Required files under `~/.nyxGPT/`
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services

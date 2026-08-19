@@ -3961,10 +3961,14 @@ def _discover_native_services() -> list[tuple[str, str]]:
         return []
     found: list[tuple[str, str]] = [
         (MANAGER_BREW, name)
-        for name in sorted(_brew_services_snapshot())
         # `nyxgpt-` covers both channels' formulas for both components and
         # excludes `ollama`, which is the same brew service in every mode.
-        if name.startswith("nyxgpt-")
+        # `brew services list` lists every keg that *has* a service file,
+        # registered or not, and reports the unregistered ones as `none` --
+        # those are not competing for anything, so reporting them would make
+        # `doctor` name a keg that is merely installed as if it were running.
+        for name, state in sorted(_brew_services_snapshot().items())
+        if name.startswith("nyxgpt-") and state != "none"
     ]
     la_dir = Path.home() / "Library" / "LaunchAgents"
     found.extend(

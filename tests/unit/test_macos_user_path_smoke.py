@@ -533,6 +533,90 @@ def test_the_reverse_direction_comment_records_the_debt_not_a_refusal() -> None:
     )
 
 
+IDENTITY_STEP = "The install-identity reconcile leaves exactly one service set (#3861)"
+
+
+def test_the_conflict_job_also_proves_the_install_identity_reconcile() -> None:
+    """#3861's executed evidence rides this job rather than a second one.
+
+    The packaging steps above answer "can two channels be installed at once?".
+    They say nothing about what an install then *does* about the one it is
+    replacing -- which is the question #3861 is about, and the one whose
+    answer was "nothing" while two `keep_alive` service sets fought over
+    ports 8000/3000 on the owner's Mac. Reaching that state needs no fault
+    injection here: both kegs are really installed by the steps above.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "brew services start nyxgpt-api@3.0.0rc" in run and (
+        "brew services start nyxgpt-api" in run
+    ), (
+        "the step no longer registers both service sets, so it reconciles a "
+        "machine that was never in the state the reconcile exists for"
+    )
+    assert "_reconcile_install_mode" in run, (
+        "the step no longer runs the real reconcile -- an assertion about the "
+        "registered services that nothing reconciled proves nothing"
+    )
+    for direction in (
+        "reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api",
+        "reconcile_from nyxgpt-api nyxgpt-api@3.0.0rc",
+    ):
+        assert direction in run, (
+            f"the {direction!r} direction is gone; `conflicts_with` is directional "
+            "and so is the leftover it leaves behind, so both are covered here"
+        )
+    assert "still registered after the reconcile (#3861)" in run and "exit 1" in run, (
+        "the step no longer fails when the previous install's service survives "
+        "the reconcile, which is the entire defect"
+    )
+
+
+def test_the_identity_step_proves_the_old_gate_could_not_have_caught_it() -> None:
+    """Non-vacuity (#3775): a check that never sees the failing state is not a check.
+
+    The pre-#3861 gate was `previous.mode != target`, and both sides of this
+    scenario are `artifact` -- so the old code could not have acted, and this
+    step is genuine evidence rather than a demonstration of something already
+    working. The moment that stops being true the model has regressed to
+    something a mode comparison can see, and the step says so instead of
+    passing.
+    """
+    run = _conflict_step(IDENTITY_STEP)["run"]
+    assert "previous.mode != target" in run, (
+        "the step no longer states which gate it is proving insufficient, so a "
+        "green run cannot be read as evidence about the artifact-to-artifact case"
+    )
+    assert "old_gate_would_have_acted" in run and "sys.exit" in run, (
+        "the step no longer FAILS when the two identities differ by mode; it "
+        "would then pass on a scenario the pre-#3861 code already handled"
+    )
+    assert "nothing would be retired" in run, (
+        "the step no longer checks that the recorded previous service is not "
+        "the target's own -- it would then assert the absence of a service the "
+        "reconcile was never asked to stop"
+    )
+
+
+def test_the_rc_keg_is_stamped_so_the_channel_it_detects_is_its_own() -> None:
+    """The candidate keg has to declare a candidate version, or the step lies.
+
+    `ops._native_service_version` reads the installed distribution's metadata
+    to decide which channel's formula an artifact install resolves. The rc
+    tarball vendors `pyproject.toml` verbatim, so an unstamped checkout would
+    put the STABLE version inside the candidate keg -- and the identity step
+    would detect "stable" from inside the candidate's own venv, quietly
+    measuring the same channel twice.
+    """
+    run = _job_run_text(_workflow()["jobs"]["stable-over-candidate"])
+    assert 'version = "3.0.0rc0"' in run, (
+        "the rc build no longer stamps a candidate version into pyproject.toml, "
+        "so the candidate keg's venv declares the stable version"
+    )
+    assert "pyproject.toml.orig" in run, (
+        "the stamp is no longer restored, so every step after it sees a mutated " "checkout"
+    )
+
+
 @pytest.mark.parametrize("formula", API_FORMULAS, ids=lambda p: p.name)
 def test_api_formula_test_blocks_run_the_cli(formula: Path) -> None:
     """`import nyxgpt.app` resolving is true of a keg with no reachable CLI."""

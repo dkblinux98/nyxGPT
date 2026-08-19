@@ -278,9 +278,10 @@ in ops.md) has no api/web keg for `brew services` to attach to, so
 
 `ollama` and `cassandra` are unchanged in either mode. Self-heal reads the
 recorded mode (`~/.nyxGPT/install-mode.json`, written by
-`nyxgpt ops install`) rather than guessing: healing a dev machine with
-`brew services restart` would start the *old keg's* api onto the port the
-dev process is already holding. On Linux both modes drive the same
+`nyxgpt ops install` as one field of the
+[install identity](ops.md#the-install-identity)) rather than guessing:
+healing a dev machine with `brew services restart` would start the *old
+keg's* api onto the port the dev process is already holding. On Linux both modes drive the same
 `nyxgpt-api`/`nyxgpt-web` systemd --user units -- only the wrapper those
 units exec differs -- so nothing about healing changes there.
 

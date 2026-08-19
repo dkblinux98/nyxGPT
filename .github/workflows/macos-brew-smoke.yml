@@ -630,8 +630,29 @@ jobs:
           # formula that is really in the tap.
           python scripts/build_homebrew_artifacts.py 3.0.0 dist/stable \
             "file://${PWD}/dist/stable/dist"
+
+          # The rc tarball vendors `pyproject.toml` verbatim, so without this
+          # the candidate keg's venv would install a distribution declaring
+          # the STABLE version -- and `nyxgpt.ops._native_service_version`
+          # reads exactly that metadata to decide which channel's formula an
+          # artifact install resolves (`_remote_tap_formula`). A real rc tag
+          # carries the bumped version in pyproject; a keg built from an
+          # unstamped checkout does not, which would make the identity step
+          # below detect "stable" while sitting inside the candidate's own
+          # keg. Stamp it for the rc build only, then put it back so nothing
+          # after this step sees a mutated checkout.
+          cp pyproject.toml "$RUNNER_TEMP/pyproject.toml.orig"
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("pyproject.toml")
+          p.write_text(p.read_text().replace('version = "3.0.0"', 'version = "3.0.0rc0"', 1))
+          PY
+          grep -m1 '^version' pyproject.toml
           python scripts/build_homebrew_artifacts.py 3.0.0rc0 dist/rc \
             "file://${PWD}/dist/rc/dist" --channel rc
+          cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml
+          grep -m1 '^version' pyproject.toml
+
           ls -1 dist/stable/*.rb dist/rc/*.rb
 
       - name: Create a tap carrying both channels
@@ -792,6 +813,134 @@ jobs:
           fi
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the stable install attempt"; exit 1; }
           nyxgpt --version || { echo "::error::nyxgpt is on PATH but does not run after the stable install attempt"; exit 1; }
+
+      - name: "The install-identity reconcile leaves exactly one service set (#3861)"
+        # Executed evidence for #3861 (D-006), on the job #3860 already built
+        # for this exact machine state rather than a second one.
+        #
+        # The packaging steps above answer "can two channels be installed at
+        # once?" (yes, in one direction -- that is #3853). This step answers
+        # the question #3861 is about: once they are, does an install
+        # *reconcile* the previous one, or does it leave two `keep_alive`
+        # service sets registered on ports 8000/3000 the way the owner's Mac
+        # did for seven hours?
+        #
+        # No fault injection is needed to reach the failing state -- both kegs
+        # are really installed here, and `brew services start` really
+        # registers both. What DOES need proving is that the fix is what
+        # removes it, so the driver first prints the old gate's own verdict:
+        # `previous.mode != target` is `artifact != artifact`, i.e. False. The
+        # pre-#3861 code could not have acted on this machine, and the step
+        # fails if that stops being true (the model would then be back to
+        # something a mode comparison can see, and this evidence would be
+        # measuring nothing).
+        #
+        # Both directions run, using each keg's own venv python: the candidate
+        # keg's declares 3.0.0rc0 (stamped above) so it detects the candidate
+        # channel, the stable keg's declares 3.0.0 so it detects the stable
+        # one. api only, for the same reason the rest of this job is api only.
+        run: |
+          set -euo pipefail
+
+          reconcile_from() {
+            # $1 = keg whose venv python runs the reconcile (the `nyxgpt` the
+            #      operator would be invoking), $2 = the api service name the
+            #      marker records as the PREVIOUS install.
+            local keg="$1" previous_api="$2"
+            local py
+            py="$(brew --prefix "$keg")/libexec/venv/bin/python3"
+            test -x "$py" || { echo "::error::no venv python in $keg"; exit 1; }
+            NYXGPT_PREVIOUS_API="$previous_api" "$py" - <<'PY'
+          import os
+          import sys
+
+          from nyxgpt import install_mode, ops
+          from nyxgpt.install_mode import INSTALL_MODE_ARTIFACT, InstallIdentity
+
+          previous_api = os.environ["NYXGPT_PREVIOUS_API"]
+          previous = InstallIdentity.build(
+              mode=INSTALL_MODE_ARTIFACT,
+              manager="brew",
+              services={"api": previous_api},
+              version="0.0.0",
+              channel="unknown",
+          )
+          install_mode.write_install_mode(INSTALL_MODE_ARTIFACT, None, identity=previous)
+
+          target = ops._native_install_identity(dev=False)
+          print(f"previous: {previous.detail()}")
+          print(f"target:   {target.detail()}")
+
+          # Non-vacuity: the gate this change replaced compared modes, and
+          # both of these ARE artifact installs. If this ever prints True the
+          # step is no longer evidence of anything.
+          old_gate_would_have_acted = previous.mode != target.mode
+          print(f"pre-#3861 gate (previous.mode != target): {old_gate_would_have_acted}")
+          if old_gate_would_have_acted:
+              sys.exit("the two identities differ by MODE -- this is not the artifact-to-artifact case")
+
+          if previous_api in target.service_names:
+              sys.exit(f"{previous_api} is the target's own service -- nothing would be retired")
+
+          results = ops._reconcile_install_mode(dev=False)
+          for r in results:
+              print(("ok   " if r.ok else "FAIL ") + r.message + (f" | {r.details}" if r.details else ""))
+          sys.exit(0 if all(r.ok for r in results) else "a reconcile step failed")
+          PY
+          }
+
+          # Mirrors `ops._discover_native_services`: `brew services list` lists
+          # every keg that has a service file, and reports the unregistered
+          # ones as `none` -- so a name alone does not mean "registered", and
+          # a check that ignored the state column would pass the moment the
+          # stable keg was merely installed.
+          registered() {
+            brew services list | awk '$1 ~ /^nyxgpt-/ && $2 != "none" {print $1}' | sort | tr '\n' ' '
+          }
+
+          echo "=== register BOTH service sets: the state the owner's Mac was in ==="
+          brew services start nyxgpt-api || true
+          brew services start nyxgpt-api@3.0.0rc || true
+          brew services list || true
+          before="$(registered)"
+          echo "registered before: $before"
+          case "$before" in
+            *"nyxgpt-api "*|*"nyxgpt-api") ;;
+            *) echo "::error::the stable keg registered no brew service -- this step is measuring nothing"; exit 1 ;;
+          esac
+          case "$before" in
+            *nyxgpt-api@3.0.0rc*) ;;
+            *) echo "::error::the candidate keg registered no brew service -- this step is measuring nothing"; exit 1 ;;
+          esac
+
+          echo "=== a candidate install over a recorded stable retires the stable service ==="
+          reconcile_from nyxgpt-api@3.0.0rc nyxgpt-api
+          after="$(registered)"
+          echo "registered after: $after"
+          case "$after" in
+            *nyxgpt-api@3.0.0rc*) ;;
+            *) echo "::error::the candidate's own service was retired -- the target must never retire itself"; exit 1 ;;
+          esac
+          case "$after" in
+            *"nyxgpt-api "*|*"nyxgpt-api")
+              echo "::error::the previously-recorded stable service is still registered after the reconcile (#3861)"
+              exit 1 ;;
+          esac
+
+          echo "=== and the reverse: a stable install over a recorded candidate retires the candidate ==="
+          brew services start nyxgpt-api@3.0.0rc || true
+          reconcile_from nyxgpt-api nyxgpt-api@3.0.0rc
+          after="$(registered)"
+          echo "registered after: $after"
+          case "$after" in
+            *nyxgpt-api@3.0.0rc*)
+              echo "::error::the previously-recorded candidate service is still registered after the reconcile (#3861)"
+              exit 1 ;;
+          esac
+
+          echo "=== the machine is still usable ==="
+          command -v nyxgpt
+          nyxgpt --version
 
       - name: Install logs on failure
         if: failure()
