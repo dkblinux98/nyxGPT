@@ -350,14 +350,53 @@ jobs:
           fi
 
           if [[ -z "$ISSUE" ]]; then
-            # A PR that closes no issue is legitimate but rare, and the rest
-            # of this job is all issue-side. Stop loudly rather than guess.
-            echo "::error::PR #$PR closes no issue -- no linked issue, and no 'Closes #N' in the body"
-            exit 1
+            # A PR that closes no issue is legitimate but rare (owner rule,
+            # 2026-08-19). It used to `exit 1` here, ahead of EVERY verdict
+            # branch, so an issue-less PR could not be merged, sent back, or
+            # escalated -- the automation could not execute any decision at
+            # all, and each verdict re-produced the same red check (#3921,
+            # #3927, #3929, #3933 all needed a manual override).
+            #
+            # "Bubble up" has to mean a conscious decision reaches a human,
+            # not that the pipeline jams. So the split is by decision:
+            # APPROVE merges without the issue-side work (below), and the
+            # hand-back decisions -- which are ALL issue-side, they assign an
+            # issue to somebody -- still stop loudly, in their own step, with
+            # a comment on the PR saying why.
+            echo "::warning::PR #$PR closes no issue -- no linked issue, and no 'Closes #N' in the body. An APPROVE merges the PR without issue-side bookkeeping; a hand-back needs an issue."
+            echo "issue_number=" >> "$GITHUB_OUTPUT"
+            echo "has_issue=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "has_issue=true" >> "$GITHUB_OUTPUT"
           echo "Found issue #$ISSUE"
+
+      - name: Stop -- hand-back decision on a PR that closes no issue
+        if: steps.get_issue.outputs.has_issue == 'false' && steps.parse_decision.outputs.decision != 'APPROVE'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          PR: ${{ steps.get_pr.outputs.pr_number }}
+          DECISION: ${{ steps.parse_decision.outputs.decision }}
+        run: |
+          set -euo pipefail
+
+          # Every non-APPROVE outcome is issue-side: it assigns an issue to
+          # the developer, parks an issue in a lane, or opens a huddle on an
+          # issue. With no issue there is nothing to hand back to, and
+          # guessing one would be worse than stopping. Say so on the PR --
+          # a red check nobody reads is not a bubble-up.
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            -f body="🛑 **Cannot execute \`${DECISION}\` -- this PR closes no issue.**
+
+          Every outcome other than \`APPROVE\` is issue-side: it assigns an issue back to the developer, parks it in a lane, or opens a huddle on it. There is no issue here to hand this back to.
+
+          Either link the issue this work belongs to (GitHub's native closing-issue link, or \`Closes #N\` in the body), or take the decision by hand. An \`APPROVE\` on this PR *would* execute -- it merges without the issue-side bookkeeping." >/dev/null || true
+
+          echo "::error::PR #$PR closes no issue, so the '$DECISION' decision cannot be executed. Commented on the PR."
+          exit 1
 
       - name: Execute merge (if approved)
         if: steps.parse_decision.outputs.decision == 'APPROVE'
@@ -461,7 +500,7 @@ jobs:
           esac
 
       - name: Escalate to human (if 3+ loops, or immediately on spec ambiguity)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}
@@ -581,7 +620,7 @@ jobs:
           exit 0
 
       - name: Return to developer (if changes requested and not escalated or huddling)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false' && steps.count.outputs.defer != 'true'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false' && steps.count.outputs.huddle == 'false' && steps.count.outputs.defer != 'true' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}
@@ -629,7 +668,7 @@ jobs:
           echo "✓ Issue returned to developer-agent, auto-fix triggered"
 
       - name: Trigger huddle (judgment call, or 2nd failed verifiable-defect cycle)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.huddle == 'true'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.huddle == 'true' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}
@@ -691,7 +730,7 @@ jobs:
           echo "✓ Huddle triggered for issue #${ISSUE} -- huddle_session.yml takes it from here"
 
       - name: Send to developer (human override after escalation)
-        if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER'
+        if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER' && steps.get_issue.outputs.has_issue == 'true'
         shell: bash
         env:
           PR: ${{ steps.get_pr.outputs.pr_number }}

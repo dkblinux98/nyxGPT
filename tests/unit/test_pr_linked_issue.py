@@ -137,3 +137,71 @@ class TestTheErrorNoLongerDemandsTheSentence:
         body = path.read_text(encoding="utf-8")
         assert "does not contain 'Closes #N'" not in body
         assert "closes no issue" in body
+
+
+class TestAnIssuelessPRCanStillBeMerged:
+    """"Bubble up" has to mean a human decides, not that the pipeline jams.
+
+    The first cut of this change kept the `exit 1` for a PR with no linked
+    issue, in a step that runs ahead of EVERY verdict branch. That made an
+    issue-less PR unmergeable, un-hand-backable and un-escalatable: the
+    review agent's APPROVE on PR #3935 was submitted and then stranded, and
+    each new verdict re-produced the same red check. The split below is by
+    decision, because that is where the two cases actually differ -- APPROVE
+    needs no issue (merge the PR, skip the bookkeeping), while every
+    hand-back outcome IS issue-side (it assigns an issue to somebody).
+    """
+
+    def test_the_extract_step_does_not_fail_the_run(self):
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        step = body.split("- name: Extract issue number from PR", 1)[1]
+        step = step.split("- name: ", 1)[0]
+        assert "has_issue=false" in step
+        assert "::warning::" in step
+        # The old shape: an unconditional stop before any decision ran.
+        # Comments are stripped -- this file explains the retired `exit 1`
+        # in prose, and the prose is not the code.
+        code = "\n".join(
+            line for line in step.splitlines() if not line.strip().startswith("#")
+        )
+        assert "exit 1" not in code
+
+    def test_the_hand_back_decisions_are_gated_on_having_one(self):
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        for step_name in (
+            "Escalate to human",
+            "Return to developer",
+            "Trigger huddle",
+            "Send to developer",
+        ):
+            head = body.split(f"- name: {step_name}", 1)[1].split("run:", 1)[0]
+            assert "steps.get_issue.outputs.has_issue == 'true'" in head, step_name
+
+    def test_a_hand_back_without_an_issue_stops_and_says_so_on_the_pr(self):
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        assert "Stop -- hand-back decision on a PR that closes no issue" in body
+        step = body.split("- name: Stop -- hand-back decision", 1)[1].split("- name: ", 1)[0]
+        # It must reach a human where a human looks -- a red check alone is
+        # not a bubble-up -- and it must still fail the run.
+        assert "/comments" in step
+        assert "exit 1" in step
+
+    def test_the_merge_step_is_not_gated_on_having_one(self):
+        body = (WORKFLOWS / "review_agent_auto_review.yml").read_text(encoding="utf-8")
+        head = body.split("- name: Execute merge (if approved)", 1)[1].split("run:", 1)[0]
+        assert "has_issue" not in head
+
+    def test_the_merge_script_treats_an_empty_issue_as_input_not_misuse(self):
+        body = (SCRIPTS / "review_accept_and_merge.sh").read_text(encoding="utf-8")
+        # Only the PR number is required.
+        assert 'if [[ -z "$PR" ]]; then usage >&2; exit 2; fi' in body
+        assert 'if [[ -z "$PR" || -z "$ISSUE" ]]' not in body
+        assert 'HAS_ISSUE=0' in body
+
+    def test_every_issue_side_step_in_the_merge_script_is_guarded(self):
+        body = (SCRIPTS / "review_accept_and_merge.sh").read_text(encoding="utf-8")
+        # The close/status/assign/kick block and the conflict hand-back are
+        # the four places that need an issue to act on.
+        assert body.count('"$HAS_ISSUE"') >= 4
+        # And the skip is recorded where somebody reads it, not just in logs.
+        assert "no issue-side bookkeeping ran" in body
