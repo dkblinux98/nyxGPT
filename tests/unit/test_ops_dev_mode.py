@@ -320,7 +320,9 @@ def test_switching_to_dev_stops_brew_services_and_drops_the_stale_venv(
     # holds :8000/:3000 against the dev LaunchAgents and `keep_alive true`
     # brings it straight back. The marker alone would miss the `@3.0.0rc`
     # pair; discovery alone would miss `nyxgpt-web`, which brew reports as
-    # nothing here at all.
+    # nothing here at all. `nyxgpt-api` is `stopped` rather than `started`, so
+    # its plist is what makes it a registration (#3861).
+    _register_brew_plist(tmp_path, "nyxgpt-api")
     monkeypatch.setattr(
         ops,
         "_brew_services_snapshot",
@@ -370,6 +372,21 @@ def test_switching_back_to_artifact_removes_the_dev_launchagents(monkeypatch, ch
     assert all(r.ok for r in results), [r.message for r in results]
     assert list(la_dir.iterdir()) == []
     assert install_mode.read_install_mode().is_dev is False
+
+
+def _register_brew_plist(home, service):
+    """Put the LaunchAgent plist brew writes for `service` under `home`.
+
+    The plist *is* the registration (#3861): `brew services list`'s Status
+    column reports the last outcome and outlives the file, so a test about a
+    service launchd will start again has to put the file there rather than
+    only name a state.
+    """
+    la_dir = home / "Library" / "LaunchAgents"
+    la_dir.mkdir(parents=True, exist_ok=True)
+    plist = la_dir / f"homebrew.mxcl.{service}.plist"
+    plist.write_text("<plist/>", encoding="utf-8")
+    return plist
 
 
 def _record_identity(monkeypatch, mode, manager, api_service):
@@ -445,7 +462,11 @@ def test_reconcile_retires_a_foreign_service_even_when_the_identity_is_unchanged
         lambda name: stopped.append(name) or [ops.OpsResult(True, f"stopped {name}")],
     )
     # An older channel's keg, registered and crash-looping, under a marker
-    # that says the current build is the one installed.
+    # that says the current build is the one installed. `error` is not by
+    # itself a registration -- brew keeps reporting it after de-registering
+    # (#3861, run 32228088507) -- so the plist that makes it one is on disk,
+    # exactly as it is on a machine launchd keeps restarting.
+    _register_brew_plist(tmp_path, "nyxgpt-api@2.1.0")
     monkeypatch.setattr(
         ops,
         "_brew_services_snapshot",

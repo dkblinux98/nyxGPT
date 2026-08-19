@@ -1274,14 +1274,67 @@ def _brew_service_registration(name: str) -> tuple[str, Path | None]:
     return "none", None
 
 
+def _brew_service_will_restart(name: str, plist: Path | None = None) -> bool:
+    """Whether anything will start brew service `name` again.
+
+    The question belongs to launchd, not to brew: a plist in
+    ~/Library/LaunchAgents is what gets loaded at the next login, and a loaded
+    job is what is holding a port right now. Either one means the service is
+    still registered; neither means it is not, whatever brew says about it.
+
+    `brew services list`'s Status column deliberately does **not** decide it.
+    That column reports the last *outcome*, and it keeps reporting `error
+    <code>` for a service whose plist brew has already removed and whose job
+    is already unloaded -- measured on a real runner
+    (`macos-brew-smoke.yml` run 32228088507: the escalation below found no
+    plist to remove, the job was not loaded, and the column still said
+    `error`). Reading that column as "registered" is the mirror image of
+    reading `brew services stop`'s exit code as "de-registered": both consult
+    a signal that is about something else. It cost a *false* failure (a
+    successful retire reported as one) where the exit code cost a false
+    success, and #3861's first evidence run (32222041921) was almost certainly
+    measuring the same stale column rather than a stop that did nothing.
+
+    `plist` may be passed when the caller already has brew's File column, to
+    honour a label scheme other than `homebrew.mxcl.<name>` without paying a
+    second `brew services list`.
+    """
+    for candidate in (plist, _launchagents_dir() / f"homebrew.mxcl.{name}.plist"):
+        if candidate is not None and candidate.exists():
+            return True
+    if not _is_macos() or _which("launchctl") is None:
+        # `brew services` drives systemd --user on Linux, where there is no
+        # plist and no gui domain to ask; the systemd path answers there.
+        return False
+    label = plist.stem if plist is not None else f"homebrew.mxcl.{name}"
+    try:
+        cp = _run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        # A probe that cannot run has not found a registration. Reporting one
+        # here would fail a retire that succeeded.
+        return False
+    return cp.returncode == 0
+
+
 def _brew_service_is_registered(name: str) -> bool:
     """Whether brew service `name` will still be started by launchd.
 
-    True for any state other than `none`, and for a `none` state that still
-    names a plist -- either one means something is left to start it.
+    The plist at brew's conventional path settles it without asking brew
+    anything -- a file that exists is a registration, and this is the cheap
+    check. Only when it is absent is brew asked which path it actually chose,
+    since the label scheme is brew's to change; see
+    `_brew_service_will_restart` for why the Status column is not the signal
+    in either case.
     """
-    state, plist = _brew_service_registration(name)
-    return state != "none" or (plist is not None and plist.exists())
+    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+        return True
+    _state, plist = _brew_service_registration(name)
+    return _brew_service_will_restart(name, plist)
 
 
 def _docker_container_state(name: str) -> str:
@@ -4223,11 +4276,10 @@ def _discover_native_services() -> list[tuple[str, str]]:
         # `nyxgpt-` covers both channels' formulas for both components and
         # excludes `ollama`, which is the same brew service in every mode.
         # `brew services list` lists every keg that *has* a service file,
-        # registered or not, and reports the unregistered ones as `none` --
-        # those are not competing for anything, so reporting them would make
-        # `doctor` name a keg that is merely installed as if it were running.
+        # registered or not, so a name here is a candidate and
+        # `_brew_row_is_a_live_registration` decides.
         for name, state in sorted(_brew_services_snapshot().items())
-        if name.startswith("nyxgpt-") and state != "none"
+        if name.startswith("nyxgpt-") and _brew_row_is_a_live_registration(name, state)
     ]
     la_dir = _launchagents_dir()
     found.extend(
@@ -4236,6 +4288,33 @@ def _discover_native_services() -> list[tuple[str, str]]:
         if (la_dir / f"{label}.plist").exists()
     )
     return found
+
+
+def _brew_row_is_a_live_registration(name: str, state: str) -> bool:
+    """Whether a `brew services list` row is a live claim on this component's port.
+
+    `started` is decisive on its own: brew is reporting a running job. `none`
+    with no plist at brew's conventional path is decisive the other way --
+    brew says nothing is registered and there is no file for launchd to load,
+    so a keg that is merely installed is not reported as if it were running
+    and nothing is asked of launchd.
+
+    Everything between them (`error <code>`, `stopped`, `scheduled`,
+    `unknown`) is the ambiguity #3861 tripped on, twice and in both
+    directions. `error 3` is the crash-looping keg the owner's Mac had -- and
+    it is *also* what brew goes on reporting for a service whose plist it has
+    already removed and whose job is already unloaded (measured, run
+    32228088507). So those states are settled at the launchd level rather than
+    read off the column: otherwise `doctor` names a service the last `nyxgpt
+    up` retired and prescribes re-running the retire that already worked.
+    """
+    if state == "started":
+        return True
+    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+        return True
+    if state == "none":
+        return False
+    return _brew_service_is_registered(name)
 
 
 def _retire_service(manager: str, name: str) -> list[OpsResult]:

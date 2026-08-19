@@ -27,6 +27,7 @@ Conventions follow `test_ops_dev_mode.py`: `_run`/`_which` are mocked,
 `~/.nyxGPT`.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -555,17 +556,24 @@ def test_retiring_never_uninstalls_the_previous_keg(monkeypatch):
 
     def _record(argv, **kwargs):
         ran.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        # `launchctl print` finds no such job -- the ordinary case, and the
+        # one that makes this a de-registration rather than a survivor.
+        rc = 1 if argv[:2] == ["launchctl", "print"] else 0
+        return subprocess.CompletedProcess(argv, rc, stdout="", stderr="")
 
     monkeypatch.setattr(ops, "_run", _record)
 
     ops._retire_service(MANAGER_BREW, "nyxgpt-api")
 
-    # The stop, then the read that checks it took: `brew services stop` exits
-    # 0 without de-registering a crashed service, so the exit code is not the
-    # answer (#3861 review). Nothing here removes the keg.
+    # The stop, then the two reads that check it took. `brew services stop`
+    # exits 0 without de-registering a crashed service, so the exit code is
+    # not the answer -- and `brew services list`'s Status column is not the
+    # answer either, because it keeps reporting `error <code>` after brew has
+    # de-registered (#3861, run 32228088507). What settles it is launchd:
+    # no plist, and no such job. Nothing here removes the keg.
     assert ran == [
         ["brew", "services", "stop", "nyxgpt-api"],
         ["brew", "services", "list"],
+        ["launchctl", "print", f"gui/{os.getuid()}/homebrew.mxcl.nyxgpt-api"],
     ]
     assert not [argv for argv in ran if {"uninstall", "remove", "rm"} & set(argv)]

@@ -536,14 +536,23 @@ change is *reported* and whether the shared api venv is rebuilt. This is what
 makes `doctor`'s remedy above — re-run `nyxgpt up` — actually retire the
 services it just named.
 
-**Retiring a service means de-registering it, and that is checked.** `brew
-services stop` exits 0 for a service that is registered but not running — the
-state a crash-looping keg sits in — while leaving its LaunchAgent plist in
-`~/Library/LaunchAgents`, so launchd starts it again at the next login. Every
-stop is therefore verified against `brew services list`, escalated to
-unloading the job and removing the plist when it did not take, and reported
-as a **failure** if the service is still registered after that, rather than
-as a stop that worked.
+**Retiring a service means de-registering it, and that is checked — against
+launchd, not against brew.** `brew services stop` exits 0 for a service that
+is registered but not running (the state a crash-looping keg sits in), so the
+exit code cannot say whether the stop took. Neither can `brew services list`'s
+Status column, which reports the last *outcome* and goes on saying `error
+<code>` for a service whose plist brew has already removed. The registration
+is the LaunchAgent plist in `~/Library/LaunchAgents`, plus whether the job is
+loaded — those are what launchd acts on at the next login, and those are what
+every stop is verified against. A stop that did not take is escalated to
+unloading the job and removing the plist, and a service still registered after
+*that* is reported as a **failure** rather than as a stop that worked.
+
+The same reading applies to what `doctor` names: a `started` service is
+registered on brew's word, an unlisted or `none` keg with no plist is not
+registered, and every state in between is settled by the plist. Without that,
+`doctor` would name a service the last `nyxgpt up` successfully retired and
+prescribe re-running the retire that already worked.
 
 On Linux the manager carries no signal — both modes drive the same
 `nyxgpt-api`/`nyxgpt-web` systemd `--user` units — so there the version and

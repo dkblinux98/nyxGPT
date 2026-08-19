@@ -7682,9 +7682,14 @@ def test_stop_brew_service_not_found(monkeypatch):
 
 
 @pytest.mark.unit
-def test_stop_brew_service_success(monkeypatch):
+def test_stop_brew_service_success(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
-    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    # Nothing registered afterwards: no plist under this home, and `launchctl
+    # print` cannot find the job. Both are pinned rather than left to the host,
+    # because "is it still registered?" is now answered from those two facts
+    # and a bare rc-0 stub would answer "loaded" (#3861).
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    _brew_list_stub(monkeypatch, ["nyxgpt-api none"])
     results = ops._stop_brew_service("nyxgpt-api")
     assert results[0].ok is True
     assert "Stopped brew service" in results[0].message
@@ -7728,14 +7733,23 @@ def test_stop_brew_service_exception(monkeypatch):
 # (macos-brew-smoke run 32222041921).
 
 
-def _brew_list_stub(monkeypatch, listings):
-    """Fake `_run` where `brew services list` returns each of `listings` in turn."""
+def _brew_list_stub(monkeypatch, listings, *, launchd_loaded=False):
+    """Fake `_run` where `brew services list` returns each of `listings` in turn.
+
+    `launchctl print` answers non-zero unless `launchd_loaded` -- "the job is
+    not loaded" is the ordinary case, and it is the *other* half of the
+    registration question the Status column cannot answer (#3861).
+    """
     remaining = list(listings)
 
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["brew", "services", "list"]:
             out = remaining.pop(0) if len(remaining) > 1 else remaining[0]
             return subprocess.CompletedProcess(cmd, 0, stdout=out)
+        if cmd[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(
+                cmd, 0 if launchd_loaded else 1, stderr="Could not find service"
+            )
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(ops, "_run", fake_run)
@@ -7783,9 +7797,14 @@ def test_stop_brew_service_reports_failure_when_it_stays_registered(monkeypatch,
     (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
     monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(ops, "_stop_launchagent", lambda label: [ops.OpsResult(True, label)])
-    # Every listing still shows it registered: the escalation did not take
-    # either, and the caller must not be told the port is free.
-    _brew_list_stub(monkeypatch, ["nyxgpt-api error 3 runner ~/Library/LaunchAgents/x.plist"])
+    # The job is still loaded after the stop and after the escalation, which
+    # is a registration whatever brew's column says -- and the caller must not
+    # be told the port is free.
+    _brew_list_stub(
+        monkeypatch,
+        ["nyxgpt-api error 3 runner ~/Library/LaunchAgents/x.plist"],
+        launchd_loaded=True,
+    )
 
     results = ops._stop_brew_service("nyxgpt-api")
 
@@ -7808,6 +7827,62 @@ def test_stop_brew_service_leaves_a_clean_stop_alone(monkeypatch, tmp_path):
 
     assert [(r.ok, r.message) for r in results] == [(True, "Stopped brew service: nyxgpt-api")]
     boot.assert_not_called()
+
+
+@pytest.mark.unit
+def test_a_stale_error_column_is_not_a_registration(monkeypatch, tmp_path):
+    """brew keeps reporting `error <code>` after it has de-registered (#3861).
+
+    Measured on a real runner (`macos-brew-smoke.yml` run 32228088507): the
+    reconcile's escalation found no plist to remove and no loaded job, and
+    `brew services list` still listed the service. Treating that column as
+    "registered" reported a successful retire as a failure -- the mirror image
+    of trusting `brew services stop`'s exit code, and just as wrong. Nothing
+    will start this service again, so the stop is a stop.
+    """
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    boot = MagicMock()
+    monkeypatch.setattr(ops, "_stop_launchagent", boot)
+    _brew_list_stub(monkeypatch, ["nyxgpt-api error 3 runner /gone/homebrew.mxcl.nyxgpt-api.plist"])
+
+    assert ops._brew_service_is_registered("nyxgpt-api") is False
+    results = ops._stop_brew_service("nyxgpt-api")
+
+    assert [(r.ok, r.message) for r in results] == [(True, "Stopped brew service: nyxgpt-api")]
+    boot.assert_not_called()
+
+
+@pytest.mark.unit
+def test_a_loaded_job_is_a_registration_even_with_no_plist(monkeypatch, tmp_path):
+    """The other half: no file on disk, but launchd is still running the job."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Darwin")
+    (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    _brew_list_stub(monkeypatch, ["nyxgpt-api none"], launchd_loaded=True)
+
+    assert ops._brew_service_is_registered("nyxgpt-api") is True
+
+
+@pytest.mark.unit
+def test_registration_is_not_probed_through_launchctl_off_macos(monkeypatch, tmp_path):
+    """`brew services` drives systemd --user on Linux; there is no gui domain."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/home/linuxbrew/.linuxbrew/bin/brew")
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="nyxgpt-api error 3 runner /x.plist")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    assert ops._brew_service_is_registered("nyxgpt-api") is False
+    assert not any(c[:1] == ["launchctl"] for c in calls), calls
 
 
 @pytest.mark.unit

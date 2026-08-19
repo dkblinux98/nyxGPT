@@ -1131,24 +1131,33 @@ jobs:
           PY
           }
 
-          # Mirrors `ops._discover_native_services`: `brew services list` lists
-          # every keg that has a service file, and reports the unregistered
-          # ones as `none` -- so a name alone does not mean "registered", and
-          # a check that ignored the state column would pass the moment the
-          # stable keg was merely installed.
+          # The registration IS the plist brew copies into
+          # ~/Library/LaunchAgents: that file, not `brew services stop`'s exit
+          # code and not `brew services list`'s Status column, is what launchd
+          # reloads at the next login. Both of the other two signals have now
+          # been measured lying here, in opposite directions:
+          #
+          #   - the exit code says 0 for a service it did not stop (the first
+          #     version of this step trusted it, run 32222041921);
+          #   - the Status column goes on saying `error <code>` for a service
+          #     whose plist is already gone and whose job is already unloaded
+          #     (run 32228088507 -- the reconcile's escalation found no plist
+          #     to remove, and the column still listed it).
+          #
+          # So `registered` keys on the plist, exactly as
+          # `ops._brew_service_will_restart` does. `brew services list` is
+          # still printed, because it is the useful thing to read in the log;
+          # it is just not what anything asserts on.
           registered() {
-            brew services list | awk '$1 ~ /^nyxgpt-/ && $2 != "none" {print $1}' | sort | tr '\n' ' '
+            local svc
+            for svc in $(brew list --formula | grep '^nyxgpt-' || true); do
+              if [ -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$svc.plist" ]; then
+                printf '%s ' "$svc"
+              fi
+            done
+            echo
           }
 
-          # The registration itself is the plist brew copies into
-          # ~/Library/LaunchAgents: that file, not the exit code of `brew
-          # services stop`, is what launchd reloads at the next login. The
-          # first run of this step passed `brew services stop` and still left
-          # BOTH services registered (run 32222041921), because brew exits 0
-          # without de-registering a service that is registered but not
-          # running -- the `error` state below, and the exact state the
-          # owner's crash-looping Mac was in. So the plist is asserted gone,
-          # not merely reported stopped.
           plist_gone() {
             ! test -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$1.plist"
           }
@@ -1157,9 +1166,12 @@ jobs:
           brew services start nyxgpt-api || true
           brew services start nyxgpt-api@3.0.0rc || true
           brew services list || true
-          echo "service states (an 'error' state is registered-but-not-started, where"
-          echo "\`brew services stop\` exits 0 and does nothing -- the case #3861 tripped on):"
+          echo "brew's own view (advisory here -- an 'error' state is a crash-looping"
+          echo "keg, which is the state the owner's Mac was in, but the column outlives"
+          echo "the registration and is not what this step asserts on):"
           brew services list | awk '$1 ~ /^nyxgpt-/ {print "  " $1 " -> " $2}'
+          echo "the plists, which are the registration:"
+          ls -1 "$HOME/Library/LaunchAgents" | grep nyxgpt || echo "  (none)"
           before="$(registered)"
           echo "registered before: $before"
           case "$before" in

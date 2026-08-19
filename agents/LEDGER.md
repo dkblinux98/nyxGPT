@@ -875,16 +875,26 @@ rather than mechanism, and nothing can enforce them.
   absent) is a possible mismatch reconciled defensively against what the
   service managers actually report, never "the same"; (c) reconcile **stops
   and de-registers, never uninstalls** — removal is a teardown decision
-  (#3859); (d) **a stop is not a de-registration until it has been checked.**
-  `brew services stop` exits 0 for a service that is registered but not
-  *running* — the `error` state a crash-looping keg sits in, which is the
-  state the owner's Mac was in — and leaves its LaunchAgent plist in place for
-  launchd to reload at the next login. So `_stop_brew_service` verifies
-  against `brew services list`, escalates to unloading the job and removing
-  the plist, and reports a **failure** when the service survives that.
-  Trusting the exit code is what made the first evidence run print `ok
-  Stopped brew service: nyxgpt-api` on a machine where `brew services list`
-  still showed it (run 32222041921); (e) the subtraction runs on **every**
+  (#3859); (d) **registration is a launchd fact, and neither of brew's two
+  obvious signals reports it.** `brew services stop` exits 0 for a service
+  that is registered but not *running* — the `error` state a crash-looping keg
+  sits in, which is the state the owner's Mac was in — so the exit code cannot
+  say whether the stop took (trusting it printed `ok Stopped brew service:
+  nyxgpt-api` over a service the step then found listed, run 32222041921).
+  **And `brew services list`'s Status column cannot say either**: it reports
+  the last *outcome* and keeps saying `error <code>` for a service whose plist
+  brew has already removed and whose job is already unloaded (measured, run
+  32228088507 — reading it as "registered" reported a *successful* retire as a
+  failure, the mirror image of the exit-code bug, and it is the likelier
+  reading of run 32222041921 too). What launchd acts on at the next login is
+  the **plist** in `~/Library/LaunchAgents`, plus whether the job is loaded, so
+  that pair is the test — in `_brew_service_will_restart`, used both to verify
+  a stop (escalate, then fail if it survives) and to decide what
+  `_discover_native_services` reports. `started` is taken on brew's word and
+  `none` with no plist is taken as unregistered; only the states between them
+  need the file. A future session must not "simplify" this back to the column:
+  it would make `doctor` name a service the last `nyxgpt up` retired and
+  prescribe re-running the retire that already worked; (e) the subtraction runs on **every**
   install, not only when the recorded identity differs. A matching marker
   records what the last install *targeted*, not what is registered now
   (a failed retire, a hand-started service, an install made outside `nyxgpt
