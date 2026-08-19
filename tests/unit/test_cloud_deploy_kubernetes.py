@@ -164,6 +164,59 @@ def test_the_default_backend_is_fine_in_kubernetes_mode():
     assert cloud_deploy.resolve_plan(_args(kubernetes=True)).session_backend == "cassandra"
 
 
+# --- Where the substrate does not reach: macOS targets (#3867) -----------
+
+
+def test_kubernetes_on_a_macos_target_is_refused_not_ignored():
+    """The trap the #3867 merge created, closed explicitly.
+
+    `render_provision_script`'s macOS branch returns the Homebrew bootstrap
+    and never reaches the substrate sections, so `--os macos --kubernetes`
+    would otherwise be accepted, dropped on the floor, and then contradicted
+    by a deploy record claiming a cluster that was never installed. There is
+    no macOS k3s path to offer instead: the installer builds a systemd unit.
+    """
+    with pytest.raises(CloudCommandError, match="k3s is Linux-only"):
+        cloud_deploy.resolve_plan(_args(os_family="macos", host="mac.example", kubernetes=True))
+
+
+def test_the_macos_refusal_beats_the_session_backend_refusal():
+    """Order matters, because macOS defaults to the `file` backend (#3867).
+
+    Checked after the backend instead, the combination would fail with a
+    message about `k8s/configmap.yaml` and session lists -- a true statement
+    about a setting the operator never chose, and the wrong diagnosis of
+    what is really "that flag does not apply to this OS".
+    """
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.resolve_plan(_args(os_family="macos", host="mac.example", kubernetes=True))
+    assert "configmap" not in str(excinfo.value).lower()
+
+
+def test_a_linux_substrate_does_not_follow_the_operator_onto_a_mac(_isolated_cloud_home):
+    """The carry-forward is scoped to one target OS, like the backend is.
+
+    Otherwise a box last deployed as Linux/k3s makes the *next* `--os macos`
+    deploy fail on a `kubernetes: true` the operator did not ask for on this
+    run and cannot see in their own command line.
+    """
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"version": "3.0.0", "kubernetes": True, "os_family": "linux"}),
+        encoding="utf-8",
+    )
+    plan = cloud_deploy.resolve_plan(_args(version=None, os_family="macos", host="mac.example"))
+    assert plan.kubernetes is False
+    assert plan.substrate == cloud_deploy.SUBSTRATE_NATIVE
+
+
+def test_a_macos_script_carries_no_substrate_text(_isolated_cloud_home):
+    """The Mac bootstrap is the #3511 one, with nothing k3s spliced into it."""
+    script = cloud_deploy.render_provision_script(
+        cloud_deploy.resolve_plan(_args(os_family="macos", host="mac.example"))
+    )
+    assert "k3s" not in _executed(script)
+
+
 # --- Reuse: the existing install mode, on the instance -------------------
 
 

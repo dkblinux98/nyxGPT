@@ -265,6 +265,17 @@ and screenshots make verifiable in the review loop:
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,
   which CI does not have (see #3505/secrets-sync for wiring one in).
+- **EC2 Mac hardware** -- a `mac*.metal` instance actually executing the macOS
+  bootstrap. GitHub Actions has no macOS EC2 runner, Apple's licensing does not
+  permit macOS in a container, and a Dedicated Host bills a 24-hour minimum, so
+  no job can produce one. Both halves *around* it are executed:
+  [`cloud-target-os-smoke.yml`](../.github/workflows/cloud-target-os-smoke.yml)
+  proves `nyxgpt cloud deploy --os macos` delivers that bootstrap itself over a
+  real SSH connection (#3867), and
+  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
+  the same formulas from the same remote tap on a real `macos-15` runner. What
+  remains owner acceptance is only that a Mac *instance* runs them -- notably
+  whether `brew services start` finds a launchd session for the login user.
 - **Anything gated behind a real (non-stubbed) LLM** -- CI runs the chat
   round-trip against whatever Ollama model is configured for the runner
   (small/stubbed per the acceptance criteria); response *quality* is not

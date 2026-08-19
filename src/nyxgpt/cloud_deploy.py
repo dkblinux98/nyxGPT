@@ -100,8 +100,65 @@ TUNNEL_LOG_FILE = CLOUD_DIR / "tunnel.log"
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # Amazon Linux 2023's default login user -- the AMI the compute module
-# resolves by default (terraform/aws/modules/compute/main.tf).
+# resolves by default (terraform/aws/modules/compute/main.tf). EC2 Mac's own
+# AMIs use the same name, so it is the right default for both target OSes.
 DEFAULT_SSH_USER = "ec2-user"
+
+# --- Target OS (#3867) -------------------------------------------------
+#
+# A deploy provisions one of two target OS families, and until #3867 it
+# provisioned exactly one of them: the Linux SSH script below was hard-coded,
+# and the only way to bootstrap an EC2 Mac was to render
+# `nyxgpt cloud user-data --os macos` and paste it into an AWS console launch
+# by hand -- the raw-operations flow CLAUDE.md's Operational Command Wrapping
+# requirement forbids. `deploy` now dispatches on the family and drives either
+# bootstrap itself, over the same wrapped SSH path.
+OS_FAMILY_LINUX = "linux"
+OS_FAMILY_MACOS = "macos"
+
+# `--os auto`, the default: derive the family from the instance type rather
+# than making every Linux operator type a flag they never had to before.
+OS_FAMILY_AUTO = "auto"
+
+DEPLOY_OS_CHOICES: tuple[str, ...] = (OS_FAMILY_AUTO, OS_FAMILY_LINUX, OS_FAMILY_MACOS)
+
+# EC2's Mac instance types, the only ones that boot macOS: `mac1.metal`
+# (Intel) and the `mac2*`. Apple Silicon family (`mac2.metal`,
+# `mac2-m2.metal`, `mac2-m2pro.metal`, `mac2-m1ultra.metal`, ...). Every one
+# is `.metal` -- macOS is only ever bare metal on EC2 -- so the shape is
+# stable enough to detect on, and anything unrecognized falls to Linux, which
+# is the pre-#3867 behavior.
+_MAC_INSTANCE_TYPE_RE = re.compile(r"^mac\d+(-[a-z0-9]+)?\.metal$")
+
+# What `--os macos` says when there is no EC2 Mac to provision.
+#
+# The substrate (terraform/aws/modules/compute) provisions default-tenancy
+# instances; EC2 Mac runs only on a Dedicated Host, and an allocated host is
+# billed for a 24-hour minimum whether or not an instance is running on it and
+# cannot be released before that. Allocating one behind a flag would spend the
+# operator's money on a resource this configuration cannot then tear down, so
+# the deploy stops here instead -- and stops *before* applying anything, so
+# the failure costs nothing.
+#
+# What it must never do is send the operator to the AWS console (#3867): the
+# way out is another wrapped `nyxgpt` command, not a script to paste.
+MACOS_NO_TARGET_MESSAGE = (
+    "`--os macos` targets an EC2 Mac, and `nyxgpt cloud infra` cannot allocate one.\n"
+    "\n"
+    "macOS runs only on EC2's Mac instance types (mac1.metal, mac2*.metal), which\n"
+    "require a Dedicated Host. An allocated host bills for a 24-hour minimum whether\n"
+    "or not an instance runs on it, and cannot be released before that -- so the\n"
+    "substrate deliberately provisions default-tenancy instances only, rather than\n"
+    "spending that on a resource it could not tear down again.\n"
+    "\n"
+    "Point the deploy at a Mac that already exists and it provisions it end to end,\n"
+    "entirely through nyxgpt:\n"
+    "\n"
+    "    nyxgpt cloud deploy --os macos --host <mac-public-ip> --ssh-user ec2-user\n"
+    "\n"
+    "That pipes the same macOS bootstrap over the same wrapped SSH path the Linux\n"
+    "deploy uses. See docs/cloud.md, 'EC2 Mac targets'."
+)
 
 # The session backend a cloud deploy selects unless told otherwise (#3865).
 #
@@ -199,6 +256,9 @@ class DeployPlan:
     ssh_timeout: float = 300.0
     session_backend: str = DEFAULT_SESSION_BACKEND
     kubernetes: bool = False
+    # Which target OS's bootstrap this deploy drives (#3867). Defaults to
+    # Linux so a plan built without the field behaves exactly as it did.
+    os_family: str = OS_FAMILY_LINUX
 
     @property
     def substrate(self) -> str:
@@ -218,6 +278,7 @@ class DeployPlan:
             "session_backend": self.session_backend,
             "kubernetes": self.kubernetes,
             "substrate": self.substrate,
+            "os_family": self.os_family,
         }
 
 
@@ -372,6 +433,59 @@ def resolve_access_target(args: argparse.Namespace) -> DeployTarget:
     return target
 
 
+def instance_type_os_family(instance_type: str) -> str:
+    """Return the OS family an EC2 instance type boots (#3867).
+
+    Only the Mac instance types boot macOS, and every one of them is a
+    `.metal` type; everything else -- including an unset or unrecognized type
+    -- is Linux, which is what every deploy before #3867 assumed.
+    """
+    return (
+        OS_FAMILY_MACOS
+        if _MAC_INSTANCE_TYPE_RE.match(instance_type.strip().lower())
+        else OS_FAMILY_LINUX
+    )
+
+
+def resolve_os_family(args: argparse.Namespace) -> str:
+    """Decide which target OS's bootstrap this deploy drives (#3867).
+
+    An explicit `--os linux|macos` wins outright. `--os auto` (the default)
+    answers from what is already known, in order:
+
+    1. **The deploy record for this exact host**, when `--host` names a
+       machine a previous run provisioned. Re-deploying a Mac must stay a Mac
+       deploy, and an operator-supplied Mac has no instance type on this
+       machine to read -- the substrate does not manage it.
+    2. **The instance type the substrate is configured for** -- this run's
+       `--instance-type` if given, otherwise the one remembered in
+       `~/.nyxGPT/cloud/infra.json` -- so an operator who already asked for a
+       `mac2.metal` does not also have to say `--os macos`.
+
+    A Linux operator types nothing new and lands on `linux` either way.
+    """
+    requested = str(getattr(args, "os_family", None) or OS_FAMILY_AUTO).strip().lower()
+    if requested and requested != OS_FAMILY_AUTO:
+        if requested not in (OS_FAMILY_LINUX, OS_FAMILY_MACOS):
+            raise CloudCommandError(
+                f"{requested!r} is not a supported target OS. Choose one of: "
+                f"{', '.join(DEPLOY_OS_CHOICES)}."
+            )
+        return requested
+    host = str(getattr(args, "host", None) or "")
+    previous = load_deploy_state()
+    recorded = str(previous.get("os_family") or "")
+    if (
+        host
+        and host == str(previous.get("host") or "")
+        and recorded in (OS_FAMILY_LINUX, OS_FAMILY_MACOS)
+    ):
+        return recorded
+    saved = cloud_infra.load_settings()
+    instance_type = str(getattr(args, "instance_type", None) or saved.get("instance_type") or "")
+    return instance_type_os_family(instance_type)
+
+
 def resolve_plan(args: argparse.Namespace) -> DeployPlan:
     """Merge flags over the last deploy's recorded choices.
 
@@ -409,18 +523,40 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
             f"{version!r} is not a valid release to install. Pass a published version such as "
             "--version 3.0.0 (digits, letters, dot, dash and underscore only)."
         )
-    if getattr(args, "skip_observability", False):
+    os_family = resolve_os_family(args)
+    if getattr(args, "skip_observability", False) or os_family == OS_FAMILY_MACOS:
+        # No observability stack on an EC2 Mac: its bootstrap installs the two
+        # Homebrew formulas and starts them (scripts/cloud/ec2-user-data-macos
+        # .sh.tmpl), and never runs `ops install`'s observability profiles --
+        # so recording profiles here would only make `tunnel` forward ports
+        # nothing is listening on and the summary promise URLs that 404.
         profiles: list[str] = []
     else:
         from nyxgpt import ops
 
         profiles = list(ops.OBSERVABILITY_PROFILES)
 
-    backend = str(
-        getattr(args, "session_backend", None)
-        or previous.get("session_backend")
-        or DEFAULT_SESSION_BACKEND
+    # The per-target-OS session-backend default (#3865, and #3867 for the
+    # dispatch): `cassandra` on Linux, where the bootstrap provisions the
+    # `nyxgpt-cassandra` container as a core service, and `file` on macOS,
+    # where nothing does -- defaulting a Mac to `cassandra` would point its
+    # API at a database that is not on the machine. Imported here rather than
+    # at module scope because `cloud_provision` imports this module.
+    from nyxgpt import cloud_provision
+
+    default_backend = cloud_provision.DEFAULT_SESSION_BACKEND_BY_OS.get(
+        os_family, DEFAULT_SESSION_BACKEND
     )
+    # The recorded choice carries over only within one target OS. A re-deploy
+    # that switches families must not inherit the other one's backend -- the
+    # whole reason the default differs is that the two bootstraps provision
+    # different stacks.
+    carried = (
+        str(previous.get("session_backend") or "")
+        if str(previous.get("os_family") or OS_FAMILY_LINUX) == os_family
+        else ""
+    )
+    backend = str(getattr(args, "session_backend", None) or carried or default_backend)
     if backend not in VALID_SESSION_BACKENDS:
         raise CloudCommandError(
             f"{backend!r} is not a valid session backend. "
@@ -428,9 +564,35 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
             "(see docs/session-storage.md)."
         )
     requested_k8s = getattr(args, "kubernetes", None)
-    kubernetes = (
-        bool(previous.get("kubernetes", False)) if requested_k8s is None else bool(requested_k8s)
+    # The substrate carries over only within one target OS, for the same
+    # reason the session backend above does and one more: k3s is Linux-only,
+    # so a Linux deploy's recorded `kubernetes: true` must not follow the
+    # operator onto a Mac and get refused there for a choice they did not
+    # make on this run.
+    carried_k8s = (
+        bool(previous.get("kubernetes", False))
+        if str(previous.get("os_family") or OS_FAMILY_LINUX) == os_family
+        else False
     )
+    kubernetes = carried_k8s if requested_k8s is None else bool(requested_k8s)
+    if kubernetes and os_family == OS_FAMILY_MACOS:
+        # Refused rather than accepted-and-ignored, the same standard the
+        # session-backend check below applies (#3956 + #3867). The macOS
+        # branch of `render_provision_script` returns the Homebrew bootstrap
+        # and never reaches the substrate sections, so without this the flag
+        # would be accepted, dropped on the floor, and then contradicted by a
+        # deploy record claiming a cluster that was never installed.
+        #
+        # There is no macOS k3s path to offer instead: the k3s installer is
+        # Linux-only (`get.k3s.io` builds a systemd/openrc unit), and an EC2
+        # Mac's bootstrap installs Homebrew formulas under launchd.
+        raise CloudCommandError(
+            "--kubernetes is not available on a macOS target: k3s is Linux-only, and an "
+            "EC2 Mac is provisioned from the remote Homebrew tap under launchd "
+            "(see docs/cloud.md, 'EC2 Mac targets').\n"
+            "Deploy the cluster on a Linux target -- `nyxgpt cloud deploy --os linux "
+            "--kubernetes` -- or drop --kubernetes to provision this Mac natively."
+        )
     if kubernetes and backend != "cassandra":
         # Refused rather than accepted-and-ignored (#3956). In Kubernetes mode
         # the Pods read `k8s/configmap.yaml`, which asserts
@@ -468,6 +630,7 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
         session_backend=backend,
         kubernetes=kubernetes,
+        os_family=os_family,
     )
 
 
@@ -937,17 +1100,34 @@ fi
 
 
 def render_provision_script(plan: DeployPlan) -> str:
-    """Render the instance provisioning script for `plan`.
+    """Render the instance provisioning script for `plan`'s target OS.
 
     Kept a pure function so the repo-less guarantee (no clone, no checkout
     copy), the artifact version pin and -- since #3956 -- the k3s server
     flags are unit-testable without an EC2 instance.
 
-    The substrate blocks are substituted rather than guarded at runtime on a
-    shell variable, so a native deploy's script contains no Kubernetes text
-    at all and a `--kubernetes` one contains no host Ollama or NodeSource
-    install. That is a property worth being able to assert directly.
+    The macOS branch renders the *same* bootstrap `nyxgpt cloud user-data
+    --os macos` prints (`cloud_provision.render_user_data`, P6-12/#3511)
+    rather than a second copy of it. That script was already the only thing
+    that knows how to bring nyxGPT up on an EC2 Mac -- remote Homebrew tap,
+    `brew services`, no clone -- and until #3867 the only way to get it onto
+    an instance was for a human to paste it into an AWS console launch.
+    Nothing about it changes here; what changes is that `deploy` delivers it.
+    It never carries a substrate section: k3s is Linux-only, and a macOS plan
+    that asked for one is refused in `resolve_plan` rather than reaching here,
+    so this branch cannot silently drop a `--kubernetes` the operator asked
+    for.
+
+    On Linux the substrate blocks are substituted rather than guarded at
+    runtime on a shell variable, so a native deploy's script contains no
+    Kubernetes text at all and a `--kubernetes` one contains no host Ollama
+    or NodeSource install. That is a property worth being able to assert
+    directly.
     """
+    if plan.os_family == OS_FAMILY_MACOS:
+        from nyxgpt import cloud_provision
+
+        return cloud_provision.render_user_data(OS_FAMILY_MACOS, plan.version, plan.session_backend)
     if plan.kubernetes:
         node_section = ""
         llm_section = render_k3s_bootstrap()
@@ -980,6 +1160,27 @@ def render_k3s_bootstrap() -> str:
     )
 
 
+def provision_remote_command(plan: DeployPlan) -> str:
+    """The shell command the rendered bootstrap is piped into on the instance.
+
+    Linux's script is written to run as the login user and elevates per step
+    with `sudo`, so it is fed to a plain `bash -s`.
+
+    The macOS script refuses to run as anyone but root -- `ec2-macos-init`
+    hands user-data to root, and the script drops to the login user with
+    `sudo -u` for every Homebrew call, which is not a thing it can do from
+    inside that user's own session. Over SSH there is no `ec2-macos-init`, so
+    the deploy elevates in its place. `sudo -n` (non-interactive) so a Mac
+    whose login user needs a password fails immediately with sudo's own
+    message rather than hanging a deploy on a prompt no wrapped command can
+    answer, and `NYXGPT_TARGET_USER` so the script installs Homebrew for the
+    user the operator actually logged in as instead of assuming `ec2-user`.
+    """
+    if plan.os_family == OS_FAMILY_MACOS:
+        return f"sudo -n NYXGPT_TARGET_USER={shlex.quote(plan.ssh_user)} bash -s"
+    return "bash -s"
+
+
 # How many trailing lines of the provisioning output a failure summary quotes
 # when the run produced no `[FAIL]` line to name (an OS-package or shell
 # error before `ops install` ever started, say). Whole lines, never a
@@ -991,7 +1192,9 @@ _PROVISION_TAIL_LINES = 25
 _OPS_FAIL_PREFIX = "[FAIL]"
 
 
-def _run_provision_script(target: DeployTarget, script: str) -> tuple[int, list[str]]:
+def _run_provision_script(
+    target: DeployTarget, script: str, remote_command: str = "bash -s"
+) -> tuple[int, list[str]]:
     """Run `script` on the instance, echoing its output live and keeping a copy.
 
     stdout was streamed straight to the terminal before and stderr was
@@ -1005,7 +1208,7 @@ def _run_provision_script(target: DeployTarget, script: str) -> tuple[int, list[
     comfortably inside the pipe buffer, so this cannot deadlock against a
     remote that hasn't started draining yet.
     """
-    argv = [*ssh_argv(target), "bash -s"]
+    argv = [*ssh_argv(target), remote_command]
     output: list[str] = []
     with subprocess.Popen(
         argv,
@@ -1058,19 +1261,22 @@ def provision_instance(target: DeployTarget, plan: DeployPlan) -> dict[str, Any]
     script = render_provision_script(plan)
     # `bash -s` over stdin rather than a quoted argv: the script is long and
     # multi-line, and piping it keeps quoting out of the picture entirely.
-    returncode, output = _run_provision_script(target, script)
+    returncode, output = _run_provision_script(target, script, provision_remote_command(plan))
     if returncode != 0:
         raise CloudCommandError(_provision_failure_detail(output))
-    # `self_heal_enabled` is safe to assert rather than re-probe: the script
-    # runs under `set -euo pipefail`, so a failed `self-heal enable` would
-    # have made this a non-zero exit and raised above. The same reasoning
-    # covers `substrate`: in Kubernetes mode the script does not reach this
-    # point unless k3s came up, the node went Ready and `ops install
-    # --kubernetes --local` succeeded.
+    # `self_heal_enabled` is safe to assert rather than re-probe on Linux: the
+    # script runs under `set -euo pipefail`, so a failed `self-heal enable`
+    # would have made this a non-zero exit and raised above. The macOS
+    # bootstrap has no such step, so this reports False rather than claiming a
+    # watchdog that is not running (#3867). The same "it exited 0, so it
+    # happened" reasoning covers `substrate`: in Kubernetes mode the script
+    # does not reach this point unless k3s came up, the node went Ready and
+    # `ops install --kubernetes --local` succeeded.
     return {
         "version": plan.version,
+        "os_family": plan.os_family,
         "profiles": list(plan.profiles),
-        "self_heal_enabled": True,
+        "self_heal_enabled": plan.os_family == OS_FAMILY_LINUX,
         "substrate": plan.substrate,
     }
 
@@ -1280,16 +1486,71 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     """
     plan = resolve_plan(args)
     steps: list[dict[str, Any]] = []
+    host_flag = str(getattr(args, "host", None) or "")
+    # Empty for a `--host` box: that machine is not ours, so there are no
+    # applied settings to read an instance type out of (#3867 + #3956).
+    applied_settings: dict[str, Any] = {}
 
-    infra = cloud_infra.apply_infra(args)
-    steps.append({"step": "infra", "outputs": infra.get("outputs", {})})
+    if plan.os_family == OS_FAMILY_MACOS:
+        # Stop before anything is applied or billed. The substrate cannot
+        # allocate the Dedicated Host an EC2 Mac needs (see
+        # MACOS_NO_TARGET_MESSAGE), so a Mac deploy is only meaningful
+        # against a Mac the operator already has and named with --host.
+        if not host_flag:
+            raise CloudCommandError(MACOS_NO_TARGET_MESSAGE)
+        # And do not apply the substrate for it either: `apply_infra` would
+        # reconcile (or create) the Linux single-box substrate, which is a
+        # different machine from the Mac being provisioned -- it would bill
+        # for an instance nothing then deploys to.
+        steps.append(
+            {
+                "step": "infra",
+                "skipped": True,
+                "reason": (
+                    "the EC2 Mac was supplied with --host; nyxGPT's substrate provisions "
+                    "default-tenancy Linux instances and does not manage this machine"
+                ),
+                "outputs": {},
+            }
+        )
+        steps.append(
+            {
+                "step": "access",
+                "owner_ip_cidr": "",
+                "open_ports": [22],
+                "mechanism": "ssh-tunnel-to-loopback",
+                "managed": False,
+            }
+        )
+        target = DeployTarget(
+            host=host_flag,
+            user=plan.ssh_user,
+            identity_file=str(Path(plan.identity_file).expanduser()) if plan.identity_file else "",
+            region=str(getattr(args, "region", None) or ""),
+        )
+    else:
+        infra = cloud_infra.apply_infra(args)
+        steps.append({"step": "infra", "outputs": infra.get("outputs", {})})
 
-    # The P6-4 access path is wired by the apply itself: `resolve_settings`
-    # re-detects the operator's current public IP on every run, so the
-    # security group's single port-22 rule already points at wherever this
-    # deploy is running from. Recorded as its own step because "which CIDR
-    # can reach this box" is the thing an operator most needs to see.
-    applied_settings = infra.get("settings", {})
+        # The P6-4 access path is wired by the apply itself: `resolve_settings`
+        # re-detects the operator's current public IP on every run, so the
+        # security group's single port-22 rule already points at wherever this
+        # deploy is running from. Recorded as its own step because "which CIDR
+        # can reach this box" is the thing an operator most needs to see.
+        applied_settings = infra.get("settings", {})
+        steps.append(
+            {
+                "step": "access",
+                "owner_ip_cidr": applied_settings.get("owner_ip_cidr", ""),
+                "open_ports": [22],
+                "mechanism": "ssh-tunnel-to-loopback",
+            }
+        )
+
+        target = resolve_target(args)
+        if plan.identity_file:
+            target.identity_file = str(Path(plan.identity_file).expanduser())
+        target.user = plan.ssh_user
 
     if plan.kubernetes:
         # Said before the ~20 minutes of provisioning, not after it (#3956).
@@ -1305,29 +1566,20 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         # change. Read from the applied settings rather than re-resolving
         # them: `resolve_settings` re-detects the operator's public IP over
         # the network, and calling it twice would pay for that twice and could
-        # answer differently the second time.
+        # answer differently the second time. A `--host` box has none -- it is
+        # not ours to resize -- so that case names no instance type and drops
+        # the --instance-type pointer rather than offering a flag that would
+        # do nothing (#3867).
+        instance_type = str(applied_settings.get("instance_type") or "")
         print(
             "Kubernetes substrate: the whole stack runs as Pods on this one "
-            f"{applied_settings.get('instance_type') or 'instance'}. See the node-capacity "
-            "section of docs/kubernetes.md for what it reserves, and pass --instance-type to "
-            "size up -- the install refuses a node that cannot hold the stack before it "
+            f"{instance_type or 'machine'}. See the node-capacity section of "
+            "docs/kubernetes.md for what it reserves"
+            + (", and pass --instance-type to size up" if instance_type else "")
+            + " -- the install refuses a node that cannot hold the stack before it "
             "builds anything.",
             file=sys.stderr,
         )
-
-    steps.append(
-        {
-            "step": "access",
-            "owner_ip_cidr": applied_settings.get("owner_ip_cidr", ""),
-            "open_ports": [22],
-            "mechanism": "ssh-tunnel-to-loopback",
-        }
-    )
-
-    target = resolve_target(args)
-    if plan.identity_file:
-        target.identity_file = str(Path(plan.identity_file).expanduser())
-    target.user = plan.ssh_user
 
     waited = wait_for_ssh(target, plan.ssh_timeout)
     steps.append({"step": "ssh", "host": target.host, "waited_seconds": round(waited, 1)})
@@ -1352,6 +1604,11 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         # rather than assuming the native one.
         "kubernetes": plan.kubernetes,
         "substrate": plan.substrate,
+        # Which bootstrap this deployment was built with (#3867). Carried
+        # forward by `resolve_plan` (a re-deploy of a Mac stays a Mac deploy)
+        # and reported by `cloud status` and the Infrastructure page, because
+        # "which OS is that box running" is otherwise unanswerable from here.
+        "os_family": plan.os_family,
         "host": target.host,
         "instance_id": target.instance_id,
         "region": target.region,
@@ -1470,6 +1727,11 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         raise
     DEPLOY_STATE_FILE.unlink(missing_ok=True)
     settings = result.get("settings", {})
+    # An operator-supplied EC2 Mac is not part of the substrate this just tore
+    # down -- nyxGPT never created it and cannot terminate it (#3867). Say so
+    # rather than let "Cloud deployment destroyed" imply a Mac that is still
+    # running, and still billing, was included.
+    macos_target = str(previous.get("os_family") or "") == OS_FAMILY_MACOS
     record_history(
         "destroy",
         "succeeded",
@@ -1477,9 +1739,19 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         host=str(previous.get("host") or ""),
         instance_id=str(previous.get("instance_id") or ""),
         region=str(previous.get("region") or settings.get("aws_region") or ""),
-        detail="tunnel closed, substrate torn down",
+        detail=(
+            "tunnel closed, substrate torn down; the EC2 Mac target was left running "
+            "(nyxGPT does not manage it)"
+            if macos_target
+            else "tunnel closed, substrate torn down"
+        ),
     )
-    return {"action": "destroy", "tunnel": tunnel, "settings": settings}
+    return {
+        "action": "destroy",
+        "tunnel": tunnel,
+        "settings": settings,
+        "unmanaged_target": previous.get("host", "") if macos_target else "",
+    }
 
 
 # The wrapped commands that own each cloud lifecycle action, returned with
@@ -1754,6 +2026,13 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         # before this flag existed, or no deploy at all, is not the same
         # claim as "this box runs the native stack".
         "substrate": str(record.get("substrate") or ""),
+        # Which target OS's bootstrap this deployment was built with (#3867).
+        # Observable rather than operable, like the session backend above: the
+        # dashboard reports it and names `nyxgpt cloud deploy --os`, and never
+        # drives a re-provision itself. Empty when nothing was recorded -- a
+        # deploy from before #3867, or no deploy at all -- which is not the
+        # same claim as "linux".
+        "os_family": str(record.get("os_family") or ""),
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
@@ -1779,7 +2058,21 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     target = result["target"]
     plan = result["plan"]
     print(f"\nnyxGPT {plan['version']} deployed to {target['instance_id'] or target['host']}.")
-    if plan.get("kubernetes"):
+    if str(plan.get("os_family") or OS_FAMILY_LINUX) == OS_FAMILY_MACOS:
+        # Say plainly what a Mac deploy did and did not do, rather than
+        # letting the Linux wording below imply parity it does not have
+        # (#3867): its bootstrap installs the two Homebrew formulas and starts
+        # them, and runs neither the observability profiles nor the self-heal
+        # watchdog that `ops install` brings with it on Linux.
+        print(
+            "Target OS: macOS (EC2 Mac) -- installed from the remote Homebrew tap and "
+            "started with `brew services`.\n"
+            "No observability stack and no self-heal watchdog: that bootstrap does not run "
+            "`nyxgpt ops install`. See docs/cloud.md, 'EC2 Mac targets'."
+        )
+    elif plan.get("kubernetes"):
+        # elif, not a second if: `resolve_plan` refuses macOS + --kubernetes,
+        # so these two are mutually exclusive by construction (#3956).
         print(
             "Substrate: a single-node k3s cluster on the instance, running the same "
             "k8s/*.yaml manifests as a local Kubernetes install.\n"
@@ -1879,6 +2172,12 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         print(f"  (from the deploy record on this machine, {DEPLOY_STATE_FILE})\n")
 
     _print_row("Version", status["version"] or "unknown")
+    _print_row(
+        "Target OS",
+        # Not defaulted to "linux": a record written before #3867 does not say,
+        # and guessing would be an assertion about a machine nothing checked.
+        status.get("os_family") or "not recorded (deploy predates `--os`)",
+    )
     instance = status["instance_id"] or "unknown"
     if status.get("instance_type"):
         instance = f"{instance} ({status['instance_type']})"
@@ -2219,8 +2518,14 @@ def deploy_command(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            destroy(args)
+            destroyed = destroy(args)
             print("Cloud deployment destroyed (tunnel closed, substrate torn down).")
+            if destroyed.get("unmanaged_target"):
+                print(
+                    f"The EC2 Mac at {destroyed['unmanaged_target']} is still running -- nyxGPT "
+                    "did not create it and cannot terminate it. Release it (and its Dedicated "
+                    "Host) yourself if you are done with it; the host bills until you do."
+                )
         elif subcommand == "tunnel":
             return _tunnel_command(args)
         elif subcommand == "credentials":

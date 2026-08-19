@@ -90,10 +90,14 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   instead of asking what the operator can type). The rest of the **operate**
   half — brew services / launchd reconciliation and a real `nyxgpt up` —
   stays owner-verified on the owner's workstation.
-- **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are documentation-verified
-  only: hosted macOS runners cover a brew install but are not EC2 instances,
-  and a Dedicated Host bills a 24-hour minimum. See [cloud.md](cloud.md)'s
-  target-OS support matrix.
+- **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are provisioned by
+  `nyxgpt cloud deploy --os macos --host <mac>`, which delivers the macOS
+  bootstrap over the same wrapped SSH path as the Linux one (#3867);
+  `cloud-target-os-smoke.yml` executes that delivery against a real sshd. The
+  *instance* half stays documentation-verified: hosted macOS runners cover a
+  brew install but are not EC2 instances, and a Dedicated Host bills a
+  24-hour minimum — which is also why nyxGPT does not allocate one. See
+  [cloud.md](cloud.md)'s [EC2 Mac targets](cloud.md#ec2-mac-targets).
 
 ### Open gaps
 

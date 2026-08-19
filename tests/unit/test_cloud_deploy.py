@@ -336,8 +336,9 @@ def _fake_provision_run(monkeypatch, returncode, output):
     """Stand in for the remote run, recording the script it was handed."""
     seen = {}
 
-    def fake_run(target, script):
+    def fake_run(target, script, remote_command="bash -s"):
         seen["script"] = script
+        seen["remote_command"] = remote_command
         return returncode, list(output)
 
     monkeypatch.setattr(cloud_deploy, "_run_provision_script", fake_run)
@@ -1654,3 +1655,285 @@ def test_a_pre_flag_deploy_record_reports_nothing_rather_than_guessing_file():
     )
 
     assert cloud_deploy.deploy_status()["session_backend"] == ""
+
+
+# --- Target OS dispatch (#3867) ------------------------------------------
+#
+# Before #3867 `deploy` drove exactly one bootstrap -- the Linux SSH script --
+# and the only route to an EC2 Mac was to render `nyxgpt cloud user-data --os
+# macos` and paste it into an AWS console instance launch by hand, which is
+# the raw-operations flow CLAUDE.md's Operational Command Wrapping requirement
+# forbids. These assert the dispatch, that the macOS bootstrap now travels the
+# same wrapped SSH path, that a Mac with nowhere to run fails *before* the
+# substrate is touched, and -- the acceptance criterion that matters most --
+# that the Linux path is byte-for-byte what it was.
+
+
+@pytest.mark.parametrize(
+    "instance_type",
+    ["mac1.metal", "mac2.metal", "mac2-m2.metal", "mac2-m2pro.metal", "mac2-m1ultra.metal"],
+)
+def test_every_ec2_mac_instance_type_resolves_to_the_macos_bootstrap(instance_type):
+    assert cloud_deploy.instance_type_os_family(instance_type) == "macos"
+
+
+@pytest.mark.parametrize(
+    "instance_type",
+    # Including the two traps: a non-Mac `.metal` type, and a type whose name
+    # merely starts with "mac".
+    ["m5.large", "", "c7g.metal", "m5.metal", "mac.large", "machine.large"],
+)
+def test_everything_else_resolves_to_the_linux_bootstrap(instance_type):
+    assert cloud_deploy.instance_type_os_family(instance_type) == "linux"
+
+
+def test_auto_reads_the_instance_type_the_substrate_is_configured_for(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "load_settings", lambda: {"instance_type": "mac2.metal"})
+
+    assert cloud_deploy.resolve_os_family(_args(os_family="auto")) == "macos"
+
+
+def test_this_runs_instance_type_flag_wins_over_the_remembered_one(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "load_settings", lambda: {"instance_type": "m5.large"})
+
+    assert (
+        cloud_deploy.resolve_os_family(_args(os_family="auto", instance_type="mac2-m2.metal"))
+        == "macos"
+    )
+
+
+def test_an_explicit_os_flag_overrides_the_instance_type(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "load_settings", lambda: {"instance_type": "mac2.metal"})
+
+    assert cloud_deploy.resolve_os_family(_args(os_family="linux")) == "linux"
+
+
+def test_redeploying_a_recorded_host_keeps_that_hosts_target_os(monkeypatch):
+    """An operator-supplied Mac has no instance type here to read: the substrate
+    does not manage it, so `infra.json` still says `m5.large`. Without this, a
+    re-deploy of a Mac would drive the *Linux* bootstrap at it."""
+    monkeypatch.setattr(cloud_infra, "load_settings", lambda: {"instance_type": "m5.large"})
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE, {"host": "198.51.100.77", "os_family": "macos"}
+    )
+
+    assert cloud_deploy.resolve_os_family(_args(os_family="auto", host="198.51.100.77")) == "macos"
+
+
+def test_a_different_host_does_not_inherit_the_recorded_target_os(monkeypatch):
+    monkeypatch.setattr(cloud_infra, "load_settings", lambda: {"instance_type": "m5.large"})
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE, {"host": "198.51.100.77", "os_family": "macos"}
+    )
+
+    assert cloud_deploy.resolve_os_family(_args(os_family="auto", host="203.0.113.9")) == "linux"
+
+
+def test_an_unsupported_os_is_refused_by_name():
+    with pytest.raises(CloudCommandError, match="not a supported target OS"):
+        cloud_deploy.resolve_os_family(_args(os_family="windows"))
+
+
+def test_the_macos_deploy_delivers_the_same_bootstrap_cloud_user_data_renders():
+    """One renderer, not a second copy of it: `cloud deploy --os macos` now
+    delivers the script that used to be pasted into the console by hand."""
+    from nyxgpt import cloud_provision
+
+    plan = cloud_deploy.resolve_plan(_args(os_family="macos"))
+
+    assert cloud_deploy.render_provision_script(plan) == cloud_provision.render_user_data(
+        "macos", plan.version, plan.session_backend
+    )
+
+
+def test_the_macos_bootstrap_installs_from_the_remote_tap_and_never_clones():
+    script = cloud_deploy.render_provision_script(
+        cloud_deploy.resolve_plan(_args(os_family="macos"))
+    )
+
+    assert "tap dkblinux98/nyxgpt" in script
+    assert "install nyxgpt-api nyxgpt-web" in script
+    assert "services start nyxgpt-api" in script
+    # Only executable lines: the header comments *mention* `git clone` to
+    # document that the script deliberately never runs one.
+    executable = [
+        line for line in script.splitlines() if line.strip() and not line.strip().startswith("#")
+    ]
+    for forbidden in ("git clone", "git://", "github.com/dkblinux98/nyxGPT.git"):
+        assert not any(forbidden in line for line in executable)
+
+
+def test_the_linux_bootstrap_is_untouched_by_the_dispatch():
+    """The acceptance criterion the rest of this change must not cost: `--os
+    linux` renders exactly the script a native Linux deploy always rendered.
+
+    The substrate sections (#3956) are substituted here rather than left as
+    placeholders because the template gained them after #3867: a *native*
+    Linux plan must still produce the pre-#3956 script, which is the same
+    claim this test was written to make about the `--os` dispatch.
+    """
+    plan = cloud_deploy.resolve_plan(_args(os_family="linux"))
+    assert plan.kubernetes is False
+    expected = (
+        cloud_deploy.PROVISION_SCRIPT_TEMPLATE.replace("__VERSION__", plan.version)
+        .replace("__PROFILES__", ",".join(plan.profiles))
+        .replace("__SESSION_BACKEND__", plan.session_backend)
+        .replace("__NODE_SECTION__", cloud_deploy.NATIVE_NODE_SECTION)
+        .replace("__LLM_RUNTIME_SECTION__", cloud_deploy.NATIVE_LLM_RUNTIME_SECTION)
+        .replace("__STACK_BRINGUP_SECTION__", cloud_deploy.NATIVE_STACK_BRINGUP_SECTION)
+    )
+
+    assert cloud_deploy.render_provision_script(plan) == expected
+    assert cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args())) == expected
+    # No placeholder survived the render -- the assertion above would pass if
+    # both sides shared an unsubstituted marker.
+    assert "__" not in expected.replace("__VERSION__", "")
+
+
+def test_the_macos_bootstrap_is_elevated_and_told_which_user_to_install_for():
+    """It refuses to run as anyone but root (ec2-macos-init hands user-data to
+    root) and drops to the login user with `sudo -u` for every brew call."""
+    plan = cloud_deploy.resolve_plan(_args(os_family="macos", ssh_user="admin"))
+
+    assert cloud_deploy.provision_remote_command(plan) == (
+        "sudo -n NYXGPT_TARGET_USER=admin bash -s"
+    )
+
+
+def test_the_linux_bootstrap_is_still_piped_into_a_plain_shell():
+    assert cloud_deploy.provision_remote_command(cloud_deploy.resolve_plan(_args())) == "bash -s"
+
+
+def test_a_macos_plan_defaults_sessions_to_file_and_a_linux_plan_to_cassandra():
+    """Nothing on the Mac provisions a Cassandra -- its bootstrap does not run
+    `ops install` -- so defaulting it to `cassandra` would point the API at a
+    database that is not on the machine."""
+    assert cloud_deploy.resolve_plan(_args(os_family="macos")).session_backend == "file"
+    assert cloud_deploy.resolve_plan(_args(os_family="linux")).session_backend == "cassandra"
+
+
+def test_the_recorded_session_backend_does_not_carry_across_target_os_families():
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE,
+        {"version": "3.0.0", "session_backend": "cassandra", "os_family": "linux"},
+    )
+
+    assert cloud_deploy.resolve_plan(_args(os_family="macos")).session_backend == "file"
+    assert cloud_deploy.resolve_plan(_args(os_family="linux")).session_backend == "cassandra"
+
+
+def test_a_macos_plan_enables_no_observability_profiles():
+    """Its bootstrap installs none, so recording them would make `tunnel`
+    forward ports nothing listens on and promise URLs that never answer."""
+    assert cloud_deploy.resolve_plan(_args(os_family="macos")).profiles == []
+
+
+def test_provisioning_a_mac_does_not_claim_a_self_heal_watchdog(monkeypatch):
+    seen = _fake_provision_run(monkeypatch, 0, [])
+    target = cloud_deploy.DeployTarget(host="198.51.100.10")
+
+    result = cloud_deploy.provision_instance(
+        target, cloud_deploy.resolve_plan(_args(os_family="macos"))
+    )
+
+    assert result["os_family"] == "macos"
+    assert result["self_heal_enabled"] is False
+    assert seen["remote_command"].startswith("sudo -n ")
+
+
+def test_a_mac_deploy_with_nowhere_to_run_fails_before_anything_is_applied(stubbed_deploy):
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.deploy(_args(os_family="macos"))
+
+    message = str(excinfo.value)
+    # Nothing was applied: the failure costs the operator nothing.
+    assert stubbed_deploy == []
+    # It names the constraint and its price, per the issue's requirement that
+    # the wrapped flow surface the cost before allocating.
+    assert "Dedicated Host" in message
+    assert "24-hour minimum" in message
+    # And the way out is another wrapped command, never the console.
+    assert "nyxgpt cloud deploy --os macos --host" in message
+    for forbidden in ("console", "paste", "user-data"):
+        assert forbidden not in message.lower()
+
+
+def test_a_supplied_mac_is_provisioned_without_applying_the_linux_substrate(
+    stubbed_deploy, _isolated_cloud_home
+):
+    result = cloud_deploy.deploy(_args(os_family="macos", host="198.51.100.77", no_tunnel=True))
+
+    # No `apply`: reconciling the substrate would bill for a Linux instance
+    # that nothing then deploys to.
+    assert stubbed_deploy == ["ssh", "provision"]
+    infra_step = next(s for s in result["steps"] if s["step"] == "infra")
+    assert infra_step["skipped"] is True
+    assert result["target"]["host"] == "198.51.100.77"
+    # Not the unrelated Linux instance's ids from the substrate handoff.
+    assert result["target"]["instance_id"] == ""
+
+    recorded = json.loads((_isolated_cloud_home / "deploy.json").read_text())
+    assert recorded["os_family"] == "macos"
+    assert recorded["host"] == "198.51.100.77"
+
+
+def test_a_linux_deploy_records_its_target_os_too(stubbed_deploy, _isolated_cloud_home):
+    cloud_deploy.deploy(_args())
+
+    recorded = json.loads((_isolated_cloud_home / "deploy.json").read_text())
+    assert recorded["os_family"] == "linux"
+
+
+def test_deploy_status_reports_the_target_os_family():
+    """Observable, not operable (Definition of Done): the Infrastructure page
+    reads this, because nothing else on it distinguishes the two bootstraps."""
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE,
+        {"version": "3.0.0", "host": "1.2.3.4", "os_family": "macos"},
+    )
+
+    assert cloud_deploy.deploy_status()["os_family"] == "macos"
+
+
+def test_a_pre_flag_deploy_record_reports_no_target_os_rather_than_guessing_linux():
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_STATE_FILE, {"version": "3.0.0", "host": "1.2.3.4"}
+    )
+
+    assert cloud_deploy.deploy_status()["os_family"] == ""
+
+
+def test_destroying_after_a_mac_deploy_says_the_mac_is_still_running(
+    monkeypatch, _isolated_cloud_home
+):
+    """`destroy` tears down the substrate, and an operator-supplied EC2 Mac was
+    never in it. Saying only "Cloud deployment destroyed" would imply a Mac --
+    and the Dedicated Host under it -- stopped billing when it did not."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.77", "version": "3.0.0", "os_family": "macos"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_infra, "destroy_infra", lambda args: {"settings": {"aws_region": "us-east-1"}}
+    )
+
+    result = cloud_deploy.destroy(_args(yes=True))
+
+    assert result["unmanaged_target"] == "198.51.100.77"
+    assert "left running" in cloud_deploy.deploy_history()[-1]["detail"]
+
+
+def test_destroying_after_a_linux_deploy_has_nothing_left_over_to_report(
+    monkeypatch, _isolated_cloud_home
+):
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10", "version": "3.0.0", "os_family": "linux"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_infra, "destroy_infra", lambda args: {"settings": {"aws_region": "us-east-1"}}
+    )
+
+    assert cloud_deploy.destroy(_args(yes=True))["unmanaged_target"] == ""
