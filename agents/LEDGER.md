@@ -663,6 +663,96 @@ rather than mechanism, and nothing can enforce them.
   Source: #3858; `src/nyxgpt/subprocess_bounds.py` (enumeration + rationale),
   `tests/unit/test_subprocess_bounds.py`.
 
+- **D-028** · 2026-08-19 · owner (issue #3882) — **Assignment is the workflow
+  lever; "process by comment" is retired.** A reviewer comments what they
+  found and **assigns the issue back**; the developer, on picking it up, moves
+  it to In Progress and works it. The comment carries findings, the assignment
+  carries the instruction, and **the actor doing the work owns the status
+  transition** — which is how people work, and what makes the state on the
+  board mean something. Both control tokens are **deleted, not deprecated**:
+  `READY_FOR_NEXT_ISSUE` became a `repository_dispatch` (#3917) and
+  `RETRY_IMPLEMENTATION` became the assignment itself, so
+  `developer_auto_implement.yml` subscribes to no comment event at all. Two
+  lanes are claimable by assignment — `Backlog` (new work) and `In Review`
+  (rework: REQUEST_CHANGES, huddle decision, conflict round, human override);
+  the held lanes stay held (**D-001**/**D-008**) and an unpermitted assigner
+  leaves the issue untouched. The stop-without-progress loop guard moved with
+  the lever, onto the claim step, and the owner is never gated by it. Same
+  move as **D-002** made for issue relationships: native mechanism, never body
+  prose. Do not re-introduce a comment token that *starts, resumes or routes*
+  work — that is the mechanism behind #3706 and #3790 (~500 runs in two
+  hours), not the wording. Tokens that author content (`@improvement`,
+  `@acceptance-failure`) or stop the loop (`PAUSE_SPRINT`,
+  `CONFLICT_REQUIRES_OWNER_DECISION`) are deliberately kept.
+  (Filed as `D-025` under #3882; renumbered to `D-028` when #3860, PR #3925's
+  huddle entry and #3858 took `D-025`, `D-026` and `D-027` on `v3.0.0` first.
+  The number came from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.)
+  Source: #3882; `docs/agent-comment-tokens.md`;
+  `tests/unit/test_dispatch_is_an_event.py`;
+  `tests/unit/test_comment_token_triggers.py`.
+
+- **D-029** · 2026-08-19 · developer session (#3911) — **The review huddle is one
+  workflow run, and its venue is a Slack thread, not the PR thread.** The #3687
+  protocol chained three comment-triggered workflows, so each leg's essay *was*
+  its trigger: three long structured comments on every huddled PR, and two races
+  that had to be guarded after the fact when a duplicated trigger produced two
+  positions and two mediations (#3728/#3733, guarded in #3736). `huddle_session.yml`
+  runs the whole huddle in one job — bounded rounds (`vars.HUDDLE_MAX_ROUNDS`,
+  default 3) of a developer turn and a review turn, then the scrummaster's
+  decision — with the conversation in a Slack thread under each agent's own
+  identity (#3910) and only the decision plus a collapsed transcript on the PR.
+
+  **Which #3736 guards went, and which did not — so a future session neither
+  restores a dead one nor deletes a live one.** Two races were guarded in
+  #3736 and they had different fates. The *mediation race* (two mediation runs
+  for one huddle) is gone by construction: the legs are steps of one job, so
+  there is no second leg to start. The *duplicate-trigger race* (#3728) is
+  **not** gone — both of `review_agent_auto_review.yml`'s trigger paths can
+  still post a HUDDLE_TRIGGERED comment minutes apart, and those upstream
+  guards are unchanged. The concurrency group serializes that second run; it
+  does not stop it, and left alone it would open a second Slack thread and
+  spend a second huddle. So `huddle_session.yml` opens with a `gate` job that
+  calls the surviving `is_primary_marker_comment`: only the round's first
+  marker comment owns the round. It is a job, not a step condition, because a
+  stand-down spread across ~20 steps is one forgotten `if:` away from running
+  the whole huddle anyway. `huddle_decision_dispatch.yml` calls the same
+  helper for the same reason on the decision comment.
+
+  **The decision comment must be authored by the scrummaster.**
+  `huddle_decision_dispatch.yml` fires only for `vars.SCRUM_AGENT` or the
+  owner, and the session's job-level `GH_TOKEN` is the review agent's — so the
+  decision turn and the step that posts it override `GH_TOKEN` to
+  `SCRUMMASTER_AGENT_TOKEN`. Under the job default the comment lands, reads
+  correctly, and dispatches nothing: the #3733 stall, silently. The old
+  `scrummaster_huddle_mediation.yml` satisfied that gate by construction (the
+  whole run was the scrummaster); consolidation turned a structural property
+  into one env override, which is exactly the kind of thing a later edit
+  drops, so `test_huddle_session.py::TestTheDecisionCanActuallyDispatch` pins
+  both ends together.
+
+  Preserved deliberately: each turn is its own `claude-code-action` invocation
+  (one job is not one session — #3687's memorylessness is the reason a fresh
+  agent re-reads the thread instead of trusting what it remembers);
+  `huddle_decision_dispatch.yml` is untouched and still keys on
+  `HUDDLE_DECISION:`; `escalate` runs the same escalation primitives. The
+  transcript is assembled from the turn files rather than read back from Slack,
+  so the record survives both an outage and Slack's retention setting.
+
+  Settling is **sticky**: round N inherits round N-1's answer. Round N gates on
+  the previous round's settle output alone, so a huddle that settles in round 1
+  skips round 2 — which means round 2's file is never written, which a
+  self-only settle check reads as "not settled" and lets round 3 run: two paid
+  invocations on a closed question. `huddle_session_probe.py` executes the
+  session's real shell bodies on every change (#3775) and re-plants that
+  pre-fix gating to prove it can still fail.
+  (Filed as `D-027`, renumbered to `D-029` when the merge of `v3.0.0` landed
+  #3858's `D-027` and #3882's `D-028` first. The number came from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.0` — run, not
+  eyeballed. IDs are never reused.)
+  Source: #3911; `.github/workflows/huddle_session.yml`;
+  `scripts/agents/lib/huddle_session_probe.py`; `tests/unit/test_huddle_session.py`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

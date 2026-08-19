@@ -18,8 +18,7 @@ comments and the budget never actually bound anything. This module replaces
 both: the budget is keyed to the stable (issue, failed step) pair via an
 unforgeable marker embedded in every auto-retry comment, and only a comment
 from the repo owner (author_association == "OWNER" -- the same signal
-developer_auto_implement.yml's own trigger gate already uses for
-RETRY_IMPLEMENTATION) resets it.
+developer_auto_implement.yml's stop-loop guard uses) resets it.
 """
 
 from __future__ import annotations
