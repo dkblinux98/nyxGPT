@@ -336,6 +336,11 @@ brew services stop nyxgpt-api@3.0.0rc && brew uninstall nyxgpt-api@3.0.0rc
 brew install nyxgpt-api && brew services start nyxgpt-api
 ```
 
+Those two are channel *swaps*, not removals: the machine keeps a nyxGPT
+install throughout, so the `com.nyxgpt.*` agents and the containers are meant
+to stay. Removing nyxGPT altogether is a different sequence — see
+[Removing nyxGPT](#removing-nyxgpt), and run `nyxgpt ops uninstall` first.
+
 If the tap does not carry the stable formula the candidate names — a tap
 whose stable formulas have not been published yet — `brew` warns that the
 conflict refers to an unknown formula and **carries on installing**. The
@@ -693,6 +698,61 @@ Example output:
 nyxgpt-api  started username ~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api.plist
 nyxgpt-web  started username ~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-web.plist
 ```
+
+---
+
+## Removing nyxGPT
+
+**Run the wrapped teardown first, before any `brew uninstall`:**
+
+```bash
+nyxgpt ops uninstall
+```
+
+Then, and only then, remove the artifacts:
+
+```bash
+brew uninstall $(brew list --formula | grep '^nyxgpt')
+brew untap dkblinux98/nyxgpt
+```
+
+`nyxgpt ops uninstall` stops **and deregisters** everything the install put
+on the machine:
+
+| Population | Why `brew uninstall` cannot do it |
+|---|---|
+| The `nyxgpt-api`/`nyxgpt-web` brew services | Homebrew has no uninstall hook and does not stop a service before deleting its keg |
+| The `com.nyxgpt.*` LaunchAgents (Ollama logs/env, Cassandra logs) | nyxGPT installed these itself; Homebrew never knew they existed |
+| The `nyxgpt-cassandra` container and the observability Compose tier | not Homebrew's at all |
+
+Your data is preserved: `~/.nyxGPT` (config.ini, volumes, logs) is left
+alone. Delete that directory by hand if you want it gone too.
+
+**Why the order matters.** `brew uninstall` deletes a keg's files without
+stopping its service first, and a running process survives deletion of its
+executable — so the api and web services keep serving :8000 and :3000 from
+software that is no longer installed. `brew untap` then removes the formula
+definitions, so `brew services stop nyxgpt-api@3.0.0rc` has nothing left to
+act on: the services are orphaned from the tool that created them. The
+formulas' `caveats` say the same thing at the point of install.
+
+`nyxgpt ops uninstall` is idempotent — it is meant to be run against
+half-removed machines, so an already-stopped service or an already-deleted
+plist is reported and skipped, not treated as a failure. If you have already
+uninstalled the kegs, run it now: it finds the leftover launchd jobs by their
+plists rather than by asking brew to resolve a formula that is gone.
+
+`nyxgpt ops install` reports the same condition from the other side: a
+launchd job left loaded against deleted files is named at install time,
+before anything tries to bind the ports it is holding.
+
+`nyxgpt ops uninstall --volumes --yes-really` additionally deletes the
+Docker volumes (Cassandra/Postgres/Grafana data). Without both flags it
+refuses.
+
+To stop the stack *without* uninstalling it, use `nyxgpt down` — that leaves
+every service installed and registered to come back at the next login, which
+is exactly why it is not a substitute for the teardown above.
 
 ---
 

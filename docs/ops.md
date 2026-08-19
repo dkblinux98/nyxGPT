@@ -114,6 +114,7 @@ nyxgpt ops status
 nyxgpt ops restart
 nyxgpt ops stop
 nyxgpt ops down
+nyxgpt ops uninstall
 nyxgpt ops doctor
 nyxgpt ops env-sync
 nyxgpt ops secrets-sync
@@ -450,7 +451,9 @@ Constraints, by design:
   names the checkout being served ([ui.md](ui.md)).
 - On macOS, `nyxgpt ops down`/`stop` unloads the dev LaunchAgents but leaves
   their plists in `~/Library/LaunchAgents`, so they load again at the next
-  login — switching back with `nyxgpt up` removes them outright.
+  login. Two commands remove them outright: switching back with `nyxgpt up`,
+  and [`nyxgpt ops uninstall`](#nyxgpt-ops-uninstall), which also removes the
+  `com.nyxgpt.*` log/env agents both modes install.
 
 Which parts of this are proven by CI: the install mechanics (editable venv,
 dev-server wrapper, mode recording, and the switch back to the artifact path)
@@ -537,8 +540,12 @@ Reports:
 - Native service state (`started`, `stopped`, `error`) — Homebrew services
   on macOS, systemd --user units on Linux
 - Docker container state for Cassandra
-- Log-follower agent load state (LaunchAgent on macOS, systemd --user unit
-  on Linux)
+- LaunchAgent load state for every agent nyxGPT installs on macOS -- both
+  log followers (`com.nyxgpt.cassandra-logs`, `com.nyxgpt.ollama-logs`), the
+  Ollama env agent (`com.nyxgpt.ollama-env`), and, in dev mode, the api/web
+  pair. On Linux, the equivalent systemd --user units. The two Ollama agents
+  used to be omitted, which made them invisible to the command an operator
+  would check a teardown with (#3859)
 - **Required models** — the configured chat and embedding models, and whether
   Ollama has each (`PRESENT`/`MISSING`, or `UNKNOWN` when Ollama itself did
   not answer). A missing one is printed with the `nyxgpt` command that fixes
@@ -546,7 +553,8 @@ Reports:
   renders, and the one `/api/v1/models/required` returns (#3824)
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
-  stack) for cleanup
+  stack) for cleanup -- and, when you are removing nyxGPT rather than
+  stopping it, [`nyxgpt ops uninstall`](#nyxgpt-ops-uninstall)
 
 This command does not modify system state.
 
@@ -749,6 +757,87 @@ this wrapper is what actually deletes the data now.)
 ### Exit codes
 
 - `0` — teardown completed (or nothing needed tearing down) successfully
+- `2` — one or more steps failed, or `--volumes` was passed without
+  `--yes-really`
+
+### `down` stops; it does not uninstall
+
+`down` leaves the machine **installed**: every service is still registered
+with launchd/systemd and comes back at the next login, which is what you
+want when you are stopping a stack you intend to start again. If you are
+removing nyxGPT, that is [`nyxgpt ops uninstall`](#nyxgpt-ops-uninstall)
+below, and it must run *before* you remove the artifacts.
+
+---
+
+## `nyxgpt ops uninstall`
+
+The wrapped teardown to run **before** removing nyxGPT's artifacts (`brew
+uninstall`, `pip uninstall`). Everything `down` does, plus the
+deregistration `down` deliberately does not do.
+
+```bash
+nyxgpt ops uninstall
+```
+
+Then, and only then, remove the artifacts — on macOS:
+
+```bash
+brew uninstall $(brew list --formula | grep '^nyxgpt')
+brew untap dkblinux98/nyxgpt
+```
+
+### Why it has to come first
+
+`brew uninstall` deletes a keg's files without stopping its service, and a
+running process survives deletion of its executable — so `api` and `web`
+keep serving :8000 and :3000 from software that is no longer installed.
+`brew untap` then removes the formula definitions, so `brew services stop
+nyxgpt-api@3.0.0rc` has nothing left to act on. Homebrew has no uninstall
+hook, so nothing in a `brew uninstall` could ever have run this for you;
+the formulas' `caveats` say so at install time.
+
+### What it removes
+
+| Population | Where it came from |
+|---|---|
+| The `nyxgpt-api`/`nyxgpt-web` brew services, or the `nyxgpt-*` systemd `--user` units | the artifact install |
+| The `com.nyxgpt.*` LaunchAgents — Ollama logs, Ollama env, Cassandra logs, and the dev-mode api/web pair | `nyxgpt ops install` wrote these itself; Homebrew never knew they existed |
+| The `nyxgpt-cassandra` container and the observability Compose tier | the container tier |
+| The native install-mode marker | the record of a deployment that no longer exists |
+
+Removal, not just unloading: a plist left in `~/Library/LaunchAgents` or a
+unit left in `~/.config/systemd/user` is reinstated at the next login.
+
+The Homebrew half is found by its launchd label (`homebrew.mxcl.nyxgpt*`)
+as well as through `brew services stop`, so it still works on a machine
+where the tap is already gone and brew can no longer resolve the formula
+name — the state an operator reaches by uninstalling first.
+
+### Your data is preserved
+
+`~/.nyxGPT` — `config.ini`, `volumes/`, `logs/` — is never touched. Delete
+it by hand if you want it gone. `--volumes --yes-really` additionally
+deletes the Docker volumes (Cassandra/Postgres/Grafana data); `--volumes`
+alone is refused, same contract as `down`.
+
+### Behavior
+
+- **Idempotent.** It is meant to run against partially-removed machines: an
+  absent keg, a container that is already gone, a host with no Docker and a
+  machine with no Compose file are all reported as skipped, not failed.
+- Running it twice is a no-op the second time, not an error.
+- On a machine where the kegs are *already* uninstalled, run it anyway — it
+  finds the orphaned launchd jobs by their plists rather than by asking brew
+  to resolve a formula that no longer exists.
+- `nyxgpt ops install` reports the same condition from the other side: a
+  launchd job loaded against files that no longer exist is named at install
+  time, with this command as the fix, before anything tries to bind the
+  ports it is holding.
+
+### Exit codes
+
+- `0` — teardown completed (or there was nothing left to tear down)
 - `2` — one or more steps failed, or `--volumes` was passed without
   `--yes-really`
 
