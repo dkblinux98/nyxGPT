@@ -31,7 +31,8 @@ otherwise read from `docs/` ships inside the package instead: once
 `nyxgpt-web` is running, the product documentation is served in the web UI
 under **Support → Docs**, offline and matching the installed version. The same menu's
 **File an Issue** entries report a problem, request a feature or ask a question
-with the ticket type, your version and your platform already filled in. See [ui.md](ui.md#support-menu).
+without leaving the app: you answer in nyxGPT, it files the ticket with your
+version and platform attached and links you to it. See [ui.md](ui.md#support-menu).
 
 ---
 

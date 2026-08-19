@@ -26,7 +26,8 @@ your tree over SSH and still clones nothing), so the documentation on it is
 the copy inside the installed
 package: reach it in the tunneled web UI under **Support → Docs**, which
 renders the product documentation that shipped with the deployed version. **File an Issue**
-sits beside it in the same menu. See [ui.md](ui.md#support-menu).
+sits beside it in the same menu and files the ticket from the instance itself,
+so a report never means leaving the tunneled UI. See [ui.md](ui.md#support-menu).
 
 ---
 
