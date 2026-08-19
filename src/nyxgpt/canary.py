@@ -49,6 +49,13 @@ from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
 from nyxgpt.ops import OpsResult as CanaryResult
 from nyxgpt.resource_monitor import get_resource_monitor
+from nyxgpt.subprocess_bounds import (
+    PROBE_TIMEOUT_SECONDS,
+    bounded_argv,
+    timed_out,
+    timeout_message,
+    timeout_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,14 @@ IMAGE_REPOSITORY = "nyxgpt-api"
 DEFAULT_NAMESPACE = "nyxgpt"
 DEFAULT_ROLLOUT_TIMEOUT_SECONDS = 180
 HISTORY_LIMIT = 20
+
+# Every kubectl call here is a single API request, not a stream, so none of
+# them has a legitimate reason to take half a minute -- this is the backstop
+# for the mutating ones (`scale`, `set image`). Read-only probes on a polled
+# endpoint use the much tighter `PROBE_TIMEOUT_SECONDS` instead, and
+# `_wait_rollout` -- the one call that blocks by contract -- passes its own
+# bound. See `subprocess_bounds` for why any of this exists (#3858).
+DEFAULT_RUN_TIMEOUT_SECONDS = 30.0
 
 # What a stable Deployment rests at between rollouts when its live replica
 # count cannot be read (#3833) -- the same number k8s/deployment-stable.yaml
@@ -216,7 +231,12 @@ def _kubectl_missing_message(fallback: str) -> str:
     return NOT_SUPPORTED_UNDER_COMPOSE if _compose_mode() else fallback
 
 
-def _run(cmd: list[str], *, expected: bool = False) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str],
+    *,
+    expected: bool = False,
+    timeout: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text without raising on non-zero exit.
 
     Non-zero exits are logged with the command and a stderr tail so failed
@@ -224,8 +244,31 @@ def _run(cmd: list[str], *, expected: bool = False) -> subprocess.CompletedProce
     caller via the returned `CompletedProcess` (#3415 gap 5). Pass `expected=True`
     for read-only probes where a non-zero exit is a normal outcome, to log at
     DEBUG instead of WARNING.
+
+    Bounded twice (#3858): `timeout` caps how long the caller's thread can be
+    held -- these calls run in Starlette's threadpool behind `/canary/status`,
+    where an unreachable cluster that blackholes rather than refuses would
+    otherwise hold a worker forever -- and `bounded_argv` hands kubectl its own
+    `--request-timeout` so it gives up with its own message first. An expired
+    bound comes back as a `TIMEOUT_RETURNCODE` result (see `timed_out`) rather
+    than a `TimeoutExpired` traveling up into a handler. Pass `timeout=None`
+    only for a call that blocks by contract and carries its own bound.
     """
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    try:
+        result = subprocess.run(
+            bounded_argv(cmd, timeout),
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        assert timeout is not None  # nosec B101 - only a set bound can expire
+        logger.warning(
+            f"Subprocess {timeout_message(timeout)}: {' '.join(cmd)}",
+            extra={"component": "canary", "cmd": cmd, "timeout_seconds": timeout},
+        )
+        return timeout_result(cmd, exc, timeout)
     if result.returncode != 0:
         level = logging.DEBUG if expected else logging.WARNING
         logger.log(
@@ -412,7 +455,9 @@ def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> li
     if not selector or _which("kubectl") is None:
         return []
     cp = _run(
-        ["kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "json"], expected=True
+        ["kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "json"],
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
         return []
@@ -447,6 +492,7 @@ def _deployment_selector(name: str, namespace: str = DEFAULT_NAMESPACE) -> str:
     cp = _run(
         ["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"],
         expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
         return ""
@@ -471,7 +517,22 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHea
             _kubectl_missing_message("kubectl not found; cannot check deployment health"),
         )
 
-    cp = _run(["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"], expected=True)
+    cp = _run(
+        ["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"],
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if timed_out(cp):
+        # A status read that took too long is a degraded reading, not an
+        # error the caller should raise on: the endpoint says so and stays
+        # up (#3858). Named separately from the generic error branch below
+        # because "timed out" and "kubectl said Forbidden" are different
+        # problems with different remedies.
+        return TrackHealth(
+            "error",
+            f"{name} health check {timeout_message(PROBE_TIMEOUT_SECONDS)} "
+            "-- the cluster did not answer",
+        )
     if cp.returncode != 0:
         stderr = (cp.stderr or "").strip()
         lowered = stderr.lower()
@@ -530,7 +591,14 @@ def current_mode() -> str:
     NYXGPT_COMPOSE_FILE marker, then a running Terraform-managed container stack,
     then a populated Kubernetes namespace, falling back to "native" (Homebrew
     services, no Terraform/Kubernetes stack detected). Returns one of "compose",
-    "terraform", "kubernetes", "native".
+    "terraform", "kubernetes", "native", "unknown".
+
+    "unknown" is the answer when the Kubernetes probe *timed out* (#3858).
+    Falling back to "native" there would be an assertion about the substrate
+    that nothing checked -- a cluster that is configured but not answering is
+    precisely the case where "you are not running Kubernetes" is most likely
+    to be wrong, and the operator needs to see the probe failure rather than a
+    confident wrong mode.
     """
     if _compose_mode():
         return "compose"
@@ -542,8 +610,12 @@ def current_mode() -> str:
         pass
     if _which("kubectl") is not None:
         cp = _run(
-            ["kubectl", "-n", DEFAULT_NAMESPACE, "get", "pods", "--no-headers"], expected=True
+            ["kubectl", "-n", DEFAULT_NAMESPACE, "get", "pods", "--no-headers"],
+            expected=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
         )
+        if timed_out(cp):
+            return "unknown"
         if cp.returncode == 0 and (cp.stdout or "").strip():
             return "kubernetes"
     return "native"
@@ -553,6 +625,13 @@ def _mode_message(mode: str) -> str | None:
     """Explain why canary doesn't apply outside Kubernetes mode, and which mode provides it."""
     if mode == "kubernetes":
         return None
+    if mode == "unknown":
+        return (
+            f"Could not determine the deployment mode: the Kubernetes probe "
+            f"{timeout_message(PROBE_TIMEOUT_SECONDS)} without an answer. Canary state cannot "
+            f"be read until the cluster responds -- check that the current kubeconfig context "
+            f"points at a reachable cluster."
+        )
     return (
         f"Canary deployment is provided by Kubernetes mode; this process is currently "
         f"running in {mode} mode. Run `nyxgpt ops install --kubernetes` to enable it."
@@ -612,7 +691,12 @@ def _wait_rollout(
             "-n",
             namespace,
             f"--timeout={timeout_seconds}s",
-        ]
+        ],
+        # The command's own `--timeout` is the real bound (it is a watch, and
+        # `--request-timeout` would cut the watch off); the Python bound sits
+        # a grace period behind it, for the case where kubectl itself wedges
+        # rather than honoring its flag (#3858).
+        timeout=timeout_seconds + DEFAULT_RUN_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
         # "timed out waiting for the condition" is not a diagnosis. Ask the Pods
@@ -752,6 +836,7 @@ def _desired_replicas(name: str, namespace: str = DEFAULT_NAMESPACE) -> int | No
     cp = _run(
         ["kubectl", "get", "deployment", name, "-n", namespace, "-o", "jsonpath={.spec.replicas}"],
         expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
         return None
@@ -868,6 +953,10 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
     unknown or unsupported `component` (e.g. `ollama`, see
     `OLLAMA_UNSUPPORTED_REASON`) reports `available: False` with the reason
     in both `unavailable_reason` and `mode_message` instead of raising.
+
+    The per-track health reads only happen in Kubernetes mode (#3858): in any
+    other mode the tracks report the mode message rather than the result of a
+    kubectl call that had no cluster to reach.
     """
     mode = current_mode()
     spec, err = _component_spec(component)
@@ -892,8 +981,20 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
         }
 
     state = _load_state(component)
-    stable_health = deployment_health(spec.stable_deployment, namespace)
-    canary_health = deployment_health(spec.canary_deployment, namespace)
+    # Outside Kubernetes there is no Deployment to ask about, so don't ask
+    # (#3858) -- the same guard `ops.infra_status()` has applied since #3468.
+    # On a native install this removes two `kubectl get deployment` calls per
+    # poll rather than merely bounding them: cheaper, and it stops a stale
+    # kubeconfig context from being dialed at all by a deployment that does
+    # not use Kubernetes. The tracks report the mode as their reason, which is
+    # the honest answer to "why is nothing deployed here".
+    mode_supported = mode == "kubernetes"
+    if mode_supported:
+        stable_health = deployment_health(spec.stable_deployment, namespace)
+        canary_health = deployment_health(spec.canary_deployment, namespace)
+    else:
+        skipped = TrackHealth("not_deployed", _mode_message(mode) or "")
+        stable_health = canary_health = skipped
     kubectl_present = _which("kubectl") is not None
     active = bool(state.get("active", False))
     weight_percent = state.get("weight_percent", 0)
@@ -945,7 +1046,7 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
             else _kubectl_missing_message("kubectl not found; cannot check deployment health")
         ),
         "mode": mode,
-        "mode_supported": mode == "kubernetes",
+        "mode_supported": mode_supported,
         "mode_message": _mode_message(mode),
     }
 

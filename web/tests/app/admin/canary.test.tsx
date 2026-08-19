@@ -82,6 +82,19 @@ const mockUnsupportedModeStatus = {
     'Canary deployment is provided by Kubernetes mode; this process is currently running in terraform mode. Run `nyxgpt ops install --kubernetes` to enable it.',
 };
 
+// The server could not read the mode at all because its kubectl probe timed
+// out (#3858). Distinct from every mode above: there is no mode to name, so
+// the page must not claim canary doesn't apply here.
+const mockUnknownModeStatus = {
+  ...mockUnsupportedModeStatus,
+  mode: 'unknown',
+  unavailable_reason: null,
+  mode_message:
+    'Could not determine the deployment mode: the Kubernetes probe timed out after 5s without an ' +
+    'answer. Canary state cannot be read until the cluster responds -- check that the current ' +
+    'kubeconfig context points at a reachable cluster.',
+};
+
 const mockMonitoringActive = {
   enabled: true,
   active: true,
@@ -222,6 +235,20 @@ describe('CanaryPage', () => {
     // The mode banner is the honest explanation -- no Unhealthy cards or unreachable-cluster banner shown.
     expect(screen.queryByText('Unhealthy')).not.toBeInTheDocument();
     expect(screen.queryByText('Kubernetes is unreachable.')).not.toBeInTheDocument();
+  });
+
+  it('says the mode is undetermined, rather than naming one, when the probe timed out', async () => {
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockUnknownModeStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Could not determine the deployment mode.')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/the Kubernetes probe timed out after 5s/)).toBeInTheDocument();
+    // "(unknown)" is not a deployment mode -- the page must not phrase it as one.
+    expect(screen.queryByText(/doesn.t apply to the current deployment mode/)).not.toBeInTheDocument();
   });
 
   it('shows the unreachable-cluster banner and allows refreshing when mode is Kubernetes but kubectl is unavailable', async () => {

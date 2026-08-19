@@ -1884,7 +1884,15 @@ def test_run_invokes_subprocess_with_expected_kwargs():
         )
         cp = ops._run(["echo", "hi"])
         run.assert_called_once_with(
-            ["echo", "hi"], check=True, text=True, capture_output=True, input=None, env=None
+            ["echo", "hi"],
+            check=True,
+            text=True,
+            capture_output=True,
+            input=None,
+            env=None,
+            # Bounded by default since #3858 -- a call that can be reached from
+            # an HTTP handler must not be able to block a thread forever.
+            timeout=ops.DEFAULT_RUN_TIMEOUT_SECONDS,
         )
         assert cp.stdout == "hi\n"
 

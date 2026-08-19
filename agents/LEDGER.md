@@ -546,6 +546,29 @@ rather than mechanism, and nothing can enforce them.
   and `test_ops_and_self_heal_never_disagree_about_whether_a_pod_is_serving`.
   Source: #3832; `docs/self-healing.md` §Pending Pods are reported, not deleted.
 
+- **D-023** · 2026-08-19 · developer agent (#3858) — **A subprocess reachable
+  from an HTTP handler is bounded, and an expired bound is a result rather
+  than an exception.** The vocabulary is one module,
+  `src/nyxgpt/subprocess_bounds.py`, which also carries the enumeration of all
+  18 `subprocess.run`/`Popen` call sites in `src/nyxgpt/` and which 10 of them
+  a handler can reach — the list is the deliverable, because bounding two
+  helpers while a third stays unbounded rebuilds the same trap. A timeout
+  comes back as returncode 124 (`timed_out()`), so a status probe degrades
+  ("… health check timed out after 5s") instead of 500ing. Two bounds are
+  applied deliberately where the tool offers one: `kubectl --request-timeout`
+  *and* Python's `timeout=`. **Handlers stay plain `def`** — the considered
+  alternative, `async def` + `run_in_threadpool`, moves the same blocking call
+  onto the same threadpool and buys nothing, while making a future forgotten
+  `await` block the event loop instead of one worker; bounding the subprocess
+  is what actually releases the worker. `canary.status()` also **skips** the
+  per-track kubectl reads outside Kubernetes mode (the #3468 guard
+  `ops.infra_status()` already had), which removes the calls on a native
+  install rather than merely bounding them, and `canary.current_mode()` now
+  answers **"unknown"** when its probe times out rather than asserting
+  "native" about a substrate nothing could see.
+  Source: #3858; `src/nyxgpt/subprocess_bounds.py` (enumeration + rationale),
+  `tests/unit/test_subprocess_bounds.py`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

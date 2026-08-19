@@ -2093,6 +2093,18 @@ def _canary_failure_detail(result: canary_module.CanaryResult) -> str:
 # Blue/green (deploy.py, `/api/v1/deploy/*`) was retired in favor of canary,
 # a strict superset for traffic purposes (0%/100% reproduces a cutover) plus
 # metrics-gated gradual shift and auto-rollback -- see #3409.
+#
+# These stay plain `def` -- deliberately, and this is the decision #3858 asked
+# to be recorded either way. FastAPI already runs a sync handler in Starlette's
+# threadpool, so rewriting them as `async def` + `run_in_threadpool` moves the
+# same subprocess onto the same pool and buys nothing: the worker is held for
+# exactly as long either way. What actually bounds the damage is bounding the
+# subprocess (`subprocess_bounds`), which is what this issue did -- a probe now
+# releases its worker in five seconds whether the handler is sync or async.
+# `async def` here would be strictly worse: every one of these bodies is
+# blocking, and one forgotten `await` in a future edit blocks the event loop
+# itself rather than one pool worker. Revisit only if a handler gains genuinely
+# concurrent I/O to overlap.
 @api.get("/canary/status")
 def canary_status(request: Request, component: str = "api") -> dict[str, Any]:
     """Return canary rollout status: active flag, traffic weight, stable/canary health/version,
