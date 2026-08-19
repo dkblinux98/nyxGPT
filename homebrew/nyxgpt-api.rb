@@ -28,6 +28,195 @@ class NyxgptApi < Formula
     python = Formula["python@3.12"].opt_bin/"python3.12"
     venv = libexec/"venv"
 
+    # #3814, and the reason #3753 and #3788 each got patched against a guess.
+    # The real fault on the owner's Mac was never pip: their `python@3.12`
+    # keg could not load its own `pyexpat`.
+    #
+    #   ImportError: dlopen(.../lib-dynload/pyexpat.cpython-312-darwin.so):
+    #     Symbol not found: _XML_SetAllocTrackerActivationThreshold
+    #     Expected in: /usr/lib/libexpat.1.dylib
+    #
+    # Homebrew tags bottles by macOS *major* version, so a bottle built
+    # against a newer minor release (SDK 26.5) is served to a machine running
+    # an older one (26.2). Its pyexpat then resolves the *system* libexpat,
+    # which does not export the newer expat's symbol. nyxGPT cannot repair
+    # that keg and must not try: what it can do is refuse to build on it and
+    # say why, in one import, instead of dying 200 lines later inside pip
+    # with a module name that has nothing to do with the fault.
+    #
+    # Both open symptoms were that one .so. `plistlib` does
+    # `from xml.parsers.expat import ParserCreate`, so `platform.mac_ver()`
+    # answered empty (#3753); pip's vendored distlib reaches it through
+    # `xmlrpc.client`, so pip's own eager pre-import swallowed the dlopen
+    # error and re-raised it as `No module named
+    # 'pip._internal.operations.install.wheel'` (#3788).
+    #
+    # Placement is load-bearing. This runs inside `install`, which Homebrew
+    # calls only after dependencies are resolved and installed -- so it
+    # checks the interpreter this build will actually use, not whatever was
+    # on the machine when `brew install` was typed.
+    #
+    # The check is Python nested in a Ruby heredoc, delimited so
+    # `build_homebrew_artifacts.py` can compile it while stamping, the unit
+    # suite can run it, and macos-brew-smoke.yml can inject a broken pyexpat
+    # into it -- all from this one copy. It fails CLOSED: anything other than
+    # the ok line, including no output at all, refuses the build.
+    # nyxgpt-interpreter-preflight: begin (#3814)
+    preflight = buildpath/"nyxgpt-interpreter-preflight.py"
+    preflight.write <<~'PY'
+      # nyxgpt-preflight-source: begin (#3814)
+      """Refuse a python@3.12 that cannot load part of its own standard library.
+
+      The formula's install block runs this against the interpreter the keg's
+      venv will be built from, before it does any work; see that block for the
+      failure it exists to prevent. Prints an ok line and exits 0 when the
+      interpreter is usable, and a complete operator report otherwise.
+
+      Only `os` and `sys` are imported at module level -- everything else is
+      imported inside a function. This file's whole job is to run on an
+      interpreter that is broken in an unknown way, so it must not need a
+      working stdlib to say so.
+      """
+      import os
+      import sys
+
+      OK = "nyxgpt-preflight: ok"
+
+      # Compiled stdlib extensions this build and the installed product reach.
+      # A healthy python@3.12 keg has every one of them; an interpreter missing
+      # one is broken, not minimal. Nothing nyxGPT writes imports
+      # `xml.parsers.expat` directly -- it is reached through pip and through
+      # `platform.mac_ver()`, which is exactly why its absence surfaced as two
+      # unrelated-looking defects.
+      REQUIRED = (
+          ("xml.parsers.expat", "pip's vendored distlib imports xmlrpc.client, which needs it"),
+          ("plistlib", "platform.mac_ver() answers empty without it, and pip parses that unguarded"),
+          ("ssl", "pip cannot reach PyPI without it"),
+          ("zlib", "every wheel is a zip"),
+          ("lzma", "wheel and sdist handling"),
+          ("bz2", "wheel and sdist handling"),
+          ("ctypes", "truststore loads Security.framework through it"),
+          ("sqlite3", "nyxGPT's local session and RAG stores"),
+      )
+
+
+      def _measured(argv):
+          """Best-effort command output for the report; never raises."""
+          try:
+              import subprocess
+
+              done = subprocess.run(
+                  argv, capture_output=True, text=True, timeout=30, check=False
+              )
+          except Exception as exc:  # noqa: BLE001 - a report line, not control flow
+              return "<%s: %r>" % (argv[0], exc)
+          return done.stdout.strip() or "<no output, exit %r>" % (done.returncode,)
+
+
+      def _mac_ver():
+          """What platform.mac_ver() answers here -- #3753's symptom, reported."""
+          try:
+              import platform
+
+              return repr(platform.mac_ver())
+          except Exception as exc:  # noqa: BLE001 - a report line, not control flow
+              return "<unavailable: %r>" % (exc,)
+
+
+      def _failures():
+          """(module, why, exception) for every required import that will not load."""
+          found = []
+          for module, why in REQUIRED:
+              try:
+                  __import__(module)
+              except Exception as exc:  # noqa: BLE001 - dlopen raises ImportError, not only
+                  found.append((module, why, exc))
+          return found
+
+
+      def _report(failures):
+          """Everything an operator needs, including the strings that make it searchable."""
+          lines = [
+              "nyxgpt-preflight: this interpreter cannot import part of its own",
+              "standard library, so nyxGPT will not build a venv on it.",
+              "",
+              "  interpreter: %s" % (sys.executable,),
+              "  keg:         %s" % (os.path.realpath(getattr(sys, "base_prefix", sys.prefix)),),
+              "  version:     %s" % (sys.version.split()[0],),
+              "  macOS:       %s" % (_measured(["/usr/bin/sw_vers", "-productVersion"]),),
+              "  SDK:         %s" % (_measured(["/usr/bin/xcrun", "--show-sdk-version"]),),
+              "  mac_ver():   %s" % (_mac_ver(),),
+              "",
+              "The errors, verbatim -- quote these when searching or reporting:",
+          ]
+          for module, why, exc in failures:
+              lines.append("")
+              lines.append("  import %s  (%s)" % (module, why))
+              for line in ("%s: %s" % (type(exc).__name__, exc)).splitlines():
+                  lines.append("    " + line)
+          lines += [
+              "",
+              "What this usually is (#3814): Homebrew tags bottles by macOS *major*",
+              "version, so a python@3.12 bottle built against a newer minor release",
+              "is served to a machine running an older one. Its",
+              "pyexpat.cpython-312-darwin.so then resolves the system",
+              "/usr/lib/libexpat.1.dylib, which does not export the newer expat's",
+              "_XML_SetAllocTrackerActivationThreshold, and every import above that",
+              "reaches XML fails with it.",
+              "",
+              "What to do:",
+              "  1. If the macOS version above is behind the SDK version above, that",
+              "     is this fault. Update macOS, then:",
+              "       brew update && brew upgrade python@3.12",
+              "  2. If the two already match, the keg is damaged rather than skewed:",
+              "       brew reinstall python@3.12",
+              "",
+              "Measured on the machine that reported #3814 and known NOT to fix the",
+              "version-skew case: `brew reinstall python@3.12` re-fetches the same",
+              "bottle, and `brew reinstall --build-from-source python@3.12` cannot",
+              "build pyexpat against the newer SDK either. Updating macOS is what",
+              "fixed it there.",
+              "",
+              "nyxGPT stops here, before creating its venv, rather than failing later",
+              "inside pip with a message about a module that is not missing (#3814).",
+          ]
+          return "\n".join(lines)
+
+
+      def main():
+          failures = _failures()
+          if failures:
+              print(_report(failures))
+              return 1
+          print("%s -- %s imports every stdlib extension this build needs" % (OK, sys.executable))
+          return 0
+
+
+      if __name__ == "__main__":
+          try:
+              raise SystemExit(main())
+          except SystemExit:
+              raise
+          except BaseException:  # noqa: BLE001 - stderr may be closed; report on stdout
+              import traceback
+
+              print("nyxgpt-preflight: the check itself could not run on this interpreter:")
+              traceback.print_exc(file=sys.stdout)
+              raise SystemExit(1)
+      # nyxgpt-preflight-source: end
+    PY
+    preflight_report = Utils.popen_read(python.to_s, preflight.to_s).strip
+    if preflight_report.empty?
+      preflight_report = "That interpreter produced no output at all -- it may be missing, " \
+                         "not executable, or unable to start."
+    end
+    odie <<~EOS unless preflight_report.include?("nyxgpt-preflight: ok")
+      #{name}: refusing to build against #{python}.
+
+      #{preflight_report}
+    EOS
+    # nyxgpt-interpreter-preflight: end
+
     # Round 2 of #3753. With ensurepip gone the install died one step later,
     # inside pip's own startup:
     #
@@ -46,13 +235,21 @@ class NyxgptApi < Formula
     # catches `ImportError`, so a `ValueError` out of the module body escapes
     # and no combination of pip options reaches the fallback.
     #
-    # Repair the value rather than chase the cause: the reason mac_ver() is
-    # empty is macOS-side and not observable from here, but the recipe only
-    # needs it to be answerable. A `sitecustomize` on PYTHONPATH runs at
-    # interpreter startup, so one file covers every interpreter that asks --
-    # this python running `pip download`, the venv python that runs pip out of
-    # the downloaded wheel, and pip's build-isolation subprocesses. It lives in
-    # buildpath, so it is gone once the keg is built and nothing ships it.
+    # A `sitecustomize` on PYTHONPATH runs at interpreter startup, so one file
+    # covers every interpreter that asks -- this python running `pip
+    # download`, the venv python that runs pip out of the downloaded wheel,
+    # and pip's build-isolation subprocesses. It lives in buildpath, so it is
+    # gone once the keg is built and nothing ships it.
+    #
+    # What this shim is NOT for, since #3814: an empty `mac_ver()` is a known
+    # symptom of a broken interpreter -- `platform._mac_ver_xml()` reads
+    # SystemVersion.plist through `plistlib`, which needs `pyexpat`. Repairing
+    # that value silently is what carried three release candidates past a
+    # broken keg and into an opaque pip failure. So the preflight above
+    # refuses that build before this file is ever written, and the shim
+    # declines to repair when it sees the same cause. What is left for it is
+    # the case it was actually written for: an interpreter that is fine and an
+    # OS lookup that is not (an unreadable or absent SystemVersion.plist).
     shim = buildpath/"brew-build-shim"
     shim.mkpath
     (shim/"sitecustomize.py").write <<~'PY'
@@ -92,6 +289,22 @@ class NyxgptApi < Formula
               return
 
 
+      def _interpreter_fault():
+          """The exception that makes mac_ver() empty, when the interpreter is why.
+
+          `platform._mac_ver_xml()` reads SystemVersion.plist through
+          `plistlib`, which does `from xml.parsers.expat import ParserCreate`.
+          A python@3.12 whose pyexpat cannot resolve its libexpat therefore
+          answers ('', ('', '', ''), '') -- #3753's symptom, whose cause was
+          #3814. One import covers the whole chain.
+          """
+          try:
+              import plistlib  # noqa: F401
+          except Exception as exc:
+              return exc
+          return None
+
+
       def _repair_mac_ver():
           """Give mac_ver() a usable release when the OS lookup came back empty."""
           try:
@@ -99,6 +312,24 @@ class NyxgptApi < Formula
           except Exception:
               current = ""
           if _is_version(current):
+              return
+
+          fault = _interpreter_fault()
+          if fault is not None:
+              # Deliberately not repaired (#3814). Making pip start on a broken
+              # interpreter is what carried rc12 past the real fault and into an
+              # ImportError about a module that was not missing. The formula's
+              # preflight refuses this build before the shim is written at all;
+              # if that was somehow bypassed, say the cause out loud rather than
+              # papering over it.
+              print(
+                  "nyxgpt: platform.mac_ver() is empty because this interpreter cannot "
+                  "import plistlib: " + repr(fault) + ". That is a broken python@3.12 "
+                  "(see #3814), not a quirk of this build environment -- not repairing "
+                  "the value, because the install must fail on the interpreter rather "
+                  "than on one of its symptoms.",
+                  file=sys.stderr,
+              )
               return
 
           try:
@@ -170,11 +401,21 @@ class NyxgptApi < Formula
     # anything, so a distribution it is about to install cannot shadow them.
     # `_eagerly_import_modules()` swallows an ImportError there and records
     # the name in `_MISSING_MODULES`; the audit hook it then installs turns
-    # the *real* import, moments later, into the ImportError above. So the
-    # visible failure is pip's guard, but the fault it is reporting is that
-    # this pip installation cannot import its own wheel installer -- which no
-    # option, ordering or `--upgrade`-free spelling of an install through
-    # that pip can route around.
+    # the *real* import, moments later, into the ImportError above.
+    #
+    # CORRECTED by #3814 -- this block used to say the fault was that "this
+    # pip installation cannot import its own wheel installer", and that was
+    # wrong in the way that costs release candidates. The module was present
+    # the whole time. What failed underneath it was
+    # `pip._vendor.distlib.scripts` -> `distlib.compat` -> `xmlrpc.client` ->
+    # `xml.parsers.expat` -> a `pyexpat` the interpreter could not dlopen; pip
+    # discarded that ImportError into `_MISSING_MODULES` and its audit hook
+    # re-raised the generic name. The reported module was never the problem,
+    # which is why three fixes aimed at pip. The interpreter preflight at the
+    # top of this block is what now catches that cause; keep this bootstrap
+    # anyway -- it is the correct shape regardless (it does not ask the keg's
+    # pip to perform an install at all), and rc12's traceback shows it running
+    # exactly as intended on a keg that was broken beneath it.
     #
     # Stop asking the keg's pip to install anything. It only *downloads* a
     # pip wheel, a code path that never touches `operations.install.wheel`;

@@ -90,6 +90,17 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   instead of asking what the operator can type). The rest of the **operate**
   half — brew services / launchd reconciliation and a real `nyxgpt up` —
   stays owner-verified on the owner's workstation.
+
+  **One environment constraint, and it is not nyxGPT's to fix.** Homebrew
+  tags bottles by macOS *major* version, so a Mac running an older **minor**
+  release than the bottle was built against can be served a `python@3.12`
+  whose `pyexpat` resolves the system `libexpat` and fails to load. Nothing
+  in this stack can repair a Homebrew bottle, so the formulas preflight the
+  interpreter and refuse to build on a broken one, naming the keg, the
+  loader's error and the remedy (keep macOS current within its major
+  release). `macos-brew-smoke.yml` injects that condition on a real runner
+  and proves both halves — see
+  [homebrew.md](homebrew.md#when-the-install-refuses-to-build).
 - **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are provisioned by
   `nyxgpt cloud deploy --os macos --host <mac>`, which delivers the macOS
   bootstrap over the same wrapped SSH path as the Linux one (#3867);
@@ -154,7 +165,11 @@ command; you never type `ssh`, `terraform`, `docker`, or `kubectl`.
 
 ### Prerequisites
 
-- Python 3.11+ (Linux/macOS), or Homebrew on macOS for the native path.
+- Python 3.11+ (Linux/macOS), or Homebrew on macOS for the native path. On
+  macOS, be current within your major release: a machine behind the minor
+  release its Homebrew bottles were built against gets a `python@3.12` whose
+  `pyexpat` will not load, and the formulas refuse to build on it
+  ([homebrew.md](homebrew.md#when-the-install-refuses-to-build)).
 - An AWS account you are willing to bill for the duration of the run, and
   permission to create a VPC, a security group, and one EC2 instance.
 - **No repo checkout.** If `git rev-parse --show-toplevel` succeeds in your

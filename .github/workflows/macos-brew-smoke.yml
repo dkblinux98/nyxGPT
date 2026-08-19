@@ -20,7 +20,13 @@ name: macOS Brew Smoke
 #                the owner's Mac exhibited and this runner does not, because a
 #                job that only runs the install is green on any machine that
 #                fails to reproduce the bug -- which is exactly how the rc5
-#                candidate passed here and failed there. Since #3854 it also
+#                candidate passed here and failed there. Since #3814 it injects
+#                the *cause* underneath that symptom as well: a `python@3.12`
+#                whose `pyexpat` will not load, which is what the empty
+#                `mac_ver()` (#3753) and the misleading pip ImportError (#3788)
+#                both were. The install has to refuse it up front, and the
+#                stripped-preflight control has to show the recipe walking
+#                straight past it the way rc12 did. Since #3854 it also
 #                asserts what the install *says*: the transcript has to name
 #                `nyxgpt up` and what `brew services start` leaves out. That
 #                assertion lives in the keg-install job and not in
@@ -529,6 +535,311 @@ jobs:
           # formula the tap does not carry (the #3753 secondary finding).
           cp dist/homebrew/*.rb "$TAP_DIR/Formula/"
           ls -1 "$TAP_DIR/Formula/"
+
+      # The cause underneath #3753 and #3788, injected (#3814). Both of those
+      # were patched against a guess -- the empty `platform.mac_ver()` and the
+      # `No module named 'pip._internal.operations.install.wheel'` were two
+      # symptoms of one broken `pyexpat` in the owner's `python@3.12` keg, and
+      # three release candidates were burnt debugging pip instead of the
+      # interpreter under it. nyxGPT cannot repair a Homebrew bottle; what it
+      # can do is refuse to build on one and say why.
+      #
+      # This runner is green by luck for that class: its bottle matches its OS,
+      # so `pyexpat` imports fine and a preflight would pass here whether or
+      # not it works. So the condition is forced, at the realpath every import
+      # route resolves to, and both halves are proved with the real
+      # `brew install`:
+      #
+      #   1. self-check -- the interpreter is really in the owner's state
+      #      (xml.parsers.expat and plistlib unimportable, mac_ver() empty)
+      #   2. the mask, reproduced: the recipe's own pip bootstrap on that
+      #      interpreter dies with the owner's misleading ImportError
+      #   3. negative control: `brew install` of this same formula with the
+      #      preflight stripped out walks straight past the broken interpreter
+      #      and into the pip bootstrap -- the rc12 behaviour
+      #   4. the shipped formula: `brew install` refuses, before the venv, with
+      #      the keg path, the dyld error verbatim and the operator action
+      #   5. restore, and prove the interpreter and the preflight are whole
+      #      (the install steps after this one run on this same keg)
+      #
+      # Fidelity note: the owner's `.so` loads and fails to resolve a symbol
+      # (`_XML_SetAllocTrackerActivationThreshold` against the system
+      # libexpat), which cannot be manufactured on a runner whose libexpat
+      # matches its bottle. What is injected instead is an unloadable
+      # extension at exactly that path, so the failure still comes out of dyld
+      # (`dlopen(...)`) at the same import site. The property under test is
+      # that the preflight quotes whatever the interpreter says and refuses --
+      # not that this runner can reproduce Apple's SDK skew.
+      - name: "Reproduce the broken pyexpat, then prove the preflight refuses to build on it"
+        run: |
+          set -euo pipefail
+
+          PY="$(brew --prefix python@3.12)/bin/python3.12"
+          TAP_DIR="$(brew --repository nyxgpt/brew-smoke)"
+          FORMULA="$TAP_DIR/Formula/nyxgpt-api@3.0.0rc.rb"
+          WORK="$(mktemp -d)"
+
+          # The realpath, not the path it was imported by: Homebrew's prefix
+          # tree links into the Cellar, and a hole punched in the prefix copy
+          # leaves the Cellar one that other routes resolve to untouched --
+          # #3788's third red round is what taught this job that.
+          EXPAT_SO="$("$PY" -c 'import os, pyexpat; print(os.path.realpath(pyexpat.__file__))')"
+          HIDDEN="$EXPAT_SO.3814-hidden"
+          echo "pyexpat extension: $EXPAT_SO"
+
+          cp "$FORMULA" "$WORK/formula.rb.shipped"
+          restore_the_machine() {
+            if [ -e "$HIDDEN" ]; then
+              mv -f "$HIDDEN" "$EXPAT_SO"
+            fi
+            cp -f "$WORK/formula.rb.shipped" "$FORMULA"
+          }
+          # Every exit path: the steps after this one install the formulas
+          # with this same keg, from this same tap.
+          trap restore_the_machine EXIT
+
+          # Not `mv` alone: a *missing* file raises ModuleNotFoundError, while
+          # the owner's fault came out of dyld. An unloadable file at the same
+          # path keeps the failure on the dlopen route.
+          mv "$EXPAT_SO" "$HIDDEN"
+          printf 'nyxgpt: deliberately not a mach-o file (#3814)\n' > "$EXPAT_SO"
+
+          echo "=== self-check: the interpreter is really in the owner's state ==="
+          # A fault that does not fire produces a passing negative control,
+          # which in a log is indistinguishable from "the bug is gone".
+          #
+          # The observed error is written out rather than assumed: the claim
+          # under test is that the refusal quotes what the *loader* said, so
+          # the later assertion greps for the string this step actually saw
+          # instead of hard-coding dyld's current phrasing.
+          NYXGPT_SMOKE_WORK="$WORK" "$PY" - <<'CHECK'
+          import os
+          import platform
+          import sys
+
+          work = os.environ["NYXGPT_SMOKE_WORK"]
+          observed = None
+          for module in ("xml.parsers.expat", "plistlib"):
+              try:
+                  __import__(module)
+              except Exception as exc:  # noqa: BLE001 - this is the assertion
+                  print(f"  import {module}: {type(exc).__name__}: {exc}")
+                  if observed is None:
+                      observed = str(exc).splitlines()[0]
+                  if "dlopen(" not in str(exc):
+                      # Not fatal: the condition (this interpreter cannot load
+                      # pyexpat) is created either way, and that is what the
+                      # preflight has to catch. Say it, because the owner's
+                      # fault came out of dyld and a drift here is worth seeing.
+                      print(f"::warning::{module} failed, but not through dlopen -- injected shape has drifted")
+              else:
+                  print(f"::error::{module} still imports; #3814's condition was not created")
+                  sys.exit(1)
+
+          # The #3753 symptom, which is what makes the two issues one issue.
+          release = platform.mac_ver()[0]
+          print(f"  platform.mac_ver()[0]: {release!r}")
+          if release:
+              print("::error::mac_ver() still answers, so this is not the state the owner's Mac was in")
+              sys.exit(1)
+          with open(os.path.join(work, "observed-error.txt"), "w", encoding="utf-8") as handle:
+              handle.write((observed or "") + "\n")
+          print("  the interpreter cannot load pyexpat, as on the owner's Mac")
+          CHECK
+
+          echo "=== the mask: what a machine in this state reported before #3814 ==="
+          # Frozen on purpose, and deliberately NOT read out of the formula:
+          # this is rc12's *behaviour* (repair mac_ver and carry on), which the
+          # shipped shim no longer has. It is the condition, not the fix.
+          mkdir -p "$WORK/rc12-shim"
+          cat > "$WORK/rc12-shim/sitecustomize.py" <<'STUB'
+          import platform
+          import subprocess
+
+          release = subprocess.run(
+              ["/usr/bin/sw_vers", "-productVersion"],
+              capture_output=True,
+              text=True,
+              check=False,
+          ).stdout.strip()
+          platform.mac_ver = lambda *args, **kwargs: (release, ("", "", ""), platform.machine())
+          STUB
+          "$PY" -m venv --without-pip "$WORK/venv-mask"
+          mkdir -p "$WORK/wheelhouse-mask"
+          set +e
+          (
+            set -e
+            PYTHONPATH="$WORK/rc12-shim" "$PY" -m pip download --no-deps --only-binary :all: \
+              --disable-pip-version-check --dest "$WORK/wheelhouse-mask" pip
+            mask_wheel="$(ls "$WORK"/wheelhouse-mask/pip-*.whl | head -1)"
+            PYTHONPATH="$WORK/rc12-shim" "$WORK/venv-mask/bin/python" "$mask_wheel/pip" \
+              install --no-index --disable-pip-version-check "$mask_wheel"
+          ) > "$WORK/mask.log" 2>&1
+          mask_rc=$?
+          set -e
+          tail -25 "$WORK/mask.log" || true
+          if [ "$mask_rc" -eq 0 ]; then
+            echo "the recipe's bootstrap survived an interpreter that cannot load"
+            echo "pyexpat, so this runner is no longer reproducing what the owner hit."
+            echo "::error::this runner no longer reproduces #3814's downstream failure"
+            exit 1
+          fi
+          if grep -qF "No module named 'pip._internal.operations.install.wheel'" "$WORK/mask.log"; then
+            echo "reproduced: exit $mask_rc, reported as the owner's ImportError -- a module"
+            echo "that is present the whole time. THAT is why three fixes aimed at pip."
+          else
+            # Not fatal: the mask is pip's behaviour, not nyxGPT's, and a pip
+            # release may report the same fault differently. What must not
+            # change is that it fails, which is asserted above. Say so loudly
+            # instead of silently accepting a different reproduction.
+            echo "::warning::the bootstrap failed on the broken interpreter, but not"
+            echo "::warning::with pip 26.2's masked ImportError -- pip's reporting changed (#3814)"
+          fi
+          if grep -qiE 'pyexpat|libexpat' "$WORK/mask.log"; then
+            echo "note: this pip names the real cause; the mask is narrower than it was"
+          else
+            echo "confirmed: nothing in that failure names pyexpat, expat or the interpreter"
+          fi
+
+          echo "=== negative control: the same install with the preflight stripped out ==="
+          PYTHONPATH=scripts python3 - "$FORMULA" <<'STRIP'
+          import pathlib
+          import sys
+
+          from build_homebrew_artifacts import strip_interpreter_preflight
+
+          formula = pathlib.Path(sys.argv[1])
+          formula.write_text(
+              strip_interpreter_preflight(formula.read_text(encoding="utf-8")), encoding="utf-8"
+          )
+          STRIP
+          set +e
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc \
+            > "$WORK/stripped-install.log" 2>&1
+          stripped_rc=$?
+          set -e
+          tail -40 "$WORK/stripped-install.log" || true
+          brew uninstall --force nyxgpt-api@3.0.0rc >/dev/null 2>&1 || true
+          if [ "$stripped_rc" -eq 0 ]; then
+            echo "::error::the install SUCCEEDED on an interpreter that cannot load"
+            echo "::error::pyexpat -- the reproduction is wrong"
+            exit 1
+          fi
+          if grep -qF "refusing to build against" "$WORK/stripped-install.log"; then
+            echo "::error::the stripped formula still refused -- the preflight was not actually removed"
+            exit 1
+          fi
+          # The point of this control: without the preflight the recipe walks
+          # PAST the broken interpreter and starts building on it, dying
+          # somewhere downstream. Several spellings, because which downstream
+          # failure comes first depends on the pip of the day -- what must be
+          # true is that the recipe got as far as running Python at all.
+          grep -qE "venv --without-pip|pip download|invalid literal for int|not repairing the value" \
+            "$WORK/stripped-install.log" || {
+            echo "::error::the stripped install failed before it ran any Python, so"
+            echo "::error::this control does not show the recipe walking past the fault"
+            exit 1
+          }
+          echo "reproduced: exit $stripped_rc, after the recipe had already begun building on it"
+
+          echo "=== the shipped formula, same broken interpreter ==="
+          cp -f "$WORK/formula.rb.shipped" "$FORMULA"
+          set +e
+          brew install --verbose nyxgpt/brew-smoke/nyxgpt-api@3.0.0rc \
+            > "$WORK/preflight-install.log" 2>&1
+          preflight_rc=$?
+          set -e
+          tail -60 "$WORK/preflight-install.log" || true
+          brew uninstall --force nyxgpt-api@3.0.0rc >/dev/null 2>&1 || true
+          if [ "$preflight_rc" -eq 0 ]; then
+            echo "::error::the shipped formula built a keg on an interpreter that cannot load pyexpat"
+            exit 1
+          fi
+          # Everything the owner asked the message to carry: that it refused,
+          # the keg it refused, the dyld error verbatim, and what to do.
+          for needle in \
+            "refusing to build against" \
+            "nyxgpt-preflight: this interpreter cannot import part of its own" \
+            "import xml.parsers.expat" \
+            "brew reinstall python@3.12" \
+            "Update macOS"
+          do
+            grep -qF "$needle" "$WORK/preflight-install.log" || {
+              echo "::error::the refusal does not carry \"$needle\" -- the operator cannot act on it"
+              exit 1
+            }
+          done
+          # The loader's own words, quoted -- compared against what the
+          # self-check above actually observed, not against a phrasing this
+          # file guessed. That string is what makes the fault searchable, which
+          # is the property the owner asked the message to have.
+          OBSERVED="$(head -1 "$WORK/observed-error.txt")"
+          test -n "$OBSERVED" || { echo "::error::the self-check recorded no loader error"; exit 1; }
+          grep -qF "$OBSERVED" "$WORK/preflight-install.log" || {
+            echo "expected verbatim: $OBSERVED"
+            echo "::error::the refusal summarises the loader error instead of quoting it"
+            exit 1
+          }
+          grep -qF "$(brew --prefix python@3.12)" "$WORK/preflight-install.log" \
+            || grep -qF "/python@3.12/" "$WORK/preflight-install.log" \
+            || { echo "::error::the refusal never names the keg it is refusing"; exit 1; }
+          # And it stopped BEFORE doing any work, which is the whole point:
+          # rc12's failure came 200 lines later, inside pip.
+          if grep -qF "venv --without-pip" "$WORK/preflight-install.log"; then
+            echo "::error::the install created its venv anyway -- the preflight is not stopping the build"
+            exit 1
+          fi
+          echo "good: refused up front, with the keg path, the dyld error and the remedy"
+
+          echo "=== is the web keg exposed to this at all? measured, not assumed ==="
+          # nyxgpt-web builds with npm and its wrapper parses config.ini with
+          # /usr/bin/python3 (Apple's, which ships with the OS and cannot skew
+          # against it), so a broken python@3.12 keg is not its problem -- but
+          # that is a claim about the dependency graph, so read it off brew
+          # rather than asserting it. If the web formula ever grows a
+          # python@3.12 dependency, this fails and it needs the preflight too
+          # (`validate_interpreter_preflight` fails the release build on the
+          # same rule).
+          brew info --json=v2 --formula nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc \
+            > "$WORK/web-info.json"
+          python3 - "$WORK/web-info.json" <<'WEB'
+          import json
+          import sys
+
+          info = json.loads(open(sys.argv[1], encoding="utf-8").read())["formulae"][0]
+          declared = sorted(
+              set(info.get("dependencies", [])) | set(info.get("build_dependencies", []))
+          )
+          print("MEASURED: nyxgpt-web declares:", ", ".join(declared) or "(none)")
+          if any(dep.startswith("python@") for dep in declared):
+              print("::error::nyxgpt-web now depends on a brewed python, so it needs the #3814 preflight too")
+              sys.exit(1)
+          WEB
+
+          echo "=== restore the interpreter, and prove both it and the preflight are whole ==="
+          restore_the_machine
+          trap - EXIT
+          "$PY" -c 'import xml.parsers.expat, plistlib, platform; print("restored:", platform.mac_ver()[0])'
+          # The preflight itself, read back out of the formula that ships it
+          # (never a copy in this file), run on the repaired interpreter: it
+          # has to PASS as well as fail, or the install steps below would be
+          # blocked by the very check this step just proved.
+          PYTHONPATH=scripts python3 - "$FORMULA" "$WORK/preflight.py" <<'OK'
+          import pathlib
+          import sys
+
+          from build_homebrew_artifacts import extract_interpreter_preflight
+
+          formula, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          out.write_text(
+              extract_interpreter_preflight(formula.read_text(encoding="utf-8")), encoding="utf-8"
+          )
+          OK
+          "$PY" "$WORK/preflight.py" | tee "$WORK/preflight-ok.log"
+          grep -qF "nyxgpt-preflight: ok" "$WORK/preflight-ok.log" || {
+            echo "::error::the restored interpreter does not pass the preflight the formula ships"
+            exit 1
+          }
 
       - name: Install nyxgpt-api from the local tap
         run: |

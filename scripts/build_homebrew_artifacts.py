@@ -131,6 +131,27 @@ _SOURCE_TREE_MARKERS = ("pyproject.toml", "example.config.ini", "src/nyxgpt", "w
 _SHIM_BEGIN = "# nyxgpt-mac-ver-shim: begin"
 _SHIM_END = "# nyxgpt-mac-ver-shim: end"
 
+# Markers around the interpreter preflight the api formulas run before they
+# build anything (#3814). Two nested pairs, because two different things are
+# wanted from it: `_PREFLIGHT_SOURCE_*` delimit the Python inside the heredoc
+# (compiled at stamp time, executed by the unit suite, fault-injected by the
+# macOS smoke job), while `_PREFLIGHT_STANZA_*` delimit the whole Ruby block
+# -- the write plus the `odie` that acts on its verdict -- so a caller can
+# produce the pre-fix recipe by removing it. That is what
+# `strip_interpreter_preflight` is for: a check that has only ever run against
+# a good keg is indistinguishable from no check at all, so the smoke job has
+# to install a formula without it and watch that install die opaquely.
+_PREFLIGHT_STANZA_BEGIN = "# nyxgpt-interpreter-preflight: begin"
+_PREFLIGHT_STANZA_END = "# nyxgpt-interpreter-preflight: end"
+_PREFLIGHT_SOURCE_BEGIN = "# nyxgpt-preflight-source: begin"
+_PREFLIGHT_SOURCE_END = "# nyxgpt-preflight-source: end"
+
+# The line the preflight prints when the interpreter is usable, and the only
+# thing the formula accepts as a pass. Spelled here as well so a drift between
+# the Python that prints it and the Ruby that looks for it fails in the unit
+# suite rather than by refusing every install on a healthy Mac.
+PREFLIGHT_OK = "nyxgpt-preflight: ok"
+
 _CLASS_RE = re.compile(r"^class\s+(\w+)\s+<\s+Formula\b", re.MULTILINE)
 
 _LICENSE_RE = re.compile(r"^([ \t]*)license\s+\"[^\"]*\"[ \t]*$", re.MULTILINE)
@@ -299,6 +320,23 @@ def formula_class_name(formula: str) -> str:
     return _AT_VERSION_RE.sub(lambda match: f"{match.group(1)}AT{match.group(2)}", class_name, 1)
 
 
+def _extract_delimited(formula_text: str, begin_marker: str, end_marker: str, what: str) -> str:
+    """The dedented block between two marker lines, inclusive.
+
+    Ruby's `<<~` strips the heredoc indentation at runtime; the file on disk
+    still carries it, so the extracted source has to be dedented to be the
+    Python that actually lands in the build environment.
+    """
+    lines = formula_text.splitlines(keepends=True)
+    begin = next((index for index, line in enumerate(lines) if begin_marker in line), None)
+    end = next((index for index, line in enumerate(lines) if end_marker in line), None)
+    if begin is None or end is None or end < begin:
+        raise ValueError(
+            f"formula does not embed {what} delimited by {begin_marker!r} / {end_marker!r}"
+        )
+    return textwrap.dedent("".join(lines[begin : end + 1]))
+
+
 def has_build_shim(formula_text: str) -> bool:
     """True if this formula embeds the mac_ver build shim (the api one does)."""
     return _SHIM_BEGIN in formula_text and _SHIM_END in formula_text
@@ -315,31 +353,97 @@ def extract_build_shim(formula_text: str) -> str:
     the unit suite something to execute, and the macOS smoke job something to
     inject a fault into, all from the single copy the formula ships.
     """
+    return _extract_delimited(formula_text, _SHIM_BEGIN, _SHIM_END, "a build shim")
+
+
+def has_interpreter_preflight(formula_text: str) -> bool:
+    """True if this formula preflights its build interpreter (#3814)."""
+    return _PREFLIGHT_SOURCE_BEGIN in formula_text and _PREFLIGHT_SOURCE_END in formula_text
+
+
+def extract_interpreter_preflight(formula_text: str) -> str:
+    """Return the interpreter preflight an api formula runs before it builds.
+
+    Same reason as `extract_build_shim`: it is Python inside a Ruby heredoc,
+    and the only way it can be compiled, unit-tested and fault-injected from
+    the single copy that actually ships is to read it back out.
+    """
+    return _extract_delimited(
+        formula_text,
+        _PREFLIGHT_SOURCE_BEGIN,
+        _PREFLIGHT_SOURCE_END,
+        "an interpreter preflight",
+    )
+
+
+def strip_interpreter_preflight(formula_text: str) -> str:
+    """The same formula with the preflight removed -- the recipe rc12 shipped.
+
+    The macOS smoke job installs this to prove the negative control: without
+    the preflight, a broken `pyexpat` takes the install down inside pip with
+    a message about a module that is not missing. A gate that has only ever
+    run against a healthy runner cannot be told apart from no gate at all
+    (#3753's lesson, applied to its own root cause).
+    """
     lines = formula_text.splitlines(keepends=True)
-    begin = next((index for index, line in enumerate(lines) if _SHIM_BEGIN in line), None)
-    end = next((index for index, line in enumerate(lines) if _SHIM_END in line), None)
+    begin = next(
+        (index for index, line in enumerate(lines) if _PREFLIGHT_STANZA_BEGIN in line), None
+    )
+    end = next((index for index, line in enumerate(lines) if _PREFLIGHT_STANZA_END in line), None)
     if begin is None or end is None or end < begin:
         raise ValueError(
-            f"formula does not embed a build shim delimited by {_SHIM_BEGIN!r} / {_SHIM_END!r}"
+            f"formula does not embed a preflight stanza delimited by "
+            f"{_PREFLIGHT_STANZA_BEGIN!r} / {_PREFLIGHT_STANZA_END!r}"
         )
-    # Ruby's `<<~` strips the heredoc indentation at runtime; the file on disk
-    # still carries it, so the extracted source has to be dedented to be the
-    # Python that actually lands in the build environment.
-    return textwrap.dedent("".join(lines[begin : end + 1]))
+    return "".join(lines[:begin] + lines[end + 1 :])
+
+
+def builds_with_brewed_python(formula_text: str) -> bool:
+    """True if this formula's install block runs Homebrew's `python@3.12`.
+
+    The predicate the preflight requirement hangs off, rather than "is this
+    the api formula": if `nyxgpt-web` ever grows a step that starts the brewed
+    interpreter, it inherits the same exposure and `validate_interpreter_preflight`
+    starts requiring the same check of it.
+    """
+    return 'Formula["python@3.12"]' in formula_text
+
+
+def validate_interpreter_preflight(formula_text: str, formula: str) -> None:
+    """Refuse to publish a formula that builds on an interpreter it never checks.
+
+    #3814: three release candidates shipped a recipe that walked straight
+    into a broken `python@3.12` and reported something unrelated. A formula
+    that starts the brewed interpreter has to refuse a broken one first.
+    """
+    if not builds_with_brewed_python(formula_text) or has_interpreter_preflight(formula_text):
+        return
+    raise ValueError(
+        f"{formula}: this formula builds with Homebrew's python@3.12 but carries no "
+        f"interpreter preflight ({_PREFLIGHT_SOURCE_BEGIN} ... {_PREFLIGHT_SOURCE_END}). "
+        "Without it a keg whose pyexpat cannot load fails later, inside pip, naming a "
+        "module that is not missing (#3814)."
+    )
 
 
 def validate_build_shim(formula_text: str, formula: str) -> None:
-    """Refuse to publish a formula whose embedded shim is not valid Python.
+    """Refuse to publish a formula whose embedded Python is not valid Python.
 
-    A no-op for formulas that embed no shim (`nyxgpt-web` builds with npm and
-    never starts a Python interpreter).
+    Covers both blocks the api formulas embed -- the mac_ver build shim
+    (#3753) and the interpreter preflight (#3814). A no-op for formulas that
+    embed neither (`nyxgpt-web` builds with npm and never starts a Python
+    interpreter).
     """
-    if not has_build_shim(formula_text):
-        return
-    try:
-        compile(extract_build_shim(formula_text), f"<{formula} build shim>", "exec")
-    except SyntaxError as exc:
-        raise ValueError(f"{formula}: the embedded build shim is not valid Python: {exc}") from exc
+    blocks = []
+    if has_build_shim(formula_text):
+        blocks.append(("build shim", extract_build_shim(formula_text)))
+    if has_interpreter_preflight(formula_text):
+        blocks.append(("interpreter preflight", extract_interpreter_preflight(formula_text)))
+    for what, source in blocks:
+        try:
+            compile(source, f"<{formula} {what}>", "exec")
+        except SyntaxError as exc:
+            raise ValueError(f"{formula}: the embedded {what} is not valid Python: {exc}") from exc
 
 
 def _insert_after_license(text: str, name: str, lines: list[str]) -> str:
@@ -522,6 +626,7 @@ def build(
         else:
             stamped = render_stable_formula(stamped, name, version)
         validate_build_shim(stamped, name)
+        validate_interpreter_preflight(stamped, name)
         formula_path = out_dir / f"{formula_name(name, channel, version)}.rb"
         formula_path.write_text(stamped, encoding="utf-8")
         written.append(formula_path)

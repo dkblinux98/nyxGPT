@@ -293,6 +293,15 @@ not. `macos-brew-smoke.yml`'s "Reproduce the empty `mac_ver()` failure, then
 prove the shim fixes it" step is the pattern to copy — assert the failure
 happens **without** the fix, so a green result **with** it means something.
 
+The same workflow's "Reproduce the broken pyexpat…" step is that pattern
+applied to a *cause* rather than a symptom (#3814): it makes the runner's
+`python@3.12` unable to load `pyexpat`, installs the formula with its
+preflight stripped out to show the recipe walking straight past the fault,
+then installs the shipped formula and requires `brew install` to refuse
+before the venv exists. Worth copying for the discipline as much as the
+technique — the two symptoms that fault produced were each patched on their
+own before anyone injected the thing underneath them.
+
 `linux-native-smoke.yml`'s `service-venv-python` job is the same shape for an
 *environment* the runner does not have: the defect (#3782) needed a system
 `python3` below nyxGPT's `requires-python`, and every hosted runner's is
