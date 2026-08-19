@@ -10,6 +10,8 @@ import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
 import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
+import { ChunkErrorBoundary } from '../components/ChunkErrorBoundary';
+import { withChunkTimeout } from '../lib/chunkLoader';
 import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
 import { highlightText } from './highlight-text';
 import { useToast } from '../contexts/ToastContext';
@@ -22,7 +24,15 @@ import { apiErrorText } from '../lib/apiError';
 
 // Route-based code splitting: ChatPane is large (2000+ lines) and only needed
 // after initial render; lazy-load it to reduce the initial bundle size.
-const ChatPane = dynamic(() => import('./components/ChatPane'), {
+//
+// Both loaders below go through withChunkTimeout, and both call sites are
+// wrapped in a ChunkErrorBoundary (#3857). A `loading:` fallback renders until
+// its chunk resolves, so a chunk request that never settles leaves a spinner
+// or a skeleton on screen forever, with no error and no retry -- which is what
+// the owner saw while every backend endpoint was answering in under 110 ms.
+// The timeout converts "pending forever" into a rejection the boundary can
+// show. Any dynamic() added here must get the same treatment.
+const ChatPane = dynamic(withChunkTimeout(() => import('./components/ChatPane'), 'ChatPane'), {
   ssr: false,
   loading: () => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
@@ -34,10 +44,13 @@ const ChatPane = dynamic(() => import('./components/ChatPane'), {
 // VirtualizedSessionList depends on react-virtuoso; split into its own chunk so
 // the virtuoso library is not included in the initial JS payload.
 const VirtualizedSessionList = dynamic(
-  () =>
-    import('../components/VirtualizedSessionList').then((mod) => ({
-      default: mod.VirtualizedSessionList,
-    })),
+  withChunkTimeout(
+    () =>
+      import('../components/VirtualizedSessionList').then((mod) => ({
+        default: mod.VirtualizedSessionList,
+      })),
+    'VirtualizedSessionList',
+  ),
   {
     ssr: false,
     loading: () => <SessionListSkeleton />,
@@ -1031,14 +1044,16 @@ function Home() {
                 </div>
               )}
               {filteredSessions.length > 0 && (
-                <VirtualizedSessionList
-                  sessions={filteredSessions}
-                  selectedSession={selectedSession}
-                  onSelectSession={selectSession}
-                  onContextMenu={handleContextMenu}
-                  pendingSessions={pendingSessions}
-                  highlightText={highlightText}
-                />
+                <ChunkErrorBoundary label="the session list">
+                  <VirtualizedSessionList
+                    sessions={filteredSessions}
+                    selectedSession={selectedSession}
+                    onSelectSession={selectSession}
+                    onContextMenu={handleContextMenu}
+                    pendingSessions={pendingSessions}
+                    highlightText={highlightText}
+                  />
+                </ChunkErrorBoundary>
               )}
               {sessions.length === 0 && !sessionsError && !loadingSessions && (
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
@@ -1681,12 +1696,14 @@ function Home() {
         )}
 
         <div style={{ height: 'calc(100vh - 80px)' }}>
-          <ChatPane
-            sessionName={selectedSession}
-            onSessionUpdated={refreshSessions}
-            scrollToMessageIndex={scrollToMessageIndex}
-            releaseVersion={info?.release_version}
-          />
+          <ChunkErrorBoundary label="the chat pane">
+            <ChatPane
+              sessionName={selectedSession}
+              onSessionUpdated={refreshSessions}
+              scrollToMessageIndex={scrollToMessageIndex}
+              releaseVersion={info?.release_version}
+            />
+          </ChunkErrorBoundary>
         </div>
       </section>
 
