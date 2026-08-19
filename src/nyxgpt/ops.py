@@ -11,6 +11,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 from __future__ import annotations
 
 import base64
+import configparser
 import contextlib
 import getpass
 import hashlib
@@ -55,6 +56,7 @@ from nyxgpt import metrics as prom_metrics
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
+    describe_config_parse_error,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_enabled,
@@ -1922,6 +1924,23 @@ def _dev_checkout_root() -> Path | None:
     if _has_vendorable_source("nyxgpt-api") and _has_vendorable_source("nyxgpt-web"):
         return REPO_ROOT
     return None
+
+
+def dev_checkout_root() -> Path | None:
+    """Public name for `_dev_checkout_root`, for modules outside `ops` (#3950).
+
+    `nyxgpt cloud deploy --dev` has to answer the same question this module's
+    own install paths do -- *is there a working tree to build from at all?* --
+    and it must answer it the same way, or the cloud path would refuse (or
+    accept) a checkout the local path disagrees about. Delegating rather than
+    re-implementing is the point: `cloud_deploy` gets one call, and this stays
+    the only definition of what a dev-mode source tree is.
+
+    Deliberately a thin forward to the private name rather than a rename: every
+    caller inside this module, and the tests that monkeypatch
+    `ops._dev_checkout_root`, keep working unchanged.
+    """
+    return _dev_checkout_root()
 
 
 def _installed_distribution_version() -> str | None:
@@ -5907,34 +5926,54 @@ def _cp_details(cp: subprocess.CompletedProcess[str]) -> str:
     return (stdout + ("\n" + stderr if stderr else "")).strip()
 
 
+# The single statement of what deploys where, shared by `_resolve_locality`'s
+# rejection below and by the `--cloud` help text in `nyxgpt.cli` so the two
+# cannot drift (#3948). It says what `--cloud` is NOT ("this flag") and names
+# the commands that do the job, because the previous wording ("not yet
+# implemented -- --local is the precursor") read as "nyxGPT cannot deploy to a
+# cloud target at all", which is false: `nyxgpt cloud infra apply` provisions
+# the AWS substrate (with Terraform) and `nyxgpt cloud deploy` deploys this
+# stack onto it. The unimplemented part is narrowly this flag.
+CLOUD_DEPLOY_POINTER = (
+    "cloud deployment is `nyxgpt cloud infra apply` to provision the AWS substrate "
+    "and `nyxgpt cloud deploy` to deploy this stack onto it -- add --kubernetes there "
+    "for a single-node k3s cluster running these same k8s/*.yaml manifests (#3956); "
+    "see docs/cloud.md and docs/kubernetes.md"
+)
+
+
 def _resolve_locality(args) -> str | None:
-    """Validate the `--local`/`--cloud` locality flag shared by `--terraform`/`--kubernetes`.
+    """Resolve the `--local`/`--cloud` locality shared by `--terraform`/`--kubernetes`.
 
-    Only `--local` is implemented today. `--cloud` is accepted by the CLI
-    surface (so it doesn't need a redesign later) but always rejected -- the
-    local deployment is the precursor to a future cloud target, not an
-    alternative to it (see issue #3344). The AWS substrate itself is
-    provisioned by `nyxgpt cloud infra` (#3509); deploying this stack onto
-    that instance is #3513, which is what will make `--cloud` meaningful
-    here.
+    **Local is the default** (#3948). `--local` was previously required and
+    was also the only accepted value, which made the user type the one legal
+    answer to a question with no alternative; it is still accepted, as an
+    explicit no-op, so existing scripts and docs keep working.
 
-    Returns "local" once implemented, or None (having already printed an
-    error) if the flag is missing or unimplemented.
+    `--cloud` is accepted by the CLI surface (so it doesn't need a redesign
+    later) but rejected: *this flag* deploys to the local machine. That is a
+    limit of the flag, not of the product -- see `CLOUD_DEPLOY_POINTER` for
+    the commands that do deploy to a cloud target.
+
+    The cloud target is not a second mode of this command: it is
+    `nyxgpt cloud deploy`, which provisions the substrate, reaches the
+    instance over the #3503 SSH path, and runs this very command *there*
+    (#3956 -- `--kubernetes` on that command puts a single-node k3s cluster on
+    the box and then runs `ops install --kubernetes` on it, which is #3506's
+    "no new deployment code path" in one sentence). That is why the rejection
+    points at a command rather than promising a future one: the older wording
+    ("not yet implemented -- --local is the precursor to a future cloud
+    target") was an expiry-dated world-state claim of exactly the kind #3744
+    forbids, and by 2026-08-19 it had expired twice over -- `nyxgpt cloud
+    deploy` shipped in #3513 and its Kubernetes mode in #3956.
+
+    Returns "local", or None (having already printed an error) if `--cloud`
+    was asked for.
     """
     if getattr(args, "cloud", False):
         print(
-            "ERROR: --cloud is not yet implemented. Local Terraform/Kubernetes deployment "
-            "(--local) is the precursor to a future cloud target -- see docs/terraform.md "
-            "and docs/kubernetes.md. To provision the AWS substrate itself, use "
-            "`nyxgpt cloud infra apply` (see docs/cloud.md); deploying this stack onto "
-            "that instance lands with `nyxgpt cloud deploy`.",
-            file=sys.stderr,
-        )
-        return None
-    if not getattr(args, "local", False):
-        print(
-            "ERROR: --local is required with --terraform/--kubernetes "
-            "(the only locality implemented today; pass --local explicitly)",
+            "ERROR: --cloud is not implemented for `ops install --terraform/--kubernetes`, "
+            f"which deploys to the local machine; {CLOUD_DEPLOY_POINTER}.",
             file=sys.stderr,
         )
         return None
@@ -6668,7 +6707,7 @@ def _install_terraform(args) -> int:
         print(
             "ERROR: --dev needs a source checkout, and this nyxgpt is running from an "
             f"installed package ({REPO_ROOT} has no pyproject.toml/src/nyxgpt/web).\n"
-            "       Run `nyxgpt up --terraform --local --dev` from a clone of the "
+            "       Run `nyxgpt up --terraform --dev` from a clone of the "
             "repository, or drop --dev to deploy the published images.",
             file=sys.stderr,
         )
@@ -6830,6 +6869,15 @@ KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 KIND_DOWNLOAD_URL = (
     "https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-{os}-{arch}"
 )
+# How long `_k3s_import_image` will wait for one image to land in k3s's
+# containerd store. Generous: the api image is multi-GB and the import is a
+# decompress-and-write of the whole thing onto the instance's root volume, on
+# hardware an operator chose for running nyxGPT rather than for build
+# throughput. Bounded all the same (D-027) -- `install_kubernetes_local` is
+# reachable from an HTTP handler, and an unbounded pipe there is a worker held
+# forever.
+K3S_IMAGE_IMPORT_TIMEOUT_SECONDS = 900
+
 KUBECTL_STABLE_URL = "https://dl.k8s.io/release/stable.txt"
 KUBECTL_DOWNLOAD_URL = "https://dl.k8s.io/release/{version}/bin/{os}/{arch}/kubectl"
 
@@ -7083,7 +7131,7 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
             OpsResult(
                 False,
                 "No reachable Kubernetes cluster, and kind needs Docker to create one",
-                "Install/start Docker so `nyxgpt ops install --kubernetes --local` can "
+                "Install/start Docker so `nyxgpt ops install --kubernetes` can "
                 "provision a local kind cluster.",
             )
         ]
@@ -7134,10 +7182,19 @@ def _build_and_load_k8s_image(
     """Build `image` from `context` and load it into the current cluster's image cache.
 
     Docker Desktop's built-in cluster shares the host's image cache, so a
-    build alone is enough there. kind/minikube each need an explicit
+    build alone is enough there. kind/minikube/k3s each need an explicit
     load step; an unrecognized cluster type is treated the same way the
     documented manual flow would be -- skip the load and tell the operator
     to do it themselves if their cluster doesn't share the host cache.
+
+    k3s is the branch `nyxgpt cloud deploy --kubernetes` lands on (#3956):
+    it runs its own containerd, so a `docker build` on the same box produces
+    an image the cluster cannot see, and every `:local` tag in `k8s/*.yaml`
+    would `ImagePullBackOff`. It is detected by the `k3s` binary rather than
+    by the context name, because k3s's default context is called `default` --
+    a name that says nothing. Ordered last of the three so a machine that has
+    k3s installed but is currently pointed at a kind cluster still takes the
+    kind branch.
 
     `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
     install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` (via
@@ -7190,6 +7247,9 @@ def _build_and_load_k8s_image(
         else:
             results.append(OpsResult(True, f"Loaded {image} into minikube"))
         return results
+    if _which("k3s") is not None:
+        results += _k3s_import_image(image)
+        return results
     results.append(
         OpsResult(
             True,
@@ -7199,6 +7259,105 @@ def _build_and_load_k8s_image(
         )
     )
     return results
+
+
+def _k3s_import_image(image: str) -> list[OpsResult]:
+    """Import a locally-built docker image into k3s's containerd store (#3956).
+
+    k3s does not use docker: it runs its own containerd, with its own image
+    store, so an image `docker build` just produced is invisible to it. Every
+    `k8s/*.yaml` Deployment pins `imagePullPolicy: IfNotPresent` against a
+    `:local` tag that exists in no registry, so without this step the apply
+    succeeds, the Pods are created, and every one of them sits in
+    `ErrImagePull`/`ImagePullBackOff` forever.
+
+    That failure mode is why this is an `OpsResult(False)` on error rather
+    than the `True` the unrecognized-cluster branch above returns: there, the
+    operator was told to load the image themselves and a bring-your-own
+    cluster may genuinely share the host cache; here we know it does not, so
+    a failed import is a failed install, reported at the step that caused it
+    instead of eight minutes later as an unexplained Pending stack.
+
+    The image itself is **piped**, not staged through a temp file: the two
+    images together are several GB, and a cloud instance's root volume is
+    sized for the stack, not for a second copy of it. `docker save`'s
+    **stderr**, on the other hand, goes to a temp file rather than to a second
+    pipe, and that asymmetry is deliberate. Nothing reads a stderr pipe until
+    after the import returns, so a `docker save` that filled the 64KiB stderr
+    buffer would block on the write, stop feeding the import, and leave the
+    two processes waiting on each other until the timeout below expired. The
+    diagnostic is a line or two in practice, which is exactly why the deadlock
+    would never show up in testing and would surface as a fifteen-minute hang
+    on somebody's deploy.
+
+    `sudo` unless already root -- containerd's socket
+    (`/run/k3s/containerd/containerd.sock`) is root-owned, and the login user
+    a cloud deploy runs as is not.
+    """
+    argv = [*_k3s_sudo_prefix(), "k3s", "ctr", "images", "import", "-"]
+    try:
+        with (
+            tempfile.TemporaryFile(mode="w+") as save_errors,
+            subprocess.Popen(  # nosec B603
+                ["docker", "save", image], stdout=subprocess.PIPE, stderr=save_errors
+            ) as save,
+        ):
+            cp = subprocess.run(  # nosec B603 - fixed argv, no shell
+                argv,
+                stdin=save.stdout,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=K3S_IMAGE_IMPORT_TIMEOUT_SECONDS,
+            )
+            # Close our handle so `docker save` sees EPIPE and exits if the
+            # import died early, instead of blocking the `with` on a full pipe.
+            if save.stdout is not None:
+                save.stdout.close()
+            save.wait(timeout=K3S_IMAGE_IMPORT_TIMEOUT_SECONDS)
+            save_errors.seek(0)
+            save_stderr = save_errors.read()
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(
+            "ops: k3s image import failed for %s: %s",
+            image,
+            e,
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [OpsResult(False, f"Could not import {image} into k3s", f"{type(e).__name__}: {e}")]
+
+    if save.returncode != 0:
+        logger.warning(
+            "ops: docker save %s exited %s: %s",
+            image,
+            save.returncode,
+            save_stderr.strip(),
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [
+            OpsResult(
+                False,
+                f"docker save {image} failed -- nothing to import into k3s",
+                save_stderr.strip(),
+            )
+        ]
+    if cp.returncode != 0:
+        logger.warning(
+            "ops: k3s ctr images import exited %s for %s: %s",
+            cp.returncode,
+            image,
+            (cp.stderr or "").strip(),
+            extra={"component": "ops", "action": "k3s-image-import", "image": image},
+        )
+        return [OpsResult(False, f"k3s ctr images import failed for {image}", _cp_details(cp))]
+    return [OpsResult(True, f"Imported {image} into k3s's containerd", _cp_details(cp))]
+
+
+def _k3s_sudo_prefix() -> list[str]:
+    """`["sudo", "-n"]` unless this process is already root (or sudo is absent)."""
+    if os.geteuid() == 0 or _which("sudo") is None:
+        return []
+    return ["sudo", "-n"]
 
 
 def build_and_load_k8s_image(
@@ -7820,7 +7979,7 @@ def _classify_k8s_observability_workload(name: str, value: str) -> K8sWorkloadSt
             name,
             K8S_STATE_FAILED,
             "absent",
-            "Re-run `nyxgpt ops observability --kubernetes --local`.",
+            "Re-run `nyxgpt ops observability --kubernetes`.",
         )
     ready, _, desired = value.partition("/")
     desired_count = desired.split()[0] if desired else ""
@@ -7850,7 +8009,7 @@ def _k8s_observability_health() -> list[OpsResult]:
             OpsResult(
                 False,
                 f"{len(missing)} observability workload(s) missing from the cluster",
-                "Re-run `nyxgpt ops observability --kubernetes --local`.",
+                "Re-run `nyxgpt ops observability --kubernetes`.",
             )
         )
     return results
@@ -8721,7 +8880,7 @@ def _evaluate_k8s_capacity(
             if layer and requested - layer <= free:
                 remedy += (
                     f", or install without the observability layer, which is {show(layer)} "
-                    "of the above: `nyxgpt ops install --kubernetes --local "
+                    "of the above: `nyxgpt ops install --kubernetes "
                     "--skip-observability`"
                 )
         message = (
@@ -8902,6 +9061,60 @@ def _restart_k8s_app_tier() -> list[OpsResult]:
             return results
         results.append(OpsResult(True, f"Rolled {ref} onto the new install mode's image"))
     return results
+
+
+# The systemd --user template a `nyxgpt cloud deploy --kubernetes` installs to
+# bridge the instance's loopback into the ClusterIP-only Services (#3956). Named
+# here so `doctor` can report it: on a cloud Kubernetes deployment this unit,
+# not the API process, is what holds 127.0.0.1:8000, so it is a distinct thing
+# that can be down while every Pod is Running -- and an operator told only "the
+# API did not answer" goes looking in the cluster, where nothing is wrong.
+K8S_ACCESS_BRIDGE_UNIT = "nyxgpt-k8s-bridge@"
+K8S_ACCESS_BRIDGE_TARGETS: tuple[str, ...] = ("api", "web", "observability")
+
+
+def _k8s_access_bridge_issues() -> list[str]:
+    """Report the access bridge's units, returning `doctor` issues for any down.
+
+    Silent where no bridge exists: the template is installed only by a cloud
+    `--kubernetes` deploy, so a local kind/minikube cluster (where the operator
+    runs `nyxgpt ops port-forward` in a terminal) has no units to report and
+    gets no output. Reads only `is-active`; `doctor` never starts anything.
+    """
+    if not _is_linux():
+        return []
+    unit_dir = _systemd_user_dir()
+    if not (unit_dir / f"{K8S_ACCESS_BRIDGE_UNIT}.service").exists():
+        return []
+    issues: list[str] = []
+    for target in K8S_ACCESS_BRIDGE_TARGETS:
+        unit = f"{K8S_ACCESS_BRIDGE_UNIT}{target}.service"
+        enabled = _run(
+            ["systemctl", "--user", "is-enabled", unit],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+        if (enabled.stdout or "").strip() != "enabled":
+            # Not enabled is not a fault: `--skip-observability` deliberately
+            # leaves the observability bridge alone.
+            continue
+        active = _run(
+            ["systemctl", "--user", "is-active", unit],
+            check=False,
+            expected=True,
+            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+        )
+        state = (active.stdout or "").strip() or "unknown"
+        print(f"Kubernetes access bridge ({target}): {state}")
+        if state != "active":
+            issues.append(
+                f"The Kubernetes access bridge for {target} is {state}. That unit, not "
+                f"the Pod, is what holds this host's loopback port, so the stack is "
+                f"unreachable through the SSH tunnel even with every Pod Running. "
+                f"Re-run `nyxgpt cloud deploy` to reconcile it."
+            )
+    return issues
 
 
 def _record_k8s_install_mode(dev: bool) -> list[OpsResult]:
@@ -10258,7 +10471,7 @@ def status(_args) -> int:
                     )
                 print(
                     "  The Pods run images built from that working tree as it was at install "
-                    "time; re-run `nyxgpt ops install --kubernetes --local --dev` to pick up "
+                    "time; re-run `nyxgpt ops install --kubernetes --dev` to pick up "
                     "new code, or drop --dev to deploy the published artifacts."
                 )
             for pod_state in pod_states:
@@ -10281,7 +10494,7 @@ def status(_args) -> int:
             else:
                 print(
                     "\nKubernetes observability: not deployed "
-                    "(`nyxgpt ops observability --kubernetes --local` deploys it)"
+                    "(`nyxgpt ops observability --kubernetes` deploys it)"
                 )
 
             serving = _serving_status("kubernetes")
@@ -10916,7 +11129,7 @@ def _terraform_install_mode_issues() -> list[str]:
     if deployed and not state.recorded:
         print(
             "  (nothing recorded what these containers were built from -- redeploy with "
-            "`nyxgpt up --terraform --local`, or `--dev` for a working-tree build, to "
+            "`nyxgpt up --terraform`, or `--dev` for a working-tree build, to "
             "record it)"
         )
         return []
@@ -10929,7 +11142,7 @@ def _terraform_install_mode_issues() -> list[str]:
         "Dev-mode Terraform deployment recorded, but its checkout is missing "
         f"({state.checkout or 'no path recorded'}) -- the running api/web images were "
         "built from a tree that is no longer there and cannot be rebuilt. Re-run "
-        "`nyxgpt up --terraform --local --dev` from a checkout, or without --dev to "
+        "`nyxgpt up --terraform --dev` from a checkout, or without --dev to "
         "deploy the published images."
     ]
 
@@ -10991,9 +11204,10 @@ def doctor(_args) -> int:
                     "Dev-mode Kubernetes deployment recorded, but its checkout is missing "
                     f"({k8s_install_mode.checkout or 'no path recorded'}) -- the images in "
                     "the cluster were built from a tree that is no longer there and cannot "
-                    "be rebuilt. Re-run `nyxgpt ops install --kubernetes --local` (add "
+                    "be rebuilt. Re-run `nyxgpt ops install --kubernetes` (add "
                     "--dev from a checkout to stay on the working tree)."
                 )
+        issues.extend(_k8s_access_bridge_issues())
     if install_mode.is_dev:
         checkout = Path(install_mode.checkout) if install_mode.checkout else None
         if checkout is None or not checkout.is_dir():
@@ -11024,9 +11238,22 @@ def doctor(_args) -> int:
             parsed = ConfigParser()
             parsed.read(cfg)
             cfg_parser = parsed
+        except configparser.Error as e:
+            # A doctor that only logs "Failed to parse <path>" and moves on is
+            # not actionable: this is the single fault that takes the whole API
+            # down (every request loads config.ini), and the user needs the
+            # line to fix it (#3944). Report it as an issue, with the line.
+            #
+            # This is the one caller that opts into quoting the file's own text
+            # (`include_line_text`), and it is the reason the default is off:
+            # doctor is a local command, run by the owner of the file, printing
+            # to their terminal. The API's rendering of the same fault is
+            # redacted because it is reachable pre-auth, and it points here.
+            issues.append(describe_config_parse_error(cfg, e, include_line_text=True))
+            cfg_parser = None
         except Exception as e:
             logger.warning(
-                "Failed to parse %s, skipping config-dependent doctor checks: %s",
+                "Failed to read %s, skipping config-dependent doctor checks: %s",
                 cfg,
                 e,
                 extra={"component": "ops"},
@@ -11171,7 +11398,7 @@ def doctor(_args) -> int:
     ):
         issues.append(
             "Terraform state exists but no nyxgpt-tf-* containers are running "
-            "(run: nyxgpt ops install --terraform --local, or nyxgpt ops down --terraform "
+            "(run: nyxgpt ops install --terraform, or nyxgpt ops down --terraform "
             "to clean up the stale state)"
         )
 

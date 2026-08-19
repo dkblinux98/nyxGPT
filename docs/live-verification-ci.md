@@ -281,6 +281,36 @@ and screenshots make verifiable in the review loop:
   (small/stubbed per the acceptance criteria); response *quality* is not
   asserted, only that a reply came back and the request/response pipeline
   (chat -> RAG -> metrics -> dashboards) is intact end to end.
+- **A real EC2 instance and a real AWS security group** -- no hosted runner
+  is an EC2 instance, and no CI job holds AWS credentials that could create
+  one (`nyxgpt cloud smoke` deploys real billed infrastructure and is a
+  deliberate terminal command for that reason). Read this narrowly, the same
+  way the macOS entry above has to be read: it does **not** make the cloud
+  deploy path exempt from the executed-verification gate.
+  [`cloud-artifact-smoke.yml`](../.github/workflows/cloud-artifact-smoke.yml)
+  executes the artifact install on a real Amazon Linux 2023 userland, and
+  since #3956 [`k3s-cloud-smoke.yml`](../.github/workflows/k3s-cloud-smoke.yml)
+  executes the `--kubernetes` deploy's *own* k3s bootstrap text
+  (`cloud_deploy.render_k3s_bootstrap()`, not a copy of it) on a real Linux
+  runner: it installs k3s, measures that the API server is bound to the node's
+  private address rather than every interface, proves Traefik and `servicelb`
+  are absent and `local-path` is still the default StorageClass, applies
+  `k8s/` unchanged against the real API server, drives the access bridge end
+  to end, and then executes the `--no-kubernetes` teardown against that same
+  live cluster and bridge -- proving the transition really stops the bridge,
+  frees `127.0.0.1:8000`, uninstalls k3s, frees 6443, and is a no-op on a
+  second pass (which is what every first deploy runs). That last one is only
+  meaningful with a cluster actually running, which is why it is here and not
+  in a unit test. Two of its steps are fault injections rather than happy
+  paths --
+  a Pod referencing a docker-built image is proved to fail before
+  `_k3s_import_image` and to run after it, and stopping the bridge is proved
+  to kill `127.0.0.1:8000` -- so neither assertion can pass by luck. What is
+  genuinely left to owner acceptance is the part that requires being in AWS:
+  the IMDSv2 read of the instance's private IPv4 (the runner exercises its
+  documented non-EC2 fallback instead), the security group actually refusing
+  everything but TCP 22, and the deploy's end-to-end wall-clock on real
+  instance hardware.
 
 ## Verifying the gate
 

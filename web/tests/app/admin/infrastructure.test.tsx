@@ -989,7 +989,7 @@ describe('InfrastructurePage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/No observability workloads in the/)).toBeInTheDocument();
     expect(
-      screen.getByText('nyxgpt ops observability --kubernetes --local')
+      screen.getByText('nyxgpt ops observability --kubernetes')
     ).toBeInTheDocument();
     expect(
       screen.queryByText('nyxgpt ops port-forward --target observability')
@@ -1023,7 +1023,7 @@ describe('InfrastructurePage', () => {
     expect(within(block).getByText(/No node had enough unreserved memory or CPU/)).toBeInTheDocument();
     // Reporting only, and the cure is a `nyxgpt` command -- never raw kubectl.
     expect(
-      within(block).getByText('nyxgpt ops install --kubernetes --local')
+      within(block).getByText('nyxgpt ops install --kubernetes')
     ).toBeInTheDocument();
     expect(within(block).queryByText(/kubectl/)).not.toBeInTheDocument();
   });
@@ -1310,6 +1310,130 @@ describe('InfrastructurePage', () => {
       ).toBeInTheDocument();
     });
     expect(screen.getByText(/nyxgpt cloud ops session-backend/)).toBeInTheDocument();
+  });
+
+  it('says when the cloud instance is running a shipped working tree rather than a release (#3950)', async () => {
+    // Every other field on this card reads identically for a `--dev` deploy
+    // and an artifact deploy of the same version -- version, host, instance,
+    // region, profiles, health. So without this the page reports a
+    // working-tree build as a published release, and an operator debugging
+    // one has no way to tell which they are looking at.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, dev: true, source_dir: '/Users/o/src/nyxGPT' })
+      )
+    );
+    const devDeploy = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('DEV BUILD')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/working tree shipped from \/Users\/o\/src\/nyxGPT \(--dev\)/)
+    ).toBeInTheDocument();
+    // And it says what that means, not just what it is: the version above
+    // names a release this stack is not running.
+    expect(screen.getByText(/not a published 3\.0\.0 release/)).toBeInTheDocument();
+    devDeploy.unmount();
+
+    // A dev deploy whose record predates `source_dir` -- or was written by a
+    // path that never captured it -- still has to say *which* claim it is
+    // making. "working tree shipped from " with nothing after it reads as a
+    // rendering bug; naming the gap says the build is unverifiable rather
+    // than pretending the directory is known.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, dev: true, source_dir: '' })
+      )
+    );
+    const devNoDir = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText('DEV BUILD')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/working tree shipped from an unrecorded checkout \(--dev\)/)
+    ).toBeInTheDocument();
+    devNoDir.unmount();
+
+    // The artifact path makes the positive claim rather than staying silent:
+    // "published release" is the thing an operator wants confirmed.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, dev: false, source_dir: '' })
+      )
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(
+        screen.getByText('published release, installed from PyPI on the instance')
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText('DEV BUILD')).not.toBeInTheDocument();
+  });
+
+  it('names the substrate, and separates "not recorded" from "native" (#3956)', async () => {
+    // Three distinct claims, and the third is the one that is easy to get
+    // wrong: a deploy record written before `--kubernetes` existed says
+    // *nothing* about the substrate, which is not the same as saying it was
+    // native. Only the k3s answer makes canary rollout available, so an
+    // operator reading this row is deciding whether `nyxgpt cloud canary`
+    // is even a thing they can run.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const deployed = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, substrate: 'kubernetes' })
+      )
+    );
+    const k8s = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/single-node k3s cluster on the instance/)).toBeInTheDocument();
+    });
+    // The row earns its place by saying what the substrate *enables*.
+    expect(screen.getByText(/canary rollout available/)).toBeInTheDocument();
+    k8s.unmount();
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...deployed, substrate: 'native' })
+      )
+    );
+    const native = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/native services on the instance/)).toBeInTheDocument();
+    });
+    // And what it would take to get canary, rather than leaving the operator
+    // to infer that native means "no".
+    expect(screen.getByText(/--kubernetes` deploys onto a cluster instead/)).toBeInTheDocument();
+    native.unmount();
+
+    // A record predating the flag: silence about the substrate, not a claim
+    // that it was native.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () => HttpResponse.json({ ...deployed, substrate: '' }))
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/not recorded — this deploy predates the substrate record/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/single-node k3s cluster/)).not.toBeInTheDocument();
   });
 
   it('names which target OS provisioned the instance, and separates "not recorded" from "linux" (#3867)', async () => {
@@ -1764,7 +1888,7 @@ describe('InfrastructurePage', () => {
                   name: 'glitchtip',
                   state: 'failed',
                   summary: 'absent',
-                  details: 'Re-run `nyxgpt ops observability --kubernetes --local`.',
+                  details: 'Re-run `nyxgpt ops observability --kubernetes`.',
                 },
               ],
             },

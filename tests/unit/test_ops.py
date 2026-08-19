@@ -793,6 +793,69 @@ def test_ops_doctor_fail_when_missing_config(monkeypatch, capsys, tmp_path):
 
 
 @pytest.mark.unit
+def test_ops_doctor_names_the_line_of_an_unparseable_config(monkeypatch, capsys, tmp_path):
+    """A user whose config.ini is damaged needs the line, not "Failed to parse" (#3944).
+
+    This is the recovery path: config.ini being unreadable takes the whole
+    API down, so `nyxgpt ops doctor` is the only surface left that can say
+    what is wrong with it. Reporting it as a warning in a log the user never
+    sees -- which is what it did -- is not a recovery path.
+    """
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "[monitoring]\nSLACK_BOT_TOKEN = a\nslack_bot_token = b\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "doctor: FAIL" in out
+    assert "Cannot parse" in out
+    assert "DuplicateOptionError" in out
+    assert "line 3" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_shows_the_offending_line_text(monkeypatch, capsys, tmp_path):
+    """Doctor is the one caller that opts into quoting the file (#3944 review).
+
+    The API's rendering of the same fault is redacted, because
+    `config_unreadable_guard` answers before auth can be enforced and the
+    offending line can be a credential. Doctor has neither problem: it is a
+    local command run by the owner of the file, and it is where the recovery
+    documentation sends a user whose API is down. If this ever redacts too,
+    the recovery path loses the only thing that makes it actionable.
+    """
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "api_key = sk-live-VERYSECRETVALUE\n[auth]\nenabled = true\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "MissingSectionHeaderError" in out
+    assert "line 1" in out
+    assert "sk-live-VERYSECRETVALUE" in out
+
+
+@pytest.mark.unit
 def test_ops_doctor_warns_when_cassandra_container_missing(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -10961,21 +11024,43 @@ class CP:
 
 
 @pytest.mark.unit
-def test_resolve_locality_rejects_cloud(capsys):
+def test_resolve_locality_rejects_cloud_by_naming_the_command_that_does_it(capsys):
+    """`--cloud` is refused with a pointer, not with a promise (#3956).
+
+    This test used to assert the words "not yet implemented" -- an
+    expiry-dated world-state claim of the kind #3744 forbids, and one that had
+    expired twice over by the time anyone read it: `nyxgpt cloud deploy`
+    shipped in #3513 and its Kubernetes mode in #3956. What the flag means is
+    that this command deploys to the machine it runs on; the cloud path is a
+    different command, and saying so is what an operator can act on.
+    """
     args = SimpleNamespace(local=False, cloud=True)
     assert ops._resolve_locality(args) is None
-    assert "not yet implemented" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # Scoped to the flag, and carrying the pointer at the commands that DO
+    # deploy to a cloud target -- never "cloud deployment is unimplemented"
+    # (#3948).
+    assert "not implemented for `ops install --terraform/--kubernetes`" in err
+    assert ops.CLOUD_DEPLOY_POINTER in err
+    # ...and that pointer names the Kubernetes half of the cloud path too
+    # (#3956), so an operator who wants a cluster is not left believing the
+    # cloud target only runs Compose.
+    assert "nyxgpt cloud deploy" in err
+    assert "--kubernetes" in err
+    assert "not yet implemented" not in err
 
 
 @pytest.mark.unit
-def test_resolve_locality_requires_local(capsys):
+def test_resolve_locality_defaults_to_local(capsys):
+    """No locality flag is not an error: local is the default (#3948)."""
     args = SimpleNamespace(local=False, cloud=False)
-    assert ops._resolve_locality(args) is None
-    assert "--local is required" in capsys.readouterr().err
+    assert ops._resolve_locality(args) == "local"
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.unit
-def test_resolve_locality_accepts_local():
+def test_resolve_locality_accepts_explicit_local():
+    """`--local` stays accepted, as a no-op, so existing scripts keep working."""
     args = SimpleNamespace(local=True, cloud=False)
     assert ops._resolve_locality(args) == "local"
 
@@ -11237,10 +11322,25 @@ def test_terraform_stack_health_reports_outputs(monkeypatch):
 
 
 @pytest.mark.unit
-def test_install_terraform_requires_locality(capsys):
-    args = SimpleNamespace(local=False, cloud=False, api_key=None)
+def test_install_terraform_rejects_cloud_locality(capsys):
+    args = SimpleNamespace(local=False, cloud=True, api_key=None)
     assert ops._install_terraform(args) == 2
-    assert "--local is required" in capsys.readouterr().err
+    assert ops.CLOUD_DEPLOY_POINTER in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_terraform_defaults_to_local_locality(monkeypatch):
+    """No locality flag deploys locally rather than refusing (#3948)."""
+    called = {}
+
+    def fake_steps(api_key, dev=False):
+        called["api_key"] = api_key
+        return [ops.OpsResult(True, "install", "ok")]
+
+    monkeypatch.setattr(ops, "_install_terraform_steps", fake_steps)
+    args = SimpleNamespace(local=False, cloud=False, api_key="k", dev=False)
+    assert ops._install_terraform(args) == 0
+    assert called == {"api_key": "k"}
 
 
 @pytest.mark.unit
@@ -12473,10 +12573,27 @@ def test_install_kubernetes_does_not_fail_on_a_pod_that_is_merely_pending(monkey
 
 
 @pytest.mark.unit
-def test_install_kubernetes_requires_locality(capsys):
-    args = SimpleNamespace(local=False, cloud=False, api_key=None)
+def test_install_kubernetes_rejects_cloud_locality(capsys):
+    args = SimpleNamespace(local=False, cloud=True, api_key=None)
     assert ops._install_kubernetes(args) == 2
-    assert "--local is required" in capsys.readouterr().err
+    assert ops.CLOUD_DEPLOY_POINTER in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_kubernetes_defaults_to_local_locality(monkeypatch):
+    """No locality flag deploys to the local cluster rather than refusing (#3948)."""
+    called = {}
+
+    def fake_steps(api_key, skip_observability=False, dev=False):
+        called["api_key"] = api_key
+        return [ops.OpsResult(True, "install", "ok")]
+
+    monkeypatch.setattr(ops, "_install_kubernetes_steps", fake_steps)
+    args = SimpleNamespace(
+        local=False, cloud=False, api_key="k", dev=False, skip_observability=False
+    )
+    assert ops._install_kubernetes(args) == 0
+    assert called == {"api_key": "k"}
 
 
 @pytest.mark.unit

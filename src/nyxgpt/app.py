@@ -119,6 +119,7 @@ from nyxgpt.config import (
     get_chat_timeout_seconds,
     get_default_model,
     get_error_tracking_config,
+    get_github_pat,
     get_log_aggregation_config,
     get_monitoring_config,
     get_ollama_base_url,
@@ -802,6 +803,47 @@ async def prometheus_metrics_middleware(request: Request, call_next):
     return response
 
 
+def _config_unreadable_response(exc: Exception, req_id: str | None = None) -> JSONResponse:
+    """Render an unreadable config.ini as a `config_unreadable` 500 (#3944)."""
+    log.error("config.ini is unreadable (request_id=%s): %s", req_id, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "config_unreadable",
+                "message": str(exc),
+                "request_id": req_id,
+            }
+        },
+    )
+
+
+@app.middleware("http")
+async def config_unreadable_guard(request: Request, call_next):
+    """Turn a `ConfigParseError` raised anywhere below into a stated cause (#3944).
+
+    Registered last, so it is the *outermost* middleware -- deliberately
+    outside `api_key_auth` and `load_cfg_and_refresh_logging`, both of which
+    call `load_config` themselves. Starlette runs registered exception
+    handlers *inside* the user middleware stack, so `config_parse_error_handler`
+    below never sees a middleware-raised error; without this, a damaged
+    config.ini came back from every endpoint as an unadorned 500 with no
+    cause, which is exactly what left the owner staring at a dead dashboard.
+    Catching it here rather than in each middleware also means the next
+    middleware that reads config inherits the behaviour instead of
+    re-introducing the gap.
+
+    These responses are not counted in the HTTP metrics below (the exception
+    unwinds past `prometheus_metrics_middleware` before reaching here) --
+    acceptable, since a process that cannot read its config cannot serve
+    anything for those metrics to describe.
+    """
+    try:
+        return await call_next(request)
+    except nyxgpt.config.ConfigParseError as e:
+        return _config_unreadable_response(e, getattr(request.state, "request_id", None))
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Render raised `HTTPException`s in the API's standard error envelope.
@@ -821,6 +863,45 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 "code": "http_error",
                 "message": detail if isinstance(detail, str) else "Request failed",
                 "details": None if isinstance(detail, str) else detail,
+                "request_id": req_id,
+            }
+        },
+    )
+
+
+@app.exception_handler(nyxgpt.config.ConfigParseError)
+async def config_parse_error_handler(request: Request, exc: Exception):
+    """Report an unreadable config.ini as itself, not as "Internal server error".
+
+    Every endpoint loads config, so one bad line in config.ini fails all of
+    them -- and until #3944 the catch-all below flattened that into the
+    generic `internal_error`, leaving the owner with a dead dashboard and no
+    stated cause. `ConfigParseError` already carries the file, the fault and
+    the line number; pass it through verbatim. It is a curated diagnosis, not
+    a traceback, and it does *not* quote the file's own bytes -- see
+    `describe_config_parse_error`, which redacts line text by default
+    precisely because this response is reachable without authentication
+    (`api_key_auth` loads config before it can check any key, so a malformed
+    config.ini is a state in which auth cannot be enforced at all).
+    """
+    return _config_unreadable_response(exc, getattr(request.state, "request_id", None))
+
+
+@app.exception_handler(config_wizard.ConfigWriteError)
+async def config_write_error_handler(request: Request, exc: Exception):
+    """Report a refused wizard save, with the reason it was refused (#3944).
+
+    Raised *before* config.ini is touched, so the accompanying promise --
+    that the file on disk is unchanged -- is one the client can act on.
+    """
+    req_id = getattr(request.state, "request_id", None)
+    log.error("Refused a config.ini write (request_id=%s): %s", req_id, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "config_write_refused",
+                "message": str(exc),
                 "request_id": req_id,
             }
         },
@@ -2683,7 +2764,7 @@ def ops_release_candidate(
         ) from e
 
 
-# --- Support endpoints (#3745) ---
+# --- Support endpoints (#3745, #3811) ---
 #
 # The web UI's Support menu, which is the only documentation surface a user
 # who installed from PyPI or Homebrew has: they never checked the repo out,
@@ -2691,9 +2772,10 @@ def ops_release_candidate(
 # Only product documentation ships -- the agent/CI process and contributor
 # docs are not in the artifact at all (#3809, `support.DOC_SECTIONS`).
 #
-# All three are read-only. "File an Issue" is deliberately a *link* the UI
-# opens, not an endpoint that posts on the user's behalf -- see
-# `nyxgpt.support`.
+# The docs endpoints are read-only. Filing is not: `POST /support/tickets`
+# creates the issue from this install so the filer never leaves the chat
+# (#3811). It is the ONLY write on this surface, and it writes exactly one
+# thing -- a labeled issue in the product's own tracker.
 
 
 @api.get("/support/docs")
@@ -2726,9 +2808,70 @@ def support_document(_request: Request, slug: str) -> dict[str, str]:
 
 
 @api.get("/support/context")
-def support_context(_request: Request) -> dict[str, Any]:
-    """Report the running environment and the prefilled issue-form link."""
-    return support_module.support_context()
+def support_context(request: Request) -> dict[str, Any]:
+    """Report the running environment and how this install can file a ticket.
+
+    `can_submit` is the branch the Support menu takes: with a credential
+    configured the UI opens its own form and nyxGPT files the ticket; without
+    one it offers the prefilled GitHub form instead. Resolved here rather
+    than in `nyxgpt.support`, which knows nothing about configuration.
+    """
+    return support_module.support_context(can_submit=bool(get_github_pat(_req_cfg(request))))
+
+
+@api.post("/support/tickets")
+def support_file_ticket(request: Request, body: api_models.SupportTicketRequest) -> JSONResponse:
+    """File a support ticket from this install and return the created issue.
+
+    This is the surface #3811 asked for: the filer answers the questions in
+    the chat, nyxGPT posts the issue, and the response carries the ticket's
+    number and URL so the UI can congratulate them with a link instead of
+    stranding them on github.com.
+
+    Three answers, and the difference between them matters to the person
+    waiting:
+
+    * **201** -- filed. `labeled` says whether the `Support` label made it
+      onto the issue; false means the token has no push access, GitHub
+      dropped the label, and `support_intake_guard.yml` will repair it. The
+      ticket exists either way, so this is not an error.
+    * **503** -- this install has no GitHub credential, so it cannot file for
+      anyone. The body carries `issue_form_url`, because the honest answer
+      is "here is the form, prefilled" and not "no".
+    * **502** -- GitHub was reached and said no (or could not be reached).
+      `detail` is written for the filer; the underlying error is in the API
+      log.
+    """
+    token = get_github_pat(_req_cfg(request))
+    if not token:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "no_credential",
+                "detail": (
+                    "This nyxGPT install has no GitHub token configured, so it "
+                    "cannot file the ticket for you. Open the prefilled form on "
+                    "GitHub instead, or set `[github] pat` in your configuration."
+                ),
+                "issue_form_url": support_module.issue_form_url(),
+            },
+        )
+
+    try:
+        created = support_module.submit_ticket(
+            ticket_type=body.ticket_type,
+            summary=body.summary,
+            description=body.description,
+            token=token,
+        )
+    except ValueError as e:
+        # The filer's own input -- an unknown ticket type, a blank field. A
+        # 400 with the reason, not a 500.
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except support_module.SupportTicketError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    return JSONResponse(status_code=201, content={"status": "filed", **created})
 
 
 # --- Model management endpoints ---

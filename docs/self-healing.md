@@ -61,7 +61,7 @@ from a mode you've since switched away from).
    no kegs to attach brew services to, so on macOS `api`/`web` are checked
    and healed through their launchd agents instead — see [Dev mode
    healing](#dev-mode-healing).
-3. **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
+3. **Terraform** (`nyxgpt ops install --terraform`): `ollama`/
    `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
    Docker containers `terraform/main.tf` defines. Checked directly via
    `docker ps`/`docker inspect` (**healthy** when `running` and, for the
@@ -69,7 +69,7 @@ from a mode you've since switched away from).
    `healthy`/empty/`starting`) and healed via `docker restart
    nyxgpt-tf-<component>`, the same primitive as native/local-first mode's
    Cassandra container. See [Terraform mode](#terraform-mode) below.
-4. **Kubernetes** (`nyxgpt ops install --kubernetes --local`): every Pod the
+4. **Kubernetes** (`nyxgpt ops install --kubernetes`): every Pod the
    install deploys — the `nyxgpt-api` and `nyxgpt-web` stable/canary
    Deployments, the `cassandra` and `ollama` StatefulSets, and the
    in-cluster observability overlay (`k8s/observability/`) — is checked via
@@ -199,8 +199,8 @@ had no way to tell that apart from a crash: a plain `ops down` stopped
 stopped — exactly what a crash looks like from the outside. The very next
 heal pass would see them unhealthy and restart them right back
 (`brew services restart`/`docker restart`), undoing the teardown; worse,
-the re-occupied ports then made a subsequent `nyxgpt ops install --terraform
---local` fail with a spurious port collision.
+the re-occupied ports then made a subsequent `nyxgpt ops install --terraform`
+fail with a spurious port collision.
 
 The fix is an **intentional-stop registry**, separate from the `enabled`
 flag, persisted in the same `~/.nyxGPT/self_heal_state.json`:
@@ -213,8 +213,8 @@ flag, persisted in the same `~/.nyxGPT/self_heal_state.json`:
   disabled observability profile (see above) — so the automatic heal pass
   leaves it alone. A manual "Heal now" click still overrides it, same as
   everywhere else `desired: false` appears.
-- `nyxgpt ops install`/`restart` (native, `--terraform --local`, or
-  `--kubernetes --local`) clear the marker for whatever they bring up:
+- `nyxgpt ops install`/`restart` (native, `--terraform`, or
+  `--kubernetes`) clear the marker for whatever they bring up:
   bringing a component back up is itself the "this is desired again" signal.
 
 Critically, this is **per-component**, not a global kill switch: an intentional
@@ -299,7 +299,7 @@ monitoring/healing it.
 
 ## Terraform mode
 
-`nyxgpt ops install --terraform --local` (see [terraform.md](terraform.md))
+`nyxgpt ops install --terraform` (see [terraform.md](terraform.md))
 runs `ollama`/`cassandra`/`api`/`web` as the plain (non-Compose)
 `nyxgpt-tf-ollama`/`nyxgpt-tf-cassandra`/`nyxgpt-tf-api`/`nyxgpt-tf-web`
 Docker containers `terraform/main.tf` defines. Like native/local-first
@@ -373,14 +373,14 @@ As defense in depth on top of the attribution fix,
 `restart_native_component("cassandra")` itself refuses (rather than
 silently no-op'ing) to `docker restart` the native Cassandra container if
 Terraform's or Compose's Cassandra is currently running -- reusing the same
-port-collision concern as the `nyxgpt ops install --terraform --local`
+port-collision concern as the `nyxgpt ops install --terraform`
 preflight check (#3193). The refusal is recorded as a normal heal event
 (`ok: false`) rather than a silent skip, so an operator watching the event
 log sees *why* nothing happened.
 
 ## Kubernetes mode
 
-`nyxgpt ops install --kubernetes --local` (see [kubernetes.md](kubernetes.md))
+`nyxgpt ops install --kubernetes` (see [kubernetes.md](kubernetes.md))
 deploys the whole stack into the `nyxgpt` namespace: the `nyxgpt-api` and
 `nyxgpt-web` stable/canary Deployment pairs, the `cassandra` and `ollama`
 StatefulSets, and the in-cluster observability overlay (`k8s/observability/`).
@@ -685,7 +685,7 @@ Aggregation](docker-compose.md#log-aggregation)).
 restarts -- it answers "how often did the system recover itself." Every
 other way a component's lifecycle changes -- `nyxgpt ops install`, `nyxgpt
 ops down`, `nyxgpt ops restart`/`stop`, `nyxgpt ops observability`, the
-`nyxgpt ops install|down --terraform|--kubernetes --local` paths (CLI-only
+`nyxgpt ops install|down --terraform|--kubernetes` paths (CLI-only
 since #3410 -- the Infrastructure admin page is status-only and has no
 install/destroy controls), and the self-heal page's manual "Heal Now"
 button -- is recorded as a separate **ops lifecycle action** instead, via

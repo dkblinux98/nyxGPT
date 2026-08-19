@@ -718,6 +718,18 @@ Returns `422` with `error.details.errors` (a list of `"section.key: reason"`
 strings) if any field fails validation, and `400` if the payload contains no
 valid fields.
 
+The merge matches option names the way `ConfigParser` reads them —
+case-insensitively — and rewrites the existing line, preserving whatever
+casing the file already uses, so `SLACK_BOT_TOKEN` on disk is updated rather
+than shadowed by a second `slack_bot_token` line (#3944). The write is staged
+into a temporary file, parsed there, and only then swapped in atomically: if
+the merged text would not parse, the endpoint returns `500` with
+`"code": "config_write_refused"` and a message naming the error and the line
+*number*, and `config.ini` is left byte-identical. The text of the offending
+line is deliberately not included -- it can be a credential, from the file or
+from the payload just posted; `nyxgpt ops doctor` shows it locally. The same
+guard covers the stale-key removal endpoint below.
+
 ### `POST /api/v1/config/sections/stale-keys/remove`
 
 Deletes specific keys the `GET` endpoint's `stale_keys` reported -- the
@@ -4661,16 +4673,19 @@ curated per-component Explore links, not general search.
 
 ## Support endpoints
 
-Read-only. They back the web UI's Support menu ([ui.md](ui.md#support-menu)),
-which is the whole documentation surface for an install with no repository
-checkout. There is no POST endpoint here: nyxGPT never files an issue on a
-user's behalf.
+They back the web UI's Support menu ([ui.md](ui.md#support-menu)), which is
+the whole documentation surface for an install with no repository checkout.
+The docs endpoints are read-only; filing is not, and `POST
+/support/tickets` is the only write on this surface — it creates one labeled
+issue in the nyxGPT tracker so the filer never has to visit github.com
+(#3811).
 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/v1/support/docs` | GET | Index of the packaged product documentation, grouped |
 | `/api/v1/support/docs/{slug}` | GET | One document rendered to HTML (404 for an unknown slug) |
-| `/api/v1/support/context` | GET | Running version/platform plus the prefilled issue-form URL |
+| `/api/v1/support/context` | GET | Running version/platform, the prefilled issue-form URL, and `can_submit` |
+| `/api/v1/support/tickets` | POST | File a support ticket from this install; returns the created issue |
 
 **`GET /api/v1/support/docs`**
 
@@ -4697,6 +4712,30 @@ order. Only **product** documentation is packaged; the agent/CI process and
 contributor documents stay in the repository and are absent from the artifact
 (#3809).
 
+**`POST /api/v1/support/tickets`**
+
+```json
+{"ticket_type": "Bug Found", "summary": "Docs are a mess", "description": "I cannot find the install steps."}
+```
+
+The version and platform are not accepted from the client — the running
+install supplies both. `ticket_type` must be one of `Bug Found`, `Feature
+Request`, `Question`.
+
+```json
+{"status": "filed", "number": 4300, "url": "https://github.com/dkblinux98/nyxGPT/issues/4300",
+ "title": "support: Docs are a mess", "labeled": true}
+```
+
+Three answers, and the difference matters to whoever is waiting:
+
+| Status | Means |
+|---|---|
+| `201` | Filed. `labeled` reports whether the `Support` label is on the created issue — read back from GitHub, not assumed, because GitHub drops `labels` silently for a token without push access. `false` is not a failed filing: the ticket exists and `support_intake_guard.yml` repairs it. |
+| `503` | This install has no `[github] pat`, so it cannot file for anyone. The body carries `issue_form_url` — the prefilled GitHub form — rather than a refusal. |
+| `502` | GitHub was unreachable or said no. `detail` is written for the filer; the underlying error is in `~/.nyxGPT/logs/api.log`. |
+| `400` | The ticket itself is unusable (unknown type, blank or over-length field). |
+
 ---
 
 ## Error handling
@@ -4704,6 +4743,17 @@ contributor documents stay in the repository and are absent from the artifact
 - All errors return JSON
 - HTTP status codes are used consistently
 - Internal errors are logged to `~/.nyxGPT/logs/api.log`
+- **`config_unreadable`** — every request loads `~/.nyxGPT/config.ini`, so a
+  malformed line makes *every* endpoint return `500` with this code. Unlike
+  the generic `internal_error`, its `message` names the file, the parse error
+  and the line number (#3944). It never quotes the *content* of the offending
+  line: while config.ini is unparseable, API-key auth cannot be enforced at
+  all — the auth middleware has to load config before it can check a key — so
+  this response is readable by anyone who can reach the port, and the
+  offending line can be a secret. For the same reason the file is named
+  home-relative (`~/.nyxGPT/config.ini`) rather than absolutely, so the
+  message carries no OS account name. Run `nyxgpt ops doctor` on the host to
+  see the line itself.
 
 ---
 

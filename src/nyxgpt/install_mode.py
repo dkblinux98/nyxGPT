@@ -395,7 +395,7 @@ class InstallModeState:
                 "not recorded (a Terraform deployment is running that no `nyxgpt ops install "
                 "--terraform` recorded -- it predates #3835 or was brought up another way, so "
                 "whether its api/web images were built from a checkout or pulled is unknown). "
-                "Re-run `nyxgpt up --terraform --local` (add `--dev` for a working-tree build) "
+                "Re-run `nyxgpt up --terraform` (add `--dev` for a working-tree build) "
                 f"to redeploy it and record the mode.{suffix}"
             )
         if self.is_dev:

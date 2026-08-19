@@ -31,7 +31,8 @@ otherwise read from `docs/` ships inside the package instead: once
 `nyxgpt-web` is running, the product documentation is served in the web UI
 under **Support → Docs**, offline and matching the installed version. The same menu's
 **File an Issue** entries report a problem, request a feature or ask a question
-with the ticket type, your version and your platform already filled in. See [ui.md](ui.md#support-menu).
+without leaving the app: you answer in nyxGPT, it files the ticket with your
+version and platform attached and links you to it. See [ui.md](ui.md#support-menu).
 
 ---
 
@@ -944,7 +945,7 @@ nyxgpt ops restart
 Compose/Terraform's `ollama` container uses -- instead of Ollama's own
 default `~/.ollama/models`, via the `OLLAMA_MODELS` environment variable
 (never a symlink). This means a model pulled while running in any one local
-launch mode (native, `nyxgpt ops install --terraform --local`, or Compose)
+launch mode (native, `nyxgpt ops install --terraform`, or Compose)
 shows up in all of them, with no duplicate downloads.
 
 This is applied via `launchctl setenv OLLAMA_MODELS ...`, plus a

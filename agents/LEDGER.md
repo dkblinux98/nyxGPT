@@ -968,6 +968,188 @@ rather than mechanism, and nothing can enforce them.
   `render_provision_script`, `provision_remote_command`); `docs/cloud.md`
   §EC2 Mac targets; `.github/workflows/cloud-target-os-smoke.yml`.
 
+- **D-034** · 2026-08-19 · owner acceptance (#3811), implemented by the
+  developer agent — **nyxGPT files a support ticket itself; the GitHub
+  compose page is a fallback, not the surface.** The owner failed the
+  previous fix in acceptance because Support → File an Issue still handed the
+  user to `github.com/.../issues/new`. The intake is now a form in the chat
+  and `POST /api/v1/support/tickets`, which creates the labeled issue from
+  the running install and answers with its number and URL; the UI shows the
+  filer their own ticket. This answers **Q-006**'s credential question in the
+  only way that leaves every filer able to report something: file with
+  `[github] pat` when it is configured (the owner's install, any operator's),
+  and offer the prefilled GitHub form when it is not — the one case the
+  product genuinely cannot cover. A hosted intake that would remove even that
+  case remains the owner's to decide and is not foreclosed. The `Support`
+  label is **read back from the created issue** rather than assumed: GitHub
+  drops `labels` silently for a token without push access, which is #3810's
+  failure mode from the other side; `support_intake_guard.yml` remains the
+  repair. Evidence is executed, not inspected — `tests/test_support_intake_live.sh`
+  files through the real API against a stub GitHub and injects the
+  dropped-label, no-credential and refusal cases.
+  Source: #3811; `src/nyxgpt/support.py`; `src/nyxgpt/app.py`;
+  `web/src/components/SupportTicketDialog.tsx`;
+  `.github/workflows/support-intake-smoke.yml` (`files-a-ticket`).
+  Filed as **D-033** on this branch; renumbered on the merge into `v3.0.0`,
+  where #3867 had already allocated that number. IDs are never reused.
+
+- **D-035** · 2026-08-19 · developer agent (#3950) — **"Dev mode on a cloud
+  target" means shipping the working tree to the instance; it does not mean a
+  cloud Terraform or Kubernetes deployment.** The two halves of this are what
+  a future session would re-derive wrongly, because the flag names look like
+  they compose and they do not.
+  (a) *What was built.* `nyxgpt cloud deploy --dev` copies the operator's tree
+  over the deploy's own SSH connection (git's file list — tracked plus
+  new-not-ignored, so **uncommitted edits go**; never `.git`) into
+  `~/.nyxGPT/src`, installs it editable there, and runs `ops install --dev` on
+  the box, so `ops.dev_checkout_root()` on the *instance* answers the shipped
+  directory. The refusal without a checkout is `ops.dev_checkout_root()` — the
+  local paths' own predicate, reached through a new public forwarder rather
+  than re-implemented, because two definitions of "is this a checkout" is how
+  one path refuses a tree the other accepts. `--dev` is **not** carried
+  forward by `resolve_plan` although every other recorded choice is: the
+  others describe the instance's configuration, this one describes where a
+  single run got its code, and inheriting it would re-ship whatever tree
+  happened to be checked out under a command every operator reads as the
+  artifact path. Not exposed on `POST /cloud/deploy`: the API host has no tree
+  to ship (D-017).
+  (b) *What "cloud mode" does and does not mean.* `--terraform` and
+  `--kubernetes` are **local install-mode** flags of `ops install`; neither is
+  a mode of `nyxgpt cloud deploy`, which deploys the native stack to one EC2
+  box. So there was no "Terraform dev mode on cloud" to add — cloud uses
+  Terraform for the *substrate* only — and no Kubernetes cloud target for
+  `--dev` to modify. The latter is **unbuilt work, not a scope decision
+  against it**: `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506)
+  rejects a managed **EKS control plane** while explicitly calling for the
+  existing `k8s/*.yaml` on a single-node k3s cluster on that instance. #3950's
+  thread contains a retracted comment asserting the opposite from the Options
+  section alone; the Decision section is what binds.
+  (c) *`--dev` is Linux-only, and refuses rather than ignores.* The `--os
+  macos` target (**D-033**, merged alongside this) renders the EC2 Mac
+  bootstrap, which installs published Homebrew formulas and has no
+  working-tree source. `resolve_plan` therefore rejects `--dev --os macos`
+  before the substrate is applied: honouring the combination by rendering the
+  Mac script anyway would install a published release to an operator who
+  believes they are testing their tree, which is the exact defect this issue
+  was filed about — reachable, without the refusal, by combining two flags
+  that are each correct alone.
+  The behaviour itself is not recorded here — it is enforced by
+  `tests/unit/test_cloud_deploy_dev_mode.py` and, on a real machine, by
+  `.github/workflows/cloud-dev-deploy-smoke.yml`, per the verification
+  retirement. What that smoke found and inspection did not: `is_file()` drops
+  every symlink-to-a-directory in `src/nyxgpt/resources/` (#3621), which
+  silently shipped a checkout whose `ops install` could not find its own
+  runtime data.
+  (Allocated D-033 from `ledger_ids.py`; renumbered to D-034 when a merge from
+  v3.0.0 showed #3867 had taken that number, then to D-035 when the next merge
+  showed #3811 had taken *that* one. IDs are never reused and every entry
+  stands.)
+  Source: #3950; #3506; extends **D-009**; interacts with **D-033**.
+- **D-036** · 2026-08-19 · owner (#3948) — **`--local` is the default locality
+  for `ops install --terraform/--kubernetes`, not a requirement**, and it stays
+  accepted as an explicit no-op so existing scripts and docs keep working. It
+  had been mandatory while also being the only legal value, which made the CLI
+  demand the one possible answer. `--cloud` is still refused by these flags,
+  but the refusal (and the help) now says what it means: *this flag* has no
+  cloud target — cloud deployment is `nyxgpt cloud infra apply` +
+  `nyxgpt cloud deploy`. The old "not yet implemented" wording read as "nyxGPT
+  cannot deploy to a cloud target at all", which was never true. One shared
+  constant (`ops.CLOUD_DEPLOY_POINTER`) backs both the error and the help so
+  they cannot drift, and `tests/unit/test_cli_locality_help.py` reads the
+  requirement claims out of the generated help and compares them against what
+  `_resolve_locality` enforces — a wording grep would not have caught this
+  drift and does not catch the next one.
+  Source: #3948; `src/nyxgpt/ops.py` (`_resolve_locality`);
+  `src/nyxgpt/cli.py` (`_add_install_arguments`);
+  `.github/workflows/cli-locality-smoke.yml`.
+  Filed as **D-033** on this branch and renumbered three times on the way
+  into `v3.0.0` — #3867 took `D-033`, #3811 then took `D-034`, and #3950 then
+  took `D-035`, each while this PR was in review. IDs are never reused and
+  every entry stands.
+- **D-037** · 2026-08-19 · developer agent (#3956) — **A decision record is a
+  requirement even where no issue transcribed it, and "the cloud target" is a
+  *place the existing install mode runs*, not a second install mode.**
+  `DECISION_AWS_COMPUTE_SUBSTRATE.md` (#3506, owner-approved 2026-08-04) chose
+  EC2 single-box **with the `k8s/*.yaml` manifests optionally layered on a
+  single-node k3s cluster for canary** — the question put to the owner was EC2
+  vs EKS, i.e. *how* to host Kubernetes on the cloud target. #3513's
+  acceptance criteria never mentioned k3s, Kubernetes or canary, so what
+  shipped had no `--kubernetes` flag and canary rollout was unavailable on the
+  cloud target entirely: the capability the substrate was being chosen *for*.
+  The correction that generalises is the reading rule, not the flag — when a
+  decision record and the issue implementing it disagree, the record is the
+  higher authority and the gap is a spec-to-issue transcription failure, which
+  is where the retrospective should count it rather than as a developer miss.
+
+  Two things a future session would otherwise re-derive wrongly, both settled
+  by measurement rather than by preference:
+
+  (a) *The apiserver binds the node's **private** address, not loopback.* The
+  obvious reading of "#3503 exposes nothing but TCP 22" is `--bind-address
+  127.0.0.1`, and it is wrong: k3s builds the in-cluster `kubernetes` Service
+  endpoint from the advertise address, so pinned to loopback every Pod that
+  talks to the API server dials its own loopback. k3s's *default* is equally
+  wrong in the other direction (0.0.0.0 is the instance's public NIC, refused
+  by the security group but listening). The private address is the only
+  correct answer, and `--tls-san` plus a kubeconfig rewrite are what make it
+  usable — k3s writes `server: https://127.0.0.1:6443` regardless of
+  `--bind-address`.
+
+  (b) *`--disable=traefik --disable=servicelb`, but **never**
+  `--disable=local-storage`.* The first two are the ingress controller and the
+  `Service: LoadBalancer` implementation #3506's premise says the manifests
+  need neither of. The third looks like more of the same trimming and is a
+  trap: the Cassandra and Ollama StatefulSets declare `volumeClaimTemplates`
+  with no `storageClassName`, so they bind through the cluster's default
+  StorageClass, which on k3s is `local-path` — disabling it leaves both Pods
+  Pending on unbound PVCs, which reads as a capacity problem and is not one.
+
+  (c) *Switching substrates is a transition, and both directions fail
+  silently if it is not.* A `--no-kubernetes` re-deploy that merely renders
+  the native script leaves k3s and the `Restart=always` access bridge holding
+  127.0.0.1:8000/3000, so the new native services never bind and *every*
+  probe that would notice -- the install's health wait, the deploy's own
+  check, the tunnel -- is answered by the cluster the operator just asked to
+  leave, while `deploy.json` and the dashboard both say "native". Each
+  provisioning script therefore retires the substrate it replaces before
+  installing its own, guarded on existence so a first deploy runs neither.
+  The reverse direction failed *loudly* instead, which was no better: its
+  refusal prescribed `nyxgpt ops down` on the instance, a command no wrapped
+  `nyxgpt cloud` surface can run, leaving `cloud destroy` as the only exit.
+
+  What the change actually does is not recorded here — it is enforced by
+  `tests/unit/test_cloud_deploy_kubernetes.py`,
+  `tests/unit/test_k3s_image_import.py`,
+  `tests/unit/test_k8s_access_bridge_doctor.py` and
+  `.github/workflows/k3s-cloud-smoke.yml`, which executes the deploy's own
+  bootstrap text on a real cluster, per the verification retirement. Related:
+  **D-023** (canary reads the canary track's own Pods) is what makes the
+  cloud canary surface meaningful; **D-017** is why `nyxgpt cloud canary` is a
+  CLI command and the dashboard only *reports* which substrate is running.
+  Source: #3956; `product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md`;
+  #3513 (the issue that under-specified it); `docs/cloud.md`
+  §Kubernetes on the instance.
+  Filed as **D-033** on this branch, then **D-034**, then **D-035**, then
+  **D-036** on the three earlier merges into `v3.0.0`; renumbered again here,
+  #3867, #3811, #3950 and #3948 having taken those four in turn while this PR
+  was in review. Number from `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.0` — run, not eyeballed, on each pass. IDs are never
+  reused.
+  Supersedes the reading in **D-035**(b) that there is "no Kubernetes cloud
+  target": that entry correctly called it unbuilt work rather than a scope
+  decision, and this PR builds it. It also supersedes D-035(b)'s "no Kubernetes
+  cloud target for `--dev` to modify" — the two flags **do** compose here:
+  `--kubernetes` chooses the substrate and `--dev` chooses where the images
+  come from, so `cloud deploy --dev --kubernetes` renders
+  `ops install --kubernetes --local --dev` on the instance. D-035(a) still
+  holds unchanged: `--dev` is not *carried forward* by `resolve_plan` on either
+  substrate. **D-036** (#3948) landed while this was in review and removed the
+  `--local` requirement these scripts were written against; the rendered
+  command still passes `--local` explicitly, which is now the accepted no-op,
+  and the `--cloud` refusal's pointer (`ops.CLOUD_DEPLOY_POINTER`) carries this
+  PR's `--kubernetes` half so both the help and the error name the whole cloud
+  path.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1128,17 +1310,17 @@ rather than mechanism, and nothing can enforce them.
   configured token. They are not variations on one design: the first needs
   hosting and abuse controls, the second is two permanent code paths, the
   third excludes the tokenless filer.
-  Needs: the owner's choice, then its own issue for the intake rework.
-  Blocks: three acceptance criteria on #3811 that this PR does **not** meet
-  and does not claim to — the filer not seeing GitHub's compose page, being
-  returned to the chat with a confirmation after submitting, and the ticket
-  type being applied by the product rather than answered on a form. Everything
-  in #3811 that does not depend on the answer shipped instead: the `Support`
-  label is guaranteed (**V-042**), the type is collected in nyxGPT and carried
-  into the body, and hygiene survives a vanished project item (**V-043**).
-  Not taken inside this PR: an intake path built on a guessed credential model
-  is one that gets rebuilt, and the two paths it would have to hedge across
-  differ in where the product is hosted, not in a detail.
+  Needs: ~~the owner's choice, then its own issue for the intake rework~~ —
+  **ANSWERED 2026-08-19** by the owner's acceptance failure on this issue,
+  which directed the rework rather than the decision: the second option, and
+  the intake shipped in #3811 rather than in an issue of its own. See
+  **D-034**. The residue is narrower than the original question: whether a
+  hosted intake should also cover the tokenless filer, who today gets the
+  prefilled GitHub form.
+  Blocks: nothing on #3811 — the three criteria this once held back (no
+  compose page, a confirmation in the chat, the product applying the label)
+  are met by D-034's intake. A hosted intake, if the owner wants one, is new
+  work and needs its own issue.
 
 - **Q-007** · 2026-08-19 · developer agent (#3853) — After the release
   ceremony retires a shipped line's candidate formulas from the tap

@@ -4,11 +4,23 @@ Wraps a stdlib ``ConfigParser`` with cached, hot-reloadable loading
 (`load_config`) plus one small getter per setting so callers never read
 raw section/option strings directly. Every getter documents which
 ``[section] option`` it reads and its fallback default, and swallows
-parse errors by falling back to that default rather than raising.
+*value* errors by falling back to that default rather than raising.
+
+A file-level parse error is the one thing not swallowed: `load_config`
+raises `ConfigParseError` naming the file, the fault and the line (#3944).
+There is no default to fall back to when the file itself cannot be read, and
+the alternative -- letting a bare `configparser` error escape into the API's
+catch-all handler -- reported a dead API as "Internal server error".
+
+Note that ``ConfigParser`` applies ``optionxform = str.lower`` to option
+names, so config.ini **option names are case-insensitive** (``API_KEY`` and
+``api_key`` are one option, and writing both is a duplicate the file will not
+load). Section names are case-sensitive.
 """
 
 from __future__ import annotations
 
+import configparser
 import ipaddress
 import logging
 import os
@@ -211,6 +223,128 @@ def validate_config(cfg: ConfigParser) -> list[str]:
     return errors
 
 
+class ConfigParseError(RuntimeError):
+    """config.ini exists but ConfigParser cannot read it (#3944).
+
+    `load_config` used to let `configparser` errors escape untouched, and the
+    API's catch-all handler turned every one of them into the generic
+    ``{"code": "internal_error", "message": "Internal server error"}``. That
+    is what the owner saw when a wizard save wrote a duplicate option: the
+    real cause -- a named file, a named error, a line number -- was thrown
+    away at exactly the moment it was needed. This type carries all three, so
+    a hand-edited or wizard-damaged config.ini reports what is wrong with it.
+    """
+
+
+def _display_config_path(config_path: Path | str) -> str:
+    """Render `config_path` home-relative (``~/.nyxGPT/config.ini``) when it is.
+
+    The parse diagnosis travels to unauthenticated callers (see
+    `describe_config_parse_error`), and an absolute path under `/home` or
+    `/Users` spells out the OS account name. Collapsing the home prefix keeps
+    the message just as actionable -- the file is still named, and the user
+    knows where their own home is -- while carrying no account identifier. A
+    path outside home is left alone: it is the operator's explicit
+    `NYXGPT_CONFIG` choice and shortening it would only obscure which file
+    failed.
+    """
+    text = str(config_path)
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):  # pragma: no cover - no home on this host
+        return text
+    try:
+        return str(Path("~") / Path(text).relative_to(home))
+    except ValueError:
+        return text
+
+
+def describe_config_parse_error(
+    config_path: Path | str,
+    exc: configparser.Error,
+    *,
+    include_line_text: bool = False,
+) -> str:
+    """Render `exc` as a one-line diagnosis naming the file, error and line.
+
+    `configparser` spreads the line number over three different attributes
+    depending on the subclass -- `lineno` (``DuplicateOptionError``,
+    ``DuplicateSectionError``, ``MissingSectionHeaderError``) and the
+    ``errors`` list of ``(lineno, line)`` pairs (``ParsingError``) -- and
+    the base class has none. Normalising them here means every consumer
+    (`load_config`, `nyxgpt ops doctor`, the wizard's pre-write check) says
+    the same actionable thing instead of "Failed to parse <path>".
+
+    **`include_line_text` defaults to False because this text reaches
+    unauthenticated callers.** `config_unreadable_guard` is the API's
+    outermost middleware and must be: `api_key_auth` itself calls
+    `load_config` before it can read `[auth] enabled` or compare a key, so
+    when config.ini is malformed there is no request on which auth is
+    enforceable, and this diagnosis is the 500 body for anyone who can reach
+    the port. The raw text of the offending line is exactly the thing that
+    must not travel that channel -- a hand-edit that drops a `[section]`
+    header makes the *following* line the offender, and that line can be
+    ``api_key = sk-live-...``. Error class, line number and section/option
+    *names* are safe and stay: they are schema, not values.
+
+    So the file's own bytes are quoted only when a caller opts in, and the
+    only caller that does is `nyxgpt ops doctor` -- a local command the user
+    runs against their own file, which is where the recovery documentation
+    already sends them. Redacted callers point at it rather than guessing.
+
+    The path itself is rendered home-relative on *both* paths
+    (`_display_config_path`): an absolute `/Users/<name>/.nyxGPT/config.ini`
+    names the OS account, and that is the same pre-auth channel on a smaller
+    scale. `~/.nyxGPT/config.ini` identifies the file just as well.
+    """
+    lineno = getattr(exc, "lineno", None)
+    where = f" at line {lineno}" if isinstance(lineno, int) else ""
+
+    if isinstance(exc, configparser.DuplicateOptionError):
+        # The exact shape #3944 produced. Say the case-insensitivity out loud:
+        # `exc.option` is already lowercased by `optionxform`, so a user
+        # staring at `SLACK_BOT_TOKEN` and `slack_bot_token` in their file
+        # has no other clue that those are one option as far as the app is
+        # concerned. Names only -- no value is quoted, on either path.
+        detail = (
+            f"option {exc.option!r} in section {exc.section!r} is defined more than once "
+            "(option names are case-insensitive, so SLACK_BOT_TOKEN and slack_bot_token "
+            "are the same option)"
+        )
+    elif isinstance(exc, configparser.DuplicateSectionError):
+        detail = f"section {exc.section!r} is defined more than once"
+    elif isinstance(exc, configparser.MissingSectionHeaderError):
+        detail = (
+            f"{exc.line.strip()!r} appears before any [section] header"
+            if include_line_text
+            else "a setting appears before any [section] header"
+        )
+    elif isinstance(exc, configparser.ParsingError) and getattr(exc, "errors", None):
+        where = ""
+        if include_line_text:
+            detail = "; ".join(f"line {n}: {text.strip()!r}" for n, text in exc.errors)
+        else:
+            numbers = ", ".join(str(n) for n, _ in exc.errors)
+            plural = "lines" if len(exc.errors) > 1 else "line"
+            detail = f"unreadable {plural} {numbers}"
+    elif include_line_text:
+        detail = " ".join(str(exc).split())
+    else:
+        # The base class and the interpolation subclasses put raw values in
+        # `str(exc)` (`InterpolationMissingOptionError` carries `rawval`), so
+        # the fallback is redacted too rather than trusted case by case.
+        detail = "the file could not be read by ConfigParser"
+
+    hint = (
+        "Fix that line (or restore a known-good config.ini) and retry."
+        if include_line_text
+        else "Run `nyxgpt ops doctor` to see the offending line, fix it "
+        "(or restore a known-good config.ini) and retry."
+    )
+    where_file = _display_config_path(config_path)
+    return f"Cannot parse {where_file}: {type(exc).__name__}{where}: {detail}. {hint}"
+
+
 def load_config(path: str | Path | None = None) -> ConfigParser:
     """Load config.ini from a path.
 
@@ -224,6 +358,9 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     Hot-reloadable settings include:
     - [nyxgpt] default_model
     - [rag] enable_chat_context
+
+    Raises `FileNotFoundError` when the file is absent and `ConfigParseError`
+    when it is present but malformed (#3944).
     """
     global _CACHED_CFG, _CACHED_PATH, _CACHED_MTIME_NS
 
@@ -258,7 +395,14 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
         return _CACHED_CFG
 
     parser = ConfigParser()
-    parser.read(config_path, encoding="utf-8")
+    try:
+        parser.read(config_path, encoding="utf-8")
+    except configparser.Error as e:
+        # Unguarded, this escaped as a bare `configparser` error and the API's
+        # catch-all handler flattened it to "Internal server error" -- the
+        # single least useful thing to tell a user whose config.ini has one
+        # bad line in it (#3944). Name the file, the fault and the line.
+        raise ConfigParseError(describe_config_parse_error(config_path, e)) from e
 
     # Validate configuration on first load only (not on hot-reload)
     # This prevents noisy validation errors on every config change

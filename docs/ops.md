@@ -397,7 +397,7 @@ Compose app tier) left by an earlier run.
 **same topology** as above — native api/web service wrappers, Ollama, the
 Cassandra container, observability — but builds `api` and `web` from the
 checkout you run it in instead of from an artifact. The flag means the same
-thing in Kubernetes mode (`nyxgpt ops install --kubernetes --local --dev`,
+thing in Kubernetes mode (`nyxgpt ops install --kubernetes --dev`,
 #3834): the two container images are built from the working tree rather than
 from the published artifacts — see
 [kubernetes.md](kubernetes.md#install-modes-artifact-and---dev). The table
@@ -430,12 +430,23 @@ nyxgpt ops restart api              # pick up new api code from the tree
 nyxgpt up                           # switch back to the artifact path
 ```
 
+**Where `--dev` is accepted.** On this machine, by
+`nyxgpt up` / `nyxgpt ops install` in all three modes (native,
+`--terraform --local`, `--kubernetes --local`). On a cloud target, by
+`nyxgpt cloud deploy --dev`, which copies this checkout to the EC2 instance
+over the deploy's own SSH connection and installs it there — the same
+working-tree-instead-of-artifact choice, one machine further away (#3950,
+[cloud.md](cloud.md#dev-mode-on-a-cloud-target)). Nowhere else: there is no
+Kubernetes or Terraform *mode* of `nyxgpt cloud deploy` for the flag to
+modify.
+
 Constraints, by design:
 
 - **Checkout-only.** Dev mode needs `pyproject.toml`, `src/nyxgpt/` and
   `web/` next to the running `nyxgpt`. Run from an installed package it
   refuses immediately, naming the path it looked at, rather than
-  half-installing.
+  half-installing. `nyxgpt cloud deploy --dev` refuses on the same check, run
+  on your workstation before AWS is touched.
 - **Not the default, and not a substitute for artifact testing.** A bare
   `nyxgpt up` is the artifact path, unchanged; dev mode exercises neither
   the published tap/wheel nor the production web build, so acceptance of a
@@ -580,16 +591,20 @@ channel are the entire difference between two installs.
 
 ### `--terraform`/`--kubernetes`: the other local deployment paths
 
-`nyxgpt ops install --terraform --local` and
-`nyxgpt ops install --kubernetes --local` wrap the alternative
+`nyxgpt ops install --terraform` and
+`nyxgpt ops install --kubernetes` wrap the alternative
 [Terraform](terraform.md) and [Kubernetes](kubernetes.md) deployment paths
 the same way — one command each, no raw `terraform`/`kubectl` typing. They
 are mutually exclusive with each other and with the native reconciliation
 above (passing `--terraform`/`--kubernetes` skips the native steps
-entirely and runs that deployment's own install sequence instead). `--local`
-is required and explicit — see [terraform.md](terraform.md#one-command-bring-up-nyxgpt-ops)
+entirely and runs that deployment's own install sequence instead). Both
+deploy to the local machine, which is the default locality (#3948);
+`--local` is still accepted as an explicit no-op. `--cloud` is rejected by
+these flags — cloud deployment is `nyxgpt cloud infra apply` plus
+`nyxgpt cloud deploy` ([cloud.md](cloud.md)) — see
+[terraform.md](terraform.md#one-command-bring-up-nyxgpt-ops)
 / [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
-each one does and why `--cloud` is rejected today.
+each one does.
 
 `--dev` composes with `--terraform`: it builds that deployment's api/web
 images from the checkout instead of deploying the published ones, and the
@@ -1012,6 +1027,15 @@ Checks include:
   reported as exactly that, rather than as a clean bill of health. Fix:
   `nyxgpt up` (add `--dev` from a checkout), which reconciles them.
 - Required files under `~/.nyxGPT/`
+- **Whether `config.ini` parses at all**, and if not, *why* — the error class
+  and the line number, e.g. `DuplicateOptionError at line 134: option
+  'slack_bot_token' in section 'monitoring' is defined more than once`. This
+  is the one fault that takes the whole API down (every request loads
+  `config.ini`, so a malformed line means `500` everywhere and a restarted
+  API that cannot boot), which makes `doctor` the only surface left that can
+  say what is wrong. Reported as a FAIL, not a log line (#3944). Fix the
+  named line and the API recovers on its next request. See
+  [configuration.md](configuration.md#when-configini-will-not-parse)
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services
 - Docker daemon availability
@@ -1240,7 +1264,7 @@ Usage:
 
 ```bash
 nyxgpt ops observability                        # Compose profiles (default)
-nyxgpt ops observability --kubernetes --local   # the in-cluster layer
+nyxgpt ops observability --kubernetes   # the in-cluster layer
 ```
 
 `nyxgpt ops install` already runs this by default (see
@@ -1248,7 +1272,7 @@ nyxgpt ops observability --kubernetes --local   # the in-cluster layer
 own to re-run it later (e.g. after a reboot, or if you first installed with
 `--skip-observability`).
 
-`--kubernetes --local` targets a cluster instead of Compose (#3787): it
+`--kubernetes` targets a cluster instead of Compose (#3787): it
 applies `k8s/observability/` -- Prometheus, Grafana, Loki + promtail, the
 OTel collector, Jaeger and GlitchTip as in-cluster workloads -- without
 touching the app tier, and generates Grafana's provisioning ConfigMaps from
@@ -1508,7 +1532,7 @@ Usage:
 nyxgpt ops migrate-volumes
 ```
 
-`nyxgpt ops install` (native and `--terraform --local`) already runs this
+`nyxgpt ops install` (native and `--terraform`) already runs this
 automatically as its first step, so most users never need to run it by
 hand -- this is a standalone escape hatch for Compose-only users who never
 run `install`.

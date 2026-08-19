@@ -13,15 +13,24 @@ documentation are linked out to instead of duplicated here:
   [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build);
   the flag means the same thing for
   [`--kubernetes`](kubernetes.md#install-modes-artifact-and---dev)
-- Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
-- Cloud/AWS (`nyxgpt cloud ...`) — deploy, `nyxgpt cloud status` (what is
+- Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md). Its `--terraform` and
+  `--kubernetes` install modes deploy to *this machine*, which is the default
+  locality (`--local` is accepted as an explicit no-op, #3948); deploying to a
+  cloud target is `nyxgpt cloud ...` below, not a flag on these
+- Cloud/AWS (`nyxgpt cloud ...`) — deploy (`--kubernetes` runs the stack on a
+  single-node k3s cluster on the instance), `nyxgpt cloud status` (what is
   deployed and how to reach it), `nyxgpt cloud ops` (read-only inspections
-  run on the instance), tunnel, destroy, the end-to-end `nyxgpt cloud smoke`
-  test, Terraform state, and credentials setup; see [Cloud (AWS)](cloud.md)
+  run on the instance), `nyxgpt cloud canary` (canary rollout against a
+  Kubernetes cloud deployment), tunnel, destroy, the end-to-end
+  `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see
+  [Cloud (AWS)](cloud.md)
 - Cloud artifact smoke (`nyxgpt cloud smoke --container`) — the artifact
   install path on a bare Amazon Linux 2023 container, no AWS account and no
   charges; see [Cloud artifact smoke](cloud-artifact-smoke.md)
-- Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
+- Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md). Against an
+  AWS deployment the wrapped form is `nyxgpt cloud canary ...`, which runs the
+  instance's own `nyxgpt canary` over the SSH access path — see
+  [Kubernetes on the instance](cloud.md#kubernetes-on-the-instance-3956)
 - Configuration wizard (`nyxgpt wizard`) — see [Configuration](configuration.md)
 - Guided secrets setup (`nyxgpt secrets setup`) — see [Configuration: Guided secrets setup](configuration.md#option-4-guided-secrets-setup)
 - PyPI builds — rc/stable (`nyxgpt release publish`) — see
@@ -153,4 +162,3 @@ publishes nothing (that commit already has one); the run reports `SKIP`
 rather than failing. Pass `--number` to override.
 Full runbook, including the one-time PyPI Trusted Publishing setup:
 [Cloud — PyPI publishing](cloud.md#pypi-publishing-rc-and-stable).
-

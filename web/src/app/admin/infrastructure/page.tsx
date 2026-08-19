@@ -110,7 +110,7 @@ type InfraStatus = {
     provisioned: boolean;
     // What the two images in this cluster were built from (#3834): the
     // published nyxgpt-api/nyxgpt-web artifacts, or a checkout's working tree
-    // (`nyxgpt ops install --kubernetes --local --dev`). `recorded: false`
+    // (`nyxgpt ops install --kubernetes --dev`). `recorded: false`
     // means no marker -- deployed before nyxGPT recorded one, or from another
     // machine -- which must read as UNRECORDED, never as the artifact
     // default: here that default would be a guess about someone else's
@@ -236,6 +236,16 @@ type CloudDeployStatus = {
   // Where the deployment's chat sessions live (#3865). Empty when the deploy
   // record predates the flag, which is not the same claim as 'file'.
   session_backend: string;
+  // What runs the stack on the instance (#3956): 'kubernetes' (a single-node
+  // k3s cluster running k8s/*.yaml) or 'native'. Empty on a deploy record
+  // that predates the flag -- reported as unknown, never as 'native'.
+  substrate: string;
+  // Whether the instance is running a shipped working tree rather than the
+  // published release `version` names (#3950). Only the deploy record can
+  // answer: an instance asked about itself reads its own package metadata,
+  // which gives the version and not where it came from.
+  dev: boolean;
+  source_dir: string;
   // Which target OS's bootstrap provisioned the instance (#3867). Empty when
   // the deploy record predates `--os`, which is not the same claim as 'linux'.
   os_family: string;
@@ -478,8 +488,8 @@ export default function InfrastructurePage() {
         }}
       >
         Full local Terraform and Kubernetes stacks are available today via{' '}
-        <code>nyxgpt ops install --terraform --local</code> and{' '}
-        <code>nyxgpt ops install --kubernetes --local</code> — see <code>docs/terraform.md</code>{' '}
+        <code>nyxgpt ops install --terraform</code> and{' '}
+        <code>nyxgpt ops install --kubernetes</code> — see <code>docs/terraform.md</code>{' '}
         and <code>docs/kubernetes.md</code>. Neither requires a pre-existing cluster: the
         Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
         reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
@@ -697,7 +707,7 @@ export default function InfrastructurePage() {
                     The api and web containers were built from the working tree at{' '}
                     <code>{status.terraform.install_mode.checkout ?? 'an unrecorded checkout'}</code>,
                     not from published images — so this deployment is not exercising the artifact
-                    path. Re-run <code>nyxgpt up --terraform --local</code> without{' '}
+                    path. Re-run <code>nyxgpt up --terraform</code> without{' '}
                     <code>--dev</code> to return to it.
                   </>
                 ) : !status.terraform.install_mode?.recorded ? (
@@ -712,7 +722,7 @@ export default function InfrastructurePage() {
                     deployment predates the per-deployment install-mode marker, or was brought up
                     outside <code>nyxgpt ops</code>. Whether its api and web images came from a
                     checkout or from the published images is unknown, so neither is claimed here.
-                    Re-run <code>nyxgpt up --terraform --local</code> (add <code>--dev</code> for a
+                    Re-run <code>nyxgpt up --terraform</code> (add <code>--dev</code> for a
                     working-tree build) to redeploy it and record the mode.
                   </>
                 ) : (
@@ -782,7 +792,7 @@ export default function InfrastructurePage() {
                       <strong>dev</strong> — the Pods run images built from the working tree at{' '}
                       <code>{status.kubernetes.install_mode.checkout ?? 'an unrecorded checkout'}</code>{' '}
                       as it was at install time, not from published artifacts. Re-run{' '}
-                      <code>nyxgpt ops install --kubernetes --local</code> without{' '}
+                      <code>nyxgpt ops install --kubernetes</code> without{' '}
                       <code>--dev</code> to deploy the artifacts.
                     </>
                   ) : (
@@ -858,7 +868,7 @@ export default function InfrastructurePage() {
                     <span style={{ color: 'var(--foreground-muted)' }}>
                       No node had enough unreserved memory or CPU for them. Give the cluster VM
                       more of either (Docker Desktop: Settings &rarr; Resources), then re-run{' '}
-                      <code>nyxgpt ops install --kubernetes --local</code> — it checks the node&apos;s
+                      <code>nyxgpt ops install --kubernetes</code> — it checks the node&apos;s
                       capacity against the stack before applying anything.
                     </span>
                   </div>
@@ -918,8 +928,8 @@ export default function InfrastructurePage() {
                     <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                       No observability workloads in the <code>{status.kubernetes.namespace}</code>{' '}
                       namespace — deploy them with{' '}
-                      <code>nyxgpt ops observability --kubernetes --local</code> (
-                      <code>nyxgpt ops install --kubernetes --local</code> includes them unless{' '}
+                      <code>nyxgpt ops observability --kubernetes</code> (
+                      <code>nyxgpt ops install --kubernetes</code> includes them unless{' '}
                       <code>--skip-observability</code> is passed).
                     </p>
                   )}
@@ -1016,9 +1026,19 @@ export default function InfrastructurePage() {
                 record on this machine is not evidence that nothing is
                 deployed -- another operator's would say otherwise -- so
                 there is deliberately no NOT DEPLOYED to claim it. */}
-            <span style={badgeStyle(Boolean(cloud?.known), !cloud?.known)}>
-              {cloud?.known ? 'DEPLOYED' : 'UNKNOWN'}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              {/* #3950: a dev deploy and an artifact deploy of the same
+                  version are identical in every other field on this card, so
+                  without this the page would report a working-tree build as
+                  though it were a published release. Same badge shape the
+                  Native card uses for the local equivalent. */}
+              {cloud?.known && cloud.dev ? (
+                <span style={badgeStyle(false, false)}>DEV BUILD</span>
+              ) : null}
+              <span style={badgeStyle(Boolean(cloud?.known), !cloud?.known)}>
+                {cloud?.known ? 'DEPLOYED' : 'UNKNOWN'}
+              </span>
+            </div>
           </div>
 
           {!cloud?.known ? (
@@ -1032,10 +1052,25 @@ export default function InfrastructurePage() {
               <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
                 {cloud.on_instance
                   ? 'Read first-hand: this dashboard is served by the deployed stack itself, so the release below is the one answering this request.'
-                  : 'What `nyxgpt cloud deploy` last put on the instance: a published nyxGPT release (never a copy of a repository) and the observability profiles it enabled.'}
+                  : 'What `nyxgpt cloud deploy` last put on the instance: a published nyxGPT release — or, under --dev, a copy of an operator’s working tree — and the observability profiles it enabled. The instance clones no repository either way.'}
               </p>
               <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                 <Row label="Installed version" value={cloud.version} />
+                {/* #3950. Named on every deployment rather than only on dev
+                    ones: "published release" is a claim worth stating, and a
+                    row that appears only in one state is a row an operator
+                    does not know to look for. Observed, never driven — the
+                    build source is chosen at `nyxgpt cloud deploy`. */}
+                <Row
+                  label="Build source"
+                  value={
+                    cloud.dev
+                      ? `working tree shipped from ${cloud.source_dir || 'an unrecorded checkout'} (--dev) — not a published ${cloud.version} release, and not exercising the artifact path`
+                      : cloud.on_instance
+                        ? 'not recorded here — the deploy record lives on the workstation that ran the deploy'
+                        : 'published release, installed from PyPI on the instance'
+                  }
+                />
                 <Row label="Host" value={cloud.host} />
                 <Row
                   label="Instance"
@@ -1061,6 +1096,24 @@ export default function InfrastructurePage() {
                       : cloud.os_family === 'linux'
                         ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
                         : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'
+                  }
+                />
+                {/* #3956: which substrate the instance runs. Observed, never
+                    driven — switching substrates rebuilds the machine this
+                    page may itself be served from, which is exactly the class
+                    of action the Definition of Done keeps in the CLI (#3804).
+                    'unknown' rather than 'native' when nothing was recorded,
+                    for the same reason the session backend above says 'not
+                    recorded': a deploy predating the flag is not a claim
+                    about what is running. */}
+                <Row
+                  label="Substrate"
+                  value={
+                    cloud.substrate === 'kubernetes'
+                      ? 'single-node k3s cluster on the instance, running k8s/*.yaml — canary rollout available via `nyxgpt cloud canary`'
+                      : cloud.substrate === 'native'
+                        ? 'native services on the instance — `nyxgpt cloud deploy --kubernetes` deploys onto a cluster instead, which is what canary rollout needs'
+                        : 'not recorded — this deploy predates the substrate record; `nyxgpt cloud ops status` reports what the instance is actually running'
                   }
                 />
                 <Row label="Observability profiles" value={cloud.profiles.join(', ')} />

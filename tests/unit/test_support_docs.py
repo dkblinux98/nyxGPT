@@ -382,11 +382,19 @@ def test_context_endpoint_carries_the_issue_link_and_network_caveat():
     assert [option["value"] for option in body["ticket_types"]] == list(support.TICKET_TYPES)
 
 
-def test_support_surface_is_read_only():
-    """nyxGPT never files an issue for the user -- there is nothing to POST to."""
+def test_reading_the_docs_stays_read_only():
+    """The docs half of Support writes nothing, whatever filing does.
+
+    This used to assert the *whole* Support surface was read-only, on the
+    reasoning that nyxGPT never files an issue for the user. The owner
+    rejected that design in acceptance (#3811): filing is now a POST, and
+    `tests/unit/test_support_intake.py` pins that it is the only one. Docs
+    are unchanged -- rendering a packaged Markdown file has no business
+    writing anything.
+    """
     # The versioned router, not `app.routes`: the app includes it lazily, so
     # the concrete endpoints only exist on `api`.
-    support_routes = [r for r in api.routes if "/support" in getattr(r, "path", "")]
-    assert support_routes
-    for route in support_routes:
+    docs_routes = [r for r in api.routes if "/support/docs" in getattr(r, "path", "")]
+    assert docs_routes
+    for route in docs_routes:
         assert set(getattr(route, "methods", set())) <= {"GET", "HEAD", "OPTIONS"}

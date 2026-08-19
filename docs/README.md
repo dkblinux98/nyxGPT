@@ -9,9 +9,9 @@ read [Installing nyxGPT](ops.md#installing-nyxgpt) and
 web UI serves them under **Support → Docs** — the same documents, matching the
 version you are running, readable with no checkout and no internet. The
 Support menu's other item, **File an Issue**, offers one entry per ticket type
-and opens a report form prefilled with that type, your version and your
-platform (it needs internet and a GitHub account). See
-[ui.md](ui.md#support-menu).
+and opens a report form in the app: nyxGPT files the ticket for you, with your
+version and platform already attached, and links you to it (filing needs
+internet). See [ui.md](ui.md#support-menu).
 
 Documents about how this repository *builds itself* — the agent loop, CI
 process, contributor setup — are not product documentation and are not
@@ -62,9 +62,12 @@ supported command can stop
 AWS deployments are `nyxgpt cloud`-wrapped, with
 an SSH-tunnel-only access path; `nyxgpt cloud status` says what is deployed
 and how to reach it, and `nyxgpt cloud ops` inspects the instance over that
-same path ([cloud.md](cloud.md)). Local **canary
+same path ([cloud.md](cloud.md)). **Canary
 deployment** gates a weighted rollout on live metrics before promotion or
-rollback, and **self-healing** watches components and restarts them
+rollback — on a workstation cluster, and on an AWS instance deployed with
+`nyxgpt cloud deploy --kubernetes`, which runs the same manifests on a
+single-node k3s cluster there — and **self-healing** watches components and
+restarts them
 ([kubernetes.md](kubernetes.md), [self-healing.md](self-healing.md)).
 
 **Observability** — Prometheus metrics (`/metrics`), Grafana dashboards and
@@ -108,9 +111,9 @@ checkout** and no raw orchestrator commands
 
 - [Docker Compose](docker-compose.md) — the containerized stack + monitoring profiles
 - [Alerting](alerting.md) — Grafana alert rules, the Slack contact point, and `nyxgpt ops alert-test`
-- [Kubernetes](kubernetes.md) — local-cluster manifests, canary deploy/gate/promote
+- [Kubernetes](kubernetes.md) — the manifests, canary deploy/gate/promote, on a workstation cluster or a single-node k3s cluster on an AWS instance
 - [Terraform](terraform.md) — local-first infrastructure-as-code
-- [Cloud (AWS)](cloud.md) — `nyxgpt cloud` (AWS substrate provisioning, SSH-rule IP refresh, lockout recovery)
+- [Cloud (AWS)](cloud.md) — `nyxgpt cloud` (AWS substrate provisioning, `--kubernetes` deploys, SSH-rule IP refresh, lockout recovery)
 - [Self-healing](self-healing.md) — the watchdog, healthchecks, and `/admin/self-heal`
 - [Deployment checklist](deployment-checklist.md) — pre-deploy security/perf/monitoring
 - [Ops helpers](ops.md) — `nyxgpt ops` service management

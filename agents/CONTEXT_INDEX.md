@@ -30,13 +30,16 @@ fails if it drifts. Do not hand-edit.
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
 | `claude.yml` | issue_comment, pull_request_review_comment, issues, pull_request_review | Claude Code |
+| `cli-locality-smoke.yml` | pull_request, push, workflow_dispatch | CLI Locality Smoke |
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
+| `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
 | `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
+| `config-wizard-save-smoke.yml` | pull_request, push, workflow_dispatch | Config Wizard Save Smoke |
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
@@ -52,6 +55,7 @@ fails if it drifts. Do not hand-edit.
 | `huddle_decision_dispatch.yml` | issue_comment | Huddle Decision Dispatch |
 | `huddle_session.yml` | issue_comment, workflow_dispatch | Review Huddle - Session |
 | `issue-relationships-smoke.yml` | push, pull_request, workflow_dispatch | Issue Relationships Smoke |
+| `k3s-cloud-smoke.yml` | pull_request, push, workflow_dispatch | k3s Cloud Smoke |
 | `k8s-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Artifact Smoke |
 | `k8s-capacity-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Capacity Smoke |
 | `k8s-local-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Local Smoke |

@@ -229,7 +229,7 @@ TARGETS: tuple[Target, ...] = (
             "`./web`), so Compose builds them from a checkout instead of pulling the "
             "published ghcr.io images -- see docs/docker-compose.md's container "
             "images section. The Compose path is the one that still builds: "
-            "`nyxgpt ops install --terraform --local` deploys the same two registry "
+            "`nyxgpt ops install --terraform` deploys the same two registry "
             "images with no checkout (#3835).",
         ),
     ),
@@ -239,7 +239,7 @@ TARGETS: tuple[Target, ...] = (
         artifact="PyPI wheel (nyxgpt); nyxgpt-api / nyxgpt-web release tarballs",
         install=("pip install nyxgpt",),
         operate=(
-            "nyxgpt ops install --kubernetes --local",
+            "nyxgpt ops install --kubernetes",
             "nyxgpt ops status",
             "nyxgpt ops port-forward",
             "nyxgpt ops port-forward --target observability",

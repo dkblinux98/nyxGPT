@@ -21,10 +21,13 @@ pip install "nyxgpt[cloud]"
 deployments, not the local stack every other `nyxgpt` command drives.
 
 A cloud instance provisions from published artifacts and never clones this
-repository, so the documentation on it is the copy inside the installed
+repository (the one exception, [`--dev`](#dev-mode-on-a-cloud-target), copies
+your tree over SSH and still clones nothing), so the documentation on it is
+the copy inside the installed
 package: reach it in the tunneled web UI under **Support → Docs**, which
 renders the product documentation that shipped with the deployed version. **File an Issue**
-sits beside it in the same menu. See [ui.md](ui.md#support-menu).
+sits beside it in the same menu and files the ticket from the instance itself,
+so a report never means leaving the tunneled UI. See [ui.md](ui.md#support-menu).
 
 ---
 
@@ -67,7 +70,9 @@ reach from your workstation. It:
    floor — see [Python on the instance](#python-on-the-instance)), Node 20
    (from NodeSource, the toolchain `ops install` builds and
    runs the web bundle with), the Docker engine, Ollama, and a **published**
-   `nyxgpt` release, then runs `nyxgpt ops install` on the box **exactly
+   `nyxgpt` release (or, under
+   [`--dev`](#dev-mode-on-a-cloud-target), your working tree), then runs
+   `nyxgpt ops install` on the box **exactly
    once**: one install pass per deploy, no retry pass and no follow-up
    `ops observability` run (the install already reconciles those profiles
    unless `--skip-observability` is passed). See
@@ -94,9 +99,11 @@ works here too and is remembered for later runs, plus:
 | Flag | Meaning |
 | --- | --- |
 | `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). See [EC2 Mac targets](#ec2-mac-targets) |
-| `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used) |
+| `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used). Ignored under `--dev` |
+| `--dev` | Deploy **your working tree** instead of a published release — Linux targets only, see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
+| `--kubernetes` / `--no-kubernetes` | Run the stack on a single-node k3s cluster on the instance instead of natively, applying the same `k8s/*.yaml` manifests — this is what makes `nyxgpt cloud canary` available. Linux targets only. Remembered for later runs. See [Kubernetes on the instance](#kubernetes-on-the-instance-3956) |
 | `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors (implied by `--os macos`, whose bootstrap installs none) |
-| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. See [session-storage.md](session-storage.md) |
+| `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. Refused with `--kubernetes` for anything but `cassandra`, which the cluster's ConfigMap fixes. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
 | `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
@@ -284,6 +291,96 @@ provisioned)` with the command that provisions it, and the command exits 2.
 Credentials are never returned by the HTTP API (#3458/#3466); this path is
 CLI-side only.
 
+### Kubernetes on the instance (#3956)
+
+```bash
+nyxgpt cloud deploy --kubernetes
+```
+
+Runs the stack on a **single-node k3s cluster** on the instance instead of
+natively, applying the same `k8s/*.yaml` manifests a local Kubernetes install
+uses. This is the owner-approved decision in
+[`DECISION_AWS_COMPUTE_SUBSTRATE.md`](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)
+— EC2 single-box with those manifests layered on k3s, rather than a managed
+EKS control plane — and the capability it exists for is
+[canary rollout](kubernetes.md#canary-deployment), which needs a cluster to
+weight traffic in.
+
+It is not a second deployment path. The deploy installs k3s, writes a
+kubeconfig the login user owns, and then runs
+`nyxgpt ops install --kubernetes --local` **on the instance** — the same
+command you would run on a workstation, taking the same bring-your-own-cluster
+branch it takes against any reachable cluster. Steps 1, 2, 5 and 6 of the
+deploy above are unchanged; step 3 installs k3s in place of the host Ollama
+and Node toolchain (the cluster runs Ollama itself, and the web image is built
+by Docker rather than by `npm` on the host).
+
+Step 4 has no Kubernetes form: chat sessions live in the in-cluster Cassandra
+because `k8s/configmap.yaml` says so, and the Pods read that rather than the
+host's `config.ini`. `--session-backend file --kubernetes` is therefore
+**refused** rather than accepted and ignored — including when the `file` value
+was carried forward from an earlier native deploy of the same instance, which
+is exactly the case where the flag would otherwise change meaning underneath
+you.
+
+What the access model gets, beyond the single port-22 rule that is unchanged:
+
+- k3s's API server binds the instance's **private** address, not `0.0.0.0`.
+- Traefik (k3s's default ingress controller, which would bind host ports
+  80/443) and `servicelb` (its `Service: LoadBalancer` implementation) are
+  both disabled. Nothing in `k8s/*.yaml` asks for either.
+- The cluster's Services are ClusterIP-only, so the deploy installs an
+  **access bridge** — systemd `--user` services running `nyxgpt ops
+  port-forward` — to hold `127.0.0.1:8000`/`127.0.0.1:3000` on the instance
+  for [`nyxgpt cloud tunnel`](#reaching-it-nyxgpt-cloud-tunnel) to forward to.
+  They restart automatically, which matters during a rollout: replacing a Pod
+  ends a port-forward.
+
+Canary rollout against the deployment:
+
+```bash
+nyxgpt cloud canary status
+nyxgpt cloud canary start --weight 10
+nyxgpt cloud canary evaluate
+nyxgpt cloud canary promote --step 25
+nyxgpt cloud canary rollback
+```
+
+These run the instance's own `nyxgpt canary` over the same wrapped SSH path
+[`nyxgpt cloud ops`](#nyxgpt-cloud-ops--inspecting-the-instance-3813) uses,
+because the cluster's API server is reachable from the instance and from
+nowhere else. `--component api|web` selects the pair. There is no
+`nyxgpt cloud canary deploy`: `nyxgpt canary deploy` builds an image from a
+source checkout and the instance has none by construction — roll a new release
+out with `nyxgpt cloud deploy --version <release>`, which is idempotent.
+
+The substrate is recorded with the deployment, so a later bare `nyxgpt cloud
+deploy` reconciles the same Kubernetes deployment rather than installing a
+native stack beside it and fighting it for ports 8000/3000. `--no-kubernetes`
+moves a deployment back to the native substrate, and `--kubernetes` on a
+native deployment moves it forward: each provisioning script retires the
+substrate it replaces before installing its own — the k3s deploy runs the
+wrapped `nyxgpt ops down` on the instance first, the native deploy stops the
+access bridge and runs k3s's own uninstaller. Without that the two stacks
+would both be running and every health probe would be answered by the one the
+operator just asked to leave.
+
+**A switch moves the instance; it does not migrate it.** Each substrate keeps
+its own Cassandra, so chat sessions do not follow a switch: the native
+Cassandra's volume survives (`ops down` preserves volumes, so switching back
+finds it), but the cluster's `local-path` volumes go with `k3s-uninstall.sh`.
+Move the data yourself before switching if you need it, or keep the two on
+separate instances.
+[`nyxgpt cloud status`](#nyxgpt-cloud-status--where-is-my-instance-3813) and
+the dashboard's Infrastructure page report which one is running.
+
+Sizing: the cluster carries the whole stack, so the node needs what a local
+Kubernetes install needs — see
+[Node capacity](kubernetes.md#node-capacity-what-the-stack-reserves) and pass
+`--instance-type` accordingly. A node too small for the stack is refused by
+the install's capacity preflight before anything is built, rather than leaving
+a Pod Pending forever.
+
 ### Tearing it down
 
 ```bash
@@ -293,6 +390,12 @@ nyxgpt cloud destroy --yes
 Closes the tunnel, then destroys the substrate. `--yes` is required: the
 instance and its root volume go, and anything living only on that box —
 models, Cassandra data, logs — goes with them.
+
+That includes a `--kubernetes` deployment's cluster, in full: the k3s control
+plane, its containerd image store and its `local-path` volumes all live on the
+instance's root volume, so terminating the instance *is* the cluster teardown.
+There is no separate cluster to remove first, and the deploy record — with the
+substrate it pins — goes with it.
 
 ### Repo-less by construction
 
@@ -306,7 +409,12 @@ of this flow touches a checkout:
 - **Instance side** — the box installs `nyxgpt==<version>` from PyPI into a
   venv under `~/.nyxGPT`, seeds `config.ini` from the installed package, and
   runs `nyxgpt ops install`. It never runs `git clone`, and nothing is copied
-  from the operator's machine. This is the same sequence the
+  from the operator's machine. With
+  [`--kubernetes`](#kubernetes-on-the-instance-3956) the same holds one layer
+  down: the manifests come from the installed package (`nyxgpt.resources.k8s`,
+  synced to `~/.nyxGPT/k8s`) and the api/web images are built on the instance
+  from the **published** `nyxgpt-api`/`nyxgpt-web` tarballs. This is the same
+  sequence the
   `artifact-install-smoke` job in `.github/workflows/release-artifacts.yml`
   proves on a checkout-free runner for every release;
   `tests/unit/test_cloud_deploy.py` asserts the generated script contains no
@@ -314,6 +422,82 @@ of this flow touches a checkout:
 
 The instance therefore runs a *published* release, not your working tree. If
 you want a version other than your CLI's, name it with `--version`.
+
+[`--dev`](#dev-mode-on-a-cloud-target) is the one deliberate exception, and it
+is opt-in and checkout-only for exactly this reason: a plain
+`nyxgpt cloud deploy` still needs no repository on either side, and the
+instance still clones nothing under `--dev` either — your tree crosses the
+deploy's own SSH connection.
+
+### Dev mode on a cloud target
+
+`nyxgpt up --dev` runs the stack from the checkout in front of you instead of
+building artifacts ([ops.md](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)).
+`nyxgpt cloud deploy --dev` is the same idea aimed at the EC2 instance:
+
+```bash
+nyxgpt cloud deploy --dev        # deploy the tree you are standing in
+nyxgpt cloud deploy              # back to a published release
+```
+
+What it does, in the order the deploy reports it:
+
+1. **Refuses immediately if you are not in a checkout.** The check is
+   `nyxgpt.ops.dev_checkout_root()` — the same one `nyxgpt up --dev` uses, so
+   the two can never disagree about what a source tree is — and it runs before
+   AWS is touched, so a mistaken `--dev` costs nothing.
+2. **Ships your working tree**, after the substrate is applied and the
+   instance is answering SSH. The file list comes from git
+   (`--cached --others --exclude-standard`): everything tracked plus everything
+   new that is not ignored, so **uncommitted edits go too** — that is the point
+   of dev mode. `node_modules`, `.venv` and `.next` are excluded by the
+   repository's own ignore rules, and `.git` is never sent: the instance gets
+   a source tree, not a repository it could pull or push from. It lands in
+   `~/.nyxGPT/src` and **replaces** whatever the last `--dev` deploy left
+   there, so a file you deleted locally leaves the instance too.
+3. **Installs it editable** (`pip install -e ~/.nyxGPT/src`) instead of
+   `pip install nyxgpt==<version>`, and runs `nyxgpt ops install --dev` on the
+   box. Everything else about the deploy is identical — same bootstrap, same
+   Node 20, same Docker, same session backend, same self-heal enable.
+
+Things worth knowing before you use it:
+
+- **It is not an acceptance path.** Same rule as the local dev mode: it exists
+  for development and mid-stream testing. What you accept is a published
+  release, installed the artifact way.
+- **`--dev` is never inherited.** Every other choice a deploy records (the SSH
+  user, the identity file, the session backend, the version) carries over to
+  the next run; this one does not. A plain `nyxgpt cloud deploy` always means
+  "install a published release", so re-running it after a `--dev` deploy puts
+  the release back rather than silently re-shipping whatever is checked out.
+- **The version you see is your tree's.** A working tree usually declares a
+  release that does not exist yet, so the deploy summary says plainly that it
+  built from your tree and names the directory. `nyxgpt cloud status` reports
+  it as well — a **Build source** row, in the human form and under `--json`
+  alike, and on the dashboard's cloud card — so an instance running a tree is
+  never mistaken for one running a release.
+- **The web UI runs Next's dev server**, as it does under `nyxgpt up --dev` —
+  slower first paint, no production build.
+- **It ships the tree, not the machine.** Anything your local stack has that
+  the repository does not (an untracked config, a hand-installed dependency)
+  is not on the instance.
+- **Linux targets only.** `--dev --os macos` is refused, before the substrate
+  is applied: the [EC2 Mac bootstrap](#ec2-mac-targets) installs published
+  Homebrew formulas from the remote tap and has no working-tree source, so
+  ignoring the flag would hand you a published release while you believed you
+  were testing your tree.
+
+Terraform and Kubernetes modes are a *local* install-mode choice
+(`nyxgpt ops install --terraform/--kubernetes --local`), and `--dev` composes
+with both there — see [terraform.md](terraform.md#install-modes-artifact-default-and---dev)
+and [kubernetes.md](kubernetes.md#install-modes-artifact-and---dev). Neither is
+a `nyxgpt cloud deploy` mode: the cloud path deploys the native stack to one
+EC2 instance.
+
+Verified by execution, not inspection: `.github/workflows/cloud-dev-deploy-smoke.yml`
+ships this repository's working tree to a bare Amazon Linux 2023 container over
+real SSH and requires the box to import `nyxgpt` from the shipped tree, an
+uncommitted sentinel included.
 
 ### Python on the instance
 
