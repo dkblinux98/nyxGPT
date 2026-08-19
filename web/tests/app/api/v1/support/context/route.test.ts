@@ -1,11 +1,13 @@
 /**
- * Tests for the /api/v1/support/context Next.js proxy route (#3745).
+ * Tests for the /api/v1/support/context Next.js proxy route (#3745, #3811).
  *
- * This is the Support menu's environment + issue-form link. It is GET-only on
- * purpose: nyxGPT never files an issue on the user's behalf, so there is no
- * mutating counterpart anywhere under /support -- pinned here as well as on
- * the backend, since a POST added to this route would be the easiest way for
- * that invariant to quietly stop holding.
+ * This is what the Support menu reads before it offers anything: the running
+ * environment, the prefilled GitHub form, and whether this install can file
+ * a ticket itself. Reading that must not change anything, so this route is
+ * GET-only -- filing lives at `/api/v1/support/tickets` and is the single
+ * write on the surface. (It was GET-only for a stronger reason until #3811:
+ * nyxGPT filed nothing at all. The owner rejected that in acceptance, since
+ * it meant handing a user with a broken install to GitHub's compose page.)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -99,7 +101,7 @@ describe('/api/v1/support/context proxy route', () => {
     expect(response.headers.get('X-Request-Id')).toBeTruthy();
   });
 
-  it('exposes no mutating handler -- nyxGPT never files on the user behalf', async () => {
+  it('exposes no mutating handler -- reading the context changes nothing', async () => {
     const route = await import(ROUTE);
 
     expect(route.GET).toBeDefined();

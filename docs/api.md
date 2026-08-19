@@ -4655,16 +4655,19 @@ curated per-component Explore links, not general search.
 
 ## Support endpoints
 
-Read-only. They back the web UI's Support menu ([ui.md](ui.md#support-menu)),
-which is the whole documentation surface for an install with no repository
-checkout. There is no POST endpoint here: nyxGPT never files an issue on a
-user's behalf.
+They back the web UI's Support menu ([ui.md](ui.md#support-menu)), which is
+the whole documentation surface for an install with no repository checkout.
+The docs endpoints are read-only; filing is not, and `POST
+/support/tickets` is the only write on this surface — it creates one labeled
+issue in the nyxGPT tracker so the filer never has to visit github.com
+(#3811).
 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/v1/support/docs` | GET | Index of the packaged product documentation, grouped |
 | `/api/v1/support/docs/{slug}` | GET | One document rendered to HTML (404 for an unknown slug) |
-| `/api/v1/support/context` | GET | Running version/platform plus the prefilled issue-form URL |
+| `/api/v1/support/context` | GET | Running version/platform, the prefilled issue-form URL, and `can_submit` |
+| `/api/v1/support/tickets` | POST | File a support ticket from this install; returns the created issue |
 
 **`GET /api/v1/support/docs`**
 
@@ -4690,6 +4693,30 @@ operate and look things up. `documents` is the same set flattened, in the same
 order. Only **product** documentation is packaged; the agent/CI process and
 contributor documents stay in the repository and are absent from the artifact
 (#3809).
+
+**`POST /api/v1/support/tickets`**
+
+```json
+{"ticket_type": "Bug Found", "summary": "Docs are a mess", "description": "I cannot find the install steps."}
+```
+
+The version and platform are not accepted from the client — the running
+install supplies both. `ticket_type` must be one of `Bug Found`, `Feature
+Request`, `Question`.
+
+```json
+{"status": "filed", "number": 4300, "url": "https://github.com/dkblinux98/nyxGPT/issues/4300",
+ "title": "support: Docs are a mess", "labeled": true}
+```
+
+Three answers, and the difference matters to whoever is waiting:
+
+| Status | Means |
+|---|---|
+| `201` | Filed. `labeled` reports whether the `Support` label is on the created issue — read back from GitHub, not assumed, because GitHub drops `labels` silently for a token without push access. `false` is not a failed filing: the ticket exists and `support_intake_guard.yml` repairs it. |
+| `503` | This install has no `[github] pat`, so it cannot file for anyone. The body carries `issue_form_url` — the prefilled GitHub form — rather than a refusal. |
+| `502` | GitHub was unreachable or said no. `detail` is written for the filer; the underlying error is in `~/.nyxGPT/logs/api.log`. |
+| `400` | The ticket itself is unusable (unknown type, blank or over-length field). |
 
 ---
 

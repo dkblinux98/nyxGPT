@@ -19,10 +19,15 @@ name: Support Intake Smoke
 # label list that lacks `Support` as well as accept one that has it. A check
 # that only ever sees the good case is the thing being guarded against.
 #
-# What this job deliberately does NOT do: file a real ticket. That is owner
-# acceptance testing -- it needs a running web UI, a GitHub account, and it
-# writes to the live Support project. This job is read-only against the
-# repository (`gh label list`) and creates nothing.
+# A second job (`files-a-ticket`) answers the question #3811's rework added:
+# "does a correctly-labeled ticket actually leave a running install when a
+# user presses File ticket?" It runs the real API against a stub GitHub, so
+# nothing is written to the live repository -- see
+# `tests/test_support_intake_live.sh` for what it injects and why.
+#
+# What neither job does: file a real ticket into the live Support project.
+# That is owner acceptance testing -- it needs a browser, a GitHub account,
+# and it writes to a project this repository does not own.
 
 on:
   push:
@@ -33,6 +38,9 @@ on:
       - ".github/workflows/support-intake-smoke.yml"
       - "scripts/agents/lib/support_label.py"
       - "src/nyxgpt/support.py"
+      - "src/nyxgpt/api_models.py"
+      - "src/nyxgpt/app.py"
+      - "tests/test_support_intake_live.sh"
   pull_request:
     paths:
       - ".github/ISSUE_TEMPLATE/support.yml"
@@ -41,6 +49,9 @@ on:
       - ".github/workflows/support-intake-smoke.yml"
       - "scripts/agents/lib/support_label.py"
       - "src/nyxgpt/support.py"
+      - "src/nyxgpt/api_models.py"
+      - "src/nyxgpt/app.py"
+      - "tests/test_support_intake_live.sh"
   workflow_dispatch:
 
 permissions:
@@ -120,3 +131,30 @@ jobs:
             exit 1
           fi
           echo "OK: a label list without '$LABEL' is rejected, near-misses included"
+
+  files-a-ticket:
+    # The half inspection cannot reach (#3811, D-006): a ticket filed by a
+    # RUNNING install. The API is the shipped one under uvicorn and the
+    # requests are real HTTP; only GitHub is a stub, so a push does not
+    # deposit a throwaway ticket in the live Support project.
+    #
+    # Its most important case is a fault injection: a GitHub that accepts the
+    # issue and silently drops the label -- what a token without push access
+    # actually does, and what made #3810 invisible. An intake that assumed
+    # the label applied passes every other check in this file and fails that
+    # one.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxGPT
+        run: pip install -e .
+
+      - name: "Live: file tickets through the running API"
+        run: tests/test_support_intake_live.sh

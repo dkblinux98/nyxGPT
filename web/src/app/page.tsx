@@ -13,6 +13,7 @@ import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBounda
 import { ChunkErrorBoundary } from '../components/ChunkErrorBoundary';
 import { withChunkTimeout } from '../lib/chunkLoader';
 import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
+import SupportTicketDialog from '../components/SupportTicketDialog';
 import { highlightText } from './highlight-text';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -67,17 +68,32 @@ type Info = {
   release_branch?: string | null;
 };
 
-/** What the Support menu's "File an Issue" item needs (#3745). */
+/** What the Support menu's "File an Issue" item needs (#3745, #3811). */
 type SupportContext = {
-  /** GitHub's issue form, with version and platform already filled in. */
+  /**
+   * GitHub's issue form, with version and platform already filled in. The
+   * *fallback* since #3811: it is what an install with no GitHub credential
+   * can offer, and what the dialog points at when filing here fails.
+   */
   issue_form_url: string;
   /**
-   * One prefilled filing link per ticket type (#3811). The filer classifies
-   * the ticket here rather than on GitHub, which is the only reason the type
-   * is recorded at all -- the Support project types tickets with a project
-   * field and nothing maps a GitHub form answer onto one.
+   * One entry per ticket type (#3811). The filer classifies the ticket here
+   * rather than on GitHub, which is the only reason the type is recorded at
+   * all -- the Support project types tickets with a project field and
+   * nothing maps a GitHub form answer onto one.
    */
   ticket_types?: Array<{ value: string; description: string; url: string }>;
+  /**
+   * Whether this install holds a GitHub credential and can therefore file
+   * the ticket itself. True is the intended surface -- the filer answers in
+   * the chat and never sees github.com; false degrades to the prefilled
+   * form, which is the only case the product cannot file for.
+   */
+  can_submit?: boolean;
+  /** Where the dialog POSTs. Reported by the backend so the two cannot drift. */
+  submit_route?: string;
+  /** This install's version/platform, shown so the filer sees what is sent. */
+  environment?: { version?: string; platform?: string; python?: string };
   /** Says plainly that filing needs internet and an account; docs do not. */
   network_note: string;
 };
@@ -109,6 +125,10 @@ function Home() {
   // platform (#3745). Fetched lazily when the Support group is first opened
   // so an offline install pays nothing for a link it may never use.
   const [supportContext, setSupportContext] = useState<SupportContext | null>(null);
+  // Which ticket type the filer picked, and therefore whether the in-app
+  // intake is open (#3811). Null is closed; the string is the preselected
+  // type, so the choice made in the menu is not asked again in the form.
+  const [ticketDialogType, setTicketDialogType] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
 
@@ -730,6 +750,11 @@ function Home() {
     setSelectedSession(sessionName);
     if (isMobile) setSidebarVisible(false);
   }, [isMobile, setSidebarVisible]);
+
+  // The ticket types the Support menu offers, resolved once: the menu builds
+  // one entry per type and the intake form re-offers the same list, and the
+  // two must be the same list rather than two expressions that agree today.
+  const filingTicketTypes = supportContext?.ticket_types ?? [];
 
   return (
     <main
@@ -1479,16 +1504,18 @@ function Home() {
                   </Link>
 
                   {/* File an Issue -- one entry per ticket type (#3811). The
-                      filer classifies the ticket HERE, in nyxGPT, and the
-                      choice travels as a prefill for the form's `ticket_type`
-                      dropdown; the Support project's `Ticket Type` field is
-                      then set from it at triage. Asking on GitHub instead
-                      would work, but every ticket filed before #3811 arrived
-                      unclassified because nothing asked at all.
-                      Each link also carries this install's version and
-                      platform, needs internet and a GitHub account (hence the
-                      title text), and stays disabled until the context
-                      resolves. */}
+                      filer classifies the ticket HERE, in nyxGPT, and on an
+                      install that can file (`can_submit`) the entry opens the
+                      in-app form: the ticket is created from this install and
+                      the filer never sees github.com. That is the surface the
+                      owner asked for; handing them to GitHub's compose page
+                      showed a user this repository's development metadata and
+                      left them there afterwards.
+                      Without a credential there is nothing to file with, so
+                      the same entries degrade to the prefilled GitHub form --
+                      the one case the product genuinely cannot cover. Either
+                      way the entries stay absent until the context resolves,
+                      because neither path exists before it. */}
                   <div
                     style={{
                       padding: '8px 16px 2px 32px',
@@ -1499,34 +1526,66 @@ function Home() {
                   >
                     File an Issue
                   </div>
-                  {(supportContext?.ticket_types ?? []).map((ticketType) => (
-                    <a
-                      key={ticketType.value}
-                      href={ticketType.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={`${ticketType.description}. ${
-                        supportContext?.network_note ?? ''
-                      }`.trim()}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        padding: '8px 16px 8px 40px',
-                        textDecoration: 'none',
-                        color: 'var(--foreground)',
-                        fontSize: 14,
-                      }}
-                      onMouseEnter={(e) =>
-                        (e.currentTarget.style.background = 'var(--button-hover)')
-                      }
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                      onClick={() => setShowSettingsMenu(false)}
-                    >
-                      <span>🐛</span>
-                      <span>{ticketType.value}</span>
-                    </a>
-                  ))}
+                  {filingTicketTypes.map((ticketType) =>
+                    supportContext?.can_submit ? (
+                      <button
+                        key={ticketType.value}
+                        type="button"
+                        title={ticketType.description}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '8px 16px 8px 40px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--foreground)',
+                          fontSize: 14,
+                          cursor: 'pointer',
+                          width: '100%',
+                          textAlign: 'left',
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.background = 'var(--button-hover)')
+                        }
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        onClick={() => {
+                          setTicketDialogType(ticketType.value);
+                          setShowSettingsMenu(false);
+                        }}
+                      >
+                        <span>🐛</span>
+                        <span>{ticketType.value}</span>
+                      </button>
+                    ) : (
+                      <a
+                        key={ticketType.value}
+                        href={ticketType.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`${ticketType.description}. ${
+                          supportContext?.network_note ?? ''
+                        }`.trim()}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '8px 16px 8px 40px',
+                          textDecoration: 'none',
+                          color: 'var(--foreground)',
+                          fontSize: 14,
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.background = 'var(--button-hover)')
+                        }
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        onClick={() => setShowSettingsMenu(false)}
+                      >
+                        <span>🐛</span>
+                        <span>{ticketType.value}</span>
+                      </a>
+                    )
+                  )}
                   {/* Until the context resolves -- and on a backend that
                       reports no ticket types -- the untyped entry, disabled
                       until its link exists. Degrading to one working filing
@@ -1707,6 +1766,19 @@ function Home() {
         </div>
       </section>
 
+      {/* The in-app support intake (#3811). Mounted at the page root rather
+          than inside the Settings menu: the menu closes as soon as the entry
+          is clicked, and a form nested in it would close with it. */}
+      {ticketDialogType !== null && (
+        <SupportTicketDialog
+          initialType={ticketDialogType}
+          ticketTypes={filingTicketTypes}
+          submitRoute={supportContext?.submit_route ?? '/api/v1/support/tickets'}
+          environment={supportContext?.environment}
+          fallbackUrl={supportContext?.issue_form_url}
+          onClose={() => setTicketDialogType(null)}
+        />
+      )}
     </main>
   );
 }

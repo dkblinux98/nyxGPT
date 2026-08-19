@@ -19,26 +19,43 @@ Two surfaces live here:
 * **Docs** -- an index of the packaged Markdown documents plus a rendered
   HTML view of one document, with the links *between* docs rewritten to
   in-app routes so the tree browses as a unit offline.
-* **File an Issue** -- the GitHub issue-form URL, prefilled with the ticket
-  type the filer picked in nyxGPT plus the running version and this
-  machine's platform, so a report carries its environment and its
-  classification without the user having to look either up. This is a link,
-  not an API call: nyxGPT never files an issue on the user's behalf, and the
-  form itself needs internet and a GitHub account.
+* **File an Issue** -- an intake nyxGPT files *itself*. The filer answers
+  the questions in the chat, `submit_ticket` creates the issue through the
+  GitHub API with the environment already filled in, and the UI shows them
+  the ticket it created. The compose page on github.com is not part of that
+  path.
 
-**The handoff is deliberate-for-now, not the intended end state.** The owner's
-settled intent for #3811 is an intake that captures the ticket in nyxGPT and
-files it from a background process, so the filer never leaves the chat and is
-returned to it with a confirmation. That rework is not built here because it
-needs a GitHub credential and the owner has not yet chosen where one comes
-from for a filer who is not them (ledger **Q-006**). Until that is answered
-this module stays a link-builder: it classifies and prefills, and GitHub's
-compose page is still what the filer sees.
+**How the credential question was answered (#3811, ledger D-033, closing
+Q-006's first half).** Creating
+an issue needs a GitHub credential, and an install has one only when
+`[github] pat` is configured. So there are two cases and they are not
+symmetric:
+
+* **configured** -- the owner's install, and any operator's -- the ticket is
+  filed from the running install and the filer never leaves nyxGPT. This is
+  the surface the product is built around, and the one the acceptance
+  criteria describe.
+* **not configured** -- the only case the product genuinely cannot file for.
+  `issue_form_url` still builds GitHub's prefilled form and the UI offers it
+  as an explicitly-labelled fallback, because a support feature that answers
+  "you cannot report this" is worse than one that hands over. A hosted
+  intake that would remove even this case is the owner's call and stays
+  open; nothing here forecloses it.
+
+Both paths apply the same `Support` label, which is the routing key: the
+Support project auto-adds `is:issue is:open label:Support`, and the agent
+loop skips anything carrying it (`scripts/agents/lib/support_label.py`). On
+the path nyxGPT files itself the label is *verified on the created issue*
+rather than assumed -- GitHub drops `labels` from an issue created by a
+token without push access, and it does it silently, which is the exact shape
+of the #3810 leak.
 """
 
 from __future__ import annotations
 
 import importlib.resources
+import logging
+import os
 import platform
 import re
 from importlib.resources.abc import Traversable
@@ -100,9 +117,45 @@ PACKAGED_SLUGS: tuple[str, ...] = tuple(slug for _title, slugs in DOC_SECTIONS f
 #: once per link.
 _PACKAGED_SLUG_SET = frozenset(PACKAGED_SLUGS)
 
-ISSUE_REPO_URL = "https://github.com/dkblinux98/nyxGPT"
+#: Where support tickets go. This is the *product's* repository, not
+#: anything the install configures: a user filing a ticket is reporting a
+#: problem with nyxGPT, wherever their own agent tooling happens to point.
+ISSUE_REPO_OWNER = "dkblinux98"
+ISSUE_REPO_NAME = "nyxGPT"
+ISSUE_REPO_URL = f"https://github.com/{ISSUE_REPO_OWNER}/{ISSUE_REPO_NAME}"
 ISSUE_FORM_TEMPLATE = "support.yml"
 REPO_DEFAULT_BRANCH = "master"
+
+#: The label that routes a support ticket, and the only thing that does. The
+#: Support project auto-adds `is:issue is:open label:Support` and every
+#: agent-loop guard is keyed on it, so a ticket without it is a ticket in the
+#: development queue (#3810).
+SUPPORT_LABEL = "Support"
+
+#: GitHub's REST root. Overridable by environment so the intake can be driven
+#: end to end against a stub in CI (`support-intake-smoke.yml`) without
+#: filing anything into the live repository -- and so a GitHub Enterprise
+#: host is a config change rather than a code change.
+GITHUB_API_BASE = "https://api.github.com"
+GITHUB_API_BASE_ENV = "NYXGPT_GITHUB_API_BASE"
+
+#: Every support ticket's title starts here. `support_intake_guard.yml` reads
+#: it as one of its two "this is support-shaped" tells, and it is what the
+#: issue template's `title:` prefix produces for a filer who goes to GitHub
+#: directly -- the two intakes must not produce differently-shaped tickets.
+TICKET_TITLE_PREFIX = "support: "
+
+#: Bounds on what the intake accepts. The API model enforces the same
+#: numbers at the edge; these are here because `submit_ticket` is also
+#: reachable from Python and an empty title reaches GitHub as a 422 that
+#: says nothing useful to the person who typed it.
+SUMMARY_MAX_LENGTH = 120
+DESCRIPTION_MAX_LENGTH = 8000
+
+#: How long to wait on GitHub before telling the filer it did not work.
+#: Long enough for a slow link, short enough that a hung request does not
+#: leave someone staring at a spinner wondering whether they filed twice.
+SUBMIT_TIMEOUT_SECONDS = 20.0
 
 #: What kind of ticket this is, chosen by the filer in the nyxGPT UI (#3811).
 #: These are the `Ticket Type` options on the Support project, mirrored here
@@ -127,6 +180,10 @@ TICKET_TYPE_DESCRIPTIONS: dict[str, str] = {
 #: The in-app route the docs viewer serves documents from; links between
 #: packaged documents are rewritten onto it.
 DOCS_ROUTE_PREFIX = "/support/docs"
+
+#: Where the UI posts a ticket. Reported in `support_context` rather than
+#: written into the frontend a second time, so the two cannot drift.
+SUBMIT_ROUTE = "/api/v1/support/tickets"
 
 #: A slug names one file directly inside the packaged docs directory. Anchored
 #: and free of `/`, `\` and `..` by construction, so a slug taken from a URL
@@ -153,8 +210,20 @@ _EVENT_ATTR_PREFIX = "on"
 _UNSAFE_URL_SCHEMES = ("javascript:", "data:text/html", "vbscript:")
 
 
+log = logging.getLogger("nyxgpt.support")
+
+
 class DocumentNotFoundError(LookupError):
     """Raised when a slug names no packaged document."""
+
+
+class SupportTicketError(RuntimeError):
+    """Filing a ticket on the user's behalf failed.
+
+    The message is written to be shown to the *filer*: they are a user with a
+    problem, not an operator, so it says what happened to their report and
+    what they can do next -- never a stack trace and never a bare status code.
+    """
 
 
 def docs_dir() -> Traversable:
@@ -408,23 +477,233 @@ def ticket_type_options(environment: dict[str, str] | None = None) -> list[dict[
     ]
 
 
-def support_context() -> dict[str, Any]:
-    """Return everything the Support menu needs: environment plus the issue links."""
+def github_api_base() -> str:
+    """Return the GitHub REST root the intake files against.
+
+    `NYXGPT_GITHUB_API_BASE` overrides it, which is how the smoke job drives
+    a real filing end to end against a stub instead of writing a throwaway
+    ticket into the live repository on every push.
+    """
+    return (os.environ.get(GITHUB_API_BASE_ENV, "") or GITHUB_API_BASE).rstrip("/")
+
+
+def ticket_title(summary: str) -> str:
+    """Return the issue title for `summary`, prefixed exactly once.
+
+    A filer who types "support: docs are a mess" gets one prefix, not two:
+    the prefix is a routing tell, and doubling it looks like a bug in the
+    product they are already reporting a bug about.
+    """
+    cleaned = " ".join(summary.split())
+    if cleaned.lower().startswith(TICKET_TITLE_PREFIX.strip().lower()):
+        cleaned = cleaned[len(TICKET_TITLE_PREFIX.strip()) :].strip()
+    return f"{TICKET_TITLE_PREFIX}{cleaned}"
+
+
+def ticket_body(ticket_type: str, description: str, environment: dict[str, str]) -> str:
+    """Render the issue body for a ticket filed from inside nyxGPT.
+
+    Deliberately the same shape GitHub renders for
+    `.github/ISSUE_TEMPLATE/support.yml`: one `###` heading per answer, in
+    the form's order. Two things depend on that and neither is cosmetic --
+    triage reads one ticket format rather than two, and
+    `support_intake_guard.yml` recognises a support-shaped issue by the
+    `### Installed version` heading, so a ticket that arrived unlabeled would
+    still be repaired.
+    """
+    return "\n\n".join(
+        (
+            "### Ticket type",
+            ticket_type,
+            "### What happened?",
+            description.strip(),
+            "### Installed version",
+            environment["version"],
+            "### Platform",
+            f"{environment['platform']}, Python {environment['python']}",
+            "<sub>Filed from nyxGPT → Support → File an Issue. The filer never "
+            "left the app (#3811).</sub>",
+        )
+    )
+
+
+def _validated_ticket(ticket_type: str, summary: str, description: str) -> tuple[str, str]:
+    """Check one ticket's fields, returning `(title, description)`.
+
+    Raises:
+        ValueError: the type is not one of `TICKET_TYPES`, or a required
+            field is blank or over length. Refusing here means the filer is
+            told what to fix; passing it through means GitHub answers 422 and
+            the UI has nothing useful to show.
+    """
+    if ticket_type not in TICKET_TYPES:
+        raise ValueError(f"Unknown ticket type: {ticket_type!r}")
+    cleaned_summary = summary.strip()
+    cleaned_description = description.strip()
+    if not cleaned_summary:
+        raise ValueError("A ticket needs a one-line summary.")
+    if not cleaned_description:
+        raise ValueError("A ticket needs a description of what happened.")
+    if len(cleaned_summary) > SUMMARY_MAX_LENGTH:
+        raise ValueError(f"The summary is longer than {SUMMARY_MAX_LENGTH} characters.")
+    if len(cleaned_description) > DESCRIPTION_MAX_LENGTH:
+        raise ValueError(f"The description is longer than {DESCRIPTION_MAX_LENGTH} characters.")
+    return ticket_title(cleaned_summary), cleaned_description
+
+
+#: What each GitHub status means *to the filer*. Anything not listed falls
+#: back to a generic message naming the status, because a wrong-but-specific
+#: explanation is worse than an honest vague one.
+_SUBMIT_STATUS_MESSAGES: dict[int, str] = {
+    401: (
+        "GitHub rejected the credential this install files tickets with. "
+        "Check `[github] pat` in your nyxGPT configuration (`nyxgpt config`) "
+        "-- the token may have expired."
+    ),
+    403: (
+        "GitHub refused the request. The configured token may lack access to "
+        "the nyxGPT repository, or you may have hit a rate limit -- wait a "
+        "minute and try again."
+    ),
+    404: (
+        "GitHub could not find the nyxGPT issue tracker with the configured "
+        "credential. If `[github] pat` is a fine-grained token, it needs "
+        "read/write access to issues."
+    ),
+    410: "Issues are disabled on the nyxGPT repository, so the ticket could not be filed.",
+    422: "GitHub rejected the ticket's contents. Shortening the summary usually fixes it.",
+}
+
+
+def submit_ticket(
+    ticket_type: str,
+    summary: str,
+    description: str,
+    token: str,
+    environment: dict[str, str] | None = None,
+    timeout: float = SUBMIT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """File one support ticket on the user's behalf and return what was created.
+
+    `{number, url, title, labeled}` -- the number and URL are the created
+    issue's, so the UI can show the filer the ticket rather than a promise
+    that one exists.
+
+    `labeled` reports whether `SUPPORT_LABEL` is actually on the created
+    issue. It is read back from GitHub's response rather than inferred from
+    the request, because GitHub *silently* drops `labels` for a token
+    without push access: assuming it applied is precisely how #3810 put an
+    unrouted ticket in front of the agent loop. A false here is not a failed
+    filing -- the ticket exists and `support_intake_guard.yml` repairs it on
+    the `issues: opened` event -- so it is reported, logged, and not raised.
+
+    Raises:
+        ValueError: the ticket's own fields are unusable (see
+            `_validated_ticket`).
+        SupportTicketError: GitHub was unreachable, refused the request, or
+            answered something this cannot read. The message is filer-facing.
+    """
+    import httpx
+
+    title, cleaned_description = _validated_ticket(ticket_type, summary, description)
+    env = environment or environment_summary()
+    payload = {
+        "title": title,
+        "body": ticket_body(ticket_type, cleaned_description, env),
+        "labels": [SUPPORT_LABEL],
+    }
+    url = f"{github_api_base()}/repos/{ISSUE_REPO_OWNER}/{ISSUE_REPO_NAME}/issues"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Authorization": f"Bearer {token}",
+    }
+
+    try:
+        response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        # The filer's own network is the likeliest cause and the only one
+        # they can act on; the exception text goes to the operator's log.
+        log.warning("Filing a support ticket failed to reach GitHub: %s", exc)
+        raise SupportTicketError(
+            "Could not reach GitHub to file the ticket. Check this machine's "
+            "internet connection and try again."
+        ) from exc
+
+    if response.status_code != 201:
+        log.warning(
+            "GitHub answered HTTP %s filing a support ticket: %s",
+            response.status_code,
+            response.text[:500],
+        )
+        raise SupportTicketError(
+            _SUBMIT_STATUS_MESSAGES.get(
+                response.status_code,
+                f"GitHub answered HTTP {response.status_code} and the ticket was not filed.",
+            )
+        )
+
+    try:
+        created = response.json()
+        number = int(created["number"])
+        issue_url = str(created["html_url"])
+    except (ValueError, KeyError, TypeError) as exc:
+        # The ticket may well exist; what is missing is the way to show it.
+        log.warning("GitHub's issue-creation response could not be read: %s", exc)
+        raise SupportTicketError(
+            "The ticket was sent, but GitHub's reply could not be read, so "
+            f"there is no link to show. Check {ISSUE_REPO_URL}/issues before "
+            "filing it again."
+        ) from exc
+
+    labels = created.get("labels") or []
+    labeled = any(
+        isinstance(label, dict) and label.get("name") == SUPPORT_LABEL for label in labels
+    )
+    if not labeled:
+        log.warning(
+            "Support ticket #%s was created WITHOUT the %r label -- the token "
+            "likely has no push access, so GitHub dropped it. "
+            "support_intake_guard.yml repairs this on the issues:opened event.",
+            number,
+            SUPPORT_LABEL,
+        )
+
+    return {"number": number, "url": issue_url, "title": title, "labeled": labeled}
+
+
+def support_context(can_submit: bool = False) -> dict[str, Any]:
+    """Return everything the Support menu needs to file a ticket.
+
+    `can_submit` says whether this install holds a credential to file with;
+    the caller resolves it (`app.py` from `[github] pat`) because this module
+    deliberately knows nothing about configuration. The UI branches on it:
+    true is the in-app intake, false is the labelled GitHub fallback built
+    from the same prefilled links.
+    """
     env = environment_summary()
     return {
         "environment": env,
-        # Kept as the untyped entry point: a filer who reaches the form some
-        # other way still gets version/platform prefilled and answers the
-        # dropdown on GitHub.
+        # Kept as the untyped entry point: the fallback for an install with
+        # no credential, and for a filer who reaches the form some other way
+        # -- version/platform still prefilled, type answered on GitHub.
         "issue_form_url": issue_form_url(env),
         "ticket_types": ticket_type_options(env),
         "docs_route": DOCS_ROUTE_PREFIX,
-        # Docs render offline; filing does not. The UI says so rather than
-        # letting the link fail mysteriously on an air-gapped install.
+        # Whether nyxGPT can file the ticket itself, and where it posts when
+        # it can. The route is reported rather than hardcoded in the UI so
+        # the two cannot drift apart silently.
+        "can_submit": can_submit,
+        "submit_route": SUBMIT_ROUTE,
+        "ticket_type_descriptions": dict(TICKET_TYPE_DESCRIPTIONS),
+        # Docs render offline; filing does not, whichever path it takes. The
+        # UI says so rather than letting it fail mysteriously on an
+        # air-gapped install.
         "requires_network": True,
         "network_note": (
-            "Filing an issue opens GitHub in your browser and needs internet "
-            "access and a GitHub account. The documentation above is packaged "
-            "with nyxGPT and works offline."
+            "Filing a ticket sends it to the nyxGPT issue tracker and needs "
+            "internet access; without a configured GitHub token it opens "
+            "GitHub in your browser instead and needs a GitHub account. The "
+            "documentation above is packaged with nyxGPT and works offline."
         ),
     }

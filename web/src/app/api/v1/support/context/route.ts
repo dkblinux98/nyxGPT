@@ -1,9 +1,11 @@
-// GET-only proxy for the Support menu's environment + issue-form link (#3745).
+// GET-only proxy for what the Support menu needs before it offers anything
+// (#3745, #3811): this install's version and platform, the prefilled GitHub
+// form, and `can_submit` -- whether nyxGPT holds a credential and can file
+// the ticket itself.
 //
-// There is deliberately no POST counterpart anywhere under /support: nyxGPT
-// never files an issue on the user's behalf. "File an Issue" opens GitHub's
-// issue form with the version and platform this endpoint reports prefilled,
-// and the user submits it themselves under their own account.
+// Reading that changes nothing, so this route stays GET-only. Filing is a
+// separate route (`/api/v1/support/tickets`) and is the only write on the
+// Support surface.
 import { apiFetch } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { withRequestLog } from "@/lib/withRequestLog";
