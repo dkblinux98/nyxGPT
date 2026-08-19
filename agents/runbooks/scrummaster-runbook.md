@@ -115,24 +115,26 @@ issue. While that record is open:
 
 ## Review huddle mediation (owner-ratified 2026-08-09, #3687)
 
-When `developer_huddle_position.yml` posts `HUDDLE_MEDIATION_REQUESTED` on
-a PR (see `agents/runbooks/review-runbook.md` §6b for the full taxonomy and
-huddle trigger conditions), `scrummaster_huddle_mediation.yml` runs a
-**fresh** scrummaster invocation -- fresh context is structural, every
-invocation starts memoryless, so the decision is based only on what's
-actually in the PR thread, never an assumption carried from a prior
-session. It reads the developer's `## Developer Position` comment and the
-review agent's code review comment (the review's position), then posts
-exactly one `## Huddle Decision` comment choosing:
+The huddle is one workflow run (`huddle_session.yml`, #3911): bounded rounds
+of a developer turn and a review turn in a Slack thread, then your decision.
+See `agents/runbooks/review-runbook.md` §6b for the trigger conditions.
+
+Your turn is the last step of that run, and it is still a **fresh,
+memoryless invocation** -- that is structural and deliberate, so the decision
+rests only on what is written down, never on an assumption carried from a
+prior session. You read every turn file of the huddle plus the PR thread, the
+diff and the linked issue, and write exactly one `## Huddle Decision`
+choosing:
 
 - **proceed** -- the existing approach is right, continue as-is.
 - **change-approach** -- a specific different approach, stated concretely.
 - **descope** -- a specific descope (e.g. drop a named flaky test, split
   off a follow-up issue) that resolves the disagreement.
-- **escalate** -- only the owner can resolve this; the mediation run itself
-  performs the standard escalation (`assign_issue_verified` +
-  `sprint_autopilot_kick`, the same primitives the 3-cycle breaker uses)
-  rather than deferring it to a later step.
+- **escalate** -- only the owner can resolve this; your own turn performs the
+  standard escalation (`assign_issue_verified` + `sprint_autopilot_kick`, the
+  same primitives the 3-cycle breaker uses) rather than deferring it to a
+  later step. That step runs under `SCRUMMASTER_AGENT_TOKEN`, so the
+  escalation is recorded as yours.
 
 The decision's content is advisory text the next fix cycle
 (`developer_auto_implement.yml`) reads and executes; mediation does not
@@ -142,7 +144,11 @@ for proceed / change-approach / descope, puts the issue back to In Progress
 and hands it to the developer agent. Before that workflow existed the
 decision just sat there -- on PR #3733 the thing that eventually moved was
 the 3-cycle escalation firing six minutes after a "proceed", parking the
-issue on the owner. Post exactly one decision comment; a duplicated or
+issue on the owner. **Do not post the decision comment yourself** -- write
+the decision file and the workflow posts it, under your identity and with the
+thread permalink attached. That identity is load-bearing: the dispatcher acts
+only on a decision comment authored by the scrummaster, so a decision posted
+by anything else lands, reads correctly, and starts nothing. A duplicated or
 re-posted decision is ignored by the dispatcher (only the round's first
 decision runs, and only once).
 

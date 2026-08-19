@@ -757,17 +757,20 @@ another fix cycle:
 
 1. `review_agent_auto_review.yml` posts a `HUDDLE_TRIGGERED` comment on the
    PR instead of reassigning the issue for another fix.
-2. `developer_huddle_position.yml` runs you with a narrow job: read the PR
-   thread and the linked issue, then post **one** `## Developer Position`
-   comment covering what you believe the problem is, what was tried, and
+2. `huddle_session.yml` runs you for one **turn** per round (#3911): read the
+   PR thread, the diff, the linked issue, and every earlier turn of this
+   huddle in `$HUDDLE_DIR`, then write **one file** — your `## Developer
+   Position` for that round: what you believe the problem is, what was tried,
    what you propose (proceed / a specific different approach / a specific
-   descope / escalate). **Do not attempt a fix in this run** — post the
-   position, then post a second comment containing exactly
-   `HUDDLE_MEDIATION_REQUESTED`.
-3. A fresh scrummaster invocation (`scrummaster_huddle_mediation.yml`) reads
-   your position and the review's position (its review comment) and posts a
-   `## Huddle Decision` comment: `HUDDLE_DECISION: proceed|change-approach|
-   descope|escalate`.
+   descope / escalate). **Do not attempt a fix, and do not post anything** —
+   the workflow posts your file to the huddle's Slack thread and, at the end,
+   to the PR transcript. Your invocation is memoryless on purpose: everything
+   you need is written down.
+3. The review agent answers in the same round, and may end its turn with
+   `HUDDLE_SETTLED` if your position resolved its finding. Otherwise the
+   rounds continue to `vars.HUDDLE_MAX_ROUNDS` (default 3), and a fresh
+   scrummaster turn posts the `## Huddle Decision` comment to the PR:
+   `HUDDLE_DECISION: proceed|change-approach|descope|escalate`.
 4. `huddle_decision_dispatch.yml` starts the next fix cycle for you on a
    proceed / change-approach / descope decision: the issue goes back to **In
    Progress** and is reassigned to you, with a `HUDDLE_DECISION_DISPATCHED`
