@@ -5853,6 +5853,25 @@ def _record_terraform_install_mode(dev: bool, images: dict[str, str]) -> list[Op
     return [OpsResult(True, f"Terraform install mode: {state.label()}", str(marker))]
 
 
+def _resolve_terraform_images(dev: bool, images: dict[str, str]) -> list[OpsResult]:
+    """Resolve the api/web images the terraform plan references.
+
+    Module scope, not nested inside `_install_terraform_steps`, because a
+    nested step cannot be patched by name: `patch.object(ops, ...)` only
+    reaches module attributes. While this was a local, the step-isolation
+    guard could not neutralize it, so every unit test that patched "all" the
+    install steps still ran a real `docker pull` against the runner -- six
+    minutes of network I/O per suite run, failing on any machine without a
+    docker daemon. Behavior is unchanged; only the binding moved, with `dev`
+    and the shared `images` dict now passed explicitly.
+    """
+    if dev:
+        return _build_terraform_docker_images()
+    resolved, results = _pull_terraform_published_images()
+    images.update(resolved)
+    return results
+
+
 def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[OpsResult]:
     """Run the Terraform bring-up steps and return structured results (no printing).
 
@@ -5893,13 +5912,6 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
     # the same `() -> list[OpsResult]` shape.
     images: dict[str, str] = {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE} if dev else {}
 
-    def _resolve_images() -> list[OpsResult]:
-        if dev:
-            return _build_terraform_docker_images()
-        resolved, results = _pull_terraform_published_images()
-        images.update(resolved)
-        return results
-
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         # Must run first: `_start_observability_stack_terraform` targets
@@ -5933,7 +5945,7 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
         # terraform's own build hits Docker's cache instead of doing the work
         # again; on the artifact path it pulls the published images, which is
         # what makes this deploy possible with no checkout at all (#3835).
-        ("api/web images", _resolve_images),
+        ("api/web images", lambda: _resolve_terraform_images(dev, images)),
         # After the images are known, before apply: the marker is what `ops
         # status`/`doctor` read to report this deployment's mode instead of
         # the native services' (#3835).
