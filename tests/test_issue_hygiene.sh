@@ -120,7 +120,8 @@ _reset_stub() {
   rm -rf "$GH_STUB_DIR"
   mkdir -p "$GH_STUB_DIR"
   cat > "$GH_STUB_DIR/milestones.json" <<'EOF'
-[{"title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open", "due_on": "2026-09-30"}]
+[{"title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open", "due_on": "2026-09-30"},
+ {"title": "Phase X: Rejected", "state": "closed"}]
 EOF
 }
 
@@ -403,17 +404,24 @@ _assert_contains "live item, failed read: says the card is still there" \
   "$out" "still exists"
 
 # ==========================================================================
-# The closure rule (#3871): an issue closed for any reason other than
-# completion ends up Phase X, assigned to the owner, Sprint cleared.
+# The closure rule (#3871, reshaped by the owner rule of 2026-08-19).
+#
+# Phase X is how a dead issue leaves the picture: it carries the
+# `Phase X: Rejected` MILESTONE and nothing else. Every project field is
+# stripped, because a rejected issue that keeps a Status still sits in a
+# lane, one that keeps a Sprint still counts against that sprint's
+# population, and one that keeps Priority/Effort/Module still skews the
+# statistics computed over those fields.
 #
 # This half of the file is NOT about the no-clobber invariant -- the closure
-# rule overwrites on purpose. What it must not do is fire on a completion,
-# touch Status, or invent a `Phase X` option that the board does not have.
+# rule overwrites and clears on purpose. What it must not do is fire on a
+# completion, or invent project metadata the owner has not created.
 # ==========================================================================
 
 _assignees() { jq -r '.assignees | join(",")' "$GH_STUB_DIR/state.json"; }
+_all_fields() { jq -r '.fields | to_entries | map(select(.value != "")) | map(.key) | sort | join(",")' "$GH_STUB_DIR/state.json"; }
 
-# ---- case C1: closed not_planned -> Phase X, owner, Sprint cleared -------
+# ---- case C1: closed not_planned -> milestone, owner, no project fields ---
 _reset_stub c1
 _write_issue <<'EOF'
 {"number": 3870, "title": "a closed issue", "body": "", "labels": [],
@@ -422,15 +430,16 @@ _write_issue <<'EOF'
 EOF
 _write_board <<'EOF'
 {"item_id": "PVTI_3870",
- "fields": {"Status": "Acceptance Failed", "Phase": "Phase 6", "Sprint": "Sprint 8"}}
+ "fields": {"Status": "Acceptance Failed", "Phase": "Phase 6", "Sprint": "Sprint 8",
+            "Priority": "P1 - High", "Effort": "XS", "Module": "sre"}}
 EOF
 out="$(bash "$HYGIENE" --closure 3870 2>&1)"
 _assert_eq "C1: rule applied cleanly" "$?" "0"
-_assert_eq "C1: Phase is Phase X" "$(_field Phase)" "Phase X"
-_assert_eq "C1: Sprint is cleared" "$(_field Sprint)" ""
-_assert_eq "C1: Status is untouched" "$(_field Status)" "Acceptance Failed"
-_assert_eq "C1: the owner is the assignee" "$(_assignees)" "dkblinux98"
+_assert_eq "C1: every project field is stripped" "$(_all_fields)" ""
+_assert_eq "C1: the milestone is the marker" "$(_milestone)" "Phase X: Rejected"
+_assert_eq "C1: the owner is the sole assignee" "$(_assignees)" "dkblinux98"
 _assert_contains "C1: says which reason triggered it" "$out" "closed as 'not_planned'"
+_assert_contains "C1: reports the Status it cleared" "$out" "Status: cleared (was 'Acceptance Failed')"
 
 # ---- case C2: closed as completed -> nothing happens ---------------------
 _reset_stub c2
@@ -445,16 +454,12 @@ _write_board <<'EOF'
 EOF
 out="$(bash "$HYGIENE" --closure 3871 2>&1)"
 _assert_eq "C2: completed closure exits cleanly" "$?" "0"
-_assert_eq "C2: Phase untouched" "$(_field Phase)" "Phase 6"
-_assert_eq "C2: Sprint untouched" "$(_field Sprint)" "Sprint 8"
+_assert_eq "C2: fields untouched" "$(_all_fields)" "Phase,Sprint,Status"
 _assert_eq "C2: assignees untouched" "$(_assignees)" "myGPT-developer-agent"
 _assert_eq "C2: no project writes at all" "$(_mutations)" ""
 _assert_contains "C2: says why it did nothing" "$out" "untouched by the closure rule"
 
 # ---- case C3: no recorded reason is treated as completed -----------------
-# A closure made through the API without a reason leaves state_reason null.
-# Treating null as a non-completion would let a backfill reassign every
-# historical closed issue to the owner.
 _reset_stub c3
 _write_issue <<'EOF'
 {"number": 3872, "title": "closed with no reason", "body": "", "labels": [],
@@ -486,36 +491,40 @@ _assert_contains "C4: says the issue is open" "$out" "not closed"
 _reset_stub c5
 _write_issue <<'EOF'
 {"number": 3874, "title": "already handled", "body": "", "labels": [],
- "state": "closed", "state_reason": "duplicate", "assignees": ["dkblinux98"]}
+ "state": "closed", "state_reason": "duplicate", "assignees": ["dkblinux98"],
+ "milestone": "Phase X: Rejected"}
 EOF
 _write_board <<'EOF'
-{"item_id": "PVTI_3874", "fields": {"Status": "Backlog", "Phase": "Phase X", "Sprint": ""}}
+{"item_id": "PVTI_3874", "fields": {}}
 EOF
 out="$(bash "$HYGIENE" --closure 3874 2>&1)"
 _assert_eq "C5: exits cleanly" "$?" "0"
 _assert_eq "C5: no project writes on a second run" "$(_mutations)" ""
-_assert_contains "C5: reports Phase already set" "$out" "already 'Phase X'"
-_assert_contains "C5: reports Sprint already clear" "$out" "already clear"
+_assert_contains "C5: reports the milestone already set" "$out" "already 'Phase X: Rejected'"
+_assert_contains "C5: reports the fields already clear" "$out" "already clear"
 
-# ---- case C6: a missing `Phase X` option fails loudly -------------------
-# Agents never create field options; a silent skip would leave the issue
-# looking handled when its Phase was never set.
+# ---- case C6: a missing milestone fails loudly --------------------------
+# Agents never create project metadata; a silent skip would leave the issue
+# looking handled with no marker on it at all.
 _reset_stub c6
+cat > "$GH_STUB_DIR/milestones.json" <<'EOF'
+[{"title": "Phase 6 — Enterprise Deployment Hardening (v3.0.0)", "state": "open"}]
+EOF
 _write_issue <<'EOF'
-{"number": 3875, "title": "no phase x on this board", "body": "", "labels": [],
+{"number": 3875, "title": "no phase x on this repo", "body": "", "labels": [],
  "state": "closed", "state_reason": "not_planned", "assignees": []}
 EOF
 _write_board <<'EOF'
 {"item_id": "PVTI_3875", "fields": {"Phase": "Phase 6", "Sprint": "Sprint 8"}}
 EOF
-out="$(GH_STUB_NO_PHASE_X=1 bash "$HYGIENE" --closure 3875 2>&1)"
+out="$(bash "$HYGIENE" --closure 3875 2>&1)"
 rc=$?
 _assert_eq "C6: the run fails" "$rc" "1"
 _assert_contains "C6: reported as an error" "$out" "::error::"
-_assert_contains "C6: names the missing option" "$out" "no option 'Phase X'"
-_assert_eq "C6: nothing was written" "$(_mutations)" ""
+_assert_contains "C6: names the missing milestone" "$out" "does not exist"
+_assert_eq "C6: nothing was stripped" "$(_mutations)" ""
 
-# ---- case C7: an issue that is not on the board has no fields to set ----
+# ---- case C7: an issue off the board still gets its marker --------------
 _reset_stub c7
 _write_issue <<'EOF'
 {"number": 3876, "title": "never boarded", "body": "", "labels": [],
@@ -526,7 +535,8 @@ _write_board <<'EOF'
 EOF
 out="$(bash "$HYGIENE" --closure 3876 2>&1)"
 _assert_eq "C7: exits cleanly" "$?" "0"
-_assert_contains "C7: says the issue is not on the board" "$out" "not on the"
+_assert_eq "C7: the milestone is still set" "$(_milestone)" "Phase X: Rejected"
+_assert_contains "C7: says there was nothing on the board to strip" "$out" "nothing to strip"
 
 # ---- summary ------------------------------------------------------------
 if [[ "$FAILURES" -eq 0 ]]; then

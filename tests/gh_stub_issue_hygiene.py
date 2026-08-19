@@ -395,7 +395,11 @@ def _issue_payload(state: dict) -> dict:
 
 def _rest(route: str, jq_filter: str | None, params: dict, method: str) -> None:
     state = _state()
-    parts = route.strip("/").split("/")
+    # Match on the path only: the real API takes query strings (`?state=all`)
+    # and a stub that folded them into the last path segment would silently
+    # answer nothing, which reads as "the resource is empty" rather than
+    # "this stub does not implement that call".
+    parts = route.split("?", 1)[0].strip("/").split("/")
 
     if len(parts) >= 6 and parts[3] == "issues" and parts[5] == "assignees":
         for login in [v for k, v in params.items() if k.startswith("assignees")]:
