@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+
+# The real home of the machine running the suite, captured at import -- before
+# any test's `monkeypatch.setattr(ops.Path, "home", ...)` can move it.
+# `_isolate_grafana_secret_files` compares against this to tell "this test
+# isolated its own home" from "this write is about to land in the developer's
+# real ~/.nyxGPT".
+_REAL_HOME = Path.home()
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +132,85 @@ def _isolate_image_build_state(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "K8S_BUILD_DIR", tmp_path / "k8s-build-home")
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path / "docker-image-markers")
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_grafana_secret_files(monkeypatch, tmp_path):
+    """Keep every unit test's Grafana secret writes out of the real `~/.nyxGPT` (#3947).
+
+    `_slack_webhook_secret_path()` and `_glitchtip_grafana_token_path()`
+    resolve `Path.home()/".nyxGPT"/"secrets"/...` fresh on every call, and the
+    writers behind them are reached from ordinary-looking tests: anything that
+    calls `ops.env_sync(args)` runs its "sync grafana slack webhook secret"
+    step, and that step writes the *invoking machine's* secret file even when
+    every path the test passes in is under `tmp_path` -- `env_sync` forwards
+    only `--config`, so nothing about the secret path is derived from it. Four
+    `env_sync` tests were doing exactly that (verified by running one:
+    `test_env_sync_logs_summary` alone created the real
+    `~/.nyxGPT/secrets/slack-webhook-url`), so on a machine with a webhook
+    actually configured, running the unit suite overwrote the real secret with
+    the unconfigured placeholder -- and then restarted the real Grafana to
+    "pick up" it (see `real_restart_grafana_if_running` below for that half).
+
+    Redirect rather than refuse, and only when the write would land in the real
+    home: a test that isolates `Path.home()` itself (the
+    `_ensure_glitchtip_secrets_dir` tests do, and assert on the files they get)
+    keeps its own path untouched, while a test that isolates nothing gets
+    `tmp_path` instead of the developer's machine. Closed once, here, rather
+    than at each present and future call site -- the same reasoning as
+    `_isolate_install_mode_marker` above.
+    """
+    from nyxgpt import ops
+
+    sandbox = tmp_path / "ops-secrets-home"
+
+    def redirected(real):
+        def sandboxed() -> Path:
+            path = real()
+            try:
+                relative = path.relative_to(_REAL_HOME)
+            except ValueError:
+                return path  # this test already redirected `Path.home()` itself
+            return sandbox / relative
+
+        return sandboxed
+
+    for name in ("_slack_webhook_secret_path", "_glitchtip_grafana_token_path"):
+        monkeypatch.setattr(ops, name, redirected(getattr(ops, name)))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def real_restart_grafana_if_running(monkeypatch):
+    """Stub `ops._restart_grafana_if_running` for every unit test -- and hand the
+    real one to the tests that are about it (#3947).
+
+    This is the live-Docker half of the hazard `_isolate_grafana_secret_files`
+    covers: `_sync_grafana_slack_webhook_secret` calls it whenever the secret
+    file's contents changed, and it runs `docker compose restart grafana`
+    against the machine's own daemon, then polls Grafana's health for up to two
+    minutes. On a clean runner no `grafana` container exists and it skips --
+    which is the only reason the tests reaching it were ever green. On a runner
+    where one does exist (a leftover observability stack; a crash-looping one
+    especially) those tests fail `assert rc == 0` two minutes later, as
+    transient-looking red with nothing to do with their subject. That is what
+    cost #3947 three verification runs, under two different symptoms.
+
+    Requesting this fixture by name yields the real function, so
+    `test_restart_grafana_if_running_*` still exercises it with their own stubs
+    of `_compose_available`/`_compose_stack_snapshot`/`_run` in place. Tests
+    that assert a restart *was* requested keep patching the name themselves;
+    their patch is applied after this one and wins.
+    """
+    from nyxgpt import ops
+
+    real = ops._restart_grafana_if_running
+    monkeypatch.setattr(
+        ops,
+        "_restart_grafana_if_running",
+        lambda reason="": ops.OpsResult(True, "Skipped Grafana restart (stubbed for unit tests)"),
+    )
+    return real
 
 
 @pytest.fixture(autouse=True)
