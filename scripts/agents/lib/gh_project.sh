@@ -1445,7 +1445,7 @@ _autopilot_post_resume() {
   max="$(jq -r '.max_resumes // 3' <<<"$budget" 2>/dev/null || echo 3)"
   marker="$(python3 "${_LIB_DIR}/parked_resume.py" marker "$issue" "$n")"
 
-  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Reassigning it to @${DEV_AGENT} to restart implementation (#3709) -- no human trigger needed.
+  issue_comment "$issue" "🔁 **Sprint Autopilot — auto-resume (${n}/${max})**: this issue is In Progress but parked (no open PR, no running developer job), and every dependency it declares is now closed. Reassigning it to @${DEV_AGENT:-the developer agent} to restart implementation (#3709) -- no human trigger needed.
 
 If this run stops again without progress, the auto-resume budget (${max}) will be spent and the issue is reported as gate-stuck on the release tracking issue instead of being retried forever. A comment from the repo owner resets the budget (#3689).
 

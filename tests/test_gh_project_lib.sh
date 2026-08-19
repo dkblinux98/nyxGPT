@@ -270,8 +270,11 @@ for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; do
 _assert_eq "fresh assignment never calls the unassign dance" "0" "$UNASSIGN_SEEN"
 
 # --- Test 10: assign_and_trigger_developer when the dev agent is already ---
-# --- assigned unassigns then reassigns (to force a real event) AND posts ---
-# --- a RETRY_IMPLEMENTATION fallback comment, per #3647's redispatch fix ---
+# --- assigned unassigns then reassigns (to force a real event) and posts ---
+# --- NOTHING. #3647 backed the reassignment with a retry-token comment as a ---
+# --- second trigger; #3882 deleted that token, so the verified reassignment ---
+# --- is the whole signal and no comment may be posted (a comment carries ---
+# --- findings, never control). ---
 GH_CALLS=()
 gh() {
   GH_CALLS+=("$*")
@@ -284,14 +287,16 @@ _issue_assignee_logins() { echo "$DEV_AGENT"; } # already assigned (REST-backed 
 ASSIGN_ONLY_CALLS=()
 COMMENT_CALLS=()
 sleep() { :; } # no real backoff in tests
+# assign_issue_verified re-reads the assignees to prove the write landed;
+# _issue_assignee_logins above already reports the dev agent, so the real
+# helper verifies on its first attempt.
 
 # shellcheck disable=SC2218 # exercises the real gh_project.sh function
 # sourced above; Test 12 below shadows it with a mock for a different unit.
 assign_and_trigger_developer "78"
 _assert_eq "redispatch calls issue_assign_only once (the reassignment)" "1" "${#ASSIGN_ONLY_CALLS[@]}"
 _assert_eq "redispatch targets the dev agent" "78 myGPT-developer-agent" "${ASSIGN_ONLY_CALLS[0]}"
-_assert_eq "redispatch posts exactly one fallback comment" "1" "${#COMMENT_CALLS[@]}"
-_assert_eq "fallback comment body is the RETRY_IMPLEMENTATION marker" "78 RETRY_IMPLEMENTATION" "${COMMENT_CALLS[0]}"
+_assert_eq "redispatch posts no comment at all (#3882)" "0" "${#COMMENT_CALLS[@]}"
 UNASSIGN_SEEN=0
 for c in "${GH_CALLS[@]}"; do [[ "$c" == "issue edit"* ]] && UNASSIGN_SEEN=1; done
 _assert_eq "redispatch unassigns before reassigning" "1" "$UNASSIGN_SEEN"

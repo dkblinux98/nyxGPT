@@ -401,8 +401,9 @@ _assert_contains "no-active-sprint park note keeps the no-sprint bucket" "$body"
 _assert_contains "no-active-sprint park note totals every waiting bucket" "$body" "**13**"
 
 # Test 10: the PAUSE_SPRINT notice is informational too -- it must not name
-# the kick token (notify_scrum_ready.yml is not gated on PAUSE_SPRINT, so a
-# paused notice that named it dispatched work despite the pause).
+# the retired kick token (before #3882 the kick was a comment token and the
+# pull workflow was not gated on PAUSE_SPRINT, so a paused notice that named
+# it dispatched work despite the pause).
 sprint_autopilot_paused() { return 0; }
 _reset_dispatch
 sprint_autopilot_kick 123 merged 2>/dev/null
@@ -507,14 +508,21 @@ _assert_eq "Backlog issues are not scanned (dispatch owns those)" "0" "$(jq -r '
 scan="$(autopilot_scan_parked '{"open":{"Backlog":[1]},"closed":{}}')"
 _assert_eq "a sprint with no In Progress issues selects nothing" "null" "$(jq -r '.selected' <<<"$scan")"
 
-# --- Test 14: _autopilot_post_resume posts real RETRY_IMPLEMENTATION ---
-# --- mechanics plus the budget marker (#3709 / #3689) ---
+# --- Test 14: _autopilot_post_resume re-assigns the developer agent and ---
+# --- leaves the budget-marked comment as the record (#3709 / #3689 / #3882). ---
+# --- The comment used to BE the trigger, ending in a retry token the ---
+# --- developer workflow substring-matched; assignment is the trigger now, ---
+# --- and the marker (which parked_resume.py counts) still rides along. ---
 _autopilot_resume_budget() { echo '{"count":1,"exhausted":false,"next_resume_number":2,"max_resumes":3}'; }
 issue_comment() { printf '%s' "$2" > "$COMMENT_FILE"; echo "$1" > "$RESUME_FILE"; }
+RESUME_ASSIGN_CALLS=()
+assign_and_trigger_developer() { RESUME_ASSIGN_CALLS+=("$1"); }
 _autopilot_post_resume 3513
 body="$(cat "$COMMENT_FILE")"
 _assert_eq "resume comment is posted on the parked issue itself" "3513" "$(cat "$RESUME_FILE")"
-_assert_contains "resume comment triggers the developer agent" "$body" "RETRY_IMPLEMENTATION"
+_assert_eq "resume re-assigns the developer agent exactly once" "1" "${#RESUME_ASSIGN_CALLS[@]}"
+_assert_eq "resume re-assigns the parked issue" "3513" "${RESUME_ASSIGN_CALLS[0]}"
+_assert_not_contains "resume comment issues no retry token" "$body" "RETRY_IMPLEMENTATION"
 _assert_contains "resume comment carries the budget marker" "$body" "<!-- nyxgpt-autoresume: issue=3513 n=2 -->"
 _assert_contains "resume comment reports where it is in the budget" "$body" "auto-resume (2/3)"
 
