@@ -94,19 +94,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
-start_port_forward() {
-    # ClusterIP-only Services (see docs/kubernetes.md) -- the operator reaches
-    # the UI the same way, through `nyxgpt ops port-forward`. Driven here with
-    # kubectl directly so the script can background it and get its PID.
+# ClusterIP-only Services (see docs/kubernetes.md) -- the operator reaches the
+# UI the same way, through `nyxgpt ops port-forward`. Driven here with kubectl
+# directly so the script can background it and get its PID. Appends, so a
+# rebuilt tunnel does not erase the previous one's error from the diagnostics.
+_open_tunnel() {
     kubectl -n "$NAMESPACE" port-forward "svc/nyxgpt-web" "${WEB_PORT}:3000" \
-        >/tmp/k8s-smoke-portforward.log 2>&1 &
+        >>/tmp/k8s-smoke-portforward.log 2>&1 &
     PF_PID=$!
+}
+
+start_port_forward() {
+    : >/tmp/k8s-smoke-portforward.log
+    # Let the web Deployment report available BEFORE forwarding to it. Step 8
+    # heals a web Pod for real and returns as soon as the replacement Pod
+    # EXISTS, not when its server is listening, so step 9 used to open the
+    # tunnel against a Pod seconds old. This is a settle, not an assertion --
+    # the probe loop below is still the only thing that decides pass/fail.
+    kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-web-stable \
+        --timeout=180s >/dev/null 2>&1 ||
+        echo "[warn] nyxgpt-web-stable is not reporting available; forwarding anyway" >&2
+    _open_tunnel
     # Readiness of the TUNNEL only -- the UI's own root page, which is served
     # by the web Pod without touching the api. Probing an api-backed route
     # here would conflate "the tunnel is up" with "the backend works", and
     # the fault-injection phase below deliberately breaks the latter.
-    for _ in $(seq 1 30); do
+    local attempt
+    for attempt in $(seq 1 30); do
         if curl -fsS -o /dev/null "${BASE}/" 2>/dev/null; then return 0; fi
+        # `kubectl port-forward` treats the first refused in-pod connection as
+        # fatal ("error: lost connection to pod") and exits. Without this the
+        # loop spends its whole 60s budget curling a process that died in the
+        # first two seconds, turning a startup window into a hard failure
+        # (run 32214550593, #3825). Rebuilding costs nothing and cannot mask a
+        # real outage: the probe above is unchanged and still decides.
+        if [ $((attempt % 3)) -eq 0 ]; then
+            kill "$PF_PID" 2>/dev/null || true
+            _open_tunnel
+        fi
         sleep 2
     done
     cat /tmp/k8s-smoke-portforward.log >&2 || true
