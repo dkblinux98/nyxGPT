@@ -354,9 +354,9 @@ stable evidence (runs can be deleted or expire); run
 is one concrete example of this pattern firing on issue #3600, triggered by
 `myGPT-review-agent` re-invoking the developer-agent automation, and it
 completed successfully; and (2) per the issue's own acceptance criteria, the
-next `@approve-merge`, `READY_FOR_NEXT_ISSUE`, and `@review` invocations in
-normal agent-loop operation after merge exercise the new gates for real, for
-an allowed actor.
+next `@approve-merge` and `@review` invocations (and, since #3882, the next
+developer *assignment*) in normal agent-loop operation after merge exercise
+the new gates for real, for an allowed actor.
 
 ## 3d) Security scanning (#3501)
 
@@ -412,8 +412,7 @@ so the cap never actually bound anything. Three fixes:
   budget" step (`scripts/agents/lib/retry_budget.py`, called from
   `developer_auto_implement.yml`) counts markers for the current failed
   step since the last comment from `author_association == "OWNER"` --
-  the same signal the workflow's own `RETRY_IMPLEMENTATION` trigger gate
-  already uses for "human intervention" (§3b). Nothing else resets the
+  the same signal the stop-loop guard uses for "human intervention" (§3b). Nothing else resets the
   count: not a fresh Phase-3-invented error-type label, not a `STATUS`
   change, not this workflow's own bot comments. The cap is 3, hard-coded in
   `retry_budget.MAX_RETRIES`. Pure logic lives in `retry_budget.py`
@@ -531,17 +530,20 @@ problems, and the pipeline needed a way to see across issues.
   step within the window) now yields one diagnosis (the origin issue's
   Phase 1-3) and a dispatch pause, not five independent loops.
 
-## 3g) Comment tokens are commands, not substrings (#3790)
+## 3g) Assignment is the lever; comment tokens are commands, not substrings (#3790, #3882)
 
 Full reference: `docs/agent-comment-tokens.md`. The short version, because
-this defect has now fired twice (#3706 on the kick token, #3790 on the retry
-token):
+this defect fired twice (#3706 on the kick token, #3790 on the retry token)
+before the mechanism itself was removed:
 
-- **Resuming a stopped developer run.** Move the issue back to `In Progress`
-  and post a comment whose **first line is** `RETRY_IMPLEMENTATION` (nothing
-  else on that line). The stop comment the agent posts deliberately does not
-  spell the token out — an automated comment naming it is exactly what
-  produced ~500 runs across #3782/#3784 on 2026-08-15.
+- **Nothing this agent does is started by a comment.** The workflow's only
+  trigger is `issues: [assigned]`. **Resuming a stopped run, retrying a
+  failed one, or picking up a rework round is the same act: assign
+  `myGPT-developer-agent` to the issue.** The agent claims it and moves it to
+  `In Progress` itself — the actor doing the work owns the transition — from
+  `Backlog` (new work) or `In Review` (rework). Held lanes
+  (`Acceptance Failed`, `Acceptance Testing`, `For Release`) refuse the
+  claim, and so does an assigner who is not a permitted identity.
 - **A token counts only where it opens a line.** Fenced code blocks and
   quoted (`>`) lines are stripped first, so quoting an earlier comment
   cannot replay its command.

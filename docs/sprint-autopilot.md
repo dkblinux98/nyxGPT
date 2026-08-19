@@ -4,10 +4,12 @@
 > hand" onward this document is a **change record**: diffs and prose written when
 > #3480 shipped, kept for the reasoning. Two mechanisms it describes are
 > retired since — the `READY_FOR_NEXT_ISSUE` comment kick, which #3882 made a
-> `repository_dispatch` (`developer_pull_next_issue.yml`), and
-> `scrummaster_next_issue.sh`, which #3883 replaced with the developer's pull
-> (`developer_pull_next.sh`). Passages naming them describe how it worked
-> then, not how it works now. The sections above this line are kept current.
+> `repository_dispatch` (`developer_pull_next_issue.yml`);
+> `RETRY_IMPLEMENTATION`, which the same issue replaced with assigning the
+> developer agent; and `scrummaster_next_issue.sh`, which #3883 replaced with
+> the developer's pull (`developer_pull_next.sh`). Passages naming them
+> describe how it worked then, not how it works now. The sections above this
+> line are kept current.
 
 Implements the owner requirement (2026-07-31): stop requiring a human to
 watch every merge to kick off the next issue, have the scrummaster continue
@@ -57,9 +59,10 @@ boundary rather than bookkeeping.
   `sprint_calc.build_sprint_park_note`): which park state it is in, what
   remains in the release per future sprint, which parked issues are waiting
   on gates, and how work resumes.
-- **Human override:** a `READY_FOR_NEXT_ISSUE` posted by the owner runs
-  unscoped, so the owner can deliberately pull work forward across the
-  boundary. Agent-posted kicks cannot.
+- **Human override:** the owner assigns the developer agent to the issue they
+  want, which claims it whatever sprint it belongs to -- a deliberate
+  pull-forward across the boundary (#3882). Agent-sent dispatches stay
+  sprint-scoped and cannot.
 - **Drift caveat:** the boundary is load-bearing, so iteration date windows
   must be kept current. With no active iteration, both the autopilot and
   `developer_pull_next.sh --sprint-scoped` stop (conservative stop) --
@@ -114,9 +117,11 @@ and the park note names the version to install.
 
 On every kick, before any park, the loop scans the active sprint's In
 Progress issues for **parked** ones -- no open PR closing the issue and no
-in-flight developer run -- and auto-posts `RETRY_IMPLEMENTATION` on **one**
-whose declared blockers have all closed. A sequenced chain therefore walks
-itself: each merge opens the next gate and kicks the loop again.
+in-flight developer run -- and re-assigns the developer agent to **one**
+whose declared blockers have all closed, leaving a budget-marked comment as
+the record (#3882: the assignment is the trigger, the comment is the record).
+A sequenced chain therefore walks itself: each merge opens the next gate and
+kicks the loop again.
 
 - Parked issues whose blockers are still open are reported in a **"waiting
   on gates"** line in the park note and the continue kick -- never dropped.
@@ -141,10 +146,12 @@ While the kick was a comment token, the dispatching workflow's job `if:`
 could only substring-match the comment body, and the agent accounts were on
 its actor allowlist -- so any agent comment that *named* the token started
 the next issue, even one whose whole point was that work had stopped
-(#3706). #3882 removed that class outright by making the kick a
-`repository_dispatch`: an event cannot be fired by prose that mentions it.
-The three rules below still govern the comment commands that remain (the
-retry token), and still describe why the park notes are written as they are:
+(#3706). #3882 removed that class outright: the kick is a
+`repository_dispatch` and developer work is dispatched by assignment, and
+neither can be fired by prose that mentions it. The three rules below still
+govern the comment commands that remain (`PAUSE_SPRINT`, `@improvement`,
+`@acceptance-failure`, `CONFLICT_REQUIRES_OWNER_DECISION`), and still
+describe why the park notes are written as they are:
 
 1. Informational autopilot comments (the park note, the `PAUSE_SPRINT`
    notice) never spell the token out -- they point here instead.
@@ -158,8 +165,9 @@ retry token), and still describe why the park notes are written as they are:
    marked or not -- can never dispatch. See
    [Comment tokens](agent-comment-tokens.md).
 
-To kick manually, post a comment on the release tracking issue that starts a
-line with `READY_FOR_NEXT_ISSUE` (and carries no marker).
+To start work manually, assign `myGPT-developer-agent` to the issue you want:
+the developer workflow claims it, moves it to In Progress and implements it
+(#3882). There is no comment that starts work.
 
 ### The sprint boundary is an acceptance gate
 

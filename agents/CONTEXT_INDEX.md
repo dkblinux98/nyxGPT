@@ -37,7 +37,7 @@ fails if it drifts. Do not hand-edit.
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
-| `developer_auto_implement.yml` | issues, issue_comment | Developer Agent Auto-Implement |
+| `developer_auto_implement.yml` | issues | Developer Agent Auto-Implement |
 | `developer_huddle_position.yml` | issue_comment | Developer Agent - Huddle Position |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
 | `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |
