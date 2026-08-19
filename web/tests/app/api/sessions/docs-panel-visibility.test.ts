@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import React from 'react';
 import ChatPane from '../../../../src/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../../../mocks/virtuoso';
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -24,12 +25,12 @@ import ChatPane from '../../../../src/app/components/ChatPane';
 
 // Prevent react-virtuoso from throwing in happy-dom (no real layout engine)
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent }: any) => {
+  Virtuoso: ({ data, itemContent }: VirtuosoMockProps) => {
     const items = (data ?? []).slice(0, 10);
     return React.createElement(
       'div',
       { 'data-testid': 'virtualized-chat' },
-      ...items.map((item: any, index: number) =>
+      ...items.map((item: unknown, index: number) =>
         React.createElement('div', { key: index }, itemContent(index, item))
       )
     );

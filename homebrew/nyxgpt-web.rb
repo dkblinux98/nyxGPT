@@ -108,6 +108,36 @@ PY
     system "chmod", "0755", bin/"nyxgpt-web"
   end
 
+  # `brew uninstall` does not stop a formula's service first, and Homebrew has
+  # no uninstall hook that could -- it deletes the keg's files out from under a
+  # running process, which goes on serving from memory. `brew untap` then makes
+  # the formula name unresolvable, so `brew services stop` has nothing left to
+  # act on: the operator ends up with services they cannot name to stop (#3859).
+  # nyxGPT also installs LaunchAgents of its own (`com.nyxgpt.*`) that Homebrew
+  # never knew about and so could never have removed. The teardown command
+  # clears all three populations; this block is the one place the operator is
+  # actually standing when they decide to remove nyxGPT (#3854).
+  def caveats
+    <<~EOS
+      Start the stack with:
+        nyxgpt up
+
+      Before removing nyxGPT, run the wrapped teardown FIRST:
+        nyxgpt ops uninstall
+
+      It stops and deregisters everything the install put on this machine --
+      the Homebrew services, the com.nyxgpt.* LaunchAgents nyxGPT installed
+      itself, and the containers. Your data in ~/.nyxGPT is preserved.
+
+      Only then remove the artifacts:
+        brew uninstall #{name}
+        brew untap #{tap || "<your-tap>"}
+
+      Uninstalling first leaves #{name} running from deleted files on its
+      port, with no supported command left to stop it.
+    EOS
+  end
+
   service do
     run ["/bin/bash", opt_bin/"nyxgpt-web"]
     keep_alive true

@@ -7,9 +7,10 @@ import Home from '@/app/page';
 import { highlightText } from '@/app/highlight-text';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { highlightMatches } from '@/components/UnifiedSearch';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ totalCount, itemContent, style, ...props }: any) => (
+  Virtuoso: ({ totalCount, itemContent, style, ...props }: VirtuosoMockProps) => (
     <div style={style} aria-label={props['aria-label']} role={props.role}>
       {Array.from({ length: totalCount }).map((_, index) => (
         <div key={index}>{itemContent(index)}</div>
@@ -24,8 +25,15 @@ vi.mock('@/contexts/ToastContext', () => ({
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+type ChatPaneStubProps = {
+  sessionName?: string;
+  onSessionUpdated?: () => void;
+  releaseVersion?: string;
+  scrollToMessageIndex?: number;
+};
+
 vi.mock('@/app/components/ChatPane', () => ({
-  default: ({ sessionName, onSessionUpdated }: any) => (
+  default: ({ sessionName, onSessionUpdated }: ChatPaneStubProps) => (
     <div data-testid="chatpane">
       <span data-testid="chatpane-session">{sessionName}</span>
       <button onClick={() => onSessionUpdated?.()}>chatpane-refresh</button>

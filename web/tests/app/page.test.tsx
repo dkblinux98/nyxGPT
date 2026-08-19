@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { imageConfig } from '../../next.config';
 import ChatPane from '../../src/app/components/ChatPane';
+import type { VirtuosoMockProps } from '../mocks/virtuoso';
 
 /**
  * Main Page Tests
@@ -46,12 +47,12 @@ describe('Logo Display', () => {
 
 // Mock react-virtuoso for test environment
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: ({ data, itemContent, style }: any) => {
+  Virtuoso: ({ data, itemContent, style }: VirtuosoMockProps) => {
     const VIEWPORT_ITEMS = 10;
     const renderCount = Math.min(data?.length || 0, VIEWPORT_ITEMS);
     return (
       <div data-testid="virtualized-chat" style={style}>
-        {data?.slice(0, renderCount).map((item: any, index: number) => (
+        {data?.slice(0, renderCount).map((item: unknown, index: number) => (
           <div key={index}>{itemContent(index, item)}</div>
         ))}
       </div>
