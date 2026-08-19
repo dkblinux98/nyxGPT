@@ -4393,7 +4393,13 @@ def rag_collection_create(
 
     store = CassandraVectorStore(collection=collection_name)
     try:
-        # Check if collection already exists
+        # Check if collection already exists. This necessarily runs *before*
+        # ensure_schema() -- ensure_schema is CREATE ... IF NOT EXISTS, so
+        # after it there is nothing left to 409 on -- which means the
+        # duplicate check has to survive a Cassandra whose keyspace does not
+        # exist yet. list_collections() reads system_schema by keyspace name
+        # and returns [] in that case rather than raising (#3864); do not
+        # reintroduce a keyspace-selecting call here.
         existing_collections = store.list_collections()
         if collection_name in existing_collections:
             raise HTTPException(
