@@ -123,6 +123,16 @@ _assert_eq "required_check_names reads only the [required] section" \
 Install the working tree's formulas
 k8s-artifact-smoke" "$NAMES"
 
+# The list resolves from the LIBRARY's location, not the caller's directory.
+# Checked before anything stubs it, and from a different cwd, because getting
+# this wrong is silent: a required-check file the library cannot find makes
+# every head `unknown`, which fails open -- so the gate would quietly stop
+# gating and every test below would still pass on its own stub file.
+DEFAULT_NAMES="$(cd "$TMP" && NYXGPT_REQUIRED_CHECKS_FILE="" \
+  bash -c 'source "$1/scripts/agents/lib/gh_project.sh"; required_check_names' _ "$ROOT_DIR" 2>/dev/null)"
+_assert_contains "the real required set resolves from the library's own path" \
+  "$DEFAULT_NAMES" "security-scan"
+
 # head_check_runs is the single point that talks to GitHub, so it is the
 # single point stubbed here.
 CHECK_RUNS=""

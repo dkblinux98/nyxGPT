@@ -41,9 +41,9 @@ def test_waiting_costs_no_claude_invocation() -> None:
     """
     for job in ("head-gate", "head-not-reviewable"):
         uses = [step.get("uses", "") for step in _steps(REVIEW_WF, job)]
-        assert not [u for u in uses if "claude-code-action" in u], (
-            f"{job} invokes claude-code-action; standing down must be free"
-        )
+        assert not [
+            u for u in uses if "claude-code-action" in u
+        ], f"{job} invokes claude-code-action; standing down must be free"
 
 
 def test_the_hand_back_posts_no_verdict() -> None:

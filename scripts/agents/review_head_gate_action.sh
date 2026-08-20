@@ -154,8 +154,7 @@ ${TIMEOUT_MARKER}"
     gh pr comment "$PR" --body "$BODY" >/dev/null \
       || _die "Could not comment the pending-timeout notice on PR #${PR}"
 
-    ISSUE=""
-    pr_linked_issue "$PR" >/dev/null 2>&1 && ISSUE="$(pr_linked_issue "$PR")"
+    ISSUE="$(pr_linked_issue "$PR" 2>/dev/null || true)"
     if [[ -n "$ISSUE" ]]; then
       notify_human_escalation "$ISSUE" "ci-stuck" \
         "Required check(s) ${NAMES} on PR #${PR} head ${SHA} had not concluded when the review gate's wait expired." \

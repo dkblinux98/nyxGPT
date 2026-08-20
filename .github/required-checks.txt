@@ -18,10 +18,11 @@
 #             as clear.
 #   clear   - every required check present on the head passed.
 #
-# WHY A NAMED LIST AND NOT "EVERY CHECK ON THE HEAD". Two of the checks on a
-# PR head belong to the review itself (`claude-review`,
-# `execute-review-decision`): gating on them deadlocks the gate against its own
-# run. The rest of the not-required list is project bookkeeping — adding a card
+# WHY A NAMED LIST AND NOT "EVERY CHECK ON THE HEAD". Four of the checks on a
+# PR head belong to the review itself (`head-gate`, `claude-review`,
+# `head-not-reviewable`, `execute-review-decision`): gating on them deadlocks
+# the gate against its own run -- `head-gate` cannot be complete at the moment
+# `head-gate` decides. The rest of the not-required list is project bookkeeping — adding a card
 # to the project board, stamping a lane, detecting a conflict. A flake in any
 # of those must not be able to wedge the pipeline, and none of them says
 # anything about whether the code is correct.
@@ -112,10 +113,11 @@ reviewable-head-behaves
 gate-is-delegated
 
 [not-required]
-# The review's own runs. Requiring these deadlocks the gate against itself:
-# `claude-review` cannot be complete at the moment the gate decides whether to
-# start `claude-review`. (This is the deadlock Q-005 raises for the merge path;
-# the merge path is untouched here.)
+# The review's own runs, including the gate itself. Requiring any of them
+# deadlocks the gate against itself: `claude-review` cannot be complete at the
+# moment the gate decides whether to start `claude-review`, and `head-gate` is
+# still running while it asks. (This is the deadlock Q-005 raises for the merge
+# path; the merge path is untouched here.)
 claude-review
 head-gate
 head-not-reviewable
