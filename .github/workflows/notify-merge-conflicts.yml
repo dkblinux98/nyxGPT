@@ -218,7 +218,7 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
-              "channel": "C0ABH478QC8",
+              "channel": "C0AANK4KDM0",
               "text": "⚠️ Merge Conflict Detected in PR #${{ matrix.pr.number }}",
               "blocks": [
                 {
