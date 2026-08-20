@@ -496,6 +496,66 @@ _assert_contains "a timed-out wait is reported, not rejected" "$COMMENTS" "still
 _assert_contains "and marked per head" "$COMMENTS" "<!-- ci-pending-timeout: sha-slow -->"
 _assert_not_contains "with no hand-back to the developer" "$(cat "$TMP/gh.log")" "dev-agent"
 
+# ======================================================================
+# Part 6 -- the WORKFLOW's own shell body, executed
+# ======================================================================
+# Everything above tests the library. This runs the `head-gate` job's real
+# `run:` block, lifted out of claude-code-review.yml, against stub check state
+# -- because the step that turns a state into a decision is workflow YAML, and
+# workflow YAML is exactly the thing this project has learned it cannot verify
+# by reading (the huddle_session_probe.py pattern, #3911).
+ROOT_DIR="$ROOT_DIR" python3 - <<'EXTRACT' > "$TMP/gate-step.sh"
+import os
+import yaml
+
+wf = yaml.safe_load(open(os.environ["ROOT_DIR"] + "/.github/workflows/claude-code-review.yml"))
+for step in wf["jobs"]["head-gate"]["steps"]:
+    if step.get("id") == "check_state":
+        print(step["run"])
+        break
+else:
+    raise SystemExit("the head-gate job has no check_state step any more")
+EXTRACT
+GATE_STEP_RC=$?
+_assert_eq "the gate step can still be found in the workflow" "0" "$GATE_STEP_RC"
+
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ "${1:-}" == "api" && "$*" == *"/pulls/"* && "$*" == *".head.sha"* ]]; then
+  echo "sha-under-test"
+  exit 0
+fi
+cat "$STUB_TMP/check-runs.txt" 2>/dev/null || true
+exit 0
+STUB
+chmod +x "$TMP/bin/gh"
+
+_run_gate_step() {
+  printf '%s\n' "$1" > "$TMP/check-runs.txt"
+  : > "$TMP/gh-output"
+  # `sleep` is shadowed so a pending head does not really wait a minute per
+  # poll; WAIT_MINUTES is 1, so the cap is reached after one interval.
+  (
+    export GITHUB_REPOSITORY="test-owner/test-repo"
+    export GITHUB_OUTPUT="$TMP/gh-output"
+    export PR=4242 WAIT_MINUTES=1
+    export PATH="$TMP/bin:$PATH"
+    cd "$ROOT_DIR" || exit 1
+    sleep() { :; }
+    # shellcheck source=/dev/null
+    source "$TMP/gate-step.sh"
+  ) >/dev/null 2>&1
+  sed -n 's/^decision=//p' "$TMP/gh-output"
+}
+
+_assert_eq "the workflow step reviews a green head" "proceed" \
+  "$(_run_gate_step 'security-scan=success')"
+_assert_eq "the workflow step refuses to review a red head" "failed" \
+  "$(_run_gate_step 'security-scan=failure')"
+_assert_eq "the workflow step reports a wait that expired" "timeout" \
+  "$(_run_gate_step 'security-scan=pending')"
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES assertion(s)" >&2

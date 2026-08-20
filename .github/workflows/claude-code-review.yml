@@ -173,6 +173,16 @@ jobs:
           HEAD_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.head.sha')"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
+          # Clamped to the job's own cap. The wait is configurable and the job
+          # timeout is not, so a REVIEW_CI_WAIT_MINUTES longer than the job
+          # would be killed by the runner mid-wait instead of reporting a
+          # timeout: no comment, no notification, no review, and nothing on
+          # the PR to say why. Clamp loudly rather than trusting the variable.
+          if [[ "$WAIT_MINUTES" -gt 60 ]]; then
+            echo "::warning::REVIEW_CI_WAIT_MINUTES=$WAIT_MINUTES exceeds this job's timeout -- waiting 60m instead"
+            WAIT_MINUTES=60
+          fi
+
           STATE_BLOCK="$(await_required_checks "$HEAD_SHA" "$((WAIT_MINUTES * 60))" 60 300)"
           echo "$STATE_BLOCK"
 
