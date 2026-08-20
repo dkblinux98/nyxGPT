@@ -96,6 +96,19 @@ classify_error() {
     return
   fi
 
+  # A submission refused because a required check is red on the head (#3971).
+  # Retriable, and specifically so: the fix for a red head is another developer
+  # round -- which lands on the branch's rescue draft and therefore takes the
+  # Review Fix path with Claude, rather than the "no review issues, skipping"
+  # path. The unforgeable retry budget bounds it; the reviewer is never asked
+  # to relay it. The signature is the refusal's own sentence, so it stays true
+  # only while developer_submit_for_review.sh still prints it -- which
+  # tests/test_reviewable_head_gate.sh pins.
+  if echo "$error_text" | grep -qE "red head is not reviewable"; then
+    echo "retriable:ci_red"
+    return
+  fi
+
   if echo "$error_text" | grep -qE "test.*failed|pytest.*FAILED|FAILED.*test"; then
     # Test failures - let the 3-attempt fix loop handle these
     echo "retriable:test_failure"
@@ -3344,4 +3357,202 @@ sweep_parked_blocked_issues() {
 
   echo "[sweep-parked] Done. Promoted ${promoted_count} issue(s)." >&2
   echo "Promoted ${promoted_count} issue(s)."
+}
+
+# ============================================================
+# Required check state on a head SHA (#3971)
+# ============================================================
+#
+# "A red head is the developer's problem, not the reviewer's. A pending head is
+# nobody's problem yet -- it is waited on, never rejected."
+#
+# Measured cause (window 2026-08-13..19): ~36% of blocking review findings
+# reported machine-observable check state that the PR page already shows, and
+# each one cost a reject round (median 7.2M tokens) plus a review-fix round
+# (median 10.7M) to relay it. This is the read those relays were doing by hand.
+#
+# It lives here, and not inline in the workflows that call it, for the same
+# reason `developer_claim_issue` does: inline YAML can only be inspected, and
+# inspection is what this project's executed-verification rule (D-006) exists
+# to stop relying on. tests/test_reviewable_head_gate.sh drives every function
+# below against stub check state; .github/workflows/reviewable-head-smoke.yml
+# runs it on a real runner.
+
+# Path of the named required set. Overridable for tests only -- there is one
+# list, versioned beside the workflows whose jobs it names.
+_required_checks_file() {
+  echo "${NYXGPT_REQUIRED_CHECKS_FILE:-${_LIB_DIR}/../../../.github/required-checks.txt}"
+}
+
+# The required check names, one per line, from the file's [required] section.
+# Fails (non-zero, nothing on stdout) if the file is missing: a caller that
+# cannot read the list must not conclude "nothing is required".
+required_check_names() {
+  local file
+  file="$(_required_checks_file)"
+  if [[ ! -f "$file" ]]; then
+    _warn "required_check_names: required-check list not found at $file"
+    return 1
+  fi
+  awk '
+    /^[[:space:]]*\[/ { section = $0; gsub(/[][[:space:]]/, "", section); next }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*$/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      if (line == "") next
+      if (section == "required") print line
+    }
+  ' "$file"
+}
+
+# "<name>=<conclusion>" for every check run on a commit, one per line, where
+# conclusion is the literal string "pending" until the run completes.
+#
+# The single point where this decision talks to GitHub, and therefore the
+# single point a test stubs. `--paginate` with `--jq` runs the filter once per
+# page, which is correct here precisely because the output is streamed lines
+# rather than one slurped document (AGENTS.md).
+head_check_runs() {
+  local sha="$1"
+  require_cmd gh
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${sha}/check-runs" --paginate \
+    --jq '.check_runs[]
+          | "\(.name)=\(if .status != "completed" then "pending" else (.conclusion // "pending") end)"'
+}
+
+# required_check_state <sha>
+#
+# Prints three lines and always exits 0 -- the state IS the answer, so callers
+# read it rather than branching on an exit code:
+#
+#   state=failed|pending|clear|absent|unknown
+#   failed=<comma-separated names>
+#   pending=<comma-separated names>
+#
+# `failed` wins over `pending`: one concluded failure decides the head without
+# waiting for the rest.
+#
+# `unknown` is deliberate and it FAILS OPEN. When the check list or the API
+# read is unavailable, every caller here proceeds exactly as it did before this
+# gate existed. Failing closed would jam every submission and every review in
+# the pipeline on a GitHub blip in order to prevent a rare wasted review --
+# the same trade `review_agent_auto_review.yml`'s merged-PR guard documents.
+# Do not "fix" this into a hard failure.
+required_check_state() {
+  local sha="${1:-}"
+  local names runs line name concl failed="" pending="" present=0
+
+  if [[ -z "$sha" ]]; then
+    _warn "required_check_state: no SHA given"
+    printf 'state=unknown\nfailed=\npending=\n'
+    return 0
+  fi
+
+  if ! names="$(required_check_names)"; then
+    printf 'state=unknown\nfailed=\npending=\n'
+    return 0
+  fi
+
+  if ! runs="$(head_check_runs "$sha")"; then
+    _warn "required_check_state: could not read check runs for $sha -- reporting unknown"
+    printf 'state=unknown\nfailed=\npending=\n'
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    name="${line%=*}"
+    concl="${line##*=}"
+    printf '%s\n' "$names" | grep -Fxq -- "$name" || continue
+    present=$((present + 1))
+    case "$concl" in
+      # `cancelled` counts as failure: the gate it stood for did not pass, and
+      # the only routine cancellation here (concurrency, newest-wins) changes
+      # the head SHA, so it is not this head's answer.
+      failure|timed_out|cancelled|action_required|startup_failure|stale)
+        [[ ",$failed," == *",$name,"* ]] || failed="${failed:+$failed,}$name"
+        ;;
+      pending)
+        [[ ",$pending," == *",$name,"* ]] || pending="${pending:+$pending,}$name"
+        ;;
+      # success / neutral / skipped: a skipped job is a path filter or an `if:`
+      # having decided the job does not apply, which is not a failure.
+      *) ;;
+    esac
+  done <<< "$runs"
+
+  local state
+  if [[ -n "$failed" ]]; then
+    state="failed"
+  elif [[ -n "$pending" ]]; then
+    state="pending"
+  elif [[ "$present" -eq 0 ]]; then
+    # Nothing required is attached to this head *yet*. Distinguished from
+    # `clear` because the two want opposite treatment moments after a push:
+    # clear means "CI ran and passed", absent means "CI has not been created".
+    state="absent"
+  else
+    state="clear"
+  fi
+
+  printf 'state=%s\nfailed=%s\npending=%s\n' "$state" "$failed" "$pending"
+}
+
+# await_required_checks <sha> [timeout_seconds] [interval_seconds] [grace_seconds]
+#
+# Blocks until the head's required checks have concluded, then prints the same
+# three lines `required_check_state` does, with one extra state:
+#
+#   state=timeout - still pending when the cap expired.
+#
+# WHY A WAIT AND NOT AN EVENT. The obvious wake-up -- re-trigger the review on
+# `check_suite: completed` -- cannot be used here: GitHub only runs the
+# DEFAULT BRANCH's copy of a workflow for events not attached to a pull
+# request, and this project's default branch is release-ceremony-only (D-003),
+# so such a trigger would (a) not exist until the next release ceremony and
+# (b) forever run a stale definition afterwards. That is the same trap
+# review-runbook §5a records for `gh workflow run` without `--ref`. An idle
+# ubuntu runner for the wait costs cents; a review invocation spent relaying
+# "17 CI checks pending", and the reject/re-fix round-trip it triggers, costs
+# ~18M tokens.
+#
+# The grace period covers the seconds between a push and GitHub creating the
+# head's check runs. `security-scan` is required and runs on every PR with no
+# path filter, so "no required check present" is a statement about GitHub's
+# latency, not about this PR -- but it is bounded anyway, because a PR whose
+# required checks genuinely never appear must not wait out the whole cap.
+await_required_checks() {
+  local sha="$1"
+  local timeout="${2:-3600}" interval="${3:-60}" grace="${4:-300}"
+  local waited=0 out state
+
+  while :; do
+    out="$(required_check_state "$sha")"
+    state="$(printf '%s\n' "$out" | sed -n 's/^state=//p')"
+
+    case "$state" in
+      pending)
+        if [[ "$waited" -ge "$timeout" ]]; then
+          printf 'state=timeout\n%s\n' "$(printf '%s\n' "$out" | grep -v '^state=')"
+          return 0
+        fi
+        ;;
+      absent)
+        if [[ "$waited" -ge "$grace" ]]; then
+          _warn "await_required_checks: no required check appeared on $sha within ${grace}s -- treating as clear"
+          printf 'state=clear\nfailed=\npending=\n'
+          return 0
+        fi
+        ;;
+      *)
+        printf '%s\n' "$out"
+        return 0
+        ;;
+    esac
+
+    echo "[gate] head $sha: $state after ${waited}s -- waiting ${interval}s" >&2
+    sleep "$interval"
+    waited=$((waited + interval))
+  done
 }

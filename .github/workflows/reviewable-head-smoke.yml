@@ -1,0 +1,155 @@
+name: Reviewable Head Smoke
+
+# Which question does this job answer? (#3775 executed verification, D-006)
+#
+#   "When a PR head is red, does the submission actually get refused -- and
+#    when it is merely pending, does the review actually WAIT instead of
+#    rejecting it -- when RUN, not when read?"
+#
+# #3971 moved a decision that used to be made by a paid review invocation
+# ("CI is red on this head") into shell: `required_check_state` /
+# `await_required_checks` in scripts/agents/lib/gh_project.sh, the refusal in
+# developer_submit_for_review.sh, and the hand-back in
+# review_head_gate_action.sh. All three are shell functions and scripts rather
+# than inline workflow YAML for one reason: inline YAML can only be inspected,
+# and this project's executed-verification rule exists because inspection kept
+# being wrong about what a thing does when it runs.
+#
+# tests/test_reviewable_head_gate.sh drives them against stub check-run state
+# and a real git fixture -- red, pending, green, override, and the per-SHA
+# bound on the hand-back. This job runs it on a real runner.
+#
+# The second job is the coupling check: the tested helper is only worth
+# testing while claude-code-review.yml still calls it. Two copies of "is this
+# head reviewable" would be free to disagree, and the tested one would be the
+# copy nothing runs.
+#
+# What it does not cover, and cannot: GitHub's own delivery of the
+# `review_requested` event, and the wall-clock behaviour of a real 60-minute
+# wait. The agent loop exercises both on every submission.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/developer_submit_for_review.sh"
+      - "scripts/agents/review_head_gate_action.sh"
+      - "tests/test_reviewable_head_gate.sh"
+      - ".github/required-checks.txt"
+      - ".github/workflows/claude-code-review.yml"
+      - ".github/workflows/reviewable-head-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/developer_submit_for_review.sh"
+      - "scripts/agents/review_head_gate_action.sh"
+      - "tests/test_reviewable_head_gate.sh"
+      - ".github/required-checks.txt"
+      - ".github/workflows/claude-code-review.yml"
+      - ".github/workflows/reviewable-head-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reviewable-head-behaves:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: The gate, executed against stub check state
+        shell: bash
+        run: bash tests/test_reviewable_head_gate.sh
+
+      - name: Prove the refusal can fail -- a red head that is NOT refused
+        # A test that cannot fail proves nothing (#3753). Re-plant the
+        # pre-fix behaviour by pointing the gate at a required-check list that
+        # names nothing, which is exactly what "no gate" looked like: the same
+        # red head then submits, and the assertion the job above relies on
+        # would have passed either way if it were not really running.
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          source scripts/agents/lib/gh_project.sh
+          set +e
+          REPO_OWNER=o REPO_NAME=r
+          export REPO_OWNER REPO_NAME
+
+          EMPTY="$RUNNER_TEMP/no-required-checks.txt"
+          printf '[required]\n\n[not-required]\nk8s-artifact-smoke\n' > "$EMPTY"
+
+          head_check_runs() { printf 'k8s-artifact-smoke=failure\n'; }
+
+          WITH_LIST="$(NYXGPT_REQUIRED_CHECKS_FILE=.github/required-checks.txt \
+            required_check_state deadbeef | sed -n 's/^state=//p')"
+          WITHOUT_LIST="$(NYXGPT_REQUIRED_CHECKS_FILE="$EMPTY" \
+            required_check_state deadbeef | sed -n 's/^state=//p')"
+
+          echo "with the real required set: $WITH_LIST"
+          echo "with the check unlisted:    $WITHOUT_LIST"
+
+          if [[ "$WITH_LIST" != "failed" ]]; then
+            echo "::error::k8s-artifact-smoke=failure did not make the head red -- the required set no longer names it"
+            exit 1
+          fi
+          if [[ "$WITHOUT_LIST" == "failed" ]]; then
+            echo "::error::an unlisted failing check still refused the head -- the gate is not reading the named list"
+            exit 1
+          fi
+          echo "ok: the refusal is the named list's doing, and it can be turned off"
+
+  gate-is-delegated:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: The review workflow delegates the decision rather than re-implementing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=".github/workflows/claude-code-review.yml"
+          FAIL=0
+
+          if ! grep -q 'await_required_checks "\$HEAD_SHA"' "$WF"; then
+            echo "::error::$WF no longer calls await_required_checks -- the executed test then covers nothing the workflow uses."
+            FAIL=1
+          fi
+
+          if ! grep -q "needs.head-gate.outputs.decision == 'proceed'" "$WF"; then
+            echo "::error::$WF no longer gates the Claude review job on the gate's decision -- a red or pending head would reach a paid review invocation."
+            FAIL=1
+          fi
+
+          if ! grep -q 'required_check_state "\$HEAD_SHA"' scripts/agents/developer_submit_for_review.sh; then
+            echo "::error::developer_submit_for_review.sh no longer reads the required-check state -- a red head can be submitted again."
+            FAIL=1
+          fi
+
+          exit $FAIL
+
+      - name: The review prompt no longer asks for CI relay
+        # The retired instructions, by their own words. The gate makes them
+        # unreachable, and an unreachable instruction that still tells the
+        # review agent to REQUEST_CHANGES over check state is how the relay
+        # comes back.
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=".github/workflows/claude-code-review.yml"
+          FAIL=0
+          while IFS= read -r phrase; do
+            if grep -qF "$phrase" "$WF"; then
+              echo "::error::$WF still carries the retired CI-relay instruction: $phrase"
+              FAIL=1
+            fi
+          done <<'PHRASES'
+          Any CI check on this PR head is failing
+          CI verdict for this PR head
+          Do not APPROVE until CI is green
+          If checks are still **pending**, say so
+          PHRASES
+          exit $FAIL

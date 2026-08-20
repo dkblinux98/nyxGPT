@@ -39,7 +39,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  claude-review:
+  # A red or pending head is not reviewable (#3971).
+  #
+  # This job is the only thing between a trigger and a paid review invocation,
+  # and it exists because ~36% of blocking review findings in the
+  # 2026-08-13..19 window were the review agent relaying check state the PR
+  # page already displays -- at a reject round (median 7.2M tokens) plus a
+  # review-fix round (median 10.7M) each time.
+  #
+  #   pending -> WAIT. Nothing is posted, no invocation is spent, and the
+  #              review starts when the checks conclude. A PR that is merely
+  #              mid-CI is never bounced back to the developer.
+  #   failed  -> hand the head back to the developer (head-not-reviewable
+  #              below). Still no invocation.
+  #   clear   -> review, exactly as before.
+  #
+  # The decision itself is `await_required_checks` in
+  # scripts/agents/lib/gh_project.sh, not inline YAML, so it can be EXECUTED
+  # in a test rather than inspected in a diff (D-006);
+  # tests/test_reviewable_head_gate.sh drives it and
+  # .github/workflows/reviewable-head-smoke.yml runs that on a real runner.
+  head-gate:
     # Only run when:
     # 1. Review-agent is requested as reviewer (review_requested)
     # 2. PR updated (synchronize) and review-agent is already assigned
@@ -61,18 +81,22 @@ jobs:
         github.event.comment.user.login == 'claude[bot]')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # The wait cap below plus headroom. A job that dies mid-wait is a review
+    # that never starts, so this must never be the thing that expires first.
+    timeout-minutes: 75
     permissions:
       contents: read
       pull-requests: read
-      issues: read
-      id-token: write
-      actions: read
-
+      checks: read
+    outputs:
+      pr: ${{ steps.pr_number.outputs.pr }}
+      head_sha: ${{ steps.check_state.outputs.head_sha }}
+      decision: ${{ steps.check_state.outputs.decision }}
+      failed: ${{ steps.check_state.outputs.failed }}
+      pending: ${{ steps.check_state.outputs.pending }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Full history needed for complete PR diff review
 
       - name: Determine PR number
         id: pr_number
@@ -100,6 +124,8 @@ jobs:
           # merge path via the pull_request_review event. Refusing fork PRs
           # here closes the chain at its first link, regardless of trigger
           # (review_requested/synchronize/@review comment/workflow_dispatch).
+          # It is in the gate, not only in the review job, because the gate
+          # runs first and the hand-back job writes to the PR.
           HEAD_REPO=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.repo.full_name')
 
           if [[ "$HEAD_REPO" != "${{ github.repository }}" ]]; then
@@ -108,6 +134,96 @@ jobs:
           fi
 
           echo "✓ PR #$PR head repo matches ${{ github.repository }}"
+
+      - name: Checkout PR head (workflow_dispatch / issue_comment)
+        # Same reason as in the review job below: those two events carry no
+        # pull_request context, so the checkout above is the default branch --
+        # and the gate would then read the DEFAULT BRANCH's required-check
+        # list, which under this project's branch rules (D-003) only moves at
+        # a release ceremony.
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'issue_comment'
+        env:
+          PR: ${{ steps.pr_number.outputs.pr }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HEAD_REF="$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.ref')"
+          git fetch origin "$HEAD_REF"
+          git checkout "$HEAD_REF"
+
+      - name: Wait for the required checks on this head
+        id: check_state
+        env:
+          PR: ${{ steps.pr_number.outputs.pr }}
+          GH_TOKEN: ${{ github.token }}
+          WAIT_MINUTES: ${{ vars.REVIEW_CI_WAIT_MINUTES || '60' }}
+        run: |
+          set -euo pipefail
+
+          # load_config is deliberately NOT used: the two values the check
+          # read needs are the repository's own halves, and requiring the
+          # project config here would make the gate fail on a missing project
+          # variable -- i.e. jam every review to protect against a rare wasted
+          # one, which is the trade this whole path refuses.
+          source scripts/agents/lib/gh_project.sh
+          REPO_OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          export REPO_OWNER REPO_NAME
+
+          HEAD_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.head.sha')"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          STATE_BLOCK="$(await_required_checks "$HEAD_SHA" "$((WAIT_MINUTES * 60))" 60 300)"
+          echo "$STATE_BLOCK"
+
+          STATE="$(printf '%s\n' "$STATE_BLOCK" | sed -n 's/^state=//p')"
+          FAILED="$(printf '%s\n' "$STATE_BLOCK" | sed -n 's/^failed=//p')"
+          PENDING="$(printf '%s\n' "$STATE_BLOCK" | sed -n 's/^pending=//p')"
+
+          case "$STATE" in
+            failed)
+              DECISION="failed"
+              echo "::warning::PR #$PR head $HEAD_SHA has failing required checks ($FAILED) -- no review invocation will be spent"
+              ;;
+            timeout)
+              DECISION="timeout"
+              echo "::warning::PR #$PR head $HEAD_SHA still has pending required checks ($PENDING) after ${WAIT_MINUTES}m"
+              ;;
+            *)
+              # clear, and also `unknown` -- an unreadable check list or a
+              # GitHub blip proceeds exactly as every review did before this
+              # gate existed (see required_check_state's fail-open note).
+              DECISION="proceed"
+              echo "::notice::PR #$PR head $HEAD_SHA is reviewable (state=$STATE)"
+              ;;
+          esac
+
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+
+  claude-review:
+    needs: head-gate
+    if: needs.head-gate.outputs.decision == 'proceed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for complete PR diff review
+
+      - name: Determine PR number
+        id: pr_number
+        env:
+          PR_FROM_GATE: ${{ needs.head-gate.outputs.pr }}
+        run: echo "pr=$PR_FROM_GATE" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR head (workflow_dispatch / issue_comment)
         # workflow_dispatch and issue_comment have no pull_request context, so
@@ -154,41 +270,42 @@ jobs:
             echo "python_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The review no longer re-runs the gates (owner decision, 2026-08-18).
-      # AGENTS.md already required the developer to land black/ruff/mypy/pytest
-      # green before submitting; the review workflow re-ran all of them anyway,
-      # on every round, so an N-round issue paid N times for the same answer --
-      # and a whole-tree lint failed PRs over pre-existing errors they never
-      # touched (#3869 lost a cycle to a B033 in a file it did not open).
-      # CI owns the gates now. The reviewer reads the verdict and reviews code.
-      - name: Read CI verdict for this PR
-        id: ci
+      # The review no longer re-runs the gates (owner decision, 2026-08-18),
+      # and since #3971 it no longer READS them either. AGENTS.md already
+      # required the developer to land black/ruff/mypy/pytest green before
+      # submitting; the review workflow re-ran all of them anyway, on every
+      # round, so an N-round issue paid N times for the same answer -- and
+      # then, having stopped re-running them, spent a third of its blocking
+      # findings relaying the verdict instead. The `gate` job above decides
+      # that now: this job only ever runs on a head whose required checks are
+      # green (or on a head the developer overrode, below).
+      - name: Read the developer's CI override claim, if any
+        id: ci_override
         env:
           PR: ${{ steps.pr_number.outputs.pr }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          HEAD_SHA=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.sha')
 
-          # Own results only: the review's own check is in this list and would
-          # otherwise report itself as pending forever.
-          gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs" \
-            --paginate --jq '.check_runs[] | select(.name != "claude-review")
-              | "\(.name)=\(.conclusion // "pending")"' \
-            | sort -u > /tmp/ci-checks.txt
-
-          FAILED=$(grep -cE "=(failure|timed_out|cancelled)$" /tmp/ci-checks.txt || true)
-          PENDING=$(grep -cE "=pending$" /tmp/ci-checks.txt || true)
-
-          {
-            echo "failed=$FAILED"
-            echo "pending=$PENDING"
-            echo "summary<<NYXGPT_CI_EOF"
-            sed 's/=/: /' /tmp/ci-checks.txt
-            echo "NYXGPT_CI_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "CI: $FAILED failing, $PENDING pending"
+          # `developer_submit_for_review.sh --ci-override` writes this marker
+          # into the PR body when it submits over a failing required check.
+          # It is a CLAIM (typically "the same failure reproduces on the base
+          # branch"), and the reviewer's job is to verify it -- which is why
+          # it is surfaced here rather than silently trusted.
+          BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.body // ""')"
+          if [[ "$BODY" == *"<!-- nyxgpt-ci-override -->"* ]]; then
+            CLAIM="$(printf '%s\n' "$BODY" | sed -n '/<!-- nyxgpt-ci-override -->/,$p')"
+            {
+              echo "present=true"
+              echo "claim<<NYXGPT_OVERRIDE_EOF"
+              printf '%s\n' "$CLAIM"
+              echo "NYXGPT_OVERRIDE_EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::PR #$PR carries a developer CI override -- the review must verify its stated reason"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "claim=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check test coverage
         id: test_coverage
@@ -333,33 +450,49 @@ jobs:
           prompt: |
             Review PR #${{ steps.pr_number.outputs.pr }} according to the review-agent charter and runbook.
 
-            ## Test and Linter Results (REQUIRED for APPROVE)
+            ## CI state is not your job (#3971)
 
-            **CI verdict for this PR head** (${{ steps.ci.outputs.failed }} failing,
-            ${{ steps.ci.outputs.pending }} pending):
+            **The required checks on this head are green.** A gate ran before
+            you: a head with a failing required check is refused at submit and
+            handed back to the developer, and a head whose checks are still
+            pending is waited on, not reviewed. You are only ever invoked on a
+            head that passed that gate.
 
-            ```
-            ${{ steps.ci.outputs.summary }}
-            ```
-
-            You did NOT run these yourself, and you must not: the developer is
-            required to land them green before submitting (AGENTS.md), and CI
-            runs each gate once per push. Judge them from the verdict above.
-
-            - If any check is **failing**, that is a blocking finding on its own
-              and the decision is REQUEST_CHANGES -- name the failing check.
-            - If checks are still **pending**, say so and do not APPROVE on the
-              assumption they will pass.
-            - A check failing for a reason the diff did not cause is still
-              reported, but it belongs to whoever owns that breakage; do not
-              demand this PR carry an unrelated fix unless it blocks the merge.
+            So do NOT run the gates, do NOT read the check list, and do NOT
+            report check state. "CI is red", "N checks pending", "the web
+            coverage gate fails", "<job> fails on this head" are NOT findings
+            any more -- they are machine-observable facts the PR page already
+            shows, and relaying one costs a reject round plus a re-fix round
+            (~18M tokens) to say what a glance at the PR says for free. That
+            relay was ~36% of all blocking findings in the 2026-08-13..19
+            window; this instruction exists to end it.
 
             Your job is the code: correctness, security, maintainability, the
             acceptance criteria, and whether the tests that exist are the right
-            ones. Re-running them tells you nothing you cannot read above.
+            ones.
+
+            ${{ steps.ci_override.outputs.present == 'true' && format('
+            ### A developer CI override is on this PR -- VERIFY IT
+
+            This PR was submitted over a failing required check under an
+            explicit developer override. The stated reason is a CLAIM, not an
+            accepted exception, and verifying it IS your job (unlike the check
+            state itself):
+
+            ```
+            {0}
+            ```
+
+            Check the claim against reality -- e.g. `gh api
+            repos/${{ github.repository }}/commits/<base-sha>/check-runs` for
+            the same check on the base branch, or the check''s own log. If the
+            reason holds, say so in your review and move on. If it does not
+            hold (the failure is this PR''s, or nothing supports the claim),
+            that IS a blocking finding: cite what you checked and what you
+            found. An override is never accepted silently.
+            ', steps.ci_override.outputs.claim) || '' }}
 
             MANDATORY: You MUST REQUEST_CHANGES if:
-            - Any CI check on this PR head is failing (name it)
             - Source code changed WITHOUT test updates (tests_updated=false)
             - User-facing code changed WITHOUT documentation updates
               (user_facing_undocumented=true)
@@ -375,8 +508,8 @@ jobs:
               the tree, without fixing the class or reporting the search
               (generality gate, review-runbook §1e)
 
-            Do not APPROVE until CI is green, tests are updated, AND
-            documentation is complete.
+            Do not APPROVE until tests are updated AND documentation is
+            complete. CI is not on that list: the gate already answered it.
 
             ## Inverse-claims check (REQUIRED, review-runbook.md §1a, #3744)
 
@@ -566,10 +699,11 @@ jobs:
             ${{ steps.previous_review.outputs.is_rereview == 'true' &&
                '[For re-reviews: State whether fixes resolved previous issues]' || '' }}
 
-            ### Test/Linter Results
-            - All tests: [PASS/FAIL]
-            - All linters: [PASS/FAIL]
-            [If any failed, this BLOCKS APPROVE]
+            ### CI State
+            - Required checks on this head: GREEN (the gate would not have
+              invoked you otherwise -- do not re-check, do not report)
+            - Developer CI override present: [NO / YES + whether the stated
+              reason held, and what you checked to decide]
 
             ### Test Coverage
             - Source code changed: [YES/NO]
@@ -663,7 +797,6 @@ jobs:
             IMPORTANT:
             - The first line MUST be exactly "## Code Review - APPROVE" or "## Code Review - REQUEST_CHANGES"
             - MUST REQUEST_CHANGES if:
-              * Tests or linters failed
               * Source code changed without test updates
               * User-facing code changed without documentation updates
               * The change falsifies a claim elsewhere in the tree and the PR
@@ -861,3 +994,93 @@ jobs:
           gh pr comment "$PR" --body "⏳ **Review Agent**: This review run hit the Claude usage limit. **Auto-retry $((ATTEMPTS + 1))/8 scheduled** for ~$RETRY_AT_UTC — the retry cron will re-request the review automatically.
           <!-- usage-limit-retry-after: $RETRY_AFTER -->"
           exit 0
+
+  # The head is not reviewable, and saying so costs no review invocation.
+  #
+  # `failed`  -> a red head is the developer's problem (#3971): hand it back by
+  #              assignment, which is the workflow lever (D-028). This is NOT a
+  #              REQUEST_CHANGES round -- no verdict is posted, the review cycle
+  #              counter is untouched, and the 3-strike escalation is unchanged.
+  # `timeout` -> required checks never concluded. Nobody is handed anything;
+  #              the PR is told once and the owner is notified.
+  #
+  # Bounded per head SHA inside the script, so a developer round that
+  # re-requests review on the same unchanged head escalates rather than
+  # ping-ponging.
+  head-not-reviewable:
+    needs: head-gate
+    if: needs.head-gate.outputs.decision == 'failed' || needs.head-gate.outputs.decision == 'timeout'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    env:
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+      # #3695 human-channel escalation, best-effort: absent secrets degrade to
+      # the PR comment alone (notify_human_escalation).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout PR head (workflow_dispatch / issue_comment)
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'issue_comment'
+        env:
+          PR: ${{ needs.head-gate.outputs.pr }}
+        run: |
+          set -euo pipefail
+          HEAD_REF="$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.ref')"
+          git fetch origin "$HEAD_REF"
+          git checkout "$HEAD_REF"
+
+      - name: Write ephemeral config.ini
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
+
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_AUTOPILOT=${{ vars.SPRINT_AUTOPILOT }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
+          EOF
+
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+
+      - name: Report the unreviewable head
+        shell: bash
+        env:
+          # Every value reaches the script as an argument, never as substituted
+          # shell source (#3820/#3837).
+          PR: ${{ needs.head-gate.outputs.pr }}
+          HEAD_SHA: ${{ needs.head-gate.outputs.head_sha }}
+          DECISION: ${{ needs.head-gate.outputs.decision }}
+          FAILED: ${{ needs.head-gate.outputs.failed }}
+          PENDING: ${{ needs.head-gate.outputs.pending }}
+        run: |
+          set -euo pipefail
+          if [[ "$DECISION" == "failed" ]]; then
+            NAMES="$FAILED"
+          else
+            NAMES="$PENDING"
+          fi
+          bash scripts/agents/review_head_gate_action.sh "$PR" "$HEAD_SHA" "$DECISION" "$NAMES"
