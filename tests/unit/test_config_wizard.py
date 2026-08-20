@@ -349,7 +349,10 @@ def test_apply_updates_lands_0600_on_a_freshly_created_file(tmp_path):
     leave that secret at default umask permissions.
     """
     cfg_path = tmp_path / "nested" / "config.ini"
-    config_wizard.apply_updates(cfg_path, {"auth": {"api_key": "supersecret"}})
+    config_wizard.apply_updates(
+        cfg_path,
+        {"auth": {"api_key": "supersecret"}},  # pragma: allowlist secret
+    )
     assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
 
 
@@ -414,8 +417,26 @@ def test_wizard_schema_covers_every_active_key_in_example_config():
         assert known_keys == set(parser.options(section)), section
 
 
-def test_excluded_sections_are_the_documented_four():
-    assert frozenset({"paths", "openai", "github", "cloud"}) == config_wizard.EXCLUDED_SECTIONS
+def test_excluded_sections_are_exactly_the_documented_set():
+    """Exclusion is an owner decision per section, so the set is pinned, not derived.
+
+    Every entry costs the user a section they cannot see or repair in the
+    wizard -- the exact bug #3388 was filed for -- so adding one is a
+    deliberate act with a recorded reason in the comment on
+    `EXCLUDED_SECTIONS`, and this test is what makes a silent addition fail.
+    `homebrew` and `pypi` joined on 2026-08-20 (owner decision) when
+    `example.config.ini` was reconciled against a real config.ini: they carry
+    release-engineering credentials that no running instance reads, and
+    `homebrew_tap_token` would otherwise have derived `secret=False` and been
+    served in cleartext by `GET /api/v1/config/sections`.
+
+    Named for the set rather than its size, because the previous name
+    ("...the_documented_four") had to change the moment the count did.
+    """
+    assert (
+        frozenset({"paths", "openai", "github", "cloud", "homebrew", "pypi"})
+        == config_wizard.EXCLUDED_SECTIONS
+    )
 
 
 def test_rag_gains_full_tuning_surface_not_just_original_six_fields():
@@ -770,6 +791,9 @@ def test_apply_updates_write_lands_0600_through_the_atomic_replace(tmp_path):
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text("[auth]\nenabled = false\n", encoding="utf-8")
 
-    config_wizard.apply_updates(cfg_path, {"auth": {"api_key": "supersecret"}})
+    config_wizard.apply_updates(
+        cfg_path,
+        {"auth": {"api_key": "supersecret"}},  # pragma: allowlist secret
+    )
 
     assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"

@@ -1242,6 +1242,24 @@ rather than mechanism, and nothing can enforce them.
   Source: #3867; `cloud_deploy.MACOS_NO_TARGET_MESSAGE`; `docs/cloud.md`
   §EC2 Mac targets.
 
+- **P-004** · 2026-08-20 · owner — `GH_TOKEN_NYXAGENT` and `QA_AGENT_TOKEN`
+  (Actions secrets, and `[github]` keys in the owner's `config.ini`) are
+  **groundwork for the future nyxAgent product**, not nyxGPT configuration.
+  Nothing in this repository reads either one, and that is correct: they are
+  deliberately not declared in `example.config.ini`, not in
+  `SECRETS_SYNC_MANIFEST`, and **not to be removed**.
+  Reason: reconciling config.ini against `example.config.ini` on 2026-08-20
+  found seven undeclared keys and asked, of each, "is this live or dead?" For
+  these two the honest repo-wide answer is "no reader anywhere", and the
+  conclusion that invites — delete the key, revoke the secret — is wrong.
+  The same sweep found `[paths] compose_file`, where "no reader" *did* mean
+  retired (#3621), so the distinction is not inferable from the code.
+  `RELEASE_TRACKING_TOKEN` is a third unread secret whose disposition is not
+  settled; it is not covered by this entry.
+  Revisit when: nyxAgent has its own repository and configuration, at which
+  point these move there rather than being deleted.
+  Source: owner in session, 2026-08-20; `example.config.ini` §`[github]`.
+
 ## Open questions
 
 - **Q-001** · 2026-08-14 · developer-agent (#3774) — Should the ledger be

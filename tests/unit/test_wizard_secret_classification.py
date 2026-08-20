@@ -271,3 +271,76 @@ def test_a_nonblank_submission_of_a_secret_still_rotates_it(tmp_path: Path) -> N
     text = cfg_path.read_text(encoding="utf-8")
     assert "xoxb-new-token" in text
     assert "xoxb-old-token" not in text
+
+
+#: Key-name shapes that mean "credential" in this file's vocabulary. Matched
+#: as whole trailing words (or the entire key) so `cassandra_keyspace` and
+#: `secretsmanager_id` are not swept in by a bare substring test.
+_CREDENTIAL_SUFFIXES = ("_token", "_password", "_secret", "_key", "_pat")
+_CREDENTIAL_KEYS = frozenset({"dsn", "pat", "token", "password", "secret"})
+
+
+def _looks_like_a_credential(key: str) -> bool:
+    """Whether `key`'s *name* alone says it holds a credential."""
+    lowered = key.lower()
+    return lowered in _CREDENTIAL_KEYS or lowered.endswith(_CREDENTIAL_SUFFIXES)
+
+
+def test_no_credential_shaped_wizard_field_is_declared_secret_false() -> None:
+    """Catch a *newly added* credential, which the test above structurally cannot.
+
+    `test_no_wizard_field_this_codebase_calls_a_secret_is_declared_secret_false`
+    only sees keys some *other* reader already classifies -- the sync
+    manifest, the summary redactions, `GUIDED_SECRETS`. A credential nobody
+    has wired into any of those yet is invisible to it, and that is exactly
+    the state every credential is in on the commit that introduces it. Since
+    `WIZARD_SCHEMA` is derived from `example.config.ini` and
+    `_build_field_spec` reads `secret = override.secret if override else
+    False`, adding `some_token =` to a non-excluded section is enough, on its
+    own, to publish it in cleartext from `GET /api/v1/config/sections`.
+
+    Reconciling config.ini against `example.config.ini` on 2026-08-20 was
+    about to do precisely that: `[homebrew] homebrew_tap_token` had to be
+    declared, it is a credential, and it appears in none of the three
+    sensitivity sources. `[homebrew]` was put in `EXCLUDED_SECTIONS` instead
+    (owner decision) -- which is one of the two fixes this test accepts. The
+    fault injection is in the PR: drop that exclusion and this test names
+    `homebrew.homebrew_tap_token`.
+
+    So this guard is deliberately a *name* heuristic, and deliberately lives
+    only in the test. `_build_field_spec` stays explicit -- inferring secrecy
+    from spelling in production would be a quiet, unreviewable rule. Here it
+    is loud: the failure names the field and the two ways to satisfy it.
+    """
+    offenders = sorted(
+        full_key
+        for full_key, field in _wizard_fields().items()
+        if _looks_like_a_credential(full_key.split(".", 1)[1]) and not field.secret
+    )
+    assert offenders == [], (
+        "credential-shaped fields are wizard-editable with secret=False, so "
+        "GET /api/v1/config/sections would return them in cleartext: "
+        f"{offenders}. Fix by adding a _FIELD_OVERRIDES entry with "
+        "secret=True, or by excluding the whole section in "
+        "config_wizard.EXCLUDED_SECTIONS if it is not an instance setting."
+    )
+
+
+def test_the_credential_heuristic_still_matches_something() -> None:
+    """Guard the guard: a broken heuristic would make the test above vacuous.
+
+    If `_looks_like_a_credential` stopped matching (a typo in the suffix
+    tuple, say), the test above would pass by inspecting an empty set. Pin it
+    to the fields it is known to cover today.
+    """
+    covered = {
+        full_key
+        for full_key in _wizard_fields()
+        if _looks_like_a_credential(full_key.split(".", 1)[1])
+    }
+    assert "auth.api_key" in covered
+    assert "monitoring.slack_bot_token" in covered
+    assert "monitoring.grafana_admin_password" in covered
+    # Near-misses that must NOT be swept in by a looser substring test.
+    assert not _looks_like_a_credential("cassandra_keyspace")
+    assert not _looks_like_a_credential("secretsmanager_id")

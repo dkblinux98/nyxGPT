@@ -94,7 +94,29 @@ _EXAMPLE_CONFIG_PATH = _resolve_example_config_path()
 # going through it could silently desync from where the key pair actually
 # lives. Every other section is in scope: when in doubt the wizard covers a
 # section rather than excluding it (owner decision, #3388).
-EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github", "cloud"})
+#
+# `homebrew` and `pypi` join them for the same reason as `github` (owner
+# decision, 2026-08-20): they hold release-engineering credentials for the
+# tap push and a manual PyPI upload -- things CI and the owner's workstation
+# use, never something a running nyxGPT instance reads.
+#
+# `homebrew` was declared in `example.config.ini` when the drift between it
+# and a real config.ini was reconciled, and declaring it *without* excluding
+# it would have created a wizard section whose `homebrew_tap_token` derives
+# `secret=False` and so would come back in cleartext from
+# `GET /api/v1/config/sections` -- #3947 again, and invisible to the guard
+# that caught #3947 (that guard reads sensitivity from the sync manifest, the
+# summary redactions and `GUIDED_SECRETS`, and this token is in none of
+# them). The general guard for *that* gap is
+# `test_no_credential_shaped_wizard_field_is_declared_secret_false`.
+#
+# `pypi` is listed here pre-emptively: it has no keys in
+# `example.config.ini` today (CI publishes via PyPI Trusted Publishing, so
+# there is no token for the product to carry), which makes this entry inert.
+# It is kept so that declaring `[pypi] pypi_token` later -- the shape a real
+# config.ini already has -- cannot reintroduce the leak in the one commit
+# where nothing else classifies it yet.
+EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github", "cloud", "homebrew", "pypi"})
 
 
 class WizardValidationError(ValueError):
