@@ -5940,5 +5940,158 @@
    "PR body is #3825's template, not this change's description",
    "`tests/gh_stub_issue_hygiene.py` change is a formatting-only reflow \u2014 fine, no action."
   ]
+ },
+ {
+  "issue": null,
+  "pr": 3957,
+  "title": "[dkblinux98/nyxGPT] fix: the escalation gate counts lanes, not assignees (PR #3957)",
+  "module": "api",
+  "date": "2026-08-19T16:07:35Z",
+  "critical": [],
+  "medium": [
+   "Falsified definition of \"unresolved escalation\" left standing in four places (\u00a71a, blocking)"
+  ],
+  "minor": [
+   "Shell-quoting artifact committed into a comment",
+   "Release-exemption test asserts less than its name claims",
+   "Empty-but-readable Status counts as an escalation",
+   "Per-issue GraphQL cost",
+   "Stale `ref` default on `code_scan_report.yml`"
+  ]
+ },
+ {
+  "issue": null,
+  "pr": 3958,
+  "title": "[dkblinux98/nyxGPT] docs(ledger): the queue kick is an assignment, not a comment (S-003) (PR #3958)",
+  "module": "documentation",
+  "date": "2026-08-19T16:47:42Z",
+  "critical": [],
+  "medium": [
+   "S-003 reuses a relocated (taken) entry ID \u2014 renumber to the allocator's answer and update the pointer"
+  ],
+  "minor": [
+   "Placement",
+   "Pre-existing staleness, not this PR's debt"
+  ]
+ },
+ {
+  "issue": 3944,
+  "pr": 3960,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard save writes an unparseable config.ini and bricks the API (#3944) (PR #3960)",
+  "module": "web-ui",
+  "date": "2026-08-19T17:22:21Z",
+  "critical": [],
+  "medium": [
+   "Pre-auth disclosure of raw config.ini line content in `config_unreadable` responses"
+  ],
+  "minor": [
+   "None that block. The smoke script's one-line-per-option count (`line.strip().lower().startswith(KEY)`) would also count a hypothetical `slack_bot_token_extra` key \u2014 harmless in this fixture, not worth a change."
+  ]
+ },
+ {
+  "issue": 3950,
+  "pr": 3963,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: dev mode is local-only -- no way to deploy a working tree to cloud (#3950) (PR #3963)",
+  "module": "cli",
+  "date": "2026-08-19T17:28:32Z",
+  "critical": [],
+  "medium": [
+   "Falsified sentence stranded inside the new dev-mode docs section (\u00a71a)",
+   "The human form of `nyxgpt cloud status` does not report the dev build, and this PR's docs say it does"
+  ],
+  "minor": [
+   "`ARCHIVE_TIMEOUT`/`TRANSFER_TIMEOUT` expiry surfaces as a raw `subprocess.TimeoutExpired` traceback rather than a `CloudCommandError`; these paths are CLI-only (not handler-reachable, so D-027 does not bind), but a caught-and-named timeout would read better. Does not block.",
+   "The PR body is an unfilled template (empty Summary, unchecked boxes). AC-1's \"state the decision in the PR\" is met in substance by D-033 riding in the diff, but the body could say so in a sentence. Does not block."
+  ]
+ },
+ {
+  "issue": 3944,
+  "pr": 3960,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard save writes an unparseable config.ini and bricks the API (#3944) (PR #3960)",
+  "module": "web-ui",
+  "date": "2026-08-19T17:46:49Z",
+  "critical": [],
+  "medium": [
+   "Failing CI check on this head: `CodeQL` (check run 96165751989)",
+   "Inverse-claims (\u00a71a): `docs/configuration.md:176-177` still claims \"the wizard shows the offending line rather than a generic error\""
+  ],
+  "minor": [
+   "Pre-auth disclosure of the absolute config path (and thus the OS username)",
+   "Seven checks were still in progress at review time (`artifact-install`, `k8s-*` smokes, `linux-native-*`, `session-backend-fault-injection`); all completed green on the previous head and none covers the changed path more directly than the green `config-wizard-save`. Noted for completeness \u2014 the resubmission will get a fresh full run anyway."
+  ]
+ },
+ {
+  "issue": 3956,
+  "pr": 3965,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented (#3956) (PR #3965)",
+  "module": "cli",
+  "date": "2026-08-19T18:18:05Z",
+  "critical": [],
+  "medium": [
+   "`--no-kubernetes` is documented as a supported transition but is neither implemented nor refused"
+  ],
+  "minor": [
+   "`docs/terraform.md:278`: the related-docs row still summarizes kubernetes.md as \"Local cluster (kind/minikube/k3s), canary rollout of the API\" \u2014 worth extending while editing docs anyway.",
+   "The deploy-failure `bridge_hint` (cloud_deploy.py:1649) says \"`nyxgpt cloud ops doctor` reports both\" \u2014 `doctor` has no awareness of the bridge units; it reports Pod state and the loopback probe, which loosely covers \"both\", but nothing an operator can run names the bridge unit as the thing to inspect. Consider having the k8s-mode doctor (or `cloud ops status`) report the bridge units' active state.",
+   "`render_k3s_bootstrap`'s k3s install is skipped when `command -v k3s` already succeeds, so changed `K3S_SERVER_FLAGS` would not reach an instance whose k3s predates them; harmless today (a re-deploy on the same instance has the same NODE_IP and same flags) \u2014 a comment noting the assumption would help the next editor."
+  ]
+ },
+ {
+  "issue": 3956,
+  "pr": 3965,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented (#3956) (PR #3965)",
+  "module": "cli",
+  "date": "2026-08-19T19:05:38Z",
+  "critical": [],
+  "medium": [
+   "`k3s-cloud-smoke` fails deterministically at step 1/7: the kubeconfig address is awk field $5, not $4"
+  ],
+  "minor": [
+   "`scripts/k3s-cloud-smoke.sh:146` reuses `$NODE_IP` in a `grep -q \"${NODE_IP}:6443\"` where the dots are regex metacharacters \u2014 harmless here (dots match themselves too, and the string comes from the kubeconfig), but `grep -qF` would say what is meant."
+  ]
+ },
+ {
+  "issue": 3956,
+  "pr": 3965,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented (#3956) (PR #3965)",
+  "module": "cli",
+  "date": "2026-08-19T19:12:42Z",
+  "critical": [],
+  "medium": [
+   "`k3s-cloud-smoke` still failing \u2014 no fix was pushed",
+   "CodeQL check failing: 1 new high-severity alert on a line this PR adds"
+  ],
+  "minor": [
+   "(carried, does not block) `scripts/k3s-cloud-smoke.sh:146`: `grep -q \"${NODE_IP}:6443\"` treats dots as regex metacharacters; `grep -qF` would say what is meant."
+  ]
+ },
+ {
+  "issue": 3956,
+  "pr": 3965,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented (#3956) (PR #3965)",
+  "module": "cli",
+  "date": "2026-08-19T19:38:27Z",
+  "critical": [],
+  "medium": [
+   "CodeQL check failing on this head \u2014 previous Medium never addressed"
+  ],
+  "minor": [
+   "None new. (Pending long smokes at review time are listed under Test/Linter Results; they were green on this PR's previous heads and nothing in this round's delta touches their surfaces.)"
+  ]
+ },
+ {
+  "issue": 3947,
+  "pr": 3968,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard returns the Slack bot token in cleartext -- secret=False on a secret (#3947) (PR #3968)",
+  "module": "web-ui",
+  "date": "2026-08-19T21:02:33Z",
+  "critical": [],
+  "medium": [
+   "Narrow patch on a general defect: four more `env_sync` unit tests reach the real `~/.nyxGPT` and the live Docker daemon (\u00a71e)"
+  ],
+  "minor": [
+   "`code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`, so a default dispatch reports a two-releases-old branch (my first dispatch did, TOTAL_OPEN=0 for v2.1.0 \u2014 misleadingly clean). Not this PR's breakage and not blocking here; it belongs to whoever owns that workflow (worth an agent-process issue: default to `vars.RELEASE_BRANCH`).",
+   "`docs/configuration.md:379`'s note that `base_url` may carry basic-auth credentials, with the field left non-secret \u2014 the audit called this judgment call out explicitly rather than hiding it; I agree with the call (masking the endpoint would make the wizard's primary field unreadable) and note it here so the owner sees it was weighed. Does not block."
+  ]
  }
 ]

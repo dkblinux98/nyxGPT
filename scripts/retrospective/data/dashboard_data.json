@@ -1,33 +1,33 @@
 {
- "generated_at": "2026-08-19T10:34:21.908729+00:00",
+ "generated_at": "2026-08-20T10:25:57.826780+00:00",
  "modules": {
   "api": {
-   "C": 15,
-   "M": 98,
-   "m": 112,
-   "rounds": 53,
-   "issues": 23
+   "C": 14,
+   "M": 94,
+   "m": 107,
+   "rounds": 49,
+   "issues": 22
   },
   "web-ui": {
    "C": 0,
-   "M": 9,
-   "m": 12,
-   "rounds": 7,
-   "issues": 7
+   "M": 13,
+   "m": 17,
+   "rounds": 10,
+   "issues": 9
   },
   "cli": {
    "C": 8,
-   "M": 36,
-   "m": 51,
-   "rounds": 26,
-   "issues": 13
+   "M": 43,
+   "m": 59,
+   "rounds": 31,
+   "issues": 15
   },
   "documentation": {
    "C": 0,
-   "M": 6,
-   "m": 5,
-   "rounds": 3,
-   "issues": 1
+   "M": 7,
+   "m": 7,
+   "rounds": 4,
+   "issues": 2
   },
   "observability": {
    "C": 5,
@@ -52,12 +52,6 @@
   }
  },
  "days": {
-  "2026-08-12": {
-   "C": 1,
-   "M": 5,
-   "m": 10,
-   "rounds": 5
-  },
   "2026-08-13": {
    "C": 2,
    "M": 7,
@@ -90,9 +84,9 @@
   },
   "2026-08-19": {
    "C": 20,
-   "M": 75,
-   "m": 93,
-   "rounds": 45
+   "M": 88,
+   "m": 113,
+   "rounds": 55
   }
  },
  "issues": [
@@ -380,75 +374,6 @@
     [
      "Medium",
      "Inverse-claims (\u00a71a): actor-gate table cells still falsified \u2014 carried from three prior rounds, unaddressed"
-    ]
-   ]
-  },
-  {
-   "issue": 3730,
-   "pr": 3733,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: Drain-gated failure processing and automated release ceremony trigger (#3730) (PR #3733)",
-   "module": "api",
-   "rounds": 4,
-   "C": 1,
-   "M": 4,
-   "m": 9,
-   "last": "2026-08-12T19:13:55Z",
-   "findings": [
-    [
-     "Critical",
-     "Drain gate deadlocks whenever an acceptance failure is filed against a feature in Acceptance Testing"
-    ],
-    [
-     "Medium",
-     "`acceptance_drain_gate.yml` `issues: [closed]` trigger carries a secret-backed `GH_TOKEN` with no actor gate (#3600 rule)"
-    ],
-    [
-     "Minor",
-     "`acceptance_lane_snapshot` (`scripts/agents/lib/gh_project.sh:857-880`) creates two `mktemp` files with no trap; under the sourced `set -e`, a mid-loop `graphql` failure leaks them. A `trap`/local cleanup would tidy this."
-    ],
-    [
-     "Minor",
-     "`release_ceremony_watch.sh:141-151`: if the marker comment fails to post, the ceremony proceeds anyway; a later poll then re-fires, fails at the Phase 0 gate (tag taken), and DMs the owner a false alarm. Acknowledged in a code comment; consider aborting (safe \u2014 nothing irreversible has happened yet) instead of continuing when the claim can't be recorded."
-    ],
-    [
-     "Minor",
-     "`handle_acceptance_failure.yml` / `handle_improvement.yml`: the `drain_gate_hold` fallback warning asserts a specific cause \u2014 \"(it is already filed in the lane)\" \u2014 but `drain_gate_hold` also fails when `set_issue_status` fails for any other reason (e.g. the `Acceptance Failed` option missing from the project). Word it as uncertain."
-    ],
-    [
-     "Minor",
-     "`release_ceremony.yml`: an unset `RELEASE_CEREMONY_TOKEN` silently falls back to the scrummaster token and only fails mid-ceremony at the Phase 1 master push. A fail-fast check at trigger time (\"ceremony token not configured\") would fail before the marker is posted rather than after."
-    ],
-    [
-     "Medium",
-     "Rework exemption over-includes held Improvements \u2014 the gate can open while a feature is still genuinely under test"
-    ],
-    [
-     "Minor",
-     "`drain_gate_rework_features` rebuilds its JSON accumulator with a full `jq` re-parse per held issue (O(n\u00b2)); harmless at realistic lane sizes, tidy only if convenient while touching the function for the Medium fix."
-    ],
-    [
-     "Medium",
-     "Rework exemption over-includes held Improvements (carried over, unaddressed)"
-    ],
-    [
-     "Minor",
-     "8a9b10ef's commit message notes a remaining follow-up it could not apply itself: pre-commit's mypy hook should get `--cache-dir=.mypy_cache_precommit` so the isolated mirrors-mypy venv stops poisoning the shared `.mypy_cache` at the source (the `.pre-commit-config.yaml` edit was blocked as a sensitive file). Worth an owner-applied change or a small follow-up issue; the `--no-incremental` pins make the gate safe regardless."
-    ],
-    [
-     "Minor",
-     "(Carried over) `drain_gate_rework_features` rebuilds its JSON accumulator with a full `jq` re-parse per held issue (O(n\u00b2)); tidy only if convenient while touching the function for the Medium fix."
-    ],
-    [
-     "Medium",
-     "Rework exemption over-includes held Improvements (carried over, second round unaddressed)"
-    ],
-    [
-     "Minor",
-     "(Carried over) pre-commit's mypy hook should eventually get `--cache-dir=.mypy_cache_precommit` to stop poisoning the shared `.mypy_cache` at the source; the `--no-incremental` pins keep the gate safe meanwhile. Suitable as an owner-applied change or small follow-up issue."
-    ],
-    [
-     "Minor",
-     "(Carried over) `drain_gate_rework_features` rebuilds its JSON accumulator with a full `jq` re-parse per held issue (O(n\u00b2)); tidy only while touching the function for the Medium fix."
     ]
    ]
   },
@@ -1058,6 +983,63 @@
     [
      "Minor",
      "The evidence step's staged identities use `version=\"0.0.0\", channel=\"unknown\"` for the previous marker \u2014 fine for the test, but the printed \"Install identity changing\" line then reports a version transition that never happened on the real machine; cosmetic."
+    ]
+   ]
+  },
+  {
+   "issue": 3956,
+   "pr": 3965,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented (#3956) (PR #3965)",
+   "module": "cli",
+   "rounds": 4,
+   "C": 0,
+   "M": 5,
+   "m": 6,
+   "last": "2026-08-19T19:38:27Z",
+   "findings": [
+    [
+     "Medium",
+     "`--no-kubernetes` is documented as a supported transition but is neither implemented nor refused"
+    ],
+    [
+     "Minor",
+     "`docs/terraform.md:278`: the related-docs row still summarizes kubernetes.md as \"Local cluster (kind/minikube/k3s), canary rollout of the API\" \u2014 worth extending while editing docs anyway."
+    ],
+    [
+     "Minor",
+     "The deploy-failure `bridge_hint` (cloud_deploy.py:1649) says \"`nyxgpt cloud ops doctor` reports both\" \u2014 `doctor` has no awareness of the bridge units; it reports Pod state and the loopback probe, which loosely covers \"both\", but nothing an operator can run names the bridge unit as the thing to inspect. Consider having the k8s-mode doctor (or `cloud ops status`) report the bridge units' active state."
+    ],
+    [
+     "Minor",
+     "`render_k3s_bootstrap`'s k3s install is skipped when `command -v k3s` already succeeds, so changed `K3S_SERVER_FLAGS` would not reach an instance whose k3s predates them; harmless today (a re-deploy on the same instance has the same NODE_IP and same flags) \u2014 a comment noting the assumption would help the next editor."
+    ],
+    [
+     "Medium",
+     "`k3s-cloud-smoke` fails deterministically at step 1/7: the kubeconfig address is awk field $5, not $4"
+    ],
+    [
+     "Minor",
+     "`scripts/k3s-cloud-smoke.sh:146` reuses `$NODE_IP` in a `grep -q \"${NODE_IP}:6443\"` where the dots are regex metacharacters \u2014 harmless here (dots match themselves too, and the string comes from the kubeconfig), but `grep -qF` would say what is meant."
+    ],
+    [
+     "Medium",
+     "`k3s-cloud-smoke` still failing \u2014 no fix was pushed"
+    ],
+    [
+     "Medium",
+     "CodeQL check failing: 1 new high-severity alert on a line this PR adds"
+    ],
+    [
+     "Minor",
+     "(carried, does not block) `scripts/k3s-cloud-smoke.sh:146`: `grep -q \"${NODE_IP}:6443\"` treats dots as regex metacharacters; `grep -qF` would say what is meant."
+    ],
+    [
+     "Medium",
+     "CodeQL check failing on this head \u2014 previous Medium never addressed"
+    ],
+    [
+     "Minor",
+     "None new. (Pending long smokes at review time are listed under Test/Linter Results; they were green on this PR's previous heads and nothing in this round's delta touches their surfaces.)"
     ]
    ]
   },
@@ -1886,23 +1868,39 @@
    ]
   },
   {
-   "issue": 3735,
-   "pr": 3738,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: publish pipeline deviates from owner decisions - @3.0.0rc naming, nightly removal (#3735) (PR #3738)",
-   "module": "api",
-   "rounds": 1,
+   "issue": 3944,
+   "pr": 3960,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard save writes an unparseable config.ini and bricks the API (#3944) (PR #3960)",
+   "module": "web-ui",
+   "rounds": 2,
    "C": 0,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-12T23:40:13Z",
+   "M": 3,
+   "m": 3,
+   "last": "2026-08-19T17:46:49Z",
    "findings": [
     [
      "Medium",
-     "Web coverage gate fails: uncovered `'none'` fallback branch"
+     "Pre-auth disclosure of raw config.ini line content in `config_unreadable` responses"
     ],
     [
      "Minor",
-     "Four spellings of \"strip the rc suffix\""
+     "None that block. The smoke script's one-line-per-option count (`line.strip().lower().startswith(KEY)`) would also count a hypothetical `slack_bot_token_extra` key \u2014 harmless in this fixture, not worth a change."
+    ],
+    [
+     "Medium",
+     "Failing CI check on this head: `CodeQL` (check run 96165751989)"
+    ],
+    [
+     "Medium",
+     "Inverse-claims (\u00a71a): `docs/configuration.md:176-177` still claims \"the wizard shows the offending line rather than a generic error\""
+    ],
+    [
+     "Minor",
+     "Pre-auth disclosure of the absolute config path (and thus the OS username)"
+    ],
+    [
+     "Minor",
+     "Seven checks were still in progress at review time (`artifact-install`, `k8s-*` smokes, `linux-native-*`, `session-backend-fault-injection`); all completed green on the previous head and none covers the changed path more directly than the green `config-wizard-save`. Noted for completeness \u2014 the resubmission will get a fresh full run anyway."
     ]
    ]
   },
@@ -2816,21 +2814,125 @@
      "`tests/gh_stub_issue_hygiene.py` change is a formatting-only reflow \u2014 fine, no action."
     ]
    ]
+  },
+  {
+   "issue": null,
+   "pr": 3957,
+   "title": "[dkblinux98/nyxGPT] fix: the escalation gate counts lanes, not assignees (PR #3957)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 5,
+   "last": "2026-08-19T16:07:35Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified definition of \"unresolved escalation\" left standing in four places (\u00a71a, blocking)"
+    ],
+    [
+     "Minor",
+     "Shell-quoting artifact committed into a comment"
+    ],
+    [
+     "Minor",
+     "Release-exemption test asserts less than its name claims"
+    ],
+    [
+     "Minor",
+     "Empty-but-readable Status counts as an escalation"
+    ],
+    [
+     "Minor",
+     "Per-issue GraphQL cost"
+    ],
+    [
+     "Minor",
+     "Stale `ref` default on `code_scan_report.yml`"
+    ]
+   ]
+  },
+  {
+   "issue": null,
+   "pr": 3958,
+   "title": "[dkblinux98/nyxGPT] docs(ledger): the queue kick is an assignment, not a comment (S-003) (PR #3958)",
+   "module": "documentation",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-19T16:47:42Z",
+   "findings": [
+    [
+     "Medium",
+     "S-003 reuses a relocated (taken) entry ID \u2014 renumber to the allocator's answer and update the pointer"
+    ],
+    [
+     "Minor",
+     "Placement"
+    ],
+    [
+     "Minor",
+     "Pre-existing staleness, not this PR's debt"
+    ]
+   ]
+  },
+  {
+   "issue": 3950,
+   "pr": 3963,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: dev mode is local-only -- no way to deploy a working tree to cloud (#3950) (PR #3963)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 2,
+   "last": "2026-08-19T17:28:32Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified sentence stranded inside the new dev-mode docs section (\u00a71a)"
+    ],
+    [
+     "Medium",
+     "The human form of `nyxgpt cloud status` does not report the dev build, and this PR's docs say it does"
+    ],
+    [
+     "Minor",
+     "`ARCHIVE_TIMEOUT`/`TRANSFER_TIMEOUT` expiry surfaces as a raw `subprocess.TimeoutExpired` traceback rather than a `CloudCommandError`; these paths are CLI-only (not handler-reachable, so D-027 does not bind), but a caught-and-named timeout would read better. Does not block."
+    ],
+    [
+     "Minor",
+     "The PR body is an unfilled template (empty Summary, unchecked boxes). AC-1's \"state the decision in the PR\" is met in substance by D-033 riding in the diff, but the body could say so in a sentence. Does not block."
+    ]
+   ]
+  },
+  {
+   "issue": 3947,
+   "pr": 3968,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: wizard returns the Slack bot token in cleartext -- secret=False on a secret (#3947) (PR #3968)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-19T21:02:33Z",
+   "findings": [
+    [
+     "Medium",
+     "Narrow patch on a general defect: four more `env_sync` unit tests reach the real `~/.nyxGPT` and the live Docker daemon (\u00a71e)"
+    ],
+    [
+     "Minor",
+     "`code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`, so a default dispatch reports a two-releases-old branch (my first dispatch did, TOTAL_OPEN=0 for v2.1.0 \u2014 misleadingly clean). Not this PR's breakage and not blocking here; it belongs to whoever owns that workflow (worth an agent-process issue: default to `vars.RELEASE_BRANCH`)."
+    ],
+    [
+     "Minor",
+     "`docs/configuration.md:379`'s note that `base_url` may carry basic-auth credentials, with the field left non-secret \u2014 the audit called this judgment call out explicitly rather than hiding it; I agree with the call (masking the endpoint would make the wizard's primary field unreadable) and note it here so the owner sees it was weighed. Does not block."
+    ]
+   ]
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 3734,
-   "merged": "2026-08-12",
-   "title": "Improvement: feat: @improvement command, native blocking relationships, retro reads fields (#3731)",
-   "module": "cli"
-  },
-  {
-   "pr": 3732,
-   "merged": "2026-08-12",
-   "title": "Improvement: feat: Auto-publish an RC when the sprint reaches agentic-work-complete (#3729)",
-   "module": "api"
-  },
   {
    "pr": 3751,
    "merged": "2026-08-13",
@@ -2952,6 +3054,12 @@
    "module": "api"
   },
   {
+   "pr": 3840,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 3852,
    "merged": "2026-08-17",
    "title": "Improvement: fix: remove create_issue.sh --blocks, the retired prose relationship path (#3836)",
@@ -3012,12 +3120,6 @@
    "module": "api"
   },
   {
-   "pr": 3840,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
    "pr": 3839,
    "merged": "2026-08-17",
    "title": "chore(retro): refresh retrospective data",
@@ -3036,10 +3138,10 @@
    "module": "api"
   },
   {
-   "pr": 3900,
+   "pr": 3897,
    "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
-   "module": "cli"
+   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
+   "module": "web-ui"
   },
   {
    "pr": 3899,
@@ -3048,10 +3150,10 @@
    "module": "observability"
   },
   {
-   "pr": 3897,
+   "pr": 3900,
    "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
-   "module": "web-ui"
+   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
+   "module": "cli"
   },
   {
    "pr": 3893,
@@ -3106,6 +3208,48 @@
    "merged": "2026-08-18",
    "title": "docs(ledger): V-033 - session backend wired only in k8s; fresh-Cassandra collections failure",
    "module": "documentation"
+  },
+  {
+   "pr": 3969,
+   "merged": "2026-08-19",
+   "title": "Acceptance Failure: bug: brew install dies opaquely on a python@3.12 keg with a broken pyexpat (root cause of #3753 and #3788) (#3814)",
+   "module": "cli"
+  },
+  {
+   "pr": 3967,
+   "merged": "2026-08-19",
+   "title": "test: cover the cloud substrate row's three answers (#3956)",
+   "module": "testing"
+  },
+  {
+   "pr": 3966,
+   "merged": "2026-08-19",
+   "title": "test: cover the unrecorded-checkout branch on the cloud build source",
+   "module": "testing"
+  },
+  {
+   "pr": 3964,
+   "merged": "2026-08-19",
+   "title": "Acceptance Failure: bug: Support tickets file unlabeled and leak into the agent loop (#3811)",
+   "module": "api"
+  },
+  {
+   "pr": 3961,
+   "merged": "2026-08-19",
+   "title": "Acceptance Failure: bug: macOS target provisioning is unwrapped; cloud deploy lacks --os (#3867)",
+   "module": "cli"
+  },
+  {
+   "pr": 3959,
+   "merged": "2026-08-19",
+   "title": "Acceptance Failure: bug: Support Docs viewer ships agent and CI process docs to end users (#3809)",
+   "module": "documentation"
+  },
+  {
+   "pr": 3955,
+   "merged": "2026-08-19",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   },
   {
    "pr": 3953,
@@ -3163,24 +3307,24 @@
   }
  ],
  "cleanByModule": {
-  "cli": 9,
-  "api": 33,
-  "documentation": 3,
+  "api": 34,
+  "documentation": 4,
+  "cli": 10,
   "security": 1,
-  "observability": 5,
   "web-ui": 4,
-  "testing": 1,
+  "observability": 5,
+  "testing": 3,
   "rag": 1
  },
  "totals": {
-  "rounds": 127,
-  "C": 28,
-  "M": 205,
-  "m": 249,
-  "items": 61,
-  "clean": 57,
-  "reviewed": 117,
-  "merged": 124,
-  "unreviewed": 7
+  "rounds": 132,
+  "C": 27,
+  "M": 213,
+  "m": 259,
+  "items": 65,
+  "clean": 62,
+  "reviewed": 127,
+  "merged": 135,
+  "unreviewed": 8
  }
 }
