@@ -40,6 +40,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
@@ -145,16 +146,34 @@ class SlackChannel:
         return os.environ.get(SPEAKER_TOKEN_ENV[speaker], "")
 
     def _call(self, method: str, token: str, payload: dict) -> dict:
-        """One Slack API call. Any transport failure is a warned no-op."""
+        """One Slack API call. Any transport failure is a warned no-op.
+
+        The body is **form-encoded, not JSON**. Slack accepts a JSON body only
+        on a subset of its methods -- `chat.postMessage` is one, which is why
+        sending JSON to everything looked like it worked: threads opened and
+        turns posted, while `conversations.replies` and `chat.getPermalink`
+        answered `invalid_arguments` every time. Since `read()` degrades to
+        `[]` and `render_transcript([])` renders "No huddle turns were
+        recorded", the visible symptom was an empty transcript on the PR
+        rather than an error -- two of this class's four operations had never
+        worked, and nothing said so.
+
+        Verified against the live API on 2026-08-20 as `SSC Developer Agent`:
+        identical payloads, `ok=false invalid_arguments` as JSON and `ok=true`
+        form-encoded, for both methods. Every payload here is flat scalars,
+        which form encoding carries exactly; a future turn needing `blocks`
+        must send JSON for that call specifically and cannot simply widen
+        this one. `TestTheWireFormat` is the guard.
+        """
         if not token:
             _warn(f"{method}: no token for this speaker -- skipping")
             return {}
         request = urllib.request.Request(
             f"{SLACK_API}/{method}",
-            data=json.dumps(payload).encode("utf-8"),
+            data=urllib.parse.urlencode(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json; charset=utf-8",
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
             },
         )
         try:

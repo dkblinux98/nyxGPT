@@ -300,3 +300,85 @@ class TestTheWorkflowCLI:
         """Distinct from a Slack failure: a mistyped command is a bug in the
         workflow, and a silent 0 would hide it behind a missing turn."""
         assert hc._main(argv) == 2
+
+
+class TestTheWireFormat:
+    """Every call must be form-encoded, because Slack only takes JSON on some.
+
+    The adapter shipped sending `application/json` to all four methods.
+    `chat.postMessage` accepts that, so threads opened and turns posted and
+    the integration looked healthy; `conversations.replies` and
+    `chat.getPermalink` answered `invalid_arguments` on every call, and since
+    `read()` degrades to `[]` the only visible symptom was
+    "No huddle turns were recorded" on the PR. Two of four operations had
+    never worked.
+
+    The existing tests could not catch it: they stub the transport, and a
+    stub accepts any encoding you hand it. So these assert on the *request
+    the adapter builds* rather than on what a fake would have returned --
+    the one property a stubbed transport can still tell the truth about.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch):
+        """Run the real `_call` path, keeping each outgoing Request."""
+        import io
+        import json as _json
+
+        sent = []
+
+        class _Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def _urlopen(request, *args, **kwargs):
+            sent.append(request)
+            return _Response(_json.dumps({"ok": True, "ts": "1.2", "messages": []}).encode())
+
+        monkeypatch.setattr(hc.urllib.request, "urlopen", _urlopen)
+        return sent
+
+    def test_every_operation_sends_form_encoded_not_json(self, monkeypatch):
+        import json as _json
+        import urllib.parse
+
+        sent = self._capture(monkeypatch)
+        channel = hc.SlackChannel("C123", tokens=TOKENS)
+        channel.open_thread(1, 2, "why")
+        channel.post("1.2", "dev", "text")
+        channel.read("1.2")
+        channel.permalink("1.2")
+
+        assert len(sent) == 4, "expected one request per operation"
+        for request in sent:
+            content_type = request.headers.get("Content-type", "")
+            assert content_type.startswith("application/x-www-form-urlencoded"), (
+                f"{request.full_url} was sent as {content_type!r}; Slack answers "
+                "invalid_arguments to a JSON body on conversations.replies and "
+                "chat.getPermalink"
+            )
+            body = request.data.decode("utf-8")
+            assert "channel=C123" in urllib.parse.unquote(body)
+            with pytest.raises(_json.JSONDecodeError):
+                _json.loads(body)
+
+    def test_the_read_and_permalink_payloads_carry_their_timestamp_keys(self, monkeypatch):
+        """Form encoding flattens, so the key names are the whole contract.
+
+        `conversations.replies` wants `ts`; `chat.getPermalink` wants
+        `message_ts`. Getting either wrong returns `invalid_arguments` --
+        the same symptom the encoding bug produced, from a different cause.
+        """
+        import urllib.parse
+
+        sent = self._capture(monkeypatch)
+        channel = hc.SlackChannel("C123", tokens=TOKENS)
+        channel.read("1.2")
+        channel.permalink("1.2")
+
+        replies, permalink = (urllib.parse.parse_qs(r.data.decode()) for r in sent)
+        assert replies["ts"] == ["1.2"] and "message_ts" not in replies
+        assert permalink["message_ts"] == ["1.2"] and "ts" not in permalink
