@@ -135,8 +135,15 @@ jobs:
         # of the paid invocation would first run AFTER the merge that broke
         # them.
         shell: bash
+        # `pip install -e .` and not just pyyaml+pytest: the root
+        # `tests/conftest.py` imports `tests/log_guard.py` (-> psutil) and
+        # `nyxgpt.config`/`nyxgpt.logging`, and nothing puts `src/` on the
+        # path but the install. Without it pytest dies at collection with
+        # exit 4 (same trap branch-guard-smoke.yml documents).
         run: |
           set -euo pipefail
+          python -m pip install --quiet --upgrade pip setuptools
+          python -m pip install --quiet -e .
           python -m pip install --quiet pyyaml pytest
           python -m pytest -q -p no:cacheprovider \
             --no-header -p no:randomly \
