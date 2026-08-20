@@ -183,11 +183,13 @@ jobs:
           case "$STATE" in
             failed)
               DECISION="failed"
-              echo "::warning::PR #$PR head $HEAD_SHA has failing required checks ($FAILED) -- no review invocation will be spent"
+              echo "::warning::PR #$PR head $HEAD_SHA has failing required" \
+                "checks ($FAILED) -- no review invocation will be spent"
               ;;
             timeout)
               DECISION="timeout"
-              echo "::warning::PR #$PR head $HEAD_SHA still has pending required checks ($PENDING) after ${WAIT_MINUTES}m"
+              echo "::warning::PR #$PR head $HEAD_SHA still has pending" \
+                "required checks ($PENDING) after ${WAIT_MINUTES}m"
               ;;
             *)
               # clear, and also `unknown` -- an unreadable check list or a

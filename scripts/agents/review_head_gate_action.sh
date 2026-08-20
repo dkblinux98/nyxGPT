@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# review_head_gate_action.sh <pr> <head_sha> <state> <check_names>
+# Reports a head the review trigger cannot review, without spending a review
+# invocation on it (#3971)
 #
-# What the review trigger does when the head it was asked to review is not
-# reviewable (#3971). `state` is the answer `await_required_checks` gave:
+# Usage: review_head_gate_action.sh <pr> <head_sha> <state> <check_names>
+#
+# `state` is the answer `await_required_checks` gave:
 #
 #   failed  - a required check on this head concluded failure. A red head is
 #             the developer's problem, not the reviewer's: hand it back by

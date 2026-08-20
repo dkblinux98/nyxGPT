@@ -14,7 +14,8 @@ See review-runbook §1b.
 - PRs assigned to review-agent as reviewer
 
 ## Procedure
-1. Run CI checks on ALL code in repository (not just changed files)
+1. Do NOT run or read the CI gates. A red or pending head never reaches you
+   (#3971, `docs/reviewable-head-gate.md`), so check state is not a finding
 2. Review ALL changed files in PR (not just new changes from current cycle)
 3. Review code against acceptance criteria, quality standards, and test coverage
 4. Post structured review: "## Code Review - [APPROVE|REQUEST_CHANGES]"

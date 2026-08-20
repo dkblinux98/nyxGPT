@@ -39,6 +39,7 @@ _NOT_PRODUCT_DOCS = {
     "how-this-project-is-run",
     "live-verification-ci",
     "portability-matrix",
+    "reviewable-head-gate",
     "security-scanning-ci",
     "sprint-autopilot",
     "testing",

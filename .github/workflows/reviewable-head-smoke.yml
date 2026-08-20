@@ -115,17 +115,20 @@ jobs:
           FAIL=0
 
           if ! grep -q 'await_required_checks "\$HEAD_SHA"' "$WF"; then
-            echo "::error::$WF no longer calls await_required_checks -- the executed test then covers nothing the workflow uses."
+            echo "::error::$WF no longer calls await_required_checks --" \
+              "the executed test then covers nothing the workflow uses."
             FAIL=1
           fi
 
           if ! grep -q "needs.head-gate.outputs.decision == 'proceed'" "$WF"; then
-            echo "::error::$WF no longer gates the Claude review job on the gate's decision -- a red or pending head would reach a paid review invocation."
+            echo "::error::$WF no longer gates the Claude review job on the" \
+              "gate's decision -- a red or pending head would reach a paid review."
             FAIL=1
           fi
 
           if ! grep -q 'required_check_state "\$HEAD_SHA"' scripts/agents/developer_submit_for_review.sh; then
-            echo "::error::developer_submit_for_review.sh no longer reads the required-check state -- a red head can be submitted again."
+            echo "::error::developer_submit_for_review.sh no longer reads the" \
+              "required-check state -- a red head can be submitted again."
             FAIL=1
           fi
 

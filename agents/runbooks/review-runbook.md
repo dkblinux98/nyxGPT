@@ -2,7 +2,10 @@
 
 ## 0) Preconditions
 - PR targets active release branch.
-- CI is green (required to merge unless human exception).
+- The head's required checks are green — **and that is not yours to check**
+  (#3971). A head with a failing required check is refused at submit and
+  handed back to the developer; a head whose checks are still pending is
+  waited on. You are only ever invoked on a head that passed that gate. See §3.
 - The PR is linked to a valid issue (GitHub's closing-issue link, however it was created).
 
 ### Project hygiene
@@ -29,18 +32,11 @@ The review-agent OWNS the review process:
 ## 1) Review checklist
 
 **IMPORTANT:**
-- Run CI checks on ALL code in the repository (not just changed files)
+- Do NOT run the CI gates, and do NOT read the check list. The gate in §3
+  already answered it; the review agent stopped re-running the gates on
+  2026-08-18 and stopped reading them in #3971
 - Review ALL changed files in the PR (not just new changes from current cycle)
 - This ensures comprehensive quality coverage across the entire codebase
-- **Reproduce gate failures with the EXACT gate commands, never approximations.**
-  The web test gate is `npx vitest run --coverage` (100% line/branch/function/
-  statement thresholds) — plain `npx vitest run` passes while the coverage
-  gate fails, which has twice caused reviewers to mislabel a real coverage
-  failure as unreproducible CI flakiness and burn escalation cycles
-  (PR #3423 on 2026-07-29, PR #3486 on 2026-07-31). If a gate reports FAIL
-  and your local run passes, diff your command against the workflow's
-  (`.github/workflows/claude-code-review.yml`) before concluding flakiness;
-  a coverage-threshold failure names the metric in the vitest output.
 
 ### Core Requirements (from project standards)
 - Correctness vs issue acceptance criteria
@@ -492,16 +488,43 @@ evidence the harness already produced, or evidence that's on the
 not-covered list above (still a structural impossibility for CI) — escalation
 is reserved for unresolved findings the agents *could* fix but haven't.
 
-## 3) CI failure handling
-If CI fails during review (should not happen if developer phase worked correctly):
-- Still review the code changes
-- Capture all issues (CI failures + code review findings)
-- Proceed with normal REQUEST_CHANGES flow
-- Set issue status -> In Progress
-- Assign issue -> developer-agent
-- Comment with all findings (CI + code issues)
+## 3) CI state is gated before you (#3971)
 
-Note: Pre-commit hooks should prevent CI failures. If they occur, treat as REQUEST_CHANGES.
+**"CI is red on this head", "N checks are pending", "the web coverage gate
+fails", "`k8s-artifact-smoke` fails deterministically" are NOT findings.** They
+are machine-observable facts the PR page already displays, and reporting one
+costs a reject round plus a re-fix round (~18M tokens) to say what a glance at
+the PR says for free. Measured over 2026-08-13..19: **~36% of all blocking
+(Critical + Medium) findings were this relay**, on 39 of the 65 rejected work
+items. This section exists to end it, so that attention goes to judgment
+instead.
+
+What handles it instead:
+
+- **Red head** — `developer_submit_for_review.sh` refuses to submit while any
+  *required* check on the head has concluded failure (exit 3, before any
+  GitHub write). If a check goes red *after* submission, the review workflow's
+  `head-gate` job hands the head back to the developer by assignment, with no
+  review invocation spent and **no REQUEST_CHANGES round recorded** — the
+  cycle counter and the 3-strike escalation are untouched.
+- **Pending head** — the gate *waits*. Nothing is posted and nothing is
+  rejected; the review starts when the checks conclude. A PR that is merely
+  mid-CI is never bounced back to the developer.
+- **The required set is explicit**: the named list in
+  `.github/required-checks.txt`, never "every check on the head" (which would
+  deadlock the gate against the review's own check run). A check that is not
+  attached to the head — the usual case for a path-filtered smoke — is not
+  waited for and not counted against it.
+
+**The one CI-adjacent thing that IS your job: verifying a developer override.**
+When the failure reproduces on the base branch, the developer may submit with
+`--ci-override "<reason>"`, which writes the reason into the PR body under
+`<!-- nyxgpt-ci-override -->`. The review workflow surfaces it to you as a
+**claim**. Check it — e.g. the same check on the base branch — and say what you
+checked. An override whose stated reason does not hold is a Medium (blocking)
+finding; an override accepted silently is a process violation.
+
+Full mechanics: `docs/reviewable-head-gate.md`.
 
 ## 3a) Merge conflicts are developer work (owner rule 2026-08-15, #3801)
 

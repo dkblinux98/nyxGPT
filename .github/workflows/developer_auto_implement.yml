@@ -1869,7 +1869,8 @@ jobs:
                     `📊 Status: **In Review**\n` +
                     `👤 Assigned to: @${review_agent}\n\n` +
                     `The review agent will now:\n` +
-                    `1. Wait for CI checks to complete\n` +
+                    `1. Wait for the required checks on this head to finish (#3971 -- ` +
+                    `a pending head is waited on, never rejected)\n` +
                     `2. Review the code changes\n` +
                     `3. Either merge or request changes\n\n` +
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`

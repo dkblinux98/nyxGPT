@@ -733,9 +733,46 @@ criterion honestly — the falsified section simply was not in the diff.
 - The PR MUST be linked to its issue. The submit script does this for you; if you open a PR by hand, link it in the sidebar or write `Closes #ISSUE`. Consumers read the link, not the text
 - Ensure CI runs green. The hooks no longer run black/ruff/mypy, so a clean
   commit is not evidence those pass -- run them yourself before submitting.
-  The reviewer no longer re-runs them and will not catch it for you.
+  The reviewer no longer re-runs them, no longer reads the check list, and
+  will not catch it for you.
 - Update issue status -> In Review
 - Assign review-agent as PR reviewer (not just assignee)
+
+### 7a) A red head is not reviewable, and it is yours (#3971)
+
+`developer_submit_for_review.sh` **refuses to submit** (exit 3, before it
+creates anything) while any *required* check on the head SHA has concluded
+failure. The refusal names the checks. It is not an error to diagnose: it is
+the round telling you the work is not finished. Fix the check, push, submit
+again.
+
+- **Pending is fine.** Submitting while the checks are still running is normal
+  and expected -- the review trigger waits them out rather than rejecting the
+  PR. Do not sit on a submission waiting for green.
+- **The required set** is the named list in `.github/required-checks.txt`. A
+  check that is not attached to the head (the usual case for a path-filtered
+  smoke) is not required *on that head*. Adding a smoke workflow means adding
+  its jobs to that file -- `tests/unit/test_required_checks.py` fails until
+  you classify them.
+- **The override, for the base-branch case only.** If the failure reproduces
+  on the release branch without your change:
+
+  ```bash
+  scripts/agents/developer_submit_for_review.sh \
+    --ci-override "security-scan fails identically on v3.0.0, run <URL>" <ISSUE>
+  ```
+
+  The reason is written into the PR body under `<!-- nyxgpt-ci-override -->`
+  and handed to the review agent **as a claim to verify** -- with a run URL or
+  a commit to look at, because a reason nobody can check is a reason the
+  reviewer must block on. Do not use it to get past a failure your change
+  caused; that is the one thing this gate exists to stop.
+- **If the head goes red after you submit**, the review trigger hands it back
+  to you by assignment (no review invocation, no REQUEST_CHANGES round, no
+  cycle counted). A second arrival on the *same unchanged head* escalates to
+  the owner instead of handing it back again.
+
+Full mechanics: `docs/reviewable-head-gate.md`.
 
 ## 8) Address REQUEST_CHANGES review
 - If review-agent posts REQUEST_CHANGES review:

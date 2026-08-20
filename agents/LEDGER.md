@@ -1194,6 +1194,60 @@ rather than mechanism, and nothing can enforce them.
   Source: #3814; #3753; #3788; **D-012** (the first principle this is the
   motivating incident for).
 
+- **D-039** · 2026-08-20 · developer agent (#3971) — **A red or pending head is
+  not reviewable, and deciding that is not a review invocation's job.** Two
+  rules, one gate. *Red*: `developer_submit_for_review.sh` refuses to submit
+  while a **required** check on the head has concluded failure (exit 3, before
+  any GitHub write — a refusal that has already opened the PR and requested the
+  reviewer is not a refusal), and a head that turns red after submission is
+  handed back to the developer by assignment (**D-028**) with no invocation
+  spent, no verdict posted and no REQUEST_CHANGES cycle counted. *Pending*: the
+  review trigger **waits**; a PR that is merely mid-CI is never bounced back.
+  Measured cause, window 2026-08-13..19: ~36% of 240 blocking findings (87, on
+  39 of 65 rejected items) reported machine-observable check state the PR page
+  already displays, at ~7.2M + ~10.7M tokens per reject/re-fix round-trip.
+
+  Three things a future session would otherwise re-derive wrongly:
+
+  (a) *The required set is a named list, and **absent is not pending**.*
+  `.github/required-checks.txt` classifies every `pull_request` job as required
+  or explicitly not; "every check on the head" would deadlock the gate against
+  the review's own check run — the shape **Q-005** records for the merge path,
+  which this change deliberately does not touch. A required check that is not
+  *attached* to the head is neither waited for nor counted against it, because
+  a path filter already decided it does not apply; that is what makes the list
+  safe to extend. `tests/unit/test_required_checks.py` fails in both directions
+  so a new smoke workflow cannot default to "not a gate" silently.
+
+  (b) *It waits rather than subscribing to an event, on purpose.* The obvious
+  wake-up — re-trigger on `check_suite: completed` — cannot be used: GitHub
+  runs the **default branch's** copy of a workflow for events not attached to a
+  pull request, and this project's default branch moves only at a release
+  ceremony (**D-003**), so the trigger would not exist until the next release
+  and would run a stale definition forever after (the trap review-runbook §5a
+  records for `gh workflow run` without `--ref`). An idle ubuntu runner for the
+  wait costs cents against ~18M tokens for the round-trip it replaces.
+
+  (c) *The gate fails **open**.* An unreadable check list or a GitHub blip
+  yields `unknown`, and every caller proceeds exactly as it did before the gate
+  existed. Failing closed would jam every submission and every review in the
+  pipeline to prevent a rare wasted review — the same trade
+  `review_agent_auto_review.yml`'s merged-PR guard documents.
+
+  The **override** is the one CI-adjacent thing still asked of the reviewer:
+  `--ci-override "<reason>"` submits over a red check and writes the reason
+  into the PR body under `<!-- nyxgpt-ci-override -->` as a *claim to verify*,
+  never an accepted exception. Behaviour is not recorded here — it is enforced
+  by `tests/test_reviewable_head_gate.sh` and
+  `.github/workflows/reviewable-head-smoke.yml` (which injects the pre-fix
+  condition: the same red head with the check unlisted, proving the refusal is
+  the named list's doing), per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3971; `docs/reviewable-head-gate.md`;
+  `agents/runbooks/review-runbook.md` §3;
+  `agents/runbooks/developer-runbook.md` §7a.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
