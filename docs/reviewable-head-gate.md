@@ -41,6 +41,34 @@ names, and answers:
 `failed` wins over `pending`: one concluded failure decides the head without
 waiting for the rest.
 
+### The refusal continues the round, and that takes a file
+
+Exiting 3 with a clear sentence on stderr does not, by itself, deliver "the
+developer round continues rather than handing off". `developer_auto_implement.yml`'s
+Phase 1 classifies whatever text it managed to harvest, and mid-run its two
+sources both lose the reason: GitHub's per-job logs API returns nothing while
+the job is still running, and the fallback is the failed step's *name*. So
+`classify_error` is handed `"Submit PR for review"`, matches no signature,
+answers `unknown` — and `unknown` means non-retriable, which means the owner is
+DM'd about a failure the pipeline knew how to retry.
+
+This gate's own first refusal is the proof: on run `32419181728` it fired
+exactly as designed against this branch's red `gate-is-delegated`, and the
+round still ended in a FATAL owner notification.
+
+So the refusal writes its reason to the **agent error-detail file** on the
+runner (`write_agent_error_detail`, default
+`$RUNNER_TEMP/nyxgpt-agent-error.txt`), and Phase 1 reads it
+(`read_agent_error_detail`) *before* trying either indirect source. The
+signature `red head is not reviewable` then classifies `retriable:ci_red` and
+the round retries itself.
+
+The write is best-effort: a script that is already failing must not fail
+differently because a temp directory was not writable, and the log harvest
+stays as the fallback. **A new agent script that knows why it failed should
+record it the same way** — this is the difference between a signature in
+`classify_error` that works and one that only reads as if it does.
+
 ## The required set is a named list
 
 `.github/required-checks.txt`, in two sections.

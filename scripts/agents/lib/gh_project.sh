@@ -45,6 +45,48 @@ require_gh_auth() {
 # Error Classification (for intelligent retry)
 # -------------------------
 
+# The agent error-detail file: how a script hands its own failure reason to the
+# failure classifier running later in the same job (#3971).
+#
+# WHY THIS EXISTS. `developer_auto_implement.yml`'s Phase 1 harvests the text
+# it classifies from GitHub's per-job logs API *mid-run*, which routinely
+# returns nothing while the job is still running, and then falls back to the
+# failed STEP NAME. So classify_error() gets "Submit PR for review" and every
+# signature below is unreachable -- the run is classified `unknown`, declared
+# non-retriable, and the owner is DM'd about a failure the pipeline knew how to
+# retry. That is not hypothetical: it is what run 32419181728 did to this very
+# issue, to a refusal whose whole purpose was "the developer round continues".
+#
+# A script that knows why it failed writes that reason here instead of hoping
+# GitHub flushed a log in time. The file lives on the runner the classifier is
+# already standing on, so the handoff needs no API call and cannot be raced.
+_agent_error_detail_file() {
+  echo "${NYXGPT_AGENT_ERROR_FILE:-${RUNNER_TEMP:-/tmp}/nyxgpt-agent-error.txt}"
+}
+
+# write_agent_error_detail <text>
+#
+# Best-effort by design: a script that is already failing must not fail
+# differently because a temp directory was not writable. The classifier's log
+# harvest remains the fallback, exactly as before this existed.
+write_agent_error_detail() {
+  local file
+  file="$(_agent_error_detail_file)"
+  printf '%s\n' "$1" > "$file" 2>/dev/null ||
+    _warn "write_agent_error_detail: could not write $file (classification falls back to the job log)"
+}
+
+# read_agent_error_detail
+#
+# Prints the recorded reason, or nothing. Never fails: "no script recorded a
+# reason" is the ordinary case, not an error.
+read_agent_error_detail() {
+  local file
+  file="$(_agent_error_detail_file)"
+  [[ -s "$file" ]] && cat "$file"
+  return 0
+}
+
 # Classifies error messages into retriable vs fatal
 # Returns: "retriable", "fatal", or "unknown"
 classify_error() {

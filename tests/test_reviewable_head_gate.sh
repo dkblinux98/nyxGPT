@@ -566,6 +566,83 @@ _assert_eq "the workflow step refuses to review a red head" "failed" \
 _assert_eq "the workflow step reports a wait that expired" "timeout" \
   "$(_run_gate_step 'security-scan=pending')"
 
+# ======================================================================
+# Part 7 -- the refusal reaches the CLASSIFIER, not just the log
+# ======================================================================
+# AC1 is "the developer round CONTINUES (fix, push, re-submit) rather than
+# handing off". Exiting 3 with a good sentence on stderr is not enough to
+# deliver that, and this project has the receipt: on run 32419181728 the
+# refusal fired exactly as designed against this branch's own red
+# `gate-is-delegated`, and the round still ended `unknown` -> "non-retriable"
+# -> FATAL owner DM, because Phase 1 classifies whatever it managed to harvest
+# and mid-run it harvests the failed STEP NAME. So the assertions below are on
+# the handoff itself, executed rather than read.
+export NYXGPT_AGENT_ERROR_FILE="$TMP/agent-error.txt"
+rm -f "$NYXGPT_AGENT_ERROR_FILE"
+
+OUT="$(_run_submit 'security-scan=success
+k8s-artifact-smoke=failure')"
+_assert_contains "the refusal records its reason where the classifier looks" \
+  "$(cat "$NYXGPT_AGENT_ERROR_FILE" 2>/dev/null)" "red head is not reviewable"
+_assert_contains "and the recorded reason names the check" \
+  "$(cat "$NYXGPT_AGENT_ERROR_FILE" 2>/dev/null)" "k8s-artifact-smoke"
+
+# The whole point: what Phase 1 would classify. Sourcing the library here is
+# what the workflow step does.
+# shellcheck source=/dev/null
+CLASSIFY="$(
+  source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
+  classify_error "$(read_agent_error_detail)"
+)"
+_assert_eq "a refused red head classifies retriable, so the round continues" \
+  "retriable:ci_red" "$CLASSIFY"
+
+# Fault injection: without the recorded reason, Phase 1's fallback is the step
+# NAME -- and that is the `unknown` that woke the owner. If this ever stops
+# being `unknown`, the assertion above is passing for the wrong reason.
+STEP_NAME_CLASSIFY="$(
+  source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
+  classify_error "Submit PR for review"
+)"
+_assert_eq "the step name alone still classifies unknown (what this fixes)" \
+  "unknown" "$STEP_NAME_CLASSIFY"
+
+# A green submission leaves no stale reason behind for the next failure to
+# inherit -- the file is written only by a refusal.
+rm -f "$NYXGPT_AGENT_ERROR_FILE"
+OUT="$(_run_submit 'security-scan=success')"
+_assert_eq "a successful submission records no failure reason" "" \
+  "$(cat "$NYXGPT_AGENT_ERROR_FILE" 2>/dev/null)"
+
+# And the harvest order is the workflow's, executed: the recorded reason
+# outranks the step-name fallback. Lifted from developer_auto_implement.yml
+# for the same reason Part 6 lifts the gate step.
+ROOT_DIR="$ROOT_DIR" python3 - <<'EXTRACT' > "$TMP/classify-step.sh"
+import os
+import yaml
+
+wf = yaml.safe_load(
+    open(os.environ["ROOT_DIR"] + "/.github/workflows/developer_auto_implement.yml")
+)
+for step in wf["jobs"]["implement"]["steps"]:
+    if step.get("id") == "classify_error":
+        print(step["run"])
+        break
+else:
+    raise SystemExit("the implement job has no classify_error step any more")
+EXTRACT
+_assert_eq "the classify step can still be found in the workflow" "0" "$?"
+
+# The assignment, not the mere mention: the step's own comments name
+# read_agent_error_detail too, so matching the bare identifier would go on
+# passing after the call itself was deleted.
+_assert_contains "the classify step asks the failing script first" \
+  "$(cat "$TMP/classify-step.sh")" 'ERROR_LOG="$(read_agent_error_detail)"'
+# The order is what makes it load-bearing: the log harvest must be guarded on
+# the recorded reason being empty, or it overwrites the direct answer.
+_assert_contains "and only falls back to the job log when nothing was recorded" \
+  "$(tr '\n' ' ' < "$TMP/classify-step.sh")" 'if [[ -z "$ERROR_LOG" && -n "$JOB_ID" ]]'
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES assertion(s)" >&2

@@ -771,6 +771,16 @@ again.
   to you by assignment (no review invocation, no REQUEST_CHANGES round, no
   cycle counted). A second arrival on the *same unchanged head* escalates to
   the owner instead of handing it back again.
+- **The refusal auto-retries; it does not wake the owner.** It is classified
+  `retriable:ci_red`, so the run's own retry path continues the round. That
+  works because the refusal *records its reason on the runner*
+  (`write_agent_error_detail`), which Phase 1 reads before it tries the job
+  log. It matters: Phase 1's log harvest returns nothing mid-run and falls
+  back to the failed step's NAME, and "Submit PR for review" classifies
+  `unknown` — non-retriable, owner DM'd. That is what happened to #3971's own
+  first refusal (run 32419181728). **If you add a script that knows why it
+  failed, write the reason with `write_agent_error_detail` rather than
+  trusting stderr to survive the trip.**
 
 Full mechanics: `docs/reviewable-head-gate.md`.
 

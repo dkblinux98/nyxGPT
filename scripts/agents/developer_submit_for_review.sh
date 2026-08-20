@@ -113,7 +113,19 @@ if [[ "$CI_STATE" == "failed" ]]; then
     # ordinary failures above, and the sentence "red head is not reviewable"
     # is the signature classify_error() maps to retriable:ci_red so the
     # developer round continues rather than handing off.
-    {
+    #
+    # The text is written to a FILE as well as to stderr, and that is the half
+    # that makes the classification actually happen. Proven by execution on
+    # this very issue (run 32419181728): the refusal fired exactly as designed,
+    # and the round still ended `unknown` -> "non-retriable" -> FATAL owner DM.
+    # `developer_auto_implement.yml`'s Phase 1 harvests the error text from
+    # GitHub's per-job logs API mid-run, which routinely returns nothing while
+    # the job is still running; it then falls back to the failed STEP NAME, so
+    # classify_error() was handed the string "Submit PR for review" and matched
+    # no signature. A refusal that means "the developer round continues" cannot
+    # depend on GitHub having flushed a log: it leaves its reason on the runner
+    # the classifier is already standing on.
+    REFUSAL="$(
       echo "[error] Required checks FAILED on head ${HEAD_SHA}: ${CI_FAILED}"
       echo "[error] Refusing to submit: a red head is not reviewable (#3971)."
       echo "[error] This is the developer round's work, not the reviewer's -- fix the"
@@ -121,7 +133,9 @@ if [[ "$CI_STATE" == "failed" ]]; then
       echo "[error] If the failure reproduces on ${BASE_BRANCH} without this change, re-run with:"
       echo "[error]   $0 --ci-override \"<why this head is not the cause>\" ${ISSUE}"
       echo "[error] The reason is recorded in the PR body and verified by the review agent."
-    } >&2
+    )"
+    printf '%s\n' "$REFUSAL" >&2
+    write_agent_error_detail "$REFUSAL"
     exit 3
   fi
 fi

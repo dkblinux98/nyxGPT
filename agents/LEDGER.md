@@ -1234,6 +1234,22 @@ rather than mechanism, and nothing can enforce them.
   pipeline to prevent a rare wasted review — the same trade
   `review_agent_auto_review.yml`'s merged-PR guard documents.
 
+  (d) *A failing step's reason reaches the classifier through a **file**, not
+  through the job log.* `developer_auto_implement.yml`'s Phase 1 harvests the
+  text it classifies from GitHub's per-job logs API **mid-run**, which
+  routinely returns nothing (the log is written on completion), and then falls
+  back to the failed step's **name**. So `classify_error` gets
+  `"Submit PR for review"`, matches no signature, and answers `unknown` —
+  which the pipeline reads as *non-retriable* and escalates to the owner. This
+  gate's own first refusal proved it: run 32419181728 refused correctly and the
+  round still ended in a FATAL owner DM instead of the continuation AC1
+  promises. The fix is `write_agent_error_detail` /
+  `read_agent_error_detail` (`gh_project.sh`): a script that knows why it
+  failed leaves the reason on the runner the classifier is standing on, and
+  Phase 1 reads that **before** either guess. **Any future agent script with a
+  known failure reason should do the same** — every signature in
+  `classify_error` is otherwise reachable only by luck of log timing.
+
   The **override** is the one CI-adjacent thing still asked of the reviewer:
   `--ci-override "<reason>"` submits over a red check and writes the reason
   into the PR body under `<!-- nyxgpt-ci-override -->` as a *claim to verify*,

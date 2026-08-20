@@ -24,6 +24,14 @@ name: Reviewable Head Smoke
 # head reviewable" would be free to disagree, and the tested one would be the
 # copy nothing runs.
 #
+# It also covers the half that a reading missed the first time: the refusal
+# only "continues the developer round" if its reason reaches Phase 1's
+# classifier, and mid-run Phase 1 harvests the failed STEP NAME, which
+# classifies `unknown` -> non-retriable -> owner DM. That is what this gate's
+# own first refusal did (run 32419181728). So the test executes the harvest
+# order out of developer_auto_implement.yml and asserts the recorded reason
+# outranks it -- which is why that workflow is in the path filters below.
+#
 # What it does not cover, and cannot: GitHub's own delivery of the
 # `review_requested` event, and the wall-clock behaviour of a real 60-minute
 # wait. The agent loop exercises both on every submission.
@@ -39,6 +47,7 @@ on:
       - "tests/unit/test_reviewable_head_gate_wiring.py"
       - ".github/required-checks.txt"
       - ".github/workflows/claude-code-review.yml"
+      - ".github/workflows/developer_auto_implement.yml"
       - ".github/workflows/reviewable-head-smoke.yml"
   pull_request:
     paths:
@@ -50,6 +59,7 @@ on:
       - "tests/unit/test_reviewable_head_gate_wiring.py"
       - ".github/required-checks.txt"
       - ".github/workflows/claude-code-review.yml"
+      - ".github/workflows/developer_auto_implement.yml"
       - ".github/workflows/reviewable-head-smoke.yml"
   workflow_dispatch:
 
