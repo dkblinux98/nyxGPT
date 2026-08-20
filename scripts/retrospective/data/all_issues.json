@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-19T10:19:41+00:00",
+ "generated_at": "2026-08-20T10:16:02+00:00",
  "issues": [
   {
    "n": 2587,
@@ -4830,17 +4830,6 @@
    "closed": "2026-08-11T04:39:29Z"
   },
   {
-   "n": 3633,
-   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-   "created": "2026-08-05T03:02:46Z",
-   "state": "closed",
-   "closed": "2026-08-09T03:51:26Z"
-  },
-  {
    "n": 3634,
    "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
    "labels": [
@@ -4850,6 +4839,17 @@
    "created": "2026-08-05T03:02:46Z",
    "state": "closed",
    "closed": "2026-08-09T03:59:01Z"
+  },
+  {
+   "n": 3633,
+   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-05T03:02:46Z",
+   "state": "closed",
+   "closed": "2026-08-09T03:51:26Z"
   },
   {
    "n": 3635,
@@ -5651,8 +5651,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:17:35Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T17:07:58Z"
   },
   {
    "n": 3811,
@@ -5662,8 +5662,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:36:19Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T17:56:45Z"
   },
   {
    "n": 3812,
@@ -5695,8 +5695,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T05:43:52Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T23:26:25Z"
   },
   {
    "n": 3815,
@@ -5761,8 +5761,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:57:02Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T16:05:23Z"
   },
   {
    "n": 3826,
@@ -6065,8 +6065,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T04:13:57Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T17:31:26Z"
   },
   {
    "n": 3868,
@@ -6239,8 +6239,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T05:32:52Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T18:32:03Z"
   },
   {
    "n": 3947,
@@ -6250,8 +6250,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T05:49:30Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T21:23:34Z"
   },
   {
    "n": 3948,
@@ -6261,8 +6261,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T06:09:46Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T19:10:43Z"
   },
   {
    "n": 3950,
@@ -6272,8 +6272,19 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T07:07:45Z",
-   "state": "open",
-   "closed": null
+   "state": "closed",
+   "closed": "2026-08-19T18:13:13Z"
+  },
+  {
+   "n": 3956,
+   "title": "bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-19T15:53:37Z",
+   "state": "closed",
+   "closed": "2026-08-19T19:36:33Z"
   }
  ]
 }
