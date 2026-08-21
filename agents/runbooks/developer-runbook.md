@@ -812,7 +812,9 @@ another fix cycle:
    descope / escalate). **Do not attempt a fix, and do not post anything** —
    the workflow posts your file to the huddle's Slack thread and, at the end,
    to the PR transcript. Your invocation is memoryless on purpose: everything
-   you need is written down.
+   you need is written down — and that now includes the thread itself, which
+   is read back into the PR transcript alongside the turn files (D-040), so
+   anything a human said in the huddle is written down too.
 3. The review agent answers in the same round, and may end its turn with
    `HUDDLE_SETTLED` if your position resolved its finding. Otherwise the
    rounds continue to `vars.HUDDLE_MAX_ROUNDS` (default 3), and a fresh

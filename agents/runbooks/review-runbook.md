@@ -698,6 +698,15 @@ huddle" step posts the `HUDDLE_TRIGGERED` marker):
    sticks: every later round inherits it, so an early close is not re-opened
    by a round that never ran. Nobody posts a position comment on the PR any
    more — the workflow writes each turn to the thread.
+
+   The collapsed block has **two** sources (D-040). The turn files are its
+   floor — written on the runner, so the record survives a Slack outage —
+   and the thread is then read back on top of them, because the files hold
+   only what the three agents wrote and the thread is the sole record of
+   anyone else in the huddle. **If you weigh in on a huddle in Slack, your
+   message is archived to the PR**; if you weigh in after the session has
+   closed, it is not. A session that dies mid-round says so in the thread as
+   well as leaving the `HUDDLE_FAILED` marker on the PR.
 3. The scrummaster's decision chooses one of: **proceed** / **change
    approach** (stated) / **descope** (e.g. drop a named test, split the
    issue) / **escalate to owner** (runs the same `assign_issue_verified` +
