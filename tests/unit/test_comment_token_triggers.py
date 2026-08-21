@@ -254,7 +254,13 @@ class TestClaudeBotIsAnAllowedTriggerAuthor:
         [
             # notify_scrum_ready.yml is no longer comment-triggered (#3882):
             # it runs on a repository_dispatch, so it has no author to allow.
-            ("claude-code-review.yml", "claude-review"),
+            #
+            # The job carrying the trigger condition moved in #3971: the
+            # `@review` allowlist now sits on `head-gate`, the job that
+            # decides whether the head is reviewable at all, and
+            # `claude-review` hangs off its decision. Same layer-1 rule the
+            # comment above states -- on the gate job where there is one.
+            ("claude-code-review.yml", "head-gate"),
         ],
     )
     def test_trigger_allows_the_claude_app_identity(self, filename, job):

@@ -268,22 +268,25 @@ Review Trigger:
 
 Workflow:
 1. Review workflow triggers when review-agent is assigned as reviewer
-2. Run CI checks on ALL code in repository (not just changed files)
+2. The `head-gate` job decides whether the head is reviewable at all (#3971);
+   the review invocation starts only on a head whose required checks are green
 3. Review ALL changed files in PR (not just new changes from current cycle)
 4. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
 5. Review workflow executes automatically:
-   - Review agent runs all tests and linters on entire codebase
    - Reviews all code changes in PR against acceptance criteria and quality standards
    - Posts structured review comment: "## Code Review - [APPROVE|REQUEST_CHANGES]"
    - Automation executes decision automatically (no human confirmation needed)
 
-On CI failure (should not happen if developer phase worked correctly):
-- Review-agent still reviews code
-- Captures all issues (CI failures + code review findings)
-- Proceeds with normal REQUEST_CHANGES flow
-- Set issue → In Progress
-- Assign issue → developer-agent
-- Comment with all findings
+On a red or pending head (#3971) — the review agent is not involved, and
+check state is **not** a review finding:
+- **Red**: `developer_submit_for_review.sh` refuses to submit it at all, and a
+  head that goes red after submission is handed back to developer-agent by
+  assignment before any review invocation is spent. GitHub already displays
+  the failure; relaying it cost a reject round plus a re-fix round.
+- **Pending**: the trigger *waits*. A PR that is merely mid-CI is never
+  bounced back to the developer.
+- The required set is the named list in `.github/required-checks.txt` — never
+  "every check on the head". See `docs/reviewable-head-gate.md`.
 
 On code review decision:
 - **APPROVE**: Automation merges PR immediately via review_accept_and_merge.sh, assigns issue to human for acceptance

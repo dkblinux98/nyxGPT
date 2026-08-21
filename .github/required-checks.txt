@@ -1,0 +1,135 @@
+# The required check set (#3971)
+#
+# WHAT THIS IS. The named list of check runs that decide whether a head SHA is
+# reviewable. `required_check_state` (scripts/agents/lib/gh_project.sh) reads
+# this file, matches the names EXACTLY against the check runs GitHub reports
+# for a commit, and answers one of:
+#
+#   failed  - a required check on that head concluded failure. The head is the
+#             developer's problem: `developer_submit_for_review.sh` refuses to
+#             submit it, and `claude-code-review.yml` hands it back instead of
+#             spending a review invocation relaying what the PR page already
+#             shows.
+#   pending - a required check is present and has not concluded. Nobody's
+#             problem yet: the review trigger WAITS. A PR that is merely
+#             mid-CI is never bounced back to the developer.
+#   absent  - no required check is present on the head at all. Bounded grace
+#             only (the checks have not been created yet); after it, treated
+#             as clear.
+#   clear   - every required check present on the head passed.
+#
+# WHY A NAMED LIST AND NOT "EVERY CHECK ON THE HEAD". Four of the checks on a
+# PR head belong to the review itself (`head-gate`, `claude-review`,
+# `head-not-reviewable`, `execute-review-decision`): gating on them deadlocks
+# the gate against its own run -- `head-gate` cannot be complete at the moment
+# `head-gate` decides. The rest of the not-required list is project bookkeeping — adding a card
+# to the project board, stamping a lane, detecting a conflict. A flake in any
+# of those must not be able to wedge the pipeline, and none of them says
+# anything about whether the code is correct.
+#
+# ABSENT IS NOT PENDING. Most jobs below are path-filtered, so on any given PR
+# most of them never run. A required check that is not attached to the head is
+# not waited for and not counted against it — the path filter already decided
+# it does not apply. This is what keeps the list safe to extend: naming a check
+# here costs nothing on the PRs it does not run on.
+#
+# MAINTENANCE. Every job of every `pull_request`-triggered workflow must appear
+# in exactly one of the two sections below — `tests/unit/test_required_checks.py`
+# fails otherwise, in both directions (a name here that matches no job, and a
+# job that this file never classified). A new smoke workflow therefore cannot
+# be added without deciding whether it gates review.
+#
+# NAMES ARE CHECK-RUN NAMES, not job ids: a job with a `name:` reports under
+# that name. `Install the working tree's formulas` is macos-brew-smoke.yml's
+# `keg-install` job. The test above resolves both forms.
+
+[required]
+# Always runs on every PR (no path filter) — the presence signal the grace
+# period keys on.
+security-scan
+
+# Quality gates for the paths they cover.
+terraform-aws-validate
+validate-web
+
+# Smoke jobs. These are this project's executed-verification evidence (D-006);
+# a red one is a real defect on the head, which is precisely what the developer
+# round must fix rather than the reviewer relay.
+claim-decision
+The guard refuses the branch that holds the only copy
+A merge that cannot be verified does not close its issue
+canary-pod-reason-smoke
+canary-rollout-smoke
+standing-pool-must-fail
+canary-track-metrics-smoke
+cli-locality-smoke
+fault-injection
+artifact-install
+session-backend-fault-injection
+cloud-dev-deploy-smoke
+cloud-imds-smoke
+cloud-status-smoke
+cloud-target-os-smoke
+gate-behavior
+loop-guard-behavior
+compose-model-prepull-smoke
+config-wizard-save
+resolution-mechanics
+routing-decision
+escalation-survives-quotes
+no-interpolation-in-script-bodies
+dispatch-run-block-is-inert
+session-shell-behaves
+session-structure-holds
+native-edges-only
+k3s-cloud-smoke
+k8s-artifact-smoke
+k8s-capacity-smoke
+k8s-local-smoke
+k8s-pod-state
+k8s-observability-smoke
+linux-native-smoke
+linux-native-dev-smoke
+ops-subprocess-output
+linux-observability
+service-venv-python
+host-relay-posture
+self-heal-probe-honesty
+Install the working tree's formulas
+Install the candidate onto a machine that already has the stable
+Install the published candidate from the real tap
+no-clobber
+Collections list/create on an empty Cassandra
+restart-activation-smoke
+stamps
+missing-sources
+pipeline
+self-heal-unschedulable-smoke
+label-exists
+files-a-ticket
+terraform-local-smoke
+terraform-artifact-smoke
+reviewable-head-behaves
+gate-is-delegated
+
+[not-required]
+# The review's own runs, including the gate itself. Requiring any of them
+# deadlocks the gate against itself: `claude-review` cannot be complete at the
+# moment the gate decides whether to start `claude-review`, and `head-gate` is
+# still running while it asks. (This is the deadlock Q-005 raises for the merge
+# path; the merge path is untouched here.)
+claude-review
+head-gate
+head-not-reviewable
+execute-review-decision
+
+# Project bookkeeping. None of these judges the code, and a flake in one must
+# not hold a green PR out of review.
+add-to-project
+closure-hygiene
+pr-hygiene
+delete-abandoned-branch
+link-revert-to-issue
+stamp-closed-lane
+detect
+resolve

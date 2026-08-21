@@ -7,7 +7,7 @@ source "$DIR/lib/gh_project.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  developer_submit_for_review.sh [--dry-run] <issue_number> [pr_title] [pr_body_file]
+  developer_submit_for_review.sh [--dry-run] [--ci-override <reason>] <issue_number> [pr_title] [pr_body_file]
 
 Behavior:
   - Creates a PR from the current git branch into the current release branch (RELEASE_BRANCH)
@@ -29,6 +29,18 @@ Then:
 Outputs:
   - PR number to stdout
 
+A red head is not reviewable (#3971):
+  - Refuses to submit (exit 3) while any REQUIRED check on the current head SHA
+    has concluded failure. The required set is the named list in
+    .github/required-checks.txt -- never "every check on the head".
+  - A merely PENDING head submits normally: the review trigger waits for the
+    checks rather than rejecting the PR.
+  - --ci-override "<reason>" submits anyway and records the reason in the PR
+    body as a CLAIM FOR THE REVIEW AGENT TO VERIFY (e.g. "the same failure
+    reproduces on the base branch"). It is not a way to silence the gate: the
+    reviewer is instructed to check the claim and to treat an unverifiable one
+    as a blocking finding. NYXGPT_CI_OVERRIDE_REASON is read as a fallback.
+
 Notes:
   - Must be run from the feature branch (not master/release branch).
   - Requires ~/.nyxGPT/config.ini (or $NYXGPT_CONFIG_FILE) and gh auth.
@@ -37,8 +49,21 @@ EOF
 }
 
 DRY_RUN=0
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then usage; exit 0; fi
-if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
+CI_OVERRIDE_REASON="${NYXGPT_CI_OVERRIDE_REASON:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --ci-override)
+      CI_OVERRIDE_REASON="${2:-}"
+      [[ -n "$CI_OVERRIDE_REASON" ]] || { echo "[error] --ci-override needs a reason" >&2; exit 2; }
+      shift 2
+      ;;
+    --ci-override=*) CI_OVERRIDE_REASON="${1#--ci-override=}"; shift ;;
+    *) break ;;
+  esac
+done
 
 ISSUE="${1:-}"
 [[ -n "$ISSUE" ]] || { usage; exit 2; }
@@ -64,6 +89,55 @@ if [[ "$CURRENT_BRANCH" == "HEAD" ]]; then
 fi
 if [[ "$CURRENT_BRANCH" == "master" || "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "$BASE_BRANCH" ]]; then
   _die "Refusing to run from '$CURRENT_BRANCH'. Checkout a feature branch."
+fi
+
+# ---- A red head is not reviewable (#3971) ----
+# Checked BEFORE any GitHub write: a refusal must leave no PR, no reviewer
+# request and no status change behind, or the "refusal" is just a slower
+# submission. A pending head is deliberately allowed through -- pending is
+# nobody's problem yet, and claude-code-review.yml waits it out instead of
+# spending a review invocation on it.
+HEAD_SHA="$(git rev-parse HEAD)"
+CI_STATE_BLOCK="$(required_check_state "$HEAD_SHA")"
+CI_STATE="$(printf '%s\n' "$CI_STATE_BLOCK" | sed -n 's/^state=//p')"
+CI_FAILED="$(printf '%s\n' "$CI_STATE_BLOCK" | sed -n 's/^failed=//p')"
+CI_PENDING="$(printf '%s\n' "$CI_STATE_BLOCK" | sed -n 's/^pending=//p')"
+echo "[dev] required checks on $HEAD_SHA: $CI_STATE${CI_FAILED:+ (failed: $CI_FAILED)}${CI_PENDING:+ (pending: $CI_PENDING)}" >&2
+
+if [[ "$CI_STATE" == "failed" ]]; then
+  if [[ -n "$CI_OVERRIDE_REASON" ]]; then
+    _warn "Submitting over failing required checks (${CI_FAILED}) on the developer's override."
+    _warn "The stated reason goes to the review agent as a claim to verify: ${CI_OVERRIDE_REASON}"
+  else
+    # Not _die: this exits 3, a code the caller can tell apart from the
+    # ordinary failures above, and the sentence "red head is not reviewable"
+    # is the signature classify_error() maps to retriable:ci_red so the
+    # developer round continues rather than handing off.
+    #
+    # The text is written to a FILE as well as to stderr, and that is the half
+    # that makes the classification actually happen. Proven by execution on
+    # this very issue (run 32419181728): the refusal fired exactly as designed,
+    # and the round still ended `unknown` -> "non-retriable" -> FATAL owner DM.
+    # `developer_auto_implement.yml`'s Phase 1 harvests the error text from
+    # GitHub's per-job logs API mid-run, which routinely returns nothing while
+    # the job is still running; it then falls back to the failed STEP NAME, so
+    # classify_error() was handed the string "Submit PR for review" and matched
+    # no signature. A refusal that means "the developer round continues" cannot
+    # depend on GitHub having flushed a log: it leaves its reason on the runner
+    # the classifier is already standing on.
+    REFUSAL="$(
+      echo "[error] Required checks FAILED on head ${HEAD_SHA}: ${CI_FAILED}"
+      echo "[error] Refusing to submit: a red head is not reviewable (#3971)."
+      echo "[error] This is the developer round's work, not the reviewer's -- fix the"
+      echo "[error] failing check(s), push, and submit again."
+      echo "[error] If the failure reproduces on ${BASE_BRANCH} without this change, re-run with:"
+      echo "[error]   $0 --ci-override \"<why this head is not the cause>\" ${ISSUE}"
+      echo "[error] The reason is recorded in the PR body and verified by the review agent."
+    )"
+    printf '%s\n' "$REFUSAL" >&2
+    write_agent_error_detail "$REFUSAL"
+    exit 3
+  fi
 fi
 
 # ---- Fetch issue data ----
@@ -187,6 +261,33 @@ if [[ -z "$body_file" ]]; then
   } > "$body_file"
 else
   [[ -f "$body_file" ]] || _die "PR body file not found: $body_file"
+fi
+
+# ---- Record a CI override as a claim, never as an excuse (#3971) ----
+# The legitimate case is a failure that reproduces on the base branch without
+# this change. That is a claim about a commit nobody has checked yet, so it is
+# written into the PR body under a marker the review workflow reads, and the
+# review agent is instructed to verify it rather than accept it. A caller-
+# supplied body file is copied first: appending to it would edit a file this
+# script does not own.
+if [[ -n "$CI_OVERRIDE_REASON" && "$CI_STATE" == "failed" ]]; then
+  if [[ -z "$tmp_body" ]]; then
+    tmp_body="$(mktemp)"
+    cat "$body_file" > "$tmp_body"
+    body_file="$tmp_body"
+  fi
+  {
+    echo
+    echo "## CI override (developer)"
+    echo "<!-- nyxgpt-ci-override -->"
+    echo "Required checks failing on head \`${HEAD_SHA}\`: \`${CI_FAILED}\`"
+    echo
+    echo "**Developer's stated reason:** ${CI_OVERRIDE_REASON}"
+    echo
+    echo "This is a **claim for the review agent to verify**, not an accepted exception:"
+    echo "check the same check(s) on \`${BASE_BRANCH}\` before treating this head as clean."
+    echo "An override whose reason does not hold is a blocking finding."
+  } >> "$body_file"
 fi
 
 echo "[dev] repo=$REPO" >&2

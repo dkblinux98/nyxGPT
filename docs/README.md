@@ -137,7 +137,8 @@ same `docs/` directory in the repository:
   `file-lock-audit.md`
 - The agent system — [AGENTS.md](../AGENTS.md), `how-this-project-is-run.md`,
   `agent-smoke.md`, `agent-comment-tokens.md`, `acceptance-drain-gate.md`,
-  `sprint-autopilot.md`, `KNOWN_LIMITATIONS.md`, `github-tokens.md`
+  `reviewable-head-gate.md`, `sprint-autopilot.md`, `KNOWN_LIMITATIONS.md`,
+  `github-tokens.md`
 - CI and release process — `live-verification-ci.md`,
   `security-scanning-ci.md`, `cloud-artifact-smoke.md`,
   `portability-matrix.md`

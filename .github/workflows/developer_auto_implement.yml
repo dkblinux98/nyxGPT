@@ -1869,7 +1869,8 @@ jobs:
                     `📊 Status: **In Review**\n` +
                     `👤 Assigned to: @${review_agent}\n\n` +
                     `The review agent will now:\n` +
-                    `1. Wait for CI checks to complete\n` +
+                    `1. Wait for the required checks on this head to finish (#3971 -- ` +
+                    `a pending head is waited on, never rejected)\n` +
                     `2. Review the code changes\n` +
                     `3. Either merge or request changes\n\n` +
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
@@ -1994,9 +1995,32 @@ jobs:
 
           echo "Failed steps: $FAILED_STEPS"
 
+          # Source the library up here rather than just before classify_error:
+          # the harvest below needs read_agent_error_detail, and the classifier
+          # is the only consumer either way.
+          source scripts/agents/lib/gh_project.sh
+
+          # FIRST, ask the failing script what went wrong (#3971).
+          #
+          # The two harvests below are both indirect, and both routinely lose
+          # the reason: the per-job logs API returns nothing while the job is
+          # still running (it is written on completion), and the fallback is
+          # the failed step's NAME -- "Submit PR for review" -- which matches
+          # no signature in classify_error() and classifies `unknown`, i.e.
+          # "non-retriable", i.e. wake the owner. Run 32419181728 did exactly
+          # that to this issue's own red-head refusal, whose stated contract is
+          # that the developer round CONTINUES.
+          #
+          # A script that knows its own failure reason writes it to the agent
+          # error-detail file on this runner. That is a direct answer and it
+          # outranks both guesses.
+          ERROR_LOG="$(read_agent_error_detail)"
+          if [[ -n "$ERROR_LOG" ]]; then
+            echo "::notice::Using the failure reason recorded by the failing step itself"
+          fi
+
           # Try per-job log endpoint — works for completed jobs, may work mid-run
-          ERROR_LOG=""
-          if [[ -n "$JOB_ID" ]]; then
+          if [[ -z "$ERROR_LOG" && -n "$JOB_ID" ]]; then
             ERROR_LOG=$(gh api repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs 2>/dev/null | \
               grep -E "\[error\]|Error:|fatal:|FAILED" | head -20 || echo "")
           fi
@@ -2035,8 +2059,7 @@ jobs:
             echo '```'
           } > /tmp/failure_detail.txt
 
-          # Source the library to get classification functions
-          source scripts/agents/lib/gh_project.sh
+          # (gh_project.sh is already sourced above, for the harvest.)
 
           # Classify the error
           ERROR_CLASS=$(classify_error "$ERROR_LOG")

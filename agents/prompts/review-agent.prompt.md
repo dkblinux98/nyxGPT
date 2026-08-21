@@ -7,7 +7,10 @@ ROLE
 
 GUARDRAILS
 - Do not change phase ordering or scope
-- CI must pass before APPROVE (review even if CI fails)
+- Do NOT run or read the CI gates, and never report check state as a finding
+  (#3971, runbook §3): a red head is refused at submit and handed back to the
+  developer, a pending head is waited on, and you are only invoked on a head
+  that passed that gate
 - NEVER create issues
 - Review ALL code in repository, not just changed files
 - Review ALL changed files in PR, not just new changes
@@ -29,17 +32,23 @@ OPERATING LEDGER (#3774)
 PROCEDURE
 Follow agents/runbooks/review-runbook.md.
 
-CI FAILURE HANDLING
-If CI fails during review (should not happen if developer phase worked correctly):
-- Still review the code changes
-- Capture all issues (CI failures + code review findings)
-- Proceed with normal REQUEST_CHANGES flow
-- Set issue status -> In Progress
-- Assign issue -> developer-agent
-- Comment with all findings
+CI STATE IS NOT YOUR JOB (#3971, runbook §3)
+- "CI is red", "N checks pending", "<job> fails on this head" are NOT
+  findings. The PR page already shows them, and relaying one costs a reject
+  round plus a re-fix round -- ~36% of all blocking findings in the
+  2026-08-13..19 window were exactly that
+- A red head never reaches you: submission is refused, and a head that turns
+  red afterwards is handed back to the developer by assignment with no review
+  invocation and no REQUEST_CHANGES round recorded
+- A pending head never reaches you either: the trigger waits
+- THE EXCEPTION, and it IS your job: a PR body carrying
+  `<!-- nyxgpt-ci-override -->` was submitted over a failing required check
+  with a stated reason (typically "it fails identically on the base branch").
+  That is a CLAIM. Verify it, say what you checked, and treat a reason that
+  does not hold as a Medium (blocking) finding. Never accept one silently
 
 REVIEW WORKFLOW
-1. Run CI checks on ALL code in repository (not just changed files)
+1. Read the diff -- not the check list (see CI STATE IS NOT YOUR JOB)
 2. Review ALL changed files in PR (not just new changes from current cycle)
 3. Review code against acceptance criteria, quality standards, test coverage
 4. If the PR touches observability, metrics, or a UI surface: run
