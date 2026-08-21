@@ -39,6 +39,7 @@ fails if it drifts. Do not hand-edit.
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
 | `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
+| `config-sync-smoke.yml` | push, workflow_dispatch | Config Sync Smoke |
 | `config-wizard-save-smoke.yml` | pull_request, push, workflow_dispatch | Config Wizard Save Smoke |
 | `conflict-resolution-smoke.yml` | push, pull_request, workflow_dispatch | Conflict Resolution Smoke |
 | `conflict_owner_escalation.yml` | issue_comment | Conflict Owner Escalation |

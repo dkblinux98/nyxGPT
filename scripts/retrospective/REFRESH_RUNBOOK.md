@@ -131,8 +131,10 @@ run's "Land it on the default branch" step rather than re-dispatching.
    `data/price_sheet.example.json`, precisely so it asserts no rate (#3744).
    Take that file's shape, fill in the per-million rates you are actually
    billed at (read from Anthropic's pricing page at that moment), and store
-   the JSON in the **`CHURN_PRICE_SHEET_JSON` repo variable**
-   (`gh variable set CHURN_PRICE_SHEET_JSON < your-sheet.json`); the workflow
+   the JSON in `~/.nyxGPT/config.ini` as `[github] churn_price_sheet_json`
+   and run `nyxgpt ops config-sync`, which pushes it to the
+   **`CHURN_PRICE_SHEET_JSON` repo variable** (config.ini is the canonical
+   store for every Actions secret and variable — #3976); the workflow
    passes it to the dump, so nothing lands in the checkout. Do **not** commit
    a `price_sheet.json` — that path is gitignored. For a local run of
    `dump_churn.py`, saving the sheet as `data/price_sheet.json` works too.

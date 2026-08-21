@@ -1196,6 +1196,82 @@ value never appears in this command's output, logs, or tracebacks -- only
 the secret's name and success/failure. CLI only: the dashboard button that
 used to run this went away with the `/admin/secrets` screen (#3805).
 
+This is the secrets half only. Use `nyxgpt ops config-sync` below to push
+secrets *and* repository variables in one pass.
+
+---
+
+## `nyxgpt ops config-sync`
+
+Pushes **both** halves of what `config.ini` carries for GitHub Actions: the
+secrets in `config.SECRETS_SYNC_MANIFEST` and the repository variables in
+`config.VARIABLES_SYNC_MANIFEST`, one direction only, config.ini → Actions.
+This is the command to run after editing any of them.
+
+```bash
+nyxgpt ops config-sync            # push every mapped secret and variable that has a value
+nyxgpt ops config-sync --dry-run  # names and destinations only, no network call, no values
+```
+
+Same requirements as `secrets-sync`, with one addition worth knowing before
+you run it: managing Actions secrets and variables needs a token with
+**admin** on the repository, which is a stronger permission than the write
+access most agent tokens carry.
+
+The two manifests are deliberately separate and structurally disjoint: a
+repository *variable* is readable by anyone with read access to the repo,
+while a secret is not, so a config key listed on both sides -- or one
+destination name claimed by both -- raises rather than pushing. That rule is
+enforced at import (`config._assert_manifests_are_disjoint`), again at push
+time, and again in `tests/unit/test_sync_manifests.py`, which also reconciles
+both manifests against the `vars.`/`secrets.` references the workflows
+actually make so a name a workflow reads cannot quietly become hand-typed
+state.
+
+Blank values are skipped rather than pushed as empty strings: for the
+optional variables (`SLACK_HUDDLE_CHANNEL`, `CHURN_PRICE_SHEET_JSON`)
+"unset" and "set to nothing" mean different things to the workflows.
+
+`.github/workflows/config-sync-smoke.yml` is the executed evidence for this
+command -- it pushes a canary variable and a canary secret to the real API,
+reads them back, pushes again to exercise the create-then-update path, and
+deletes both.
+
+---
+
+## `nyxgpt ops config-drift`
+
+Reconciles `~/.nyxGPT/config.ini` against `example.config.ini` in both
+directions, across **every** section:
+
+```bash
+nyxgpt ops config-drift                        # ~/.nyxGPT/config.ini
+nyxgpt ops config-drift --config path/to.ini   # any other file
+```
+
+Reports, by name and never by value:
+
+* keys in your `config.ini` that `example.config.ini` does not declare --
+  either a live setting nobody declared or a retired one; the command does
+  not decide which;
+* keys `example.config.ini` declares that your `config.ini` lacks -- each of
+  those is running on a fallback default.
+
+Exits 0 when the two agree and 2 when they do not, so it can be wired into a
+check.
+
+Why it exists alongside the admin dashboard's stale-key banner: that banner
+is driven by `config_wizard.find_stale_keys`, which walks the wizard schema
+-- `example.config.ini` *minus* `config_wizard.EXCLUDED_SECTIONS`. So it is
+structurally blind in `[github]`, `[paths]`, `[homebrew]`, `[pypi]`,
+`[openai]` and `[cloud]`, which is where the credentials are. This command
+has no such blind spot.
+
+Two keys are deliberately never reported:
+`[github] qa_agent_token` and `[github] gh_token_nyxagent`, which are
+groundwork for a separate product and are neither declared nor to be removed
+(operating ledger, P-004).
+
 ---
 
 ## `nyxgpt ops logs`
