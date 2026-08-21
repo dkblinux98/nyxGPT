@@ -102,3 +102,44 @@ jobs:
           SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
           SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
         run: python3 scripts/agents/lib/huddle_session_probe.py --live --prove-it-fails
+
+  # The two jobs above cover the huddle: a *channel*, three identities, one
+  # thread. This one covers the other place #3910's tokens are now spent --
+  # the owner's escalation DM (#3911).
+  #
+  # It answers a question about the workspace that no stub can: may an agent's
+  # user token open a DM with the owner at all? `notify_human_escalation`
+  # swallows every Slack failure by design (#3695), and now falls back to the
+  # shared bot on top of that, so a token Slack refuses would leave the
+  # attribution silently dead and every unit test green -- the same shape as
+  # the #3974 defect that reopened this issue.
+  #
+  # Dispatch-only for the same reason as its siblings, and a sharper one: each
+  # run DMs the owner for real. Three messages on demand is the cost of
+  # knowing; three on every push is an escalation channel nobody reads.
+  escalation-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || vars.RELEASE_BRANCH }}
+
+      # No SLACK_BOT_TOKEN in this step's environment, deliberately: with a
+      # fallback available, a refused agent token still delivers and the job
+      # would pass on the bot's work. The absence is the assertion.
+      - name: Each agent DMs the owner under its own identity
+        env:
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: bash scripts/slack-escalation-smoke.sh
+
+      # The other half: a fallback nothing exercises is a fallback nobody
+      # knows is broken. An invalid agent token must still reach the owner,
+      # via the bot, and the record must say so.
+      - name: A refused identity still reaches the owner, via the bot
+        env:
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: bash scripts/slack-escalation-smoke.sh --prove-it-fails

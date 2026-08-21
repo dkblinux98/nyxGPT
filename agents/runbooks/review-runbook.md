@@ -641,9 +641,14 @@ The review workflow tracks cumulative review cycles:
   - Issue remains Status -> In Review
   - Issue reassigned to HUMAN_OWNER
   - Slack DM sent to human (`notify_human_escalation`,
-    `scripts/agents/lib/gh_project.sh`, #3695 -- reuses the existing
-    `SLACK_BOT_TOKEN` + `SLACK_USER_ID` secrets already configured for
-    `notify-merge-conflicts.yml`; missing secrets or a failed Slack call
+    `scripts/agents/lib/gh_project.sh`, #3695), **signed by the review
+    agent** (#3911): `review_agent_auto_review.yml` sets `AGENT_ROLE:
+    review` and passes `SLACK_USER_TOKEN_REVIEW`, and the scripts that
+    escalate on the review agent's behalf (`review_head_gate_action.sh`,
+    `review_ensure_handoff.sh`, `dispatch_conflict_resolution.sh`) declare
+    the same role themselves. A missing or refused agent token falls back
+    to `SLACK_BOT_TOKEN` -- attribution never costs the notification;
+    missing secrets or a failed Slack call
     degrade gracefully to the GitHub comment alone, which is always posted
     first and unconditionally; repeat escalations on the same PR within a
     60-minute window are deduped)

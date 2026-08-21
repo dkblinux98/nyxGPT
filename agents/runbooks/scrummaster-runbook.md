@@ -87,6 +87,15 @@ dispatch-wide target the release-issue report above and
 loop itself on a Slack failure (same graceful-degradation contract as
 every other `notify_human_escalation` caller).
 
+That DM is **signed by the scrummaster** (#3911), not by the workflow's
+token: `scrummaster_dispatch_next.sh` declares `AGENT_ROLE=scrum` itself,
+because `developer_pull_next_issue.yml` runs it under
+`DEVELOPER_AGENT_TOKEN` and a dispatch-block report is the scrummaster's
+wherever it executes. The workflow only passes `SLACK_USER_TOKEN_SCRUM`.
+`release_ceremony_watch.sh` does the same for ceremony failures. A missing
+or refused agent token falls back to `SLACK_BOT_TOKEN` -- attribution
+never costs the notification.
+
 ## Cross-issue infrastructure-anomaly dispatch pause backstop (#3694)
 
 Composes with the escalation-pause backstop above: `scrummaster_dispatch_next.sh`

@@ -65,6 +65,11 @@ jobs:
       # scripts/agents/lib/gh_project.sh).
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      # #3911: that DM is signed by the scrummaster, not by this job's token.
+      # The dispatch-block report is the scrummaster's even though this
+      # workflow runs as DEVELOPER_AGENT_TOKEN, so the role is set by
+      # scrummaster_dispatch_next.sh itself; only its token is passed here.
+      SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
 
     steps:
       - name: Checkout

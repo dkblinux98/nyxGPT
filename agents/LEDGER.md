@@ -1333,6 +1333,73 @@ rather than mechanism, and nothing can enforce them.
   `scripts/agents/lib/huddle_session_probe.py`;
   `scripts/agents/lib/huddle_channel.py`.
 
+- **D-041** · 2026-08-21 · developer agent (#3911, owner scope addition) —
+  **An escalation DM is signed by the agent that raised it, and the raiser is
+  named from `AGENT_ROLE` alone — never inferred. The merge-conflict channel
+  is a repo variable, and deliberately not the huddle's.**
+
+  Owner direction, 2026-08-21: the two acceptance criteria left over from
+  #3910 move to #3911 rather than staying with a closed issue.
+
+  (a) *Attribution.* `notify_human_escalation` posted every DM with the single
+  `SLACK_BOT_TOKEN`, so a self-heal FATAL and a review 3-cycle breaker arrived
+  from the same sender and the owner had to read the body to learn which agent
+  was stuck. It now posts with the raising agent's user token — the same three
+  `SLACK_USER_TOKEN_{DEV,REVIEW,SCRUM}` secrets #3910 filed and D-040's huddle
+  spends.
+
+  (b) *The role is explicit or absent.* It comes from `AGENT_ROLE` and from
+  nothing else. Inference was considered and rejected: this repo's workflow
+  names are not uniform (`Notify Merge Conflicts` and `Claude Code Review`
+  both escalate as the review agent and neither says so), and a wrong guess
+  signs an escalation with the wrong agent's name — strictly worse than the
+  unattributed bot DM it replaces. An unrecognised role attributes nothing.
+  **The default lives in the role-owned script, not the workflow**, because
+  the *report* has an author independent of the runner: `developer_pull_next_
+  issue.yml` runs `scrummaster_dispatch_next.sh` under `DEVELOPER_AGENT_TOKEN`,
+  and a dispatch-block report is the scrummaster's wherever it executes.
+
+  (c) *Attribution never costs a notification.* An unset role, an
+  unconfigured token, or a user token Slack refuses all fall back to
+  `SLACK_BOT_TOKEN`, and only if that also fails does the DM degrade to
+  comment-only. #3695's delivery guarantee outranks this entry's sender name;
+  a nicer sender that loses the escalation is the wrong trade. The message's
+  "Raised by" line and the `:envelope:` marker comment name the agent on
+  either path, so attribution survives the fallback even when the sender does
+  not.
+
+  (d) *The merge-conflict channel is configuration.* It was the literal
+  `C0AANK4KDM0` in `notify-merge-conflicts.yml`. It is now
+  `vars.SLACK_CONFLICT_CHANNEL`, with that id kept only as the `||` fallback
+  so setting the variable is what changes behaviour and not setting it changes
+  nothing. It is **its own** variable, not `SLACK_HUDDLE_CHANNEL`
+  (`C0ABH478QC8` / `#nyxagent-dev`): conflict notices and huddle deliberation
+  are different audiences and must diverge without a code change. A later
+  "tidy-up" collapsing them onto one variable would read as a simplification
+  and would move every conflict notice into the huddle's reading channel —
+  `TestTheConflictChannelIsConfiguration` exists to stop it.
+
+  Evidence, applying D-040's own lesson: whether Slack will let an agent's
+  user token DM the owner is a property of the workspace that no stub can
+  answer, and the function swallows Slack failures by design, so a refused
+  token would leave attribution dead with every test green. `scripts/slack-
+  escalation-smoke.sh` asks the live API as the `escalation-identity` job of
+  `slack-huddle-smoke.yml` — **with no bot token in the step's environment**,
+  so a marker comment can only mean that agent's own token was accepted — and
+  a `--prove-it-fails` half plants an invalid agent token and requires the bot
+  fallback to carry the DM. Dispatch-only: each run DMs the owner for real.
+  The decision itself (which token, which fallback, which record) is Test 17b
+  of `tests/test_gh_project_lib.sh`, which `assignment-dispatch-smoke.yml`
+  already runs on a real runner on every change to `gh_project.sh`; the wiring
+  — a role declared whose token is never passed, which degrades silently to
+  the old behaviour — is `tests/unit/test_escalation_attribution.py`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3911 (owner comment 2026-08-21), #3910;
+  `scripts/agents/lib/gh_project.sh`; `scripts/slack-escalation-smoke.sh`;
+  `.github/workflows/notify-merge-conflicts.yml`;
+  `.github/workflows/slack-huddle-smoke.yml`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

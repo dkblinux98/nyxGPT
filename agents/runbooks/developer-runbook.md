@@ -475,9 +475,12 @@ follows all three exhaustion paths above also calls
 `notify_human_escalation` (`scripts/agents/lib/gh_project.sh`) with the
 firing step's one-line diagnosis and recommended action (e.g. "merge
 `<sha>` to v3.0.0" for `FIXED_REQUIRES_MERGE`). This sends a Slack DM to
-the owner via the existing `SLACK_BOT_TOKEN` + `SLACK_USER_ID` Actions
-secrets (already configured for `notify-merge-conflicts.yml` -- no new
-secrets). Missing secrets or a failed Slack call degrade silently to the
+the owner, **signed by the developer agent** (#3911): the job sets
+`AGENT_ROLE: dev` and passes `SLACK_USER_TOKEN_DEV`, so the escalation
+arrives from the agent that raised it instead of from the shared bot. A
+missing or refused agent token falls back to `SLACK_BOT_TOKEN` --
+attribution never costs the notification, and the "Raised by" line names
+the agent on either path. Missing secrets or a failed Slack call degrade silently to the
 comment-only behavior that already existed; the GitHub escalation comment
 is always posted regardless. Repeated firings for the same (issue, state)
 within a 60-minute window are suppressed via a dedup marker comment

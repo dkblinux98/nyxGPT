@@ -4,6 +4,13 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib/gh_project.sh"
 
+# Who any Slack escalation from this script is from (#3911). Set here rather
+# than in the workflow because the *report* is the scrummaster's wherever it
+# runs: `developer_pull_next_issue.yml` invokes this under the developer
+# token, and a dispatch-block report signed by the developer agent would name
+# the wrong agent. An explicit AGENT_ROLE in the environment still wins.
+export AGENT_ROLE="${AGENT_ROLE:-scrum}"
+
 usage() {
   cat <<'EOF'
 Usage:

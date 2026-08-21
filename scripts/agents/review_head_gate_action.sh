@@ -29,6 +29,10 @@ set -euo pipefail
 #
 # Executed by tests/test_reviewable_head_gate.sh against a stub `gh`.
 
+# Who any Slack escalation from this script is from (#3911): the head gate is
+# the review agent's.
+export AGENT_ROLE="${AGENT_ROLE:-review}"
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$DIR/lib/gh_project.sh"

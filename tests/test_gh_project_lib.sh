@@ -937,6 +937,14 @@ fi
 # --- above. ---
 SLACK_BOT_TOKEN=""
 SLACK_USER_ID=""
+# #3911 put a second family of tokens on this path. Clear them explicitly:
+# inherited from a real environment they would make the degradation
+# assertions below pass or fail for reasons that have nothing to do with the
+# code under test.
+AGENT_ROLE=""
+SLACK_USER_TOKEN_DEV=""
+SLACK_USER_TOKEN_REVIEW=""
+SLACK_USER_TOKEN_SCRUM=""
 CURL_CALLS=0
 curl() { CURL_CALLS=$((CURL_CALLS + 1)); echo '{"ok":true}'; }
 COMMENT_CALLS=()
@@ -981,6 +989,144 @@ else
 fi
 _assert_eq "Slack API failure: no marker comment posted (no false record of success)" "0" "${#COMMENT_CALLS[@]}"
 rm -f "$CURL_CALL_LOG"
+
+# --- Test 17b: notify_human_escalation attribution (#3911) -- the DM is  ---
+# --- sent under the RAISING AGENT's Slack identity, and the fallback to  ---
+# --- the shared bot is preserved so attribution can never cost a         ---
+# --- notification (#3695's guarantee outranks #3911's sender name).      ---
+#
+# The stub records the bearer token of every call, because "which identity
+# sent it" is the entire behaviour here and it is invisible in the response.
+SLACK_USER_ID="U12345"
+DEV_AGENT="myGPT-developer-agent"
+REVIEW_AGENT="myGPT-review-agent"
+SCRUM_AGENT="myGPT-scrummaster-agent"
+_slack_notify_recent() { return 1; } # never a duplicate for these cases
+AUTH_LOG="$(mktemp)"
+TEXT_LOG="$(mktemp)"
+
+# Records each call's bearer token and message text, and answers according to
+# SLACK_STUB_FAIL_TOKEN (which token, if any, Slack should reject).
+curl() {
+  local arg prev="" token="" text=""
+  for arg in "$@"; do
+    case "$arg" in
+      "Authorization: Bearer "*) token="${arg#Authorization: Bearer }" ;;
+    esac
+    [[ "$prev" == "-d" ]] && text="$arg"
+    prev="$arg"
+  done
+  echo "$token" >>"$AUTH_LOG"
+  echo "$text" >>"$TEXT_LOG"
+  if [[ -n "${SLACK_STUB_FAIL_TOKEN:-}" && "$token" == "$SLACK_STUB_FAIL_TOKEN" ]]; then
+    echo '{"ok":false,"error":"not_allowed_token_type"}'
+  else
+    echo '{"ok":true}'
+  fi
+}
+
+_reset_attribution_case() {
+  : >"$AUTH_LOG"
+  : >"$TEXT_LOG"
+  COMMENT_CALLS=()
+  SLACK_STUB_FAIL_TOKEN=""
+  AGENT_ROLE=""
+  SLACK_BOT_TOKEN="xoxb-bot"
+  SLACK_USER_TOKEN_DEV=""
+  SLACK_USER_TOKEN_REVIEW=""
+  SLACK_USER_TOKEN_SCRUM=""
+}
+
+# 1. The developer agent's escalation goes out under the developer identity.
+_reset_attribution_case
+AGENT_ROLE="dev"
+SLACK_USER_TOKEN_DEV="xoxp-dev"
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "attribution: exactly one Slack call (no bot retry after success)" "1" "$(wc -l <"$AUTH_LOG")"
+_assert_eq "attribution: sent with the developer agent's user token, not the bot's" \
+  "xoxp-dev" "$(head -1 "$AUTH_LOG")"
+_assert_contains "attribution: the message body names the raising agent" \
+  "$(cat "$TEXT_LOG")" "Raised by:* @myGPT-developer-agent"
+_assert_contains "attribution: the marker comment records the sending identity" \
+  "${COMMENT_CALLS[0]}" "as @myGPT-developer-agent"
+
+# 2. Each role reaches for its own token -- review and scrum are not aliases
+#    of the developer path.
+_reset_attribution_case
+AGENT_ROLE="review"
+SLACK_USER_TOKEN_REVIEW="xoxp-review"
+SLACK_USER_TOKEN_DEV="xoxp-dev"
+notify_human_escalation "42" "review-escalation" "diag" "action"
+_assert_eq "attribution: the review agent sends with the review token" \
+  "xoxp-review" "$(head -1 "$AUTH_LOG")"
+
+_reset_attribution_case
+AGENT_ROLE="scrummaster-agent" # the long spelling resolves too
+SLACK_USER_TOKEN_SCRUM="xoxp-scrum"
+notify_human_escalation "42" "queue-blocked" "diag" "action"
+_assert_eq "attribution: the scrummaster sends with the scrum token" \
+  "xoxp-scrum" "$(head -1 "$AUTH_LOG")"
+
+# 3. THE LOAD-BEARING CASE: a user token Slack refuses must not swallow the
+#    escalation. The bot retry runs and the owner is still notified.
+_reset_attribution_case
+AGENT_ROLE="dev"
+SLACK_USER_TOKEN_DEV="xoxp-dev"
+SLACK_STUB_FAIL_TOKEN="xoxp-dev"
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "rejected user token: both identities are tried" "2" "$(wc -l <"$AUTH_LOG")"
+_assert_eq "rejected user token: the retry uses the bot token" "xoxb-bot" "$(tail -1 "$AUTH_LOG")"
+_assert_eq "rejected user token: the owner is still notified (marker posted)" \
+  "1" "${#COMMENT_CALLS[@]}"
+_assert_contains "rejected user token: the marker says the bot sent it on the agent's behalf" \
+  "${COMMENT_CALLS[0]}" "from the shared bot identity, on behalf of @myGPT-developer-agent"
+
+# 4. An agent token with no bot token configured still delivers -- the
+#    pre-#3911 code required SLACK_BOT_TOKEN specifically.
+_reset_attribution_case
+SLACK_BOT_TOKEN=""
+AGENT_ROLE="review"
+SLACK_USER_TOKEN_REVIEW="xoxp-review"
+notify_human_escalation "42" "review-escalation" "diag" "action"
+_assert_eq "no bot token: the agent identity alone is enough to send" \
+  "xoxp-review" "$(head -1 "$AUTH_LOG")"
+_assert_eq "no bot token: the marker comment is still posted" "1" "${#COMMENT_CALLS[@]}"
+
+# 5. An unrecognized role attributes nothing rather than guessing, and falls
+#    straight through to the bot -- exactly the pre-#3911 behaviour.
+_reset_attribution_case
+AGENT_ROLE="huddle"
+SLACK_USER_TOKEN_DEV="xoxp-dev"
+notify_human_escalation "42" "FATAL" "diag" "action"
+_assert_eq "unknown role: sent as the bot, never as a guessed agent" \
+  "xoxb-bot" "$(head -1 "$AUTH_LOG")"
+if grep -q "Raised by" "$TEXT_LOG"; then
+  echo "[FAIL] unknown role: must not claim an agent it could not identify" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] unknown role: no 'Raised by' line invented"
+fi
+
+# 6. Both identities failing still degrades to comment-only, unchanged.
+_reset_attribution_case
+AGENT_ROLE="dev"
+SLACK_USER_TOKEN_DEV="xoxp-dev"
+curl() { echo '{"ok":false,"error":"channel_not_found"}'; }
+if notify_human_escalation "42" "FATAL" "diag" "action"; then
+  echo "[ok] both identities failing: still returns 0 (never blocks the caller)"
+else
+  echo "[FAIL] both identities failing: notify_human_escalation must always return 0" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+_assert_eq "both identities failing: no marker comment (no false record of success)" \
+  "0" "${#COMMENT_CALLS[@]}"
+
+rm -f "$AUTH_LOG" "$TEXT_LOG"
+unset SLACK_STUB_FAIL_TOKEN
+AGENT_ROLE=""
+SLACK_USER_TOKEN_DEV=""
+SLACK_USER_TOKEN_REVIEW=""
+SLACK_USER_TOKEN_SCRUM=""
 
 # --- Test 18: _release_issue_comments_json (#3694) -- exercises the REAL ---
 # --- gh api + jq pipeline (only `gh` is stubbed) across two pages, the ---

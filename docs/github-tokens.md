@@ -73,12 +73,30 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `AGENT_MODEL_CANARY` | `claude-haiku-4-5-20251001` | Model for the CLAUDE.md binding canary (`claude-md-binding-canary.yml`); optional, defaults to `claude-haiku-4-5-20251001` |
 | `HUDDLE_MAX_ROUNDS` | `3` | Round cap for `huddle_session.yml` (#3911); optional, defaults to `3`. **Configurable downward only** — the rounds are three explicit pairs of steps, so any value above 3 behaves as 3 |
 | `SLACK_HUDDLE_CHANNEL` | *(empty)* | Channel id the huddle conversation is threaded in (#3910); optional — unset degrades the huddle to transcript-only, it never fails the run |
+| `SLACK_CONFLICT_CHANNEL` | `C0AANK4KDM0` | Channel id `notify-merge-conflicts.yml` posts conflict notices to (#3911); optional, falls back to the id that used to be hard-coded in that workflow. Deliberately **separate from `SLACK_HUDDLE_CHANNEL`** — conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change |
 
-### Review huddle Slack identities (#3910)
+### Agent Slack identities (#3910, extended by #3911)
 
 | Secret | Purpose |
 |---|---|
 | `SLACK_USER_TOKEN_DEV` / `SLACK_USER_TOKEN_REVIEW` / `SLACK_USER_TOKEN_SCRUM` | User tokens with the `chat:write` user scope, one per agent, so each huddle turn posts under its own identity. A bot token would put every turn under one name, which defeats a thread you can read back. All three are **optional**: a missing token degrades that speaker (and a missing channel degrades the whole thread) to the PR transcript alone — `huddle_session.yml` deliberately does not validate them, because refusing to huddle over an unconfigured chat integration is a worse failure than the one it reports. |
+
+**Escalation DMs are signed by the agent that raised them (#3911).**
+`notify_human_escalation` (`scripts/agents/lib/gh_project.sh`) posts the owner
+DM with the raising agent's user token above rather than the shared
+`SLACK_BOT_TOKEN`, so a self-heal FATAL reads as coming from the developer
+agent and a 3-cycle breaker from the review agent. Two rules make that safe:
+
+- The role comes from **`AGENT_ROLE`** (`dev` | `review` | `scrum`) and is
+  never inferred. Role-owned scripts set their own default, so the report
+  keeps its author whichever workflow runs it — `scrummaster_dispatch_next.sh`
+  stays the *scrummaster's* even though `developer_pull_next_issue.yml` runs it
+  under `DEVELOPER_AGENT_TOKEN`.
+- **Attribution never costs a notification.** An unset role, an unconfigured
+  token, or a user token Slack refuses all fall back to `SLACK_BOT_TOKEN`, and
+  only if *that* also fails does the DM degrade to comment-only. #3695's
+  delivery guarantee outranks #3911's sender name; the "Raised by" line in the
+  message body and the `:envelope:` marker comment name the agent either way.
 
 ### Switching agent models without a commit
 
