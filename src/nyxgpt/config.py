@@ -1819,6 +1819,9 @@ SECRETS_SYNC_MANIFEST: dict[str, str] = {
     # Write access to the Homebrew tap the `-rc` and stable formulas are
     # pushed to (#3727).
     "homebrew.homebrew_tap_token": "HOMEBREW_TAP_TOKEN",
+    # Owner-level token for the release ceremony's Phase 1 master push
+    # (#3730). Unconfigured, the ceremony refuses to start.
+    "github.release_ceremony_token": "RELEASE_CEREMONY_TOKEN",
 }
 
 # Deliberate omissions from `SECRETS_SYNC_MANIFEST`, recorded here because
