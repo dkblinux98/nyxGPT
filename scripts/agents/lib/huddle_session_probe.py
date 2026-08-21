@@ -565,6 +565,23 @@ _SETTLE_SHIPPED = (
 )
 _SETTLE_PREFIX = '          if [[ -s "$FILE" ]] && grep -qx \'HUDDLE_SETTLED\' "$FILE"; then\n'
 
+#: The same treatment for the two bodies #3911's reopening added, planted by
+#: `--live --prove-it-fails`. Neither can be falsified hermetically: without a
+#: real thread the read-back is empty and the failure notice has nowhere to
+#: go, which is precisely how they went unnoticed in the first place.
+_READBACK_SHIPPED = (
+    "            THREAD_MD=$(python3 scripts/agents/lib/huddle_channel.py read"
+    ' "$THREAD_TS" || true)\n'
+)
+_READBACK_PREFIX = '            THREAD_MD=""  # planted: the session never read the thread\n'
+_THREAD_NOTICE_SHIPPED = (
+    '            python3 scripts/agents/lib/huddle_channel.py post "$THREAD_TS" scrum \\\n'
+    '              ":warning: This huddle session failed part-way through (run'
+    " ${GITHUB_RUN_ID}). Nothing further will be posted here; the PR carries a"
+    ' HUDDLE_FAILED marker." || true\n'
+)
+_THREAD_NOTICE_PREFIX = "            : # planted: only the PR was told the session died\n"
+
 
 def prove_it_fails() -> int:
     """Plant the pre-fix settle gating and require the probe to catch it."""
@@ -592,6 +609,80 @@ def prove_it_fails() -> int:
     return 0
 
 
+def prove_the_live_fix_was_needed(work: Path) -> int:
+    """Plant the pre-#3911-reopen bodies and require the live case to reject them.
+
+    The two behaviours this fix added are exactly the two a hermetic probe
+    cannot see: with no thread there is nothing to read back and nowhere to
+    announce a failure, so both would have passed every offline assertion
+    forever. Which is the reopening's whole point -- so the falsification runs
+    live too, on a deliberately small thread: one turn is enough for a
+    read-back to be non-empty, and one failure step is enough for the notice
+    to be present or absent.
+    """
+    source = session().read_text(encoding="utf-8")
+    for shipped, what in ((_READBACK_SHIPPED, "read-back"), (_THREAD_NOTICE_SHIPPED, "notice")):
+        if shipped not in source:
+            print(f"::error::the {what} body no longer matches the shape this injection plants.")
+            print("::error::Update the constants so the live probe stays falsifiable.")
+            return 1
+
+    hc = _adapter()
+    channel = hc.get_channel()
+    if isinstance(channel, hc.NullChannel):
+        print("::error::--live --prove-it-fails needs the real channel, same as --live")
+        return 1
+
+    planted = work / "planted-huddle_session.yml"
+    planted.write_text(
+        source.replace(_READBACK_SHIPPED, _READBACK_PREFIX).replace(
+            _THREAD_NOTICE_SHIPPED, _THREAD_NOTICE_PREFIX
+        ),
+        encoding="utf-8",
+    )
+
+    huddle = work / "planted"
+    huddle.mkdir()
+    _turn(huddle, "01-dev.md", "## Developer Position (round 1)\n\nA planted turn.\n")
+    base = {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3911"}
+
+    print("Opening a thread with the shipped bodies, then planting the pre-fix ones")
+    opened = run_step(
+        step_body(name_contains="Open the huddle thread"),
+        work,
+        {**base, "REASON": "live falsification (#3911)", "ISSUE_NUMBER": "3911"},
+    )
+    thread = opened.output.get("ts", "")
+    if not thread:
+        print("::error::could not open a thread to falsify against")
+        return 1
+    run_step(
+        step_body(name_contains="Round 1 - post the dev turn"), work, {**base, "THREAD_TS": thread}
+    )
+
+    _UNDER_TEST["session"] = planted
+    env = {**base, "THREAD_TS": thread}
+    FAILURES.clear()
+
+    archived = run_step(step_body(name_contains="Append the transcript"), work, env)
+    check("the pre-fix archive read the thread back", "read back from Slack" in archived.gh_body)
+
+    run_step(step_body(name_contains="Record a failed session"), work, env)
+    tail = hc.render_transcript(channel.read(thread))
+    check("the pre-fix failure told the thread", "failed part-way through" in tail)
+
+    caught = list(FAILURES)
+    FAILURES.clear()
+    if len(caught) != 2:
+        print(
+            "::error::the live probe accepted a session that neither archives the thread "
+            f"nor announces its own death in it ({len(caught)}/2 assertions fired)"
+        )
+        return 1
+    print(f"\nLive probe correctly rejected the pre-fix bodies ({len(caught)} assertions fired).")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     prove = "--prove-it-fails" in argv
     _LIVE["on"] = "--live" in argv
@@ -606,6 +697,9 @@ def main(argv: list[str]) -> int:
         return 1
 
     if prove:
+        if _LIVE["on"]:
+            with tempfile.TemporaryDirectory() as tmp:
+                return prove_the_live_fix_was_needed(Path(tmp))
         return prove_it_fails()
 
     if _LIVE["on"]:

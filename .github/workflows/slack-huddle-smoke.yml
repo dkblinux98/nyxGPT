@@ -89,3 +89,16 @@ jobs:
           SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
           SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
         run: python3 scripts/agents/lib/huddle_session_probe.py --live
+
+      # Fault injection, the `macos-brew-smoke.yml` template: plant the two
+      # pre-fix bodies and require the live assertions above to reject them.
+      # Neither can be falsified offline -- with no thread there is nothing to
+      # read back and nowhere to announce a failure, so both would have passed
+      # a hermetic probe forever, which is how they went unnoticed.
+      - name: The live probe rejects the pre-fix bodies
+        env:
+          SLACK_HUDDLE_CHANNEL: ${{ vars.SLACK_HUDDLE_CHANNEL }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: python3 scripts/agents/lib/huddle_session_probe.py --live --prove-it-fails

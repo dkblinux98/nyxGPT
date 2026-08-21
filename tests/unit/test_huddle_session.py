@@ -357,6 +357,14 @@ class TestExecutedVerification:
         for secret in ("SLACK_USER_TOKEN_DEV", "SLACK_USER_TOKEN_REVIEW", "SLACK_USER_TOKEN_SCRUM"):
             assert secret in body, f"{secret} never reaches the live session job"
 
+    def test_the_live_job_proves_it_can_still_fail(self):
+        """A guard that cannot fail is not a guard, and these two behaviours
+        are the ones a hermetic probe structurally cannot falsify: with no
+        thread there is nothing to read back and nowhere to announce a
+        failure, so both would pass offline forever."""
+        body = (WORKFLOWS / "slack-huddle-smoke.yml").read_text(encoding="utf-8")
+        assert "--live --prove-it-fails" in body
+
     def test_the_live_job_stays_dispatch_only(self):
         """Each run leaves a thread in a channel where `chat:delete` is
         deliberately ungranted (#3910), so running it on push would fill the
