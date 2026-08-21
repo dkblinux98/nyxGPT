@@ -225,3 +225,28 @@ def test_manifest_destination_names_are_valid_actions_names() -> None:
     for full_key, name in both.items():
         assert re.fullmatch(r"[A-Z_][A-Z0-9_]*", name), f"{full_key} -> invalid name {name!r}"
         assert not name.startswith("GITHUB_"), f"{full_key} -> reserved prefix in {name!r}"
+
+
+def test_the_conflict_channel_keeps_its_own_config_key() -> None:
+    """#3979: "configuration" means config.ini owns it, not that it is hand-set.
+
+    #3911 made the channel a repo variable and #3976 made every variable a
+    workflow reads populatable by `nyxgpt ops config-sync`; landing 35 minutes
+    apart, they left this one variable settable only by typing it into GitHub's
+    Settings UI. The generic guard above catches that class of gap -- this pins
+    the specific pairing, and that the conflict channel keeps its own config key
+    rather than being collapsed onto the huddle's (ledger D-041(d)).
+
+    It lives here rather than beside the channel's other tests in
+    `test_conflict_resolution.py` because `conflict-resolution-smoke.yml`'s
+    `routing-decision` job runs that file with `--noconftest` and installs only
+    `pytest pyyaml` -- deliberately, so the smoke gate stays cheap. A test that
+    imports `nyxgpt` cannot live there without breaking that invariant.
+    """
+    assert (
+        config.VARIABLES_SYNC_MANIFEST["monitoring.slack_conflict_channel"]
+        == "SLACK_CONFLICT_CHANNEL"
+    )
+    assert (
+        config.VARIABLES_SYNC_MANIFEST["monitoring.slack_huddle_channel"] == "SLACK_HUDDLE_CHANNEL"
+    )
