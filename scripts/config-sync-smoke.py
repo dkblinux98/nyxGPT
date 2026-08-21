@@ -68,13 +68,20 @@ def announce(message: str) -> None:
     print(f"\n=== {message} ===", flush=True)
 
 
+#: Probe name, distinct from the canary the assertions below use so a failed
+#: probe can never be mistaken for a failed push.
+PROBE_VARIABLE = "NYXGPT_CONFIG_SYNC_PROBE"
+
+
 def pick_token(owner: str, name: str) -> tuple[str, str]:
     """Return `(env_var_name, token)` for the first candidate that can administer the repo.
 
     Managing Actions secrets and variables requires **admin** on the
     repository, which is a stronger permission than the write access the agent
-    tokens need for everything else. Which token clears that bar is not
-    knowable by reading anything, so it is probed and reported.
+    tokens need for everything else -- and GitHub's read and write bars for
+    variables are different, so a token that can *list* them may still 403 on
+    the create. The probe is therefore a real create-and-delete, not a read:
+    the permission under test is the one that gets exercised.
     """
     candidates = [c.strip() for c in os.environ.get("GITHUB_TOKEN_CANDIDATES", "").split(",")]
     candidates = [c for c in candidates if c and os.environ.get(c)]
@@ -84,11 +91,15 @@ def pick_token(owner: str, name: str) -> tuple[str, str]:
     for env_name in candidates:
         token = os.environ[env_name]
         with ops._github_actions_client(token) as client:
-            response = client.get(f"/repos/{owner}/{name}/actions/variables")
-        if response.status_code == 200:
-            print(f"using {env_name}: it can read {owner}/{name}'s Actions variables")
-            return env_name, token
-        print(f"{env_name}: HTTP {response.status_code} listing Actions variables -- trying next")
+            created = client.post(
+                f"/repos/{owner}/{name}/actions/variables",
+                json={"name": PROBE_VARIABLE, "value": "probe"},
+            )
+            if created.status_code in (201, 409):
+                client.delete(f"/repos/{owner}/{name}/actions/variables/{PROBE_VARIABLE}")
+                print(f"using {env_name}: it can write {owner}/{name}'s Actions variables")
+                return env_name, token
+        print(f"{env_name}: HTTP {created.status_code} creating a probe variable -- trying next")
 
     fail(
         "none of the candidate tokens can administer this repository's Actions "
