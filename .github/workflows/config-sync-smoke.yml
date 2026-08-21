@@ -1,0 +1,85 @@
+name: Config Sync Smoke
+
+# One job, answering three questions no unit test can (#3976, #3775):
+#
+#   1. Does a repository *variable* actually reach GitHub from config.ini?
+#      The variables API is POST-to-a-collection then PATCH-by-name, not the
+#      secrets API's idempotent PUT -- and the second run of `config-sync` is
+#      always the 409 -> PATCH path. Every unit test for it mocks the
+#      transport, so the shape is asserted against a fixture rather than
+#      against GitHub.
+#   2. Does a *secret* actually reach GitHub from config.ini? Same question,
+#      other manifest, and unanswerable by reading: managing Actions secrets
+#      and variables needs **admin** on the repository, not the write access
+#      the agent tokens use everywhere else. Only a call finds that out.
+#   3. Does `nyxgpt ops config-drift` report a seeded mismatch? Run as the
+#      real CLI in both directions -- exit 0 when the files agree, exit 2
+#      naming the key when they do not. A check that cannot fail is not a
+#      check (#3753's fault-injection rule).
+#
+# The push is a canary, never a real value: `scripts/config-sync-smoke.py`
+# swaps both manifests for canary-only ones, so what lands at GitHub is
+# NYXGPT_CONFIG_SYNC_CANARY_VARIABLE / _SECRET and nothing else, and both are
+# deleted in a `finally` whatever happened. Everything below that swap -- the
+# client, the sealed-box encryption, the request shapes, the error handling --
+# is the code `nyxgpt ops config-sync` runs.
+#
+# Why this job exists at all: the environment the owner acceptance-tests in
+# was reproducible only by hand. Three Slack tokens and five variables had
+# been typed into GitHub's settings UI, `config.ini` could not explain them,
+# and a clean machine could not reconstruct them from the repository.
+
+on:
+  push:
+    paths:
+      - 'src/nyxgpt/config.py'
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/config_wizard.py'
+      - 'src/nyxgpt/cli.py'
+      - 'example.config.ini'
+      - 'scripts/config-sync-smoke.py'
+      - '.github/workflows/config-sync-smoke.yml'
+  workflow_dispatch:
+
+# Least-privilege: the repository writes in this job are made with a PAT from
+# `config.ini`, which is the path under test. The job's own token only reads
+# the checked-out code.
+permissions:
+  contents: read
+
+# Two runs would collide on the one canary name, and the loser would see its
+# variable deleted mid-assertion.
+concurrency:
+  group: config-sync-smoke
+  cancel-in-progress: false
+
+jobs:
+  config-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: Push a canary variable and secret from config.ini, then read them back
+        env:
+          REPO_OWNER: ${{ vars.REPO_OWNER || github.repository_owner }}
+          REPO_NAME: ${{ vars.REPO_NAME || github.event.repository.name }}
+          # Probed in order; the first that can administer Actions settings is
+          # used and named in the log. Managing secrets/variables requires
+          # admin on the repo, so the owner-level ceremony token is tried
+          # first and the agent tokens are the fallback.
+          GITHUB_TOKEN_CANDIDATES: RELEASE_CEREMONY_TOKEN,DEVELOPER_AGENT_TOKEN,SCRUMMASTER_AGENT_TOKEN,REVIEW_AGENT_TOKEN
+          RELEASE_CEREMONY_TOKEN: ${{ secrets.RELEASE_CEREMONY_TOKEN }}
+          DEVELOPER_AGENT_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          SCRUMMASTER_AGENT_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REVIEW_AGENT_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+        run: python3 scripts/config-sync-smoke.py
