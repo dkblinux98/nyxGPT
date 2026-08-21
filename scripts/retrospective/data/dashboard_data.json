@@ -1,27 +1,6 @@
 {
- "generated_at": "2026-08-20T10:25:57.826780+00:00",
+ "generated_at": "2026-08-21T10:20:34.668245+00:00",
  "modules": {
-  "api": {
-   "C": 14,
-   "M": 94,
-   "m": 107,
-   "rounds": 49,
-   "issues": 22
-  },
-  "web-ui": {
-   "C": 0,
-   "M": 13,
-   "m": 17,
-   "rounds": 10,
-   "issues": 9
-  },
-  "cli": {
-   "C": 8,
-   "M": 43,
-   "m": 59,
-   "rounds": 31,
-   "issues": 15
-  },
   "documentation": {
    "C": 0,
    "M": 7,
@@ -29,19 +8,40 @@
    "rounds": 4,
    "issues": 2
   },
-  "observability": {
-   "C": 5,
-   "M": 46,
+  "cli": {
+   "C": 6,
+   "M": 40,
    "m": 55,
    "rounds": 29,
-   "issues": 13
+   "issues": 14
+  },
+  "web-ui": {
+   "C": 0,
+   "M": 10,
+   "m": 15,
+   "rounds": 9,
+   "issues": 8
+  },
+  "api": {
+   "C": 14,
+   "M": 94,
+   "m": 106,
+   "rounds": 49,
+   "issues": 22
+  },
+  "observability": {
+   "C": 5,
+   "M": 47,
+   "m": 58,
+   "rounds": 30,
+   "issues": 14
   },
   "security": {
    "C": 0,
-   "M": 9,
-   "m": 11,
-   "rounds": 8,
-   "issues": 3
+   "M": 11,
+   "m": 18,
+   "rounds": 10,
+   "issues": 5
   },
   "testing": {
    "C": 0,
@@ -52,12 +52,6 @@
   }
  },
  "days": {
-  "2026-08-13": {
-   "C": 2,
-   "M": 7,
-   "m": 9,
-   "rounds": 4
-  },
   "2026-08-14": {
    "C": 2,
    "M": 17,
@@ -87,6 +81,18 @@
    "M": 88,
    "m": 113,
    "rounds": 55
+  },
+  "2026-08-20": {
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "rounds": 1
+  },
+  "2026-08-21": {
+   "C": 0,
+   "M": 3,
+   "m": 10,
+   "rounds": 3
   }
  },
  "issues": [
@@ -1345,55 +1351,6 @@
    ]
   },
   {
-   "issue": 3753,
-   "pr": 3755,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: rc formula install fails at keg venv ensurepip on stock Homebrew macOS (#3753) (PR #3755)",
-   "module": "cli",
-   "rounds": 2,
-   "C": 2,
-   "M": 3,
-   "m": 4,
-   "last": "2026-08-13T19:10:14Z",
-   "findings": [
-    [
-     "Critical",
-     "pip `--python` is misplaced \u2014 the fixed install path still fails"
-    ],
-    [
-     "Medium",
-     "Ineffective unit pin for the pip bootstrap"
-    ],
-    [
-     "Medium",
-     "Falsified claim left unfixed (inverse-claims \u00a71a)"
-    ],
-    [
-     "Minor",
-     "security-scan failure is not this PR's"
-    ],
-    [
-     "Minor",
-     "The developer's own PR comment honestly flagged the smoke job as the real verification gate before it ran \u2014 good process; this round is that gate doing its job."
-    ],
-    [
-     "Critical",
-     "`nyxgpt --version` does not exist \u2014 the smoke job fails its own verify step"
-    ],
-    [
-     "Medium",
-     "None beyond the Critical (the ineffective pin at tests/unit/test_build_homebrew_artifacts.py:898 and the docs/homebrew.md:307 sentence describing the `--version` check are consequences of the Critical and must move with whatever fix is chosen)."
-    ],
-    [
-     "Minor",
-     "Pre-existing false claims about `nyxgpt --version`"
-    ],
-    [
-     "Minor",
-     "security-scan / nanoid npm advisory"
-    ]
-   ]
-  },
-  {
    "issue": 3784,
    "pr": 3795,
    "title": "[dkblinux98/nyxGPT] Improvement: feat: nyxgpt cloud smoke - artifact install path end-to-end on amazonlinux 2023 (#3784) (PR #3795)",
@@ -1901,68 +1858,6 @@
     [
      "Minor",
      "Seven checks were still in progress at review time (`artifact-install`, `k8s-*` smokes, `linux-native-*`, `session-backend-fault-injection`); all completed green on the previous head and none covers the changed path more directly than the green `config-wizard-save`. Noted for completeness \u2014 the resubmission will get a fresh full run anyway."
-    ]
-   ]
-  },
-  {
-   "issue": 3736,
-   "pr": 3739,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: huddle decision vs 3-cycle escalation race - dedupe triggers, escalation defers (#3736) (PR #3739)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-13T00:48:08Z",
-   "findings": [
-    [
-     "Medium",
-     "`jq -n --argjson` passes the whole PR thread as one exec argument and hard-fails above ~128KB, killing verdict execution on exactly the long threads this fix targets"
-    ],
-    [
-     "Minor",
-     "Workflow activation latency"
-    ],
-    [
-     "Minor",
-     "`parse_decision` prefix-matches \"change\""
-    ],
-    [
-     "Minor",
-     "Hand-posted decision with no trigger re-dispatches on manual re-run"
-    ]
-   ]
-  },
-  {
-   "issue": 3745,
-   "pr": 3754,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: web UI Support menu - packaged Docs viewer and File an Issue template (#3745) (PR #3754)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 2,
-   "last": "2026-08-13T18:28:14Z",
-   "findings": [
-    [
-     "Medium",
-     "Vitest coverage gate fails \u2014 no web tests for any new web code"
-    ],
-    [
-     "Medium",
-     "`_rewrite_link` mangles dotfile-directory links (`src/nyxgpt/support.py:203`)"
-    ],
-    [
-     "Medium",
-     "`docs/ui.md` Settings Menu enumeration falsified (inverse-claims \u00a71a)"
-    ],
-    [
-     "Minor",
-     "Support issues still count in `open_issues`"
-    ],
-    [
-     "Minor",
-     "`test_render_rewrites_links_between_docs_to_in_app_routes` allows any absolute URL"
     ]
    ]
   },
@@ -2930,45 +2825,125 @@
      "`docs/configuration.md:379`'s note that `base_url` may carry basic-auth credentials, with the field left non-secret \u2014 the audit called this judgment call out explicitly rather than hiding it; I agree with the call (masking the endpoint would make the wizard's primary field unreadable) and note it here so the owner sees it was weighed. Does not block."
     ]
    ]
+  },
+  {
+   "issue": null,
+   "pr": 3973,
+   "title": "[dkblinux98/nyxGPT] fix: reconcile example.config.ini with a real config.ini, without leaking a token (PR #3973)",
+   "module": "security",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-20T23:30:39Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified documentation of the wizard's exclusion set (\u00a71a)"
+    ],
+    [
+     "Minor",
+     "Ledger `P-004` says the sweep \"found seven undeclared keys\"; the PR body counts eight. Owner-authored entry, narration-level discrepancy \u2014 noting for the record only, not blocking (\u00a71b), and not agent-editable regardless."
+    ],
+    [
+     "Minor",
+     "`src/nyxgpt/secrets_setup.py:17-19` says the wizard \"excludes the `openai`/`github` sections entirely\" \u2014 non-exhaustive phrasing that does cite `EXCLUDED_SECTIONS` as its source, so not falsified; worth sweeping into the same doc pass if convenient."
+    ]
+   ]
+  },
+  {
+   "issue": null,
+   "pr": 3975,
+   "title": "[dkblinux98/nyxGPT] feat: a smoke job that proves the huddle channel by using it (#3910) (PR #3975)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 3,
+   "last": "2026-08-21T00:27:12Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claims left standing: \"live three-identity Slack delivery is owner-acceptance only\" (\u00a71a, #3744)"
+    ],
+    [
+     "Minor",
+     "`scripts/slack-huddle-smoke.py:76`"
+    ],
+    [
+     "Minor",
+     "Read-after-write timing"
+    ],
+    [
+     "Minor",
+     "Observed in passing, unrelated to this PR"
+    ]
+   ]
+  },
+  {
+   "issue": 3911,
+   "pr": 3977,
+   "title": "[dkblinux98/nyxGPT] Agent: refactor: consolidate the review huddle into one session workflow (#3911) (PR #3977)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-21T01:02:53Z",
+   "findings": [
+    [
+     "Medium",
+     "Owner-directed scope addition on #3911 not covered \u2014 the PR closes the issue with two acceptance criteria unmet."
+    ],
+    [
+     "Minor",
+     "The \"No `set -e` here on purpose\" comment in the `Record a failed session` step is slightly inaccurate \u2014 GitHub's default shell for `run:` is `bash -e {0}`, so errexit is active regardless. Behaviour is still correct because both commands are `|| true`-guarded (and the new test pins both guards); consider rewording the comment so a future reader doesn't rely on \"no set -e\" being literally true. Does not block merge."
+    ],
+    [
+     "Minor",
+     "`prove_the_live_fix_was_needed` uses `check()` failures as its positive signal, so a *passing* run prints the two failure lines into the log before declaring success. Cosmetic log noise only; the final verdict lines are unambiguous. Does not block merge."
+    ]
+   ]
+  },
+  {
+   "issue": 3976,
+   "pr": 3978,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: improvement: config.ini must populate every GitHub secret AND variable, and prove it has (#3976) (PR #3978)",
+   "module": "security",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 5,
+   "last": "2026-08-21T02:02:57Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claim left unfixed: `docs/sprint-autopilot.md:231-241` (\u00a71a, #3744)"
+    ],
+    [
+     "Minor",
+     "Cite the smoke run in the PR body"
+    ],
+    [
+     "Minor",
+     "`agents/runbooks/review-runbook.md:1000-1004`"
+    ],
+    [
+     "Minor",
+     "`docs/github-tokens.md:82`"
+    ],
+    [
+     "Minor",
+     "`scripts/config-sync-smoke.py:792,825`"
+    ],
+    [
+     "Minor",
+     "`config_wizard.find_config_drift`"
+    ]
+   ]
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 3751,
-   "merged": "2026-08-13",
-   "title": "Acceptance Failure: bug: tap job uploads assets after release creation - immutable releases reject them (#3747)",
-   "module": "api"
-  },
-  {
-   "pr": 3750,
-   "merged": "2026-08-13",
-   "title": "Acceptance Failure: fix: review contract misses claims falsified outside the diff - add inverse-claims check (#3744)",
-   "module": "api"
-  },
-  {
-   "pr": 3749,
-   "merged": "2026-08-13",
-   "title": "Acceptance Failure: bug: README asserts no PyPI release exists - false as of 3.0.0rc1, clone instructions stale (#3743)",
-   "module": "documentation"
-  },
-  {
-   "pr": 3748,
-   "merged": "2026-08-13",
-   "title": "Acceptance Failure: bug: merged/closed PRs strand in In Review - merge flow must set PR item Closed (#3742)",
-   "module": "api"
-  },
-  {
-   "pr": 3746,
-   "merged": "2026-08-13",
-   "title": "Acceptance Failure: bug: homebrew-tap-rc job missing httpx - tap stamp fails after PyPI publish (#3741)",
-   "module": "cli"
-  },
-  {
-   "pr": 3740,
-   "merged": "2026-08-13",
-   "title": "Improvement: feat: backfill v2.1.0 stable formulas to the public tap for parity (#3737)",
-   "module": "api"
-  },
   {
    "pr": 3778,
    "merged": "2026-08-14",
@@ -3054,12 +3029,6 @@
    "module": "api"
   },
   {
-   "pr": 3840,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
    "pr": 3852,
    "merged": "2026-08-17",
    "title": "Improvement: fix: remove create_issue.sh --blocks, the retired prose relationship path (#3836)",
@@ -3120,6 +3089,12 @@
    "module": "api"
   },
   {
+   "pr": 3840,
+   "merged": "2026-08-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 3839,
    "merged": "2026-08-17",
    "title": "chore(retro): refresh retrospective data",
@@ -3138,10 +3113,10 @@
    "module": "api"
   },
   {
-   "pr": 3897,
+   "pr": 3900,
    "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
-   "module": "web-ui"
+   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
+   "module": "cli"
   },
   {
    "pr": 3899,
@@ -3150,10 +3125,10 @@
    "module": "observability"
   },
   {
-   "pr": 3900,
+   "pr": 3897,
    "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
-   "module": "cli"
+   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
+   "module": "web-ui"
   },
   {
    "pr": 3893,
@@ -3304,27 +3279,45 @@
    "merged": "2026-08-19",
    "title": "Acceptance Failure: bug: Infrastructure page reports \"Docker Compose\" on a native install whenever observability is running (#3855)",
    "module": "web-ui"
+  },
+  {
+   "pr": 3970,
+   "merged": "2026-08-20",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 3980,
+   "merged": "2026-08-21",
+   "title": "Acceptance Failure: bug: v3.0.0 red - SLACK_CONFLICT_CHANNEL manifest gap, admin coverage (#3979)",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3972,
+   "merged": "2026-08-21",
+   "title": "wip: feat: a red or pending head is not reviewable - api (#3971)",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "api": 34,
-  "documentation": 4,
-  "cli": 10,
+  "api": 32,
+  "cli": 9,
   "security": 1,
-  "web-ui": 4,
   "observability": 5,
+  "web-ui": 5,
+  "documentation": 3,
   "testing": 3,
   "rag": 1
  },
  "totals": {
   "rounds": 132,
-  "C": 27,
-  "M": 213,
-  "m": 259,
-  "items": 65,
-  "clean": 62,
-  "reviewed": 127,
-  "merged": 135,
-  "unreviewed": 8
+  "C": 25,
+  "M": 210,
+  "m": 262,
+  "items": 66,
+  "clean": 59,
+  "reviewed": 124,
+  "merged": 133,
+  "unreviewed": 9
  }
 }

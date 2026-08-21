@@ -6093,5 +6093,69 @@
    "`code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`, so a default dispatch reports a two-releases-old branch (my first dispatch did, TOTAL_OPEN=0 for v2.1.0 \u2014 misleadingly clean). Not this PR's breakage and not blocking here; it belongs to whoever owns that workflow (worth an agent-process issue: default to `vars.RELEASE_BRANCH`).",
    "`docs/configuration.md:379`'s note that `base_url` may carry basic-auth credentials, with the field left non-secret \u2014 the audit called this judgment call out explicitly rather than hiding it; I agree with the call (masking the endpoint would make the wizard's primary field unreadable) and note it here so the owner sees it was weighed. Does not block."
   ]
+ },
+ {
+  "issue": null,
+  "pr": 3973,
+  "title": "[dkblinux98/nyxGPT] fix: reconcile example.config.ini with a real config.ini, without leaking a token (PR #3973)",
+  "module": "security",
+  "date": "2026-08-20T23:30:39Z",
+  "critical": [],
+  "medium": [
+   "Falsified documentation of the wizard's exclusion set (\u00a71a)"
+  ],
+  "minor": [
+   "Ledger `P-004` says the sweep \"found seven undeclared keys\"; the PR body counts eight. Owner-authored entry, narration-level discrepancy \u2014 noting for the record only, not blocking (\u00a71b), and not agent-editable regardless.",
+   "`src/nyxgpt/secrets_setup.py:17-19` says the wizard \"excludes the `openai`/`github` sections entirely\" \u2014 non-exhaustive phrasing that does cite `EXCLUDED_SECTIONS` as its source, so not falsified; worth sweeping into the same doc pass if convenient."
+  ]
+ },
+ {
+  "issue": null,
+  "pr": 3975,
+  "title": "[dkblinux98/nyxGPT] feat: a smoke job that proves the huddle channel by using it (#3910) (PR #3975)",
+  "module": "observability",
+  "date": "2026-08-21T00:27:12Z",
+  "critical": [],
+  "medium": [
+   "Falsified claims left standing: \"live three-identity Slack delivery is owner-acceptance only\" (\u00a71a, #3744)"
+  ],
+  "minor": [
+   "`scripts/slack-huddle-smoke.py:76`",
+   "Read-after-write timing",
+   "Observed in passing, unrelated to this PR"
+  ]
+ },
+ {
+  "issue": 3911,
+  "pr": 3977,
+  "title": "[dkblinux98/nyxGPT] Agent: refactor: consolidate the review huddle into one session workflow (#3911) (PR #3977)",
+  "module": "api",
+  "date": "2026-08-21T01:02:53Z",
+  "critical": [],
+  "medium": [
+   "Owner-directed scope addition on #3911 not covered \u2014 the PR closes the issue with two acceptance criteria unmet."
+  ],
+  "minor": [
+   "The \"No `set -e` here on purpose\" comment in the `Record a failed session` step is slightly inaccurate \u2014 GitHub's default shell for `run:` is `bash -e {0}`, so errexit is active regardless. Behaviour is still correct because both commands are `|| true`-guarded (and the new test pins both guards); consider rewording the comment so a future reader doesn't rely on \"no set -e\" being literally true. Does not block merge.",
+   "`prove_the_live_fix_was_needed` uses `check()` failures as its positive signal, so a *passing* run prints the two failure lines into the log before declaring success. Cosmetic log noise only; the final verdict lines are unambiguous. Does not block merge."
+  ]
+ },
+ {
+  "issue": 3976,
+  "pr": 3978,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: improvement: config.ini must populate every GitHub secret AND variable, and prove it has (#3976) (PR #3978)",
+  "module": "security",
+  "date": "2026-08-21T02:02:57Z",
+  "critical": [],
+  "medium": [
+   "Falsified claim left unfixed: `docs/sprint-autopilot.md:231-241` (\u00a71a, #3744)"
+  ],
+  "minor": [
+   "Cite the smoke run in the PR body",
+   "`agents/runbooks/review-runbook.md:1000-1004`",
+   "`docs/github-tokens.md:82`",
+   "`scripts/config-sync-smoke.py:792,825`",
+   "`config_wizard.find_config_drift`"
+  ]
  }
 ]

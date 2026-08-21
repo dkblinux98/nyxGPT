@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-20T10:16:02+00:00",
+ "generated_at": "2026-08-21T10:13:29+00:00",
  "issues": [
   {
    "n": 2587,
@@ -9,7 +9,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:13:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:07Z"
   },
   {
@@ -20,7 +20,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:09Z"
   },
   {
@@ -31,7 +31,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:11Z"
   },
   {
@@ -42,7 +42,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:34Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:13Z"
   },
   {
@@ -53,7 +53,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:36Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:15Z"
   },
   {
@@ -64,7 +64,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:17Z"
   },
   {
@@ -75,7 +75,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:19Z"
   },
   {
@@ -86,7 +86,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:21Z"
   },
   {
@@ -97,7 +97,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:02:49Z"
   },
   {
@@ -108,7 +108,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-01T22:18:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:07:22Z"
   },
   {
@@ -119,7 +119,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:18:49Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T05:50:52Z"
   },
   {
@@ -130,7 +130,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:18:51Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T01:01:29Z"
   },
   {
@@ -141,7 +141,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:18:53Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T06:12:26Z"
   },
   {
@@ -152,7 +152,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:18:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T20:43:23Z"
   },
   {
@@ -163,7 +163,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:18:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:37:45Z"
   },
   {
@@ -174,7 +174,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:18:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-10T10:56:00Z"
   },
   {
@@ -185,7 +185,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:19:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-11T03:11:19Z"
   },
   {
@@ -196,7 +196,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:19:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T04:48:20Z"
   },
   {
@@ -207,7 +207,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:19:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T03:31:35Z"
   },
   {
@@ -218,7 +218,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:19:06Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T05:54:33Z"
   },
   {
@@ -229,7 +229,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-01T22:19:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T01:25:08Z"
   },
   {
@@ -240,7 +240,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T02:51:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T03:10:06Z"
   },
   {
@@ -251,7 +251,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T02:51:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T03:10:07Z"
   },
   {
@@ -262,7 +262,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T03:39:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T04:49:17Z"
   },
   {
@@ -273,7 +273,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T03:39:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-16T04:13:02Z"
   },
   {
@@ -284,7 +284,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T03:39:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-16T04:21:07Z"
   },
   {
@@ -295,7 +295,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T03:39:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-16T03:32:16Z"
   },
   {
@@ -306,7 +306,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T03:39:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-13T00:35:09Z"
   },
   {
@@ -317,7 +317,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T03:39:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-06T16:52:58Z"
   },
   {
@@ -328,7 +328,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T03:39:35Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-12T23:33:27Z"
   },
   {
@@ -339,7 +339,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T03:39:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-13T03:08:44Z"
   },
   {
@@ -350,7 +350,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T03:39:39Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-13T03:33:46Z"
   },
   {
@@ -361,7 +361,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T03:39:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-13T03:50:58Z"
   },
   {
@@ -372,7 +372,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T06:52:26Z"
   },
   {
@@ -383,7 +383,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T08:42:08Z"
   },
   {
@@ -394,7 +394,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T09:09:30Z"
   },
   {
@@ -405,7 +405,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T06:29:16Z"
   },
   {
@@ -416,7 +416,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T06:07:21Z"
   },
   {
@@ -427,7 +427,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:14:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T05:07:05Z"
   },
   {
@@ -438,7 +438,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:14:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T05:15:26Z"
   },
   {
@@ -449,7 +449,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T04:02:35Z"
   },
   {
@@ -460,7 +460,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T04:12:20Z"
   },
   {
@@ -471,7 +471,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:14:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T11:48:55Z"
   },
   {
@@ -482,7 +482,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-02T04:14:56Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T04:26:17Z"
   },
   {
@@ -493,7 +493,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:15:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T18:45:14Z"
   },
   {
@@ -504,7 +504,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T07:19:30Z"
   },
   {
@@ -515,7 +515,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T20:24:52Z"
   },
   {
@@ -526,7 +526,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T20:25:45Z"
   },
   {
@@ -537,7 +537,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T22:01:48Z"
   },
   {
@@ -548,7 +548,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:36Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T22:22:11Z"
   },
   {
@@ -559,7 +559,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T22:58:03Z"
   },
   {
@@ -570,7 +570,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:15:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-14T06:12:40Z"
   },
   {
@@ -581,7 +581,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:11Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T04:48:11Z"
   },
   {
@@ -592,7 +592,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T05:34:34Z"
   },
   {
@@ -603,7 +603,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T06:22:31Z"
   },
   {
@@ -614,7 +614,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T05:31:41Z"
   },
   {
@@ -625,7 +625,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-14T22:41:13Z"
   },
   {
@@ -636,7 +636,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:16:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T02:00:54Z"
   },
   {
@@ -647,7 +647,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:16:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T02:39:14Z"
   },
   {
@@ -658,7 +658,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T03:55:27Z"
   },
   {
@@ -669,7 +669,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:16:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T07:24:59Z"
   },
   {
@@ -680,7 +680,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T05:58:07Z"
   },
   {
@@ -691,7 +691,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T06:38:59Z"
   },
   {
@@ -702,7 +702,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T05:15:37Z"
   },
   {
@@ -713,7 +713,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:16:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-14T02:47:17Z"
   },
   {
@@ -724,7 +724,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:17:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T23:08:10Z"
   },
   {
@@ -735,7 +735,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:17:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T23:00:11Z"
   },
   {
@@ -746,7 +746,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:17:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-21T00:08:48Z"
   },
   {
@@ -757,7 +757,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:17:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T00:33:06Z"
   },
   {
@@ -768,7 +768,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:17:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T23:10:41Z"
   },
   {
@@ -779,7 +779,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:17:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-21T00:51:14Z"
   },
   {
@@ -790,7 +790,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:17:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-21T05:12:27Z"
   },
   {
@@ -801,7 +801,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:06Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-22T03:25:28Z"
   },
   {
@@ -812,7 +812,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-22T00:13:15Z"
   },
   {
@@ -823,7 +823,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-21T05:20:30Z"
   },
   {
@@ -834,7 +834,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-25T03:49:15Z"
   },
   {
@@ -845,7 +845,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-02T04:18:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T03:55:37Z"
   },
   {
@@ -856,7 +856,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-25T04:22:42Z"
   },
   {
@@ -867,7 +867,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-24T08:51:00Z"
   },
   {
@@ -878,7 +878,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-24T06:54:20Z"
   },
   {
@@ -889,7 +889,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-24T05:11:32Z"
   },
   {
@@ -900,7 +900,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-22T07:20:13Z"
   },
   {
@@ -911,7 +911,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-18T21:31:41Z"
   },
   {
@@ -922,7 +922,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-02T04:18:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-24T08:06:45Z"
   },
   {
@@ -933,7 +933,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-22T22:35:45Z"
   },
   {
@@ -944,7 +944,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-14T02:32:49Z"
   },
   {
@@ -955,7 +955,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:11Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-14T02:46:28Z"
   },
   {
@@ -966,7 +966,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-22T23:28:10Z"
   },
   {
@@ -977,7 +977,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-07T16:43:03Z"
   },
   {
@@ -988,7 +988,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-07T17:15:46Z"
   },
   {
@@ -999,7 +999,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-07T17:52:20Z"
   },
   {
@@ -1010,7 +1010,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-27T20:45:50Z"
   },
   {
@@ -1021,7 +1021,7 @@
    ],
    "milestone": "Phase X: Rejected",
    "created": "2026-01-02T04:19:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-07T23:30:21Z"
   },
   {
@@ -1032,7 +1032,7 @@
    ],
    "milestone": "Phase X: Rejected",
    "created": "2026-01-02T04:19:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-06T15:57:23Z"
   },
   {
@@ -1043,7 +1043,7 @@
    ],
    "milestone": "Phase X: Rejected",
    "created": "2026-01-02T04:19:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-06T15:57:26Z"
   },
   {
@@ -1054,7 +1054,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T18:03:22Z"
   },
   {
@@ -1065,7 +1065,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-01-02T04:19:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T00:31:28Z"
   },
   {
@@ -1076,7 +1076,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T23:02:49Z"
   },
   {
@@ -1087,7 +1087,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-08T23:25:03Z"
   },
   {
@@ -1098,7 +1098,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T12:43:08Z"
   },
   {
@@ -1109,7 +1109,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-13T03:04:12Z"
   },
   {
@@ -1120,7 +1120,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T02:38:08Z"
   },
   {
@@ -1131,7 +1131,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T03:16:40Z"
   },
   {
@@ -1142,7 +1142,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T04:04:55Z"
   },
   {
@@ -1153,7 +1153,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T04:36:12Z"
   },
   {
@@ -1164,7 +1164,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T05:16:04Z"
   },
   {
@@ -1175,7 +1175,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T05:40:31Z"
   },
   {
@@ -1186,7 +1186,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T06:17:55Z"
   },
   {
@@ -1197,7 +1197,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:35Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T07:07:54Z"
   },
   {
@@ -1208,7 +1208,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-02T04:20:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T07:52:07Z"
   },
   {
@@ -1219,7 +1219,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:41:43Z"
   },
   {
@@ -1230,7 +1230,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:41:47Z"
   },
   {
@@ -1241,7 +1241,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:41:51Z"
   },
   {
@@ -1252,7 +1252,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:41:54Z"
   },
   {
@@ -1263,7 +1263,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:41:58Z"
   },
   {
@@ -1274,7 +1274,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:42:02Z"
   },
   {
@@ -1285,7 +1285,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:42:05Z"
   },
   {
@@ -1296,7 +1296,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-02T04:41:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-02T04:42:08Z"
   },
   {
@@ -1307,7 +1307,7 @@
    ],
    "milestone": "Phase 3.5: Release Stakeholder Acceptance Failures and Improvements (v1.0.0)",
    "created": "2026-01-03T03:57:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-05T21:32:52Z"
   },
   {
@@ -1318,7 +1318,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:17:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:23:38Z"
   },
   {
@@ -1329,7 +1329,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:38:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:45:45Z"
   },
   {
@@ -1340,7 +1340,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:39:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:45:48Z"
   },
   {
@@ -1351,7 +1351,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:39:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:45:51Z"
   },
   {
@@ -1362,7 +1362,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:39:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:45:54Z"
   },
   {
@@ -1373,7 +1373,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:39:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:45:57Z"
   },
   {
@@ -1384,7 +1384,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T05:39:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T05:46:00Z"
   },
   {
@@ -1395,7 +1395,7 @@
    ],
    "milestone": "Phase 0: Application Scaffolding (v1.0.0)",
    "created": "2026-01-03T08:07:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T08:31:50Z"
   },
   {
@@ -1406,7 +1406,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T09:13:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T03:37:29Z"
   },
   {
@@ -1417,7 +1417,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T09:13:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T09:21:01Z"
   },
   {
@@ -1428,7 +1428,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T09:13:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T03:26:21Z"
   },
   {
@@ -1439,7 +1439,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T09:14:06Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T03:30:36Z"
   },
   {
@@ -1450,7 +1450,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-03T09:14:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-03T09:24:46Z"
   },
   {
@@ -1461,7 +1461,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T04:21:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T04:37:24Z"
   },
   {
@@ -1472,7 +1472,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T04:22:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T07:27:54Z"
   },
   {
@@ -1483,7 +1483,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T04:22:39Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T04:50:21Z"
   },
   {
@@ -1494,7 +1494,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T04:22:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T04:53:37Z"
   },
   {
@@ -1505,7 +1505,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T05:08:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T05:29:42Z"
   },
   {
@@ -1516,7 +1516,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T05:09:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T05:29:44Z"
   },
   {
@@ -1527,7 +1527,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T05:18:36Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T05:29:45Z"
   },
   {
@@ -1538,7 +1538,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T06:53:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T07:02:59Z"
   },
   {
@@ -1549,7 +1549,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-04T06:57:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-04T07:03:08Z"
   },
   {
@@ -1561,7 +1561,7 @@
    ],
    "milestone": "Phase 1: Quality & Security (v1.0.0)",
    "created": "2026-01-06T03:56:58Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T04:03:59Z"
   },
   {
@@ -1572,7 +1572,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-06T04:58:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-06T05:03:24Z"
   },
   {
@@ -1583,7 +1583,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-01-06T05:35:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T20:42:50Z"
   },
   {
@@ -1594,7 +1594,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-06T05:56:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-22T02:53:26Z"
   },
   {
@@ -1605,7 +1605,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T00:53:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T01:01:18Z"
   },
   {
@@ -1616,7 +1616,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T01:43:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T01:51:12Z"
   },
   {
@@ -1627,7 +1627,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T01:44:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T01:51:12Z"
   },
   {
@@ -1638,7 +1638,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:21:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:35:36Z"
   },
   {
@@ -1649,7 +1649,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:21:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:35:40Z"
   },
   {
@@ -1660,7 +1660,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:22:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:35:43Z"
   },
   {
@@ -1671,7 +1671,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:22:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:35:45Z"
   },
   {
@@ -1682,7 +1682,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:22:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:35:47Z"
   },
   {
@@ -1693,7 +1693,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:38:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:54:37Z"
   },
   {
@@ -1704,7 +1704,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:45:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:48:20Z"
   },
   {
@@ -1715,7 +1715,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:46:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:48:28Z"
   },
   {
@@ -1726,7 +1726,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:46:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:51:07Z"
   },
   {
@@ -1737,7 +1737,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:46:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:51:15Z"
   },
   {
@@ -1748,7 +1748,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:47:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:51:24Z"
   },
   {
@@ -1759,7 +1759,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T02:47:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T02:51:32Z"
   },
   {
@@ -1770,7 +1770,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T04:06:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T20:39:54Z"
   },
   {
@@ -1781,7 +1781,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T04:06:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T04:57:34Z"
   },
   {
@@ -1792,7 +1792,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T05:32:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T05:56:19Z"
   },
   {
@@ -1803,7 +1803,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-07T05:33:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-22T04:25:14Z"
   },
   {
@@ -1814,7 +1814,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T19:20:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T19:34:28Z"
   },
   {
@@ -1825,7 +1825,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T19:50:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T02:38:43Z"
   },
   {
@@ -1836,7 +1836,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T19:50:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-07T20:02:39Z"
   },
   {
@@ -1847,7 +1847,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T20:36:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T08:07:45Z"
   },
   {
@@ -1858,7 +1858,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T20:36:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T08:07:11Z"
   },
   {
@@ -1869,7 +1869,7 @@
    ],
    "milestone": "Phase X: Rejected",
    "created": "2026-01-07T20:42:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-14T06:18:33Z"
   },
   {
@@ -1880,7 +1880,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T21:00:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T19:27:17Z"
   },
   {
@@ -1891,7 +1891,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T21:01:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T06:14:10Z"
   },
   {
@@ -1902,7 +1902,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T21:03:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T08:07:29Z"
   },
   {
@@ -1913,7 +1913,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-07T21:34:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-08T01:51:28Z"
   },
   {
@@ -1924,7 +1924,7 @@
    ],
    "milestone": "Phase X: Rejected",
    "created": "2026-01-08T22:01:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-10T03:45:45Z"
   },
   {
@@ -1935,7 +1935,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T04:36:56Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:37:42Z"
   },
   {
@@ -1946,7 +1946,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T04:37:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:37:39Z"
   },
   {
@@ -1957,7 +1957,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T04:38:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:37:36Z"
   },
   {
@@ -1968,7 +1968,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T04:38:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:37:33Z"
   },
   {
@@ -1979,7 +1979,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T05:00:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:39:49Z"
   },
   {
@@ -1990,7 +1990,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T05:01:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:39:52Z"
   },
   {
@@ -2001,7 +2001,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T05:01:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:39:55Z"
   },
   {
@@ -2012,7 +2012,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T05:02:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:39:58Z"
   },
   {
@@ -2023,7 +2023,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T05:02:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T05:40:01Z"
   },
   {
@@ -2034,7 +2034,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T06:34:53Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-09T08:06:52Z"
   },
   {
@@ -2045,7 +2045,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T19:56:53Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-10T01:42:55Z"
   },
   {
@@ -2056,7 +2056,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T19:57:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-10T02:54:56Z"
   },
   {
@@ -2067,7 +2067,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T19:57:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-10T02:55:25Z"
   },
   {
@@ -2078,7 +2078,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-09T19:57:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-10T01:43:07Z"
   },
   {
@@ -2089,7 +2089,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-01-11T00:26:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T08:27:27Z"
   },
   {
@@ -2100,7 +2100,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T02:58:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T03:39:20Z"
   },
   {
@@ -2111,7 +2111,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T02:58:39Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T03:31:36Z"
   },
   {
@@ -2122,7 +2122,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T02:58:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T03:20:13Z"
   },
   {
@@ -2133,7 +2133,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T03:50:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T05:43:52Z"
   },
   {
@@ -2144,7 +2144,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T03:51:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T04:25:36Z"
   },
   {
@@ -2155,7 +2155,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T03:52:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T04:24:07Z"
   },
   {
@@ -2166,7 +2166,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T04:59:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T06:41:48Z"
   },
   {
@@ -2177,7 +2177,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T04:59:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T07:13:38Z"
   },
   {
@@ -2188,7 +2188,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T05:20:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T05:56:22Z"
   },
   {
@@ -2199,7 +2199,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T05:20:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T05:43:51Z"
   },
   {
@@ -2210,7 +2210,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T05:26:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T05:34:46Z"
   },
   {
@@ -2221,7 +2221,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T05:37:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T05:50:53Z"
   },
   {
@@ -2230,7 +2230,7 @@
    "labels": [],
    "milestone": "Phase X: Rejected",
    "created": "2026-01-12T05:38:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T05:55:00Z"
   },
   {
@@ -2241,7 +2241,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T05:44:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T06:01:46Z"
   },
   {
@@ -2252,7 +2252,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-12T06:00:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-12T07:17:01Z"
   },
   {
@@ -2263,7 +2263,7 @@
    ],
    "milestone": "Phase 3.5: Release Stakeholder Acceptance Failures and Improvements (v1.0.0)",
    "created": "2026-01-13T04:46:06Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-25T06:10:44Z"
   },
   {
@@ -2274,7 +2274,7 @@
    ],
    "milestone": "Phase 3.5: Release Stakeholder Acceptance Failures and Improvements (v1.0.0)",
    "created": "2026-01-13T04:46:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-25T04:37:25Z"
   },
   {
@@ -2285,7 +2285,7 @@
    ],
    "milestone": "Phase 3.5: Release Stakeholder Acceptance Failures and Improvements (v1.0.0)",
    "created": "2026-01-13T04:46:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-25T07:00:34Z"
   },
   {
@@ -2296,7 +2296,7 @@
    ],
    "milestone": "Phase 3.5: Release Stakeholder Acceptance Failures and Improvements (v1.0.0)",
    "created": "2026-01-13T04:46:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-25T04:35:43Z"
   },
   {
@@ -2307,7 +2307,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-13T06:23:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-13T18:35:27Z"
   },
   {
@@ -2318,7 +2318,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-14T22:47:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T05:02:26Z"
   },
   {
@@ -2329,7 +2329,7 @@
    ],
    "milestone": "Phase 2: User Experience (v1.0.0)",
    "created": "2026-01-15T04:57:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-15T06:44:47Z"
   },
   {
@@ -2340,7 +2340,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-20T08:09:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-20T22:31:15Z"
   },
   {
@@ -2351,7 +2351,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-22T19:05:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-22T22:15:00Z"
   },
   {
@@ -2362,7 +2362,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-22T20:18:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-23T06:03:11Z"
   },
   {
@@ -2373,7 +2373,7 @@
    ],
    "milestone": "Phase 3: Intelligence (v1.0.0)",
    "created": "2026-01-23T18:54:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-01-23T19:22:06Z"
   },
   {
@@ -2384,7 +2384,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-02-13T03:24:51Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-07T16:43:05Z"
   },
   {
@@ -2395,7 +2395,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-02-13T16:41:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-14T02:12:43Z"
   },
   {
@@ -2406,7 +2406,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-02-13T16:42:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-13T17:56:17Z"
   },
   {
@@ -2417,7 +2417,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-02-13T21:25:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-28T01:31:37Z"
   },
   {
@@ -2428,7 +2428,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-02-14T03:00:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-02-18T04:09:30Z"
   },
   {
@@ -2439,7 +2439,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-02-28T01:44:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-03-07T15:20:36Z"
   },
   {
@@ -2450,7 +2450,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-03-05T17:34:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-03-07T15:31:34Z"
   },
   {
@@ -2461,7 +2461,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-03-06T20:53:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-03-06T20:59:37Z"
   },
   {
@@ -2472,7 +2472,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-03-06T21:53:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-03-06T22:23:50Z"
   },
   {
@@ -2483,7 +2483,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-03-06T23:04:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-03-06T23:09:34Z"
   },
   {
@@ -2494,7 +2494,7 @@
    ],
    "milestone": "Phase 4: Scale & Performance (v2.0.0)",
    "created": "2026-03-07T15:07:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-03-07T16:09:40Z"
   },
   {
@@ -2505,7 +2505,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-07T17:16:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T10:26:56Z"
   },
   {
@@ -2516,7 +2516,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-07T17:16:45Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T11:29:46Z"
   },
   {
@@ -2527,7 +2527,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-08T23:18:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-14T13:35:55Z"
   },
   {
@@ -2538,7 +2538,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:53:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T14:39:26Z"
   },
   {
@@ -2549,7 +2549,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:54:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T15:10:53Z"
   },
   {
@@ -2560,7 +2560,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:54:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T16:52:01Z"
   },
   {
@@ -2571,7 +2571,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:55:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T17:14:01Z"
   },
   {
@@ -2582,7 +2582,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:55:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T17:44:15Z"
   },
   {
@@ -2593,7 +2593,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:55:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T18:20:23Z"
   },
   {
@@ -2604,7 +2604,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:58:11Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T18:37:40Z"
   },
   {
@@ -2615,7 +2615,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T04:58:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T19:19:56Z"
   },
   {
@@ -2626,7 +2626,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T05:03:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T19:32:18Z"
   },
   {
@@ -2637,7 +2637,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:29:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T20:24:20Z"
   },
   {
@@ -2648,7 +2648,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:30:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T20:49:19Z"
   },
   {
@@ -2659,7 +2659,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:30:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T21:18:55Z"
   },
   {
@@ -2670,7 +2670,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:30:45Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T21:33:42Z"
   },
   {
@@ -2681,7 +2681,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:30:49Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T22:14:58Z"
   },
   {
@@ -2692,7 +2692,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:31:11Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T22:54:49Z"
   },
   {
@@ -2703,7 +2703,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:31:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T23:38:51Z"
   },
   {
@@ -2714,7 +2714,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:31:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-15T23:56:47Z"
   },
   {
@@ -2725,7 +2725,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:31:34Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T01:22:29Z"
   },
   {
@@ -2736,7 +2736,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:31:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T01:44:47Z"
   },
   {
@@ -2747,7 +2747,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-15T06:32:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T03:26:59Z"
   },
   {
@@ -2758,7 +2758,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T04:29:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T04:29:56Z"
   },
   {
@@ -2769,7 +2769,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:36:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T22:23:42Z"
   },
   {
@@ -2780,7 +2780,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:37:56Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T22:23:44Z"
   },
   {
@@ -2791,7 +2791,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T00:10:30Z"
   },
   {
@@ -2802,7 +2802,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:06Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T01:06:16Z"
   },
   {
@@ -2813,7 +2813,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-16T22:23:45Z"
   },
   {
@@ -2824,7 +2824,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T01:29:52Z"
   },
   {
@@ -2835,7 +2835,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T01:35:13Z"
   },
   {
@@ -2846,7 +2846,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T03:23:47Z"
   },
   {
@@ -2857,7 +2857,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:38:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T03:41:36Z"
   },
   {
@@ -2868,7 +2868,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:39:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T04:15:42Z"
   },
   {
@@ -2879,7 +2879,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:39:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T04:42:47Z"
   },
   {
@@ -2890,7 +2890,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:39:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T05:07:03Z"
   },
   {
@@ -2901,7 +2901,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:39:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T06:14:36Z"
   },
   {
@@ -2912,7 +2912,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T21:39:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T07:06:56Z"
   },
   {
@@ -2923,7 +2923,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:21:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T07:40:42Z"
   },
   {
@@ -2934,7 +2934,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:21:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T08:16:26Z"
   },
   {
@@ -2945,7 +2945,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:21:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T09:25:15Z"
   },
   {
@@ -2956,7 +2956,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:22:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T09:54:45Z"
   },
   {
@@ -2967,7 +2967,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:22:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T10:42:16Z"
   },
   {
@@ -2978,7 +2978,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:22:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T11:54:40Z"
   },
   {
@@ -2989,7 +2989,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:22:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T12:16:01Z"
   },
   {
@@ -3000,7 +3000,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-16T22:22:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T12:39:59Z"
   },
   {
@@ -3011,7 +3011,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-17T01:34:31Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T02:36:06Z"
   },
   {
@@ -3022,7 +3022,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-17T01:34:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T02:09:19Z"
   },
   {
@@ -3033,7 +3033,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-17T02:04:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-17T02:36:31Z"
   },
   {
@@ -3044,7 +3044,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-17T09:25:35Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T04:11:28Z"
   },
   {
@@ -3055,7 +3055,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-17T14:04:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T02:48:20Z"
   },
   {
@@ -3066,7 +3066,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-17T14:05:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T06:48:35Z"
   },
   {
@@ -3077,7 +3077,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T02:20:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T22:47:52Z"
   },
   {
@@ -3088,7 +3088,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T02:23:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T02:49:50Z"
   },
   {
@@ -3099,7 +3099,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T02:39:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T03:02:07Z"
   },
   {
@@ -3110,7 +3110,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T02:41:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T03:29:39Z"
   },
   {
@@ -3121,7 +3121,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T03:13:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T23:30:28Z"
   },
   {
@@ -3132,7 +3132,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T03:13:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T03:39:09Z"
   },
   {
@@ -3143,7 +3143,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T03:19:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T03:20:29Z"
   },
   {
@@ -3154,7 +3154,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T04:44:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T05:02:08Z"
   },
   {
@@ -3165,7 +3165,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T16:44:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T16:59:34Z"
   },
   {
@@ -3176,7 +3176,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T19:30:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T22:51:56Z"
   },
   {
@@ -3187,7 +3187,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T00:43:08Z"
   },
   {
@@ -3198,7 +3198,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T06:04:21Z"
   },
   {
@@ -3209,7 +3209,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T23:30:52Z"
   },
   {
@@ -3220,7 +3220,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T01:31:21Z"
   },
   {
@@ -3231,7 +3231,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T01:43:59Z"
   },
   {
@@ -3242,7 +3242,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-18T23:24:06Z"
   },
   {
@@ -3253,7 +3253,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-18T22:51:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T00:54:09Z"
   },
   {
@@ -3264,7 +3264,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-19T16:45:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-19T16:51:21Z"
   },
   {
@@ -3275,7 +3275,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-20T16:24:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-20T16:45:17Z"
   },
   {
@@ -3286,7 +3286,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-20T16:43:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-20T16:58:33Z"
   },
   {
@@ -3297,7 +3297,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-20T16:43:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-24T21:25:49Z"
   },
   {
@@ -3308,7 +3308,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-20T16:55:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-20T17:00:34Z"
   },
   {
@@ -3319,7 +3319,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-20T17:01:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T02:24:30Z"
   },
   {
@@ -3330,7 +3330,7 @@
    ],
    "milestone": "Phase 5: Enterprise Features (v2.0.0)",
    "created": "2026-07-20T17:51:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T03:56:22Z"
   },
   {
@@ -3341,7 +3341,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-20T23:38:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-21T00:15:47Z"
   },
   {
@@ -3352,7 +3352,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-20T23:38:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-20T23:58:29Z"
   },
   {
@@ -3363,7 +3363,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-20T23:49:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-21T00:22:01Z"
   },
   {
@@ -3374,7 +3374,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-21T02:23:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-21T02:31:21Z"
   },
   {
@@ -3385,7 +3385,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-21T02:29:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-21T09:30:59Z"
   },
   {
@@ -3396,7 +3396,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-21T02:34:06Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-21T09:36:27Z"
   },
   {
@@ -3407,7 +3407,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-22T21:01:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-22T21:30:43Z"
   },
   {
@@ -3418,7 +3418,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-22T21:01:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-24T23:11:36Z"
   },
   {
@@ -3429,7 +3429,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-22T21:31:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-24T23:58:42Z"
   },
   {
@@ -3440,7 +3440,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-23T21:04:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T00:37:30Z"
   },
   {
@@ -3451,7 +3451,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T16:41:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T00:06:24Z"
   },
   {
@@ -3462,7 +3462,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T17:13:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T21:13:10Z"
   },
   {
@@ -3473,7 +3473,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T17:30:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T21:43:54Z"
   },
   {
@@ -3484,7 +3484,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T17:37:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T22:57:04Z"
   },
   {
@@ -3495,7 +3495,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T17:53:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T23:53:54Z"
   },
   {
@@ -3506,7 +3506,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T17:59:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T00:27:19Z"
   },
   {
@@ -3517,7 +3517,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T18:00:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T03:02:45Z"
   },
   {
@@ -3528,7 +3528,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T18:01:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-25T19:28:14Z"
   },
   {
@@ -3539,7 +3539,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T18:03:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T14:04:04Z"
   },
   {
@@ -3550,7 +3550,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T18:04:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T14:51:22Z"
   },
   {
@@ -3561,7 +3561,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T18:08:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T16:30:08Z"
   },
   {
@@ -3572,7 +3572,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T18:12:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T18:12:47Z"
   },
   {
@@ -3583,7 +3583,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T19:06:11Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T18:17:14Z"
   },
   {
@@ -3594,7 +3594,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T19:17:58Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T18:56:01Z"
   },
   {
@@ -3605,7 +3605,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T19:28:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T19:44:34Z"
   },
   {
@@ -3616,7 +3616,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T19:36:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-26T20:05:23Z"
   },
   {
@@ -3627,7 +3627,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-25T20:15:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T06:05:08Z"
   },
   {
@@ -3638,7 +3638,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-26T12:51:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T06:43:25Z"
   },
   {
@@ -3649,7 +3649,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T16:15:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T16:51:37Z"
   },
   {
@@ -3660,7 +3660,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T16:34:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T16:48:44Z"
   },
   {
@@ -3671,7 +3671,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T16:38:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T17:24:25Z"
   },
   {
@@ -3682,7 +3682,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T16:43:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T18:51:15Z"
   },
   {
@@ -3693,7 +3693,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T16:50:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T19:31:52Z"
   },
   {
@@ -3704,7 +3704,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T16:51:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T21:10:56Z"
   },
   {
@@ -3715,7 +3715,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T17:32:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T20:29:13Z"
   },
   {
@@ -3726,7 +3726,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T17:46:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T21:08:13Z"
   },
   {
@@ -3737,7 +3737,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T17:58:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T19:12:26Z"
   },
   {
@@ -3748,7 +3748,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T18:57:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T21:32:51Z"
   },
   {
@@ -3759,7 +3759,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-27T19:01:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-27T21:56:40Z"
   },
   {
@@ -3770,7 +3770,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T20:42:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-28T22:00:56Z"
   },
   {
@@ -3781,7 +3781,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T21:01:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T05:04:06Z"
   },
   {
@@ -3792,7 +3792,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T21:30:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T07:50:31Z"
   },
   {
@@ -3803,7 +3803,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T21:44:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T10:41:52Z"
   },
   {
@@ -3814,7 +3814,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T22:15:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T12:23:25Z"
   },
   {
@@ -3825,7 +3825,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T22:25:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T16:01:12Z"
   },
   {
@@ -3836,7 +3836,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T22:28:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T17:13:10Z"
   },
   {
@@ -3847,7 +3847,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T23:19:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T17:59:20Z"
   },
   {
@@ -3858,7 +3858,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-28T23:32:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T20:57:10Z"
   },
   {
@@ -3869,7 +3869,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T07:20:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T23:39:22Z"
   },
   {
@@ -3880,7 +3880,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T15:54:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T00:24:48Z"
   },
   {
@@ -3891,7 +3891,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T19:31:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T01:04:00Z"
   },
   {
@@ -3902,7 +3902,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T19:47:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T00:58:02Z"
   },
   {
@@ -3913,7 +3913,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T20:13:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T21:33:03Z"
   },
   {
@@ -3924,7 +3924,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T20:25:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T23:30:00Z"
   },
   {
@@ -3935,7 +3935,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T20:55:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T02:11:54Z"
   },
   {
@@ -3946,7 +3946,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T22:29:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-29T23:15:26Z"
   },
   {
@@ -3957,7 +3957,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T22:56:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T03:25:45Z"
   },
   {
@@ -3968,7 +3968,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:23:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T04:28:29Z"
   },
   {
@@ -3979,7 +3979,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:23:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T06:20:40Z"
   },
   {
@@ -3990,7 +3990,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:31:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T07:04:18Z"
   },
   {
@@ -4001,7 +4001,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:39:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T08:19:55Z"
   },
   {
@@ -4012,7 +4012,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:40:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T20:49:34Z"
   },
   {
@@ -4023,7 +4023,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:40:36Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T00:46:30Z"
   },
   {
@@ -4034,7 +4034,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:40:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T22:38:51Z"
   },
   {
@@ -4045,7 +4045,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-29T23:41:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-30T23:38:11Z"
   },
   {
@@ -4056,7 +4056,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:23:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T00:29:36Z"
   },
   {
@@ -4067,7 +4067,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:26:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T01:45:01Z"
   },
   {
@@ -4078,7 +4078,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:38:33Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T02:20:47Z"
   },
   {
@@ -4089,7 +4089,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:38:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T05:31:23Z"
   },
   {
@@ -4100,7 +4100,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:41:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T07:28:41Z"
   },
   {
@@ -4111,7 +4111,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:44:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T04:28:02Z"
   },
   {
@@ -4122,7 +4122,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:56:56Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T19:03:47Z"
   },
   {
@@ -4133,7 +4133,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T20:58:58Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T19:32:25Z"
   },
   {
@@ -4144,7 +4144,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:01:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T20:59:54Z"
   },
   {
@@ -4155,7 +4155,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:02:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T20:14:43Z"
   },
   {
@@ -4166,7 +4166,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:06:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T21:06:07Z"
   },
   {
@@ -4177,7 +4177,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:08:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T04:16:31Z"
   },
   {
@@ -4188,7 +4188,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:10:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-01T03:44:34Z"
   },
   {
@@ -4199,7 +4199,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:12:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T21:31:26Z"
   },
   {
@@ -4210,7 +4210,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:17:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-01T04:03:13Z"
   },
   {
@@ -4221,7 +4221,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:25:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T22:43:54Z"
   },
   {
@@ -4232,7 +4232,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-30T21:55:17Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T01:49:30Z"
   },
   {
@@ -4243,7 +4243,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-31T00:53:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T02:13:53Z"
   },
   {
@@ -4254,7 +4254,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-31T01:59:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T21:42:45Z"
   },
   {
@@ -4265,7 +4265,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-31T02:22:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T22:50:45Z"
   },
   {
@@ -4276,7 +4276,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-07-31T02:41:36Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-07-31T22:33:27Z"
   },
   {
@@ -4287,7 +4287,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:57:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T22:43:36Z"
   },
   {
@@ -4298,7 +4298,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:57:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T22:54:47Z"
   },
   {
@@ -4309,7 +4309,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:58:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T02:54:55Z"
   },
   {
@@ -4320,7 +4320,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:58:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T23:05:45Z"
   },
   {
@@ -4331,7 +4331,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:58:49Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T03:25:35Z"
   },
   {
@@ -4342,7 +4342,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:59:11Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T00:22:50Z"
   },
   {
@@ -4353,7 +4353,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:59:34Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T23:25:45Z"
   },
   {
@@ -4364,7 +4364,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T07:59:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T23:31:45Z"
   },
   {
@@ -4375,7 +4375,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:00:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T23:32:53Z"
   },
   {
@@ -4386,7 +4386,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:00:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T06:25:01Z"
   },
   {
@@ -4397,7 +4397,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:01:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T06:51:42Z"
   },
   {
@@ -4408,7 +4408,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:01:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T16:23:16Z"
   },
   {
@@ -4419,7 +4419,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:02:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T01:03:14Z"
   },
   {
@@ -4430,7 +4430,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:02:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T08:19:38Z"
   },
   {
@@ -4441,7 +4441,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:02:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T09:37:47Z"
   },
   {
@@ -4452,7 +4452,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:03:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T10:13:38Z"
   },
   {
@@ -4463,7 +4463,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T08:03:36Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T17:44:18Z"
   },
   {
@@ -4474,7 +4474,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-07-31T17:58:24Z",
-   "state": "open",
+   "state": "OPEN",
    "closed": null
   },
   {
@@ -4485,7 +4485,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-01T00:39:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-01T01:25:03Z"
   },
   {
@@ -4496,7 +4496,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-01T01:10:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-01T01:55:34Z"
   },
   {
@@ -4507,7 +4507,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-01T02:36:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-01T03:14:59Z"
   },
   {
@@ -4518,7 +4518,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-01T02:53:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-01T04:25:21Z"
   },
   {
@@ -4529,7 +4529,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-01T18:11:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T01:22:38Z"
   },
   {
@@ -4540,7 +4540,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-02T02:31:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T22:56:58Z"
   },
   {
@@ -4551,7 +4551,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T02:37:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T03:00:08Z"
   },
   {
@@ -4562,7 +4562,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T02:55:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T03:22:16Z"
   },
   {
@@ -4573,7 +4573,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T02:55:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T04:18:29Z"
   },
   {
@@ -4584,7 +4584,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T02:57:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T04:53:39Z"
   },
   {
@@ -4595,7 +4595,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T03:40:01Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T05:25:16Z"
   },
   {
@@ -4606,7 +4606,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T03:51:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T04:21:08Z"
   },
   {
@@ -4617,7 +4617,7 @@
    ],
    "milestone": "Phase 5.5: Release Stakeholder Acceptance Failures and Improvements (v2.0.0)",
    "created": "2026-08-02T03:58:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-02T06:01:45Z"
   },
   {
@@ -4628,7 +4628,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-02T19:57:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T02:19:34Z"
   },
   {
@@ -4639,7 +4639,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-02T20:02:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T02:42:19Z"
   },
   {
@@ -4650,7 +4650,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-02T20:21:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-07T10:10:02Z"
   },
   {
@@ -4661,7 +4661,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-02T20:56:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-08T05:00:13Z"
   },
   {
@@ -4672,7 +4672,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-02T21:01:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T00:38:02Z"
   },
   {
@@ -4683,7 +4683,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-03T03:08:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-08T19:15:05Z"
   },
   {
@@ -4694,7 +4694,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-03T03:17:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T00:42:31Z"
   },
   {
@@ -4705,7 +4705,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-03T21:29:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T22:17:43Z"
   },
   {
@@ -4716,7 +4716,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-03T21:29:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-03T21:37:18Z"
   },
   {
@@ -4727,7 +4727,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-04T01:59:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T04:14:01Z"
   },
   {
@@ -4738,7 +4738,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-04T02:17:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T02:24:56Z"
   },
   {
@@ -4749,7 +4749,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-04T03:19:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T02:09:09Z"
   },
   {
@@ -4760,7 +4760,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-04T03:20:08Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T02:45:33Z"
   },
   {
@@ -4771,7 +4771,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-04T03:44:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T03:19:51Z"
   },
   {
@@ -4782,7 +4782,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-04T04:13:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-04T11:13:51Z"
   },
   {
@@ -4793,7 +4793,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T01:51:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T02:49:33Z"
   },
   {
@@ -4804,7 +4804,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T02:13:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T03:29:08Z"
   },
   {
@@ -4815,7 +4815,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T02:45:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T03:30:39Z"
   },
   {
@@ -4826,19 +4826,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T02:50:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-11T04:39:29Z"
-  },
-  {
-   "n": 3634,
-   "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-   "created": "2026-08-05T03:02:46Z",
-   "state": "closed",
-   "closed": "2026-08-09T03:59:01Z"
   },
   {
    "n": 3633,
@@ -4848,8 +4837,19 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T03:02:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T03:51:26Z"
+  },
+  {
+   "n": 3634,
+   "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-05T03:02:46Z",
+   "state": "CLOSED",
+   "closed": "2026-08-09T03:59:01Z"
   },
   {
    "n": 3635,
@@ -4859,7 +4859,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T03:02:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T14:15:31Z"
   },
   {
@@ -4870,7 +4870,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-05T04:47:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T16:05:35Z"
   },
   {
@@ -4881,7 +4881,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T01:35:40Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-07T02:42:17Z"
   },
   {
@@ -4892,7 +4892,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T02:56:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T05:02:18Z"
   },
   {
@@ -4903,7 +4903,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T02:56:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-07T00:56:27Z"
   },
   {
@@ -4914,7 +4914,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T02:56:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T04:44:08Z"
   },
   {
@@ -4925,7 +4925,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T02:56:45Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T06:02:34Z"
   },
   {
@@ -4936,7 +4936,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T02:57:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T05:22:24Z"
   },
   {
@@ -4947,7 +4947,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T02:57:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-06T06:36:33Z"
   },
   {
@@ -4958,7 +4958,7 @@
    ],
    "milestone": "Phase 5.6 GitHub Public Repository Hardening and Security Hardening (v2.1.0)",
    "created": "2026-08-06T04:14:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-07T00:39:39Z"
   },
   {
@@ -4969,7 +4969,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-06T04:42:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T04:19:22Z"
   },
   {
@@ -4980,7 +4980,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-07T03:08:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T05:10:01Z"
   },
   {
@@ -4991,7 +4991,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-08T19:31:18Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T00:07:51Z"
   },
   {
@@ -5002,7 +5002,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-08T21:48:10Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T04:49:50Z"
   },
   {
@@ -5013,7 +5013,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-08T23:46:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T03:56:52Z"
   },
   {
@@ -5024,7 +5024,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T14:18:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T15:40:18Z"
   },
   {
@@ -5035,7 +5035,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T14:23:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T16:00:23Z"
   },
   {
@@ -5046,7 +5046,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T14:51:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T17:00:59Z"
   },
   {
@@ -5057,7 +5057,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T19:28:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T23:17:14Z"
   },
   {
@@ -5068,7 +5068,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T22:24:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T00:24:15Z"
   },
   {
@@ -5079,7 +5079,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T22:24:45Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T23:58:14Z"
   },
   {
@@ -5090,7 +5090,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-09T22:25:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-09T23:59:26Z"
   },
   {
@@ -5101,7 +5101,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-10T01:01:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T01:54:16Z"
   },
   {
@@ -5112,7 +5112,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-10T03:51:25Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T04:50:34Z"
   },
   {
@@ -5123,7 +5123,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-10T04:55:55Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-10T05:40:27Z"
   },
   {
@@ -5134,7 +5134,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-11T02:47:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-11T03:26:21Z"
   },
   {
@@ -5145,7 +5145,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-11T03:19:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-11T04:26:29Z"
   },
   {
@@ -5156,7 +5156,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-11T03:34:43Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-11T04:00:29Z"
   },
   {
@@ -5167,7 +5167,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-11T04:01:41Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T23:08:11Z"
   },
   {
@@ -5178,7 +5178,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-11T04:18:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-11T04:58:45Z"
   },
   {
@@ -5189,7 +5189,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-11T16:38:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-12T16:58:42Z"
   },
   {
@@ -5200,7 +5200,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-12T16:19:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-12T17:45:28Z"
   },
   {
@@ -5211,7 +5211,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-12T16:19:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-12T20:16:10Z"
   },
   {
@@ -5222,7 +5222,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-12T16:20:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-12T20:59:09Z"
   },
   {
@@ -5233,7 +5233,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-12T22:45:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T00:07:31Z"
   },
   {
@@ -5244,7 +5244,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-12T22:45:34Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T01:09:58Z"
   },
   {
@@ -5255,7 +5255,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-12T22:47:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T00:47:57Z"
   },
   {
@@ -5266,7 +5266,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T02:14:38Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T03:10:03Z"
   },
   {
@@ -5277,7 +5277,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T02:15:35Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T03:41:00Z"
   },
   {
@@ -5288,7 +5288,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T02:33:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T04:05:44Z"
   },
   {
@@ -5299,7 +5299,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T02:33:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T04:33:06Z"
   },
   {
@@ -5310,7 +5310,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T02:48:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T19:08:03Z"
   },
   {
@@ -5321,7 +5321,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T03:13:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-13T05:08:38Z"
   },
   {
@@ -5332,7 +5332,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T17:14:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T05:51:39Z"
   },
   {
@@ -5343,7 +5343,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-13T18:05:49Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T03:38:05Z"
   },
   {
@@ -5354,7 +5354,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T03:51:21Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T04:16:15Z"
   },
   {
@@ -5365,7 +5365,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T04:22:47Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T06:33:19Z"
   },
   {
@@ -5376,7 +5376,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T04:22:58Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T07:19:59Z"
   },
   {
@@ -5387,7 +5387,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T04:23:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T07:39:55Z"
   },
   {
@@ -5398,7 +5398,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T04:23:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T08:26:57Z"
   },
   {
@@ -5409,7 +5409,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T04:23:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T09:52:34Z"
   },
   {
@@ -5420,7 +5420,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T09:57:51Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T10:55:06Z"
   },
   {
@@ -5431,7 +5431,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T09:57:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T10:51:26Z"
   },
   {
@@ -5442,7 +5442,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T15:06:56Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T15:39:43Z"
   },
   {
@@ -5453,7 +5453,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T15:07:09Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T16:03:14Z"
   },
   {
@@ -5464,7 +5464,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T15:07:20Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T16:11:10Z"
   },
   {
@@ -5475,7 +5475,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-14T21:09:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-14T22:06:16Z"
   },
   {
@@ -5486,7 +5486,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T02:31:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T05:52:49Z"
   },
   {
@@ -5497,7 +5497,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T02:31:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T03:04:44Z"
   },
   {
@@ -5508,7 +5508,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T02:35:24Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-16T00:16:00Z"
   },
   {
@@ -5519,7 +5519,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T03:02:26Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T07:20:32Z"
   },
   {
@@ -5530,7 +5530,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T03:10:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T08:11:17Z"
   },
   {
@@ -5541,7 +5541,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T03:34:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T07:42:00Z"
   },
   {
@@ -5552,7 +5552,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T04:23:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T20:08:40Z"
   },
   {
@@ -5563,7 +5563,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T05:10:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-15T06:13:50Z"
   },
   {
@@ -5574,7 +5574,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-15T19:54:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-16T01:13:07Z"
   },
   {
@@ -5585,7 +5585,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T03:44:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T07:22:44Z"
   },
   {
@@ -5596,7 +5596,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T03:46:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T08:53:38Z"
   },
   {
@@ -5607,7 +5607,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T03:50:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T08:35:25Z"
   },
   {
@@ -5618,7 +5618,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T03:53:51Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T12:24:03Z"
   },
   {
@@ -5629,7 +5629,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:08:27Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T09:55:24Z"
   },
   {
@@ -5640,7 +5640,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:10:16Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T10:46:54Z"
   },
   {
@@ -5651,7 +5651,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:17:35Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T17:07:58Z"
   },
   {
@@ -5662,7 +5662,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T04:36:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T17:56:45Z"
   },
   {
@@ -5673,7 +5673,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T05:20:56Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T13:22:44Z"
   },
   {
@@ -5684,7 +5684,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T05:27:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T12:32:43Z"
   },
   {
@@ -5695,7 +5695,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T05:43:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T23:26:25Z"
   },
   {
@@ -5706,7 +5706,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T10:17:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-16T16:45:31Z"
   },
   {
@@ -5717,7 +5717,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T15:52:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-16T17:45:46Z"
   },
   {
@@ -5728,7 +5728,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T17:27:15Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-16T19:06:21Z"
   },
   {
@@ -5739,7 +5739,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T17:28:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-16T20:02:59Z"
   },
   {
@@ -5750,7 +5750,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:13:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T01:24:11Z"
   },
   {
@@ -5761,7 +5761,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:57:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T16:05:23Z"
   },
   {
@@ -5772,7 +5772,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:58:49Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T14:11:12Z"
   },
   {
@@ -5783,7 +5783,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:59:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T00:24:08Z"
   },
   {
@@ -5794,7 +5794,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T04:59:49Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T15:49:30Z"
   },
   {
@@ -5805,7 +5805,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:00:23Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T00:59:11Z"
   },
   {
@@ -5814,7 +5814,7 @@
    "labels": [],
    "milestone": "Phase X: Rejected",
    "created": "2026-08-17T05:01:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-17T05:05:41Z"
   },
   {
@@ -5825,7 +5825,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:01:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T17:20:56Z"
   },
   {
@@ -5836,7 +5836,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:02:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T21:42:01Z"
   },
   {
@@ -5847,7 +5847,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:02:44Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T18:31:05Z"
   },
   {
@@ -5858,7 +5858,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:03:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T19:50:09Z"
   },
   {
@@ -5869,7 +5869,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:03:50Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T20:23:31Z"
   },
   {
@@ -5880,7 +5880,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:07:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-17T19:49:50Z"
   },
   {
@@ -5891,7 +5891,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T05:31:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T05:10:30Z"
   },
   {
@@ -5902,7 +5902,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:35:03Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T19:06:47Z"
   },
   {
@@ -5913,7 +5913,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:35:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T16:34:44Z"
   },
   {
@@ -5924,7 +5924,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:49:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T06:42:56Z"
   },
   {
@@ -5935,7 +5935,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-17T19:52:02Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T05:52:46Z"
   },
   {
@@ -5946,7 +5946,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:12:00Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T00:01:12Z"
   },
   {
@@ -5955,7 +5955,7 @@
    "labels": [],
    "milestone": "Phase X: Rejected",
    "created": "2026-08-18T02:12:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T02:23:36Z"
   },
   {
@@ -5966,7 +5966,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:23:13Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T03:15:30Z"
   },
   {
@@ -5977,7 +5977,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:24:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T02:34:22Z"
   },
   {
@@ -5988,7 +5988,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:35:04Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T05:21:24Z"
   },
   {
@@ -5999,7 +5999,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:35:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T02:00:52Z"
   },
   {
@@ -6010,7 +6010,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:39:42Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T09:08:30Z"
   },
   {
@@ -6021,7 +6021,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:27:58Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T07:10:49Z"
   },
   {
@@ -6032,7 +6032,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:28:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T02:37:12Z"
   },
   {
@@ -6043,7 +6043,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:29:05Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T00:18:47Z"
   },
   {
@@ -6054,7 +6054,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T03:30:07Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T04:54:34Z"
   },
   {
@@ -6065,7 +6065,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T04:13:57Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T17:31:26Z"
   },
   {
@@ -6076,7 +6076,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T04:30:59Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T06:20:46Z"
   },
   {
@@ -6087,7 +6087,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T05:36:12Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T12:28:11Z"
   },
   {
@@ -6098,7 +6098,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T05:48:32Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T01:15:18Z"
   },
   {
@@ -6109,7 +6109,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T11:38:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T03:38:37Z"
   },
   {
@@ -6120,7 +6120,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T11:44:22Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T23:08:32Z"
   },
   {
@@ -6131,7 +6131,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T15:51:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T16:09:20Z"
   },
   {
@@ -6140,7 +6140,7 @@
    "labels": [],
    "milestone": "Phase X: Rejected",
    "created": "2026-08-18T15:52:53Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T21:55:43Z"
   },
   {
@@ -6151,7 +6151,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T15:52:54Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T20:48:01Z"
   },
   {
@@ -6162,7 +6162,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T17:26:28Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T18:05:19Z"
   },
   {
@@ -6173,7 +6173,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T17:27:14Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T22:34:03Z"
   },
   {
@@ -6184,7 +6184,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T17:55:19Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T01:46:49Z"
   },
   {
@@ -6195,7 +6195,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T18:11:29Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-18T22:20:19Z"
   },
   {
@@ -6206,8 +6206,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T18:15:31Z",
-   "state": "open",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-21T00:05:39Z"
   },
   {
    "n": 3911,
@@ -6217,8 +6217,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T18:16:02Z",
-   "state": "closed",
-   "closed": "2026-08-19T03:59:22Z"
+   "state": "CLOSED",
+   "closed": "2026-08-21T01:48:52Z"
   },
   {
    "n": 3940,
@@ -6228,7 +6228,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T04:24:48Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T05:22:54Z"
   },
   {
@@ -6239,7 +6239,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T05:32:52Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T18:32:03Z"
   },
   {
@@ -6250,7 +6250,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T05:49:30Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T21:23:34Z"
   },
   {
@@ -6261,7 +6261,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T06:09:46Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T19:10:43Z"
   },
   {
@@ -6272,7 +6272,7 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T07:07:45Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T18:13:13Z"
   },
   {
@@ -6283,8 +6283,41 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T15:53:37Z",
-   "state": "closed",
+   "state": "CLOSED",
    "closed": "2026-08-19T19:36:33Z"
+  },
+  {
+   "n": 3971,
+   "title": "feat: a red or pending head is not reviewable - api",
+   "labels": [
+    "Feature"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-20T21:22:13Z",
+   "state": "CLOSED",
+   "closed": "2026-08-21T00:09:34Z"
+  },
+  {
+   "n": 3976,
+   "title": "improvement: config.ini must populate every GitHub secret AND variable, and prove it has",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-21T00:47:33Z",
+   "state": "CLOSED",
+   "closed": "2026-08-21T02:25:15Z"
+  },
+  {
+   "n": 3979,
+   "title": "bug: v3.0.0 red - SLACK_CONFLICT_CHANNEL manifest gap, admin coverage",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-21T03:03:50Z",
+   "state": "CLOSED",
+   "closed": "2026-08-21T04:19:36Z"
   }
  ]
 }
