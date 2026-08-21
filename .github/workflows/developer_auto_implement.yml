@@ -1262,6 +1262,62 @@ jobs:
             exit 1
           fi
 
+      # Verification below runs in the job's own checkout, which is
+      # `vars.RELEASE_BRANCH` (see the Checkout step). Every path that
+      # implements or fixes something leaves the workspace on the branch
+      # carrying that work, so the gate reads the tree it is judging. One path
+      # does not: a re-assignment where the PR is already open with no review
+      # issues skips BOTH Claude steps -- `claude_initial` is gated on
+      # `pr_exists == 'false'` and `claude_review_fix` on
+      # `has_review_issues == 'true'` -- and nothing moves the workspace off
+      # the release branch. `Run Verification (Attempt 1)` has no `if:`, so it
+      # ran anyway and reported a verdict about the release branch as if it
+      # were the PR's.
+      #
+      # Both directions are wrong, and the quiet one is worse. Red release
+      # branch: #3979 was told its implementation had failed, handed a pytest
+      # log quoting the very bug it had already fixed, on a tree that predated
+      # its commits -- and the prescribed response (re-fix on a fresh branch
+      # cut from that red tip) would have duplicated the work and lost the PR.
+      # Green release branch, which is the normal case: the gate PASSES having
+      # executed none of the PR's code, and `Request review for existing PR`
+      # hands the reviewer a green light from a check that never looked at it.
+      #
+      # So put the workspace on the head the verdict is supposed to be about,
+      # before dependencies install from it. Only on that path: every other
+      # path is already positioned by the step that did the work, and
+      # repositioning there could discard commits the sync step deliberately
+      # kept local (see `Ensure review fixes landed on PR branch`).
+      - name: Check out the PR head for verification (no Claude step ran)
+        if: |
+          steps.check_pr.outputs.pr_exists == 'true' &&
+          steps.check_pr.outputs.pr_state == 'OPEN' &&
+          steps.check_review.outputs.has_review_issues == 'false'
+        shell: bash
+        env:
+          # #3837: step outputs reach the shell as data, never as source.
+          PR: ${{ steps.check_pr.outputs.existing_pr }}
+          PR_BRANCH: ${{ steps.check_pr.outputs.pr_branch }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
+        run: |
+          set -euo pipefail
+
+          # Fail loudly rather than fall through to verifying $RELEASE_BRANCH
+          # and calling the result the PR's -- that silent substitution is the
+          # whole defect this step exists to remove.
+          if [ -z "$PR_BRANCH" ]; then
+            echo "::error::PR #$PR is open but reported no head branch; refusing to verify $RELEASE_BRANCH and attribute the verdict to the PR."
+            exit 1
+          fi
+
+          if ! git fetch origin "$PR_BRANCH" --quiet; then
+            echo "::error::Could not fetch PR #$PR head branch '$PR_BRANCH' (deleted, or from a fork); refusing to verify $RELEASE_BRANCH in its place."
+            exit 1
+          fi
+
+          git checkout -B "$PR_BRANCH" "origin/$PR_BRANCH"
+          echo "::notice::Verifying PR #$PR head $PR_BRANCH at $(git rev-parse --short HEAD), not $RELEASE_BRANCH"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
