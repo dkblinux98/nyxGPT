@@ -804,8 +804,18 @@ def _run(
     input: str | None = None,
     env: dict[str, str] | None = None,
     timeout: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
+    stream_stdout: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
+
+    Pass `stream_stdout=True` to leave stdout attached to the terminal while
+    still capturing stderr -- the discipline `cloud_infra.py`'s Terraform
+    runner documents: long-running commands with meaningful progress output
+    (`terraform apply` streaming per-resource "Still creating..." lines) are
+    indistinguishable from a hang when fully captured, and Terraform puts its
+    failure diagnostics on stderr, so a failure still carries its reason. In
+    this mode `result.stdout` is None; every consumer of it in this module
+    already tolerates that (`_cp_details`, `_log_nonzero_exit`).
 
     Raises `subprocess.CalledProcessError` on non-zero exit unless `check=False`.
     Non-zero exits are always logged with the command and a stderr tail first,
@@ -849,7 +859,12 @@ def _run(
             bounded_argv(_apply_docker_socket_hop(cmd), timeout),
             check=check,
             text=True,
-            capture_output=True,
+            # subprocess.run rejects stdout/stderr alongside capture_output
+            # only when they are non-None, so this pairing is valid in both
+            # modes: captured (stdout+stderr piped) or streaming (stdout
+            # inherits the terminal, stderr piped for the failure diagnostic).
+            capture_output=not stream_stdout,
+            stderr=subprocess.PIPE if stream_stdout else None,
             input=input,
             env=env,
             timeout=timeout,
@@ -6303,18 +6318,26 @@ def _terraform_init_plan_apply(
         dev,
     )
     chdir = f"-chdir={TERRAFORM_DIR}"
-    cp = _run(["terraform", chdir, "init", "-input=false"], check=False)
+    cp = _run(["terraform", chdir, "init", "-input=false"], check=False, stream_stdout=True)
     if cp.returncode != 0:
         return [OpsResult(False, "terraform init failed", _cp_details(cp))]
     results = [OpsResult(True, "terraform init")]
 
-    cp = _run(["terraform", chdir, "plan", "-input=false", *var_args, "-out=tfplan"], check=False)
+    cp = _run(
+        ["terraform", chdir, "plan", "-input=false", *var_args, "-out=tfplan"],
+        check=False,
+        stream_stdout=True,
+    )
     if cp.returncode != 0:
         results.append(OpsResult(False, "terraform plan failed", _cp_details(cp)))
         return results
     results.append(OpsResult(True, "terraform plan"))
 
-    cp = _run(["terraform", chdir, "apply", "-input=false", "-auto-approve", "tfplan"], check=False)
+    cp = _run(
+        ["terraform", chdir, "apply", "-input=false", "-auto-approve", "tfplan"],
+        check=False,
+        stream_stdout=True,
+    )
     if cp.returncode != 0:
         results.append(OpsResult(False, "terraform apply failed", _cp_details(cp)))
         return results

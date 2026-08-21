@@ -24,6 +24,12 @@ resource "docker_network" "nyxgpt" {
 # the policy and how to bump them together.
 resource "docker_image" "ollama" {
   name = "ollama/ollama:0.32.4"
+
+  # Survive `terraform destroy` -- same rationale as the api image below:
+  # removing a pinned public image on destroy only forces a re-pull on the
+  # next up, and deletion collides with any non-terraform container that
+  # shares the image.
+  keep_locally = true
 }
 
 resource "docker_container" "ollama" {
@@ -61,6 +67,14 @@ resource "docker_container" "ollama" {
 # four together.
 resource "docker_image" "cassandra" {
   name = "cassandra:5.0.8"
+
+  # Survive `terraform destroy` -- same rationale as the api image below, plus
+  # one this image hits in practice: the local-first path's `nyxgpt-cassandra`
+  # container (plain `docker run`, not terraform-managed) references this same
+  # pinned image, so a destroy that tries to delete it fails with "conflict:
+  # unable to delete ... (must be forced)" whenever that sibling exists
+  # (observed 2026-08-21 on a machine that had switched install modes).
+  keep_locally = true
 }
 
 resource "docker_container" "cassandra" {
