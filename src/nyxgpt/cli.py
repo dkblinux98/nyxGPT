@@ -2207,6 +2207,34 @@ def cli(argv: list[str] | None = None) -> int:
         help="Show which secrets would be pushed without contacting the GitHub API",
     )
 
+    ops_config_sync = ops_sub.add_parser(
+        "config-sync",
+        help=(
+            "Push config.ini's GitHub Actions secrets AND repository variables in one pass, "
+            "one direction only (config.ini -> Actions)"
+        ),
+    )
+    ops_config_sync.add_argument(
+        "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
+    )
+    ops_config_sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show which secrets and variables would be pushed, by name, without "
+        "contacting the GitHub API",
+    )
+
+    ops_config_drift = ops_sub.add_parser(
+        "config-drift",
+        help=(
+            "Reconcile config.ini against example.config.ini across every section, "
+            "reporting keys missing from either (names only, never values)"
+        ),
+    )
+    ops_config_drift.add_argument(
+        "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
+    )
+
     ops_logs = ops_sub.add_parser(
         "logs",
         help="Show recent logs for a component, in whichever mode it's actually running",
@@ -3488,6 +3516,10 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.session_backend(args)
         if args.ops_cmd == "secrets-sync":
             return ops_mod.secrets_sync(args)
+        if args.ops_cmd == "config-sync":
+            return ops_mod.config_sync(args)
+        if args.ops_cmd == "config-drift":
+            return ops_mod.config_drift(args)
         if args.ops_cmd == "logs":
             return ops_mod.logs(args)
         if args.ops_cmd == "credentials":

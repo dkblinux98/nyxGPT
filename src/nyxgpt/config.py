@@ -1794,14 +1794,142 @@ def get_github_repo_name(cfg: ConfigParser) -> str:
 # here to the matching GitHub Actions secret name, one direction only
 # (config.ini -> Actions); a key not listed here is never pushed, even if a
 # human adds an option under the same section. Extending sync to a new
-# secret is a one-line addition here.
+# secret is a one-line addition here -- and `tests/unit/test_sync_manifests.py`
+# is what stops that addition from being forgotten: it reconciles this
+# manifest against the `secrets.NAME` references the workflows actually make,
+# so a secret a workflow reads and this manifest does not carry fails the
+# build instead of silently becoming hand-typed state (#3976).
 SECRETS_SYNC_MANIFEST: dict[str, str] = {
     "github.claude_code_oauth_token": "CLAUDE_CODE_OAUTH_TOKEN",
     "github.developer_agent_token": "DEVELOPER_AGENT_TOKEN",
     "github.scrummaster_agent_token": "SCRUMMASTER_AGENT_TOKEN",
     "github.review_agent_token": "REVIEW_AGENT_TOKEN",
     "monitoring.slack_bot_token": "SLACK_BOT_TOKEN",
+    # The review huddle's three per-agent Slack user tokens (#3910). Each turn
+    # posts under its own identity, so there is one token per speaker; all
+    # three were typed into GitHub by hand on 2026-08-20, which is the drift
+    # #3976 was filed for.
+    "monitoring.slack_user_token_dev": "SLACK_USER_TOKEN_DEV",
+    "monitoring.slack_user_token_review": "SLACK_USER_TOKEN_REVIEW",
+    "monitoring.slack_user_token_scrum": "SLACK_USER_TOKEN_SCRUM",
+    # Owner DM target for escalations (#3695) -- a Slack member id rather than
+    # a credential, but it is stored as an Actions *secret*, so it is synced
+    # as one and classified as one everywhere else (see the wizard override).
+    "monitoring.slack_user_id": "SLACK_USER_ID",
+    # Write access to the Homebrew tap the `-rc` and stable formulas are
+    # pushed to (#3727).
+    "homebrew.homebrew_tap_token": "HOMEBREW_TAP_TOKEN",
 }
+
+# Deliberate omissions from `SECRETS_SYNC_MANIFEST`, recorded here because
+# "not listed" and "forgotten" are indistinguishable otherwise -- which is the
+# failure mode #3976 was filed for:
+#
+# * `github.pat`, `openai.api_key`, `auth.api_key`, `monitoring.
+#   grafana_admin_password`, `error_tracking.dsn` -- credentials a *running*
+#   nyxGPT instance reads. No workflow reads them; pushing them would put an
+#   instance credential in CI for nothing.
+# * `monitoring.slack_webhook_url` -- Grafana's `nyxgpt-slack` contact point,
+#   provisioned locally by `nyxgpt ops env-sync`/`install`. No workflow reads
+#   a `SLACK_WEBHOOK_URL` secret.
+# * `github.myagent_review_agent_token` -- declared in example.config.ini, read
+#   by nothing in `.github/workflows`.
+# * `github.release_tracking_token` and `pypi.pypi_token` -- both unread in
+#   this repository today (the release ceremony uses
+#   `RELEASE_CEREMONY_TOKEN`; PyPI publishing uses Trusted Publishing).
+#   `RELEASE_TRACKING_TOKEN`'s disposition is explicitly unsettled in ledger
+#   P-004; syncing it would assert a decision nobody has made.
+# * `github.qa_agent_token` and `github.gh_token_nyxagent` -- ledger **P-004**:
+#   nyxAgent groundwork, deliberately not declared and not to be removed.
+
+# The canonical-store -> GitHub Actions *variables* sync manifest (#3976).
+#
+# Same `section.key -> NAME` shape as `SECRETS_SYNC_MANIFEST` and the same one
+# direction (config.ini -> Actions), but a different destination API and a
+# very different blast radius: **repository variables are readable by anyone
+# with read access to the repo**, and their values come back from the API in
+# cleartext. That asymmetry is why the split between the two manifests is
+# enforced structurally (`_assert_manifests_are_disjoint` below, plus
+# `tests/unit/test_sync_manifests.py`) rather than defended by a comment --
+# the 2026-02 predecessor of this manifest, a shell script with a 16-name
+# allowlist, guarded it with a comment and was deleted without replacement.
+#
+# Scope: the repository variables the workflows in `.github/workflows`
+# actually read as `vars.NAME`, plus the acceptance/terminal lane names the
+# agent scripts read from the same source. A variable no workflow reads is not
+# listed -- `DEV_AUTO_IMPLEMENT_ENABLED` is documented in
+# `docs/github-tokens.md` but has no `vars.` reference, so nothing here would
+# be reading what this pushed.
+VARIABLES_SYNC_MANIFEST: dict[str, str] = {
+    "github.agents_enabled": "AGENTS_ENABLED",
+    "github.repo_owner": "REPO_OWNER",
+    "github.repo_name": "REPO_NAME",
+    "github.project_owner": "PROJECT_OWNER",
+    "github.project_number": "PROJECT_NUMBER",
+    "github.dev_agent": "DEV_AGENT",
+    "github.review_agent": "REVIEW_AGENT",
+    "github.scrum_agent": "SCRUM_AGENT",
+    "github.human_owner": "HUMAN_OWNER",
+    "github.status_field": "STATUS_FIELD",
+    "github.status_backlog": "STATUS_BACKLOG",
+    "github.status_in_progress": "STATUS_IN_PROGRESS",
+    "github.status_in_review": "STATUS_IN_REVIEW",
+    "github.status_acceptance_testing": "STATUS_ACCEPTANCE_TESTING",
+    "github.status_acceptance_failed": "STATUS_ACCEPTANCE_FAILED",
+    "github.status_for_release": "STATUS_FOR_RELEASE",
+    "github.status_closed": "STATUS_CLOSED",
+    "github.release_branch": "RELEASE_BRANCH",
+    "github.release_issue_number": "RELEASE_ISSUE_NUMBER",
+    "github.sprint_autopilot": "SPRINT_AUTOPILOT",
+    "github.sprint_field": "SPRINT_FIELD",
+    "github.drain_gate_bypass_labels": "DRAIN_GATE_BYPASS_LABELS",
+    "github.agent_model_dev": "AGENT_MODEL_DEV",
+    "github.agent_model_review": "AGENT_MODEL_REVIEW",
+    "github.agent_model_huddle": "AGENT_MODEL_HUDDLE",
+    "github.agent_model_canary": "AGENT_MODEL_CANARY",
+    "github.huddle_max_rounds": "HUDDLE_MAX_ROUNDS",
+    "github.review_ci_wait_minutes": "REVIEW_CI_WAIT_MINUTES",
+    "github.churn_price_sheet_json": "CHURN_PRICE_SHEET_JSON",
+    "homebrew.homebrew_tap_repo": "HOMEBREW_TAP_REPO",
+    "monitoring.slack_huddle_channel": "SLACK_HUDDLE_CHANNEL",
+}
+
+
+def _assert_manifests_are_disjoint() -> None:
+    """Fail at import if a key or a name is claimed by both sync manifests (#3976).
+
+    A repository *variable* is world-readable to anyone who can read the repo;
+    a secret is not. So the one mistake this pair of manifests must make
+    impossible is a credential appearing on the variables side -- by config
+    key (the same `section.key` in both) or by destination name (the same
+    `NAME` pushed to both APIs, where the variable would be the readable copy
+    of the secret).
+
+    Raised at import rather than checked at push time on purpose: by push time
+    the value is already in memory next to an API client, and a guard that
+    only runs when someone happens to run `config-sync` is not a guard. The
+    test-side half of this rule (`tests/unit/test_sync_manifests.py`) is
+    broader -- it derives sensitivity from the summary redactions and
+    `GUIDED_SECRETS` too, which this module cannot import without a cycle.
+    """
+    shared_keys = sorted(set(SECRETS_SYNC_MANIFEST) & set(VARIABLES_SYNC_MANIFEST))
+    if shared_keys:
+        raise RuntimeError(
+            "config.ini keys are in both SECRETS_SYNC_MANIFEST and "
+            f"VARIABLES_SYNC_MANIFEST, so a secret would be pushed to the "
+            f"world-readable variables API: {shared_keys}"
+        )
+    shared_names = sorted(
+        set(SECRETS_SYNC_MANIFEST.values()) & set(VARIABLES_SYNC_MANIFEST.values())
+    )
+    if shared_names:
+        raise RuntimeError(
+            "the same GitHub Actions name is claimed as both a secret and a "
+            f"variable: {shared_names}"
+        )
+
+
+_assert_manifests_are_disjoint()
 
 
 def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
@@ -2005,6 +2133,7 @@ __all__ = [
     "get_secrets_ssm_prefix",
     "get_secrets_secretsmanager_id",
     "SECRETS_SYNC_MANIFEST",
+    "VARIABLES_SYNC_MANIFEST",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
     "get_self_heal_default_enabled",

@@ -16,6 +16,13 @@ service restart or reconcile the observability Compose stack after a save.
 `find_stale_keys`/`remove_keys` back the drift-reconciliation surface: a key
 no longer declared in `example.config.ini` is reported, never removed
 silently -- `apply_updates` itself never deletes anything.
+
+`find_stale_keys` reports only what the *wizard* can see, which is
+`example.config.ini` minus `EXCLUDED_SECTIONS` -- and the excluded sections
+are where the credentials are. `find_config_drift` (#3976) is the version
+with no blind spot: it reconciles a live config.ini against
+`example.config.ini` across every section, in both directions, and is what
+`nyxgpt ops config-drift` reports.
 """
 
 from __future__ import annotations
@@ -110,12 +117,11 @@ _EXAMPLE_CONFIG_PATH = _resolve_example_config_path()
 # them). The general guard for *that* gap is
 # `test_no_credential_shaped_wizard_field_is_declared_secret_false`.
 #
-# `pypi` is listed here pre-emptively: it has no keys in
-# `example.config.ini` today (CI publishes via PyPI Trusted Publishing, so
-# there is no token for the product to carry), which makes this entry inert.
-# It is kept so that declaring `[pypi] pypi_token` later -- the shape a real
-# config.ini already has -- cannot reintroduce the leak in the one commit
-# where nothing else classifies it yet.
+# `pypi` was listed here pre-emptively, before the section had any key at
+# all; `[pypi] pypi_token` was then declared in `example.config.ini` (#3976)
+# so that a config.ini carrying one reconciles clean instead of reporting as
+# drift. This exclusion is what kept that declaration from reintroducing
+# #3947 in the one commit where nothing else classifies the key yet.
 EXCLUDED_SECTIONS = frozenset({"paths", "openai", "github", "cloud", "homebrew", "pypi"})
 
 
@@ -481,6 +487,27 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     # including over a cloud access tunnel. `test_wizard_secret_classification`
     # is the general guard; this comment is why the entry exists.
     ("monitoring", "slack_bot_token"): _Override(validator=_validate_optional_str, secret=True),
+    # The huddle's three per-agent Slack *user* tokens and the owner's DM
+    # target (#3910/#3695), declared in `example.config.ini` by #3976 so
+    # config.ini has a canonical home for them. Same rule as the bot token
+    # above: `config.SECRETS_SYNC_MANIFEST` pushes all four to Actions
+    # *secrets*, so the wizard must not hand any of them back in cleartext.
+    # `slack_user_id` is a member id rather than a credential, but it is
+    # carried as a secret, and sensitivity is one decision made once.
+    ("monitoring", "slack_user_id"): _Override(validator=_validate_optional_str, secret=True),
+    ("monitoring", "slack_user_token_dev"): _Override(
+        validator=_validate_optional_str, secret=True
+    ),
+    ("monitoring", "slack_user_token_review"): _Override(
+        validator=_validate_optional_str, secret=True
+    ),
+    ("monitoring", "slack_user_token_scrum"): _Override(
+        validator=_validate_optional_str, secret=True
+    ),
+    # The huddle channel id is a *variable*, not a secret: it is
+    # world-readable in GitHub's Actions settings by design, so masking it
+    # here would claim a protection the destination does not provide.
+    ("monitoring", "slack_huddle_channel"): _Override(validator=_validate_optional_str),
     ("log_aggregation", "enabled"): _Override(validator=_validate_bool, observability=True),
     ("log_aggregation", "grafana_explore_url"): _Override(validator=_validate_url),
     ("self_heal", "check_interval_seconds"): _Override(validator=_bounded_float(min_value=1.0)),
@@ -719,6 +746,74 @@ def find_stale_keys(cfg: ConfigParser) -> dict[str, list[str]]:
         if stale:
             out[section_spec.section] = stale
     return out
+
+
+#: `section.key` names a real config.ini carries that `example.config.ini`
+#: deliberately does not declare, and which `find_config_drift` must therefore
+#: not report. Ledger **P-004**: both are groundwork for the future nyxAgent
+#: product, nothing in this repository reads either one, and the conclusion an
+#: unexplained "undeclared key" report invites -- delete the key, revoke the
+#: secret -- is the wrong one. Removing them from this set is how they start
+#: being reported again if that ledger entry is ever revisited.
+UNDECLARED_BY_DESIGN: frozenset[str] = frozenset(
+    {
+        "github.qa_agent_token",
+        "github.gh_token_nyxagent",
+    }
+)
+
+
+def _example_option_names() -> set[str]:
+    """Return every `section.key` declared in `example.config.ini`, lowercased.
+
+    Lowercased because `config.load_config` builds a `ConfigParser` with the
+    default `optionxform`, so a key the owner spelled `SLACK_BOT_TOKEN` on
+    disk arrives here as `slack_bot_token` -- comparing raw spellings would
+    report a live key as undeclared purely because of its case (#3947 is the
+    same parser behavior seen from the other side).
+    """
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(_EXAMPLE_CONFIG_PATH, encoding="utf-8")
+    return {
+        f"{section}.{key}".lower()
+        for section in parser.sections()
+        for key in parser.options(section)
+    }
+
+
+def find_config_drift(cfg: ConfigParser) -> dict[str, list[str]]:
+    """Reconcile a live `config.ini` against `example.config.ini`, both directions (#3976).
+
+    `find_stale_keys` iterates `WIZARD_SCHEMA`, which is built from
+    `example.config.ini` *minus* `EXCLUDED_SECTIONS` -- so it is structurally
+    blind in `[github]`, `[paths]`, `[homebrew]`, `[pypi]`, `[openai]` and
+    `[cloud]`, which is exactly where the credentials live. All eight keys
+    found drifting on 2026-08-20 were in those sections and none of them could
+    have been reported. This function has no such blind spot: it compares the
+    two files key-for-key across *every* section.
+
+    Returns `{"undeclared": [...], "missing": [...]}`, each a sorted list of
+    `section.key` names:
+
+    * `undeclared` -- in `cfg` but not in `example.config.ini`. Either a live
+      setting nobody declared (declare it) or a retired one (remove it); the
+      distinction is not inferable from the code, which is why neither this
+      function nor its callers ever act on the answer.
+    * `missing` -- declared in `example.config.ini` but absent from `cfg`.
+      Every one of these is running on a fallback default.
+
+    Names only, never values: a report about credentials must be safe to paste
+    into an issue.
+    """
+    declared = _example_option_names()
+    present = {
+        f"{section}.{key}".lower() for section in cfg.sections() for key in cfg.options(section)
+    }
+    return {
+        "undeclared": sorted(present - declared - UNDECLARED_BY_DESIGN),
+        "missing": sorted(declared - present),
+    }
 
 
 def validate_updates(payload: Any) -> tuple[dict[str, dict[str, Any]], list[str]]:

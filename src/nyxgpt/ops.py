@@ -14306,22 +14306,47 @@ def _github_actions_client(pat: str) -> httpx.Client:
     )
 
 
-def _secrets_sync_targets(cfg: ConfigParser) -> list[tuple[str, str, str]]:
-    """Return `(full_key, value, actions_secret_name)` for every manifest entry with a value.
+def _manifest_targets(cfg: ConfigParser, manifest: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Return `(full_key, value, actions_name)` for every manifest entry with a value.
 
     A manifest key absent or blank in config.ini is silently skipped (nothing
     to sync yet, not an error) -- `nyxgpt secrets setup`/manual entry decides
-    when a given secret exists.
+    when a given secret exists, and a blank *variable* is how "unset" is
+    spelled for the optional ones (an empty `SLACK_HUDDLE_CHANNEL` means the
+    huddle degrades to transcript-only, which is not the same as pushing "").
     """
-    from nyxgpt.config import SECRETS_SYNC_MANIFEST
-
     targets = []
-    for full_key, actions_secret in SECRETS_SYNC_MANIFEST.items():
+    for full_key, actions_name in manifest.items():
         section, key = full_key.split(".", 1)
         value = cfg.get(section, key, fallback="").strip()
         if value:
-            targets.append((full_key, value, actions_secret))
+            targets.append((full_key, value, actions_name))
     return targets
+
+
+def _secrets_sync_targets(cfg: ConfigParser) -> list[tuple[str, str, str]]:
+    """Return `(full_key, value, actions_secret_name)` for `SECRETS_SYNC_MANIFEST`."""
+    from nyxgpt.config import SECRETS_SYNC_MANIFEST
+
+    return _manifest_targets(cfg, SECRETS_SYNC_MANIFEST)
+
+
+def _variables_sync_targets(cfg: ConfigParser) -> list[tuple[str, str, str]]:
+    """Return `(full_key, value, actions_variable_name)` for `VARIABLES_SYNC_MANIFEST`.
+
+    Re-checks the secret/variable split at push time as well as at import
+    (`config._assert_manifests_are_disjoint`). Belt and braces on purpose: this
+    is the last point before a value is handed to the world-readable variables
+    API, and the cost of the check is a set intersection.
+    """
+    from nyxgpt.config import SECRETS_SYNC_MANIFEST, VARIABLES_SYNC_MANIFEST
+
+    leaking = sorted(set(VARIABLES_SYNC_MANIFEST) & set(SECRETS_SYNC_MANIFEST))
+    if leaking:
+        raise RuntimeError(
+            f"refusing to push secrets to the GitHub Actions variables API: {leaking}"
+        )
+    return _manifest_targets(cfg, VARIABLES_SYNC_MANIFEST)
 
 
 def _encrypt_for_actions_secret(public_key_b64: str, value: str) -> str:
@@ -14351,12 +14376,7 @@ def sync_secrets_to_github_actions(
     never the value) plus, on failure, enough detail to fix the problem
     (missing config field, HTTP status, etc.).
     """
-    from nyxgpt.config import (
-        get_github_pat,
-        get_github_repo_name,
-        get_github_repo_owner,
-        load_config,
-    )
+    from nyxgpt.config import load_config
 
     cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
     if not cfg_path.exists():
@@ -14386,25 +14406,10 @@ def sync_secrets_to_github_actions(
             for full_key, _value, actions_secret in targets
         ]
 
-    pat = get_github_pat(cfg)
-    if not pat:
-        return [
-            OpsResult(
-                False,
-                "Cannot sync: [github] pat is not set",
-                "Run `nyxgpt secrets setup` to configure a GitHub PAT with repo scope.",
-            )
-        ]
-    repo_owner = get_github_repo_owner(cfg)
-    repo_name = get_github_repo_name(cfg)
-    if not repo_owner or not repo_name:
-        return [
-            OpsResult(
-                False,
-                "Cannot sync: [github] repo_owner/repo_name is not set in config.ini",
-                "Set both under [github] in config.ini, then retry.",
-            )
-        ]
+    credentials = _github_repo_credentials(cfg)
+    if isinstance(credentials, OpsResult):
+        return [credentials]
+    pat, repo_owner, repo_name = credentials
 
     results: list[OpsResult] = []
     with _github_actions_client(pat) as client:
@@ -14447,6 +14452,116 @@ def sync_secrets_to_github_actions(
     return results
 
 
+def _github_repo_credentials(cfg: ConfigParser) -> tuple[str, str, str] | OpsResult:
+    """Return `(pat, repo_owner, repo_name)` from config.ini, or the `OpsResult` explaining why not."""
+    from nyxgpt.config import get_github_pat, get_github_repo_name, get_github_repo_owner
+
+    pat = get_github_pat(cfg)
+    if not pat:
+        return OpsResult(
+            False,
+            "Cannot sync: [github] pat is not set",
+            "Run `nyxgpt secrets setup` to configure a GitHub PAT with repo scope.",
+        )
+    repo_owner = get_github_repo_owner(cfg)
+    repo_name = get_github_repo_name(cfg)
+    if not repo_owner or not repo_name:
+        return OpsResult(
+            False,
+            "Cannot sync: [github] repo_owner/repo_name is not set in config.ini",
+            "Set both under [github] in config.ini, then retry.",
+        )
+    return pat, repo_owner, repo_name
+
+
+def sync_variables_to_github_actions(
+    cfg_path: Path | None = None, dry_run: bool = False
+) -> list[OpsResult]:
+    """Push `config.VARIABLES_SYNC_MANIFEST`'s config.ini values to GitHub Actions variables (#3976).
+
+    The variables half of the same canonical-store rule `secrets-sync`
+    implements for secrets, and it exists because the repo had no variables
+    push at all: the 2026-02 shell script that did this was deleted and never
+    replaced, so every variable added since -- and every one whose value
+    changed -- was typed into GitHub's settings UI by hand, which is not a
+    thing a clean machine can reproduce from the repository.
+
+    One direction only (config.ini -> Actions), and unlike a secret a variable
+    *can* be read back, so create-then-update is done against the API rather
+    than guessed: POST creates, and a repeat POST 409s, which is when the
+    PATCH runs. `dry_run=True` reports names and destinations without a
+    network call.
+
+    Values are not printed. A variable is world-readable at GitHub, so this is
+    not a confidentiality claim -- it keeps the transcript of an ops run from
+    becoming a second uncontrolled copy of configuration, the same reason
+    `secrets-sync` reports names only.
+    """
+    from nyxgpt.config import load_config
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return [
+            OpsResult(
+                False,
+                f"Missing config {cfg_path}",
+                "Run `nyxgpt wizard` first to generate config.ini.",
+            )
+        ]
+
+    cfg = load_config(cfg_path)
+    targets = _variables_sync_targets(cfg)
+    if not targets:
+        return [
+            OpsResult(
+                True,
+                "No mapped variables have a value set in config.ini -- nothing to sync",
+                "Set the [github]/[homebrew]/[monitoring] keys listed in "
+                "docs/github-tokens.md, then retry.",
+            )
+        ]
+
+    if dry_run:
+        return [
+            OpsResult(True, f"[dry-run] would sync {full_key} -> Actions variable {name}")
+            for full_key, _value, name in targets
+        ]
+
+    credentials = _github_repo_credentials(cfg)
+    if isinstance(credentials, OpsResult):
+        return [credentials]
+    pat, repo_owner, repo_name = credentials
+
+    results: list[OpsResult] = []
+    with _github_actions_client(pat) as client:
+        for full_key, value, name in targets:
+            try:
+                response = client.post(
+                    f"/repos/{repo_owner}/{repo_name}/actions/variables",
+                    json={"name": name, "value": value},
+                )
+                if response.status_code == 409:
+                    # Already exists -- the only supported update path.
+                    response = client.patch(
+                        f"/repos/{repo_owner}/{repo_name}/actions/variables/{name}",
+                        json={"name": name, "value": value},
+                    )
+                response.raise_for_status()
+            except httpx.HTTPError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to sync {full_key} -> Actions variable {name}",
+                        f"{e} -- verify [github] pat has permission to manage Actions "
+                        f"variables on {repo_owner}/{repo_name}.",
+                    )
+                )
+                continue
+            results.append(OpsResult(True, f"Synced {full_key} -> Actions variable {name}"))
+
+    return results
+
+
 def secrets_sync(args) -> int:
     """CLI entrypoint for `nyxgpt ops secrets-sync`.
 
@@ -14475,6 +14590,110 @@ def secrets_sync(args) -> int:
         extra={"component": "ops", "action": "secrets-sync", "ok": ok},
     )
 
+    return 0 if ok else 2
+
+
+def config_sync(args) -> int:
+    """CLI entrypoint for `nyxgpt ops config-sync`: push secrets *and* variables (#3976).
+
+    The one wrapped command the canonical-store rule needs. `secrets-sync`
+    only ever covered half of what config.ini carries, and the missing half
+    had no command at all -- so "config.ini is the canonical store" was true
+    of secrets and false of variables, and nothing failed when it fell behind.
+
+    Returns 0 only if both halves succeeded. The variables push runs even when
+    the secrets push failed: they are independent destinations, and stopping
+    at the first failure would leave the operator guessing which half landed.
+    """
+    cfg_path = Path(args.config).expanduser() if getattr(args, "config", None) else None
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    logger.info(
+        "ops: config-sync starting (config=%s, dry_run=%s)",
+        cfg_path,
+        dry_run,
+        extra={"component": "ops", "action": "config-sync"},
+    )
+
+    results = sync_secrets_to_github_actions(cfg_path=cfg_path, dry_run=dry_run)
+    results += sync_variables_to_github_actions(cfg_path=cfg_path, dry_run=dry_run)
+    ok = _emit_results("config-sync", results)
+
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("config-sync", "github-actions", result, message)
+
+    logger.info(
+        "ops: config-sync %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "config-sync", "ok": ok},
+    )
+
+    return 0 if ok else 2
+
+
+def config_drift(args) -> int:
+    """CLI entrypoint for `nyxgpt ops config-drift` (#3976).
+
+    Reconciles config.ini against `example.config.ini` in both directions,
+    across *every* section -- including the ones the wizard excludes, which is
+    where the credentials are and where the admin dashboard's stale-key banner
+    is structurally blind.
+
+    Reports names only, never values, so the output is safe to paste into an
+    issue. Exit 0 when the two agree, 2 when they do not: this is a check, and
+    a check that always exits 0 cannot be wired into anything.
+    """
+    from nyxgpt.config import load_config
+    from nyxgpt.config_wizard import find_config_drift
+
+    cfg_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else (Path.home() / ".nyxGPT" / "config.ini")
+    )
+    if not cfg_path.exists():
+        _emit_results(
+            "config-drift",
+            [
+                OpsResult(
+                    False,
+                    f"Missing config {cfg_path}",
+                    "Run `nyxgpt wizard` first to generate config.ini.",
+                )
+            ],
+        )
+        return 2
+
+    drift = find_config_drift(load_config(cfg_path))
+    undeclared, missing = drift["undeclared"], drift["missing"]
+
+    results = [
+        OpsResult(
+            False,
+            f"In config.ini but not declared in example.config.ini: {key}",
+            "Declare it in example.config.ini if it is live, or remove it from "
+            "config.ini if it is retired -- `nyxgpt ops config-drift` never "
+            "decides that for you.",
+        )
+        for key in undeclared
+    ] + [
+        OpsResult(
+            False,
+            f"Declared in example.config.ini but absent from config.ini: {key}",
+            "Running on its fallback default. Add it to config.ini to pin the value.",
+        )
+        for key in missing
+    ]
+    if not results:
+        results = [OpsResult(True, f"{cfg_path} and example.config.ini agree on every key")]
+
+    ok = _emit_results("config-drift", results)
+    logger.info(
+        "ops: config-drift found %d undeclared / %d missing",
+        len(undeclared),
+        len(missing),
+        extra={"component": "ops", "action": "config-drift", "ok": ok},
+    )
     return 0 if ok else 2
 
 
