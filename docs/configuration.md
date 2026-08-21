@@ -1024,6 +1024,7 @@ slack_webhook_url =
 slack_bot_token =
 slack_user_id =
 slack_huddle_channel =
+slack_conflict_channel =
 slack_user_token_dev =
 slack_user_token_review =
 slack_user_token_scrum =
@@ -1039,6 +1040,7 @@ slack_user_token_scrum =
 | `slack_bot_token` | Slack bot token the `notify-merge-conflicts` CI workflow uses to post notifications. Write-once (Slack shows it only at creation) -- config.ini is its canonical copy; run `nyxgpt ops secrets-sync` to push it to this repo's `SLACK_BOT_TOKEN` Actions secret instead of pasting it into GitHub's Secrets UI by hand. Set it from the config wizard's Additional Settings (masked as a secret, like `slack_webhook_url` -- an empty input means "leave unchanged") or directly in config.ini. See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions). |
 | `slack_user_id` | Slack member id the agent system DMs when an escalation needs the owner (#3695). Not a credential, but carried as the `SLACK_USER_ID` Actions secret, so it is synced and masked as one. |
 | `slack_huddle_channel` | Channel id the review huddle threads its conversation in (#3910). Pushed to the `SLACK_HUDDLE_CHANNEL` Actions **variable**, not a secret -- a channel id is world-readable in GitHub's settings by design, and masking it here would claim a protection the destination does not provide. Blank degrades the huddle to the PR transcript alone. |
+| `slack_conflict_channel` | Channel id `notify-merge-conflicts.yml` posts merge-conflict notices to (#3911). Pushed to the `SLACK_CONFLICT_CHANNEL` Actions **variable**, on the same reasoning as `slack_huddle_channel`. Deliberately its own key rather than a reuse of that one: conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change. Blank leaves the workflow's built-in fallback channel in place. |
 | `slack_user_token_dev` / `slack_user_token_review` / `slack_user_token_scrum` | Per-agent Slack *user* tokens (`chat:write` user scope), one per huddle speaker, so each turn posts under its own identity instead of all three landing under one bot name (#3910). Write-once at Slack, like `slack_bot_token`. All three are optional: a missing token degrades that speaker only. |
 
 Requires the `monitoring` Compose profile (local Prometheus + Grafana),

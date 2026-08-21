@@ -508,6 +508,9 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     # world-readable in GitHub's Actions settings by design, so masking it
     # here would claim a protection the destination does not provide.
     ("monitoring", "slack_huddle_channel"): _Override(validator=_validate_optional_str),
+    # Same reasoning for the merge-conflict notice channel (#3911/#3979): a
+    # channel id pushed to a world-readable Actions variable, not a secret.
+    ("monitoring", "slack_conflict_channel"): _Override(validator=_validate_optional_str),
     ("log_aggregation", "enabled"): _Override(validator=_validate_bool, observability=True),
     ("log_aggregation", "grafana_explore_url"): _Override(validator=_validate_url),
     ("self_heal", "check_interval_seconds"): _Override(validator=_bounded_float(min_value=1.0)),
