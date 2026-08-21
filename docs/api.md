@@ -760,7 +760,7 @@ Read-only. The guided secrets are the three human-provided secrets the Config
 Wizard above deliberately excludes (`openai`/`github` are agent-level
 sections, out of scope for `/config/sections`); they are **entered with
 `nyxgpt secrets setup`**, and pushed to GitHub Actions with `nyxgpt ops
-secrets-sync`. There is no HTTP write path and no web screen for either
+config-sync`. There is no HTTP write path and no web screen for either
 (#3805): a credential typed into a browser crosses an HTTP request and the
 page's process on its way to disk, and by the time this API answers, reaching
 it already required these secrets. The endpoint below reports *whether* a

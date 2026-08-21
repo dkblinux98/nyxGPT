@@ -2043,15 +2043,86 @@ describe('AdminPage Component', () => {
 
       await goToMoreStep();
 
-      expect(screen.getByText('Config.ini has options no longer recognized')).toBeInTheDocument();
+      expect(
+        screen.getByText('Config.ini has options example.config.ini does not declare')
+      ).toBeInTheDocument();
       expect(screen.getByText('[nyxgpt] retired_option')).toBeInTheDocument();
 
+      // Removal is two clicks now (#3976): the first arms it, the second does it.
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' }));
 
       await waitFor(() => {
-        expect(screen.queryByText('Config.ini has options no longer recognized')).not.toBeInTheDocument();
+        expect(
+          screen.queryByText('Config.ini has options example.config.ini does not declare')
+        ).not.toBeInTheDocument();
       });
       expect(removeRequestBody).toEqual({ remove: { nyxgpt: ['retired_option'] } });
+    });
+
+    it('does not remove anything on the first click of Remove (#3976)', async () => {
+      /*
+       * The banner used to delete on a single click, and the keys it reports
+       * are as often live credentials as retired options -- for a token the
+       * issuing service showed only once, that click is unrecoverable. The
+       * first click must only arm the action.
+       */
+      let removeCalled = false;
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        ),
+        http.post('/api/v1/config/sections/stale-keys/remove', () => {
+          removeCalled = true;
+          return HttpResponse.json({ removed: {}, sections: SECTIONS_WITH_EXTRAS, stale_keys: {} });
+        })
+      );
+
+      await goToMoreStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+      expect(removeCalled).toBe(false);
+      expect(screen.getByRole('button', { name: 'Confirm remove' })).toBeInTheDocument();
+      expect(screen.getByText(/cannot be recovered/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(removeCalled).toBe(false);
+      expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+      expect(screen.getByText('[nyxgpt] retired_option')).toBeInTheDocument();
+    });
+
+    it('offers declaring a reported key instead of deleting it (#3976)', async () => {
+      /*
+       * The non-destructive resolution. An undeclared key is as likely to be
+       * a live setting nobody declared as a retired one, and the banner used
+       * to offer only the destructive answer.
+       */
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      const declare = screen.getByRole('button', { name: 'Declare instead' });
+      expect(declare).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(declare);
+
+      expect(screen.getByText(/\[nyxgpt\][\s\S]*retired_option =/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Hide' })).toHaveAttribute('aria-expanded', 'true');
+      // The sections this banner cannot see are named, with the command that can.
+      expect(screen.getByText('nyxgpt ops config-drift')).toBeInTheDocument();
     });
 
     it('leaves the stale-keys banner in place when removal fails', async () => {
@@ -2071,11 +2142,12 @@ describe('AdminPage Component', () => {
 
       await goToMoreStep();
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' }));
 
       await waitFor(() => {
         expect(screen.getByRole('button', { name: 'Remove' })).not.toBeDisabled();
       });
-      expect(screen.getByText('Config.ini has options no longer recognized')).toBeInTheDocument();
+      expect(screen.getByText('Config.ini has options example.config.ini does not declare')).toBeInTheDocument();
       expect(screen.getByText('[nyxgpt] retired_option')).toBeInTheDocument();
     });
 
@@ -2094,10 +2166,11 @@ describe('AdminPage Component', () => {
 
       await goToMoreStep();
       fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' }));
 
       await waitFor(() => {
         expect(
-          screen.queryByText('Config.ini has options no longer recognized')
+          screen.queryByText('Config.ini has options example.config.ini does not declare')
         ).not.toBeInTheDocument();
       });
       expect(screen.getByLabelText('Embedding Cache Dir')).toHaveValue('');

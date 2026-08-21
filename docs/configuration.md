@@ -114,11 +114,18 @@ System Health screen and the admin dashboard, #3384, #3413.)
   and anything you hand-added -- survive a save byte-for-byte. A key is
   never deleted by a regular save.
 - **Drift reconciliation.** If `config.ini` has a key inside a wizard-managed
-  section that's no longer declared in `example.config.ini` (a retired
-  option, or something added outside the wizard), the Additional Settings
-  step shows it in a "no longer recognized" banner with a **Remove** button
-  per key -- nothing is ever deleted automatically, only on your
-  confirmation.
+  section that `example.config.ini` doesn't declare (a retired option, or
+  something added outside the wizard), the Additional Settings step reports
+  it. Each reported key offers both resolutions: **Declare instead**, which
+  shows the snippet to add to `example.config.ini` and the secret
+  classification a credential also needs, and **Remove**, which asks for
+  confirmation before deleting -- an undeclared key is as often a live
+  setting nobody declared as a retired one, and for a write-once credential
+  the deletion is not recoverable (#3976). Nothing is ever deleted
+  automatically.
+  This banner covers the wizard-managed sections only. For the full
+  reconciliation -- including `[github]`, `[paths]`, `[homebrew]` and
+  `[pypi]`, where the credentials live -- run `nyxgpt ops config-drift`.
 - **Save is apply-on-save, not just a file write.** Saving validates every
   changed field (ports, URLs, hosts), writes `config.ini` (still the single
   source of truth, #3194), and immediately invalidates the API's config
@@ -247,37 +254,53 @@ copies with no way to verify they still match -- and when one needs to
 rotate, it's easy to update only one of them and not notice until CI starts
 failing with stale credentials.
 
-`~/.nyxGPT/config.ini` is the **single canonical store** for these tokens.
-Set them once via `nyxgpt secrets setup`, then push the declared subset that
-CI needs to this repo's GitHub Actions secrets with:
+`~/.nyxGPT/config.ini` is the **single canonical store** for these tokens,
+and for the repository *variables* the agent workflows read. Set them once
+via `nyxgpt secrets setup` (or by editing the file), then push what CI needs
+to this repo's GitHub Actions settings with:
 
 ```bash
-nyxgpt ops secrets-sync            # push config.ini's mapped secrets to Actions
-nyxgpt ops secrets-sync --dry-run  # show which secrets *would* be pushed, by name only
+nyxgpt ops config-sync             # push config.ini's mapped secrets AND variables
+nyxgpt ops config-sync --dry-run   # show what *would* be pushed, by name only
+nyxgpt ops secrets-sync            # the secrets half on its own
 ```
 
 This is **one direction only**: config.ini → GitHub Actions. Nothing is ever
-read back from GitHub (the Actions secrets API can't return a value anyway).
-CLI only: the dashboard button that used to run this was removed with the
-`/admin/secrets` screen (#3805).
+read back from GitHub for a secret (the Actions secrets API can't return a
+value anyway). CLI only: the dashboard button that used to run this was
+removed with the `/admin/secrets` screen (#3805).
 
-- **What gets synced is a declared mapping, not "everything."**
-  `nyxgpt.config.SECRETS_SYNC_MANIFEST` is the single place that maps a
-  `config.ini` key to its GitHub Actions secret name. A key not listed there
-  is never pushed, even if it's a secret-looking field. Today's manifest:
-
-  | `config.ini` key | Actions secret |
-  |---|---|
-  | `[github] claude_code_oauth_token` | `CLAUDE_CODE_OAUTH_TOKEN` |
-  | `[github] developer_agent_token` | `DEVELOPER_AGENT_TOKEN` |
-  | `[github] scrummaster_agent_token` | `SCRUMMASTER_AGENT_TOKEN` |
-  | `[github] review_agent_token` | `REVIEW_AGENT_TOKEN` |
-  | `[monitoring] slack_bot_token` | `SLACK_BOT_TOKEN` |
-
-  Adding a new synced secret is a one-line addition to that dict -- see
-  `src/nyxgpt/config.py`.
+- **What gets synced is a declared mapping, not "everything."** Two
+  manifests in `src/nyxgpt/config.py` are the single place a `config.ini`
+  key is mapped to a GitHub Actions name: `SECRETS_SYNC_MANIFEST` for
+  secrets and `VARIABLES_SYNC_MANIFEST` for repository variables. A key not
+  listed in either is never pushed, even if it looks like one that should
+  be.
+- **The two are structurally disjoint, and that is the load-bearing rule.**
+  A repository variable is readable by anyone with read access to the repo;
+  a secret is not. A config key claimed by both manifests -- or one Actions
+  name claimed by both -- raises at import, again at push time, and fails
+  `tests/unit/test_sync_manifests.py`.
+- **Neither manifest is allowed to fall behind.** The same test file
+  reconciles both against the `vars.NAME`/`secrets.NAME` references the
+  workflows actually make, so a name a workflow reads that `config.ini`
+  cannot populate fails the build rather than quietly becoming a value
+  somebody typed into GitHub's settings UI. Each deliberate omission is
+  justified in a comment beside the manifest it is missing from.
 - **`[github] pat` authenticates the sync call itself** (via the GitHub REST
-  API's Actions secrets endpoints) and is not, itself, a sync target.
+  API's Actions secrets and variables endpoints) and is not, itself, a sync
+  target. It needs **admin** on the repository: managing Actions secrets and
+  variables is a stronger permission than repository write.
+- **Blank means "not set", not "set to empty".** A mapped key with no value
+  is skipped rather than pushed as an empty string -- for the optional
+  variables the two are different states to the workflows reading them.
+- **`nyxgpt ops config-drift` reconciles the file itself.** It compares
+  `config.ini` against `example.config.ini` in both directions across every
+  section -- including the ones the Configuration Wizard excludes, which is
+  where the credentials live -- and reports names only, never values. The
+  admin dashboard's stale-key banner covers only the wizard-managed
+  sections; this covers all of them. See
+  [`docs/ops.md`](ops.md#nyxgpt-ops-config-drift).
 - **Values never appear in logs, tracebacks, or command output.** Sync
   results report which secrets were set/updated *by name only*; a failure
   names the key and how to fix it (e.g. missing `[github] pat`, wrong
@@ -826,11 +849,13 @@ claude_code_oauth_token =
 
 **Note:** Agent tokens fall back to the main `pat` if not explicitly set.
 
-**Note:** `scrummaster_agent_token`, `developer_agent_token`,
-`review_agent_token`, and `claude_code_oauth_token` are synced to this
-repo's GitHub Actions secrets by `nyxgpt ops secrets-sync` -- see
-[Canonical secret store & sync to GitHub
-Actions](#canonical-secret-store--sync-to-github-actions).
+**Note:** the agent tokens and `claude_code_oauth_token` are synced to this
+repo's GitHub Actions secrets, and most of the rest of `[github]` is synced
+to its repository variables, by `nyxgpt ops config-sync`. Which key goes
+where is declared in `SECRETS_SYNC_MANIFEST` / `VARIABLES_SYNC_MANIFEST` in
+`src/nyxgpt/config.py` -- see [Canonical secret store & sync to GitHub
+Actions](#canonical-secret-store--sync-to-github-actions) and
+[`docs/github-tokens.md`](github-tokens.md) for what each name is for.
 
 ---
 
@@ -997,6 +1022,11 @@ prometheus_ui_url = http://localhost:9090
 grafana_admin_password =
 slack_webhook_url =
 slack_bot_token =
+slack_user_id =
+slack_huddle_channel =
+slack_user_token_dev =
+slack_user_token_review =
+slack_user_token_scrum =
 ```
 
 | Key | Description |
@@ -1007,6 +1037,9 @@ slack_bot_token =
 | `grafana_admin_password` | Grafana's admin password, auto-generated by `nyxgpt wizard`, never returned by `GET /api/v1/monitoring`. Optional: if left unset, `nyxgpt ops install` manages its own generated secret at `~/.nyxGPT/secrets/grafana-admin-password` instead. Either way, `nyxgpt ops install` deterministically resets the running Grafana container's actual admin password to match via `grafana cli admin reset-admin-password` -- this works on both a fresh and a long-lived Grafana volume, unlike `GF_SECURITY_ADMIN_PASSWORD`, which only applies on first boot. To log in, print whichever of the two applies with `nyxgpt ops credentials` (or `nyxgpt cloud credentials` for a deployment) -- see [`docs/ops.md`](ops.md#nyxgpt-ops-credentials). See [security.md](security.md#api-key-management). |
 | `slack_webhook_url` | Slack incoming webhook URL for Grafana's `nyxgpt-slack` alerting contact point. Optional: alert rules fire and stay visible in Grafana's Alerting UI either way -- this only controls whether firing alerts also post to Slack. Set from the config wizard's Additional Settings (masked as a secret) or directly in config.ini, then run `nyxgpt ops env-sync` (or `nyxgpt ops install`) to provision it. See [alerting.md](alerting.md#slack-contact-point). |
 | `slack_bot_token` | Slack bot token the `notify-merge-conflicts` CI workflow uses to post notifications. Write-once (Slack shows it only at creation) -- config.ini is its canonical copy; run `nyxgpt ops secrets-sync` to push it to this repo's `SLACK_BOT_TOKEN` Actions secret instead of pasting it into GitHub's Secrets UI by hand. Set it from the config wizard's Additional Settings (masked as a secret, like `slack_webhook_url` -- an empty input means "leave unchanged") or directly in config.ini. See [Canonical secret store & sync to GitHub Actions](#canonical-secret-store--sync-to-github-actions). |
+| `slack_user_id` | Slack member id the agent system DMs when an escalation needs the owner (#3695). Not a credential, but carried as the `SLACK_USER_ID` Actions secret, so it is synced and masked as one. |
+| `slack_huddle_channel` | Channel id the review huddle threads its conversation in (#3910). Pushed to the `SLACK_HUDDLE_CHANNEL` Actions **variable**, not a secret -- a channel id is world-readable in GitHub's settings by design, and masking it here would claim a protection the destination does not provide. Blank degrades the huddle to the PR transcript alone. |
+| `slack_user_token_dev` / `slack_user_token_review` / `slack_user_token_scrum` | Per-agent Slack *user* tokens (`chat:write` user scope), one per huddle speaker, so each turn posts under its own identity instead of all three landing under one bot name (#3910). Write-once at Slack, like `slack_bot_token`. All three are optional: a missing token degrades that speaker only. |
 
 Requires the `monitoring` Compose profile (local Prometheus + Grafana),
 started automatically by `nyxgpt ops install` (or standalone via `nyxgpt

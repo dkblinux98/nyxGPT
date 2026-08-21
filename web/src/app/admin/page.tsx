@@ -735,6 +735,25 @@ const LOG_LEVEL_OPTIONS = [
   { value: 'CRITICAL', label: 'CRITICAL - Critical failures only' },
 ];
 
+/**
+ * Shared style for the reconciliation banner's buttons (#3976). `destructive`
+ * is the confirm step of a removal only -- the first click is a plain button,
+ * so the red is spent on the action that actually deletes rather than on the
+ * report itself.
+ */
+function staleKeyButtonStyle(destructive: boolean): React.CSSProperties {
+  return {
+    padding: '4px 10px',
+    background: 'transparent',
+    color: destructive ? 'var(--error-text)' : 'inherit',
+    border: `1px solid ${destructive ? 'var(--error-text)' : 'currentColor'}`,
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 600,
+  };
+}
+
 export default function AdminPage() {
   const [sections, setSections] = useState<SectionsData>(emptySections());
   const [fieldDefaults, setFieldDefaults] = useState<FieldDefaults>({});
@@ -756,6 +775,16 @@ export default function AdminPage() {
   const [extraValues, setExtraValues] = useState<Record<string, Record<string, string>>>({});
   const [staleKeys, setStaleKeys] = useState<Record<string, string[]>>({});
   const [removingStaleKey, setRemovingStaleKey] = useState<string | null>(null);
+  /**
+   * Which stale key's "Declare instead" panel is open, and which one is one
+   * click from deletion (#3976). Both default to closed: the old banner had a
+   * single Remove button that deleted on the first click, and for a live
+   * credential absent from example.config.ini -- which is what every one of
+   * the eight keys found drifting on 2026-08-20 was -- deleting is the wrong
+   * direction. The correct fix is usually to *declare* it.
+   */
+  const [declaringStaleKey, setDeclaringStaleKey] = useState<string | null>(null);
+  const [confirmingStaleKey, setConfirmingStaleKey] = useState<string | null>(null);
 
   /**
    * Config saved but not yet running (#3806). Server-side state, not a toast:
@@ -813,6 +842,7 @@ export default function AdminPage() {
 
   async function handleRemoveStaleKey(section: string, key: string) {
     setRemovingStaleKey(`${section}.${key}`);
+    setConfirmingStaleKey(null);
     try {
       const res = await fetch('/api/v1/config/sections/stale-keys/remove', {
         method: 'POST',
@@ -1586,54 +1616,139 @@ export default function AdminPage() {
               directly from that file (#3388) -- a new option never goes missing from the wizard.
             </p>
 
+            {/*
+              Reconciliation, not an error (#3976). An option in config.ini
+              that example.config.ini does not declare is *either* a retired
+              setting or a live one nobody declared -- and the code cannot
+              tell which. This banner used to be red and offer one button,
+              Remove, which deleted on the first click; every key it reported
+              on 2026-08-20 was a live credential, so it steered toward
+              revoking a working token. Both resolutions are offered here, and
+              the destructive one asks first.
+            */}
             {Object.keys(staleKeys).length > 0 && (
               <div
                 role="alert"
                 style={{
                   marginBottom: '1.5rem',
                   padding: '1rem',
-                  background: 'var(--error-bg)',
-                  color: 'var(--error-text)',
-                  border: '1px solid #ffcccc',
+                  background: 'var(--info-bg)',
+                  border: '1px solid var(--border)',
                   borderRadius: 6,
                   fontSize: 14,
                 }}
               >
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>
-                  Config.ini has options no longer recognized
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  Config.ini has options example.config.ini does not declare
                 </div>
+                <p style={{ marginTop: 0, marginBottom: 12, color: 'var(--muted-foreground)' }}>
+                  Each of these is either a live setting that was never declared or one that has
+                  been retired. Declare it if it is live; remove it only if it is not. This list
+                  covers the sections the wizard manages -- run{' '}
+                  <code>nyxgpt ops config-drift</code> for the full reconciliation, including{' '}
+                  <code>[github]</code>, <code>[homebrew]</code> and <code>[pypi]</code>.
+                </p>
                 {Object.entries(staleKeys).map(([section, keys]) =>
                   keys.map((key) => {
                     const id = `${section}.${key}`;
+                    const busy = removingStaleKey !== null;
                     return (
-                      <div
-                        key={id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          marginBottom: 6,
-                        }}
-                      >
-                        <code style={{ fontSize: 13 }}>
-                          [{section}] {key}
-                        </code>
-                        <button
-                          onClick={() => handleRemoveStaleKey(section, key)}
-                          disabled={removingStaleKey !== null}
+                      <div key={id} style={{ marginBottom: 10 }}>
+                        <div
                           style={{
-                            padding: '4px 10px',
-                            background: 'transparent',
-                            color: 'inherit',
-                            border: '1px solid currentColor',
-                            borderRadius: 6,
-                            cursor: removingStaleKey !== null ? 'not-allowed' : 'pointer',
-                            fontSize: 12,
-                            fontWeight: 600,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 8,
                           }}
                         >
-                          {removingStaleKey === id ? 'Removing...' : 'Remove'}
-                        </button>
+                          <code style={{ fontSize: 13 }}>
+                            [{section}] {key}
+                          </code>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                              onClick={() =>
+                                setDeclaringStaleKey(declaringStaleKey === id ? null : id)
+                              }
+                              style={staleKeyButtonStyle(false)}
+                              aria-expanded={declaringStaleKey === id}
+                            >
+                              {declaringStaleKey === id ? 'Hide' : 'Declare instead'}
+                            </button>
+                            {confirmingStaleKey === id ? (
+                              <>
+                                <button
+                                  onClick={() => handleRemoveStaleKey(section, key)}
+                                  disabled={busy}
+                                  style={staleKeyButtonStyle(true)}
+                                >
+                                  {removingStaleKey === id ? 'Removing...' : 'Confirm remove'}
+                                </button>
+                                <button
+                                  onClick={() => setConfirmingStaleKey(null)}
+                                  disabled={busy}
+                                  style={staleKeyButtonStyle(false)}
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => setConfirmingStaleKey(id)}
+                                disabled={busy}
+                                style={staleKeyButtonStyle(false)}
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {confirmingStaleKey === id && (
+                          <p
+                            style={{
+                              margin: '6px 0 0',
+                              fontSize: 12,
+                              color: 'var(--error-text)',
+                            }}
+                          >
+                            This deletes the option and its value from config.ini. If it holds a
+                            credential the issuing service showed only once, it cannot be recovered
+                            -- declare it instead.
+                          </p>
+                        )}
+                        {declaringStaleKey === id && (
+                          <div
+                            style={{
+                              margin: '6px 0 0',
+                              padding: '8px 10px',
+                              background: 'var(--code-bg)',
+                              borderRadius: 6,
+                              fontSize: 12,
+                            }}
+                          >
+                            <p style={{ marginTop: 0 }}>
+                              Add this to <code>example.config.ini</code> (it is the wizard&apos;s
+                              schema, so declaring the key is what makes it a recognized option
+                              rather than drift):
+                            </p>
+                            <pre
+                              style={{
+                                margin: '0 0 8px',
+                                whiteSpace: 'pre-wrap',
+                                fontSize: 12,
+                              }}
+                            >{`[${section}]\n# what this option does, and where its value comes from\n${key} =`}</pre>
+                            <p style={{ margin: 0, color: 'var(--muted-foreground)' }}>
+                              If it holds a credential, also give it a{' '}
+                              <code>_FIELD_OVERRIDES</code> entry with <code>secret=True</code> in{' '}
+                              <code>config_wizard.py</code> -- an undeclared credential defaults to{' '}
+                              <code>secret=False</code> and would come back from this page in
+                              cleartext. If it belongs in a GitHub Actions secret or variable, add
+                              it to the matching manifest in <code>config.py</code> and run{' '}
+                              <code>nyxgpt ops config-sync</code>.
+                            </p>
+                          </div>
+                        )}
                       </div>
                     );
                   })

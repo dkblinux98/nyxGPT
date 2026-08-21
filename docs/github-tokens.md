@@ -2,9 +2,39 @@
 
 This document lists all required tokens and secrets for the agent workflows.
 
+## Where these values come from
+
+**`~/.nyxGPT/config.ini` is the canonical store for every name on this page,
+and `nyxgpt ops config-sync` is the only supported way to get them into
+GitHub** (#3505, #3976):
+
+```bash
+nyxgpt ops config-sync --dry-run   # names and destinations only, no network call
+nyxgpt ops config-sync             # push every mapped secret and variable
+nyxgpt ops config-drift            # reconcile config.ini against example.config.ini
+```
+
+Which `config.ini` key maps to which name is declared in
+`SECRETS_SYNC_MANIFEST` and `VARIABLES_SYNC_MANIFEST` in
+`src/nyxgpt/config.py`, and `tests/unit/test_sync_manifests.py` reconciles
+both against the `vars.`/`secrets.` references the workflows actually make --
+so a name added to a workflow without a config.ini key behind it fails the
+build rather than becoming a value somebody has to remember typing in.
+
+Typing a value into the settings UI instead still works, and is still the
+wrong move: it produces a repository whose configuration cannot be
+reconstructed from `config.ini` on a clean machine, which is the state
+#3976 was filed to end. The token running the sync needs **admin** on the
+repository -- managing Actions secrets and variables is a stronger
+permission than repository write.
+
+Values are never printed: sync results name the secret or variable and
+whether it was set, never what it was set to.
+
 ## Required Secrets
 
-Configure these in: **Settings → Secrets and variables → Actions → Secrets**
+Configure these with `nyxgpt ops config-sync`; they land in
+**Settings → Secrets and variables → Actions → Secrets**
 
 ### Agent Tokens (Classic PATs)
 
@@ -39,13 +69,17 @@ and starts no fix cycle (the #3733 stall).
 
 ## Required Variables
 
-Configure these in: **Settings → Secrets and variables → Actions → Variables**
+Configure these with `nyxgpt ops config-sync` too; they land in
+**Settings → Secrets and variables → Actions → Variables**. Unlike a secret,
+a variable is readable by anyone with read access to the repository -- which
+is why the two manifests are kept structurally disjoint and a credential can
+never be pushed to this side.
 
 | Variable Name | Example Value | Description |
 |--------------|---------------|-------------|
 | `AGENTS_ENABLED` | `true` | Master switch for all agent workflows |
-| `DEV_AUTO_IMPLEMENT_ENABLED` | `true` | Enable developer auto-implementation |
-| `CLAUDE_REVIEW_ENABLED` | `true` | Enable automated Claude code reviews |
+| `DEV_AUTO_IMPLEMENT_ENABLED` | `true` | Enable developer auto-implementation. **No workflow reads this today** — it has no `config.ini` key and is not in `VARIABLES_SYNC_MANIFEST` for that reason; setting it changes nothing. |
+| `CLAUDE_REVIEW_ENABLED` | `true` | Enable automated Claude code reviews. **No workflow reads this today** either — like the row above it has no `config.ini` key and is deliberately absent from `VARIABLES_SYNC_MANIFEST`; setting it changes nothing. |
 | `REPO_OWNER` | `dkblinux98` | GitHub repository owner |
 | `REPO_NAME` | `nyxGPT` | GitHub repository name |
 | `PROJECT_OWNER` | `dkblinux98` | GitHub project owner (user or org) |
@@ -72,6 +106,9 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `AGENT_MODEL_HUDDLE` | `claude-fable-5` | Model for every turn of a review huddle — the developer and review turns of each round and the scrummaster's decision, all run by `huddle_session.yml` (#3911); optional, defaults to `claude-fable-5` (ledger D-014) |
 | `AGENT_MODEL_CANARY` | `claude-haiku-4-5-20251001` | Model for the CLAUDE.md binding canary (`claude-md-binding-canary.yml`); optional, defaults to `claude-haiku-4-5-20251001` |
 | `HUDDLE_MAX_ROUNDS` | `3` | Round cap for `huddle_session.yml` (#3911); optional, defaults to `3`. **Configurable downward only** — the rounds are three explicit pairs of steps, so any value above 3 behaves as 3 |
+| `REVIEW_CI_WAIT_MINUTES` | `60` | How long the review agent waits for a PR's CI to settle before giving up (`claude-code-review.yml`); optional, defaults to `60` and is capped by that job's own timeout |
+| `HOMEBREW_TAP_REPO` | *(empty)* | `owner/repo` of the Homebrew tap the `-rc` and stable formulas are pushed to; optional — blank skips the tap push with a notice rather than failing the release |
+| `CHURN_PRICE_SHEET_JSON` | *(empty)* | Per-model price sheet (JSON) the retrospective uses to attach dollars to token churn; optional — blank leaves the churn dump in tokens only |
 | `SLACK_HUDDLE_CHANNEL` | *(empty)* | Channel id the huddle conversation is threaded in (#3910); optional — unset degrades the huddle to transcript-only, it never fails the run |
 | `SLACK_CONFLICT_CHANNEL` | `C0AANK4KDM0` | Channel id `notify-merge-conflicts.yml` posts conflict notices to (#3911); optional, falls back to the id that used to be hard-coded in that workflow. Deliberately **separate from `SLACK_HUDDLE_CHANNEL`** — conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change |
 
@@ -79,6 +116,7 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 
 | Secret | Purpose |
 |---|---|
+| `SLACK_BOT_TOKEN` / `SLACK_USER_ID` | The bot token the merge-conflict notifier posts with, and the owner's Slack member id the agent system DMs on an escalation (#3695). Both come from `[monitoring]` in `config.ini`. |
 | `SLACK_USER_TOKEN_DEV` / `SLACK_USER_TOKEN_REVIEW` / `SLACK_USER_TOKEN_SCRUM` | User tokens with the `chat:write` user scope, one per agent, so each huddle turn posts under its own identity. A bot token would put every turn under one name, which defeats a thread you can read back. All three are **optional**: a missing token degrades that speaker (and a missing channel degrades the whole thread) to the PR transcript alone — `huddle_session.yml` deliberately does not validate them, because refusing to huddle over an unconfigured chat integration is a worse failure than the one it reports. |
 
 **Escalation DMs are signed by the agent that raised them (#3911).**
@@ -105,9 +143,16 @@ code change — when a model is refused (see the ledger's D-010 for the
 monthly-spend-limit signature), flip the variable and the next workflow run
 picks it up:
 
+Edit the key in `config.ini` and push it:
+
+```ini
+# ~/.nyxGPT/config.ini
+[github]
+agent_model_review = claude-opus-5
+```
+
 ```bash
-gh variable set AGENT_MODEL_REVIEW --body claude-opus-5 --repo dkblinux98/nyxGPT
-gh variable set AGENT_MODEL_REVIEW --body claude-fable-5 --repo dkblinux98/nyxGPT  # switch back
+nyxgpt ops config-sync
 ```
 
 Unset means the default in the table above, so the workflows keep the intended

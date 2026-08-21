@@ -227,30 +227,48 @@ merge to `RELEASE_BRANCH`, so next-release work must never be started:
   `tests/test_scrummaster_sprint_boundary.sh` (#3706, end-to-end selector
   boundary check against a fake `gh`).
 
-## What the owner needs to apply by hand
+## How the variables and workflow changes get applied
 
-Agent tokens cannot write `.github/workflows/*` (same hand-carry pattern as
-#3454/#3479). Two things need manual application:
+**This section used to read "What the owner needs to apply by hand". Both of
+its premises have since been retired and neither half is a hand-carry today**
+(corrected 2026-08-21, #3976). Agent tokens in this repository *can* write
+`.github/workflows/*` — the `workflow` scope is on `DEVELOPER_AGENT_TOKEN`
+(`CLAUDE.md` § Tooling, 2026-08-07), so the #3454/#3479 hand-carry pattern no
+longer applies. And the variables are no longer typed into GitHub at all. The
+block is kept because the values it documents are still live.
 
-### 1. New repo variables
+### 1. Repo variables — declared in config.ini, pushed by one command
 
-Add alongside the existing ones (Settings -> Secrets and variables ->
-Actions -> Variables):
+Both variables are entries in `VARIABLES_SYNC_MANIFEST`
+(`src/nyxgpt/config.py`), keyed off `[github]` in config.ini. Set them there
+and push with:
 
-| Variable Name | Example Value | Description |
-|---|---|---|
-| `SPRINT_AUTOPILOT` | `false` | Kill switch: `true` enables the self-continuing merge -> next-issue loop. Off by default -- unset/`false` reproduces today's manual-kick flow exactly. |
-| `SPRINT_FIELD` | `Sprint` | Project iteration field name used for sprint scoping/reporting. Optional -- every script defaults to `Sprint` if unset. |
+```bash
+nyxgpt ops config-sync
+```
 
-`RELEASE_ISSUE_NUMBER` already exists (see `docs/github-tokens.md`) but is
-not currently written into every workflow's ephemeral config.ini -- see
-below.
+| config.ini key (`[github]`) | Variable Name | Example Value | Description |
+|---|---|---|---|
+| `sprint_autopilot` | `SPRINT_AUTOPILOT` | `false` | Kill switch: `true` enables the self-continuing merge -> next-issue loop. Off by default -- unset/`false` reproduces today's manual-kick flow exactly. |
+| `sprint_field` | `SPRINT_FIELD` | `Sprint` | Project iteration field name used for sprint scoping/reporting. Optional -- every script defaults to `Sprint` if unset. |
 
-### 2. Workflow file changes
+Adding them through **Settings -> Secrets and variables -> Actions ->
+Variables** still works, and is still the wrong move: a value that reaches
+GitHub only by hand cannot be reconstructed from the repository, which is the
+defect #3976 was filed for.
+
+`RELEASE_ISSUE_NUMBER` is in the same manifest
+(`github.release_issue_number`) and is pushed by the same command. The
+"not currently written into every workflow's ephemeral config.ini" caveat
+that stood here is also spent: `review_agent_auto_review.yml` writes it (see
+the diff below, which was applied).
+
+### 2. Workflow file changes (applied)
 
 **`review_agent_auto_review.yml`** -- the "Write ephemeral config.ini" step
-needs three more lines so the merge script can find the release tracking
-issue and read the autopilot switch:
+took three more lines so the merge script can find the release tracking issue
+and read the autopilot switch (applied; `RELEASE_ISSUE_NUMBER=` is on the
+step today):
 
 ```diff
            RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
