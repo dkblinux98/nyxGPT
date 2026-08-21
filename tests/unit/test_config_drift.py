@@ -97,6 +97,30 @@ def test_an_uppercase_spelling_on_disk_is_not_reported_as_drift(tmp_path: Path) 
     assert drift["undeclared"] == []
 
 
+def test_a_miscased_section_on_disk_is_reported_from_both_sides(tmp_path: Path) -> None:
+    """`[GitHub]` is not `[github]` to ConfigParser, and the report must say so.
+
+    Sections are not folded by `optionxform` -- only option names are. So a
+    file spelled `[GitHub]` makes `cfg.get("github", ...)` raise
+    `NoSectionError` and every getter fall back to its default, while the keys
+    look perfectly set to a human reading the file. Folding the section name
+    for the comparison would reconcile it clean and report nothing, which is
+    the one answer that is certainly wrong. Compared as spelled, the key is
+    undeclared *and* its lowercase counterpart is missing -- both true, and
+    together they name the mistake.
+    """
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[GitHub]\nrepo_owner = dkblinux98\n", "utf-8")
+    cfg = config.load_config(str(cfg_path))
+
+    # The premise: the getter really does miss it.
+    assert cfg.get("github", "repo_owner", fallback="") == ""
+
+    drift = config_wizard.find_config_drift(cfg)
+    assert "GitHub.repo_owner" in drift["undeclared"]
+    assert "github.repo_owner" in drift["missing"]
+
+
 def test_the_p004_keys_are_never_reported_as_drift() -> None:
     """Ledger P-004: reporting them invites exactly the wrong fix.
 

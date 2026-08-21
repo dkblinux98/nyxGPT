@@ -79,7 +79,7 @@ never be pushed to this side.
 |--------------|---------------|-------------|
 | `AGENTS_ENABLED` | `true` | Master switch for all agent workflows |
 | `DEV_AUTO_IMPLEMENT_ENABLED` | `true` | Enable developer auto-implementation. **No workflow reads this today** — it has no `config.ini` key and is not in `VARIABLES_SYNC_MANIFEST` for that reason; setting it changes nothing. |
-| `CLAUDE_REVIEW_ENABLED` | `true` | Enable automated Claude code reviews |
+| `CLAUDE_REVIEW_ENABLED` | `true` | Enable automated Claude code reviews. **No workflow reads this today** either — like the row above it has no `config.ini` key and is deliberately absent from `VARIABLES_SYNC_MANIFEST`; setting it changes nothing. |
 | `REPO_OWNER` | `dkblinux98` | GitHub repository owner |
 | `REPO_NAME` | `nyxGPT` | GitHub repository name |
 | `PROJECT_OWNER` | `dkblinux98` | GitHub project owner (user or org) |

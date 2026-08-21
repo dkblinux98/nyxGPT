@@ -154,7 +154,10 @@ def main() -> int:
     try:
         announce("A secret that is not there yet")
         with ops._github_actions_client(token) as client:
-            before = client.get(f"/repos/{owner}/{name}/actions/secrets")
+            # per_page=100: the default page is 30, and "the canary is in the
+            # list" would start failing spuriously the day the repo crosses
+            # that many secrets.
+            before = client.get(f"/repos/{owner}/{name}/actions/secrets?per_page=100")
             before.raise_for_status()
             existing = {s["name"] for s in before.json()["secrets"]}
         if CANARY_SECRET in existing:
@@ -187,7 +190,7 @@ def main() -> int:
 
         announce("Confirm the secret landed: its name must now be listed")
         with ops._github_actions_client(token) as client:
-            after = client.get(f"/repos/{owner}/{name}/actions/secrets")
+            after = client.get(f"/repos/{owner}/{name}/actions/secrets?per_page=100")
             after.raise_for_status()
             names = {s["name"] for s in after.json()["secrets"]}
         if CANARY_SECRET not in names:

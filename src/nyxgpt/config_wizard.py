@@ -764,19 +764,28 @@ UNDECLARED_BY_DESIGN: frozenset[str] = frozenset(
 
 
 def _example_option_names() -> set[str]:
-    """Return every `section.key` declared in `example.config.ini`, lowercased.
+    """Return every `section.key` declared in `example.config.ini`.
 
-    Lowercased because `config.load_config` builds a `ConfigParser` with the
-    default `optionxform`, so a key the owner spelled `SLACK_BOT_TOKEN` on
-    disk arrives here as `slack_bot_token` -- comparing raw spellings would
-    report a live key as undeclared purely because of its case (#3947 is the
-    same parser behavior seen from the other side).
+    The *key* half is lowercased because `config.load_config` builds a
+    `ConfigParser` with the default `optionxform`, so a key the owner spelled
+    `SLACK_BOT_TOKEN` on disk arrives here as `slack_bot_token` -- comparing
+    raw spellings would report a live key as undeclared purely because of its
+    case (#3947 is the same parser behavior seen from the other side).
+
+    The *section* half is compared as spelled, because ConfigParser does not
+    fold section names: `cfg.get("github", ...)` raises `NoSectionError`
+    against a file that says `[GitHub]`, so every getter silently falls back
+    to its default. Folding the section here would reconcile that file clean
+    and report nothing, which is the one answer that is certainly wrong.
+    Compared as spelled, `[GitHub] repo_owner` shows up as undeclared *and*
+    `github.repo_owner` shows up as missing -- both true, and together they
+    name the mistake.
     """
     parser = ConfigParser()
     parser.optionxform = str  # type: ignore[assignment]
     parser.read(_EXAMPLE_CONFIG_PATH, encoding="utf-8")
     return {
-        f"{section}.{key}".lower()
+        f"{section}.{key.lower()}"
         for section in parser.sections()
         for key in parser.options(section)
     }
@@ -805,10 +814,14 @@ def find_config_drift(cfg: ConfigParser) -> dict[str, list[str]]:
 
     Names only, never values: a report about credentials must be safe to paste
     into an issue.
+
+    Section names are compared as spelled and only the key is case-folded --
+    see `_example_option_names` for why a mis-cased `[GitHub]` must not
+    reconcile clean.
     """
     declared = _example_option_names()
     present = {
-        f"{section}.{key}".lower() for section in cfg.sections() for key in cfg.options(section)
+        f"{section}.{key.lower()}" for section in cfg.sections() for key in cfg.options(section)
     }
     return {
         "undeclared": sorted(present - declared - UNDECLARED_BY_DESIGN),

@@ -998,10 +998,12 @@ The review workflow requires these secrets to be configured:
 - `CLAUDE_CODE_OAUTH_TOKEN` - OAuth token for Claude Code agent
 - `REVIEW_AGENT_TOKEN` - GitHub token with repo/project permissions (used for review workflow)
 
-**How to configure secrets:**
-- Navigate to: Settings → Secrets and variables → Actions → Secrets
-- Click "New repository secret"
-- Add all secrets if not already present
+**How to configure secrets:** declare them in `config.ini` and run
+`nyxgpt ops config-sync` — both are in `SECRETS_SYNC_MANIFEST`
+(`github.claude_code_oauth_token`, `github.review_agent_token`), and that
+command is the only supported path (#3505, #3976). Typing them into
+**Settings → Secrets and variables → Actions → Secrets** by hand leaves a
+credential the repository cannot explain or rotate.
 
 ### Branch Cleanup
 Branch deletion happens in `review_accept_and_merge.sh` via `--delete-branch`, not in auto-fix workflow.
