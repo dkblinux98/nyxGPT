@@ -388,6 +388,28 @@ class TestTheConflictChannelIsConfiguration:
         # are kept apart, and that comment is the thing a future reader needs.
         assert "vars.SLACK_HUDDLE_CHANNEL" not in self._workflow()
 
+    def test_config_ini_can_populate_it(self):
+        """#3979: "configuration" means config.ini owns it, not that it is hand-set.
+
+        #3911 made the channel a repo variable and #3976 made every variable a
+        workflow reads populatable by `nyxgpt ops config-sync`; landing 35
+        minutes apart, they left this one variable settable only by typing it
+        into GitHub's Settings UI. `test_sync_manifests.py` catches that class
+        of gap generically -- this pins the specific pairing, and that the
+        conflict channel keeps its own config key rather than being collapsed
+        onto the huddle's (ledger D-041(d)).
+        """
+        from nyxgpt import config
+
+        assert (
+            config.VARIABLES_SYNC_MANIFEST["monitoring.slack_conflict_channel"]
+            == "SLACK_CONFLICT_CHANNEL"
+        )
+        assert (
+            config.VARIABLES_SYNC_MANIFEST["monitoring.slack_huddle_channel"]
+            == "SLACK_HUDDLE_CHANNEL"
+        )
+
 
 class TestDispatcherShellBehaviour:
     """Runs `tests/test_conflict_resolution_dispatch.sh` (stubbed `gh`, no

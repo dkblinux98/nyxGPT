@@ -110,7 +110,7 @@ never be pushed to this side.
 | `HOMEBREW_TAP_REPO` | *(empty)* | `owner/repo` of the Homebrew tap the `-rc` and stable formulas are pushed to; optional — blank skips the tap push with a notice rather than failing the release |
 | `CHURN_PRICE_SHEET_JSON` | *(empty)* | Per-model price sheet (JSON) the retrospective uses to attach dollars to token churn; optional — blank leaves the churn dump in tokens only |
 | `SLACK_HUDDLE_CHANNEL` | *(empty)* | Channel id the huddle conversation is threaded in (#3910); optional — unset degrades the huddle to transcript-only, it never fails the run |
-| `SLACK_CONFLICT_CHANNEL` | `C0AANK4KDM0` | Channel id `notify-merge-conflicts.yml` posts conflict notices to (#3911); optional, falls back to the id that used to be hard-coded in that workflow. Deliberately **separate from `SLACK_HUDDLE_CHANNEL`** — conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change |
+| `SLACK_CONFLICT_CHANNEL` | *(empty)* | Channel id `notify-merge-conflicts.yml` posts conflict notices to (#3911); optional — unset falls back to the id that used to be hard-coded in that workflow, so leaving it blank changes nothing. Set it from `monitoring.slack_conflict_channel` in `config.ini` (#3979), not by hand. Deliberately **separate from `SLACK_HUDDLE_CHANNEL`** — conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change |
 
 ### Agent Slack identities (#3910, extended by #3911)
 

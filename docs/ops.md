@@ -1229,7 +1229,8 @@ actually make so a name a workflow reads cannot quietly become hand-typed
 state.
 
 Blank values are skipped rather than pushed as empty strings: for the
-optional variables (`SLACK_HUDDLE_CHANNEL`, `CHURN_PRICE_SHEET_JSON`)
+optional variables (`SLACK_HUDDLE_CHANNEL`, `SLACK_CONFLICT_CHANNEL`,
+`CHURN_PRICE_SHEET_JSON`)
 "unset" and "set to nothing" mean different things to the workflows.
 
 `.github/workflows/config-sync-smoke.yml` is the executed evidence for this

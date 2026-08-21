@@ -1895,6 +1895,11 @@ VARIABLES_SYNC_MANIFEST: dict[str, str] = {
     "github.churn_price_sheet_json": "CHURN_PRICE_SHEET_JSON",
     "homebrew.homebrew_tap_repo": "HOMEBREW_TAP_REPO",
     "monitoring.slack_huddle_channel": "SLACK_HUDDLE_CHANNEL",
+    # The merge-conflict notice channel (#3911), kept separate from the huddle
+    # channel above on purpose -- ledger D-041(d). Optional: blank leaves
+    # `notify-merge-conflicts.yml`'s `||` fallback id in place, which is why
+    # it was hand-set until #3979 gave it a config.ini key.
+    "monitoring.slack_conflict_channel": "SLACK_CONFLICT_CHANNEL",
 }
 
 
