@@ -755,6 +755,9 @@ rather than mechanism, and nothing can enforce them.
   `HUDDLE_DECISION:`; `escalate` runs the same escalation primitives. The
   transcript is assembled from the turn files rather than read back from Slack,
   so the record survives both an outage and Slack's retention setting.
+  (That last clause is **amended by `D-040`**: the files are still the floor,
+  but the thread is now read back *on top of* them. Kept here as written
+  because the reasoning behind the floor is unchanged and still load-bearing.)
 
   Settling is **sticky**: round N inherits round N-1's answer. Round N gates on
   the previous round's settle output alone, so a huddle that settles in round 1
@@ -1263,6 +1266,72 @@ rather than mechanism, and nothing can enforce them.
   Source: #3971; `docs/reviewable-head-gate.md`;
   `agents/runbooks/review-runbook.md` §3;
   `agents/runbooks/developer-runbook.md` §7a.
+
+- **D-040** · 2026-08-21 · developer agent (#3911 reopened) — **A feature whose
+  every execution has taken its degradation path has not been executed. The
+  huddle archive now reads the thread back, and a dead session says so in the
+  thread as well as on the PR.**
+
+  #3911 closed on 2026-08-19 claiming executed evidence for a live huddle. No
+  Slack user token existed until 2026-08-20, so `get_channel()` returned
+  `NullChannel` on every run that had ever happened: no thread, no turns, no
+  permalink. Every test and the `huddle_session_probe.py` smoke ran that same
+  path, all green, and what they were green about was #3910's *degradation
+  contract* — correct, and not the feature. The adapter had meanwhile shipped
+  with `_call` sending JSON to every method, which Slack accepts on
+  `chat.postMessage` and refuses on `conversations.replies` and
+  `chat.getPermalink`: two of four operations dead for two months, invisible
+  because a broken integration and a quiet one produce the same silence
+  (fixed #3974, guarded #3975). **Generalised: when a component is specified to
+  degrade quietly, "the tests are green" is evidence about the quiet path
+  only. Something must execute the loud one, or the feature is unverified by
+  construction.**
+
+  Three changes follow from that, all on #3911's own criteria:
+
+  (a) *The archive reads the thread back.* `read()` was the operation that had
+  shipped broken, and `huddle_session.yml` — the workflow that supposedly
+  depended on it — never called it. The turn files remain the **floor** (they
+  are written on the runner, so the record survives a Slack outage, which is
+  D-029's unchanged reasoning); the read-back is added on top, guarded by
+  `|| true`, because the files hold only what the three agents wrote and the
+  thread is the sole record of anyone else in the huddle — the owner weighing
+  in, a human correcting a premise — which otherwise evaporates with Slack
+  retention. Amends D-029's transcript clause.
+
+  (b) *A failed session tells the thread, not only the PR.* The criterion is
+  that a dead session leaves no "half-written Slack thread". A `HUDDLE_FAILED`
+  marker on the PR makes it recoverable for someone reading the PR, while the
+  thread just stops — indistinguishable from a huddle still thinking, and the
+  thread is where a huddle is read.
+
+  (c) *Read-back turns are named by role.* A user-token message returns an
+  opaque `U…` id, so the archived thread would name its speakers
+  `**U09ABCDEF:**` three times: the reason for posting under three identities,
+  lost at the moment the record is meant to outlive Slack. `identities()`
+  resolves them via one `auth.test` per configured token, at archive time
+  only. It is deliberately **not** on the `Channel` interface — it exists
+  because Slack labels its own messages badly, and a replacement transport
+  would have to implement a method it has no use for, so callers ask with
+  `getattr`. Matching is keyed on the account id, never the display name,
+  which Slack attaches only sometimes.
+
+  Evidence: `huddle_session_probe.py --live` runs the session's real `run:`
+  bodies against the live channel with the three real user tokens, inverting
+  the degradation contract the way `scripts/slack-huddle-smoke.py` does for
+  the adapter — a warned no-op is a failure there. It runs as the `session`
+  job of `slack-huddle-smoke.yml`, dispatch-only for the same reason that
+  file's other job is (each run leaves a thread, and `chat:delete` is
+  deliberately ungranted). Still not covered, and named rather than implied:
+  the six model turns are canned prose, and `huddle_decision_dispatch.yml`
+  firing needs a real decision comment on a real PR, so it stays pinned by
+  `test_huddle_session.py::TestTheDecisionCanActuallyDispatch`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3911; `.github/workflows/huddle_session.yml`;
+  `.github/workflows/slack-huddle-smoke.yml`;
+  `scripts/agents/lib/huddle_session_probe.py`;
+  `scripts/agents/lib/huddle_channel.py`.
 
 ## Parked
 

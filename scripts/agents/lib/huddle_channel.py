@@ -19,6 +19,10 @@ Four operations, deliberately no more:
     read(thread) -> [Turn, ...]
     permalink(thread) -> url
 
+(`SlackChannel` also carries `identities()`, which is deliberately *not* on
+the interface -- see its docstring. It is a Slack-specific readability
+refinement, not something a replacement transport has to provide.)
+
 **No Slack type appears in those signatures.** A thread is a string, a turn is
 this module's own dataclass, and a speaker is one of three role names. Slack's
 stance on automating user accounts is unfavourable enough that a forced move to
@@ -64,11 +68,21 @@ CHANNEL_ENV = "SLACK_HUDDLE_CHANNEL"
 
 @dataclass(frozen=True)
 class Turn:
-    """One message in a huddle thread, transport-independent."""
+    """One message in a huddle thread, transport-independent.
+
+    `speaker` is the best label the transport gave us and `account` is the
+    stable id behind it, kept separately because they are answers to different
+    questions: Slack reports a user-token message with an opaque id and
+    sometimes also a display name, and only the id can be matched back to
+    "this is the agent whose token we hold". Labelling off whichever field
+    happened to be present would work on one of those shapes and silently not
+    on the other.
+    """
 
     speaker: str
     text: str
     ts: str = ""
+    account: str = ""
 
 
 class Channel(Protocol):
@@ -122,6 +136,10 @@ class NullChannel:
     def permalink(self, thread: str) -> str:  # noqa: ARG002
         self._once()
         return ""
+
+    def identities(self) -> dict[str, str]:
+        self._once()
+        return {}
 
 
 class SlackChannel:
@@ -231,6 +249,59 @@ class SlackChannel:
         )
         return str(body.get("permalink", ""))
 
+    # -- a Slack-specific readability refinement ---------------------------
+    def identities(self) -> dict[str, str]:
+        """Slack user id -> speaker role, resolved from the configured tokens.
+
+        A message posted with a *user* token comes back from
+        `conversations.replies` carrying only the account's `user` id, so a
+        thread read back reads `**U09ABCDEF:**` three times over -- opaque
+        ids where the whole point of posting under three identities was that
+        a future session can tell the turns apart. `auth.test` is the cheapest
+        way to learn which id each of our own tokens speaks as: one call per
+        configured speaker, made once when the transcript is archived, never
+        per turn.
+
+        This is **not** on the `Channel` interface, and that is the decision,
+        not an oversight: it exists because Slack labels its own messages
+        badly, and a replacement transport that labels them well would have
+        to implement a method it has no use for. Callers treat it as optional
+        (`getattr`) and fall back to whatever the transport reported.
+
+        An id this run has no token for -- a human in the thread, another bot
+        -- is simply absent from the mapping and keeps its raw label. Losing
+        that message would be far worse than labelling it awkwardly.
+        """
+        resolved: dict[str, str] = {}
+        for speaker in SPEAKER_TOKEN_ENV:
+            token = self._token(speaker)
+            if not token:
+                continue
+            user_id = str(self._call("auth.test", token, {}).get("user_id", ""))
+            if user_id:
+                resolved[user_id] = speaker
+        return resolved
+
+
+def label_turns(turns: list[Turn], identities: dict[str, str]) -> list[Turn]:
+    """Relabel turns whose account is one this run holds the token for.
+
+    Keyed on `account`, never on `speaker`: the point is to name the three
+    agents by role, and a display name Slack may or may not have attached is
+    not what tells us which of them it was.
+    """
+    if not identities:
+        return turns
+    return [
+        Turn(
+            speaker=identities.get(turn.account, turn.speaker),
+            text=turn.text,
+            ts=turn.ts,
+            account=turn.account,
+        )
+        for turn in turns
+    ]
+
 
 def parse_replies(body: dict) -> list[Turn]:
     """Slack's `conversations.replies` payload -> transport-free turns.
@@ -245,8 +316,11 @@ def parse_replies(body: dict) -> list[Turn]:
         text = str(message.get("text", "")).strip()
         if not text:
             continue
-        speaker = str(message.get("username") or message.get("user") or "unknown")
-        turns.append(Turn(speaker=speaker, text=text, ts=str(message.get("ts", ""))))
+        account = str(message.get("user") or "")
+        speaker = str(message.get("username") or account or "unknown")
+        turns.append(
+            Turn(speaker=speaker, text=text, ts=str(message.get("ts", "")), account=account)
+        )
     return turns
 
 
@@ -305,7 +379,19 @@ def _main(argv: list[str]) -> int:
         # survives in the PR transcript. Do not "fix" this to return 1.
         return 0
     if command == "read":
-        print(render_transcript(channel.read(rest[0])))
+        turns = channel.read(rest[0])
+        if not turns:
+            # Nothing at all, deliberately -- not `render_transcript([])`'s
+            # placeholder. The caller is the shell step deciding whether the
+            # PR transcript gets a "read back from Slack" section, and
+            # "_No huddle turns were recorded._" *is* a section: it would add
+            # a heading announcing an empty thread to every huddle that ran
+            # without Slack. Empty stdout is the signal for "no section".
+            return 0
+        # `identities` is optional on the interface (see its docstring), so
+        # ask for it rather than requiring it.
+        resolve = getattr(channel, "identities", None)
+        print(render_transcript(label_turns(turns, resolve() if callable(resolve) else {})))
         return 0
     if command == "permalink":
         print(channel.permalink(rest[0]))

@@ -49,3 +49,43 @@ jobs:
           SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
           SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
         run: python3 scripts/slack-huddle-smoke.py
+
+  # The job above proves the four adapter *operations*. This one proves the
+  # thing that consumes them: `huddle_session.yml`'s own shell, executed with
+  # the same real credentials (#3911).
+  #
+  # It lives here rather than in `huddle-session-smoke.yml` for two reasons.
+  # It has the same cost shape as the job above -- each run leaves a thread in
+  # a channel where `chat:delete` is deliberately ungranted -- so it must be
+  # dispatch-only, and `huddle-session-smoke.yml` runs on push. And it needs
+  # the same three secrets, next to the job that documents why they exist.
+  #
+  # What it still does not cover, and cannot cheaply: the six model turns
+  # (canned prose here -- seven claude-code-action invocations per run) and
+  # `huddle_decision_dispatch.yml` actually firing, which needs a real
+  # decision comment on a real PR and so would start a real fix cycle. The
+  # dispatch gate's author requirement is pinned instead by
+  # `test_huddle_session.py::TestTheDecisionCanActuallyDispatch`.
+  session:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || vars.RELEASE_BRANCH }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The probe reads the workflow file to extract the real `run:` bodies;
+      # that is the one thing it needs beyond the stdlib.
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Run the real session bodies against the live channel
+        env:
+          SLACK_HUDDLE_CHANNEL: ${{ vars.SLACK_HUDDLE_CHANNEL }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: python3 scripts/agents/lib/huddle_session_probe.py --live

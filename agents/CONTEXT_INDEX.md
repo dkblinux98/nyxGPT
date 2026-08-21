@@ -90,6 +90,7 @@ fails if it drifts. Do not hand-edit.
 | `scrummaster_sprint_report.yml` | schedule, workflow_dispatch | Scrummaster Agent - Sprint Report |
 | `security-scan.yml` | pull_request, push | Security Scan |
 | `self-heal-unschedulable-smoke.yml` | pull_request, push, workflow_dispatch | Self-Heal Unschedulable Pod Smoke |
+| `slack-huddle-smoke.yml` | workflow_dispatch | Slack Huddle Smoke |
 | `support-intake-smoke.yml` | push, pull_request, workflow_dispatch | Support Intake Smoke |
 | `support_intake_guard.yml` | issues | Support Intake Guard |
 | `sweep_parked_blocked_issues.yml` | schedule, workflow_dispatch | Sweep Parked Blocked Issues |
