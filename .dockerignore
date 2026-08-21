@@ -3,6 +3,7 @@
 .claude
 .run
 .venv
+product_management/private
 web/node_modules
 web/.next
 web/out
