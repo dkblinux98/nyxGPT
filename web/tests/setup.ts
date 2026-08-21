@@ -46,6 +46,28 @@ class StackContextManager implements ContextManager {
 
 context.setGlobalContextManager(new StackContextManager());
 
+// Node >= 22 defines its own global `localStorage`/`sessionStorage`: getters
+// that return undefined unless node runs with `--localstorage-file`
+// (ExperimentalWarning: "localStorage is not available because
+// --localstorage-file was not provided"). Vitest's happy-dom environment does
+// not displace that pre-existing global, so on modern node every test touching
+// `localStorage` got node's undefined instead of a working Storage -- 182
+// failures, all "Cannot read properties of undefined (reading ...)". Replace
+// the stub with a real happy-dom Storage as a plain writable property, so the
+// suite behaves identically on every node version (CI pins node 20, where the
+// stub doesn't exist) and tests can still assign their own mocks. Note
+// `window === globalThis` under vitest globals, so this cannot be a getter
+// deferring to `window.localStorage` -- that recurses into itself.
+const storageWindow = new (await import('happy-dom')).Window();
+for (const key of ['localStorage', 'sessionStorage'] as const) {
+  delete (globalThis as Record<string, unknown>)[key];
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    writable: true,
+    value: storageWindow[key],
+  });
+}
+
 // Establish API mocking before all tests
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 
