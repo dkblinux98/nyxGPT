@@ -2,8 +2,6 @@
 .github
 .claude
 .run
-.venv
-product_management/private
 web/node_modules
 web/.next
 web/out
@@ -15,7 +13,42 @@ k8s
 homebrew
 ops
 *.md
-!README.md
+
+# Virtualenvs. 359MB on a dev machine, and the churniest files in the tree --
+# on the Dropbox-backed checkout these are the prime suspect for the corrupted
+# build-context tars ("archive/tar: invalid tar header" / "unpigz: corrupted"
+# from the terraform docker provider's legacy build, 2026-08-21).
+.venv*/
+
+# Tool caches, build output, IDE metadata. None are COPY'd by any Dockerfile;
+# all of them bloat and churn the context tar.
+node_modules/
+__pycache__/
+*.py[cod]
+.mypy_cache*/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+out/
+coverage/
+.idea/
+.DS_Store
+*.log
+
+# Terraform working dir: provider binaries (63MB), state, and live tfvars
+# carrying the deployment auth key. Terraform runs from ~/.nyxGPT/terraform;
+# the build context never needs any of it.
+terraform/
+
+# Live secrets/config. Runtime config reaches containers from ~/.nyxGPT at
+# run time (mounts/env), never through the build context -- these entries
+# keep stray local copies out of the tar sent to the docker daemon.
 .env
-.env.*
-!.env.example
+config.ini
+docker/config.docker.ini
+
+# Local-only material, including the gitignored private tier.
+product_management/
+jupyter-notebooks/
+.agent-smoke/
