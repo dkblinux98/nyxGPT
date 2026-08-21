@@ -2698,14 +2698,50 @@ If rework is genuinely needed, it is a **new issue**: a closed issue means the w
 #     `For Release` is finished work;
 #   * an issue that is not on the board at all -- there is no state to claim;
 #   * an assigner who is not a permitted identity, so a stray assignment by
-#     anyone else leaves the issue exactly as it was.
+#     anyone else leaves the issue exactly as it was;
+#   * a CLOSED issue, whatever lane it is in -- see below.
 #
 # Lives here rather than inline in developer_auto_implement.yml so the
 # decision can be executed against stub state (tests/test_gh_project_lib.sh,
 # run on a runner by assignment-dispatch-smoke.yml) instead of only read.
 developer_claim_issue() {
   local issue="$1" assigner="${2:-}"
-  local status
+  local status issue_state
+
+  # Closed first, before the lane rules and before the already-In-Progress
+  # shortcut. `assign_and_trigger_developer` already refuses to *dispatch* a
+  # closed issue (#3825/#3906), but that is a point-in-time check at the
+  # dispatcher: it cannot see a merge that happens after it. #3956 is the gap
+  # it leaves. The review agent dispatched conflict-resolution round 3 at
+  # 19:13:22Z with PR #3965 open and CONFLICTING; the runner queue held the
+  # job for 28 minutes; the PR merged at 19:36:31Z and closed the issue; the
+  # job started at 19:42:53Z and claimed it anyway. Downstream, `check_pr`
+  # then read the PR as MERGED and routed the round into the
+  # acceptance-failure path -- which told the developer agent "the human owner
+  # has left a comment explaining what is broken" about a finished issue where
+  # no owner comment exists, inviting a fix for a defect nobody reported.
+  #
+  # The claim is the right place for it because it is the moment work would
+  # begin, and it is the one choke point every round (implement, review-fix,
+  # conflict, acceptance-fix) passes through. It also protects the board: the
+  # claim's own `set_issue_status` write is what moved #3956 out of the lane
+  # its merge had put it in and parked a closed, shipped issue in
+  # `In Progress` -- invisible to the acceptance drain gate, which opens on
+  # `Acceptance Testing` being empty (#3730).
+  #
+  # Deliberately not reopening or re-laning anything: a closed issue's
+  # placement is owner signal (D-008), and refusing is the whole job here.
+  # Rework on shipped work is a new issue, exactly as #3906 says.
+  #
+  # Only an explicit CLOSED refuses. `_issue_open_state` answers "" when the
+  # REST read itself fails, and a transient API hiccup must not stall every
+  # dispatch -- the same fail-open choice `assign_and_trigger_developer` makes,
+  # and the submit guard is still behind it either way.
+  issue_state="$(_issue_open_state "$issue")"
+  if [[ "$issue_state" == "CLOSED" ]]; then
+    echo "::warning::Issue #${issue} is CLOSED -- an assignment cannot claim finished work." >&2
+    return 3
+  fi
 
   status="$(issue_status "$issue")"
   if [[ -z "$status" ]]; then
