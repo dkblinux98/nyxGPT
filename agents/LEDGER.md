@@ -755,6 +755,9 @@ rather than mechanism, and nothing can enforce them.
   `HUDDLE_DECISION:`; `escalate` runs the same escalation primitives. The
   transcript is assembled from the turn files rather than read back from Slack,
   so the record survives both an outage and Slack's retention setting.
+  (That last clause is **amended by `D-040`**: the files are still the floor,
+  but the thread is now read back *on top of* them. Kept here as written
+  because the reasoning behind the floor is unchanged and still load-bearing.)
 
   Settling is **sticky**: round N inherits round N-1's answer. Round N gates on
   the previous round's settle output alone, so a huddle that settles in round 1
@@ -1263,6 +1266,139 @@ rather than mechanism, and nothing can enforce them.
   Source: #3971; `docs/reviewable-head-gate.md`;
   `agents/runbooks/review-runbook.md` §3;
   `agents/runbooks/developer-runbook.md` §7a.
+
+- **D-040** · 2026-08-21 · developer agent (#3911 reopened) — **A feature whose
+  every execution has taken its degradation path has not been executed. The
+  huddle archive now reads the thread back, and a dead session says so in the
+  thread as well as on the PR.**
+
+  #3911 closed on 2026-08-19 claiming executed evidence for a live huddle. No
+  Slack user token existed until 2026-08-20, so `get_channel()` returned
+  `NullChannel` on every run that had ever happened: no thread, no turns, no
+  permalink. Every test and the `huddle_session_probe.py` smoke ran that same
+  path, all green, and what they were green about was #3910's *degradation
+  contract* — correct, and not the feature. The adapter had meanwhile shipped
+  with `_call` sending JSON to every method, which Slack accepts on
+  `chat.postMessage` and refuses on `conversations.replies` and
+  `chat.getPermalink`: two of four operations dead for two months, invisible
+  because a broken integration and a quiet one produce the same silence
+  (fixed #3974, guarded #3975). **Generalised: when a component is specified to
+  degrade quietly, "the tests are green" is evidence about the quiet path
+  only. Something must execute the loud one, or the feature is unverified by
+  construction.**
+
+  Three changes follow from that, all on #3911's own criteria:
+
+  (a) *The archive reads the thread back.* `read()` was the operation that had
+  shipped broken, and `huddle_session.yml` — the workflow that supposedly
+  depended on it — never called it. The turn files remain the **floor** (they
+  are written on the runner, so the record survives a Slack outage, which is
+  D-029's unchanged reasoning); the read-back is added on top, guarded by
+  `|| true`, because the files hold only what the three agents wrote and the
+  thread is the sole record of anyone else in the huddle — the owner weighing
+  in, a human correcting a premise — which otherwise evaporates with Slack
+  retention. Amends D-029's transcript clause.
+
+  (b) *A failed session tells the thread, not only the PR.* The criterion is
+  that a dead session leaves no "half-written Slack thread". A `HUDDLE_FAILED`
+  marker on the PR makes it recoverable for someone reading the PR, while the
+  thread just stops — indistinguishable from a huddle still thinking, and the
+  thread is where a huddle is read.
+
+  (c) *Read-back turns are named by role.* A user-token message returns an
+  opaque `U…` id, so the archived thread would name its speakers
+  `**U09ABCDEF:**` three times: the reason for posting under three identities,
+  lost at the moment the record is meant to outlive Slack. `identities()`
+  resolves them via one `auth.test` per configured token, at archive time
+  only. It is deliberately **not** on the `Channel` interface — it exists
+  because Slack labels its own messages badly, and a replacement transport
+  would have to implement a method it has no use for, so callers ask with
+  `getattr`. Matching is keyed on the account id, never the display name,
+  which Slack attaches only sometimes.
+
+  Evidence: `huddle_session_probe.py --live` runs the session's real `run:`
+  bodies against the live channel with the three real user tokens, inverting
+  the degradation contract the way `scripts/slack-huddle-smoke.py` does for
+  the adapter — a warned no-op is a failure there. It runs as the `session`
+  job of `slack-huddle-smoke.yml`, dispatch-only for the same reason that
+  file's other job is (each run leaves a thread, and `chat:delete` is
+  deliberately ungranted). Still not covered, and named rather than implied:
+  the six model turns are canned prose, and `huddle_decision_dispatch.yml`
+  firing needs a real decision comment on a real PR, so it stays pinned by
+  `test_huddle_session.py::TestTheDecisionCanActuallyDispatch`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3911; `.github/workflows/huddle_session.yml`;
+  `.github/workflows/slack-huddle-smoke.yml`;
+  `scripts/agents/lib/huddle_session_probe.py`;
+  `scripts/agents/lib/huddle_channel.py`.
+
+- **D-041** · 2026-08-21 · developer agent (#3911, owner scope addition) —
+  **An escalation DM is signed by the agent that raised it, and the raiser is
+  named from `AGENT_ROLE` alone — never inferred. The merge-conflict channel
+  is a repo variable, and deliberately not the huddle's.**
+
+  Owner direction, 2026-08-21: the two acceptance criteria left over from
+  #3910 move to #3911 rather than staying with a closed issue.
+
+  (a) *Attribution.* `notify_human_escalation` posted every DM with the single
+  `SLACK_BOT_TOKEN`, so a self-heal FATAL and a review 3-cycle breaker arrived
+  from the same sender and the owner had to read the body to learn which agent
+  was stuck. It now posts with the raising agent's user token — the same three
+  `SLACK_USER_TOKEN_{DEV,REVIEW,SCRUM}` secrets #3910 filed and D-040's huddle
+  spends.
+
+  (b) *The role is explicit or absent.* It comes from `AGENT_ROLE` and from
+  nothing else. Inference was considered and rejected: this repo's workflow
+  names are not uniform (`Notify Merge Conflicts` and `Claude Code Review`
+  both escalate as the review agent and neither says so), and a wrong guess
+  signs an escalation with the wrong agent's name — strictly worse than the
+  unattributed bot DM it replaces. An unrecognised role attributes nothing.
+  **The default lives in the role-owned script, not the workflow**, because
+  the *report* has an author independent of the runner: `developer_pull_next_
+  issue.yml` runs `scrummaster_dispatch_next.sh` under `DEVELOPER_AGENT_TOKEN`,
+  and a dispatch-block report is the scrummaster's wherever it executes.
+
+  (c) *Attribution never costs a notification.* An unset role, an
+  unconfigured token, or a user token Slack refuses all fall back to
+  `SLACK_BOT_TOKEN`, and only if that also fails does the DM degrade to
+  comment-only. #3695's delivery guarantee outranks this entry's sender name;
+  a nicer sender that loses the escalation is the wrong trade. The message's
+  "Raised by" line and the `:envelope:` marker comment name the agent on
+  either path, so attribution survives the fallback even when the sender does
+  not.
+
+  (d) *The merge-conflict channel is configuration.* It was the literal
+  `C0AANK4KDM0` in `notify-merge-conflicts.yml`. It is now
+  `vars.SLACK_CONFLICT_CHANNEL`, with that id kept only as the `||` fallback
+  so setting the variable is what changes behaviour and not setting it changes
+  nothing. It is **its own** variable, not `SLACK_HUDDLE_CHANNEL`
+  (`C0ABH478QC8` / `#nyxagent-dev`): conflict notices and huddle deliberation
+  are different audiences and must diverge without a code change. A later
+  "tidy-up" collapsing them onto one variable would read as a simplification
+  and would move every conflict notice into the huddle's reading channel —
+  `TestTheConflictChannelIsConfiguration` exists to stop it.
+
+  Evidence, applying D-040's own lesson: whether Slack will let an agent's
+  user token DM the owner is a property of the workspace that no stub can
+  answer, and the function swallows Slack failures by design, so a refused
+  token would leave attribution dead with every test green. `scripts/slack-
+  escalation-smoke.sh` asks the live API as the `escalation-identity` job of
+  `slack-huddle-smoke.yml` — **with no bot token in the step's environment**,
+  so a marker comment can only mean that agent's own token was accepted — and
+  a `--prove-it-fails` half plants an invalid agent token and requires the bot
+  fallback to carry the DM. Dispatch-only: each run DMs the owner for real.
+  The decision itself (which token, which fallback, which record) is Test 17b
+  of `tests/test_gh_project_lib.sh`, which `assignment-dispatch-smoke.yml`
+  already runs on a real runner on every change to `gh_project.sh`; the wiring
+  — a role declared whose token is never passed, which degrades silently to
+  the old behaviour — is `tests/unit/test_escalation_attribution.py`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3911 (owner comment 2026-08-21), #3910;
+  `scripts/agents/lib/gh_project.sh`; `scripts/slack-escalation-smoke.sh`;
+  `.github/workflows/notify-merge-conflicts.yml`;
+  `.github/workflows/slack-huddle-smoke.yml`.
 
 ## Parked
 

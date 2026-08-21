@@ -886,9 +886,11 @@ jobs:
           PR: ${{ steps.pr_number.outputs.pr }}
           GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
           # #3695 escalation DM, best-effort -- absent secrets degrade to
-          # the GitHub comment alone (notify_human_escalation).
+          # the GitHub comment alone (notify_human_escalation). #3911 signs it
+          # as the review agent; the role is set by the called script.
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
         run: |
           set -euo pipefail
 
@@ -1030,9 +1032,11 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
       # #3695 human-channel escalation, best-effort: absent secrets degrade to
-      # the PR comment alone (notify_human_escalation).
+      # the PR comment alone (notify_human_escalation). #3911 signs it as the
+      # review agent; the role is set by the called script.
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

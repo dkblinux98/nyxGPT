@@ -233,6 +233,78 @@ class TestInterfaceIsTransportFree:
             for operation in ("open_thread", "post", "read", "permalink"):
                 assert callable(getattr(implementation, operation))
 
+    def test_identities_is_deliberately_not_part_of_the_interface(self):
+        """It exists because Slack labels its own messages badly. A transport
+        that labels them well would have to implement a method it has no use
+        for, so callers ask for it with `getattr` instead."""
+        assert not hasattr(hc.Channel, "identities")
+
+
+class TestIdentitiesAreResolvedToRoles:
+    """A user-token message comes back labelled with an opaque `U…` id.
+
+    `parse_replies` reports whatever Slack said, which for the three agent
+    accounts is three ids -- so a thread read back into the PR archive would
+    name its speakers `**U09ABCDEF:**`, and the reason for posting under three
+    identities (that a future session can tell the turns apart) would be lost
+    at exactly the moment the record is supposed to outlive Slack.
+    """
+
+    def test_each_configured_token_is_asked_who_it_speaks_as(self):
+        channel = RecordingSlack("C123", tokens=TOKENS, reply={"ok": True, "user_id": "U1"})
+        channel.identities()
+        assert [method for method, _t, _p in channel.calls] == ["auth.test"] * 3
+        assert {token for _m, token, _p in channel.calls} == set(TOKENS.values())
+
+    def test_an_unconfigured_speaker_is_skipped_rather_than_asked(self):
+        channel = RecordingSlack("C123", tokens={"dev": "xoxp-dev"}, reply={"ok": True})
+        channel.identities()
+        assert [token for _m, token, _p in channel.calls] == ["xoxp-dev"]
+
+    def test_a_refused_auth_test_drops_that_speaker_not_the_mapping(self):
+        channel = RecordingSlack("C123", tokens=TOKENS, reply={"ok": False, "error": "invalid"})
+        assert channel.identities() == {}
+
+    def test_the_null_channel_maps_nothing(self):
+        assert hc.NullChannel("why").identities() == {}
+
+    def test_turns_are_relabelled_by_role_where_the_account_is_known(self):
+        turns = [
+            hc.Turn("U1", "a", account="U1"),
+            hc.Turn("U2", "b", account="U2"),
+            hc.Turn("U9", "c", account="U9"),
+        ]
+        labelled = hc.label_turns(turns, {"U1": "dev", "U2": "review"})
+        assert [t.speaker for t in labelled] == ["dev", "review", "U9"]
+
+    def test_the_account_is_what_is_matched_not_the_display_name(self):
+        """Slack sometimes attaches a `username` and sometimes does not, and
+        the id is the only field that answers "which of our three agents is
+        this". Keying on the label would work on one shape and quietly fail
+        on the other -- a monologue wearing three names, again."""
+        parsed = hc.parse_replies(
+            {"messages": [{"user": "U1", "username": "SSC Developer Agent", "text": "a point"}]}
+        )
+        assert hc.label_turns(parsed, {"U1": "dev"})[0].speaker == "dev"
+
+    def test_a_message_with_no_account_still_parses_with_its_display_name(self):
+        parsed = hc.parse_replies({"messages": [{"username": "a-bot", "text": "hello"}]})
+        assert (parsed[0].speaker, parsed[0].account) == ("a-bot", "")
+
+    def test_an_unknown_speaker_keeps_its_label_rather_than_being_dropped(self):
+        """A human in the thread is the message most worth keeping, and this
+        run holds no token for them."""
+        kept = hc.label_turns([hc.Turn("U9", "the owner", account="U9")], {"U1": "dev"})
+        assert (kept[0].speaker, kept[0].text) == ("U9", "the owner")
+
+    def test_relabelling_preserves_the_text_and_timestamp(self):
+        labelled = hc.label_turns([hc.Turn("U1", "my position", "1.2", "U1")], {"U1": "dev"})
+        assert (labelled[0].text, labelled[0].ts) == ("my position", "1.2")
+
+    def test_no_identities_is_a_no_op_rather_than_a_rebuild(self):
+        turns = [hc.Turn("U1", "a", account="U1")]
+        assert hc.label_turns(turns, {}) is turns
+
 
 class TestTheWorkflowCLI:
     """`_main` is the only caller the workflow has, and it had no coverage.
@@ -294,6 +366,39 @@ class TestTheWorkflowCLI:
         )
         assert hc._main(["read", "ts-1"]) == 0
         assert "my position" in capsys.readouterr().out
+
+    def test_an_empty_thread_prints_nothing_at_all(self, unconfigured, capsys):
+        """Not `render_transcript([])`'s placeholder. The caller is the shell
+        step deciding whether the PR archive gets a "read back from Slack"
+        section, and an empty stdout is how it learns there is none -- the
+        placeholder would announce an empty thread on every huddle that ran
+        with Slack unconfigured."""
+        assert hc._main(["read", "ts-1"]) == 0
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_read_labels_the_turns_by_role_when_the_channel_can(self, monkeypatch, capsys):
+        channel = type(
+            "C",
+            (),
+            {
+                "read": lambda _s, _t: [hc.Turn("U1", "my position", account="U1")],
+                "identities": lambda _s: {"U1": "dev"},
+            },
+        )()
+        monkeypatch.setattr(hc, "get_channel", lambda: channel)
+        assert hc._main(["read", "ts-1"]) == 0
+        assert "**dev:**" in capsys.readouterr().out
+
+    def test_read_still_works_for_a_channel_without_identities(self, monkeypatch, capsys):
+        """`identities` is optional, so a transport that never grew one must
+        still archive its thread rather than crash the step."""
+        monkeypatch.setattr(
+            hc,
+            "get_channel",
+            lambda: type("C", (), {"read": lambda _s, _t: [hc.Turn("someone", "a point")]})(),
+        )
+        assert hc._main(["read", "ts-1"]) == 0
+        assert "**someone:**" in capsys.readouterr().out
 
     @pytest.mark.parametrize("argv", [[], ["sing"]])
     def test_a_usage_error_is_a_nonzero_exit(self, argv, unconfigured):

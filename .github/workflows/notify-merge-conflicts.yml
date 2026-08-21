@@ -155,9 +155,11 @@ jobs:
       # In Progress and reassigns the developer agent.
       GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
       # Slack DM secrets for the owner-decision escalation path only; absent
-      # secrets degrade to comment-only (notify_human_escalation).
+      # secrets degrade to comment-only (notify_human_escalation). #3911 signs
+      # that DM as the review agent (role set by the called script).
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -209,6 +211,14 @@ jobs:
       # per conflicted PR — the notification-fatigue half of this issue.
       # A failed route step leaves the output empty, which is not 'noop', so
       # breakage still gets announced.
+      # #3911: the channel is configuration, not a literal. It is deliberately
+      # NOT `SLACK_HUDDLE_CHANNEL` -- that is `#nyxagent-dev`, where the huddle
+      # deliberates, and conflict notices must be able to move somewhere else
+      # without another edit to this file. The old id stays only as the
+      # fallback, so that setting the variable is what changes behavior and
+      # not setting it changes nothing; drop the fallback once
+      # `vars.SLACK_CONFLICT_CHANNEL` is set, because an unset variable with
+      # no fallback posts to channel "" and Slack simply swallows the notice.
       - name: Send Slack notification
         if: always() && steps.route.outcome != 'skipped' && steps.route.outputs.action != 'noop'
         continue-on-error: true
@@ -218,7 +228,7 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
-              "channel": "C0AANK4KDM0",
+              "channel": "${{ vars.SLACK_CONFLICT_CHANNEL || 'C0AANK4KDM0' }}",
               "text": "⚠️ Merge Conflict Detected in PR #${{ matrix.pr.number }}",
               "blocks": [
                 {

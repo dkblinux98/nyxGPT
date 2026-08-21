@@ -49,6 +49,12 @@ jobs:
       # notify_human_escalation, scripts/agents/lib/gh_project.sh).
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      # #3911: sign the DM as the agent that raised it. Every escalation in
+      # this workflow is the review agent's (the 3-cycle breaker, the handoff
+      # backstop), so the role is fixed at the job. An absent user token falls
+      # back to SLACK_BOT_TOKEN -- attribution never costs a notification.
+      AGENT_ROLE: review
+      SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
 
     steps:
       - name: Checkout

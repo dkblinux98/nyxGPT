@@ -34,6 +34,11 @@ set -uo pipefail
 #   TAP_REPO / TAP_TOKEN  remote Homebrew tap, for the rc retirement
 #   SLACK_BOT_TOKEN / SLACK_USER_ID   owner DM channel (#3695)
 
+# Who any Slack escalation from this script is from (#3911): the ceremony
+# watch runs as SCRUMMASTER_AGENT_TOKEN and reports on the release tracking
+# issue.
+export AGENT_ROLE="${AGENT_ROLE:-scrum}"
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 # shellcheck source=lib/gh_project.sh

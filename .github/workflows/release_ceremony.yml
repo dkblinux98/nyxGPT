@@ -59,9 +59,12 @@ jobs:
       NYXGPT_CEREMONY_PAT: ${{ secrets.RELEASE_CEREMONY_TOKEN }}
       TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      # Owner DM channel for a ceremony failure (#3695).
+      # Owner DM channel for a ceremony failure (#3695), signed by the
+      # scrummaster agent that runs the ceremony (#3911 -- the role itself is
+      # set by release_ceremony_watch.sh).
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

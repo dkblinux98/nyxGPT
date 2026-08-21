@@ -42,6 +42,11 @@ set -euo pipefail
 # Always prints one machine-readable result line on stdout:
 #   conflict-resolution: <action> pr=<n> issue=<n> reason=<text>
 
+# Who any Slack escalation from this script is from (#3911): routing a
+# conflicted PR is the review agent's job, and both workflows that call this
+# already run as REVIEW_AGENT_TOKEN.
+export AGENT_ROLE="${AGENT_ROLE:-review}"
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/gh_project.sh
 source "$DIR/lib/gh_project.sh"

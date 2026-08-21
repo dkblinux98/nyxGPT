@@ -49,3 +49,97 @@ jobs:
           SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
           SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
         run: python3 scripts/slack-huddle-smoke.py
+
+  # The job above proves the four adapter *operations*. This one proves the
+  # thing that consumes them: `huddle_session.yml`'s own shell, executed with
+  # the same real credentials (#3911).
+  #
+  # It lives here rather than in `huddle-session-smoke.yml` for two reasons.
+  # It has the same cost shape as the job above -- each run leaves a thread in
+  # a channel where `chat:delete` is deliberately ungranted -- so it must be
+  # dispatch-only, and `huddle-session-smoke.yml` runs on push. And it needs
+  # the same three secrets, next to the job that documents why they exist.
+  #
+  # What it still does not cover, and cannot cheaply: the six model turns
+  # (canned prose here -- seven claude-code-action invocations per run) and
+  # `huddle_decision_dispatch.yml` actually firing, which needs a real
+  # decision comment on a real PR and so would start a real fix cycle. The
+  # dispatch gate's author requirement is pinned instead by
+  # `test_huddle_session.py::TestTheDecisionCanActuallyDispatch`.
+  session:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || vars.RELEASE_BRANCH }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The probe reads the workflow file to extract the real `run:` bodies;
+      # that is the one thing it needs beyond the stdlib.
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Run the real session bodies against the live channel
+        env:
+          SLACK_HUDDLE_CHANNEL: ${{ vars.SLACK_HUDDLE_CHANNEL }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: python3 scripts/agents/lib/huddle_session_probe.py --live
+
+      # Fault injection, the `macos-brew-smoke.yml` template: plant the two
+      # pre-fix bodies and require the live assertions above to reject them.
+      # Neither can be falsified offline -- with no thread there is nothing to
+      # read back and nowhere to announce a failure, so both would have passed
+      # a hermetic probe forever, which is how they went unnoticed.
+      - name: The live probe rejects the pre-fix bodies
+        env:
+          SLACK_HUDDLE_CHANNEL: ${{ vars.SLACK_HUDDLE_CHANNEL }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: python3 scripts/agents/lib/huddle_session_probe.py --live --prove-it-fails
+
+  # The two jobs above cover the huddle: a *channel*, three identities, one
+  # thread. This one covers the other place #3910's tokens are now spent --
+  # the owner's escalation DM (#3911).
+  #
+  # It answers a question about the workspace that no stub can: may an agent's
+  # user token open a DM with the owner at all? `notify_human_escalation`
+  # swallows every Slack failure by design (#3695), and now falls back to the
+  # shared bot on top of that, so a token Slack refuses would leave the
+  # attribution silently dead and every unit test green -- the same shape as
+  # the #3974 defect that reopened this issue.
+  #
+  # Dispatch-only for the same reason as its siblings, and a sharper one: each
+  # run DMs the owner for real. Three messages on demand is the cost of
+  # knowing; three on every push is an escalation channel nobody reads.
+  escalation-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || vars.RELEASE_BRANCH }}
+
+      # No SLACK_BOT_TOKEN in this step's environment, deliberately: with a
+      # fallback available, a refused agent token still delivers and the job
+      # would pass on the bot's work. The absence is the assertion.
+      - name: Each agent DMs the owner under its own identity
+        env:
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: bash scripts/slack-escalation-smoke.sh
+
+      # The other half: a fallback nothing exercises is a fallback nobody
+      # knows is broken. An invalid agent token must still reach the owner,
+      # via the bot, and the record must say so.
+      - name: A refused identity still reaches the owner, via the bot
+        env:
+          SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: bash scripts/slack-escalation-smoke.sh --prove-it-fails

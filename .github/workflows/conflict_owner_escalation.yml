@@ -69,6 +69,9 @@ jobs:
       GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      # #3911: the conflict escalation is the review agent's, and says so in
+      # the DM's sender (role set by dispatch_conflict_resolution.sh).
+      SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
 
     steps:
       - name: Checkout

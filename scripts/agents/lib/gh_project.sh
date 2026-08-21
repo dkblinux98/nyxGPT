@@ -1911,6 +1911,78 @@ print((datetime.datetime.utcnow() - datetime.timedelta(minutes=int(sys.argv[1]))
     | grep -q true
 }
 
+# -------------------------
+# Attributing the DM to the agent that raised it (#3911)
+# -------------------------
+# Until #3910 there was one Slack identity in this repo, so every escalation
+# arrived from the same bot and the owner had to read the body to learn which
+# agent was stuck. #3910 filed one *user* token per agent; this is where they
+# are spent outside the huddle: a DM raised by the developer agent is posted
+# with SLACK_USER_TOKEN_DEV and therefore reads as coming from the developer
+# agent.
+#
+# The role is taken from `AGENT_ROLE` and from nothing else. It is deliberately
+# never inferred: workflow names in this repo are not uniform ("Notify Merge
+# Conflicts", "Claude Code Review"), and a wrong guess signs an escalation with
+# the wrong agent's name -- worse than the unattributed bot DM it replaces.
+# Role-owned scripts set it themselves (`AGENT_ROLE="${AGENT_ROLE:-review}"`),
+# so a script keeps its attribution whichever workflow runs it, and a workflow
+# can still override for an inline call.
+#
+# Unset, unrecognized, or configured-without-a-token all fall back to
+# SLACK_BOT_TOKEN, i.e. exactly the pre-#3911 behavior. Attribution is a
+# readability improvement layered on top of #3695's contract, never a new
+# reason for an escalation not to reach the owner.
+
+# `AGENT_ROLE` normalized to dev|review|scrum, or "" when it names none of them.
+_escalation_role() {
+  case "$(printf '%s' "${AGENT_ROLE:-}" | tr '[:upper:]' '[:lower:]')" in
+    dev | developer | developer-agent) printf 'dev' ;;
+    review | reviewer | review-agent) printf 'review' ;;
+    scrum | scrummaster | scrummaster-agent) printf 'scrum' ;;
+    *) printf '' ;;
+  esac
+}
+
+# The Slack user token `role` speaks with; "" if unknown or unconfigured.
+# The variable names are the same three `huddle_channel.py` reads
+# (SPEAKER_TOKEN_ENV) -- one token per agent, one vocabulary for both users.
+_escalation_user_token() {
+  case "$1" in
+    dev) printf '%s' "${SLACK_USER_TOKEN_DEV:-}" ;;
+    review) printf '%s' "${SLACK_USER_TOKEN_REVIEW:-}" ;;
+    scrum) printf '%s' "${SLACK_USER_TOKEN_SCRUM:-}" ;;
+    *) printf '' ;;
+  esac
+}
+
+# The GitHub login of `role`, for the DM's "Raised by" line. Falls back to a
+# prose name so the line is still readable before config is loaded.
+_escalation_role_login() {
+  case "$1" in
+    dev) printf '%s' "${DEV_AGENT:-the developer agent}" ;;
+    review) printf '%s' "${REVIEW_AGENT:-the review agent}" ;;
+    scrum) printf '%s' "${SCRUM_AGENT:-the scrummaster agent}" ;;
+    *) printf '' ;;
+  esac
+}
+
+# POSTs `text` to `channel` as `token`. Echoes Slack's raw response and
+# returns 0 only on `ok: true`. Split out of notify_human_escalation so the
+# same call can be made twice with two identities (see below).
+_slack_dm_post() {
+  local token="$1" channel="$2" text="$3"
+  local payload response ok
+  payload="$(jq -n --arg channel "$channel" --arg text "$text" '{channel: $channel, text: $text}')"
+  response="$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    -d "$payload" 2>/dev/null)" || response=""
+  printf '%s' "$response"
+  ok="$(printf '%s' "$response" | jq -r '.ok // false' 2>/dev/null)"
+  [[ "$ok" == "true" ]]
+}
+
 # Sends a Slack DM to HUMAN_OWNER for a terminal agent outcome. Args:
 #   $1 issue      issue/PR number the escalation is about
 #   $2 state      short terminal-state label (e.g. "FATAL", "review-escalation")
@@ -1920,17 +1992,24 @@ print((datetime.datetime.utcnow() - datetime.timedelta(minutes=int(sys.argv[1]))
 #                 (default: "${issue}:${state}")
 #   $6 window_minutes  dedup window in minutes (default: 60)
 #
-# Absent SLACK_BOT_TOKEN/SLACK_USER_ID degrades gracefully to comment-only
-# behavior (no-op here; the caller's own GitHub comment already carries the
-# escalation). Always returns 0 -- see header comment above.
+# The DM is posted under the raising agent's own Slack identity when
+# `AGENT_ROLE` names one and that agent's user token is configured (#3911),
+# and under SLACK_BOT_TOKEN otherwise. Absent *both* tokens, or absent
+# SLACK_USER_ID, degrades gracefully to comment-only behavior (no-op here;
+# the caller's own GitHub comment already carries the escalation). Always
+# returns 0 -- see header comment above.
 notify_human_escalation() {
   local issue="$1" state="$2" diagnosis="$3" action="$4"
   local dedup_key="${5:-${issue}:${state}}"
   local window_minutes="${6:-60}"
   require_cmd jq
 
-  if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_USER_ID:-}" ]]; then
-    _warn "notify_human_escalation: SLACK_BOT_TOKEN/SLACK_USER_ID not configured -- skipping Slack DM (comment-only fallback stands)."
+  local role user_token
+  role="$(_escalation_role)"
+  user_token="$(_escalation_user_token "$role")"
+
+  if [[ -z "$user_token" && -z "${SLACK_BOT_TOKEN:-}" ]] || [[ -z "${SLACK_USER_ID:-}" ]]; then
+    _warn "notify_human_escalation: no Slack token (agent or bot) / SLACK_USER_ID not configured -- skipping Slack DM (comment-only fallback stands)."
     return 0
   fi
 
@@ -1939,26 +2018,56 @@ notify_human_escalation() {
     return 0
   fi
 
-  local issue_url text payload response ok
+  local issue_url text raised_by response sent_as
   issue_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/${issue}"
   text="$(printf ':rotating_light: *%s* on <%s|#%s>\n*Diagnosis:* %s\n*Recommended action:* %s' \
     "$state" "$issue_url" "$issue" "$diagnosis" "$action")"
-  payload="$(jq -n --arg channel "$SLACK_USER_ID" --arg text "$text" '{channel: $channel, text: $text}')"
+  # Name the raiser in the body as well as in the sender. The sender is the
+  # better signal but it is the one that can be lost -- to an unconfigured
+  # token, or to the bot fallback below -- and an escalation the owner cannot
+  # attribute is the thing this criterion is about.
+  raised_by="$(_escalation_role_login "$role")"
+  [[ -z "$raised_by" ]] || text="$(printf '%s\n*Raised by:* @%s' "$text" "$raised_by")"
 
-  response="$(curl -sS -X POST https://slack.com/api/chat.postMessage \
-    -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-    -H "Content-Type: application/json; charset=utf-8" \
-    -d "$payload" 2>/dev/null)" || response=""
-  ok="$(echo "$response" | jq -r '.ok // false' 2>/dev/null)"
+  # The agent identity first, the bot second. Both are tried before giving
+  # up, deliberately: a user token that this workspace will not let open a DM
+  # would otherwise turn a delivered escalation into a warned no-op -- trading
+  # the owner's notification for a nicer sender name, which is the wrong way
+  # round. #3695's guarantee outranks #3911's attribution.
+  sent_as=""
+  if [[ -n "$user_token" ]]; then
+    if response="$(_slack_dm_post "$user_token" "$SLACK_USER_ID" "$text")"; then
+      sent_as="$role"
+    else
+      # Name what happens next accurately: with no bot token configured there
+      # is no retry, and a log that promises one sends the reader looking for
+      # a second call that was never made.
+      local next="retrying as the bot"
+      [[ -n "${SLACK_BOT_TOKEN:-}" ]] || next="and there is no bot token to retry with"
+      _warn "notify_human_escalation: the ${role} agent's Slack identity could not send for issue #${issue} (response=${response:-<empty>}) -- ${next}."
+    fi
+  fi
 
-  if [[ "$ok" != "true" ]]; then
+  if [[ -z "$sent_as" && -n "${SLACK_BOT_TOKEN:-}" ]]; then
+    if response="$(_slack_dm_post "$SLACK_BOT_TOKEN" "$SLACK_USER_ID" "$text")"; then
+      sent_as="bot"
+    fi
+  fi
+
+  if [[ -z "$sent_as" ]]; then
     _warn "notify_human_escalation: Slack API call failed for issue #${issue} (response=${response:-<empty>}) -- falling back to comment-only."
     return 0
   fi
 
-  local marker
+  # Which identity actually sent it goes in the marker comment too: when the
+  # bot fallback fires, the GitHub record is the only place that says so.
+  local marker sender_note=""
+  case "$sent_as" in
+    bot) [[ -z "$raised_by" ]] || sender_note=" from the shared bot identity, on behalf of @${raised_by}" ;;
+    *) [[ -z "$raised_by" ]] || sender_note=" as @${raised_by}" ;;
+  esac
   marker="${_SLACK_NOTIFY_MARKER_PREFIX}${dedup_key} -->"
-  issue_comment "$issue" "$(printf ':envelope: Notified @%s via Slack DM (%s).\n\n%s' "${HUMAN_OWNER:-the human owner}" "$state" "$marker")" \
+  issue_comment "$issue" "$(printf ':envelope: Notified @%s via Slack DM%s (%s).\n\n%s' "${HUMAN_OWNER:-the human owner}" "$sender_note" "$state" "$marker")" \
     || _warn "notify_human_escalation: Slack DM sent but failed to post dedup marker comment on #${issue}."
 
   return 0

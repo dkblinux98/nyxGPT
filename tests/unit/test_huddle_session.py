@@ -20,8 +20,10 @@ refactor would quietly break:
   never ran;
 * the crash markers bracket the rounds, so a session that dies mid-round is
   recoverable;
-* the transcript is assembled from the turn files rather than read back from
-  Slack, so the record survives both a Slack outage and Slack retention.
+* the transcript's floor is the turn files rather than a read-back, so the
+  record survives both a Slack outage and Slack retention -- with the thread
+  read back on top of that floor, because the one thing the files cannot hold
+  is what somebody who is not a turn-writing agent said in the huddle.
 """
 
 from __future__ import annotations
@@ -146,23 +148,63 @@ class TestCrashSafety:
         assert failure_steps, "no failure() step -- a dead session would leave no record"
         assert "HUDDLE_FAILED" in str(failure_steps[0].get("run", ""))
 
+    def test_a_failed_session_also_says_so_in_the_thread(self):
+        """The criterion is that a dead session leaves no "half-written Slack
+        thread". A PR marker alone does not achieve that: the thread simply
+        stops, indistinguishable from a huddle still thinking, and the people
+        reading a huddle are reading it in Slack."""
+        run = next(
+            str(s.get("run", "")) for s in _steps() if str(s.get("if", "")).strip() == "failure()"
+        )
+        assert "huddle_channel.py post" in run
+
+    def test_the_failure_notice_cannot_swallow_the_pr_marker(self):
+        """This step runs because something already failed. A Slack post that
+        exited non-zero must not stop the marker that makes the run
+        recoverable."""
+        run = next(
+            str(s.get("run", "")) for s in _steps() if str(s.get("if", "")).strip() == "failure()"
+        )
+        assert run.count("|| true") >= 2, (
+            "both the thread notice and the PR marker must be best-effort; "
+            "one of them is load-bearing for recovery and neither may block the other"
+        )
+
 
 class TestTheRecordSurvivesSlack:
-    def test_the_transcript_is_assembled_from_the_turn_files(self):
-        """Not read back from Slack: a huddle that ran with the channel
-        unavailable still has to leave its reasoning on the PR."""
-        step = next(s for s in _steps() if "transcript" in str(s.get("name", "")).lower())
-        run = str(step.get("run", ""))
-        assert "HUDDLE_DIR" in run
-        assert "huddle_channel.py read" not in run
+    @staticmethod
+    def _transcript_step() -> dict:
+        return next(s for s in _steps() if "transcript" in str(s.get("name", "")).lower())
+
+    def test_the_turn_files_are_the_floor_of_the_transcript(self):
+        """A huddle that ran with the channel unavailable -- which is every
+        huddle that ran before 2026-08-20 -- still has to leave its reasoning
+        on the PR, so the archive is built from files written on this runner."""
+        assert "HUDDLE_DIR" in str(self._transcript_step().get("run", ""))
+
+    def test_the_thread_is_read_back_on_top_of_that_floor(self):
+        """The files hold what the three agents wrote. Only the thread holds
+        what anyone else said in the huddle -- the owner weighing in, a human
+        correcting a premise -- and that evaporates with Slack retention if
+        nothing archives it. It is also the session's only call to `read()`,
+        which mattered: the operation shipped broken (#3974) inside a workflow
+        that never called it, so nothing could have noticed."""
+        run = str(self._transcript_step().get("run", ""))
+        assert "huddle_channel.py read" in run
+        assert "THREAD_TS" in str(self._transcript_step().get("env", {}))
+
+    def test_a_slack_read_that_fails_costs_the_section_not_the_archive(self):
+        """`set -e` plus an unguarded read would let a Slack outage delete the
+        very record that exists because Slack cannot be relied on."""
+        run = str(self._transcript_step().get("run", ""))
+        read_line = next(line for line in run.splitlines() if "huddle_channel.py read" in line)
+        assert "|| true" in read_line
 
     def test_the_transcript_lands_collapsed_so_it_does_not_bury_the_thread(self):
-        step = next(s for s in _steps() if "transcript" in str(s.get("name", "")).lower())
-        assert "<details>" in str(step.get("run", ""))
+        assert "<details>" in str(self._transcript_step().get("run", ""))
 
     def test_the_transcript_is_written_even_when_a_turn_failed(self):
-        step = next(s for s in _steps() if "transcript" in str(s.get("name", "")).lower())
-        assert "cancelled()" in str(step.get("if", ""))
+        assert "cancelled()" in str(self._transcript_step().get("if", ""))
 
 
 class TestSlackIsOptional:
@@ -302,3 +344,31 @@ class TestExecutedVerification:
         smoke = WORKFLOWS / "huddle-session-smoke.yml"
         assert smoke.exists(), "nothing executes the session's shell control flow"
         assert "huddle_session" in smoke.read_text(encoding="utf-8")
+
+    def test_a_job_executes_them_against_the_live_channel_too(self):
+        """The smoke above runs with Slack switched off, which is the whole
+        reason #3911 was reopened: every huddle that had ever run took the
+        degradation path, so "the thread opens, the turns post under three
+        identities, the permalink lands on the PR" was an untested claim about
+        an operation that had in fact shipped broken (#3974)."""
+        live = WORKFLOWS / "slack-huddle-smoke.yml"
+        body = live.read_text(encoding="utf-8")
+        assert "huddle_session_probe.py --live" in body
+        for secret in ("SLACK_USER_TOKEN_DEV", "SLACK_USER_TOKEN_REVIEW", "SLACK_USER_TOKEN_SCRUM"):
+            assert secret in body, f"{secret} never reaches the live session job"
+
+    def test_the_live_job_proves_it_can_still_fail(self):
+        """A guard that cannot fail is not a guard, and these two behaviours
+        are the ones a hermetic probe structurally cannot falsify: with no
+        thread there is nothing to read back and nowhere to announce a
+        failure, so both would pass offline forever."""
+        body = (WORKFLOWS / "slack-huddle-smoke.yml").read_text(encoding="utf-8")
+        assert "--live --prove-it-fails" in body
+
+    def test_the_live_job_stays_dispatch_only(self):
+        """Each run leaves a thread in a channel where `chat:delete` is
+        deliberately ungranted (#3910), so running it on push would fill the
+        channel the huddle exists to be readable in."""
+        triggers = _load(WORKFLOWS / "slack-huddle-smoke.yml")
+        triggers = triggers["on"] if "on" in triggers else triggers[True]
+        assert set(triggers) == {"workflow_dispatch"}

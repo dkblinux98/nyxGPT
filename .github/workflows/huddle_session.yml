@@ -796,16 +796,44 @@ jobs:
 
       # The record has to survive Slack: retention is somebody else's setting,
       # and a decision whose reasoning is unreachable to a future session is
-      # exactly what agents/LEDGER.md exists to prevent. Assembled from the
-      # turn files, not read back from Slack, so it is complete even when the
-      # channel was unavailable for the whole huddle.
+      # exactly what agents/LEDGER.md exists to prevent.
+      #
+      # Two sources, and the order between them is the whole design:
+      #
+      #   * the **turn files** are the floor. They are written on this runner,
+      #     so the archive is complete even when the channel was unavailable
+      #     for the entire huddle -- which is exactly how every huddle ran
+      #     before the tokens existed, and why this step must never depend on
+      #     Slack answering.
+      #   * the **thread, read back**, is the part the files cannot hold:
+      #     anything said in the huddle by someone who is not one of the three
+      #     turn-writing agents -- the owner weighing in, a human correcting a
+      #     premise -- exists only in Slack, and evaporates with Slack's
+      #     retention. Adding it is the difference between archiving the
+      #     agents' essays and archiving the conversation.
+      #
+      # This is also the only call to `read()` on the session's live path.
+      # #3911 reopened partly because that operation had never been executed
+      # by anything but its own smoke: it was dead code inside the workflow
+      # that supposedly relied on it (it shipped broken, #3974, and the huddle
+      # could not have noticed).
       - name: Append the transcript to the PR
         if: "!cancelled()"
+        env:
+          THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           TURNS=("$HUDDLE_DIR"/[0-9][0-9]-*.md)
-          if [[ ${#TURNS[@]} -eq 0 ]]; then
+
+          # `|| true`: a Slack read that fails must cost the extra section,
+          # never the archive. Its warnings go to the runner log as usual.
+          THREAD_MD=""
+          if [[ -n "${THREAD_TS:-}" ]]; then
+            THREAD_MD=$(python3 scripts/agents/lib/huddle_channel.py read "$THREAD_TS" || true)
+          fi
+
+          if [[ ${#TURNS[@]} -eq 0 && -z "$THREAD_MD" ]]; then
             echo "::notice::no huddle turns were written -- nothing to transcribe"
             exit 0
           fi
@@ -816,6 +844,10 @@ jobs:
               cat "$turn"
               printf '\n\n'
             done
+            if [[ -n "$THREAD_MD" ]]; then
+              printf '### The huddle thread, as it was read back from Slack\n\n'
+              printf '%s\n\n' "$THREAD_MD"
+            fi
             printf '</details>\n\n<!-- nyxgpt-token-mention -->\n'
           } > "$HUDDLE_DIR/transcript.md"
           gh pr comment "$PR_NUMBER" --body-file "$HUDDLE_DIR/transcript.md"
@@ -828,6 +860,20 @@ jobs:
           # and `thread=` with nothing after it reads as a truncated marker.
           THREAD_TS: ${{ steps.thread.outputs.ts }}
         run: |
+          # The thread is told first, and it is told at all because of what
+          # the acceptance criterion actually asks for: a session that dies
+          # mid-round must not leave "a half-written Slack thread". The PR
+          # marker alone does not achieve that -- it makes the failure
+          # recoverable for anyone reading the *PR*, while the thread itself
+          # just stops, indistinguishable from a huddle still thinking. The
+          # people reading a huddle are reading it in Slack.
+          #
+          # No `set -e` here on purpose (unchanged): this step runs *because*
+          # something already failed, and each notice is best-effort.
+          if [[ -n "${THREAD_TS:-}" ]]; then
+            python3 scripts/agents/lib/huddle_channel.py post "$THREAD_TS" scrum \
+              ":warning: This huddle session failed part-way through (run ${GITHUB_RUN_ID}). Nothing further will be posted here; the PR carries a HUDDLE_FAILED marker." || true
+          fi
           gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s\n%s' \
             ':warning: **Review huddle**: the session failed part-way through. The transcript above (if any) is what was written before it stopped.' \
             "<!-- HUDDLE_FAILED thread=${THREAD_TS:-none} run=${GITHUB_RUN_ID} -->" \

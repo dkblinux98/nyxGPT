@@ -33,6 +33,19 @@ down its NullChannel path.
 Exits 0 when every case holds, 1 on the first failure, with the step's own
 output attached -- run it from anywhere: `python3
 scripts/agents/lib/huddle_session_probe.py`.
+
+**`--live` is the other half, and #3911 was reopened for its absence.** The
+default mode above proves the session survives an *unconfigured* Slack: it is
+the degradation path, end to end, and no huddle had ever run any other way,
+because no Slack user token existed until 2026-08-20. So every claim about
+"the thread opens, the turns post under three identities, the permalink lands
+on the PR" rested on a path nothing had executed -- and one of its operations
+(`read`, and `permalink` with it) turned out to have shipped broken (#3974).
+`--live` runs the same real step bodies with the real channel and the three
+real user tokens, and inverts the degradation contract the way
+`scripts/slack-huddle-smoke.py` does for the adapter: here a warned no-op is a
+failure, because here the feature is what is under test. `gh` stays a shim --
+proving the huddle needs Slack to be real, not GitHub.
 """
 
 from __future__ import annotations
@@ -56,6 +69,11 @@ FAILURES: list[str] = []
 #: that cannot fail is not a guard (the `github-script-injection-smoke.yml`
 #: template).
 _UNDER_TEST = {"session": DEFAULT_SESSION}
+
+#: `--live`: hand the step bodies the ambient Slack credentials instead of
+#: blanking them. Off by default so the ordinary run stays hermetic and posts
+#: nothing to anybody's channel.
+_LIVE = {"on": False}
 
 
 def session() -> Path:
@@ -129,16 +147,25 @@ def run_step(body: str, workdir: Path, env: dict[str, str]) -> StepRun:
     bindir.mkdir(exist_ok=True)
     _gh_shim(bindir, spool)
 
+    # Off `--live`, Slack is blanked so huddle_channel.py takes its
+    # NullChannel path for real; on `--live` the ambient credentials are left
+    # exactly as the runner would hand them to the huddle.
+    slack = (
+        {}
+        if _LIVE["on"]
+        else {
+            "SLACK_HUDDLE_CHANNEL": "",
+            "SLACK_USER_TOKEN_DEV": "",
+            "SLACK_USER_TOKEN_REVIEW": "",
+            "SLACK_USER_TOKEN_SCRUM": "",
+        }
+    )
     full = {
         **os.environ,
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "GITHUB_OUTPUT": str(outputs),
         "GITHUB_RUN_ID": "42424242",
-        # No Slack: huddle_channel.py takes its NullChannel path for real.
-        "SLACK_HUDDLE_CHANNEL": "",
-        "SLACK_USER_TOKEN_DEV": "",
-        "SLACK_USER_TOKEN_REVIEW": "",
-        "SLACK_USER_TOKEN_SCRUM": "",
+        **slack,
         **env,
     }
     proc = subprocess.run(  # noqa: S603
@@ -380,6 +407,150 @@ def case_slack_being_down_does_not_stop_the_huddle(work: Path) -> None:
     check("a turn that wrote no file does not fail the run", missing.code == 0, missing.log)
 
 
+# -- the live case -----------------------------------------------------------
+#
+# Everything above runs with Slack switched off. This one runs the same real
+# step bodies with the real channel and the three real user tokens, which is
+# what #3911's reopening asked for and what nothing had ever done.
+#
+# The turn *prose* is canned rather than model-generated, and that is the one
+# deliberate substitution: seven `claude-code-action` invocations would make
+# this too expensive to run on demand, and the model's essay is the only part
+# of a huddle that is not this workflow's own behaviour. Everything downstream
+# of the model -- the thread, the identities, the permalink, the decision
+# comment, the archive, the crash markers -- is executed exactly as shipped.
+
+LIVE_ROUNDS = (
+    ("01-dev.md", "dev", "## Developer Position (round 1)\n\nThe diagnosis, round 1.\n"),
+    ("02-review.md", "review", "## Review Position (round 1)\n\nThe finding stands.\n"),
+    ("03-dev.md", "dev", "## Developer Position (round 2)\n\nThe diagnosis, round 2.\n"),
+    ("04-review.md", "review", "## Review Position (round 2)\n\nStill unconvinced.\n"),
+    ("05-dev.md", "dev", "## Developer Position (round 3)\n\nThe diagnosis, round 3.\n"),
+    ("06-review.md", "review", "## Review Position (round 3)\n\nStill unconvinced.\n"),
+)
+
+LIVE_DECISION = (
+    "## Huddle Decision\n\n**Decision:** proceed\n\n### Rationale\n"
+    "the position answers the finding; recorded by the live session probe.\n\n"
+    "### What happens next\nthe developer continues as-is.\n\n"
+    "HUDDLE_DECISION: proceed\n"
+)
+
+
+def _adapter():
+    """Import the adapter the way the workflow's steps do."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import huddle_channel  # noqa: PLC0415
+
+    return huddle_channel
+
+
+def case_the_session_runs_against_real_slack(work: Path) -> int:
+    """The whole Slack-touching session, executed with real credentials."""
+    hc = _adapter()
+    channel = hc.get_channel()
+    if isinstance(channel, hc.NullChannel):
+        print(
+            "::error::the channel degraded to NullChannel -- SLACK_HUDDLE_CHANNEL or the "
+            "SLACK_USER_TOKEN_* secrets did not reach this job. That is the exact state "
+            "#3911 closed in, and the state this mode exists to refuse."
+        )
+        return 1
+
+    huddle = work / "live"
+    huddle.mkdir()
+    base = {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3911"}
+
+    print("\n[L1] the thread opens for real")
+    opened = run_step(
+        step_body(name_contains="Open the huddle thread"),
+        work,
+        {**base, "REASON": "live session probe (#3911)", "ISSUE_NUMBER": "3911"},
+    )
+    thread = opened.output.get("ts", "")
+    check("opening the thread succeeds", opened.code == 0, opened.log)
+    check("it returns a real thread id", bool(thread), str(opened.output) + "\n" + opened.log)
+    check("and does not warn about a missing channel", "::warning::" not in opened.log, opened.log)
+    if not thread:
+        return 1  # nothing below can mean anything without a thread
+    env = {**base, "THREAD_TS": thread}
+
+    print("\n[L2] the started marker names the real thread, before any turn")
+    started = run_step(step_body(name_contains="Record that the session started"), work, env)
+    check(f"HUDDLE_SESSION_STARTED thread={thread}", f"thread={thread}" in started.gh_body)
+
+    print("\n[L3] every turn is delivered, each under its own identity")
+    for filename, _speaker, text in LIVE_ROUNDS:
+        _turn(huddle, filename, text)
+    for round_no in (1, 2, 3):
+        for role in ("dev", "review"):
+            posted = run_step(
+                step_body(name_contains=f"Round {round_no} - post the {role} turn"), work, env
+            )
+            check(f"round {round_no} {role} turn posts", posted.code == 0, posted.log)
+            # The step exits 0 either way -- that is #3910's degradation
+            # contract, and it is exactly why a broken huddle looked like a
+            # quiet one for two months. Here a warning is the failure.
+            check(
+                f"round {round_no} {role} turn actually reached Slack",
+                "[huddle-channel]" not in posted.log,
+                posted.log,
+            )
+
+    print("\n[L4] nobody settles, so the huddle runs to the cap and stops")
+    already = "false"
+    for step_id in ("settle1", "settle2", "settle3"):
+        result = run_step(step_body(step_id=step_id), work, {**env, "ALREADY": already})
+        check(f"{step_id} reports unsettled", result.output.get("settled") == "false", result.log)
+        already = result.output.get("settled", "")
+    check(
+        "there is no round 4",
+        not any(
+            "Round 4" in str(s.get("name", ""))
+            for s in huddle_steps()
+            if "claude-code-action" in str(s.get("uses", ""))
+        ),
+    )
+
+    print("\n[L5] the decision reaches the PR with a working thread link")
+    _turn(huddle, "90-decision.md", LIVE_DECISION)
+    decided = run_step(step_body(name_contains="Post the decision"), work, env)
+    body = decided.gh_body
+    check("the step succeeds", decided.code == 0, decided.log)
+    check("the dispatch line lands", "HUDDLE_DECISION: proceed" in body, body)
+    check("the rationale lands with it", "answers the finding" in body, body)
+    # The operation that had never worked. An empty permalink used to leave
+    # the PR with the decision and no way back to the reasoning.
+    check(
+        "a real Slack permalink lands with it",
+        "[Huddle thread](https://" in body,
+        body,
+    )
+
+    print("\n[L6] the archive is populated, and holds what the files cannot")
+    archived = run_step(step_body(name_contains="Append the transcript"), work, env)
+    body = archived.gh_body
+    check("the step succeeds", archived.code == 0, archived.log)
+    check("it is collapsed", "<details>" in body and "</details>" in body, body)
+    check("it counts every turn", "(7 turns)" in body, body)
+    check("the turn files are in it", "The diagnosis, round 1." in body, body)
+    check("the decision is in it", "HUDDLE_DECISION: proceed" in body, body)
+    check("the thread was read back", "read back from Slack" in body, body)
+    # `read()` shipped broken (#3974) and the session did not call it, so an
+    # empty section would have looked exactly like a healthy one.
+    check("the read-back is not empty", "No huddle turns were recorded" not in body, body)
+    for role in ("dev", "review", "scrum"):
+        check(f"the read-back names {role} by role, not by user id", f"**{role}:**" in body, body)
+
+    print("\n[L7] a session that dies says so in both places")
+    failed = run_step(step_body(name_contains="Record a failed session"), work, env)
+    check(f"HUDDLE_FAILED thread={thread}", f"HUDDLE_FAILED thread={thread}" in failed.gh_body)
+    check("it did not degrade to none", "thread=none" not in failed.gh_body, failed.gh_body)
+    tail = hc.render_transcript(channel.read(thread))
+    check("the thread itself was told it died", "failed part-way through" in tail, tail[-800:])
+    return 0
+
+
 # -- proving the probe can fail ----------------------------------------------
 #
 # The shipped settle body and the pre-fix one it replaced, verbatim from the
@@ -393,6 +564,23 @@ _SETTLE_SHIPPED = (
     '          elif [[ -s "$FILE" ]] && grep -qx \'HUDDLE_SETTLED\' "$FILE"; then\n'
 )
 _SETTLE_PREFIX = '          if [[ -s "$FILE" ]] && grep -qx \'HUDDLE_SETTLED\' "$FILE"; then\n'
+
+#: The same treatment for the two bodies #3911's reopening added, planted by
+#: `--live --prove-it-fails`. Neither can be falsified hermetically: without a
+#: real thread the read-back is empty and the failure notice has nowhere to
+#: go, which is precisely how they went unnoticed in the first place.
+_READBACK_SHIPPED = (
+    "            THREAD_MD=$(python3 scripts/agents/lib/huddle_channel.py read"
+    ' "$THREAD_TS" || true)\n'
+)
+_READBACK_PREFIX = '            THREAD_MD=""  # planted: the session never read the thread\n'
+_THREAD_NOTICE_SHIPPED = (
+    '            python3 scripts/agents/lib/huddle_channel.py post "$THREAD_TS" scrum \\\n'
+    '              ":warning: This huddle session failed part-way through (run'
+    " ${GITHUB_RUN_ID}). Nothing further will be posted here; the PR carries a"
+    ' HUDDLE_FAILED marker." || true\n'
+)
+_THREAD_NOTICE_PREFIX = "            : # planted: only the PR was told the session died\n"
 
 
 def prove_it_fails() -> int:
@@ -421,8 +609,83 @@ def prove_it_fails() -> int:
     return 0
 
 
+def prove_the_live_fix_was_needed(work: Path) -> int:
+    """Plant the pre-#3911-reopen bodies and require the live case to reject them.
+
+    The two behaviours this fix added are exactly the two a hermetic probe
+    cannot see: with no thread there is nothing to read back and nowhere to
+    announce a failure, so both would have passed every offline assertion
+    forever. Which is the reopening's whole point -- so the falsification runs
+    live too, on a deliberately small thread: one turn is enough for a
+    read-back to be non-empty, and one failure step is enough for the notice
+    to be present or absent.
+    """
+    source = session().read_text(encoding="utf-8")
+    for shipped, what in ((_READBACK_SHIPPED, "read-back"), (_THREAD_NOTICE_SHIPPED, "notice")):
+        if shipped not in source:
+            print(f"::error::the {what} body no longer matches the shape this injection plants.")
+            print("::error::Update the constants so the live probe stays falsifiable.")
+            return 1
+
+    hc = _adapter()
+    channel = hc.get_channel()
+    if isinstance(channel, hc.NullChannel):
+        print("::error::--live --prove-it-fails needs the real channel, same as --live")
+        return 1
+
+    planted = work / "planted-huddle_session.yml"
+    planted.write_text(
+        source.replace(_READBACK_SHIPPED, _READBACK_PREFIX).replace(
+            _THREAD_NOTICE_SHIPPED, _THREAD_NOTICE_PREFIX
+        ),
+        encoding="utf-8",
+    )
+
+    huddle = work / "planted"
+    huddle.mkdir()
+    _turn(huddle, "01-dev.md", "## Developer Position (round 1)\n\nA planted turn.\n")
+    base = {"HUDDLE_DIR": str(huddle), "PR_NUMBER": "3911"}
+
+    print("Opening a thread with the shipped bodies, then planting the pre-fix ones")
+    opened = run_step(
+        step_body(name_contains="Open the huddle thread"),
+        work,
+        {**base, "REASON": "live falsification (#3911)", "ISSUE_NUMBER": "3911"},
+    )
+    thread = opened.output.get("ts", "")
+    if not thread:
+        print("::error::could not open a thread to falsify against")
+        return 1
+    run_step(
+        step_body(name_contains="Round 1 - post the dev turn"), work, {**base, "THREAD_TS": thread}
+    )
+
+    _UNDER_TEST["session"] = planted
+    env = {**base, "THREAD_TS": thread}
+    FAILURES.clear()
+
+    archived = run_step(step_body(name_contains="Append the transcript"), work, env)
+    check("the pre-fix archive read the thread back", "read back from Slack" in archived.gh_body)
+
+    run_step(step_body(name_contains="Record a failed session"), work, env)
+    tail = hc.render_transcript(channel.read(thread))
+    check("the pre-fix failure told the thread", "failed part-way through" in tail)
+
+    caught = list(FAILURES)
+    FAILURES.clear()
+    if len(caught) != 2:
+        print(
+            "::error::the live probe accepted a session that neither archives the thread "
+            f"nor announces its own death in it ({len(caught)}/2 assertions fired)"
+        )
+        return 1
+    print(f"\nLive probe correctly rejected the pre-fix bodies ({len(caught)} assertions fired).")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     prove = "--prove-it-fails" in argv
+    _LIVE["on"] = "--live" in argv
     paths = [a for a in argv if not a.startswith("-")]
     if paths:
         _UNDER_TEST["session"] = Path(paths[0]).resolve()
@@ -434,7 +697,24 @@ def main(argv: list[str]) -> int:
         return 1
 
     if prove:
+        if _LIVE["on"]:
+            with tempfile.TemporaryDirectory() as tmp:
+                return prove_the_live_fix_was_needed(Path(tmp))
         return prove_it_fails()
+
+    if _LIVE["on"]:
+        print(f"Executing {session()}'s shell bodies against the LIVE Slack channel")
+        with tempfile.TemporaryDirectory() as tmp:
+            fatal = case_the_session_runs_against_real_slack(Path(tmp))
+        if fatal and not FAILURES:
+            return 1  # it already said why, and nothing below it could run
+        if fatal or FAILURES:
+            print(f"\n::error::{len(FAILURES)} live huddle session behaviour(s) did not hold:")
+            for label in FAILURES:
+                print(f"::error::  {label}")
+            return 1
+        print("\nEvery live huddle session behaviour held.")
+        return 0
 
     print(f"Executing {session()}'s shell bodies")
     with tempfile.TemporaryDirectory() as tmp:

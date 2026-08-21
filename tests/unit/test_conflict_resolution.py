@@ -359,6 +359,36 @@ class TestNoOwnerAssignmentOnTheRoutinePath:
         assert "assign_issue_verified" not in conflict_block
 
 
+class TestTheConflictChannelIsConfiguration:
+    """#3911: the notification channel is a repo variable, not a literal.
+
+    It was `"channel": "C0AANK4KDM0"` in the workflow body, so moving conflict
+    notices anywhere else meant a code change, a PR and a review. It is also
+    deliberately *not* `SLACK_HUDDLE_CHANNEL`: that is `#nyxagent-dev`, where
+    the huddle deliberates, and the two audiences have to be able to diverge
+    without another round of edits. Pinning both halves here because a later
+    "tidy-up" collapsing them onto one variable would look like a
+    simplification and would quietly move every conflict notice into the
+    huddle's reading channel.
+    """
+
+    def _workflow(self) -> str:
+        return (REPO_ROOT / ".github" / "workflows" / "notify-merge-conflicts.yml").read_text()
+
+    def test_the_channel_comes_from_a_repo_variable(self):
+        workflow = self._workflow()
+        assert "vars.SLACK_CONFLICT_CHANNEL" in workflow
+        # The old id survives only as the `||` fallback, so that setting the
+        # variable is what changes behaviour and not setting it changes
+        # nothing. It must not still be the value the payload names outright.
+        assert '"channel": "C0AANK4KDM0"' not in workflow
+
+    def test_it_is_not_the_huddle_channel(self):
+        # The *use*, not the name: the workflow's comment explains why the two
+        # are kept apart, and that comment is the thing a future reader needs.
+        assert "vars.SLACK_HUDDLE_CHANNEL" not in self._workflow()
+
+
 class TestDispatcherShellBehaviour:
     """Runs `tests/test_conflict_resolution_dispatch.sh` (stubbed `gh`, no
     network) under pytest, so `pytest -v` exercises the shell that actually

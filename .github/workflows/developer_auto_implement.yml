@@ -2827,6 +2827,13 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+          # #3911: the DM is signed by the agent that raised it. This step's
+          # escalations are all the developer agent's own terminal outcomes
+          # (FATAL, requires-merge, retry-budget exhausted), so it speaks with
+          # the developer identity #3910 filed. Both are optional -- an absent
+          # token falls back to SLACK_BOT_TOKEN, never to no DM.
+          AGENT_ROLE: dev
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
           STATE_FATAL: ${{ steps.escalate_fatal.outputs.developer_escalated }}
           STATE_REQUIRES_MERGE: ${{ steps.escalate_requires_merge.outputs.developer_escalated }}
           STATE_RETRY_EXHAUSTED: ${{ steps.auto_retry.outputs.escalated }}

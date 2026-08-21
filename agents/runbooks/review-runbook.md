@@ -641,9 +641,14 @@ The review workflow tracks cumulative review cycles:
   - Issue remains Status -> In Review
   - Issue reassigned to HUMAN_OWNER
   - Slack DM sent to human (`notify_human_escalation`,
-    `scripts/agents/lib/gh_project.sh`, #3695 -- reuses the existing
-    `SLACK_BOT_TOKEN` + `SLACK_USER_ID` secrets already configured for
-    `notify-merge-conflicts.yml`; missing secrets or a failed Slack call
+    `scripts/agents/lib/gh_project.sh`, #3695), **signed by the review
+    agent** (#3911): `review_agent_auto_review.yml` sets `AGENT_ROLE:
+    review` and passes `SLACK_USER_TOKEN_REVIEW`, and the scripts that
+    escalate on the review agent's behalf (`review_head_gate_action.sh`,
+    `review_ensure_handoff.sh`, `dispatch_conflict_resolution.sh`) declare
+    the same role themselves. A missing or refused agent token falls back
+    to `SLACK_BOT_TOKEN` -- attribution never costs the notification;
+    missing secrets or a failed Slack call
     degrade gracefully to the GitHub comment alone, which is always posted
     first and unconditionally; repeat escalations on the same PR within a
     60-minute window are deduped)
@@ -698,6 +703,15 @@ huddle" step posts the `HUDDLE_TRIGGERED` marker):
    sticks: every later round inherits it, so an early close is not re-opened
    by a round that never ran. Nobody posts a position comment on the PR any
    more — the workflow writes each turn to the thread.
+
+   The collapsed block has **two** sources (D-040). The turn files are its
+   floor — written on the runner, so the record survives a Slack outage —
+   and the thread is then read back on top of them, because the files hold
+   only what the three agents wrote and the thread is the sole record of
+   anyone else in the huddle. **If you weigh in on a huddle in Slack, your
+   message is archived to the PR**; if you weigh in after the session has
+   closed, it is not. A session that dies mid-round says so in the thread as
+   well as leaving the `HUDDLE_FAILED` marker on the PR.
 3. The scrummaster's decision chooses one of: **proceed** / **change
    approach** (stated) / **descope** (e.g. drop a named test, split the
    issue) / **escalate to owner** (runs the same `assign_issue_verified` +
