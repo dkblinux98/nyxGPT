@@ -1,0 +1,51 @@
+name: Slack Huddle Smoke
+
+# Least-privilege token: this gate only reads the checked-out code.
+permissions:
+  contents: read
+
+# Executed evidence for the huddle channel (#3910, D-006).
+#
+# `huddle_channel.py` degrades rather than fails by design -- a missing token
+# or a refused call warns and returns an empty result, so the agent loop
+# survives an unconfigured chat integration. The cost of that contract is that
+# a *broken* integration is indistinguishable from a quiet one, and #3933
+# shipped exactly so: every call was sent as JSON, which Slack accepts on
+# `chat.postMessage` and rejects on `conversations.replies` and
+# `chat.getPermalink`, leaving two of four operations dead. The 22 unit tests
+# stayed green because they stub the transport. Only calling the real API
+# could find it, so that is what this job does.
+#
+# `workflow_dispatch` only, deliberately. Each run leaves a small thread in the
+# huddle channel and `chat:delete` is not a granted scope, so running this on
+# every push would fill the channel the huddle is meant to be readable in.
+# Run it when the adapter, its tokens, or the channel configuration change.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or SHA to test (defaults to the release branch)
+        required: false
+        type: string
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || vars.RELEASE_BRANCH }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # No pip install: the adapter is deliberately stdlib-only (urllib), so
+      # this job proves it runs on a bare runner the way the huddle does.
+      - name: Post, read back and permalink as three agent identities
+        env:
+          SLACK_HUDDLE_CHANNEL: ${{ vars.SLACK_HUDDLE_CHANNEL }}
+          SLACK_USER_TOKEN_DEV: ${{ secrets.SLACK_USER_TOKEN_DEV }}
+          SLACK_USER_TOKEN_REVIEW: ${{ secrets.SLACK_USER_TOKEN_REVIEW }}
+          SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+        run: python3 scripts/slack-huddle-smoke.py
