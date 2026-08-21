@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
-import { http, HttpResponse } from 'msw';
+import { http, HttpResponse, delay } from 'msw';
 import { server } from '../mocks/server';
 import { FULL_WIZARD_SCHEMA } from '../mocks/handlers';
 import AdminPage from '../../src/app/admin/page';
@@ -2123,6 +2123,88 @@ describe('AdminPage Component', () => {
       expect(screen.getByRole('button', { name: 'Hide' })).toHaveAttribute('aria-expanded', 'true');
       // The sections this banner cannot see are named, with the command that can.
       expect(screen.getByText('nyxgpt ops config-drift')).toBeInTheDocument();
+    });
+
+    it('collapses the declare panel on a second press of the same button (#3979)', async () => {
+      /*
+       * The toggle-off half of the same control. The button is a disclosure
+       * -- it renames itself to Hide and advertises `aria-expanded` -- so a
+       * second press has to put the row back exactly as it was, snippet gone
+       * and the affordance offering to open it again. Left unexercised, a
+       * refactor to `setDeclaringStaleKey(id)` would read as a
+       * simplification and would leave the panel stuck open.
+       */
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Declare instead' }));
+      expect(screen.getByText(/\[nyxgpt\][\s\S]*retired_option =/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+
+      expect(screen.queryByText(/\[nyxgpt\][\s\S]*retired_option =/)).not.toBeInTheDocument();
+      const declare = screen.getByRole('button', { name: 'Declare instead' });
+      expect(declare).toHaveAttribute('aria-expanded', 'false');
+      // The row itself survives the collapse -- only the panel closed.
+      expect(screen.getByText('[nyxgpt] retired_option')).toBeInTheDocument();
+    });
+
+    it('reads "Removing..." while the removal is in flight (#3979)', async () => {
+      /*
+       * The destructive button has to say which of its two states it is in:
+       * armed ("Confirm remove") or already running ("Removing..."). Until
+       * #3979 the running state was unreachable -- `handleRemoveStaleKey`
+       * clears `confirmingStaleKey` as it starts and React batches that with
+       * `setRemovingStaleKey`, so the row fell back to a disabled "Remove"
+       * and the user got no word that their click had done anything.
+       */
+      let removeCalls = 0;
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        ),
+        http.post('/api/v1/config/sections/stale-keys/remove', async () => {
+          removeCalls += 1;
+          await delay(30);
+          return HttpResponse.json({
+            removed: { nyxgpt: ['retired_option'] },
+            sections: SECTIONS_WITH_EXTRAS,
+            stale_keys: {},
+          });
+        })
+      );
+
+      await goToMoreStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' }));
+
+      const removing = await screen.findByRole('button', { name: 'Removing...' });
+      // Disabled as well as relabelled: a second click must not fire a second
+      // DELETE against a key the first one is already removing.
+      expect(removing).toBeDisabled();
+      fireEvent.click(removing);
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText('Config.ini has options example.config.ini does not declare')
+        ).not.toBeInTheDocument();
+      });
+      expect(removeCalls).toBe(1);
     });
 
     it('leaves the stale-keys banner in place when removal fails', async () => {

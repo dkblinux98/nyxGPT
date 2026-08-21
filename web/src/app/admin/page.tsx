@@ -1675,7 +1675,18 @@ export default function AdminPage() {
                             >
                               {declaringStaleKey === id ? 'Hide' : 'Declare instead'}
                             </button>
-                            {confirmingStaleKey === id ? (
+                            {/*
+                              The in-flight row stays on the confirm branch
+                              (#3979). `handleRemoveStaleKey` clears
+                              `confirmingStaleKey` as it starts, and React
+                              batches that with `setRemovingStaleKey`, so on
+                              `confirmingStaleKey === id` alone the row fell
+                              straight back to a disabled "Remove" the moment
+                              the request left -- and the "Removing..." label
+                              below was unreachable. Reporting the request
+                              that is running is the point of the label.
+                            */}
+                            {confirmingStaleKey === id || removingStaleKey === id ? (
                               <>
                                 <button
                                   onClick={() => handleRemoveStaleKey(section, key)}
