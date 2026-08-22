@@ -987,10 +987,15 @@ rather than mechanism, and nothing can enforce them.
   developer agent — **nyxGPT files a support ticket itself; the GitHub
   compose page is a fallback, not the surface.** The owner failed the
   previous fix in acceptance because Support → File an Issue still handed the
-  user to `github.com/.../issues/new`. The intake is now a form in the chat
-  and `POST /api/v1/support/tickets`, which creates the labeled issue from
-  the running install and answers with its number and URL; the UI shows the
-  filer their own ticket. This answers **Q-006**'s credential question in the
+  user to `github.com/.../issues/new`. The intake is now a nyxGPT page
+  (`/support/new`) and `POST /api/v1/support/tickets`, which creates the
+  labeled issue from the running install and answers with its number and
+  URL; the UI shows the filer their own ticket. *(Surface corrected
+  2026-08-22 on the #3811 re-test: this entry first said "a form in the
+  chat", which the owner's second acceptance failure falsified — the first
+  build put a dialog behind a menu that asked the ticket type and could
+  still fall through to github.com. It is a route, asked once, with no
+  runtime branch in the menu.)* This answers **Q-006**'s credential question in the
   only way that leaves every filer able to report something: file with
   `[github] pat` when it is configured (the owner's install, any operator's),
   and offer the prefilled GitHub form when it is not — the one case the
@@ -1598,7 +1603,7 @@ rather than mechanism, and nothing can enforce them.
   hosted intake should also cover the tokenless filer, who today gets the
   prefilled GitHub form.
   Blocks: nothing on #3811 — the three criteria this once held back (no
-  compose page, a confirmation in the chat, the product applying the label)
+  compose page, a confirmation in nyxGPT, the product applying the label)
   are met by D-034's intake. A hosted intake, if the owner wants one, is new
   work and needs its own issue.
 
