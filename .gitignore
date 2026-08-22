@@ -83,6 +83,26 @@ config.ini
 !/terraform/aws/terraform.tfvars.example
 /terraform/aws/crash.log
 /terraform/aws/crash.*.log
+# The EC2 Mac roots (#3995) are separate root modules, not child modules, so
+# each accumulates its own .terraform/ plugin cache and lock file the moment
+# anyone runs `terraform init` in it -- which the terraform-aws-validate CI
+# gate now does for both. The rules above are anchored at /terraform/aws/ and
+# do not reach a subdirectory, so without these the multi-hundred-megabyte
+# provider cache shows up as untracked and offers itself for commit.
+/terraform/aws/mac/.terraform/
+/terraform/aws/mac/.terraform.lock.hcl
+/terraform/aws/mac/*.tfstate
+/terraform/aws/mac/*.tfstate.*
+/terraform/aws/mac/*.tfvars
+/terraform/aws/mac/crash.log
+/terraform/aws/mac/crash.*.log
+/terraform/aws/mac-release/.terraform/
+/terraform/aws/mac-release/.terraform.lock.hcl
+/terraform/aws/mac-release/*.tfstate
+/terraform/aws/mac-release/*.tfstate.*
+/terraform/aws/mac-release/*.tfvars
+/terraform/aws/mac-release/crash.log
+/terraform/aws/mac-release/crash.*.log
 
 # Codex/Github/Jupyter
 chat_history.md

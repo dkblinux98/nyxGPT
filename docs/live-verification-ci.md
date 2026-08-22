@@ -266,9 +266,16 @@ and screenshots make verifiable in the review loop:
   message in a real Slack workspace still requires a real webhook secret,
   which CI does not have (see #3505/secrets-sync for wiring one in).
 - **EC2 Mac hardware** -- a `mac*.metal` instance actually executing the macOS
-  bootstrap. GitHub Actions has no macOS EC2 runner, Apple's licensing does not
-  permit macOS in a container, and a Dedicated Host bills a 24-hour minimum, so
-  no job can produce one. Both halves *around* it are executed:
+  bootstrap, and with it the Dedicated Host lifecycle around that instance
+  (#3995): allocating a host, and the deferred release that AWS refuses until
+  24 hours have passed. GitHub Actions has no macOS EC2 runner, Apple's
+  licensing does not permit macOS in a container, a Dedicated Host bills a
+  24-hour minimum, and no job can make that clock pass -- so no job can
+  produce any of it. What *is* executed around the allocation:
+  `terraform-aws-validate.yml` validates both EC2 Mac root modules, and
+  `cloud-target-os-smoke.yml` proves the CLI reaches the allocation path
+  rather than refusing on principle, and records nothing when it fails.
+  Both halves around the *bootstrap* are executed too:
   [`cloud-target-os-smoke.yml`](../.github/workflows/cloud-target-os-smoke.yml)
   proves `nyxgpt cloud deploy --os macos` delivers that bootstrap itself over a
   real SSH connection (#3867), and

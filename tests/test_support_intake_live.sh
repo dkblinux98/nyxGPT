@@ -142,7 +142,7 @@ write_config() {
 base_url = http://127.0.0.1:11434
 
 [nyxgpt]
-default_model = qwen2.5-coder:latest
+default_model = qwen3.5:0.8b
 
 [github]
 pat = $pat

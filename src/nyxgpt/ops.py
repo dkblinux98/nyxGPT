@@ -2351,9 +2351,9 @@ def _docker_build_if_needed(
 # unrelated repo-root change (docs, terraform/, etc.) doesn't force a rebuild.
 #
 # Kept as paths *relative to the build context* because there are now two
-# contexts (#3834): the checkout, and the staged copy of the published
-# `nyxgpt-api` artifact the Kubernetes artifact path builds from
-# (`_stage_k8s_artifact_context`). Identical layout, identical fingerprint --
+# contexts (#3834, #3985): the checkout, and the staged copy of the published
+# `nyxgpt-api` artifact the Kubernetes and Terraform artifact paths build from
+# (`_stage_artifact_build_context`). Identical layout, identical fingerprint --
 # so identical content skips the rebuild in either mode.
 _API_IMAGE_FINGERPRINT_RELPATHS = (
     Path("src") / "nyxgpt",
@@ -6081,42 +6081,92 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
 # so `brew install terraform` fails -- install from the official tap instead.
 HASHICORP_TAP = "hashicorp/tap"
 
-# Dev mode's image refs (`--terraform --local --dev`, #3835): built from the
+# Dev mode's image refs (`--terraform --dev`, #3835): built from the
 # checkout's working tree and never pushed anywhere, so the tag says so.
-# `_build_terraform_docker_images` pre-builds them before `terraform apply`
-# so terraform's own `build {}` block hits Docker's layer cache instead of
-# doing real work when the source hasn't changed.
+# `_build_terraform_docker_images` builds them before `terraform apply`, and
+# since #3984 that is the ONLY build in the dev path -- terraform/main.tf has
+# no `build {}` block in any mode and simply consumes these tags.
 TF_API_IMAGE = "nyxgpt-api:local"
 TF_WEB_IMAGE = "nyxgpt-web:local"
 
-# The artifact path's image refs: what `.github/workflows/release-artifacts.yml`
-# publishes on every release, and the only api/web build a machine with no
-# checkout can run. Kept as repository + tag rather than one string so the
-# fallback below can re-tag without re-parsing.
-PUBLISHED_IMAGE_REPOS: dict[str, str] = {
-    "api": "ghcr.io/dkblinux98/nyxgpt-api",
-    "web": "ghcr.io/dkblinux98/nyxgpt-web",
+
+# --- the artifact path's images (#3985) ---
+#
+# The Terraform artifact path builds its two images LOCALLY, from the
+# published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz`
+# source tarballs -- the same artifact channel the native install and the
+# Kubernetes artifact path already use, and the same staging helper
+# (`_stage_artifact_build_context`).
+#
+# It used to pull `ghcr.io/dkblinux98/nyxgpt-{api,web}` instead, with a
+# `latest` fallback, and that could not install the builds acceptance testing
+# actually runs, for two independent reasons (owner acceptance 2026-08-21,
+# both re-verified 2026-08-22):
+#
+#   1. A RELEASE CANDIDATE PUBLISHES NO IMAGES. release-artifacts.yml's
+#      `container-images` job triggers on `release: released`, and an rc is a
+#      prerelease, which fires `prereleased`. So `ghcr.io/.../nyxgpt-api:
+#      3.0.0rc13` is `manifest unknown`, the resolution fell back to `latest`
+#      -- the previous *stable* release -- and the operator got a 2.1.0 stack
+#      while believing they were testing 3.0.0rc13. The tarballs an rc does
+#      publish need no new release machinery at all.
+#   2. THE PUBLISHED IMAGES ARE amd64-ONLY, so the fallback could not even be
+#      pulled on Apple Silicon ("no matching manifest for linux/arm64/v8").
+#      release-artifacts.yml now builds `linux/amd64,linux/arm64` for the
+#      consumers that do run published images (Docker/Compose --  see
+#      docs/portability-matrix.md), but a locally built image is the host's
+#      own architecture by construction, so this path no longer depends on
+#      that being right.
+#
+# The tag is version-qualified AND namespaced to this path, and both halves
+# are load-bearing:
+#   - the version is what lets `ops status` name the build a Terraform
+#     deployment is running (the install-mode marker records these refs, and
+#     `InstallModeState._terraform_label` prints them);
+#   - `artifact-` keeps it out of two tag namespaces already in use on the
+#     same daemon: `nyxgpt-api:local` (dev mode here, and the Kubernetes
+#     install's `K8S_IMAGE`) and `nyxgpt-api:<version>` (what `nyxgpt canary
+#     deploy` builds -- `canary.IMAGE_REPOSITORY`). Sharing a tag would let
+#     one path silently overwrite another's image.
+def _terraform_artifact_image_ref(component: str, version: str) -> str:
+    """The local tag the Terraform artifact path builds `component` at."""
+    return f"nyxgpt-{component}:artifact-{version}"
+
+
+# {component: (published service artifact, staged build-context directory
+# name)}. The directory name is load-bearing: `_hash_paths` keys its
+# fingerprint on the base directory's *name*, so staging the web tree as
+# `web/` -- what the dev build's context is called -- lets identical content
+# skip the rebuild when the operator toggles between `--dev` and the artifact
+# path on an unchanged tree. Shared with the Kubernetes artifact path
+# (`K8S_IMAGE_ARTIFACTS`), which builds the same two images from the same two
+# tarballs; defined here because this is the earlier of the two in the file.
+ARTIFACT_IMAGE_SOURCES: dict[str, tuple[str, str]] = {
+    "api": ("nyxgpt-api", "context"),
+    "web": ("nyxgpt-web", "web"),
 }
 
-# Tag used when this nyxGPT's own version has no published image. Release
-# candidates are the standing case: release-artifacts.yml runs on `released`
-# only, so an rc line publishes tarballs and wheels but no images. Falling
-# back is reported loudly (never silently), and naming the resolved digest's
-# tag is what lets an operator see the skew in `ops status`.
-PUBLISHED_IMAGE_FALLBACK_TAG = "latest"
+# Where the Terraform artifact path unpacks those tarballs into build
+# contexts. Deliberately not `K8S_BUILD_DIR`: a machine can carry both
+# deployments, and a shared staging root would let one install's `rmtree`
+# land in the middle of the other's build.
+TF_BUILD_DIR = NYXGPT_HOME / "build" / "terraform"
 
 # Operator/CI override for the artifact path's image refs, mirroring
 # `NYXGPT_ARTIFACT_DIR` for the native tarballs (`_staged_service_tarball`):
 # it names images already present in (or pullable by) the local Docker
-# daemon, so a version whose images are not published yet can still be
-# deployed -- and CI can execute the artifact path against images built from
-# the ref under test instead of whatever `latest` happens to be.
+# daemon, so an operator can deploy a specific published or hand-built image
+# without going through the tarball build at all.
 TF_IMAGE_ENV_OVERRIDES: dict[str, str] = {
     "api": "NYXGPT_TF_API_IMAGE",
     "web": "NYXGPT_TF_WEB_IMAGE",
 }
 
-# Matches terraform/variables.tf's `web_api_base_url` default.
+# Baked into the web UI's client bundle at build time (Next.js NEXT_PUBLIC_*
+# semantics) by every build of that image -- the Terraform dev and artifact
+# builds here, and `_build_and_load_k8s_web_image`/`canary.deploy` for the
+# cluster. A container's bundle is only ever loaded by a browser on the
+# operator's own machine, so the host-local default is right for all of them.
 TF_WEB_API_BASE_URL_DEFAULT = "http://localhost:8000"
 
 
@@ -6296,32 +6346,30 @@ def _ensure_terraform_tfvars(api_key: str | None) -> list[OpsResult]:
     return [OpsResult(True, f"Bootstrapped {tfvars} from terraform.tfvars.example")]
 
 
-def _terraform_image_vars(images: dict[str, str], dev: bool) -> list[str]:
-    """The `-var` arguments that put `images` (and the install mode) into the plan.
+def _terraform_image_vars(images: dict[str, str]) -> list[str]:
+    """The `-var` arguments that put `images` into the plan.
 
     Passed per run rather than persisted in tfvars so switching between
     `--dev` and the artifact path is a single command with no leftover state:
-    the previous mode's `build {}` block, image ref and build context all
-    come from these flags, so the next apply simply replaces them.
+    the image refs are the only thing that differs between the two modes in
+    the plan, so the next apply simply replaces them.
+
+    Since #3984 this is the *whole* mode-dependent surface. It used to also
+    carry `build_from_source` and `repo_path`, which drove a `dynamic "build"`
+    block in terraform/main.tf; that block is gone, because ops has already
+    built or staged both images by the time this runs and the provider's own
+    build cannot complete on Docker 29.x with the containerd image store. See
+    `docker_image.api` in terraform/main.tf.
     """
-    args = [
+    return [
         f"-var=api_image={images['api']}",
         f"-var=web_image={images['web']}",
-        f"-var=build_from_source={'true' if dev else 'false'}",
     ]
-    if dev:
-        args.append(f"-var=repo_path={REPO_ROOT}")
-    return args
 
 
-def _terraform_init_plan_apply(
-    images: dict[str, str] | None = None, dev: bool = False
-) -> list[OpsResult]:
+def _terraform_init_plan_apply(images: dict[str, str] | None = None) -> list[OpsResult]:
     """Run `terraform init` -> `plan` -> `apply`, stopping at the first failure."""
-    var_args = _terraform_image_vars(
-        images or {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE},
-        dev,
-    )
+    var_args = _terraform_image_vars(images or {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE})
     chdir = f"-chdir={TERRAFORM_DIR}"
     cp = _run(["terraform", chdir, "init", "-input=false"], check=False, stream_stdout=True)
     if cp.returncode != 0:
@@ -6350,124 +6398,154 @@ def _terraform_init_plan_apply(
     return results
 
 
-def _published_image_ref(component: str, tag: str) -> str:
-    """The published image ref for `component` (`api`/`web`) at `tag`."""
-    return f"{PUBLISHED_IMAGE_REPOS[component]}:{tag}"
+def _terraform_override_image(component: str) -> tuple[str | None, list[OpsResult]]:
+    """Resolve `component` from its `NYXGPT_TF_{API,WEB}_IMAGE` override, if set.
 
-
-def _pull_published_image(component: str) -> tuple[str | None, list[OpsResult]]:
-    """Resolve and pull the published image for `component`, returning (ref, results).
-
-    Three sources, in order, each reported so the operator can see which one
-    answered: the `NYXGPT_TF_{API,WEB}_IMAGE` override (an image already in
-    the local daemon -- the staged-artifact path, mirroring
-    `NYXGPT_ARTIFACT_DIR`), this nyxGPT's own version tag, and
-    `PUBLISHED_IMAGE_FALLBACK_TAG`. `ref` is None when none of them produced
-    a usable image, in which case the results say why.
+    Returns `(None, [])` -- not a failure -- when the variable is unset, which
+    is the signal to the caller to take the normal artifact build. When it IS
+    set, the image must be present locally or pullable; anything else is a
+    failure, because an operator who named a specific image must never be
+    given a different one (#3985).
     """
     override = os.environ.get(TF_IMAGE_ENV_OVERRIDES[component], "").strip()
-    if override:
-        cp = _run(["docker", "image", "inspect", override], check=False, expected=True)
-        if cp.returncode == 0:
-            return override, [
-                OpsResult(
-                    True,
-                    f"terraform {component} image: {override} "
-                    f"(staged via {TF_IMAGE_ENV_OVERRIDES[component]})",
-                )
-            ]
-        cp = _run(["docker", "pull", override], check=False)
-        if cp.returncode == 0:
-            return override, [
-                OpsResult(
-                    True,
-                    f"terraform {component} image: pulled {override} "
-                    f"(named by {TF_IMAGE_ENV_OVERRIDES[component]})",
-                )
-            ]
-        return None, [
-            OpsResult(
-                False,
-                f"{TF_IMAGE_ENV_OVERRIDES[component]}={override} is neither present locally "
-                "nor pullable",
-                _cp_details(cp),
-            )
-        ]
-
-    version = _native_service_version()
-    versioned = _published_image_ref(component, version)
-    cp = _run(["docker", "pull", versioned], check=False)
+    if not override:
+        return None, []
+    cp = _run(["docker", "image", "inspect", override], check=False, expected=True)
     if cp.returncode == 0:
-        return versioned, [OpsResult(True, f"terraform {component} image: pulled {versioned}")]
-
-    fallback = _published_image_ref(component, PUBLISHED_IMAGE_FALLBACK_TAG)
-    cp_fallback = _run(["docker", "pull", fallback], check=False)
-    if cp_fallback.returncode == 0:
-        return fallback, [
+        return override, [
             OpsResult(
                 True,
-                f"terraform {component} image: {versioned} is not published, "
-                f"using {fallback} instead",
-                "Container images are published per release "
-                "(.github/workflows/release-artifacts.yml), so a release candidate has "
-                f"none of its own. The deployed {component} is therefore NOT version "
-                f"{version} -- set {TF_IMAGE_ENV_OVERRIDES[component]} to deploy a "
-                "specific image, or use --dev to build this checkout's working tree.\n"
-                # The pull's own error, because "not published" is this
-                # function's inference: an auth or network failure fails the
-                # same way, and only the daemon's message tells them apart.
-                f"{versioned} pull said: {_cp_details(cp)}",
+                f"terraform {component} image: {override} "
+                f"(staged via {TF_IMAGE_ENV_OVERRIDES[component]})",
+            )
+        ]
+    cp = _run(["docker", "pull", override], check=False)
+    if cp.returncode == 0:
+        return override, [
+            OpsResult(
+                True,
+                f"terraform {component} image: pulled {override} "
+                f"(named by {TF_IMAGE_ENV_OVERRIDES[component]})",
             )
         ]
     return None, [
         OpsResult(
             False,
-            f"No published nyxgpt-{component} image could be pulled "
-            f"({versioned}, then {fallback})",
-            f"{_cp_details(cp_fallback)}\nSet {TF_IMAGE_ENV_OVERRIDES[component]} to an "
-            "image this machine can reach, or run with --dev from a checkout to build "
-            "the image locally.",
+            f"{TF_IMAGE_ENV_OVERRIDES[component]}={override} is neither present locally "
+            "nor pullable",
+            _cp_details(cp),
         )
     ]
 
 
-def _pull_terraform_published_images() -> tuple[dict[str, str], list[OpsResult]]:
-    """Resolve+pull both published images the artifact-path deploy runs (#3835).
+def _build_terraform_artifact_image(
+    component: str, version: str
+) -> tuple[str | None, list[OpsResult]]:
+    """Build `component`'s image from its published source tarball at `version`.
+
+    The artifact path's unit of work (#3985). Stages the published
+    `nyxgpt-{api,web}-<version>.tar.gz` into a docker build context
+    (`_stage_artifact_build_context` -- vendored from a checkout when there is
+    one, taken from `$NYXGPT_ARTIFACT_DIR` when staged, else downloaded from
+    the GitHub Release) and builds it into
+    `_terraform_artifact_image_ref(component, version)`.
+
+    `ref` is None on failure, and the results name `version` when they say so:
+    there is deliberately NO fallback to another release. Substituting one was
+    the defect -- an operator asked for 3.0.0rc13 and got 2.1.0 -- so a version
+    whose artifacts cannot be resolved fails the install instead.
+    """
+    ref = _terraform_artifact_image_ref(component, version)
+    service, context_name = ARTIFACT_IMAGE_SOURCES[component]
+    try:
+        context = _stage_artifact_build_context(service, context_name, TF_BUILD_DIR)
+    except (RuntimeError, OSError, tarfile.TarError) as e:
+        return None, [
+            OpsResult(
+                False,
+                f"Could not stage the published {service} {version} artifact to build the "
+                f"terraform {component} image from",
+                f"{type(e).__name__}: {e}\n"
+                f"Stage it in $NYXGPT_ARTIFACT_DIR, set "
+                f"{TF_IMAGE_ENV_OVERRIDES[component]} to an image this machine can reach, "
+                "or run with --dev from a checkout to build the working tree.",
+            )
+        ]
+
+    if component == "web":
+        # Mirrors `_build_terraform_docker_images`' web build: fingerprint the
+        # tree itself rather than the whole context, skipping the gitignored
+        # vendor/build output, and bake in the API base URL the bundle calls.
+        build_kwargs: dict[str, Any] = {
+            "fingerprint_paths": [context],
+            "excludes": _WEB_VENDOR_EXCLUDES,
+            "build_args": {"NEXT_PUBLIC_API_BASE_URL": TF_WEB_API_BASE_URL_DEFAULT},
+        }
+    else:
+        build_kwargs = {
+            "fingerprint_paths": [context / rel for rel in _API_IMAGE_FINGERPRINT_RELPATHS],
+        }
+    try:
+        decision = _docker_build_if_needed(
+            ref, context, marker_dir=DOCKER_IMAGE_MARKER_DIR, **build_kwargs
+        )
+    except RuntimeError as e:
+        return None, [OpsResult(False, f"docker build {ref} failed", str(e))]
+    return ref, [
+        OpsResult(
+            True,
+            f"terraform {component} image: {ref} ({decision})",
+            f"built from the published {service}-{version}.tar.gz",
+        )
+    ]
+
+
+def _build_terraform_artifact_images(images: dict[str, str]) -> list[OpsResult]:
+    """Resolve both api/web images the artifact-path deploy runs (#3835, #3985).
 
     The artifact path is the default and the only one a machine with no
     checkout can take: nothing here reads `REPO_ROOT`, and `terraform apply`
-    gets image refs rather than a build context (see
-    `_terraform_image_vars`). Returns the refs alongside the per-image
-    results; a component missing from the dict means its result explains why.
+    gets finished image refs rather than a build context (see
+    `_terraform_image_vars`). Fills `images` in place -- the shared dict
+    `_install_terraform_steps` threads through its steps.
+
+    Two sources per component, each reported so the operator can see which one
+    answered: the `NYXGPT_TF_{API,WEB}_IMAGE` override (an image already in,
+    or pullable by, the local daemon), and otherwise a local build of the
+    published source tarball at THIS nyxGPT's own version. Stops at the first
+    failure rather than deploying a half-resolved pair.
     """
-    images: dict[str, str] = {}
-    results: list[OpsResult] = []
     if _which("docker") is None:
-        return images, [
-            OpsResult(False, "docker not found on PATH -- cannot pull the nyxgpt api/web images")
+        return [
+            OpsResult(False, "docker not found on PATH -- cannot build the nyxgpt api/web images")
         ]
+    version = _native_service_version()
+    results: list[OpsResult] = []
     for component in ("api", "web"):
-        ref, component_results = _pull_published_image(component)
+        ref, component_results = _terraform_override_image(component)
+        if not component_results:
+            ref, component_results = _build_terraform_artifact_image(component, version)
         results += component_results
-        if ref is not None:
-            images[component] = ref
-    return images, results
+        if ref is None:
+            return results
+        images[component] = ref
+    return results
 
 
 def _build_terraform_docker_images() -> list[OpsResult]:
     """Build the `nyxgpt-api`/`nyxgpt-web` images the Terraform `--local --dev`
     deploy consumes, skipping each build the app source hasn't changed since (#3414).
 
-    Dev mode only (#3835): the artifact path runs published images instead
-    (`_pull_terraform_published_images`) and never needs a checkout. Runs
-    before `terraform init/plan/apply` so `docker_image.api`/`.web` in
-    terraform/main.tf (the `local` tags, matching `TF_API_IMAGE`/
-    `TF_WEB_IMAGE` here) already exist locally in the target state: unchanged
-    source means `_docker_build_if_needed` skips the rebuild entirely
-    (reported below, mirroring the Homebrew `_install_homebrew_api`/`_web`
-    decision output); changed source means it rebuilds now, so terraform's
-    own `build {}` block then just hits Docker's layer cache instead of doing
-    the real work again.
+    Dev mode only (#3835): the artifact path builds the same two images from
+    the published source tarballs instead (`_build_terraform_artifact_images`)
+    and never needs a checkout. Runs before `terraform init/plan/apply` so
+    `docker_image.api`/`.web` in terraform/main.tf (the `local` tags, matching
+    `TF_API_IMAGE`/`TF_WEB_IMAGE` here) already exist locally when the plan
+    resolves them: unchanged source means `_docker_build_if_needed` skips the
+    rebuild entirely (reported below, mirroring the Homebrew
+    `_install_homebrew_api`/`_web` decision output); changed source means it
+    rebuilds now, and the new image id is what the next apply rolls the
+    containers onto. Terraform itself builds nothing (#3984).
     """
     if _which("docker") is None:
         return [OpsResult(False, "docker not found on PATH -- cannot build nyxgpt-api/nyxgpt-web")]
@@ -6582,9 +6660,7 @@ def _resolve_terraform_images(dev: bool, images: dict[str, str]) -> list[OpsResu
     """
     if dev:
         return _build_terraform_docker_images()
-    resolved, results = _pull_terraform_published_images()
-    images.update(resolved)
-    return results
+    return _build_terraform_artifact_images(images)
 
 
 def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[OpsResult]:
@@ -6600,8 +6676,9 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
     which are independent and best-effort.
 
     `dev=True` builds the api/web images from `REPO_ROOT`'s working tree
-    (the pre-#3835 behavior, now opt-in); the default artifact path deploys
-    the published images and touches no checkout at all.
+    (the pre-#3835 behavior, now opt-in); the default artifact path builds
+    them from the published source tarballs at this nyxGPT's own version and
+    touches no checkout at all (#3985).
 
     Shared by the `nyxgpt ops install --terraform --local` CLI entrypoint
     (`_install_terraform`) and `install_terraform_local`, the SRE/admin
@@ -6654,18 +6731,19 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
         # docker-compose.yml), so the derived file has to exist first or
         # Docker creates an empty directory in its place.
         ("compose config (derive from native)", _generate_compose_config),
-        # Must run before apply: resolves the api/web images the plan
-        # references. In dev mode that pre-builds them from the working tree
-        # (or skips, if source is unchanged since the last build -- #3414) so
-        # terraform's own build hits Docker's cache instead of doing the work
-        # again; on the artifact path it pulls the published images, which is
-        # what makes this deploy possible with no checkout at all (#3835).
+        # Must run before apply: builds the api/web images the plan
+        # references, since terraform builds nothing itself (#3984). In dev
+        # mode the source is the working tree; on the artifact path it is the
+        # published `nyxgpt-{api,web}-<version>.tar.gz` source tarballs, which
+        # is what makes this deploy possible with no checkout at all (#3835)
+        # AND at a release candidate's own version (#3985). Either way an
+        # unchanged source skips the rebuild (#3414).
         ("api/web images", lambda: _resolve_terraform_images(dev, images)),
         # After the images are known, before apply: the marker is what `ops
         # status`/`doctor` read to report this deployment's mode instead of
         # the native services' (#3835).
         ("terraform install mode", lambda: _record_terraform_install_mode(dev, images)),
-        ("terraform init/plan/apply", lambda: _terraform_init_plan_apply(images, dev)),
+        ("terraform init/plan/apply", lambda: _terraform_init_plan_apply(images)),
         # Must run after apply (the ollama container has to exist) and before
         # the stack is called up: `terraform apply` returns as soon as the
         # container is created, so the pull waits for the server to answer on
@@ -6758,10 +6836,11 @@ def _down_terraform_steps() -> list[OpsResult]:
     machine upgrading from a pre-#3835 install has its state in the
     checkout's `terraform/` and nothing in the ops-managed directory, and
     destroying from an empty directory would report success while leaving
-    the whole stack running. `build_from_source=false` is forced here
-    regardless of the deployment's mode -- tearing down never needs an image
-    built, and a dev-mode deployment whose checkout has since been deleted
-    must still be destroyable.
+    the whole stack running. The image refs are still passed (they are
+    required variables of the plan being destroyed) but nothing builds or
+    pulls them: since #3984 the configuration has no `build {}` block in any
+    mode, so a dev-mode deployment whose checkout has since been deleted --
+    or one whose images have been removed -- is still destroyable.
     """
     if _which("terraform") is None:
         results = [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
@@ -6779,7 +6858,7 @@ def _down_terraform_steps() -> list[OpsResult]:
                 f"-chdir={TERRAFORM_DIR}",
                 "destroy",
                 "-input=false",
-                *_terraform_image_vars(images, dev=False),
+                *_terraform_image_vars(images),
                 "-auto-approve",
             ],
             check=False,
@@ -8461,22 +8540,26 @@ def _wait_for_k8s_app_tier() -> list[OpsResult]:
 # container image, so a path that could only pull `ghcr.io` images would work
 # for stable releases and fail for exactly the builds acceptance testing runs.
 #
+# The staging half below is shared, not Kubernetes-specific: #3985 moved the
+# Terraform artifact path onto this same channel, for exactly the reason the
+# paragraph above gives, and it calls `_stage_artifact_build_context` with its
+# own staging root (`TF_BUILD_DIR`).
+#
 # `--dev` keeps the old behavior, now explicit and recorded: build from the
 # working tree.
 K8S_BUILD_DIR = NYXGPT_HOME / "build" / "kubernetes"
 
-# The published artifact each image is built from, and the directory name its
-# staged context gets. The name matters: `_hash_paths` keys the fingerprint on
-# the base directory's *name*, so staging the web tree as `web/` -- what the
-# dev build's context is called -- lets identical content skip the rebuild
-# when the operator toggles modes on an unchanged tree.
+# The published artifact each Kubernetes image is built from, and the
+# directory name its staged context gets -- the same two pairs the Terraform
+# artifact path uses, keyed by this path's image tags. See
+# `ARTIFACT_IMAGE_SOURCES` for why the context directory name is load-bearing.
 K8S_IMAGE_ARTIFACTS: dict[str, tuple[str, str]] = {
-    K8S_IMAGE: ("nyxgpt-api", "context"),
-    TF_WEB_IMAGE: ("nyxgpt-web", "web"),
+    K8S_IMAGE: ARTIFACT_IMAGE_SOURCES["api"],
+    TF_WEB_IMAGE: ARTIFACT_IMAGE_SOURCES["web"],
 }
 
 
-def _stage_k8s_api_build_files(context: Path) -> None:
+def _stage_api_build_files(context: Path) -> None:
     """Add the two files the api image's Dockerfile COPYs that the tarball has no copy of.
 
     The `nyxgpt-api` artifact vendors what the *service* needs (pyproject.toml,
@@ -8513,7 +8596,19 @@ def _stage_k8s_api_build_files(context: Path) -> None:
 
 
 def _stage_k8s_artifact_context(image: str) -> Path:
-    """Unpack `image`'s published artifact into a docker build context and return it.
+    """`_stage_artifact_build_context` for a Kubernetes `image` tag."""
+    service, context_name = K8S_IMAGE_ARTIFACTS[image]
+    return _stage_artifact_build_context(service, context_name, K8S_BUILD_DIR)
+
+
+def _stage_artifact_build_context(service: str, context_name: str, root_dir: Path) -> Path:
+    """Unpack `service`'s published source tarball into a docker build context.
+
+    `service` is `nyxgpt-api` or `nyxgpt-web`; `context_name` is the directory
+    name the context gets (load-bearing for the build fingerprint -- see
+    `ARTIFACT_IMAGE_SOURCES`); `root_dir` is the caller's staging root, which
+    differs per substrate so two installs on one machine cannot collide
+    (`K8S_BUILD_DIR` vs `TF_BUILD_DIR`).
 
     The context is rebuilt from the artifact on every install rather than
     updated in place, so a half-unpacked or hand-edited leftover can never be
@@ -8521,9 +8616,8 @@ def _stage_k8s_artifact_context(image: str) -> Path:
     into an OpsResult -- the artifact may be missing, undownloadable, or not
     the tarball this version knows how to build.
     """
-    service, context_name = K8S_IMAGE_ARTIFACTS[image]
     version = _native_service_version()
-    root = K8S_BUILD_DIR / service
+    root = root_dir / service
     _ensure_dir(root)
     tarball = _service_source_tarball(root, service, version)
 
@@ -8548,7 +8642,7 @@ def _stage_k8s_artifact_context(image: str) -> Path:
     shutil.rmtree(unpacked, ignore_errors=True)
 
     if service == "nyxgpt-api":
-        _stage_k8s_api_build_files(context)
+        _stage_api_build_files(context)
     elif not (context / "Dockerfile").is_file():
         raise RuntimeError(
             f"the staged {service} artifact has no Dockerfile at {context / 'Dockerfile'} "

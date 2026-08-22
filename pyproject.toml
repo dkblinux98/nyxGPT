@@ -210,9 +210,55 @@ where = ["src"]
   "terraform/aws/*.tfstate.*",
   "terraform/aws/*.tfvars",
   "terraform/aws/tfplan",
+  # The EC2 Mac roots (#3995). These are separate *root* modules, so each has
+  # its own state, tfvars and .terraform/ cache, and the entries above are
+  # anchored at terraform/aws/ and do not descend into a subdirectory.
+  # Verified by building a wheel both ways: with a terraform.tfvars planted in
+  # each root (as test_resources_packaging.py now does), removing these puts
+  # both files in the artifact.
+  #
+  # The `.terraform/` lines are belt-and-braces only -- "**/*" is glob-style
+  # and does not match dotfiles, so nothing under a dot-directory is collected
+  # in the first place. Kept for symmetry with the terraform/aws/ block above,
+  # which carries the same pair for the same reason.
+  "terraform/aws/mac/.terraform/*",
+  "terraform/aws/mac/.terraform/**/*",
+  "terraform/aws/mac/.terraform.lock.hcl",
+  "terraform/aws/mac/*.tfstate",
+  "terraform/aws/mac/*.tfstate.*",
+  "terraform/aws/mac/*.tfvars",
+  "terraform/aws/mac-release/.terraform/*",
+  "terraform/aws/mac-release/.terraform/**/*",
+  "terraform/aws/mac-release/.terraform.lock.hcl",
+  "terraform/aws/mac-release/*.tfstate",
+  "terraform/aws/mac-release/*.tfstate.*",
+  "terraform/aws/mac-release/*.tfvars",
 ]
 # Keyed by the namespace package that actually owns the file -- see above.
 "nyxgpt.resources.k8s.observability" = ["secret.yaml"]
+# The same double-collection trap as k8s/observability, and verified the same
+# way (`find_namespace_packages` reports both of these): `terraform/aws/mac`
+# and `terraform/aws/mac-release` are discovered as packages in their own
+# right as well as being swept up by `nyxgpt.resources`'s `**/*`, and
+# `exclude_data_files` only applies a pattern to the package it is keyed
+# under. Without these keys the copy collected under the child package still
+# reaches the wheel even though the entries above matched the other one.
+"nyxgpt.resources.terraform.aws.mac" = [
+  ".terraform/*",
+  ".terraform/**/*",
+  ".terraform.lock.hcl",
+  "*.tfstate",
+  "*.tfstate.*",
+  "*.tfvars",
+]
+"nyxgpt.resources.terraform.aws.mac-release" = [
+  ".terraform/*",
+  ".terraform/**/*",
+  ".terraform.lock.hcl",
+  "*.tfstate",
+  "*.tfstate.*",
+  "*.tfvars",
+]
 
 [tool.mypy]
 python_version = "3.11"

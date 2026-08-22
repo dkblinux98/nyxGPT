@@ -460,8 +460,8 @@ Constraints, by design:
   [install identity](#the-install-identity) below.
 - **Per deployment.** `--dev` means the same thing for the Kubernetes and
   Terraform deployments — the api/web images built from the working tree
-  instead of from the published ones (see
-  [terraform.md](terraform.md#install-modes-artifact-default-and---dev)) —
+  instead of from the published `nyxgpt-api`/`nyxgpt-web` source tarballs
+  (see [terraform.md](terraform.md#install-modes-artifact-default-and---dev)) —
   and each records its mode in its own marker,
   `~/.nyxGPT/install-mode-kubernetes.json` (#3834) and
   `~/.nyxGPT/install-mode-terraform.json` (#3835). They are reported as
@@ -607,8 +607,8 @@ these flags — cloud deployment is `nyxgpt cloud infra apply` plus
 each one does.
 
 `--dev` composes with `--terraform`: it builds that deployment's api/web
-images from the checkout instead of deploying the published ones, and the
-deployment records and reports its own install mode
+images from the checkout instead of from the published source tarballs, and
+the deployment records and reports its own install mode
 ([terraform.md](terraform.md#install-modes-artifact-default-and---dev)).
 
 Both deploy observability with the app tier, and `--skip-observability`

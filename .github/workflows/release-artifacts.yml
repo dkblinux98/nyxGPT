@@ -87,6 +87,11 @@ jobs:
         with:
           ref: ${{ env.VERSION }}
 
+      # arm64 emulation for the cross-build below. Without it buildx has no
+      # way to run arm64 build steps on this amd64 runner and the arm64 leg
+      # fails with "exec format error".
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -95,11 +100,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `platforms:` is REQUIRED, not an optimization (#3985). Without it
+      # build-push-action publishes only the runner's own architecture --
+      # linux/amd64 -- and every arm64 consumer of a published nyxGPT image
+      # gets "no matching manifest for linux/arm64/v8" on `docker pull`.
+      # macOS on Apple Silicon is an in-scope Repo-less Portability target
+      # (CLAUDE.md, 2026-08-01) and is the owner's own platform, so an
+      # amd64-only image is a broken artifact for the machine most likely to
+      # run it. The consumer that made this visible -- `nyxgpt ops install
+      # --terraform` -- no longer pulls these images at all (it builds from
+      # the published source tarballs, which are architecture-neutral), but
+      # Docker/Compose still names them as its artifact in
+      # docs/portability-matrix.md, so the gap is closed here for every
+      # consumer rather than routed around in one caller.
+      #
+      # Cost: the arm64 leg is QEMU-emulated, so this job gets materially
+      # slower -- the `web` image's `next build` is the expensive half. That
+      # is paid once per release publish, on a workflow that runs only on a
+      # `released` event or an explicit dispatch, and the alternative
+      # (shipping an image half the target platforms cannot run) is not one.
       - name: Build and push nyxgpt-api
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ github.repository_owner }}/nyxgpt-api:${{ env.VERSION }}
             ghcr.io/${{ github.repository_owner }}/nyxgpt-api:latest
@@ -109,9 +134,34 @@ jobs:
         with:
           context: ./web
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ github.repository_owner }}/nyxgpt-web:${{ env.VERSION }}
             ghcr.io/${{ github.repository_owner }}/nyxgpt-web:latest
+
+      # Assert what was actually published, rather than trusting that
+      # `platforms:` was honoured. This is the only place the manifest can be
+      # checked by running something: the images exist nowhere before this
+      # job, and no other CI job pulls them. A single-arch index here is the
+      # #3985 regression, and it must redden the release rather than reach an
+      # operator's `docker pull`.
+      - name: The published images must carry both architectures
+        run: |
+          set -euo pipefail
+          fail=0
+          for image in nyxgpt-api nyxgpt-web; do
+            ref="ghcr.io/${{ github.repository_owner }}/${image}:${VERSION}"
+            platforms=$(docker buildx imagetools inspect --raw "$ref" |
+              jq -r '[.manifests[].platform
+                      | select(.architecture != "unknown")
+                      | "\(.os)/\(.architecture)"] | sort | join(",")')
+            echo "  ${ref} -> ${platforms}"
+            [ "$platforms" = "linux/amd64,linux/arm64" ] || {
+              echo "::error::${ref} published ${platforms}, expected linux/amd64,linux/arm64"
+              fail=1
+            }
+          done
+          exit $fail
 
   homebrew-tap:
     runs-on: ubuntu-latest
@@ -353,7 +403,9 @@ jobs:
           creation (#3763).
 
           \`\`\`bash
-          brew tap dkblinux98/nyxgpt && (brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true) && brew install nyxgpt-api nyxgpt-web
+          brew tap dkblinux98/nyxgpt
+          brew tap-trust dkblinux98/nyxgpt || brew trust dkblinux98/nyxgpt || true
+          brew install nyxgpt-api nyxgpt-web
           \`\`\`
           NOTES
 
@@ -616,11 +668,13 @@ jobs:
           # is already satisfied the run would prove nothing, so fail loudly
           # rather than quietly going back to masking the bugs.
           if [ -d "/run/user/$uid" ]; then
-            echo "::error::$NYXGPT_TARGET_USER already has a runtime dir (/run/user/$uid) -- this job would mask the D-Bus/session bug"
+            echo "::error::$NYXGPT_TARGET_USER already has a runtime dir"
+            echo "::error::(/run/user/$uid) -- this job would mask the D-Bus/session bug"
             exit 1
           fi
           if sudo -u "$NYXGPT_TARGET_USER" docker info >/dev/null 2>&1; then
-            echo "::error::$NYXGPT_TARGET_USER can already reach the Docker daemon -- this job would mask the docker-group bug"
+            echo "::error::$NYXGPT_TARGET_USER can already reach the Docker"
+            echo "::error::daemon -- this job would mask the docker-group bug"
             exit 1
           fi
           echo "$NYXGPT_TARGET_USER: no logind session, no Docker access -- matches an EC2 instance's first boot"
