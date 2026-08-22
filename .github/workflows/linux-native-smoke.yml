@@ -73,10 +73,14 @@ name: Linux Native Smoke
 #                       lacks the `docker` group while /etc/group grants it --
 #                       a systemd --user service started before `usermod -aG
 #                       docker`, which is what a cloud deploy leaves behind. A
-#                       bare docker call there really is denied, and the probe
-#                       must still report the running container (retried
-#                       through `sg docker`) rather than leaving the tier
-#                       permanently unobservable.
+#                       bare docker call there is denied, and the probe must
+#                       still report the running container (retried through
+#                       `sg docker`) rather than leaving the tier permanently
+#                       unobservable. That half is hermetic: the denial comes
+#                       from a stub `docker` first on PATH keyed only on the
+#                       caller's group set, because this runner's socket is
+#                       NOT group-protected, so dropping the group against the
+#                       real socket denies nothing and proves nothing.
 #                       Unit tests mock the subprocess; only a real denied
 #                       socket and a real stripped group set show what
 #                       `docker compose ps` actually does.
