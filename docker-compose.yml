@@ -190,6 +190,14 @@ services:
       # distinct from the NEXT_PUBLIC_API_BASE_URL build arg above, which is
       # baked into the browser bundle instead.
       NYXGPT_API_BASE_URL: http://api:8000
+      # Which web build this container is, reported beside the API's own
+      # version by /api/info so a mixed web/API stack is visible rather than
+      # silent (#3982). Derived from the image tag because that *is* the
+      # container's identity here -- the default `local` correctly reports a
+      # locally built image as a working-tree build, and an operator running
+      # a published tag (NYXGPT_WEB_IMAGE_TAG=3.0.0rc13) gets that candidate
+      # named in the UI.
+      NYXGPT_WEB_VERSION: ${NYXGPT_WEB_IMAGE_TAG:-local}
       # Same shared secret as the api service, so the proxy routes can
       # attach X-API-Key on every backend call (see docker/config.docker.ini).
       NYXGPT_AUTH_API_KEY: ${NYXGPT_AUTH_API_KEY:-}
