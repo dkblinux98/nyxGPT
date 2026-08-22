@@ -90,6 +90,20 @@ def _force_macos_native_path(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_docker_group_hop_leakage():
+    """Reset the process-wide `sg docker` hop cache around every test (#3812).
+
+    `_docker_group_hop()` caches both its positive and (time-boxed) negative
+    answers in module globals so a long-lived API process probes at most once
+    per interval. Left alone, one test's answer would decide the next test's
+    Docker behaviour, in file order.
+    """
+    self_heal._reset_docker_hop_cache()
+    yield
+    self_heal._reset_docker_hop_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(self_heal, "_state_path", lambda: tmp_path / "self_heal_state.json")
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
@@ -2301,7 +2315,7 @@ def test_bring_up_compose_service_success(monkeypatch):
 @pytest.mark.unit
 def test_bring_up_compose_service_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=120.0: CP(returncode=1, stderr="boom")
+        self_heal, "_run", lambda cmd, timeout=120.0, **_k: CP(returncode=1, stderr="boom")
     )
     result = self_heal._bring_up_compose_service("grafana")
     assert not result.ok
@@ -3767,3 +3781,186 @@ def test_unhealable_component_warns_on_the_transition_not_on_every_pass(
     assert len(lines) == 5
     assert [r.levelno for r in lines] == [logging.WARNING] + [logging.DEBUG] * 4
     assert "Insufficient memory" in lines[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# #3812 re-test: reporting the tier as "unknown" was honest but not enough.
+# On a fresh `nyxgpt cloud deploy` the owner still saw all eleven
+# observability components undetermined, because nothing made the survey
+# runnable. The service's `systemd --user` session predates its `docker`
+# group membership -- a condition `sg docker` clears in-process, without the
+# session recreation that restarting the units cannot perform.
+# ---------------------------------------------------------------------------
+
+
+def _hop_aware_run(monkeypatch, *, hop_works=True, hop_preserves_env=True, bare_stderr=None):
+    """Stub `_run` so bare docker calls are denied and `sg docker` ones are not.
+
+    Returns the list of argvs seen, so a test can assert *how* the answer was
+    obtained rather than only that it arrived.
+    """
+    seen: list[list[str]] = []
+
+    def _fake_run(cmd, timeout=30.0, **kwargs):
+        seen.append(list(cmd))
+        hopped = cmd[:2] == ["sg", "docker"]
+        if not hopped:
+            return CP(
+                returncode=1,
+                stderr=bare_stderr if bare_stderr is not None else _PERMISSION_DENIED_STDERR,
+            )
+        if not hop_works:
+            return CP(returncode=1, stderr="sg: failed to crypt password with previous salt")
+        if "printf" in cmd[-1]:
+            env = kwargs.get("env") or {}
+            home = os.environ.get("HOME", str(Path.home()))
+            if not hop_preserves_env:
+                return CP(stdout="/\n\n")
+            return CP(stdout=f"{home}\n{env.get('NYXGPT_HOP_PROBE', '')}\n")
+        if "docker info" in cmd[-1]:
+            return CP(stdout="27.1.1\n")
+        return CP(stdout='{"Name":"nyxgpt-grafana-1","Service":"grafana","State":"running"}\n')
+
+    monkeypatch.setattr(self_heal, "_run", _fake_run)
+    return seen
+
+
+@pytest.mark.unit
+def test_denied_docker_call_is_retried_through_the_docker_group(monkeypatch, tmp_path):
+    """The re-test defect itself: a denied survey must be *made to run*, not
+    only reported as unrunnable. Without the hop this returns available=False
+    and eleven unknown rows, which is exactly the screen the owner failed."""
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services: {}\n")
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", compose_file)
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    seen = _hop_aware_run(monkeypatch)
+
+    probe = self_heal.compose_probe()
+
+    assert probe.available is True
+    assert probe.reason == ""
+    assert [s.service for s in probe.statuses] == ["grafana"]
+    # The bare call was tried first (a healthy host must pay nothing), and the
+    # answer came from a hopped one.
+    assert seen[0][:2] == ["docker", "compose"]
+    assert any(cmd[:2] == ["sg", "docker"] and "ps" in cmd[-1] for cmd in seen)
+
+
+@pytest.mark.unit
+def test_hop_is_reused_without_reprobing_on_later_calls(monkeypatch, tmp_path):
+    """First principle 1: the watchdog runs every ~15s. Re-deriving the hop on
+    every Docker call would be three subprocesses where one is needed."""
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "docker-compose.yml")
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    seen = _hop_aware_run(monkeypatch)
+
+    self_heal.compose_probe()
+    first_pass = len(seen)
+    self_heal.compose_probe()
+
+    # Second pass: exactly one command, hopped, no bare attempt and no re-probe.
+    assert len(seen) == first_pass + 1
+    assert seen[-1][:2] == ["sg", "docker"]
+
+
+@pytest.mark.unit
+def test_no_hop_attempted_when_docker_answers_normally(monkeypatch, tmp_path):
+    """A working host must never see `sg` at all -- including when Docker
+    itself fails for its own reasons (no such image, bad compose file)."""
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "docker-compose.yml")
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    seen: list[list[str]] = []
+
+    def _fake_run(cmd, timeout=30.0, **_k):
+        seen.append(list(cmd))
+        return CP(returncode=1, stderr="no configuration file provided: not found")
+
+    monkeypatch.setattr(self_heal, "_run", _fake_run)
+
+    assert self_heal.compose_probe().available is False
+    assert all(cmd[:1] != ["sg"] for cmd in seen)
+
+
+@pytest.mark.unit
+def test_unusable_hop_leaves_the_honest_unknown_report_intact(monkeypatch, tmp_path):
+    """#3812's fix must survive its own follow-up: where no hop helps (the
+    user really is not in the group), the panel still says "cannot determine"
+    with Docker's own words rather than inventing a state."""
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "docker-compose.yml")
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    _hop_aware_run(monkeypatch, hop_works=False)
+
+    probe = self_heal.compose_probe()
+
+    assert probe.available is False
+    assert "permission denied" in probe.reason
+    assert probe.statuses == ()
+
+
+@pytest.mark.unit
+def test_hop_rejected_when_it_does_not_preserve_the_environment(monkeypatch, tmp_path):
+    """A hop that resets the environment answers about a different Compose
+    project (`COMPOSE_PROJECT_NAME`) under a different `$HOME`. Wrong answers
+    are worse than no answer, so such a hop is refused."""
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "docker-compose.yml")
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    _hop_aware_run(monkeypatch, hop_preserves_env=False)
+
+    assert self_heal.compose_probe().available is False
+
+
+@pytest.mark.unit
+def test_no_hop_when_sg_is_not_installed(monkeypatch, tmp_path):
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "docker-compose.yml")
+    monkeypatch.setattr(self_heal, "_which", lambda prog: None if prog == "sg" else f"/bin/{prog}")
+    seen = _hop_aware_run(monkeypatch)
+
+    assert self_heal.compose_probe().available is False
+    assert all(cmd[:1] != ["sg"] for cmd in seen)
+
+
+@pytest.mark.unit
+def test_healing_actions_use_the_same_hop_as_the_survey(monkeypatch, tmp_path):
+    """A panel that can see eleven components and heal none of them is half a
+    fix, so the hop covers restarts and container probes too, not just `ps`."""
+    monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "docker-compose.yml")
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    seen = _hop_aware_run(monkeypatch)
+
+    result = self_heal.restart_component("grafana")
+
+    assert result.ok is True
+    assert any(cmd[:2] == ["sg", "docker"] and "restart grafana" in cmd[-1] for cmd in seen)
+
+
+@pytest.mark.unit
+def test_hop_argv_quotes_every_argument(monkeypatch):
+    """`sg -c` takes a shell string, so the argv must be joined with quoting.
+    A compose file path with a space would otherwise become two arguments."""
+    argv = self_heal._hop_argv(["docker", "compose", "-f", "/home/ec 2/compose.yml", "ps"])
+
+    assert argv[:3] == ["sg", "docker", "-c"]
+    assert "'/home/ec 2/compose.yml'" in argv[3]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stderr,expected",
+    [
+        (_PERMISSION_DENIED_STDERR, True),
+        # The rc13 wording, which differs from rc12's: "docker API", not
+        # "Docker daemon socket". Matching only one of them would have left
+        # the owner's own instance unfixed.
+        (
+            "permission denied while trying to connect to the docker API at "
+            "unix:///var/run/docker.sock",
+            True,
+        ),
+        ("Cannot connect to the Docker daemon at unix:///var/run/docker.sock.", True),
+        ("no configuration file provided: not found", False),
+        ("", False),
+    ],
+)
+def test_only_socket_access_failures_trigger_a_hop_probe(stderr, expected):
+    assert self_heal._looks_like_docker_access_failure(CP(returncode=1, stderr=stderr)) is expected

@@ -32,6 +32,16 @@ fault-injection pattern from ``macos-brew-smoke.yml``):
   real container the script starts: the previously-unknown services must now
   carry *real* states (the started one running, the rest genuinely absent), so
   the honesty above is not bought by making every real absence unknown.
+* **group-denied** -- the owner's *re-test* condition, and the reason #3812 was
+  reopened. Reporting "cannot determine" was honest, but it left the
+  observability tier permanently unobservable from the dashboard on a fresh
+  ``nyxgpt cloud deploy``, which the Definition of Done does not allow. The
+  condition is a process whose *session* lacks the ``docker`` group while
+  ``/etc/group`` grants it to the user -- exactly a ``systemd --user`` service
+  started before ``usermod -aG docker`` -- reproduced with ``setpriv
+  --clear-groups``. A bare ``docker compose ps`` there really is denied; the
+  shipped probe must nonetheless report the running container, having retried
+  through ``sg docker``.
 
 Linux-only by construction (it needs a plain Linux docker engine and root to
 own the denied socket); it exits 0 with a skip notice elsewhere.
@@ -39,6 +49,7 @@ own the denied socket); it exits 0 with a skip notice elsewhere.
 
 from __future__ import annotations
 
+import grp
 import os
 import platform
 import shutil
@@ -277,7 +288,126 @@ def run_restored_half(root: Path) -> None:
         compose(home, "down", "-v", "--remove-orphans", check=False)
 
 
+DENIED_GROUP_MARKER = "group-denied-child: probe reported the running container"
+
+
+def _docker_gid() -> int:
+    return grp.getgrnam("docker").gr_gid
+
+
+def run_group_denied_child() -> None:
+    """The child half, run with the `docker` group stripped from the session.
+
+    Everything here is asserted from *inside* the condition, because that is
+    the only place the difference shows: the parent process can reach the
+    daemon and would prove nothing.
+    """
+    if _docker_gid() in os.getgroups():
+        die("the child still holds the docker group -- setpriv did not strip it")
+    log("group-denied-child: this session does NOT hold the docker group")
+
+    bare = subprocess.run(
+        ["docker", "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True
+    )
+    if bare.returncode == 0:
+        die(
+            "a bare docker call succeeded without the group -- the socket is not "
+            "group-protected on this host, so this check has no teeth"
+        )
+    if "permission denied" not in (bare.stderr or "").lower():
+        die(f"expected a permission-denied failure, got: {bare.stderr!r}")
+    log("group-denied-child: a bare docker call is denied, as on the owner's instance")
+
+    self_heal = _reimport_nyxgpt()
+    probe = self_heal.compose_probe()
+    if not probe.available:
+        die(
+            "the probe still cannot run, so the observability tier stays unobservable "
+            f"from the dashboard -- that is the re-test failure. reason: {probe.reason}"
+        )
+    data = self_heal.status()
+    started = {c["service"]: c for c in data["components"]}.get(STARTED_SERVICE)
+    if not started or started["known"] is not True or started["state"] != "running":
+        die(f"a running container was not reported running from a denied session: {started}")
+    if data["unknown_count"] != 0:
+        die(f"components were still reported unknown: {data['unknown_count']}")
+    log(DENIED_GROUP_MARKER)
+
+
+def run_group_denied_half(root: Path) -> None:
+    """The owner's re-test condition: a session without the group, a user with it."""
+    home = root / "home-group-denied"
+    os.environ.pop("DOCKER_HOST", None)
+    os.environ["COMPOSE_PROJECT_NAME"] = PROJECT
+    sync_home(home)
+
+    try:
+        docker_gid = _docker_gid()
+    except KeyError:
+        die("this host has no `docker` group, so it cannot reproduce the owner's condition")
+    if docker_gid not in os.getgroups():
+        die("this session is not in the docker group, so stripping it would prove nothing")
+    if shutil.which("sg") is None:
+        die("`sg` is not installed, so the hop under test cannot be exercised here")
+    if shutil.which("setpriv") is None:
+        die("`setpriv` is not installed; the group-denied condition cannot be injected")
+
+    import nyxgpt.ops as ops
+
+    for result in ops._ensure_observability_volume_dirs():
+        if not result.ok:
+            die(f"could not reconcile a bind-mount directory: {result.details}")
+    compose(home, "up", "-d", STARTED_SERVICE)
+    try:
+        self_heal = _reimport_nyxgpt()
+        deadline = time.monotonic() + START_TIMEOUT
+        while time.monotonic() < deadline:
+            rows = [s for s in self_heal.compose_probe().statuses if s.service == STARTED_SERVICE]
+            if rows and rows[0].state == "running":
+                break
+            time.sleep(3)
+
+        # `sudo env ... setpriv`: sudo resets the environment by design, so the
+        # variables the child needs are passed explicitly rather than through
+        # --preserve-env guesswork. --clear-groups is the injection; the uid and
+        # gid come straight back to this user, so the child is this user *minus*
+        # every supplementary group -- a faithful stand-in for a `systemd --user`
+        # manager started before the group was granted.
+        cmd = [
+            "sudo",
+            "-n",
+            "env",
+            f"HOME={home}",
+            f"COMPOSE_PROJECT_NAME={PROJECT}",
+            f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}",
+            "setpriv",
+            "--clear-groups",
+            f"--reuid={os.getuid()}",
+            f"--regid={os.getgid()}",
+            "--",
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--group-denied-child",
+        ]
+        cp = subprocess.run(cmd, capture_output=True, text=True)
+        sys.stdout.write(cp.stdout)
+        sys.stderr.write(cp.stderr)
+        if cp.returncode != 0:
+            die(f"the group-denied child failed (exit {cp.returncode}) -- see its output above")
+        if DENIED_GROUP_MARKER not in cp.stdout:
+            die("the child did not reach its assertion; this half proved nothing")
+        log(
+            "group-denied: a session without the docker group still observed the running "
+            "container -- the tier is visible on the dashboard, not permanently unknown"
+        )
+    finally:
+        compose(home, "down", "-v", "--remove-orphans", check=False)
+
+
 def main() -> None:
+    if "--group-denied-child" in sys.argv:
+        run_group_denied_child()
+        return
     if platform.system() != "Linux":
         log(f"skipping: needs a plain Linux docker engine (this is {platform.system()})")
         return
@@ -296,6 +426,7 @@ def main() -> None:
         try:
             run_injected_half(root)
             run_restored_half(root)
+            run_group_denied_half(root)
         finally:
             os.environ["HOME"] = original_home
             os.environ.pop("COMPOSE_PROJECT_NAME", None)
@@ -306,7 +437,10 @@ def main() -> None:
             # Root-owned by construction (the mode-000 socket) and by dockerd
             # (the bind-mount sources): TemporaryDirectory cannot remove either.
             subprocess.run(["sudo", "rm", "-rf", str(root)], check=False)
-    log("PASS: an unqueryable probe reports unknown-with-reason; a reachable one reports reality")
+    log(
+        "PASS: an unqueryable probe reports unknown-with-reason, a reachable one reports "
+        "reality, and a session missing the docker group is recovered rather than reported blind"
+    )
 
 
 if __name__ == "__main__":
