@@ -92,12 +92,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-# `nyxgpt.release_tarball` imports nothing but the standard library (#3741),
-# so this script runs from a bare checkout + `setup-python` with no
-# `pip install` step at all -- which is exactly what the two CI jobs that run
-# it provide. Importing the same helpers from `nyxgpt.ops` instead pulled in
-# httpx/pynacl and the whole metrics/tracing stack, and killed the rc tap job
-# after the candidate had already been published to PyPI.
+# `nyxgpt.release_tarball` pulls in no third-party package (#3741) -- the
+# standard library plus one first-party module that is itself stdlib-only at
+# import time (`nyxgpt.release_candidate`, for `pin_version`) -- so this script
+# runs from a bare checkout + `setup-python` with no `pip install` step at all,
+# which is exactly what the two CI jobs that run it provide. Importing the same
+# helpers from `nyxgpt.ops` instead pulled in httpx/pynacl and the whole
+# metrics/tracing stack, and killed the rc tap job after the candidate had
+# already been published to PyPI. The property is guard-tested by
+# `test_build_script_runs_end_to_end_with_third_party_imports_blocked`, which
+# blocks every import that is neither stdlib nor `nyxgpt`.
 from nyxgpt.release_tarball import (  # noqa: E402
     _sha256_file,
     build_release_dist_tarball,

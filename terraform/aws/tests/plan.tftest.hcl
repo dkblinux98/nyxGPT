@@ -64,7 +64,7 @@ run "instance_is_hardened_and_single_box" {
   }
 
   assert {
-    condition     = output.instance_type == "m5.large"
+    condition     = output.instance_type == "m5.xlarge"
     error_message = "Default instance type should match DECISION_AWS_COMPUTE_SUBSTRATE.md's sizing."
   }
 
