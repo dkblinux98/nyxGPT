@@ -2798,8 +2798,46 @@ def cli(argv: list[str] | None = None) -> int:
         choices=list(cloud_deploy_mod.DEPLOY_OS_CHOICES),
         help=(
             "Target instance OS family (default: auto -- macos for a mac*.metal instance "
-            "type, linux otherwise). `--os macos` provisions an EC2 Mac named with --host; "
-            "nyxGPT's substrate cannot allocate the Dedicated Host one would need"
+            "type, linux otherwise). `--os macos` with no --host prices and allocates an EC2 "
+            "Mac Dedicated Host after a typed confirmation, launches the Mac on it and "
+            "bootstraps it; with --host it provisions a Mac you already have"
+        ),
+    )
+    # #3995. The Dedicated Host an EC2 Mac needs bills a 24-hour minimum that
+    # AWS will not let anyone cancel, so allocating one is the single most
+    # expensive thing this CLI can be asked to do. These three flags exist so
+    # the operator can choose *what* is allocated; `--yes` is how they say the
+    # disclosure was read (it skips the typed word, never the disclosure).
+    cloud_deploy_p.add_argument(
+        "--mac-instance-type",
+        help=(
+            "EC2 Mac type to allocate a Dedicated Host for (default: mac2.metal, the "
+            "cheapest family; then --instance-type or the remembered one when either names "
+            "a Mac). The rate is looked up live per family and region -- never assumed"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--mac-az",
+        help=(
+            "Availability zone to allocate the Dedicated Host in (default: the first zone "
+            "that offers the family, queried from EC2 -- Mac capacity is per-AZ and differs "
+            "by family)"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--mac-ami-id",
+        help=(
+            "Pin the macOS AMI (default: the newest amzn-ec2-macos-* AMI for the type's "
+            "architecture)"
+        ),
+    )
+    cloud_deploy_p.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "Skip the typed confirmation before allocating an EC2 Mac Dedicated Host, so "
+            "`--os macos` stays scriptable. The cost disclosure is still printed -- this "
+            "confirms you have read it, it does not suppress it"
         ),
     )
     cloud_deploy_p.add_argument(

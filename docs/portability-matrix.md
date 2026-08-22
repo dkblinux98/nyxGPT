@@ -102,12 +102,14 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   and proves both halves — see
   [homebrew.md](homebrew.md#when-the-install-refuses-to-build).
 - **EC2 Mac** targets (`mac2.metal`, `mac1.metal`) are provisioned by
-  `nyxgpt cloud deploy --os macos --host <mac>`, which delivers the macOS
-  bootstrap over the same wrapped SSH path as the Linux one (#3867);
-  `cloud-target-os-smoke.yml` executes that delivery against a real sshd. The
-  *instance* half stays documentation-verified: hosted macOS runners cover a
-  brew install but are not EC2 instances, and a Dedicated Host bills a
-  24-hour minimum — which is also why nyxGPT does not allocate one. See
+  `nyxgpt cloud deploy --os macos`, which allocates the Dedicated Host after a
+  priced, typed confirmation (#3995) and delivers the macOS bootstrap over the
+  same wrapped SSH path as the Linux one (#3867); `--host <mac>` targets one
+  you already have. `cloud-target-os-smoke.yml` executes that delivery against
+  a real sshd. The *instance* half stays documentation-verified: hosted macOS
+  runners cover a brew install but are not EC2 instances, and neither an
+  allocation nor its deferred release can be executed in CI — a Dedicated Host
+  bills a 24-hour minimum and no job can make that clock pass. See
   [cloud.md](cloud.md)'s [EC2 Mac targets](cloud.md#ec2-mac-targets).
 
 ### Open gaps
