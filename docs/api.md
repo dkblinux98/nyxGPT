@@ -436,8 +436,12 @@ enabled, because `rag_enabled` is a per-session toggle.
 
 `nyxgpt ops install` pulls both before it reports the stack up (#3824), so
 this normally reads ready. It is what the SRE/admin dashboard's Required
-Models panel renders and what `nyxgpt ops status` prints, so the three cannot
-disagree.
+Models panel renders. `nyxgpt ops status` can legitimately differ (#3987):
+this endpoint answers from the Ollama its own process is configured for,
+while `ops status` on a Kubernetes deployment reads the in-cluster Ollama
+instead. One machine can hold both a native install and a cluster, with
+different models in each -- so the two describe different stores rather than
+disagreeing about one.
 
 An unreachable Ollama is reported as `reachable: false` with `present: null`
 per model — "cannot tell" is not "missing" — rather than as an error status.
