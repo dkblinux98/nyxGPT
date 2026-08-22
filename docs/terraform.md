@@ -69,30 +69,73 @@ pulled the formula from homebrew-core after the 2023 BUSL relicense),
 materializes the Terraform configuration into `~/.nyxGPT/terraform/` from the
 copy shipped inside the installed package, bootstraps `terraform.tfvars` from
 the example (a random `auth_api_key` is generated unless you pass `--api-key`
-or answer the interactive prompt), pulls the published `api`/`web` container
-images, and runs `init` → `plan` → `apply`, then reports each container's
-health plus the `api_url`/`web_url`/`ollama_url` outputs.
+or answer the interactive prompt), builds the `api`/`web` container images,
+and runs `init` → `plan` → `apply`, then reports each container's health plus
+the `api_url`/`web_url`/`ollama_url` outputs.
 
 ### Install modes: artifact (default) and `--dev`
 
 The deployment has the same two install modes as the native install
 ([ops.md](ops.md#install-modes)), and records which one it is running:
 
-| | what the `api`/`web` containers run | needs a checkout |
-| --- | --- | --- |
-| default (**artifact**) | the published `ghcr.io/dkblinux98/nyxgpt-api` / `nyxgpt-web` images | no |
-| `--dev` | images built from the current checkout's working tree | yes |
+| | what the `api`/`web` containers run | image tags | needs a checkout |
+| --- | --- | --- | --- |
+| default (**artifact**) | images built from the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` source tarballs | `nyxgpt-api:artifact-<version>`, `nyxgpt-web:artifact-<version>` | no |
+| `--dev` | images built from the current checkout's working tree | `nyxgpt-api:local`, `nyxgpt-web:local` | yes |
 
 ```bash
-nyxgpt ops install --terraform          # published images
+nyxgpt ops install --terraform          # this nyxgpt's own published release
 nyxgpt ops install --terraform --dev    # this checkout's working tree
 ```
 
 The artifact path is what makes this deployment runnable on a machine that
 has never cloned the repository: the `.tf` files come from the installed
-package, the images from the registry, and the api container's mounts from
-`~/.nyxGPT`. `--dev` needs a checkout by definition and is refused (with the
-path it looked at) when nyxgpt is running from an installed package.
+package, the image sources from the published release tarballs, and the api
+container's mounts from `~/.nyxGPT`. `--dev` needs a checkout by definition
+and is refused (with the path it looked at) when nyxgpt is running from an
+installed package.
+
+**Why source tarballs and not the `ghcr.io` images (#3985).** The artifact
+path used to `docker pull ghcr.io/dkblinux98/nyxgpt-api` at the running
+version, falling back to `:latest`. That could not install the builds
+acceptance testing actually runs. `release-artifacts.yml`'s image job triggers
+on a *release*, and a release candidate is a prerelease — so an rc publishes
+tarballs and wheels but **no container image**, the pull fell back to
+`:latest`, and the operator got the previous stable release while believing
+they were running the candidate. (The published images were also amd64-only,
+so on Apple Silicon even the fallback could not be pulled; they are multi-arch
+now, for the Docker/Compose consumers in
+[portability-matrix.md](portability-matrix.md), but this path no longer
+depends on that.) Building from the source tarballs an rc *does* publish is
+what the Kubernetes artifact path already did, and it also settles
+architecture by construction: a locally built image is the host's own.
+
+**The version you asked for is the version you get.** There is no fallback to
+another release. When a version's artifacts cannot be resolved, the install
+fails naming that version rather than substituting a different one. Both
+image tags carry the version, so `nyxgpt ops status` reports which build the
+deployment is actually serving:
+
+```
+Install mode (terraform): artifact (images built from the published
+  nyxgpt-api/nyxgpt-web artifacts) [api=nyxgpt-api:artifact-3.0.0rc13,
+  web=nyxgpt-web:artifact-3.0.0rc13]
+```
+
+To deploy a specific image instead — one you built by hand, or a published
+one — set `NYXGPT_TF_API_IMAGE` / `NYXGPT_TF_WEB_IMAGE` to refs the local
+Docker daemon already has or can pull. A named image that cannot be resolved
+fails the install; it is never silently replaced.
+
+**Terraform itself builds nothing (#3984).** Both `docker_image` resources
+consume a ready tag. The docker provider's own `build {}` block was removed:
+it streams the build context through the daemon's legacy (pre-BuildKit)
+endpoint, which on Docker 29.x with the containerd image store fails
+deterministically (`archive/tar: invalid tar header`, `unpigz: … corrupted --
+invalid deflate data`), and it was redundant besides — `nyxgpt ops install`
+has already built the same context with BuildKit before the apply. Rebuilds on
+source change still reach the containers: ops rebuilds the tag, the plan picks
+up the new image id, and the container is replaced.
 
 **Where dev mode is available.** `--dev` is a flag of the *install* command,
 so it applies to this machine: `nyxgpt ops install`/`nyxgpt up` accepts it in
@@ -206,12 +249,14 @@ The variables that select an install mode are deliberately *not* in that
 file, because they change per run — `nyxgpt ops` passes them on the command
 line, and so should you:
 
-- `api_image` / `web_image` — the image refs the `api`/`web` containers run
-- `build_from_source` — `true` builds them from `repo_path` instead (dev
-  mode); `false`, the default, uses `api_image`/`web_image` as-is
-- `repo_path` — absolute path to a nyxGPT checkout, used as the Docker build
-  context when `build_from_source` is set (same role as the `context:` keys
-  in `docker-compose.yml`); unused otherwise, and empty by default
+- `api_image` / `web_image` — the image refs the `api`/`web` containers run.
+  They must already exist on the local Docker daemon (or be pullable): this
+  configuration builds nothing. `nyxgpt ops install --terraform` builds them
+  first and then passes them here.
+
+`build_from_source` and `repo_path` were retired with the provider-side build
+(#3984), and `web_api_base_url` with them — the API base URL baked into the
+web bundle is now a build arg ops passes when it builds that image.
 
 ## 2. State management
 
@@ -234,15 +279,17 @@ one.
 ## 3. Apply
 
 ```bash
-terraform plan -var=api_image=ghcr.io/dkblinux98/nyxgpt-api:latest \
-               -var=web_image=ghcr.io/dkblinux98/nyxgpt-web:latest
-terraform apply -var=api_image=ghcr.io/dkblinux98/nyxgpt-api:latest \
-                -var=web_image=ghcr.io/dkblinux98/nyxgpt-web:latest
+terraform plan -var=api_image=nyxgpt-api:artifact-3.0.0 \
+               -var=web_image=nyxgpt-web:artifact-3.0.0
+terraform apply -var=api_image=nyxgpt-api:artifact-3.0.0 \
+                -var=web_image=nyxgpt-web:artifact-3.0.0
 ```
 
-(add `-var=build_from_source=true -var=repo_path=/path/to/checkout` to build
-the images from a working tree instead — the dev-mode equivalent of `docker
-compose up --build`.)
+(name whichever tags you have — `nyxgpt-api:local`/`nyxgpt-web:local` after a
+`nyxgpt ops install --terraform --dev`, which are also the variable defaults.
+Both images must already exist locally or be pullable: this configuration has
+no `build {}` block in any mode, so `terraform apply` never builds one. Run
+`nyxgpt ops install --terraform` to produce them.)
 
 This starts all four containers on a dedicated `nyxgpt-terraform` bridge
 network. Models are not pulled by this raw-Terraform path: `nyxgpt ops install

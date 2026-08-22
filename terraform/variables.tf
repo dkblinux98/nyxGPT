@@ -1,19 +1,10 @@
-variable "repo_path" {
-  description = "Absolute path to a nyxGPT repository checkout, used as the Docker build context for the api/web images in dev mode (build_from_source = true). Empty -- the default -- is the artifact path, which has no checkout and builds nothing."
-  type        = string
-  default     = ""
-}
-
-# Dev mode (`nyxgpt ops install --terraform --local --dev`, #3835): build the
-# api/web images from `repo_path`'s working tree instead of running the
-# published `api_image`/`web_image`. False -- the default -- is the artifact
-# path, the only one a machine with no checkout can run (CLAUDE.md's
-# repo-less portability requirement).
-variable "build_from_source" {
-  description = "Build the api/web images from repo_path's working tree (dev mode) instead of using the published api_image/web_image."
-  type        = bool
-  default     = false
-}
+# `repo_path` and `build_from_source` were RETIRED by #3984, along with the
+# `dynamic "build"` blocks they drove in main.tf. Nothing here builds an image
+# any more, in either install mode: `nyxgpt ops install --terraform` builds
+# (dev) or stages-and-builds (artifact) before it ever runs `terraform apply`,
+# and passes the finished tag in `api_image`/`web_image`. Re-adding either
+# variable is re-adding the provider build that cannot complete on Docker 29.x
+# with the containerd image store -- see `docker_image.api` in main.tf.
 
 variable "ollama_port" {
   description = "Host port for Ollama's API."
@@ -51,26 +42,31 @@ variable "cors_origins" {
   default     = "http://localhost:3000,http://127.0.0.1:3000"
 }
 
-# Full image refs rather than a tag appended to a fixed name (#3835): the
-# artifact path runs the published `ghcr.io/dkblinux98/nyxgpt-*` images, whose
-# repository is not `nyxgpt-api`. `nyxgpt ops install --terraform --local`
-# passes both on the command line -- the defaults are the dev-mode tags it
-# builds locally, so a hand-run `terraform apply --var build_from_source=true`
-# still behaves as it did before.
+# Full image refs rather than a tag appended to a fixed name (#3835): an
+# operator may point either container at any image their daemon can resolve,
+# including a `ghcr.io/...` one, and that repository is not `nyxgpt-api`.
+#
+# `nyxgpt ops install --terraform` always passes both on the command line: the
+# `:local` tags it builds in dev mode, or the version-qualified
+# `nyxgpt-api:artifact-<version>` / `nyxgpt-web:artifact-<version>` tags it
+# builds from the published source tarballs on the artifact path (#3985). The
+# defaults below are the dev-mode tags, so a hand-run `terraform apply` after
+# a `nyxgpt up --terraform --dev` needs no `-var` at all. Whatever is named
+# here must already exist locally or be pullable -- this configuration builds
+# nothing (#3984).
 variable "api_image" {
-  description = "Image ref for the nyxgpt api container -- a published image (artifact path) or the tag applied to the locally built one (dev mode)."
+  description = "Image ref for the nyxgpt api container. Must already be built or pullable -- `nyxgpt ops install --terraform` produces it before apply."
   type        = string
   default     = "nyxgpt-api:local"
 }
 
 variable "web_image" {
-  description = "Image ref for the nyxgpt web container -- a published image (artifact path) or the tag applied to the locally built one (dev mode)."
+  description = "Image ref for the nyxgpt web container. Must already be built or pullable -- `nyxgpt ops install --terraform` produces it before apply."
   type        = string
   default     = "nyxgpt-web:local"
 }
 
-variable "web_api_base_url" {
-  description = "API base URL baked into the web UI's client bundle at build time (Next.js NEXT_PUBLIC_* semantics)."
-  type        = string
-  default     = "http://localhost:8000"
-}
+# `web_api_base_url` was RETIRED by #3984 with the web `build {}` block that
+# was its only consumer. The API base URL baked into the web bundle is now a
+# build arg ops passes when it builds the image
+# (`TF_WEB_API_BASE_URL_DEFAULT`, src/nyxgpt/ops.py).
