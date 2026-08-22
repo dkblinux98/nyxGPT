@@ -10,10 +10,12 @@ patterns already used throughout tests/unit/test_ops.py.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from ops_step_isolation import TERRAFORM_INSTALL_STEP_FUNCS, patch_steps
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops
@@ -346,35 +348,18 @@ def test_down_records_success_action_for_scope():
 
 
 def test_install_terraform_steps_records_success():
-    ok = [ops.OpsResult(True, "ok")]
     before = _ops_actions_total("install", "terraform", "success")
-    with (
-        patch.object(ops, "_refuse_port_collision", return_value=None),
-        patch.object(ops, "_sync_packaged_resources", return_value=ok),
-        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
-        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
-        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
-        # Unstubbed, this step shells out to a real `docker build` of the
-        # whole checkout -- twice -- against whatever Docker daemon the
-        # developer (or the runner) has, and leaves images behind on it. This
-        # test is about the action ledger, not about building images (#3834).
-        #
-        # BOTH modes' image steps have to be stubbed, not just dev's: the
-        # default here is the artifact path, and only its dev sibling was
-        # stubbed, so this test really did reach the network on every run
-        # (a `docker pull ghcr.io/...` before #3985, a `docker build` after).
-        # It failed on any machine where that could not succeed -- which is
-        # every arm64 one, since the published images are amd64-only.
-        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
-        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
-        patch.object(ops, "_generate_compose_config", return_value=ok),
-        patch.object(ops, "_ensure_required_models", return_value=ok),
-        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
-        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
-        patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
-        patch.object(ops, "_provision_glitchtip", return_value=ok),
-        patch.object(ops, "_terraform_stack_health", return_value=ok),
-    ):
+    # Every step from `TERRAFORM_INSTALL_STEP_FUNCS`, not a hand-written list
+    # (#3983). The list this replaces named `_build_terraform_docker_images`
+    # (the `--dev` path) but not `_resolve_terraform_images`, which is what the
+    # default artifact path runs -- so the step `docker pull`ed
+    # ghcr.io/dkblinux98/nyxgpt-{api,web} for real, and this test failed on any
+    # machine where that pull does not succeed (arm64: 3.0.0 publishes no
+    # matching manifest). This test is about the action ledger, not about
+    # images; the shared list is guarded by `test_ops_step_isolation.py`.
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(ops, "_refuse_port_collision", return_value=None))
+        patch_steps(stack, TERRAFORM_INSTALL_STEP_FUNCS)
         results = ops.install_terraform_local(api_key="k")
     assert all(r.ok for r in results)
     after = _ops_actions_total("install", "terraform", "success")

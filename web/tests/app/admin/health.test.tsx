@@ -36,6 +36,31 @@ const healthySelfHealStatus = {
   unhealthy_count: 0,
 };
 
+// The model-readiness panel (#3824) mounts with the page and fetches on mount.
+// Without a handler MSW's `onUnhandledRequest: 'error'` fails that fetch, the
+// panel renders its ErrorMessage -- which carries `role="alert"` -- and every
+// `getByRole('alert')` below intermittently finds two elements instead of one,
+// depending on whether the rejection lands before or after the assertion. That
+// race is what made `renders a warning-severity alert distinctly from critical`
+// fail about half the time (#3983); a flaky green is worse than a red, because
+// the diff-gated web job can certify a run that never checked anything.
+const readyRequiredModels = {
+  base_url: 'http://127.0.0.1:11434',
+  reachable: true,
+  error: '',
+  ready: true,
+  remediation: '',
+  models: [
+    { role: 'chat', model: 'qwen3:0.6b', setting: '[nyxgpt] default_model', present: true },
+    {
+      role: 'embedding',
+      model: 'nomic-embed-text',
+      setting: '[rag] embedding_model',
+      present: true,
+    },
+  ],
+};
+
 describe('AdminHealthPage', () => {
   // The consolidated screen (#3413) also mounts the Usage Analytics and
   // Resource Metrics sections on every render, so every test needs default
@@ -46,7 +71,8 @@ describe('AdminHealthPage', () => {
       http.get('/api/v1/analytics/usage', () => HttpResponse.json(emptyUsageSummary)),
       http.get('/api/metrics', () => HttpResponse.json(zeroMetrics)),
       http.get('/api/v1/metrics/history', () => HttpResponse.json(emptyMetricsHistory)),
-      http.get('/api/v1/self-heal/status', () => HttpResponse.json(healthySelfHealStatus))
+      http.get('/api/v1/self-heal/status', () => HttpResponse.json(healthySelfHealStatus)),
+      http.get('/api/v1/models/required', () => HttpResponse.json(readyRequiredModels))
     );
   });
 

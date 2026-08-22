@@ -9,12 +9,18 @@ import sys
 import tarfile
 import time
 from configparser import ConfigParser
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import httpx
 import pytest
+from ops_step_isolation import (
+    INSTALL_STEP_FUNCS,
+    TERRAFORM_INSTALL_STEP_FUNCS,
+    patch_steps,
+)
 
 from nyxgpt import ops, self_heal
 
@@ -745,6 +751,13 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     # Cassandra container is present and running
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # ...and no Terraform deployment is up. Without this, the blanket
+    # `_docker_container_state` stub above also answers "running" for the
+    # `nyxgpt-tf-*` containers `terraform_stack_state()` probes, so
+    # `detect_deployment_mode()` sees cassandra live under both stacks at once
+    # and doctor reports the dual-stack conflict (#3565) -- a FAIL this test's
+    # subject has nothing to do with, and one that predates the stub (#3983).
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     # Mock REPO_ROOT to point to tmp_path (no web/ directory)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
@@ -1427,6 +1440,8 @@ def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     monkeypatch.setattr(ops, "_promtail_container_id", lambda: "abc123")
     monkeypatch.setattr(ops, "_promtail_native_mount_missing", lambda container_id: True)
     monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: (None, None))
@@ -1452,6 +1467,8 @@ def test_ops_doctor_prints_loki_volume_by_logger_when_available(monkeypatch, cap
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     monkeypatch.setattr(
         ops,
         "_loki_recent_volume_by_logger",
@@ -1484,6 +1501,8 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: (None, None))
 
     rc = ops.doctor(MagicMock())
@@ -1507,6 +1526,8 @@ def test_ops_doctor_flags_missing_grafana_doctor_token(monkeypatch, capsys, tmp_
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     rc = ops.doctor(MagicMock())
     out = capsys.readouterr().out
@@ -1534,6 +1555,8 @@ def test_ops_doctor_flags_grafana_401_rejected_token(monkeypatch, capsys, tmp_pa
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     class _FakeResponse:
         status_code = 401
@@ -3801,6 +3824,18 @@ def test_migrate_legacy_volumes_refuses_when_dest_populated_and_legacy_volume_st
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
         patch.object(ops, "_docker_volume_exists", lambda name: True),
+        # This test's subject is the cassandra refusal, but the same
+        # `_docker_volume_exists` stub claims a legacy volume for *every*
+        # component -- and the others' destinations are empty, so they migrate.
+        # Unstubbed that is a real `docker run --rm -v nyxgpt_grafana_data:...`
+        # followed by a real `docker volume rm` against the developer's own
+        # daemon: the suite deleting the machine's Grafana/Loki/Prometheus/
+        # Ollama volumes as a side effect of a refusal test (#3983).
+        patch.object(
+            ops,
+            "_migrate_docker_volume_to_bind_dir",
+            lambda volume, dest, label: ops.OpsResult(True, f"{label}: migrated (stubbed)"),
+        ),
     ):
         results = ops.migrate_legacy_volumes()
 
@@ -5323,23 +5358,18 @@ def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path
 
 @pytest.mark.unit
 def test_ops_install_catches_exception_from_a_step(capsys):
-    ok_results = [ops.OpsResult(True, "ok")]
-    with (
-        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
-        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
-        patch.object(ops, "_sync_packaged_resources", return_value=ok_results),
-        patch.object(ops, "_ensure_web_deps", side_effect=RuntimeError("kaboom")),
-        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
-        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
-        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
-        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
-        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
-        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
-        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
-        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
-    ):
+    # `INSTALL_STEP_FUNCS` rather than a hand-written list (#3983): the names
+    # below were the step list as it stood when this test was written, and
+    # several (`_install_cassandra_launchagent`, `_install_ollama_env_launchagent`)
+    # have since been renamed or replaced -- so the steps that took their place
+    # ran for real, one of them shelling out to `launchctl setenv OLLAMA_MODELS`
+    # on the developer's machine. The shared list is guarded by
+    # `test_ops_step_isolation.py`.
+    with ExitStack() as stack:
+        patch_steps(stack, INSTALL_STEP_FUNCS)
+        stack.enter_context(
+            patch.object(ops, "_ensure_web_deps", side_effect=RuntimeError("kaboom"))
+        )
         rc = ops.install(MagicMock(dev=False, terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
@@ -5703,23 +5733,14 @@ def test_ops_install_logs_start_and_summary(caplog):
 
 @pytest.mark.unit
 def test_ops_install_logs_error_when_step_raises(caplog):
-    with (
-        patch.object(ops, "_reconcile_install_mode", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_sync_packaged_resources", side_effect=RuntimeError("boom")),
-        patch.object(ops, "migrate_legacy_volumes", return_value=[]),
-        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=[]),
-        patch.object(ops, "_ensure_web_deps", return_value=[]),
-        patch.object(ops, "_ensure_mcp_deps", return_value=[]),
-        patch.object(ops, "_ensure_cassandra_container", return_value=[]),
-        patch.object(ops, "_install_cassandra_launchagent", return_value=[]),
-        patch.object(ops, "_install_ollama_launchagent", return_value=[]),
-        patch.object(ops, "_install_ollama_env_launchagent", return_value=[]),
-        patch.object(ops, "_install_homebrew_api", return_value=[]),
-        patch.object(ops, "_install_homebrew_web", return_value=[]),
-        patch.object(ops, "_ensure_required_models", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[]),
-        caplog.at_level("INFO", logger="nyxgpt.ops"),
-    ):
+    # Shared step list, for the same reason as
+    # `test_ops_install_catches_exception_from_a_step` above (#3983).
+    with ExitStack() as stack:
+        patch_steps(stack, INSTALL_STEP_FUNCS)
+        stack.enter_context(
+            patch.object(ops, "_sync_packaged_resources", side_effect=RuntimeError("boom"))
+        )
+        stack.enter_context(caplog.at_level("INFO", logger="nyxgpt.ops"))
         rc = ops.install(MagicMock(dev=False, terraform=False, kubernetes=False))
 
     assert rc == 2
@@ -7640,6 +7661,14 @@ def test_reconcile_grafana_provisioning_writes_the_relay_env_next_to_the_compose
     monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
     monkeypatch.setattr(
         ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+    # Claiming Linux (above) also turns on the volume-ownership step, which
+    # runs a real `sudo -n chown -R` -- an actual privilege escalation attempt
+    # from a unit test whose subject is where the `.env` file lands (#3983).
+    monkeypatch.setattr(
+        ops,
+        "_ensure_observability_volume_dir",
+        lambda component: ops.OpsResult(True, f"{component} volume dir (stubbed)"),
     )
 
     ops._reconcile_grafana_provisioning()
@@ -11367,24 +11396,25 @@ def test_install_terraform_refuses_port_collision(monkeypatch, capsys):
 def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     args = SimpleNamespace(local=True, cloud=False, api_key="k")
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
-    ok = [ops.OpsResult(True, "ok")]
-    with (
-        patch.object(ops, "_sync_packaged_resources", return_value=ok),
-        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
-        patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
-        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
-        patch.object(ops, "_generate_compose_config", return_value=ok) as c,
-        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
-        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
-        patch.object(ops, "_ensure_required_models", return_value=ok),
-        patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
-        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
-        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok) as s,
-        patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
-        patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
-        patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
-    ):
+    # Patch the steps from `TERRAFORM_INSTALL_STEP_FUNCS` rather than by hand
+    # (#3983). The hand-written list this replaces predated
+    # `_resolve_terraform_images`, so that step ran for real: on the artifact
+    # path it `docker pull`s ghcr.io/dkblinux98/nyxgpt-{api,web}, which is
+    # network I/O from a unit test and fails outright on arm64 (3.0.0 publishes
+    # no matching manifest) -- three of these tests were red on the branch head
+    # for that reason alone. The shared list is guarded by
+    # `test_ops_step_isolation.py`, so a step added later cannot go unpatched.
+    with ExitStack() as stack:
+        steps = patch_steps(stack, TERRAFORM_INSTALL_STEP_FUNCS)
         rc = ops._install_terraform(args)
+    b = steps["_ensure_terraform_binary"]
+    t = steps["_ensure_terraform_tfvars"]
+    c = steps["_generate_compose_config"]
+    a = steps["_terraform_init_plan_apply"]
+    s = steps["_sync_grafana_slack_webhook_secret"]
+    o = steps["_start_observability_stack_terraform"]
+    g = steps["_provision_glitchtip"]
+    h = steps["_terraform_stack_health"]
     assert rc == 0
     b.assert_called_once()
     t.assert_called_once_with("k")
@@ -11418,30 +11448,24 @@ def test_install_terraform_syncs_slack_webhook_before_observability_starts(monke
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     call_order: list[str] = []
-    with (
-        patch.object(ops, "_sync_packaged_resources", return_value=ok),
-        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
-        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
-        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
-        patch.object(ops, "_generate_compose_config", return_value=ok),
-        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
-        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
-        patch.object(ops, "_ensure_required_models", return_value=ok),
-        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
-        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
-        patch.object(
-            ops,
-            "_sync_grafana_slack_webhook_secret",
-            side_effect=lambda: call_order.append("slack webhook secret") or ok,
-        ),
-        patch.object(
-            ops,
-            "_start_observability_stack_terraform",
-            side_effect=lambda: call_order.append("observability stack") or ok,
-        ),
-        patch.object(ops, "_provision_glitchtip", return_value=ok),
-        patch.object(ops, "_terraform_stack_health", return_value=ok),
-    ):
+    # Shared step list, then this test's own two steps on top -- `patch_steps`
+    # is entered first so the more specific patches win (#3983).
+    with ExitStack() as stack:
+        patch_steps(stack, TERRAFORM_INSTALL_STEP_FUNCS)
+        stack.enter_context(
+            patch.object(
+                ops,
+                "_sync_grafana_slack_webhook_secret",
+                side_effect=lambda: call_order.append("slack webhook secret") or ok,
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                ops,
+                "_start_observability_stack_terraform",
+                side_effect=lambda: call_order.append("observability stack") or ok,
+            )
+        )
         rc = ops._install_terraform(args)
     assert rc == 0
     assert call_order == ["slack webhook secret", "observability stack"]
@@ -11477,24 +11501,14 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
     must be cleared so self-heal resumes guarding them (#3406)."""
     args = SimpleNamespace(local=True, cloud=False, api_key="k")
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
-    ok = [ops.OpsResult(True, "ok")]
-    with (
-        patch.object(ops, "_sync_packaged_resources", return_value=ok),
-        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
-        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
-        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
-        patch.object(ops, "_generate_compose_config", return_value=ok),
-        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
-        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
-        patch.object(ops, "_ensure_required_models", return_value=ok),
-        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
-        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
-        patch.object(ops, "_sync_grafana_slack_webhook_secret", return_value=ok),
-        patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
-        patch.object(ops, "_provision_glitchtip", return_value=ok),
-        patch.object(ops, "_terraform_stack_health", return_value=ok),
-        patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
-    ):
+    # Shared step list, minus the step under test: `_clear_intentional_stops`
+    # is what calls `clear_intentionally_stopped`, so patching it out would
+    # make this test assert on nothing (#3983).
+    with ExitStack() as stack:
+        patch_steps(stack, TERRAFORM_INSTALL_STEP_FUNCS, skip=("_clear_intentional_stops",))
+        clear_stopped = stack.enter_context(
+            patch.object(ops.self_heal, "clear_intentionally_stopped")
+        )
         rc = ops._install_terraform(args)
     assert rc == 0
     assert clear_stopped.call_args_list == [
@@ -12868,7 +12882,8 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok),
         # The dashboard's bring-up is the artifact path (#3835): it builds
-        # from the published source tarballs and never from a checkout.
+        # its images from the published source tarballs (#3985) and never
+        # from a checkout.
         patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),

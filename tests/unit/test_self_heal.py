@@ -333,6 +333,13 @@ def test_compose_probe_available_true_when_docker_and_compose_file_present(monke
     compose_file.write_text("services: {}\n")
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(self_heal, "COMPOSE_FILE", compose_file)
+    # Stub the probe command itself (#3983). Unstubbed, this ran a real
+    # `docker compose ps` against the developer's daemon, so the answer came
+    # from whether *that machine* could run compose -- the assertion below
+    # passed or failed for reasons entirely outside the test.
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=0, stdout="")
+    )
     assert self_heal.compose_probe_available() is True
 
 
@@ -352,6 +359,15 @@ def test_compose_probe_available_false_when_compose_file_unreachable(monkeypatch
     # never bind-mounted into this container.
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(self_heal, "COMPOSE_FILE", tmp_path / "does-not-exist.yml")
+    # What the real `docker compose -f <missing>` answers, stated here rather
+    # than obtained by running it (#3983) -- the same reason as the test above.
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(
+            returncode=1, stderr="no configuration file provided: not found"
+        ),
+    )
     assert self_heal.compose_probe_available() is False
 
 
