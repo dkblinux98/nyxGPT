@@ -178,7 +178,15 @@ Type `allocate` to allocate the Dedicated Host, or anything else to stop:
   bill for an instance nothing then deploys to.
 - **Re-running is safe.** A second `nyxgpt cloud deploy --os macos` reconciles
   the host you already have. It does not re-price, re-ask or allocate a second
-  host (which would be a second 24-hour minimum).
+  host (which would be a second 24-hour minimum) — **and it re-applies the Mac
+  you have, not a newer one.** The AMI the instance booted and its root volume
+  size are recorded at allocation and fed back on every reconcile, and the
+  module additionally ignores AMI drift on an existing instance. Both matter
+  because `ami` and a shrinking root volume force *replacement*, and replacing
+  an EC2 Mac terminates it, takes its disk with it, and puts the host into an
+  hour-long scrub that the replacement then cannot launch onto. Moving an
+  existing Mac to a newer macOS is therefore deliberate: `nyxgpt cloud
+  destroy`, then deploy again (or pass `--mac-ami-id` on the first allocation).
 
 What the deploy does once the Mac is up — the same for a host it allocated and
 for one you named with `--host`:
@@ -1286,8 +1294,10 @@ checkout.
 
 EC2 Mac instances require a
 [Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html)
-with a 24-hour minimum allocation -- an AWS billing/allocation constraint,
-not a nyxGPT one, and the reason nyxGPT does not allocate one for you
+with a 24-hour minimum allocation -- an AWS billing/allocation constraint, not
+a nyxGPT one. `nyxgpt cloud deploy --os macos` allocates that host for you
+after disclosing what it costs and asking, and defers its release past the
+24-hour window rather than leaving it to you
 (see [EC2 Mac targets](#ec2-mac-targets)). Any other Linux distro (no systemd, e.g. Alpine) or
 Windows AMI is out of scope, per the native-install OS dispatch
 (`_unsupported_os_result` in `src/nyxgpt/ops.py`) and CLAUDE.md's

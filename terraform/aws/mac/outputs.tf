@@ -55,5 +55,10 @@ output "ssh_key_name" {
 
 output "ami_id" {
   description = "macOS AMI the instance booted."
-  value       = local.ami_id
+  # The instance's own attribute, not `local.ami_id`. With `ignore_changes =
+  # [ami]` the two diverge the moment Amazon publishes a newer
+  # `amzn-ec2-macos-*`: the local resolves the new id while the running Mac
+  # still has the old one. cloud_mac records this value and feeds it back on
+  # the next reconcile, so it has to be what the machine actually booted.
+  value = aws_instance.mac.ami
 }

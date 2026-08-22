@@ -81,6 +81,14 @@ STATE_KEYS: tuple[str, ...] = (
     "mac_availability_zone",
     "mac_public_ip",
     "mac_security_group_id",
+    # What the instance actually booted and how big its root disk is. Recorded
+    # so a reconcile re-applies the *same* values rather than re-resolving
+    # them: `most_recent = true` on the AMI data source and a differing volume
+    # size both force instance replacement, and replacing an EC2 Mac means a
+    # terminated instance, a lost disk and a host that then scrubs for an hour
+    # before anything can be placed on it again.
+    "mac_ami_id",
+    "mac_root_volume_size",
     "mac_allocated_at",
     "mac_release_at",
     "mac_hourly_rate",
@@ -859,7 +867,9 @@ def resolve_allocation_plan(args: argparse.Namespace) -> MacAllocationPlan:
         owner_ip_cidr=settings.owner_ip_cidr,
         ssh_key_name=settings.ssh_key_name,
         ssh_public_key=settings.ssh_public_key,
-        root_volume_size=int(requested_volume) if requested_volume else 200,
+        root_volume_size=(
+            int(requested_volume) if requested_volume else MacAllocationPlan.root_volume_size
+        ),
         name_prefix=f"{settings.name_prefix}-mac",
         ami_id=str(getattr(args, "mac_ami_id", None) or ""),
         pricing=lookup_host_pricing(instance_type, region, profile),
@@ -929,6 +939,8 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
             ),
             "mac_public_ip": str(outputs.get("public_ip") or ""),
             "mac_security_group_id": str(outputs.get("security_group_id") or ""),
+            "mac_ami_id": str(outputs.get("ami_id") or plan.ami_id or ""),
+            "mac_root_volume_size": plan.root_volume_size,
             "mac_allocated_at": allocated_at.isoformat(),
             "mac_release_at": releasable_at.isoformat(),
             "mac_hourly_rate": (plan.pricing.hourly_rate if plan.pricing else None),
@@ -952,8 +964,46 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     }
 
 
+def _recorded_root_volume_size(existing: dict[str, Any]) -> int:
+    """Root volume size from the record, or the size the allocation would use.
+
+    Separate from a plain `int(...)` because the record can hold `""`, `None`
+    or a string from an older write, and a bad value here does not fail loudly
+    -- it plans a differently-sized root volume, which forces replacement.
+    """
+    raw = existing.get("mac_root_volume_size")
+    default = MacAllocationPlan.root_volume_size
+    if raw in (None, ""):
+        return int(default)
+    try:
+        size = int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+    return size if size > 0 else int(default)
+
+
 def _reconcile_existing(args: argparse.Namespace, existing: dict[str, Any]) -> dict[str, Any]:
-    """Re-apply the Mac root for a host this machine already allocated."""
+    """Re-apply the Mac root for a host this machine already allocated.
+
+    Re-applies the machine the operator *has*, never a newer one. Two inputs
+    decide that and both are read back from the record rather than re-resolved:
+
+    * **The AMI.** `data.aws_ami.macos` is `most_recent = true`, so leaving
+      `ami_id` empty here would resolve whatever Amazon published since the
+      allocation. `ami` forces replacement, and replacing an EC2 Mac is not a
+      brief outage -- the instance is terminated, its disk goes with it, and
+      the host enters an hour-long scrub during which the replacement cannot
+      launch. `terraform apply` runs `-auto-approve` on this path, so nothing
+      would have stopped it either.
+    * **The root volume size.** This used to be hardcoded to 200 GiB, which
+      silently disagreed with any deploy that passed `--root-volume-size`;
+      shrinking a root volume forces replacement the same way.
+
+    A record written before those keys existed has neither, so each falls back
+    to what the original allocation would have used -- and `ignore_changes =
+    [ami]` in the module is the backstop that keeps even that case from
+    replacing a running Mac.
+    """
     plan = MacAllocationPlan(
         instance_type=str(existing.get("mac_instance_type") or DEFAULT_MAC_INSTANCE_TYPE),
         region=str(existing.get("mac_region") or ""),
@@ -965,7 +1015,8 @@ def _reconcile_existing(args: argparse.Namespace, existing: dict[str, Any]) -> d
     plan.ssh_key_name = settings.ssh_key_name
     plan.ssh_public_key = settings.ssh_public_key
     plan.name_prefix = f"{settings.name_prefix}-mac"
-    plan.root_volume_size = 200
+    plan.ami_id = str(existing.get("mac_ami_id") or "")
+    plan.root_volume_size = _recorded_root_volume_size(existing)
     print(
         f"Reconciling the EC2 Mac already allocated from this machine "
         f"(host {existing.get('mac_host_id')}) -- no new host, no new 24-hour minimum."
@@ -976,6 +1027,12 @@ def _reconcile_existing(args: argparse.Namespace, existing: dict[str, Any]) -> d
             "mac_public_ip": str(outputs.get("public_ip") or ""),
             "mac_instance_id": str(outputs.get("instance_id") or ""),
             "mac_security_group_id": str(outputs.get("security_group_id") or ""),
+            # Heals a record written before these keys existed: the output is
+            # the instance's own `ami`, so what lands here is what the Mac is
+            # running, and the next reconcile pins to it instead of resolving
+            # `most_recent` all over again.
+            "mac_ami_id": str(outputs.get("ami_id") or plan.ami_id or ""),
+            "mac_root_volume_size": plan.root_volume_size,
         }
     )
     return {

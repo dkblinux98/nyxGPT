@@ -193,4 +193,29 @@ resource "aws_instance" "mac" {
   }
 
   tags = { Name = "${var.name_prefix}-instance" }
+
+  # `ami` forces replacement, and on this resource replacement is not the
+  # cheap thing it is elsewhere. Destroying a Mac instance starts the host's
+  # **scrub** -- AWS wipes the bare metal, which takes on the order of an hour
+  # -- and nothing can be placed on the host until it finishes. So a
+  # replacement here is not "briefly down": it is the operator's Mac deleted,
+  # its disk gone, and the create half of the replace failing against a host
+  # that is still scrubbing.
+  #
+  # Amazon publishes new `amzn-ec2-macos-*` images regularly, and
+  # `data.aws_ami.macos` above is `most_recent = true`. Without this, the next
+  # `nyxgpt cloud deploy --os macos` on an existing host -- documented as safe
+  # to re-run, and which reconciles rather than allocating -- would resolve a
+  # newer AMI id and silently plan exactly that destroy/create.
+  #
+  # `ignore_changes` applies only to updates, so a *new* instance still boots
+  # the AMI resolved above (or `--mac-ami-id`). Moving an existing Mac to a
+  # newer macOS stays possible and stays deliberate: `nyxgpt cloud destroy`,
+  # then deploy again. cloud_mac also records the booted AMI and feeds it back
+  # on reconcile, so in the normal case there is no diff for this to suppress
+  # -- belt and braces, because the record cannot exist for a host allocated
+  # before it did.
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }

@@ -18,8 +18,10 @@ well-meaning edit would silently break.
 
 import argparse
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -703,3 +705,105 @@ def test_the_mac_security_group_opens_ssh_only_and_never_to_the_world():
     assert "from_port   = 22" in hcl
     assert "cidr_blocks = [var.owner_ip_cidr]" in hcl
     assert 'var.owner_ip_cidr != "0.0.0.0/0"' in variables
+
+
+# --- Reconcile must re-apply the Mac you have, not a newer one -------------
+
+
+def test_an_existing_mac_is_never_replaced_for_a_newer_ami():
+    """`ami` forces replacement, and the AMI data source is `most_recent`.
+    Replacing an EC2 Mac terminates it, takes its disk with it and starts an
+    hour-long host scrub the replacement cannot then launch onto -- on the
+    path the docs call safe to re-run, under `apply -auto-approve`."""
+    hcl = (MAC_TF / "main.tf").read_text(encoding="utf-8")
+
+    assert "ignore_changes = [ami]" in hcl
+    # The output has to be the instance's own attribute: with the drift
+    # ignored, `local.ami_id` is the *newer* image, not the booted one, and
+    # cloud_mac feeds this value back on the next reconcile.
+    outputs = (MAC_TF / "outputs.tf").read_text(encoding="utf-8")
+    assert re.search(r"^\s*value\s*=\s*aws_instance\.mac\.ami\s*$", outputs, re.MULTILINE)
+    assert not re.search(r"^\s*value\s*=\s*local\.ami_id\s*$", outputs, re.MULTILINE)
+
+
+def test_reconcile_re_applies_the_recorded_ami_and_volume_not_freshly_resolved_ones(monkeypatch):
+    """The record is the pin. Leaving `mac_ami_id` empty would re-resolve
+    `most_recent`, and the root volume size was hardcoded to 200 -- which
+    silently shrinks the disk of anyone who deployed with a larger
+    `--root-volume-size`, forcing replacement the same way an AMI change does.
+    """
+    _record_host(mac_ami_id="ami-booted", mac_root_volume_size=400)
+    applied: dict[str, object] = {}
+
+    def _capture(plan):
+        applied["ami_id"] = plan.ami_id
+        applied["root_volume_size"] = plan.root_volume_size
+        return {"public_ip": "203.0.113.9", "instance_id": "i-0mac", "ami_id": "ami-booted"}
+
+    monkeypatch.setattr(cloud_mac, "apply_mac_host", _capture)
+    monkeypatch.setattr(
+        cloud_mac.cloud_infra,
+        "resolve_settings",
+        lambda _args: SimpleNamespace(
+            aws_profile="",
+            owner_ip_cidr="198.51.100.5/32",
+            ssh_key_name="",
+            ssh_public_key="",
+            name_prefix="nyxgpt-tf",
+        ),
+    )
+    monkeypatch.setattr(cloud_mac, "resolve_allocation_plan", _never_priced)
+
+    result = cloud_mac._reconcile_existing(_args(), cloud_mac.load_mac_record())
+
+    assert applied["ami_id"] == "ami-booted"
+    assert applied["root_volume_size"] == 400
+    assert result["reconciled"] is True
+
+
+def test_a_record_written_before_the_ami_was_pinned_falls_back_to_the_defaults(monkeypatch):
+    """A host allocated before those keys existed has neither. It must still
+    reconcile -- with the module's `ignore_changes` as the thing that keeps it
+    from being replaced -- rather than crash or plan a 0 GiB root volume."""
+    _record_host()
+    applied: dict[str, object] = {}
+
+    def _capture(plan):
+        applied["ami_id"] = plan.ami_id
+        applied["root_volume_size"] = plan.root_volume_size
+        return {"public_ip": "203.0.113.9", "instance_id": "i-0mac", "ami_id": "ami-booted"}
+
+    monkeypatch.setattr(cloud_mac, "apply_mac_host", _capture)
+    monkeypatch.setattr(
+        cloud_mac.cloud_infra,
+        "resolve_settings",
+        lambda _args: SimpleNamespace(
+            aws_profile="",
+            owner_ip_cidr="198.51.100.5/32",
+            ssh_key_name="",
+            ssh_public_key="",
+            name_prefix="nyxgpt-tf",
+        ),
+    )
+
+    cloud_mac._reconcile_existing(_args(), cloud_mac.load_mac_record())
+
+    assert applied["ami_id"] == ""
+    assert applied["root_volume_size"] == cloud_mac.MacAllocationPlan.root_volume_size
+    # And the record is healed from what the instance reports, so the *next*
+    # reconcile is pinned even though this one could not be.
+    assert cloud_mac.load_mac_record()["mac_ami_id"] == "ami-booted"
+
+
+@pytest.mark.parametrize("raw", [None, "", "not-a-number", 0, -1])
+def test_an_unusable_recorded_volume_size_falls_back_rather_than_shrinking_the_disk(raw):
+    """A bad value here does not fail loudly -- it plans a differently-sized
+    root volume, and a smaller one forces replacement."""
+    assert (
+        cloud_mac._recorded_root_volume_size({"mac_root_volume_size": raw})
+        == cloud_mac.MacAllocationPlan.root_volume_size
+    )
+
+
+def _never_priced(*_args, **_kwargs):
+    raise AssertionError("a reconcile must not re-price or re-resolve the allocation")
