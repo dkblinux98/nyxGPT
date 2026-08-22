@@ -90,6 +90,8 @@ PROBES = (
     ("/health", "#3853: the health probe was never issued"),
     ("/api/v1/sessions", "#3851: a stack that starts but cannot reach its datastore"),
     ("http://127.0.0.1:3000", "#3857: the web UI was never requested"),
+    ("/api/info", "#3982: the web tier was never asked which build it is"),
+    ("homebrew-keg", "#3982: the keg-derived web version was never asserted"),
     ("nyxgpt ops status", "#3854: brew's own caveats point elsewhere"),
     ("nyxgpt down", "#3859: the supported stop was never exercised"),
     ("nyxgpt ops uninstall", "#3859: the wrapped teardown was never exercised"),
