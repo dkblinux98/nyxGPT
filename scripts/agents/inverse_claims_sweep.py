@@ -1490,21 +1490,22 @@ def main(argv: list[str] | None = None) -> int:
         "--max-items",
         type=int,
         default=DEFAULT_MAX_ITEMS,
-        help=f"checklist rows to print, 0 for all (default {DEFAULT_MAX_ITEMS})",
+        help=f"fact clusters to print, 0 for all (default {DEFAULT_MAX_ITEMS})",
     )
     parser.add_argument(
         "--preview-lines",
         type=int,
         default=DEFAULT_PREVIEW_LINES,
-        help=f"lines quoted per entry (default {DEFAULT_PREVIEW_LINES})",
+        help=f"lines quoted per claim sentence (default {DEFAULT_PREVIEW_LINES})",
     )
     parser.add_argument(
         "--term-budget",
         type=float,
         default=DEFAULT_TERM_BUDGET,
         help=(
-            "an identifier already named in more prose blocks than this is "
-            f"vocabulary, not a topic (default {DEFAULT_TERM_BUDGET})"
+            "scale on MAX_BLOCKS_PER_KIND: an identifier named in more prose "
+            "blocks than its kind's budget is vocabulary, not this change's "
+            f"topic (default {DEFAULT_TERM_BUDGET})"
         ),
     )
     args = parser.parse_args(argv)
