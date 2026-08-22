@@ -130,7 +130,7 @@ def terraform_calls(monkeypatch):
     """Record `_run_terraform` invocations instead of shelling out to Terraform."""
     calls: list[list[str]] = []
 
-    def fake_run(arguments, *, capture=False, extra_env=None):
+    def fake_run(arguments, *, capture=False, extra_env=None, chdir=None):
         calls.append(list(arguments))
         stdout = '{"version": 4, "serial": 3}' if arguments[:2] == ["state", "pull"] else ""
         return subprocess.CompletedProcess(["terraform", *arguments], 0, stdout=stdout, stderr="")

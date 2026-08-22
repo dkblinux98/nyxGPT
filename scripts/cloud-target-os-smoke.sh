@@ -21,10 +21,11 @@
 #
 # Four phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
 #
-#   1. `--os macos` with no Mac  -> fails, naming the Dedicated Host and its
-#                                   24-hour minimum, and having applied
-#                                   nothing: no Terraform directory exists
-#                                   afterwards, so the failure cost nothing
+#   1. `--os macos` with no Mac  -> reaches the allocation path (#3995) and
+#                                   stops on AWS, not on the policy refusal it
+#                                   used to make; the old wording and its
+#                                   `--host` workaround are gone, and nothing
+#                                   was billed or recorded
 #   2. `--os macos --host ...`   -> the CLI delivers the EC2 Mac bootstrap
 #                                   itself, elevated, and records the family
 #   3. os_family=linux, same box -> the Linux bootstrap arrives instead, over
@@ -105,28 +106,54 @@ CLOUD_DIR="$HOME/.nyxGPT/cloud"
 echo
 echo "== Phase 1: --os macos with no Mac to run on =="
 rm -rf "$CLOUD_DIR"
-if nyxgpt cloud deploy --os macos --version 3.0.0 >"$OUT" 2>&1; then
-    fail "deploy --os macos succeeded with no target; it must refuse"
-fi
+# No AWS credentials on the runner, deliberately: the allocation path's first
+# AWS call is the availability-zone query, so this run reaches the new code
+# and stops there. That is the assertion -- it stops on *AWS*, not on a policy
+# refusal nyxGPT used to make on principle.
+#
+# `--owner-ip` and `--ssh-public-key` are supplied so the run gets *past* the
+# input resolution that precedes the AWS call: without them it would stop on
+# "no SSH key configured" or on a public-IP echo service being unreachable,
+# and this phase would pass for the wrong reason.
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+    -u AWS_PROFILE AWS_EC2_METADATA_DISABLED=true \
+    nyxgpt cloud deploy --os macos --version 3.0.0 \
+    --ssh-public-key "$KEY.pub" --owner-ip 198.51.100.5 >"$OUT" 2>&1 && \
+    fail "deploy --os macos succeeded with no AWS credentials"
 cat "$OUT"
-# It names the constraint and what it costs, per the issue's requirement that
-# the wrapped flow surface the price before anything is allocated.
-contains "$OUT" "Dedicated Host"
-contains "$OUT" "24-hour minimum"
-# And the way out is another wrapped command...
-contains "$OUT" "nyxgpt cloud deploy --os macos --host"
-# ...never a script to carry through the AWS console, which is the whole
-# defect (#3867).
+# Diagnose the environment before diagnosing the CLI. Without the `[cloud]`
+# extra the run stops on the boto3 requirement *before* the AWS call, and every
+# assertion below would then fail with a message about the CLI's wording when
+# the actual fault is how this smoke's venv was built.
+if grep -qF "boto3 is required" "$OUT"; then
+    fail "the venv running this smoke has no boto3, so the allocation path was
+never reached. Install the wheel with the extra the CLI names:
+    pip install \"\$(ls dist/*.whl)[cloud]\""
+fi
+# The retired refusal (#3995): nyxGPT no longer declines to allocate on
+# principle, so neither its wording nor the workaround it used to offer may
+# come back.
+not_contains "$OUT" "cannot allocate one"
+not_contains "$OUT" "nyxgpt cloud deploy --os macos --host"
+# What it says instead is an AWS problem the operator can act on, and it names
+# the wrapped flag that picks a zone -- never a raw `aws` command, a console
+# step, or a script to paste (#3867's defect, one level down).
+contains "$OUT" "availability zones"
+contains "$OUT" "--mac-az"
 not_contains "$OUT" "paste"
 not_contains "$OUT" "console"
 not_contains "$OUT" "user-data"
-# Nothing was applied: no Terraform working directory was ever materialized,
-# so the refusal cost the operator nothing.
-if [ -d "$CLOUD_DIR/terraform" ]; then
-    fail "the refusal still materialized $CLOUD_DIR/terraform"
+not_contains "$OUT" "aws ec2 allocate-hosts"
+# And nothing was billed or recorded: the failure happened before any
+# Terraform ran, so the operator paid nothing for it.
+if [ -f "$CLOUD_DIR/mac.tfstate" ]; then
+    fail "a failed allocation still wrote $CLOUD_DIR/mac.tfstate"
 fi
 if [ -f "$CLOUD_DIR/deploy.json" ]; then
-    fail "the refusal still wrote a deploy record"
+    fail "a failed allocation still wrote a deploy record"
+fi
+if [ -f "$CLOUD_DIR/state.json" ] && grep -qF 'mac_host_id' "$CLOUD_DIR/state.json"; then
+    fail "a failed allocation still recorded a Dedicated Host"
 fi
 
 echo
