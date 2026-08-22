@@ -838,6 +838,18 @@ rather than mechanism, and nothing can enforce them.
   passes verification. Without that loop the rescue would trade an orphan branch
   for a stranded draft PR, which is worse — an open PR shields its head branch
   from every cleanup there is.
+  **Amended 2026-08-22 (#3862, second round):** the rescue backstop identifies
+  its target branches from the **remote and the workspace's refs**, never from
+  the working tree. `claude-code-action` mints a fresh
+  `claude/issue-<n>-<timestamp>` branch on every invocation, and
+  `developer_auto_implement.yml` invokes it six times — including "Deep
+  analysis with Claude (Phase 3)", which runs *after* a failed step, i.e. on
+  the very path the backstop covers. So at the end of a failed run `git branch
+  --show-current` names a decoy minted seconds earlier and the branch holding
+  the work is checked out nowhere: run 32291977186 reported "never reached
+  origin" and rescued nothing while #3956's only copy sat on
+  `claude/issue-3956-20260819-1943` for two days, until the owner merged it by
+  hand. Do not reintroduce a working-tree read as the branch source.
   (Filed as `D-030`, renumbered to `D-031` by `ledger_ids.py reallocate
   --write --base origin/v3.0.0` when `v3.0.0` landed #3853's `D-030` first —
   this entry's own machinery, run on the collision it was written for, and the

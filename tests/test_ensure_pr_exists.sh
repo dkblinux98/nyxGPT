@@ -6,8 +6,9 @@ set -uo pipefail
 # scripts/agents/developer_ensure_pr_exists.sh.
 #
 # The script is run end to end against a real bare `origin` and a stub `gh` on
-# PATH, so the actual code path -- the PR-list guard, classify_mergeable, the
-# body generator -- runs with no network. Three things are pinned:
+# PATH, so the actual code path -- branch discovery, the PR-list guard,
+# classify_mergeable, the body generator -- runs with no network. Four things
+# are pinned:
 #
 #   1. FAIL CLOSED, AND SURVIVE. When the PR list cannot be read, the script
 #      must leave the branch alone -- rather than open a PR that may be a
@@ -36,6 +37,16 @@ set -uo pipefail
 #      accumulation mode inside the change whose purpose is ending
 #      accumulation. Two files, one string, and nothing but a test to notice
 #      when they drift apart.
+#
+#   4. THE RESCUE FINDS THE BRANCH THE RUN ACTUALLY PUSHED, which is not the
+#      branch the workspace is standing on. Cases 1-3 all pass the branch they
+#      want rescued as an argument; the workflow passes none, and that gap is
+#      exactly where #3862 came back (run 32291977186: the guard ran, and
+#      reported "never reached origin" about a decoy branch minted seconds
+#      earlier by the Phase 3 escalation's own claude-code-action, while
+#      #3956's only copy sat on origin unrescued). Case 4 runs the no-argument
+#      form against that fixture; case 4b restores the retired
+#      `git branch --show-current` form and shows it rescuing nothing.
 #
 # Usage: bash tests/test_ensure_pr_exists.sh
 
@@ -336,6 +347,108 @@ _assert_contains "and is taken out of draft before review is requested" \
 _assert_contains "developer_submit_for_review.sh adopts an existing open PR instead of dying" \
   "$(cat "$ROOT_DIR/scripts/agents/developer_submit_for_review.sh")" \
   'gh pr ready "$existing_pr"'
+
+# ======================================================================
+# 4. #3862 ROUND 2 -- the recurrence shape: the branch that carries the work
+#    is NOT the branch the workspace is sitting on when the backstop runs.
+# ======================================================================
+# Reproduced from run 32291977186 / job 96194626814 (issue #3956), which
+# happened ~13 hours AFTER the first fix for #3862 merged:
+#
+#   19:43:28  Creating local branch claude/issue-3956-20260819-1943 ...
+#   19:55:29  git-push.sh origin claude/issue-3956-20260819-1943   <- the work
+#   20:04:46  Submit PR for review -> FAILS (issue #3956 is CLOSED)
+#   20:04:56  Creating local branch claude/issue-3956-20260819-2004 ...
+#   20:07:23  [ensure-pr] claude/issue-3956-20260819-2004 never reached
+#             origin; nothing to review or clean up.
+#
+# The step ran, `always()` held, the guard fired -- at a branch that had never
+# been pushed and never held anything. `claude-code-action` mints a fresh
+# `claude/issue-<n>-<timestamp>` branch on every invocation, and the Phase 3
+# escalation step is one of six such invocations, running *after* a failed
+# step: i.e. on precisely the path this backstop exists to cover, the current
+# branch is guaranteed to be a decoy created seconds earlier. The work branch
+# sat on origin with no PR until the owner merged it by hand two days later.
+#
+# The fixture below is that exact shape. The workflow passes NO branch
+# argument, so this case must not either -- passing one is how every assertion
+# above missed this: each names the branch it wants rescued, which is the one
+# piece of knowledge the real caller does not have.
+: > "$TMP/gh.log"
+rm -f "$TMP/pr-body.md" "$TMP/pulls-fail"
+echo '[]' > "$TMP/pulls.json"
+
+git checkout -q v2.0.0
+git checkout -q -b claude/issue-9201-20260819-1943
+echo "the work the run actually did" > recurrence_work.py
+git add recurrence_work.py
+git commit -q -m "feat: work that exists only on the branch nobody is standing on"
+git push -q -u origin claude/issue-9201-20260819-1943
+
+# The decoy: minted from the base branch by a later claude-code-action
+# invocation, carrying nothing, never pushed -- and left checked out.
+git checkout -q v2.0.0
+git checkout -q -b claude/issue-9201-20260819-2004
+
+OUT="$(bash "$ENSURE" 9201 2>&1)"
+RC=$?
+LOG="$(cat "$TMP/gh.log")"
+
+_assert_contains "the run exits 0 while fanning out over several branches" "rc=$RC" "rc=0"
+_assert_contains "the pushed work branch gets a PR though nothing is standing on it" \
+  "$LOG" "--head claude/issue-9201-20260819-1943"
+_assert_contains "and it is still a draft rescue, not a submission" "$LOG" "--draft"
+_assert_not_contains "the never-pushed decoy the workspace IS on gets no PR" \
+  "$LOG" "--head claude/issue-9201-20260819-2004"
+_assert_contains "every stranded branch for the issue is swept, not just one" \
+  "$LOG" "--head claude/issue-9201-stranded"
+_assert_contains "and the candidate set is printed so a run can be audited" \
+  "$OUT" "Candidate branches for #9201"
+
+# ======================================================================
+# 4b. Fault injection: the shipped-and-failed form of the same guard, run
+#     against the identical fixture, rescues nothing.
+# ======================================================================
+# Without this half, case 4 would also pass against any implementation that
+# happens to look at the right branch by luck -- and it would have passed
+# against the code that was live on 2026-08-19, the code that let #3956's work
+# sit unreviewed until it was merged by hand. The retired form is restored by
+# cutting the sentinel-delimited discovery block out of the real script and
+# putting `git branch --show-current` back, so what runs here is the actual
+# retired code path rather than a re-description of it.
+python3 - "$ENSURE" "$TMP/retired_branch_pick.sh" <<'PY2'
+import re
+import sys
+
+src, out = sys.argv[1:3]
+text = open(src).read()
+
+block = re.search(
+    r"# >>> branch-discovery \(#3862 round 2\) >>>\n.*?"
+    r"# <<< branch-discovery \(#3862 round 2\) <<<\n",
+    text,
+    re.S,
+)
+assert block, "could not locate the sentinel-delimited discovery block"
+text = text[: block.start()] + text[block.end() :]
+
+assert 'BRANCH="$2"\n' in text, "could not locate the single-branch assignment"
+text = text.replace(
+    'BRANCH="$2"\n',
+    'BRANCH="${2:-$(git branch --show-current 2>/dev/null || true)}"\n',
+    1,
+)
+open(out, "w").write(text)
+PY2
+
+: > "$TMP/gh.log"
+RETIRED_OUT="$(bash "$TMP/retired_branch_pick.sh" 9201 2>&1)"
+RETIRED_LOG="$(cat "$TMP/gh.log")"
+
+_assert_not_contains "the retired form rescues nothing (so case 4 can fail)" \
+  "$RETIRED_LOG" "gh pr create"
+_assert_contains "and it fails exactly as run 32291977186 did, on the decoy branch" \
+  "$RETIRED_OUT" "claude/issue-9201-20260819-2004 never reached origin"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
