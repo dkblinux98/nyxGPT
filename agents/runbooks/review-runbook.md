@@ -922,11 +922,15 @@ the same native blocked-by relationship. The label distinction is a
 3. **On the same or a separate comment, write:** `@acceptance-failure`
 
 That's it. The system will automatically (related-issue model, owner decision
-2026-08-02):
-- Leave the original feature/doc/release/improvement issue **intact** — it
-  stays closed, keeps its labels, and stays in whichever parking lane it is
-  in: "Acceptance Testing", or "Acceptance Failed" if you moved it there
-  (#3780). The original never re-enters the dev/review cycle.
+2026-08-02; reopen behavior per owner standard **D-042**, 2026-08-22):
+- **Reopen the original** feature/doc/release/improvement issue, assign it to
+  the scrummaster and park it in **"Acceptance Failed"**. The reopen *is* the
+  record that this issue did not pass acceptance, and your comment says why.
+  It keeps its labels, nothing is ever dispatched against it, and it leaves
+  that lane only when the promotion sweep clears it (below).
+  - This **replaces** the earlier rule that the original "stays closed and is
+    never reopened". Comments and docs written before 2026-08-22 still say
+    the old thing; D-042 is the current standard.
 - Create a **new** issue labeled "Acceptance Failure" marked as **blocking**
   the original through GitHub's native issue relationship — the original's
   Relationships panel shows exactly what holds it back, and that panel is the
@@ -959,10 +963,22 @@ Two exemptions, both encoded rather than incidental:
 
 **You may also park a failed feature in that lane** (owner decision
 2026-08-14, #3780) — it is where you keep what you have tested and failed.
-The machinery reads it: a **closed** item in `Acceptance Failed` is a parked
-feature, promoted to "For Release" by the promotion sweep once its whole
-blocked-by closure is accepted, and moved by nothing else. An **open** item
-is this round's held rework, released to Backlog on the drain as above.
+Anything you park there, closed or reopened, is promoted to "For Release" by
+the promotion sweep once its whole blocked-by closure is accepted, and moved
+by nothing else.
+
+**How the gate tells a parked issue from held rework** (owner standard
+D-042, #3999): not by open-vs-closed — a reopened issue is *your* signal
+that it failed acceptance, which is the opposite of "dispatch a developer",
+and reading state that way released #3835 and #3829 into Backlog on
+2026-08-22 where neither could be worked. It reads two recorded facts
+instead (`acceptance_role` in `scripts/agents/lib/drain_gate.py`):
+
+| The item… | is | and the gate |
+|---|---|---|
+| carries "Acceptance Failure"/"Improvement" **and blocks** another issue | handler-filed rework | releases it to Backlog |
+| **is blocked by** other issues | an original waiting on work elsewhere | leaves it parked |
+| neither | a standalone failure (D-042 (b)) | releases it to Backlog |
 
 Once released to Backlog, the item follows the normal flow: the developer
 agent takes it, creates a `fix/N-...` branch and a PR with `Closes #N`.
@@ -975,16 +991,25 @@ feature gets its own issue via a comment on the feature.
 
 The automation tells those two cases apart by requiring **both** a handler
 label ("Acceptance Failure" or "Improvement") **and** a native blocking edge
-(#3731). Neither alone is enough: owner-filed defect issues carry the label
-while being parents themselves, and a plain feature can block a sequenced
+(#3731) — the same `acceptance_role` rule the gate applies. Neither alone is
+enough: owner-filed defect issues carry the label while being parents
+themselves (#3829 is one), and a plain feature can block a sequenced
 successor.
 
 **Promotion:** when everything blocking an issue reaches "For Release" —
 directly and **transitively**, so a failure filed against a failure counts —
 it is promoted to "For Release" automatically by the promotion sweep, with a
-comment recording which issues cleared it. Unique-failure count per feature
+comment recording which issues cleared it. If it is a reopened original, the
+same sweep assigns it back to you and **closes** it: your reopen asked a
+question, and the promotion is where it is answered. Unique-failure count per feature
 (usually 1) = the "Acceptance Failure"-labeled issues blocking it; rework
 rounds live inside each failure issue's history.
+
+**If the command appears to do nothing:** it failed loudly since #3999 — the
+handler posts a 🚨 comment on the issue naming the failing run, and DMs you
+on the #3695 Slack channel. Before that it could die with no output at all
+and eat the report (runs 32547268563 and 32583495118, 2026-08-22). Re-issue
+the command once the cause is fixed; your comment text is never lost.
 
 > **Note:** `@acceptance-failure` is only accepted from the human owner account and only on
 > issues (not PRs). It is entirely separate from the review-loop overrides

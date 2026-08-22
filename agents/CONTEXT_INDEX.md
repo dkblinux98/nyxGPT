@@ -13,6 +13,7 @@ fails if it drifts. Do not hand-edit.
 | Workflow | Triggered by | Name |
 |---|---|---|
 | `acceptance_drain_gate.yml` | schedule, issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
+| `acceptance-standard-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Standard Smoke |
 | `acceptance_plan.yml` | issues | Acceptance Plan Actions |
 | `add-to-release-issue-on-milestone.yml` | issues | Add issue to release issue on milestone assignment |
 | `admin_ensure_support_label.yml` | workflow_dispatch, schedule, push | Admin - Ensure Support Label |

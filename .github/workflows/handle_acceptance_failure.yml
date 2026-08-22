@@ -13,9 +13,18 @@ on:
 #   original through GitHub's native blocked-by/blocks relationship — NOT a
 #   sub-issue, and NOT a "Related feature: #N" body marker (that prose
 #   convention is retired; it is only still READ for historical issues).
-#   The original is never reopened or relabeled; it stays closed, parked in
-#   "Acceptance Testing" or — at the owner's choice, #3780 — in
-#   "Acceptance Failed". Both lanes park identically.
+#   The ORIGINAL is REOPENED, assigned to the scrummaster and parked in
+#   "Acceptance Failed" (owner standard D-042, 2026-08-22): the reopen is
+#   the signal that this issue did not pass acceptance, and its last
+#   comment says why. Nothing is dispatched against it -- the derived issue
+#   is the work -- and promote_accepted_features.sh promotes, reassigns and
+#   closes it once its whole blocked-by closure is accepted.
+#
+#   This REVERSES the pre-D-042 rule ("the original is never reopened or
+#   relabeled; it stays closed"). Do not restore that on the strength of an
+#   older comment: the two lanes still park identically, but the machinery
+#   now reads "handler-filed rework vs original" from labels + blocking
+#   edges (drain_gate.py `acceptance_role`), never from open/closed state.
 # - If the failure issue's fix later fails stakeholder re-test, commenting
 #   @acceptance-failure ON THE FAILURE ISSUE reopens THAT SAME issue and
 #   sends it back through dev -> review. No per-round issues are created;
@@ -107,6 +116,14 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      # A failure here eats an owner acceptance report: the derived issue is
+      # never filed and no blocking edge is written, so the reopened original
+      # sits with nothing pointing at it. The alert step below is the reason
+      # these are in scope (#3695 owner DM path, #3999).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+      AGENT_ROLE: scrum
 
     steps:
       - name: Checkout
@@ -237,9 +254,20 @@ jobs:
           PROSE_AFS="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=Acceptance%20Failure&state=all&per_page=100" \
             --paginate \
             --jq ".[] | select(has(\"pull_request\") | not) | select(.body | test(\"(Parent|Related) feature: #${FEATURE}\\\\b\")) | .number")"
+          # `grep` exits 1 when it matches NOTHING, and under
+          # `set -o pipefail` that is the exit status of the whole
+          # pipeline -- so `set -e` killed this step, silently and with no
+          # output at all, for every FIRST failure filed against an issue.
+          # That is the swallowed-report defect: runs 32547268563 (#3829,
+          # 02:48Z) and 32583495118 (#3993, 16:02Z) on 2026-08-22 both died
+          # exactly here, ~6s in, printing nothing. Introduced by #3731,
+          # which replaced a `jq -s 'length'` that returned 0 quite happily.
+          # `|| true` keeps "no matches" as the zero it is; a real failure
+          # of the two API reads above still surfaces there, not here.
           EXISTING="$(printf '%s\n%s\n' "$NATIVE_AFS" "$PROSE_AFS" \
-            | grep -E '^[0-9]+$' | sort -u | wc -l | tr -d ' ')"
+            | { grep -E '^[0-9]+$' || true; } | sort -u | wc -l | tr -d ' ')"
           NUM=$((EXISTING + 1))
+          echo "Existing acceptance-failure issues against #${FEATURE}: ${EXISTING} -> filing unique failure ${NUM}"
 
           TITLE="bug: acceptance failure ${NUM} for #${FEATURE} - ${FEATURE_TITLE#*: }"
           TITLE="${TITLE:0:80}"
@@ -299,9 +327,9 @@ jobs:
             echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
           fi
 
-          # Only the new issue enters the rework cycle; the feature is
-          # untouched. Under the drain gate, "enters the cycle" means
-          # "waits in Acceptance Failed until the round drains" (#3730).
+          # Only the new issue enters the rework cycle. Under the drain
+          # gate, "enters the cycle" means "waits in Acceptance Failed until
+          # the round drains" (#3730).
           if [[ "$GATED" == "1" ]]; then
             drain_gate_hold "$NEW" "acceptance failure" \
               || _warn "drain gate: could not put #${NEW} in the holding lane --" \
@@ -309,6 +337,19 @@ jobs:
           else
             assign_and_trigger_developer "$NEW"
           fi
+
+          # ...and the ORIGINAL is reopened as the signal that it did not
+          # pass acceptance, assigned to the scrummaster and parked in the
+          # holding lane (owner standard D-042, 2026-08-22). This step used
+          # to be deliberately absent -- the header said "the original is
+          # never reopened or relabeled" -- and D-042 reverses that: the
+          # reopen IS the report, the derived issue is the work, and the
+          # promotion sweep closes the original when its blockers clear.
+          # Nothing is dispatched against the original; the gate leaves it
+          # parked because `acceptance_role` says it is not rework, which is
+          # the same call this Path A branch already made.
+          acceptance_reopen_original "$FEATURE" "$NEW"
+          echo "Reopened #$FEATURE as the acceptance-failure signal (D-042)"
 
           {
             echo "mode=filed"
@@ -359,12 +400,15 @@ jobs:
                 `🔧 **Scrummaster Agent**: Acceptance failure acknowledged.\n\n` +
                 `Filed as **#${issue}** — unique failure ${num} for #${feature}. It is recorded as **blocking** this issue through GitHub's native Relationships (no body markers).\n\n` +
                 `**Flow (automated):**\n` +
-                `- This issue stays closed in **Acceptance Testing** and is otherwise untouched\n` +
+                `- This issue is **reopened** and parked in **Acceptance Failed**, `
+                  + `assigned to the scrummaster — the reopen is the record that it did `
+                  + `not pass acceptance (owner standard D-042). `
+                  + `Nothing is dispatched against it\n` +
                 startLine +
                 `- Developer agent fixes via a \`fix/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
                 `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your re-test\n` +
                 `- If #${issue}'s fix fails your re-test, comment \`@acceptance-failure\` **on #${issue}** — it is reopened and re-cycled, not replaced\n` +
-                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release automatically\n\n` +
+                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release, assigned back to you and closed, automatically\n\n` +
                 `[Monitor progress](${repoUrl}/issues/${issue})`;
             }
 
@@ -381,3 +425,56 @@ jobs:
           FEATURE: ${{ steps.handle.outputs.feature }}
           NUM: ${{ steps.handle.outputs.num }}
           GATED: ${{ steps.handle.outputs.gated }}
+
+      # FAIL LOUDLY (#3999). Until 2026-08-22 a failure of this handler was
+      # invisible: the step died with no output, the owner's report was
+      # never filed, and the only trace was a red run nobody was watching.
+      # Two of those happened in one day (32547268563 on #3829,
+      # 32583495118 on #3993) before anyone noticed. The named cause is
+      # fixed above; this is the net under it, because a handler that eats
+      # owner input is worse than anything it was reporting.
+      #
+      # Deliberately BOTH channels: the Slack DM (#3695) reaches the owner
+      # where they are, and the issue comment leaves the evidence on the
+      # thread the report was written on. The comment goes first, exactly
+      # like every other #3695 caller, so the record survives an unwired
+      # Slack.
+      - name: Alert the owner if the handler failed
+        if: failure()
+        env:
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMENTED: ${{ github.event.issue.number }}
+        run: |
+          set -uo pipefail
+          source scripts/agents/lib/gh_project.sh
+          load_config
+
+          # Body via a file, not a heredoc inside "$( … )": bash 3.2 (the
+          # macOS shell every local test run uses) mis-parses that form, so
+          # a step that is only ever exercised on a failure would break
+          # exactly where it cannot be noticed.
+          BODY_FILE="${RUNNER_TEMP:-/tmp}/handler-failure.md"
+          cat > "$BODY_FILE" <<EOF
+          🚨 **\`@acceptance-failure\` handler FAILED** — this report was **not** filed.
+
+          No derived issue was created and no blocking relationship was written, so
+          nothing is pointing at this issue and no agent has been dispatched. The
+          owner's report is the comment above; it is not lost, but nothing is
+          acting on it.
+
+          - Failing run: ${RUN_URL}
+          - Reporting comment: ${COMMENT_URL}
+
+          Re-issuing the command on this issue re-runs the handler once the cause is fixed.
+
+          <!-- nyxgpt-token-mention -->
+          EOF
+
+          issue_comment "$COMMENTED" "$(cat "$BODY_FILE")" \
+            || _warn "could not post the handler-failure comment on #${COMMENTED}"
+
+          notify_human_escalation "$COMMENTED" "acceptance-failure handler FAILED" \
+            "The @acceptance-failure handler exited non-zero on #${COMMENTED}: nothing filed, no edge written." \
+            "Read ${RUN_URL}, fix the cause, then re-issue @acceptance-failure on #${COMMENTED} (${COMMENT_URL})." \
+            "${COMMENTED}:acceptance-failure-handler-failed" 60
