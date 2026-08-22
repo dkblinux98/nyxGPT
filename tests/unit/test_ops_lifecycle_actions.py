@@ -356,10 +356,17 @@ def test_install_terraform_steps_records_success():
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         # Unstubbed, this step shells out to a real `docker build` of the
         # whole checkout -- twice -- against whatever Docker daemon the
-        # developer (or the runner) has, and leaves `nyxgpt-api:local` /
-        # `nyxgpt-web:local` behind on it. This test is about the action
-        # ledger, not about building images (#3834).
+        # developer (or the runner) has, and leaves images behind on it. This
+        # test is about the action ledger, not about building images (#3834).
+        #
+        # BOTH modes' image steps have to be stubbed, not just dev's: the
+        # default here is the artifact path, and only its dev sibling was
+        # stubbed, so this test really did reach the network on every run
+        # (a `docker pull ghcr.io/...` before #3985, a `docker build` after).
+        # It failed on any machine where that could not succeed -- which is
+        # every arm64 one, since the published images are amd64-only.
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),

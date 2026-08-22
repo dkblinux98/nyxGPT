@@ -11230,7 +11230,7 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
     tf_dir = tmp_path / "terraform"
     tf_dir.mkdir()
     (tf_dir / "terraform.tfvars.example").write_text(
-        'repo_path    = "/absolute/path/to/nyxGPT"\n'
+        'api_image    = "/absolute/path/to/nyxGPT"\n'
         'auth_api_key = "REPLACE_WITH_A_REAL_KEY"\n'  # pragma: allowlist secret
         'cors_origins = "http://localhost:3000"\n',
         encoding="utf-8",
@@ -11244,9 +11244,9 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
     tfvars = tf_dir / "terraform.tfvars"
     content = tfvars.read_text(encoding="utf-8")
     assert 'auth_api_key = "my-key"' in content  # pragma: allowlist secret
-    # The checkout path is NOT written here (#3835): repo_path is a dev-mode
-    # `-var` on the apply, so the bootstrapped tfvars carries nothing that
-    # ties the deployment to a repository.
+    # The checkout path is NOT written here (#3835): the image refs are
+    # per-run `-var`s on the apply, so the bootstrapped tfvars carries nothing
+    # that ties the deployment to a repository.
     assert str(repo_root) not in content
 
 
@@ -11375,6 +11375,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok) as c,
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
@@ -11424,6 +11425,7 @@ def test_install_terraform_syncs_slack_webhook_before_observability_starts(monke
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
@@ -11483,6 +11485,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
+        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
@@ -12864,11 +12867,9 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_sync_local_terraform_config", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok),
-        # The dashboard's bring-up is the artifact path (#3835): it pulls
-        # published images and never builds from a checkout.
-        patch.object(
-            ops, "_pull_terraform_published_images", return_value=({"api": "i", "web": "i"}, ok)
-        ),
+        # The dashboard's bring-up is the artifact path (#3835): it builds
+        # from the published source tarballs and never from a checkout.
+        patch.object(ops, "_build_terraform_artifact_images", return_value=ok),
         patch.object(ops, "_ensure_required_models", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),

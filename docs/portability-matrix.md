@@ -124,15 +124,22 @@ from the registry yet.
    `nyxgpt ops observability` starts the monitoring/logging/tracing/errors
    profiles from public images with no checkout.
 
-**Terraform closed its gap in #3835.** The `.tf` configuration ships as package
-data (`nyxgpt.resources.terraform.local`, materialized into `~/.nyxGPT/terraform`)
-instead of being read from `REPO_ROOT`, and `nyxgpt ops install --terraform` pulls the published `ghcr.io/dkblinux98/nyxgpt-api`/`-web` images rather
-than building the working tree. `--dev` still builds it, records that it did, and
-is refused where there is no checkout. The proof is executed, not inspected: the
-`terraform-artifact-smoke` job in
+**Terraform closed its gap in #3835, and #3985 made it work for release
+candidates too.** The `.tf` configuration ships as package data
+(`nyxgpt.resources.terraform.local`, materialized into `~/.nyxGPT/terraform`)
+instead of being read from `REPO_ROOT`, and `nyxgpt ops install --terraform`
+builds its two images from the published `nyxgpt-api`/`nyxgpt-web` **source
+tarballs** at this nyxGPT's own version rather than from the working tree. It
+does not pull the `ghcr.io` images: those are published on a *release* only, so
+an rc has none and the old `:latest` fallback deployed the previous stable
+release under the candidate's name (#3985). Same artifact channel as the
+Kubernetes row above, for the same reason. `--dev` still builds the working
+tree, records that it did, and is refused where there is no checkout. The proof
+is executed, not inspected: the `terraform-artifact-smoke` job in
 [`terraform-local-smoke.yml`](../.github/workflows/terraform-local-smoke.yml)
-installs the wheel into a venv with no repository in reach, resolves and pulls the
-real published images, deploys, and requires the stack to serve.
+installs the wheel into a venv with no repository in reach, **at a release
+candidate version**, builds both images from tarballs staged the way a release
+publishes them, deploys, and requires the stack to serve.
 
 **Kubernetes closed its gap in #3834.** The manifests ship as package data
 (`nyxgpt.resources.k8s`, synced to `~/.nyxGPT/k8s`) instead of being read from
