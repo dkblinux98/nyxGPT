@@ -30,9 +30,9 @@ A Homebrew install has no repository checkout, so the documentation you would
 otherwise read from `docs/` ships inside the package instead: once
 `nyxgpt-web` is running, the product documentation is served in the web UI
 under **Support → Docs**, offline and matching the installed version. The same menu's
-**File an Issue** entries report a problem, request a feature or ask a question
-without leaving the app: you answer in nyxGPT, it files the ticket with your
-version and platform attached and links you to it. See [ui.md](ui.md#support-menu).
+**File an Issue** entry reports a problem, requests a feature or asks a
+question without leaving the app: you answer on a nyxGPT page, it files the
+ticket with your version and platform attached, and shows you a link to it. See [ui.md](ui.md#support-menu).
 
 ---
 
@@ -353,6 +353,32 @@ An `rc` publish never builds, copies or commits a stable formula file: the
 job asserts none was produced, and the tap push refuses if a stable formula
 would change. The `stable` channel never reaches the tap job at all -- the
 stable formulas belong to the ceremony's `release-artifacts.yml` run.
+
+### A candidate keg reports the candidate version
+
+A keg installed from `nyxgpt-api@3.0.0rc` reports the **candidate** version
+everywhere the product names itself -- `nyxgpt --version`, `GET
+/api/v1/info`, the web UI badge and `nyxgpt ops status` all print e.g.
+`3.0.0rc13`, not `3.0.0`.
+
+That is not cosmetic. An artifact install has no repo checkout above the
+package, so the installed distribution's metadata is the **only** record of
+which channel the keg belongs to, and `nyxgpt up` reads it to decide which
+formulas to reconcile: a version carrying an `rc` marker routes to
+`nyxgpt-api@<line>rc`/`nyxgpt-web@<line>rc`, and one without it routes to the
+stable pair. Through rc13 the tarball vendored the release branch's
+`pyproject.toml` verbatim, so a candidate keg declared the stable version it
+was a candidate *for* -- and `nyxgpt up`, run from that keg, installed the
+stable pair beside the candidate and started it, leaving a released web tier
+in front of an unreleased API (#3850). The version is stamped into the
+vendored `pyproject.toml` at tarball-build time now
+(`nyxgpt.release_tarball._vendor_pyproject`), and both API formulas'
+`brew test` blocks assert the keg reports its own version.
+
+`web/package.json` is deliberately **not** stamped: npm versions are semver
+(`3.0.0rc13` is not one), `package.json` and `package-lock.json` must agree
+or the formula's `npm ci` refuses, and the web keg's channel already comes
+from its formula name.
 
 ### Why `@3.0.0rc` and not `@rc` or `-rc`
 
@@ -1099,6 +1125,33 @@ PATH reaches it.
    ```bash
    "$(brew --prefix nyxgpt-api)/libexec/venv/bin/nyxgpt" ops status
    ```
+
+### A candidate install pulled in the stable formulas too
+
+**Symptom**: after `brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc` and
+`nyxgpt up`, `brew list --versions` shows **four** kegs -- the candidate pair
+*and* `nyxgpt-api`/`nyxgpt-web` at the last stable release -- and
+`brew services list` shows the stable pair running. The UI looks like an
+older nyxGPT than the one you installed, typically reported as a feature
+that has gone missing.
+
+**Cause**: a candidate keg built before the tarball carried the candidate
+version (#3850). It reported the stable version, so `nyxgpt up` read that as
+"this machine is on the stable channel" and reconciled the stable formulas.
+Confirm with `nyxgpt --version`: on an affected keg it prints the release
+line (`3.0.0`) rather than the candidate (`3.0.0rc13`).
+
+**Solution**: remove the stable pair, then upgrade the candidate to a keg
+that reports itself correctly.
+
+```bash
+nyxgpt down
+brew uninstall nyxgpt-api nyxgpt-web
+brew update && brew upgrade nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+# Confirm the keg now names the candidate before starting anything:
+nyxgpt --version
+nyxgpt up
+```
 
 ### Web UI can't connect to API
 

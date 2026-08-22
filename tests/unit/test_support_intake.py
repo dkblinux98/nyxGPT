@@ -24,10 +24,16 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from nyxgpt import support
+from nyxgpt import api_models, support
+from nyxgpt import app as app_module
 from nyxgpt.app import api, app
 
 pytestmark = pytest.mark.unit
+
+# The web route the menu links to. A literal, because it is the Next.js
+# page's path and nothing in the Python package routes it -- the docstrings
+# below are the only place the backend names it, which is why they drift.
+INTAKE_PAGE_ROUTE = "/support/new"
 
 ENV = {"version": "3.0.0", "platform": "Linux 6.8.0 (x86_64)", "python": "3.11.9"}
 
@@ -424,3 +430,35 @@ def test_filing_is_the_only_write_on_the_support_surface():
 
     tickets = next(r for r in support_routes if getattr(r, "path", "") == support.SUBMIT_ROUTE)
     assert set(getattr(tickets, "methods", set())) == {"POST"}
+
+
+def test_the_intake_documents_itself_as_a_page_not_as_a_dialog_in_the_chat():
+    """Every docstring describing the intake names the page it actually is.
+
+    This guards a defect that has now recurred, not a matter of style. The
+    first build of this intake was a dialog opened from the chat and the
+    owner failed it in acceptance: the surface is a route (`/support/new`)
+    reached by a menu entry that asks nothing and decides nothing. Three
+    docstrings describe that surface to the next reader; when the shape
+    changed, two were corrected and `SupportTicketRequest` was left saying
+    the filer answers "in the chat" -- a sentence that reads as current and
+    is false, which is how a rejected design survives into the next change.
+
+    So the claim is pinned where it can be checked mechanically: name the
+    route, and do not describe the intake as living in the chat.
+    """
+    documented = {
+        "nyxgpt.support module": support.__doc__,
+        "POST /support/tickets": app_module.support_file_ticket.__doc__,
+        "SupportTicketRequest": api_models.SupportTicketRequest.__doc__,
+    }
+
+    for name, doc in documented.items():
+        assert doc, f"{name} has no docstring to check"
+        assert (
+            INTAKE_PAGE_ROUTE in doc
+        ), f"{name} describes the intake without naming {INTAKE_PAGE_ROUTE}"
+        assert "in the chat" not in doc, (
+            f"{name} still says the filer answers 'in the chat'; the intake is "
+            f"the {INTAKE_PAGE_ROUTE} page (#3811 re-test)"
+        )

@@ -105,10 +105,10 @@ which is the complete, grouped list.
 
 **If you have nyxGPT installed, you already have the product docs.** They ship
 inside the package, so the web UI serves them under **Support → Docs** —
-no checkout, no internet. The Support menu's **File an Issue** entries open a
-report form *in the app* — pick the ticket type, say what happened, and nyxGPT
-files the ticket and links you to it, with your version and platform already
-attached (filing needs internet).
+no checkout, no internet. The Support menu's **File an Issue** entry opens a
+report page *in the app* — pick the ticket type, say what happened, and nyxGPT
+files the ticket and shows you a link to it, with your version and platform
+already attached (filing needs internet).
 
 Common starting points:
 

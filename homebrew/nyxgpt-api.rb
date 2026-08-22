@@ -607,14 +607,24 @@ PY
     # So run the command the docs tell the operator to run, through `bin` --
     # a CLI that exists only inside the keg's venv fails here.
     assert_predicate bin/"nyxgpt", :exist?
-    # `\d` and not the formula's own version: the tarball vendors pyproject.toml
-    # as-is, so the package metadata the CLI reports is the project version,
-    # which is deliberately not the candidate version stamped onto the formula.
     reported = shell_output("#{bin}/nyxgpt --version")
-    assert_match(/\Anyxgpt \d/, reported)
     # 0.0.0 is nyxgpt.version's "could not be determined" sentinel: the CLI
     # ran, but could not read its own installed metadata, and there is no
     # checkout in a keg to fall back to.
     refute_match(/\Anyxgpt 0\.0\.0/, reported)
+    # The keg has to report the version it IS, exactly (#3850, re-test).
+    # This used to be a loose `/\Anyxgpt \d/` with a comment explaining that
+    # the reported version deliberately differs from the formula's -- because
+    # the tarball vendored pyproject.toml verbatim, so a 3.0.0rc13 keg
+    # declared the release branch's stable 3.0.0. That comment was describing
+    # the defect. An artifact install has no checkout above the package, so
+    # this metadata is the only thing that says which channel the keg belongs
+    # to: `ops._native_service_version` reads it and `ops._remote_tap_formula`
+    # maps a version with no rc marker to the STABLE formula, so `nyxgpt up`
+    # from the candidate installed the stable pair beside it and started that
+    # instead. The tarball is stamped now (`release_tarball._vendor_pyproject`),
+    # which makes these two the same string -- so compare them, and let
+    # `brew test` be what catches a regression in the stamp.
+    assert_equal "nyxgpt #{version}", reported.strip()
   end
 end

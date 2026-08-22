@@ -301,16 +301,41 @@ and screenshots make verifiable in the review loop:
   frees `127.0.0.1:8000`, uninstalls k3s, frees 6443, and is a no-op on a
   second pass (which is what every first deploy runs). That last one is only
   meaningful with a cluster actually running, which is why it is here and not
-  in a unit test. Two of its steps are fault injections rather than happy
-  paths --
-  a Pod referencing a docker-built image is proved to fail before
+  in a unit test. Three of its steps carry fault injections rather than happy
+  paths -- an overlapping VPC network is proved to be refused with nothing
+  installed, a Pod referencing a docker-built image is proved to fail before
   `_k3s_import_image` and to run after it, and stopping the bridge is proved
-  to kill `127.0.0.1:8000` -- so neither assertion can pass by luck. What is
+  to kill `127.0.0.1:8000` -- so no assertion can pass by luck. What is
   genuinely left to owner acceptance is the part that requires being in AWS:
   the IMDSv2 read of the instance's private IPv4 (the runner exercises its
   documented non-EC2 fallback instead), the security group actually refusing
   everything but TCP 22, and the deploy's end-to-end wall-clock on real
   instance hardware.
+- **Being inside a VPC** -- which is the specific blindness that let #3956's
+  DNS collision through a green `k3s-cloud-smoke` run and into owner
+  acceptance. k3s's default pod network was byte-identical to the substrate's
+  default VPC CIDR; the CNI shadowed the VPC resolver, CoreDNS forwarded to
+  itself, its loop guard killed it, and the deploy surfaced the outage as an
+  unrelated `Ollama did not become ready in time`. No hosted runner sits in a
+  VPC, so the collision could not arise on the runner *and the job asserted
+  nothing that would have missed it*. Handled the way this document says such
+  gaps must be: the condition is **injected**. The bootstrap reads the VPC's
+  network from instance metadata with a documented `NYXGPT_VPC_CIDRS`
+  override, and the job feeds it three overlapping values and requires a
+  refusal with k3s uninstalled, then runs the real bootstrap with the
+  substrate's actual VPC default and measures the networks the *running*
+  cluster cut (the node's `podCIDR`, kube-dns's ClusterIP) plus CoreDNS
+  Available at zero restarts with no `plugin/loop` in its log. What remains
+  owner-only is the live AWS resolver at `169.254.169.253` answering, since
+  the link-local alias exists only inside a VPC.
+- **The Ollama Pod's model pull against a real registry.** The retry-and-
+  surface behaviour of `k8s/statefulset-ollama.yaml`'s `postStart` hook is
+  executed rather than inspected --
+  [`tests/unit/test_ollama_model_pull_hook.py`](../tests/unit/test_ollama_model_pull_hook.py)
+  extracts the hook script from the manifest and runs it under `sh` against a
+  stubbed `ollama`, asserting the exit status and output kubelet turns into a
+  `FailedPostStartHook` event. What that cannot cover is a real registry
+  outage on a real instance, which is owner acceptance.
 
 ## Verifying the gate
 
