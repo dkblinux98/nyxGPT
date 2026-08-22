@@ -222,9 +222,24 @@ type CloudConnection = {
   reason: string;
 };
 
+// Five sources, not three (#3993). 'deploy-attempt' is a deploy this machine
+// started and did not finish; 'substrate-record' is a provisioned instance
+// with no deploy recorded against it. Both are *known* -- this machine wrote
+// the record -- and neither is *deployed*, which is why the badge below reads
+// `deployed` and not `known`: reporting DEPLOYED for a provision that died
+// partway is the same class of lie the whole issue is about.
 type CloudDeployStatus = {
-  source: 'deploy-record' | 'local-instance' | 'none';
+  source: 'deploy-record' | 'local-instance' | 'deploy-attempt' | 'substrate-record' | 'none';
   known: boolean;
+  // The last deploy this machine started, whatever became of it (#3993).
+  // Absent on a payload from before that existed; `{}` means none was ever
+  // started here.
+  attempt?: {
+    status?: string;
+    phase?: string;
+    version?: string;
+    error?: string;
+  };
   on_instance: boolean;
   deployed: boolean;
   version: string;
@@ -1032,11 +1047,21 @@ export default function InfrastructurePage() {
                   without this the page would report a working-tree build as
                   though it were a published release. Same badge shape the
                   Native card uses for the local equivalent. */}
-              {cloud?.known && cloud.dev ? (
+              {cloud?.deployed && cloud.dev ? (
                 <span style={badgeStyle(false, false)}>DEV BUILD</span>
               ) : null}
-              <span style={badgeStyle(Boolean(cloud?.known), !cloud?.known)}>
-                {cloud?.known ? 'DEPLOYED' : 'UNKNOWN'}
+              {/* #3993: three verdicts, because there are three answers.
+                  Keying the badge off `known` alone said DEPLOYED for a
+                  deploy that died partway -- the failure family this issue
+                  exists to close. */}
+              <span style={badgeStyle(Boolean(cloud?.deployed), !cloud?.known)}>
+                {cloud?.deployed
+                  ? 'DEPLOYED'
+                  : cloud?.source === 'deploy-attempt'
+                    ? 'NOT COMPLETED'
+                    : cloud?.source === 'substrate-record'
+                      ? 'SUBSTRATE ONLY'
+                      : 'UNKNOWN'}
               </span>
             </div>
           </div>
@@ -1046,6 +1071,24 @@ export default function InfrastructurePage() {
               Unknown from this machine — no deploy has been recorded here and this is not the
               instance. Run <code>{cloud?.commands?.status ?? 'nyxgpt cloud status'}</code>{' '}
               where the deploy was run.
+            </p>
+          ) : !cloud.deployed ? (
+            /* #3993. Observable, never operable (D-017): this states what
+               exists and names the command that moves it forward, and drives
+               nothing itself. An instance is up and billing -- saying
+               "unknown" here sent the owner looking for another workstation
+               while their own state file named the instance. */
+            <p style={{ fontSize: '0.875rem' }}>
+              {cloud.source === 'deploy-attempt'
+                ? `A deploy started on this machine and did not finish${
+                    cloud.attempt?.phase ? ` — it stopped at the \`${cloud.attempt.phase}\` phase` : ''
+                  }${cloud.attempt?.error ? `: ${cloud.attempt.error}` : '.'}`
+                : 'A substrate is provisioned, but no deploy has been recorded against it.'}{' '}
+              An instance exists and is being billed — this is not the same as nothing being
+              deployed, and not the same as unknown. Re-run{' '}
+              <code>{cloud.commands?.deploy ?? 'nyxgpt cloud deploy'}</code> (idempotent), or{' '}
+              <code>{cloud.commands?.destroy ?? 'nyxgpt cloud destroy --yes'}</code> to tear it
+              down.
             </p>
           ) : (
             <>

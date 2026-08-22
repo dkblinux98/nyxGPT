@@ -590,15 +590,35 @@ def _load_cloud_state() -> dict[str, Any]:
 
 
 def write_cloud_state(outputs: dict[str, Any]) -> dict[str, Any]:
-    """Merge the substrate's Terraform outputs into the shared cloud state file.
+    """Replace this module's keys in the shared cloud state file with `outputs`.
 
     Only `STATE_KEYS` are touched; anything else another `nyxgpt cloud`
     command wrote is preserved. This is what makes `nyxgpt cloud allow-ip`
     work with no arguments right after provisioning.
+
+    Within `STATE_KEYS` this *replaces* rather than merges (#3993). The merge
+    it replaced only ever wrote keys the new outputs carried, so a key the
+    apply did not produce kept the previous substrate's value -- and the file
+    then described two substrates at once. Observed live: `state.json` naming
+    the new instance's id beside the destroyed substrate's `security_group_id`,
+    which sent `nyxgpt cloud allow-ip`'s auto-discovery at a group that no
+    longer existed, while the operator was locked out and depending on it. A
+    key with no value in the new outputs is *dropped*: "this substrate has no
+    such id" is an answer, and a stale id is worse than a missing one because
+    every consumer treats it as current.
+
+    Empty `outputs` is the one case that changes nothing. `terraform_outputs`
+    returns `{}` both for "no substrate yet" and for "the output read itself
+    failed", and blanking every recorded id because a *read* failed would be a
+    second, worse lie than the one this replace fixes -- the operator would be
+    told nothing is provisioned by a function that never asked AWS.
+    `apply_infra` reports that case rather than acting on it.
     """
-    state = _load_cloud_state()
+    if not outputs:
+        return _load_cloud_state()
+    state = {k: v for k, v in _load_cloud_state().items() if k not in STATE_KEYS}
     for key in STATE_KEYS:
-        if key in outputs and outputs[key] is not None:
+        if outputs.get(key) is not None:
             state[key] = outputs[key]
     CLOUD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     CLOUD_STATE_FILE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -665,7 +685,32 @@ def apply_infra(args: argparse.Namespace) -> dict[str, Any]:
     )
     outputs = terraform_outputs()
     state = write_cloud_state(outputs)
-    return {"action": "apply", "settings": settings.to_dict(), "outputs": outputs, "state": state}
+    # "Cannot determine" is its own outcome, distinct from success and from
+    # failure (#3993). The apply succeeded -- an instance exists and is being
+    # billed -- but nothing here could read what it produced, so every id
+    # `state.json` still holds describes some *earlier* substrate. Say so
+    # loudly instead of letting the deploy carry on treating stale ids as
+    # current; raising here would abort a deploy whose infrastructure is
+    # already up, which helps nobody.
+    if not outputs:
+        print(
+            "WARNING: the substrate applied, but `terraform output` returned nothing readable. "
+            f"{CLOUD_STATE_FILE} has NOT been refreshed, so any instance/security-group id it "
+            "holds is from an earlier substrate and must not be trusted. Re-run "
+            "`nyxgpt cloud infra apply` to refresh it; `nyxgpt cloud allow-ip "
+            "--security-group-id <id>` takes the id explicitly in the meantime.",
+            file=sys.stderr,
+        )
+    return {
+        "action": "apply",
+        "settings": settings.to_dict(),
+        "outputs": outputs,
+        "state": state,
+        # False means the ids in `state` describe an earlier substrate, not
+        # this apply's. Reported rather than inferred, so a caller never has
+        # to guess from an empty `outputs` dict.
+        "state_refreshed": bool(outputs),
+    }
 
 
 def destroy_infra(args: argparse.Namespace) -> dict[str, Any]:
