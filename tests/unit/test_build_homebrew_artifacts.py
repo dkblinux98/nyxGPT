@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -310,8 +311,13 @@ def _write_fake_source_tree(root: Path) -> Path:
     Stands in for a checkout of an old release tag: same layout, contents
     that could not possibly have come from this working tree.
     """
+    # The `version` line is not decoration: the builder stamps it to the
+    # version being built (#3850), and a source tree that has none is one it
+    # refuses rather than vendoring a tarball that declares nothing. A real
+    # checkout of a release tag always declares one, so a fixture without it
+    # was standing in for a tree that cannot exist.
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "nyxgpt-from-the-tag"\n', encoding="utf-8"
+        '[project]\nname = "nyxgpt-from-the-tag"\nversion = "0.0.1"\n', encoding="utf-8"
     )
     (root / "example.config.ini").write_text("[nyxgpt]\n; from the tag\n", encoding="utf-8")
     (root / "src" / "nyxgpt").mkdir(parents=True)
@@ -2134,3 +2140,189 @@ def test_the_published_tap_job_installs_both_formulas_the_owner_types():
 
     assert 'brew install --verbose "${TAP}/nyxgpt-api@${RELEASE}rc"' in script
     assert 'brew install --verbose "${TAP}/nyxgpt-web@${RELEASE}rc"' in script
+
+
+# --- #3850 (re-test): the tarball has to declare the version it is named for -
+#
+# The CLI-on-PATH half of #3850 held -- `/opt/homebrew/bin/nyxgpt` existed and
+# ran on the owner's rc13 install. What failed on re-test was what it *said*:
+# `nyxgpt --version` printed `nyxgpt 3.0.0` out of an
+# `nyxgpt-api@3.0.0rc/3.0.0rc13` keg, because the api tarball vendored the
+# release branch's pyproject.toml verbatim and a release branch declares the
+# stable version it is heading for.
+#
+# That is not a cosmetic mislabel. An artifact install has no checkout above
+# the package, so distribution metadata is the *only* thing that says which
+# channel a keg belongs to: `ops._native_service_version()` reads it and
+# `ops._remote_tap_formula()` maps a version with no `rc` marker to the stable
+# formula. So `nyxgpt up`, run from the rc13 keg, installed the stable 2.1.0
+# `nyxgpt-api`/`nyxgpt-web` pair beside the candidate and started that -- a
+# 2.1.0 web tier against a 3.0.0-line API, which the owner first read as a
+# missing product feature.
+#
+# These tests pin the stamp at the one place every consumer builds through,
+# and they pin the inverse claim too: the vendored file must NOT still carry
+# the checkout's own version.
+
+
+def _vendored_pyproject(artifacts_dir: Path, version: str) -> str:
+    """The `pyproject.toml` as it actually ships inside the api tarball."""
+    with tarfile.open(artifacts_dir / "dist" / f"nyxgpt-api-{version}.tar.gz") as tf:
+        member = tf.extractfile(f"nyxgpt-api-{version}/pyproject.toml")
+        assert member is not None
+        return member.read().decode("utf-8")
+
+
+def _declared_version(pyproject_text: str) -> str:
+    """`[project] version`, read the way pip will read it."""
+    return str(tomllib.loads(pyproject_text)["project"]["version"])
+
+
+def test_the_rc_tarball_declares_the_candidate_version(built_rc_artifacts):
+    """The exact assertion the owner's `nyxgpt --version` failed on re-test."""
+    assert _declared_version(_vendored_pyproject(built_rc_artifacts, "9.9.9rc4")) == "9.9.9rc4"
+
+
+def test_the_rc_tarball_does_not_declare_the_checkouts_own_version(built_rc_artifacts):
+    """The inverse claim, stated against the real defect rather than implied.
+
+    A test that only asserts "declares 9.9.9rc4" would also pass if the
+    builder happened to be handed a checkout already declaring it. What
+    shipped rc13 was the *checkout's* version surviving into the tarball, so
+    read this repo's own pyproject.toml and require that it did not.
+    """
+    checkout_version = _declared_version((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    vendored = _declared_version(_vendored_pyproject(built_rc_artifacts, "9.9.9rc4"))
+
+    assert vendored != checkout_version
+    assert "rc" in vendored, "an rc tarball with no rc marker routes ops to the stable channel"
+
+
+def test_the_stable_tarball_declares_the_release_version(built_artifacts):
+    """The stable channel gets the same guarantee, not a special case."""
+    assert _declared_version(_vendored_pyproject(built_artifacts, "9.9.9")) == "9.9.9"
+
+
+def test_the_backfilled_tarball_is_stamped_over_the_source_tags_version(backfilled_artifacts):
+    """`--source-root` vendors the tag's code, but the *build's* version wins.
+
+    The tag checkout declares whatever it declared when it was cut; the
+    artifact being published is 9.9.9. Publishing the tag's number instead
+    would put the same class of mislabel into a stable formula.
+    """
+    text = _vendored_pyproject(backfilled_artifacts, "9.9.9")
+
+    assert _declared_version(text) == "9.9.9"
+    # ...and the stamp rewrote one line, it did not replace the tag's file.
+    assert "nyxgpt-from-the-tag" in text
+
+
+def test_only_the_project_tables_version_is_stamped(built_rc_artifacts):
+    """A `version = ...` under a tool table is somebody else's setting.
+
+    `[tool.ruff] target-version` and friends are not the artifact's version;
+    a rewriter that matched them would silently reconfigure the build.
+    """
+    text = _vendored_pyproject(built_rc_artifacts, "9.9.9rc4")
+    data = tomllib.loads(text)
+
+    assert data["tool"]["ruff"]["target-version"] == "py311"
+    assert data["tool"]["black"]["target-version"] == ["py311"]
+    assert "9.9.9rc4" not in text.split("[tool.", 1)[1]
+
+
+def test_the_web_tarball_version_is_deliberately_not_stamped(built_rc_artifacts):
+    """Deliberate asymmetry, pinned so it is not "fixed" into a broken build.
+
+    Stamping `web/package.json` would break two things at once. npm versions
+    are semver, and `9.9.9rc4` is not one (`9.9.9-rc.4` would be) -- and
+    `package.json` and `package-lock.json` must agree or the formula's own
+    `npm ci` refuses to run, so a stamp would have to rewrite the lockfile
+    too. Nothing needs it either: the web keg's channel comes from the
+    formula name, and every version the product reports comes from the API's
+    python metadata, which IS stamped.
+    """
+    with tarfile.open(built_rc_artifacts / "dist" / "nyxgpt-web-9.9.9rc4.tar.gz") as tf:
+        member = tf.extractfile("nyxgpt-web-9.9.9rc4/package.json")
+        assert member is not None
+        package = json.loads(member.read().decode("utf-8"))
+
+    assert (
+        package["version"]
+        == json.loads((REPO_ROOT / "web" / "package.json").read_text(encoding="utf-8"))["version"]
+    )
+
+
+def test_a_source_tree_that_cannot_be_stamped_is_refused(tmp_path):
+    """Refuse loudly rather than vendor a tarball that declares nothing.
+
+    An unstampable pyproject.toml is how a keg ends up with no usable version
+    at all -- `nyxgpt.version`'s "0.0.0" sentinel -- which is the same failure
+    mode as the wrong version, minus the clue.
+    """
+    tree = tmp_path / "src-tree"
+    tree.mkdir()
+    source_root = _write_fake_source_tree(tree)
+    (source_root / "pyproject.toml").write_text('[project]\nname = "nyxgpt"\n', encoding="utf-8")
+
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "9.9.9",
+            str(tmp_path / "out"),
+            BASE_URL,
+            "--source-root",
+            str(source_root),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert cp.returncode != 0
+    assert "[project] table" in cp.stderr
+
+
+@pytest.mark.parametrize("which", sorted(_API_FORMULAS))
+def test_the_api_formulas_assert_the_reported_version_matches_the_keg(which):
+    """`brew test` has to compare against the formula's own version.
+
+    The block that shipped rc13 asserted `/\\Anyxgpt \\d/` and carried a
+    comment explaining that the reported version deliberately differs from
+    the formula's. That comment was describing the defect. Now that the
+    tarball is stamped the two are the same string, and asserting equality is
+    what makes `brew test` catch a regression in the stamp -- on the exact
+    keg, with no CI plumbing needed.
+    """
+    block = _test_block(_API_FORMULAS[which].read_text(encoding="utf-8"))
+
+    assert any(
+        'assert_equal "nyxgpt #{version}", reported.strip()' in line for line in block
+    ), block
+    # The loose shape assertion it replaces would pass on the rc13 keg.
+    assert not any("Anyxgpt \\d" in line for line in block), block
+
+
+def test_the_keg_install_job_proves_the_candidate_keg_reports_the_candidate():
+    """Executed evidence for the stamp, on macOS, by the operator's command."""
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
+
+    # The build-time half: the tarball the runner just built declares the rc.
+    assert "nyxgpt-api-${SMOKE_VERSION}/pyproject.toml" in script
+    # The operator-facing half, through the command a user types...
+    assert "reported_version_is() {" in script
+    assert 'REPORTED="$(nyxgpt --version)"' in script
+    # ...its negative control, fed the exact string the pre-fix keg printed...
+    assert 'reported_version_is "nyxgpt ${SMOKE_VERSION%%rc*}"' in script
+    assert "it tests nothing" in script
+    # ...and the consequence, at the function that made the wrong call.
+    assert "ops._remote_tap_formula" in script
+    assert "ops._native_service_version()" in script
+
+
+def test_the_published_tap_job_asserts_the_installed_keg_reports_the_candidate():
+    """The owner's literal path is the published tap, not the working tree."""
+    script = _job_run_script(_macos_smoke_workflow()["jobs"]["published-tap"])
+
+    assert 'test "$REPORTED" = "nyxgpt ${VERSION}"' in script

@@ -21,6 +21,16 @@ pins that -- it runs the script with every non-stdlib import blocked, so
 adding a third-party import anywhere in this module's closure fails in CI
 rather than mid-release.
 
+The one import here that is not stdlib is
+`nyxgpt.release_candidate.pin_version` (#3850), and it is inside that boundary
+rather than a hole in it: `release_candidate`'s own top-level imports are all
+stdlib, and its only third-party dependency (httpx) is imported lazily, inside
+the two functions that call PyPI. What keeps that true is not this paragraph
+but `test_build_script_runs_end_to_end_with_third_party_imports_blocked`,
+which executes the release script with every non-nyxGPT third-party import
+blocked -- so hoisting httpx to `release_candidate`'s top level fails in CI
+here rather than mid-release, which is the way #3741 was found.
+
 `nyxgpt.ops` re-exports these names, so `ops._create_dist_tarball` and
 friends keep working for the local file:// tap install path.
 """
@@ -31,6 +41,8 @@ import hashlib
 import shutil
 import tarfile
 from pathlib import Path
+
+from nyxgpt.release_candidate import pin_version
 
 # Repo root: .../nyxGPT/src/nyxgpt/release_tarball.py -> parents[2].
 #
@@ -150,6 +162,47 @@ def _vendor_tree(src: Path, dst: Path, *, excludes: frozenset[str] = frozenset()
     shutil.copytree(src, dst, ignore=_ignore)
 
 
+def _vendor_pyproject(src: Path, dst: Path, version: str) -> None:
+    """Copy `pyproject.toml` into the tarball, stamped to the tarball's version.
+
+    A verbatim copy is what shipped #3850's second failure. An rc tarball
+    vendors the release branch's own `pyproject.toml`, and a release branch
+    declares the *stable* version it is heading for -- so the `3.0.0rc13`
+    tarball carried `version = "3.0.0"`, and the keg's `pip install`
+    registered distribution metadata claiming to be the stable release.
+
+    Nothing downstream can recover from that, because metadata is the only
+    thing an artifact install has: there is no checkout above the package to
+    disagree with it. `nyxgpt --version`, `GET /api/v1/info` and `ops status`
+    all read it, and -- the expensive one -- `ops._native_service_version()`
+    feeds it to `ops._remote_tap_formula()`, which maps a version with no
+    `rc` marker to the *stable* formula name. So `nyxgpt up`, run from an
+    rc13 keg, installed the stable `nyxgpt-api`/`nyxgpt-web` pair beside the
+    candidate and started that instead, leaving a 2.1.0 web tier talking to a
+    3.0.0-line API. The owner reported it as a missing feature, not as the
+    channel mix-up it was.
+
+    So the version a tarball declares is not cosmetic bookkeeping: it is the
+    only thing that tells an installed keg which channel it belongs to.
+    Stamping it here, where the tarball is assembled, is the single point that
+    covers every consumer -- the published tap, the local `file://` tap and
+    the release tooling all build through this function.
+
+    `pin_version` rather than a second rewriter of the same line: the PyPI
+    publish path already pins it for exactly this reason
+    (`release-publish-pypi.yml`, "Resolve the version and pin
+    pyproject.toml"), and two implementations of "what version does this
+    artifact claim to be" are how the wheel and the keg would come to
+    disagree about one release. It also refuses a version it does not
+    recognize, so a tarball can never be named one thing and declare another.
+
+    A dev / local `file://` tap build passes the version it just read out of
+    this same file, so the stamp is a no-op there and the vendored content is
+    unchanged.
+    """
+    dst.write_text(pin_version(src.read_text(encoding="utf-8"), version), encoding="utf-8")
+
+
 def _create_dist_tarball(
     tap_dir: Path, name: str, version: str, source_root: Path | None = None
 ) -> Path:
@@ -191,7 +244,7 @@ def _create_dist_tarball(
         _vendor_tree(src_root / "web", root, excludes=_WEB_VENDOR_EXCLUDES)
     else:
         _vendor_tree(src_root / "src" / "nyxgpt", root / "src" / "nyxgpt")
-        shutil.copy2(src_root / "pyproject.toml", root / "pyproject.toml")
+        _vendor_pyproject(src_root / "pyproject.toml", root / "pyproject.toml", version)
         # config_wizard builds its schema from example.config.ini at import
         # time (#3388), so `import nyxgpt.app` needs the file present. A venv
         # install has no repo root above the package, so ship the template in

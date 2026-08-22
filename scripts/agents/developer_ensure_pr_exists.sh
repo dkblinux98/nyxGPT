@@ -14,6 +14,14 @@ The backstop that closes #3862's first defect: work reached `origin` and no
 pull request was ever opened, so it was never reviewed, never merged and
 never cleaned up.
 
+With `branch` given, that one branch is checked. WITHOUT it, the branches are
+DISCOVERED -- from origin and from the workspace's local refs -- rather than
+read off the working tree. That distinction is the whole of #3862's second
+round: `git branch --show-current` names a branch `claude-code-action` created
+seconds ago for its own use, not the branch that carries the work. See the
+"Branch DISCOVERY" comment below the argument parsing for the run that proved
+it.
+
 WHY THIS EXISTS. developer_auto_implement.yml pushes the work branch twice
 before any PR is possible -- once at creation (developer_create_branch.sh) and
 once from "Snapshot uncommitted implementation work", which is deliberate: a
@@ -24,8 +32,8 @@ escalation, a usage-limit abort, the job timing out -- leaves a branch on the
 remote with no PR. Three branches sat there for weeks that way, two of them
 holding the only copy of 438 lines of test coverage.
 
-Run this with `if: always()` at the end of the job. For the branch the run was
-working on it does exactly one of three things:
+Run this with `if: always()` at the end of the job. For each branch it finds
+it does exactly one of three things:
 
   1. **Nothing reached the remote** (no such branch on origin) -> nothing to do.
   2. **The branch's content is provably already on the release branch**
@@ -75,16 +83,112 @@ if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
 
 ISSUE="${1:-}"
 if [[ -z "$ISSUE" ]]; then usage >&2; exit 2; fi
+# Digits only: the issue number is interpolated into the branch-discovery
+# regexes below and into REST paths. Anything else is a caller bug, and a
+# caller bug must not become a pattern that matches branches at random.
+if [[ ! "$ISSUE" =~ ^[0-9]+$ ]]; then
+  echo "[ensure-pr] '${ISSUE}' is not an issue number." >&2
+  exit 2
+fi
 
 load_config
 require_gh_auth
 require_cmd git
 require_cmd jq
 
+# >>> branch-discovery (#3862 round 2) >>>
+# The sentinels are load-bearing: tests/test_ensure_pr_exists.sh case 4b cuts
+# everything between them out and restores the retired `git branch
+# --show-current` form, to show the same fixture going unrescued without this
+# block. A check that cannot fail proves nothing (#3775), and this one has
+# already passed once over a live defect.
+# ----------------------------------------------------------------------
+# Branch DISCOVERY (#3862, second round).
+#
+# WHY THIS IS NOT `git branch --show-current`. That is what the first cut
+# did, and it is why the backstop was still standing there while
+# `claude/issue-3956-20260819-1943` reached origin, held 3956's only copy of
+# its work, got no PR, and was merged by hand two days later.
+#
+# Run 32291977186 (job 96194626814), read end to end:
+#
+#   19:43:28  Creating local branch claude/issue-3956-20260819-1943 ...
+#   19:55:29  git-push.sh origin claude/issue-3956-20260819-1943   <- the work
+#   20:04:46  Submit PR for review -> FAILS (issue #3956 is CLOSED)
+#   20:04:56  Creating local branch claude/issue-3956-20260819-2004 ...
+#   20:07:23  [ensure-pr] claude/issue-3956-20260819-2004 never reached
+#             origin; nothing to review or clean up.
+#
+# The step ran. `always()` held. The guard fired. It was simply aimed at the
+# wrong branch: `claude-code-action` creates and checks out a FRESH
+# `claude/issue-<n>-<timestamp>` branch on every invocation, and this workflow
+# invokes it six times -- including "Deep analysis with Claude (Phase 3)",
+# which runs *after* a failed step, i.e. on exactly the path this backstop
+# exists to cover. So on the failure path the workspace's current branch is
+# always a never-pushed decoy created seconds earlier, and the branch carrying
+# the work is no longer checked out anywhere. Deriving the target from the
+# working tree at the end of the job is therefore not merely fragile; it is
+# guaranteed wrong in the case that matters.
+#
+# The remote is the authority instead. With no explicit branch argument the
+# candidate set is the union of:
+#
+#   * the current branch (the previous contract, kept -- it can only add),
+#   * every LOCAL branch this run left behind whose name carries this issue
+#     number, which captures each branch claude-code-action created regardless
+#     of what it decided to call it, and
+#   * every branch ON ORIGIN matching the naming conventions the agent loop
+#     uses -- the same set cleanup_superseded_branches sweeps, so the two
+#     halves of D-013 (rescue and cleanup) look at identical candidates.
+#
+# Every candidate then goes through the unchanged single-branch logic below,
+# one child process each, so one branch's transient API failure cannot stop
+# the others from being rescued. An explicit branch argument still means
+# exactly that branch.
+# ----------------------------------------------------------------------
+if [[ -z "${2:-}" ]]; then
+  candidates="$(
+    {
+      git branch --show-current 2>/dev/null || true
+      # Name-agnostic, issue-scoped: the issue number must appear delimited by
+      # non-digits, so `claude/issue-3956-20260819-1943` matches for 3956 and
+      # nothing matches for 819 or 2026 on the strength of the date stamp.
+      git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null \
+        | grep -E "(^|[^0-9])${ISSUE}([^0-9]|\$)" || true
+      git ls-remote --heads origin 2>/dev/null | awk '{print $2}' \
+        | sed 's#^refs/heads/##' \
+        | grep -E "^(feat|fix|chore)/${ISSUE}-|^claude/issue-${ISSUE}-" || true
+    } | grep -v '^$' | sort -u
+  )"
+
+  if [[ -z "$candidates" ]]; then
+    echo "[ensure-pr] No branch on origin or in this workspace belongs to #${ISSUE}; nothing to check." >&2
+    exit 0
+  fi
+
+  echo "[ensure-pr] Candidate branches for #${ISSUE}:" >&2
+  echo "$candidates" | sed 's/^/[ensure-pr]   /' >&2
+
+  rc=0
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    if [[ "$DRY_RUN" == "1" ]]; then
+      "$0" --dry-run "$ISSUE" "$candidate" || rc=$?
+    else
+      "$0" "$ISSUE" "$candidate" || rc=$?
+    fi
+  done <<< "$candidates"
+  # Reported, never propagated: this runs `if: always()` as the last step of
+  # the developer job.
+  [[ "$rc" == "0" ]] || _warn "At least one candidate branch could not be processed (last rc=${rc})."
+  exit 0
+fi
+# <<< branch-discovery (#3862 round 2) <<<
+
 REPO="${REPO_OWNER}/${REPO_NAME}"
 BASE_BRANCH="$(get_release_branch)"
 
-BRANCH="${2:-$(git branch --show-current 2>/dev/null || true)}"
+BRANCH="$2"
 
 if [[ -z "$BRANCH" || "$BRANCH" == "HEAD" ]]; then
   echo "[ensure-pr] Detached HEAD and no branch argument; nothing to check." >&2

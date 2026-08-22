@@ -884,7 +884,7 @@ Shape fixed by two approved decision records, not by configuration:
 | VPC | `10.42.0.0/16` by default, DNS support + hostnames on |
 | Public subnet(s) | one `10.42.1.0/24` subnet by default, plus an internet gateway and default route — the instance needs a routable address for SSH |
 | Security group | **exactly one inbound rule: TCP 22 from your IP.** Egress is open outbound (package/artifact/image/model downloads) |
-| EC2 instance | one `m5.large` (per [`DECISION_AWS_COMPUTE_SUBSTRATE.md`](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)), IMDSv2 required, encrypted gp3 root volume, Elastic IP so the address survives stop/start |
+| EC2 instance | one `m5.xlarge` (4 vCPU / 16 GiB, per [`DECISION_AWS_COMPUTE_SUBSTRATE.md`](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)), IMDSv2 required, encrypted gp3 root volume, Elastic IP so the address survives stop/start |
 
 There is no EKS cluster, node group, load balancer, or NAT gateway: a single
 owner reaching a single private deployment needs none of them, and an ALB
@@ -951,8 +951,34 @@ below for why a re-apply is not the way to change it.
 Provisioning uses boto3-style credential resolution via Terraform's AWS
 provider — the profile from `nyxgpt cloud credentials-setup` (below), or
 `--profile`/`AWS_PROFILE`. **This command creates billable resources**: an
-`m5.large` on-demand is roughly $70/month plus EBS and the Elastic IP;
-`nyxgpt cloud infra destroy --yes` removes all of it.
+`m5.xlarge` on-demand is roughly **$140/month** (~$0.192/hr) plus EBS and the
+Elastic IP; `nyxgpt cloud infra destroy --yes` removes all of it. That is
+double the old `m5.large` default, and the doubling is deliberate — see
+[Instance sizing](#instance-sizing).
+
+### Instance sizing
+
+The default is `m5.xlarge` (4 vCPU / 16 GiB). The previous `m5.large` default
+(2 vCPU / 8 GiB) could not hold what a deploy puts on the box: Cassandra's
+untuned JVM alone takes ~4.3 GiB, and with the web tier, Ollama and the
+observability stack the instance sat at 7.2 of 7.6 GiB minutes after boot with
+no swap. Ordinary use then froze it — a web route compile, a page navigation
+or a document ingest each drove it into reclaim thrash, invisible to EC2
+status checks and with no OOM kill to diagnose from (#3992).
+
+**An existing deployment is not resized by upgrading nyxGPT.** Every
+`nyxgpt cloud infra plan`/`apply` records the size it used in
+`~/.nyxGPT/cloud/infra.json`, and a remembered value always beats the built-in
+default, so a substrate provisioned on `m5.large` stays on `m5.large` until
+you say otherwise. To take the new size on an existing instance, ask for it:
+
+```bash
+nyxgpt cloud infra apply --instance-type m5.xlarge
+```
+
+That stops the instance, resizes it and starts it again — the root volume and
+the Elastic IP survive, but the stack is down for the restart, so run it when
+a short outage is acceptable. The new value is remembered from then on.
 
 ---
 
