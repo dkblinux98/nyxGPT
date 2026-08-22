@@ -1025,6 +1025,7 @@ slack_bot_token =
 slack_user_id =
 slack_huddle_channel =
 slack_conflict_channel =
+slack_channel =
 slack_user_token_dev =
 slack_user_token_review =
 slack_user_token_scrum =
@@ -1041,6 +1042,7 @@ slack_user_token_scrum =
 | `slack_user_id` | Slack member id the agent system DMs when an escalation needs the owner (#3695). Not a credential, but carried as the `SLACK_USER_ID` Actions secret, so it is synced and masked as one. |
 | `slack_huddle_channel` | Channel id the review huddle threads its conversation in (#3910). Pushed to the `SLACK_HUDDLE_CHANNEL` Actions **variable**, not a secret -- a channel id is world-readable in GitHub's settings by design, and masking it here would claim a protection the destination does not provide. Blank degrades the huddle to the PR transcript alone. |
 | `slack_conflict_channel` | Channel id `notify-merge-conflicts.yml` posts merge-conflict notices to (#3911). Pushed to the `SLACK_CONFLICT_CHANNEL` Actions **variable**, on the same reasoning as `slack_huddle_channel`. Deliberately its own key rather than a reuse of that one: conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change. Blank leaves the workflow's built-in fallback channel in place. |
+| `slack_channel` | Channel id **nyxGPT itself** posts runtime notifications to (#3995), read by the product rather than pushed to Actions -- which is what makes it different from the two channel ids above. Today its one consumer is the deferred EC2 Mac Dedicated Host release: `nyxgpt cloud destroy` hands it to a Step Functions state machine that reports, more than 24 hours later, whether the host was released. Blank falls back to `config.DEFAULT_SLACK_CHANNEL` (`C0ABH478QC8`) rather than degrading to no notification -- a message nobody is waiting for is exactly the one that must not be silently dropped. See [cloud.md](cloud.md#teardown-and-the-deferred-host-release). |
 | `slack_user_token_dev` / `slack_user_token_review` / `slack_user_token_scrum` | Per-agent Slack *user* tokens (`chat:write` user scope), one per huddle speaker, so each turn posts under its own identity instead of all three landing under one bot name (#3910). Write-once at Slack, like `slack_bot_token`. All three are optional: a missing token degrades that speaker only. |
 
 Requires the `monitoring` Compose profile (local Prometheus + Grafana),

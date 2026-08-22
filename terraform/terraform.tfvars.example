@@ -3,8 +3,8 @@
 #
 # `nyxgpt ops install --terraform --local` bootstraps this file for you at
 # ~/.nyxGPT/terraform/terraform.tfvars (filling auth_api_key in) and passes
-# the per-run variables -- api_image/web_image, build_from_source and, in dev
-# mode, repo_path -- on the command line, so they are deliberately absent
+# the per-run variables -- api_image and web_image, the two tags it built
+# before the apply -- on the command line, so they are deliberately absent
 # here.
 
 auth_api_key = "REPLACE_WITH_A_REAL_KEY"

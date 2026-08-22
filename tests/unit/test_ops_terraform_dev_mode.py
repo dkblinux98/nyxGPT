@@ -8,8 +8,9 @@ last recorded. These tests cover the four claims the issue makes:
 
 - `--dev` is accepted and means "build the api/web images from this
   checkout's working tree", and is refused when there is no checkout;
-- without `--dev` the deploy runs published images and touches no checkout
-  -- neither for the images nor for the Terraform configuration itself;
+- without `--dev` the deploy builds its images from the published source
+  tarballs at this nyxGPT's own version (#3985) and touches no checkout --
+  neither for the images nor for the Terraform configuration itself;
 - the deployment records its own install mode, in its own marker, so a
   Terraform install can never restate the native services' mode (or
   overwrite the marker that decides how they are restarted);
@@ -170,69 +171,110 @@ def test_terraform_dev_marker_records_the_checkout(monkeypatch, checkout):
     assert state.checkout == str(checkout)
 
 
-# --- image resolution: published images, override, fallback ---
+# --- image resolution on the artifact path (#3985) ---
+#
+# The path used to `docker pull ghcr.io/dkblinux98/nyxgpt-{api,web}` at this
+# version and fall back to `:latest`. Both halves were broken for the builds
+# acceptance testing runs: an rc publishes no image at all (release-
+# artifacts.yml triggers on `released`), so the fallback silently deployed the
+# previous *stable* release; and the published images are amd64-only, so on
+# Apple Silicon even the fallback could not be pulled. It now builds from the
+# published source tarballs an rc *does* publish, exactly as the Kubernetes
+# artifact path does.
 
 
-def test_published_image_is_pulled_at_this_version(monkeypatch):
+def _stub_artifact_build(monkeypatch, *, staged: dict[str, str] | None = None):
+    """Stub the staging + docker build so these tests exercise resolution only."""
+    contexts: dict[str, str] = staged if staged is not None else {}
+
+    def fake_stage(service, context_name, root_dir):
+        contexts[service] = str(root_dir / service / context_name)
+        return root_dir / service / context_name
+
+    monkeypatch.setattr(ops, "_stage_artifact_build_context", fake_stage)
+    monkeypatch.setattr(ops, "_docker_build_if_needed", lambda *a, **k: "built")
+    return contexts
+
+
+def test_artifact_images_are_built_from_this_versions_published_tarballs(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(ops, "_native_service_version", lambda: "2.1.0")
-    pulls: list[list[str]] = []
+    _stub_artifact_build(monkeypatch)
 
-    def fake_run(cmd, check=True, **_k):
-        pulls.append(list(cmd))
-        return _cp()
+    images: dict[str, str] = {}
+    results = ops._build_terraform_artifact_images(images)
 
-    monkeypatch.setattr(ops, "_run", fake_run)
-    images, results = ops._pull_terraform_published_images()
-
+    assert all(r.ok for r in results), results
     assert images == {
-        "api": "ghcr.io/dkblinux98/nyxgpt-api:2.1.0",
-        "web": "ghcr.io/dkblinux98/nyxgpt-web:2.1.0",
+        "api": "nyxgpt-api:artifact-2.1.0",
+        "web": "nyxgpt-web:artifact-2.1.0",
     }
-    assert all(r.ok for r in results)
-    assert ["docker", "pull", "ghcr.io/dkblinux98/nyxgpt-api:2.1.0"] in pulls
 
 
-def test_unpublished_version_falls_back_and_says_so(monkeypatch):
-    """A release candidate has no images of its own (release-artifacts.yml runs
-    on `released`), so the fallback is real -- but it is version skew and the
-    result has to name it rather than quietly deploying another release."""
+def test_a_release_candidate_installs_at_its_own_version(monkeypatch):
+    """The whole point of #3985: an rc has no published container image, so a
+    path that could only pull one could never install a candidate. Building
+    from the tarball an rc *does* publish makes the requested version the
+    version that gets deployed."""
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
-    monkeypatch.setattr(ops, "_native_service_version", lambda: "3.0.0rc9")
+    monkeypatch.setattr(ops, "_native_service_version", lambda: "3.0.0rc13")
+    _stub_artifact_build(monkeypatch)
 
-    def fake_run(cmd, check=True, **_k):
-        if cmd[:2] == ["docker", "pull"] and cmd[2].endswith(":3.0.0rc9"):
-            return _cp(returncode=1, stderr="manifest unknown")
-        return _cp()
+    images: dict[str, str] = {}
+    results = ops._build_terraform_artifact_images(images)
 
-    monkeypatch.setattr(ops, "_run", fake_run)
-    images, results = ops._pull_terraform_published_images()
-
-    assert images["api"] == "ghcr.io/dkblinux98/nyxgpt-api:latest"
-    assert all(r.ok for r in results)
-    skew = [r for r in results if "is not published" in r.message]
-    assert skew and "NOT version 3.0.0rc9" in skew[0].details
+    assert all(r.ok for r in results), results
+    assert images["api"] == "nyxgpt-api:artifact-3.0.0rc13"
+    assert images["web"] == "nyxgpt-web:artifact-3.0.0rc13"
+    # No other release may appear anywhere in what gets deployed or reported.
+    assert not any("latest" in ref for ref in images.values())
+    assert not any("latest" in (r.details or "") for r in results)
 
 
-def test_no_pullable_image_fails_with_the_two_ways_out(monkeypatch):
+def test_the_artifact_tag_collides_with_neither_dev_nor_canary(monkeypatch):
+    """`nyxgpt-api:local` is dev mode's tag here and the Kubernetes install's
+    (`K8S_IMAGE`); `nyxgpt-api:<version>` is what `nyxgpt canary deploy`
+    builds (`canary.IMAGE_REPOSITORY`). Sharing either would let one path
+    overwrite another path's image on the same daemon."""
+    ref = ops._terraform_artifact_image_ref("api", "3.0.0rc13")
+    assert ref not in (ops.TF_API_IMAGE, ops.K8S_IMAGE, "nyxgpt-api:3.0.0rc13")
+    assert "3.0.0rc13" in ref
+
+
+def test_an_unresolvable_artifact_fails_naming_the_version_it_wanted(monkeypatch):
+    """No fallback: substituting another release is the defect being fixed."""
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(ops, "_native_service_version", lambda: "9.9.9")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: _cp(returncode=1, stderr="nope"))
 
-    images, results = ops._pull_terraform_published_images()
+    def boom(service, context_name, root_dir):
+        raise RuntimeError("no such release asset")
+
+    monkeypatch.setattr(ops, "_stage_artifact_build_context", boom)
+    monkeypatch.setattr(
+        ops, "_docker_build_if_needed", lambda *a, **k: pytest.fail("nothing should be built")
+    )
+
+    images: dict[str, str] = {}
+    results = ops._build_terraform_artifact_images(images)
 
     assert images == {}
     failure = next(r for r in results if not r.ok)
+    assert "9.9.9" in failure.message
     assert "NYXGPT_TF_API_IMAGE" in failure.details
     assert "--dev" in failure.details
 
 
-def test_staged_image_override_is_used_without_pulling(monkeypatch):
+def test_staged_image_override_is_used_without_building(monkeypatch):
     """The `NYXGPT_TF_*_IMAGE` override mirrors NYXGPT_ARTIFACT_DIR for the
     native tarballs: an image already in the local daemon is the artifact."""
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setenv("NYXGPT_TF_API_IMAGE", "staged/nyxgpt-api:under-test")
     monkeypatch.setenv("NYXGPT_TF_WEB_IMAGE", "staged/nyxgpt-web:under-test")
+    monkeypatch.setattr(
+        ops,
+        "_stage_artifact_build_context",
+        lambda *a, **k: pytest.fail("an overridden image must not be rebuilt"),
+    )
     calls: list[list[str]] = []
 
     def fake_run(cmd, check=True, **_k):
@@ -240,16 +282,36 @@ def test_staged_image_override_is_used_without_pulling(monkeypatch):
         return _cp()
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    images, results = ops._pull_terraform_published_images()
+    images: dict[str, str] = {}
+    results = ops._build_terraform_artifact_images(images)
 
     assert images["api"] == "staged/nyxgpt-api:under-test"
     assert all(r.ok for r in results)
     assert not any(cmd[:2] == ["docker", "pull"] for cmd in calls)
 
 
+def test_an_unreachable_override_fails_rather_than_falling_back(monkeypatch):
+    """An operator who named an image must get that image or an error."""
+    monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setenv("NYXGPT_TF_API_IMAGE", "staged/nyxgpt-api:missing")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: _cp(returncode=1, stderr="nope"))
+    monkeypatch.setattr(
+        ops,
+        "_stage_artifact_build_context",
+        lambda *a, **k: pytest.fail("an overridden image must not fall back to the tarball build"),
+    )
+
+    images: dict[str, str] = {}
+    results = ops._build_terraform_artifact_images(images)
+
+    assert images == {}
+    assert not results[-1].ok
+
+
 def test_image_resolution_without_docker_fails_rather_than_guessing(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda tool: None)
-    images, results = ops._pull_terraform_published_images()
+    images: dict[str, str] = {}
+    results = ops._build_terraform_artifact_images(images)
     assert images == {}
     assert not results[0].ok
 
@@ -257,23 +319,22 @@ def test_image_resolution_without_docker_fails_rather_than_guessing(monkeypatch)
 # --- what reaches `terraform plan` ---
 
 
-def test_artifact_plan_passes_published_images_and_no_build(monkeypatch, checkout):
+def test_the_plan_carries_only_the_image_refs(monkeypatch, checkout):
+    """#3984: `build_from_source`/`repo_path` are retired along with the
+    provider-side build, so the images are the entire mode-dependent surface
+    and no build context ever crosses into the plan -- in either mode."""
     monkeypatch.setattr(ops, "REPO_ROOT", checkout)
-    args = ops._terraform_image_vars(
-        {"api": "ghcr.io/x/nyxgpt-api:1", "web": "ghcr.io/x/nyxgpt-web:1"}, dev=False
-    )
-    assert "-var=build_from_source=false" in args
-    assert "-var=api_image=ghcr.io/x/nyxgpt-api:1" in args
-    # The build context is what makes a deploy need a checkout -- the
-    # artifact path must not send one at all.
-    assert not any(a.startswith("-var=repo_path=") for a in args)
-
-
-def test_dev_plan_builds_from_the_checkout(monkeypatch, checkout):
-    monkeypatch.setattr(ops, "REPO_ROOT", checkout)
-    args = ops._terraform_image_vars({"api": "nyxgpt-api:local", "web": "nyxgpt-web:local"}, True)
-    assert "-var=build_from_source=true" in args
-    assert f"-var=repo_path={checkout}" in args
+    for images in (
+        {"api": "nyxgpt-api:artifact-3.0.0rc13", "web": "nyxgpt-web:artifact-3.0.0rc13"},
+        {"api": "nyxgpt-api:local", "web": "nyxgpt-web:local"},
+    ):
+        args = ops._terraform_image_vars(images)
+        assert args == [
+            f"-var=api_image={images['api']}",
+            f"-var=web_image={images['web']}",
+        ]
+        assert not any("build_from_source" in a or "repo_path" in a for a in args)
+        assert not any(str(checkout) in a for a in args)
 
 
 # --- the configuration itself is packaged, not read from a checkout ---
@@ -394,33 +455,33 @@ def _stub_install_steps(monkeypatch):
     monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))
 
 
-def test_artifact_install_pulls_published_images_and_never_builds(monkeypatch):
+def test_artifact_install_builds_from_the_published_tarballs_not_the_tree(monkeypatch):
     _stub_install_steps(monkeypatch)
     built: list[str] = []
     monkeypatch.setattr(ops, "_build_terraform_docker_images", lambda: built.append("built") or [])
-    monkeypatch.setattr(
-        ops,
-        "_pull_terraform_published_images",
-        lambda: (
-            {"api": "ghcr.io/x/nyxgpt-api:1", "web": "ghcr.io/x/nyxgpt-web:1"},
-            [ops.OpsResult(True, "pulled")],
-        ),
-    )
-    applied: list[tuple] = []
+
+    def fake_artifact_images(images):
+        images.update({"api": "nyxgpt-api:artifact-1", "web": "nyxgpt-web:artifact-1"})
+        return [ops.OpsResult(True, "built from artifacts")]
+
+    monkeypatch.setattr(ops, "_build_terraform_artifact_images", fake_artifact_images)
+    applied: list[dict] = []
     monkeypatch.setattr(
         ops,
         "_terraform_init_plan_apply",
-        lambda images, dev: applied.append((images, dev)) or [ops.OpsResult(True, "applied")],
+        lambda images: applied.append(images) or [ops.OpsResult(True, "applied")],
     )
 
     results = ops.install_terraform_local(api_key="k")
 
     assert all(r.ok for r in results)
     assert built == []
-    assert applied == [({"api": "ghcr.io/x/nyxgpt-api:1", "web": "ghcr.io/x/nyxgpt-web:1"}, False)]
+    assert applied == [{"api": "nyxgpt-api:artifact-1", "web": "nyxgpt-web:artifact-1"}]
     recorded = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM)
     assert recorded.mode == install_mode.INSTALL_MODE_ARTIFACT
-    assert recorded.images["api"] == "ghcr.io/x/nyxgpt-api:1"
+    # `ops status` reads these refs back, so this is also what makes the
+    # deployment's *version* reportable (#3985).
+    assert recorded.images["api"] == "nyxgpt-api:artifact-1"
 
 
 def test_dev_install_builds_from_the_working_tree(monkeypatch, checkout):
@@ -434,21 +495,21 @@ def test_dev_install_builds_from_the_working_tree(monkeypatch, checkout):
     )
     monkeypatch.setattr(
         ops,
-        "_pull_terraform_published_images",
-        lambda: pytest.fail("dev mode must not pull published images"),
+        "_build_terraform_artifact_images",
+        lambda images: pytest.fail("dev mode must not build from the published artifacts"),
     )
-    applied: list[tuple] = []
+    applied: list[dict] = []
     monkeypatch.setattr(
         ops,
         "_terraform_init_plan_apply",
-        lambda images, dev: applied.append((images, dev)) or [ops.OpsResult(True, "applied")],
+        lambda images: applied.append(images) or [ops.OpsResult(True, "applied")],
     )
 
     results = ops._install_terraform_steps("k", dev=True)
 
     assert all(r.ok for r in results)
     assert built == ["built"]
-    assert applied == [({"api": ops.TF_API_IMAGE, "web": ops.TF_WEB_IMAGE}, True)]
+    assert applied == [{"api": ops.TF_API_IMAGE, "web": ops.TF_WEB_IMAGE}]
     assert install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM).is_dev is True
 
 
@@ -510,9 +571,9 @@ def test_down_destroys_with_the_recorded_images_and_never_builds(monkeypatch):
     destroy = next(cmd for cmd in commands if "destroy" in cmd)
     assert "-var=api_image=nyxgpt-api:local" in destroy
     # A dev deployment whose checkout has since been deleted must still be
-    # destroyable, so teardown never asks terraform to build anything.
-    assert "-var=build_from_source=false" in destroy
-    assert not any(a.startswith("-var=repo_path=") for a in destroy)
+    # destroyable. Since #3984 nothing in the configuration can build at all,
+    # so teardown cannot ask for a build even by accident.
+    assert not any("build_from_source" in a or "repo_path" in a for a in destroy)
 
 
 # --- reporting ---
