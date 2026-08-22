@@ -1412,7 +1412,7 @@ rather than mechanism, and nothing can enforce them.
   `.github/workflows/notify-merge-conflicts.yml`;
   `.github/workflows/slack-huddle-smoke.yml`.
 
-- **D-043** · 2026-08-22 · owner — **An acceptance failure attributable to one
+- **D-042** · 2026-08-22 · owner — **An acceptance failure attributable to one
   issue reopens that issue as the signal, and the rework is a separate issue
   that blocks it. The machinery does not implement this yet.**
 
