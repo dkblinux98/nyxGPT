@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTheme } from '../../contexts/ThemeContext';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
-import { formatVersion } from '../lib/version';
+import { channelLabel, describeStackVersions } from '../lib/version';
 
 type Info = {
   ollama_base_url: string;
@@ -14,6 +14,25 @@ type Info = {
   release_version: string | null;
   /** Agent tooling's configured release branch -- not the running version. */
   release_branch?: string | null;
+  /** Which tier `release_version` is: `stable`, `rc`, `dev`, `unknown` (#3982). */
+  release_channel?: string | null;
+  /** The web tier's own version, stamped in by the `/api/info` route (#3982). */
+  web_version?: string | null;
+  /** How `web_version` was established (#3982). */
+  web_version_source?: string | null;
+};
+
+/**
+ * Plain-English account of how the web tier's version was established
+ * (#3982). Shown because "unknown" on its own invites the operator to
+ * distrust the whole surface; naming the reason tells them whether to set
+ * `NYXGPT_WEB_VERSION` or whether they are simply on a dev server.
+ */
+const WEB_VERSION_SOURCE_LABEL: Record<string, string> = {
+  env: 'from NYXGPT_WEB_VERSION',
+  'homebrew-keg': 'from the installed Homebrew keg',
+  'native-build': 'from the native install build directory',
+  unknown: 'not identifiable on this install (set NYXGPT_WEB_VERSION to declare it)',
 };
 
 const cardStyle: React.CSSProperties = {
@@ -37,6 +56,12 @@ export default function GeneralSettings() {
   const [info, setInfo] = useState<Info | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Safe before `info` arrives: every field resolves to `unknown`, and the
+  // rows that read it only render inside the `info &&` branch below.
+  const stack = describeStackVersions({
+    apiVersion: info?.release_version,
+    webVersion: info?.web_version,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -124,10 +149,50 @@ export default function GeneralSettings() {
 
         {info && (
           <div>
+            {/* Both tiers, always -- not only when they disagree (#3982).
+                The About surface is where an operator goes to answer "what
+                am I running?", and an answer that silently collapses two
+                separately installed services into one number is the defect
+                this screen now exists to make impossible. */}
             <div style={rowStyle}>
-              <span style={labelStyle}>Version</span>
-              <span style={valueStyle}>{formatVersion(info.release_version) || 'unknown'}</span>
+              <span style={labelStyle}>API Version</span>
+              <span style={valueStyle}>
+                {stack.apiVersion || 'unknown'}
+                {channelLabel(stack.apiChannel) ? ` (${channelLabel(stack.apiChannel)})` : ''}
+              </span>
             </div>
+            <div style={rowStyle}>
+              <span style={labelStyle}>Web UI Version</span>
+              <span style={valueStyle}>
+                {stack.webVersion || 'unknown'}
+                {channelLabel(stack.webChannel) ? ` (${channelLabel(stack.webChannel)})` : ''}
+              </span>
+            </div>
+            <div style={rowStyle}>
+              <span style={labelStyle}>Web UI Version Source</span>
+              <span style={valueStyle}>
+                {WEB_VERSION_SOURCE_LABEL[info.web_version_source ?? 'unknown'] ??
+                  info.web_version_source}
+              </span>
+            </div>
+            {stack.mismatch && (
+              <div
+                role="status"
+                data-testid="settings-version-mismatch"
+                style={{
+                  margin: '8px 0',
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  border: '1px solid var(--error-text)',
+                  background: 'var(--error-bg)',
+                  color: 'var(--error-text)',
+                  fontSize: 13,
+                }}
+              >
+                ⚠ {stack.detail}. The two tiers are separate installs; reconcile them
+                with <code>nyxgpt ops install</code>.
+              </div>
+            )}
             <div style={rowStyle}>
               <span style={labelStyle}>Default Model</span>
               <span style={valueStyle}>{info.default_model}</span>

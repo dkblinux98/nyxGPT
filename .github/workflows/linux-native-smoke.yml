@@ -21,7 +21,13 @@ name: Linux Native Smoke
 #                       have the model already. This is the review
 #                       agent's only way to see systemd-path regressions --
 #                       unit tests mock systemctl; this runs the real thing on
-#                       a real systemd userland.
+#                       a real systemd userland. Since #3982 it also asserts
+#                       the web tier reports its OWN version through
+#                       /api/info: that version is derived from the directory
+#                       the wrapper cd's into, so only a real install proves
+#                       the derivation matches where the server actually runs
+#                       (the dev-mode job asserts the inverse -- a working
+#                       tree must report `unknown`, never a release).
 #   linux-native-dev-smoke  Does the DEV install mode (#3789) actually run the
 #                       checkout, and does switching back to the artifact path
 #                       reconcile cleanly? Drives the same script with `--dev`:
@@ -90,6 +96,8 @@ on:
       - 'ops/systemd/**'
       - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'web/src/lib/webVersion.ts'
+      - 'web/src/app/api/info/route.ts'
       - 'scripts/ollama-bootstrap-smoke.py'
       - 'scripts/first-chat-smoke.py'
       - 'src/nyxgpt/model_bootstrap.py'
@@ -109,6 +117,8 @@ on:
       - 'ops/systemd/**'
       - 'ops/launchagents/**'
       - 'scripts/systemd-native-smoke.sh'
+      - 'web/src/lib/webVersion.ts'
+      - 'web/src/app/api/info/route.ts'
       - 'scripts/ollama-bootstrap-smoke.py'
       - 'scripts/first-chat-smoke.py'
       - 'src/nyxgpt/model_bootstrap.py'

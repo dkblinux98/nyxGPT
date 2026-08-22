@@ -399,15 +399,26 @@ Returns basic runtime configuration details.
   "ollama_base_url": "http://127.0.0.1:11434",
   "default_model": "llama3.1:8b",
   "sessions_dir": "/Users/you/.nyxGPT/sessions",
-  "release_version": "3.0.0",
-  "release_branch": "v3.0.0"
+  "release_version": "3.0.0rc13",
+  "release_branch": "v3.0.0",
+  "release_channel": "rc"
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `release_version` | Version of the installed `nyxgpt` package — the version actually running. Read from package metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. This is what the web UI's header badge displays. |
+| `release_version` | Version of the installed `nyxgpt` package — the version actually running. Read from package metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. Pre-release suffixes are carried verbatim (`3.0.0rc13`): that suffix is the entire difference between the candidate under acceptance and the release. |
 | `release_branch` | The agent tooling's `[github] RELEASE_BRANCH` config setting, or `null` if unset. A git branch name for the agent workflows — **not** the running version, and never used as one. |
+| `release_channel` | Which tier `release_version` belongs to: `stable`, `rc`, `dev` or `unknown` (#3982). Sent as its own field so every client agrees on whether an install is a candidate or a release, rather than each re-deriving it from the string and drifting. |
+
+**Note — the web UI's `/api/info` sees one extra pair of fields.** The Next.js
+proxy route stamps `web_version` and `web_version_source` into this payload as
+it passes through (#3982). They describe the *web tier* — a service installed
+separately from the API — and the API itself neither knows nor reports them. A
+2.1.0 web build serving against a 3.0.0-line API is a legitimate state of a
+machine and used to be an invisible one; the header now names both versions
+and warns when they differ. See
+[configuration.md](configuration.md) for `NYXGPT_WEB_VERSION`.
 
 ---
 

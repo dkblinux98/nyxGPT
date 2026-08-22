@@ -128,8 +128,78 @@ describe('GeneralSettings', () => {
 
     renderWithTheme();
 
+    // Two rows read "unknown" since #3982 -- the API's version and the web
+    // tier's -- because the About surface now names both tiers separately.
     await waitFor(() => {
-      expect(screen.getByText('unknown')).toBeInTheDocument();
+      expect(screen.getAllByText('unknown').length).toBeGreaterThan(0);
+    });
+  });
+
+  /**
+   * #3982: the About surface reported one version for two separately
+   * installed services. An operator asking "what am I running?" got the
+   * API's number and no way to see that the page asking the question came
+   * from a different build.
+   */
+  describe('stack tiers (#3982)', () => {
+    it('names the API and web versions as separate rows', async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...mockInfo,
+          release_version: '3.0.0rc13',
+          web_version: '3.0.0rc13',
+          web_version_source: 'homebrew-keg',
+        }),
+      });
+
+      renderWithTheme();
+
+      await waitFor(() => {
+        expect(screen.getByText('API Version')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Web UI Version')).toBeInTheDocument();
+      // rc suffix intact, tier named: the two questions the header could
+      // not answer during acceptance.
+      expect(screen.getAllByText('v3.0.0rc13 (rc)')).toHaveLength(2);
+      expect(screen.getByText('from the installed Homebrew keg')).toBeInTheDocument();
+    });
+
+    it('warns when the two tiers are different builds', async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...mockInfo,
+          release_version: '3.0.0',
+          web_version: '2.1.0',
+          web_version_source: 'homebrew-keg',
+        }),
+      });
+
+      renderWithTheme();
+
+      const warning = await screen.findByTestId('settings-version-mismatch');
+      expect(warning).toHaveTextContent('web v2.1.0');
+      expect(warning).toHaveTextContent('API v3.0.0');
+    });
+
+    it('does not warn on a matched stack', async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...mockInfo,
+          release_version: '3.0.0',
+          web_version: '3.0.0',
+          web_version_source: 'homebrew-keg',
+        }),
+      });
+
+      renderWithTheme();
+
+      await waitFor(() => {
+        expect(screen.getByText('API Version')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('settings-version-mismatch')).not.toBeInTheDocument();
     });
   });
 

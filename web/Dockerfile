@@ -31,6 +31,17 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# Which web build this image is (#3982). Server-side only, so unlike the
+# NEXT_PUBLIC_* vars above it belongs on the *runner* stage and needs no
+# rebuild to correct: `/api/info` reads it at request time and reports it
+# beside the API's own version, which is how a mixed web/API stack becomes
+# visible instead of silent. A container has no install directory to derive
+# it from -- the native paths do (Homebrew Cellar, the systemd build dir,
+# see web/src/lib/webVersion.ts) -- so here it must be declared. Left empty
+# by default rather than guessed: the UI says "unknown", which is true,
+# where a wrong number would not be.
+ARG NYXGPT_WEB_VERSION=""
+ENV NYXGPT_WEB_VERSION=${NYXGPT_WEB_VERSION}
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules

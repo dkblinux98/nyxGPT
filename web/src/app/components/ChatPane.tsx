@@ -5,7 +5,7 @@ import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
 import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
-import { formatVersion } from '../lib/version';
+import { StackMismatchWarning, VersionLabel } from './StackVersion';
 import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { apiErrorText } from '../../lib/apiError';
@@ -192,6 +192,13 @@ type Props = {
   onSessionUpdated?: () => void;
   scrollToMessageIndex?: number | null;
   releaseVersion?: string | null;
+  /**
+   * The web tier's own running version, resolved by the Next.js server that
+   * served this page (#3982). Distinct from `releaseVersion`, which is the
+   * API process's -- they are separately installed services and a stack can
+   * legitimately (or accidentally) be running two different builds.
+   */
+  webVersion?: string | null;
 };
 
 // Helper function to get score quality and color
@@ -429,7 +436,7 @@ type ChatStreamRequest = {
   attachments?: ChatAttachment[];
 };
 
-export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex, releaseVersion }: Props) {
+export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex, releaseVersion, webVersion }: Props) {
   const toast = useToast();
   const isMobile = useIsMobile();
   const [input, setInput] = useState('');
@@ -1625,34 +1632,41 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Model selector - ChatGPT style */}
       <div style={{ position: 'relative', marginBottom: 8 }}>
-        <button
-          onClick={() => !isStreaming && setShowModelDropdown(!showModelDropdown)}
-          disabled={isStreaming}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '8px 12px',
-            background: 'var(--background)',
-            border: '1px solid var(--border)',
-            borderRadius: 20,
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: isStreaming ? 'not-allowed' : 'pointer',
-            color: 'var(--foreground)',
-            transition: 'background 0.2s ease',
-          }}
-          onMouseEnter={(e) => {
-            if (!isStreaming) e.currentTarget.style.background = 'var(--button-hover)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'var(--background)';
-          }}
-        >
-          <span style={{ fontWeight: 600 }}>nyxGPT</span>
-          <span style={{ opacity: 0.6 }}>{formatVersion(releaseVersion)}</span>
-          <span style={{ opacity: 0.5, fontSize: 12, marginLeft: 2 }}>›</span>
-        </button>
+        {/* Button and stack warning share a row; the dropdown below stays
+            positioned against the outer `position: relative` wrapper, so the
+            extra flex row must not replace it (#3982). */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => !isStreaming && setShowModelDropdown(!showModelDropdown)}
+            disabled={isStreaming}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '8px 12px',
+              background: 'var(--background)',
+              border: '1px solid var(--border)',
+              borderRadius: 20,
+              fontSize: 14,
+              fontWeight: 500,
+              cursor: isStreaming ? 'not-allowed' : 'pointer',
+              color: 'var(--foreground)',
+              transition: 'background 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              if (!isStreaming) e.currentTarget.style.background = 'var(--button-hover)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'var(--background)';
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>nyxGPT</span>
+            <VersionLabel releaseVersion={releaseVersion} webVersion={webVersion} />
+            <span style={{ opacity: 0.5, fontSize: 12, marginLeft: 2 }}>›</span>
+          </button>
+
+          <StackMismatchWarning releaseVersion={releaseVersion} webVersion={webVersion} />
+        </div>
 
         {showModelDropdown && (
           <>
