@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud_deploy, cloud_infra
+from nyxgpt import cloud_deploy, cloud_infra, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 
 
@@ -30,6 +30,14 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", cloud_dir / "infra.json")
+    # #3995's EC2 Mac roots keep state of their own, and their module-level
+    # paths bind at import -- unpatched, `mac_state_exists()` would answer from
+    # the developer's real ~/.nyxGPT and a test would pass or fail depending on
+    # whose machine ran it.
+    monkeypatch.setattr(cloud_mac, "MAC_TFSTATE_FILE", cloud_dir / "mac.tfstate")
+    monkeypatch.setattr(cloud_mac, "MAC_RELEASE_TFSTATE_FILE", cloud_dir / "mac-release.tfstate")
+    monkeypatch.setattr(cloud_mac, "MAC_TFVARS_FILE", cloud_dir / "mac.tfvars")
+    monkeypatch.setattr(cloud_mac, "MAC_RELEASE_TFVARS_FILE", cloud_dir / "mac-release.tfvars")
     return cloud_dir
 
 
@@ -1857,21 +1865,41 @@ def test_provisioning_a_mac_does_not_claim_a_self_heal_watchdog(monkeypatch):
     assert seen["remote_command"].startswith("sudo -n ")
 
 
-def test_a_mac_deploy_with_nowhere_to_run_fails_before_anything_is_applied(stubbed_deploy):
-    with pytest.raises(CloudCommandError) as excinfo:
-        cloud_deploy.deploy(_args(os_family="macos"))
+def test_a_mac_deploy_with_no_host_offers_to_allocate_instead_of_refusing(
+    monkeypatch, stubbed_deploy, _isolated_cloud_home
+):
+    """#3995 replaced the refusal at `--os macos` with no `--host`. What used to
+    raise now allocates -- after a typed confirmation -- and never applies the
+    Linux substrate, which would bill for a box nothing deploys to."""
+    allocated = {}
 
-    message = str(excinfo.value)
-    # Nothing was applied: the failure costs the operator nothing.
-    assert stubbed_deploy == []
-    # It names the constraint and its price, per the issue's requirement that
-    # the wrapped flow surface the cost before allocating.
-    assert "Dedicated Host" in message
-    assert "24-hour minimum" in message
-    # And the way out is another wrapped command, never the console.
-    assert "nyxgpt cloud deploy --os macos --host" in message
-    for forbidden in ("console", "paste", "user-data"):
-        assert forbidden not in message.lower()
+    def _fake_allocate(args, *, assume_yes=False):
+        allocated["assume_yes"] = assume_yes
+        return {
+            "allocated": True,
+            "host_id": "h-0abc",
+            "instance_id": "i-0mac",
+            "public_ip": "203.0.113.7",
+            "security_group_id": "sg-0mac",
+            "region": "us-east-1",
+            "owner_ip_cidr": "198.51.100.5/32",
+            "release_at": "2026-08-23T18:30:00+00:00",
+        }
+
+    monkeypatch.setattr(cloud_mac, "allocate", _fake_allocate)
+
+    result = cloud_deploy.deploy(_args(os_family="macos", no_tunnel=True, yes=True))
+
+    # The Linux substrate is still never applied for a Mac.
+    assert stubbed_deploy == ["ssh", "provision"]
+    assert allocated["assume_yes"] is True
+    step = next(s for s in result["steps"] if s["step"] == "mac-host")
+    assert step["host_id"] == "h-0abc"
+    assert result["target"]["host"] == "203.0.113.7"
+    assert result["target"]["instance_id"] == "i-0mac"
+    recorded = json.loads((_isolated_cloud_home / "deploy.json").read_text())
+    assert recorded["mac_host_id"] == "h-0abc"
+    assert recorded["os_family"] == "macos"
 
 
 def test_a_supplied_mac_is_provisioned_without_applying_the_linux_substrate(

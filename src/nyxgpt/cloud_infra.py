@@ -414,8 +414,15 @@ def _run_terraform(
     *,
     capture: bool = False,
     extra_env: dict[str, str] | None = None,
+    chdir: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `terraform -chdir=<synced config> <arguments>`, raising on failure.
+
+    `chdir` overrides the substrate's configuration directory. It exists for
+    the EC2 Mac roots (#3995), which are separate root modules inside the same
+    synced tree with state files of their own -- the isolation that lets a
+    Dedicated Host outlive the teardown that terminated its instance without
+    the substrate's own destroy depending on it.
 
     stderr is always captured so a failure carries Terraform's own diagnostic
     into the raised error -- the dashboard only ever sees that message, and
@@ -425,7 +432,7 @@ def _run_terraform(
     Terraform's progress live rather than going silent for minutes.
     """
     binary = ensure_terraform_binary()
-    command = [binary, f"-chdir={TERRAFORM_DIR}", *arguments]
+    command = [binary, f"-chdir={chdir or TERRAFORM_DIR}", *arguments]
     env = {**os.environ, **(extra_env or {})}
     completed = subprocess.run(
         command,
@@ -449,16 +456,18 @@ def run_terraform(
     *,
     capture: bool = False,
     extra_env: dict[str, str] | None = None,
+    chdir: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Public entry point to `_run_terraform` for `nyxgpt.cloud_state`.
+    """Public entry point to `_run_terraform` for `nyxgpt.cloud_state`/`cloud_mac`.
 
-    That module drives Terraform's state subcommands (`state pull`, `state
-    push`, `force-unlock`) against this same synced configuration and must go
-    through the same runner, so failures carry Terraform's own diagnostic. A
-    delegating function rather than an alias: an alias would bind at import
-    and quietly bypass anything that replaces `_run_terraform` later.
+    Those modules drive Terraform against this same synced tree -- state
+    subcommands (`state pull`, `state push`, `force-unlock`) for the first, and
+    the EC2 Mac root modules under `mac/` and `mac-release/` for the second --
+    and must go through the same runner, so failures carry Terraform's own
+    diagnostic. A delegating function rather than an alias: an alias would bind
+    at import and quietly bypass anything that replaces `_run_terraform` later.
     """
-    return _run_terraform(arguments, capture=capture, extra_env=extra_env)
+    return _run_terraform(arguments, capture=capture, extra_env=extra_env, chdir=chdir)
 
 
 def _synced_config_fingerprint() -> str:
