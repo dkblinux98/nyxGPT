@@ -8241,11 +8241,15 @@ def _k8s_metrics_flow_result() -> OpsResult:
     try:
         targets = json.loads(body)["data"]["activeTargets"]
     except (ValueError, KeyError, TypeError):
-        return _no_data("observability metrics: Prometheus's target list was unreadable", body[:200])
+        return _no_data(
+            "observability metrics: Prometheus's target list was unreadable", body[:200]
+        )
 
     up = [t for t in targets if t.get("health") == "up"]
     if up:
-        return OpsResult(True, f"observability metrics: {len(up)}/{len(targets)} scrape target(s) up")
+        return OpsResult(
+            True, f"observability metrics: {len(up)}/{len(targets)} scrape target(s) up"
+        )
     return _no_data(
         "observability metrics: no scrape target is up",
         "Prometheus is running and collecting nothing; every Grafana metrics panel will be "

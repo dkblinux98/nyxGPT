@@ -1398,7 +1398,9 @@ def _provisionable_cluster(tmp_path, monkeypatch, *, dsn="http://key@localhost:8
     )
     monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {"glitchtip": "1/1 ready"})
+    monkeypatch.setattr(
+        ops, "_k8s_observability_workload_state", lambda: {"glitchtip": "1/1 ready"}
+    )
     monkeypatch.setattr(
         ops, "_k8s_glitchtip_ensure_superuser", lambda *a: ops.OpsResult(True, "superuser")
     )
@@ -1488,7 +1490,9 @@ def test_provisioning_skips_when_glitchtip_is_not_ready(monkeypatch) -> None:
     """A skip, not a failure: the app tier is fine without error tracking, and
     an install must not fail over a workload that is still rolling out."""
     monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {"glitchtip": "0/1 ready"})
+    monkeypatch.setattr(
+        ops, "_k8s_observability_workload_state", lambda: {"glitchtip": "0/1 ready"}
+    )
 
     results = ops._k8s_provision_glitchtip()
 
