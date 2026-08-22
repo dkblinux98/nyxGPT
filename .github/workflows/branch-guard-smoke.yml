@@ -79,6 +79,13 @@ jobs:
         # string it writes to the one developer_auto_implement.yml matches --
         # the coupling that stops a rescue draft from becoming permanent debris
         # whose head branch no cleanup may touch.
+        #
+        # #3862 round 2 adds the case that reopened the issue: the caller
+        # passes NO branch, because the branch the run pushed is not the one
+        # the workspace is standing on when the backstop fires. Its
+        # fault-injection half restores the retired `git branch
+        # --show-current` form and shows it rescuing nothing on the same
+        # fixture.
         run: bash tests/test_ensure_pr_exists.sh
 
       - name: The unit fixtures, including the rebased-but-landed ledger case

@@ -99,6 +99,26 @@ STATE_KEYS = (
 # supported install path (mirrors `nyxgpt.ops`'s local Terraform bootstrap).
 HASHICORP_TAP = "hashicorp/tap"
 
+# Sizing for the single-box substrate (#3992). `m5.large` (2 vCPU / 8 GiB) was
+# the original pick and cannot hold what `cloud deploy` puts on the box: owner
+# acceptance on 2026-08-22 measured 7.2 of 7.6 GiB consumed minutes after boot
+# (Cassandra's untuned JVM alone ~4.3 GiB) with no swap, so ordinary use -- a
+# web route compile, a page navigation, a RAG ingest -- drove the instance into
+# reclaim thrash and froze it interactively while EC2 status checks stayed
+# green and the OOM killer never fired. `m5.xlarge` (4 vCPU / 16 GiB) is the
+# shipped default; the reasoning lives in
+# product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md.
+#
+# Raising this default must never resize a substrate that already exists.
+# `_prepare` calls `save_settings` on every plan/apply, so a provisioned
+# deployment's `infra.json` names its own instance type and `resolve_settings`
+# prefers that over this constant -- an upgraded nyxGPT keeps the operator on
+# the size they are running. Adopting the new size is an explicit
+# `nyxgpt cloud infra apply --instance-type m5.xlarge`, which stops, resizes
+# and restarts the instance; doing that implicitly on someone's next
+# `cloud deploy` would be an unannounced outage on a live box.
+DEFAULT_INSTANCE_TYPE = "m5.xlarge"
+
 # Dummy credentials for `nyxgpt cloud infra test`, which runs the plan-level
 # suite in terraform/aws/tests/. Those run blocks set the provider's skip_*
 # escape hatches and pin an AMI, so nothing reaches AWS -- but the provider
@@ -119,7 +139,7 @@ class InfraSettings:
     owner_ip_cidr: str
     ssh_key_name: str = ""
     ssh_public_key: str = ""
-    instance_type: str = "m5.large"
+    instance_type: str = DEFAULT_INSTANCE_TYPE
     root_volume_size: int = 100
     aws_profile: str = ""
     name_prefix: str = "nyxgpt-tf"
@@ -258,7 +278,7 @@ def saved_settings() -> InfraSettings | None:
         owner_ip_cidr=str(saved["owner_ip_cidr"]),
         ssh_key_name=str(saved.get("ssh_key_name", "")),
         ssh_public_key=str(saved.get("ssh_public_key", "")),
-        instance_type=str(saved.get("instance_type") or "m5.large"),
+        instance_type=str(saved.get("instance_type") or DEFAULT_INSTANCE_TYPE),
         root_volume_size=int(saved.get("root_volume_size") or 100),
         aws_profile=str(saved.get("aws_profile", "")),
         name_prefix=str(saved.get("name_prefix") or "nyxgpt-tf"),
@@ -361,7 +381,9 @@ def resolve_settings(args: argparse.Namespace) -> InfraSettings:
         ssh_key_name=str(ssh_key_name),
         ssh_public_key=str(ssh_public_key),
         instance_type=str(
-            getattr(args, "instance_type", None) or saved.get("instance_type") or "m5.large"
+            getattr(args, "instance_type", None)
+            or saved.get("instance_type")
+            or DEFAULT_INSTANCE_TYPE
         ),
         root_volume_size=int(
             getattr(args, "root_volume_size", None) or saved.get("root_volume_size") or 100
