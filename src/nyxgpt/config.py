@@ -432,7 +432,7 @@ def get_default_model(cfg: ConfigParser) -> str:
 
     This setting is hot-reloadable via config.ini changes.
     """
-    return cfg.get("nyxgpt", "default_model", fallback="llama3.1:8b").strip()
+    return cfg.get("nyxgpt", "default_model", fallback="qwen3.5:0.8b").strip()
 
 
 def get_ollama_base_url(cfg: ConfigParser) -> str:
@@ -1601,6 +1601,14 @@ def resolve_grafana_admin_password(cfg: ConfigParser) -> str:
     return password
 
 
+# The Slack channel nyxGPT's runtime notifications land in when
+# `monitoring.slack_channel` is unset. A real default rather than "": the one
+# consumer today (#3995's deferred Dedicated Host release) posts hours after
+# the operator has closed the terminal, so "no channel configured" would mean
+# the outcome of a billed teardown is reported to nobody.
+DEFAULT_SLACK_CHANNEL = "C0ABH478QC8"
+
+
 def get_monitoring_slack_webhook_url(cfg: ConfigParser) -> str:
     """Get the Slack incoming-webhook URL for Grafana's alerting contact point.
 
@@ -1634,6 +1642,30 @@ def get_monitoring_slack_bot_token(cfg: ConfigParser) -> str:
         The configured bot token, or "" if unset
     """
     return cfg.get("monitoring", "slack_bot_token", fallback="")
+
+
+def get_monitoring_slack_channel(cfg: ConfigParser) -> str:
+    """Get the Slack channel id nyxGPT's own runtime notifications post to.
+
+    Distinct from the CI-only channel ids beside it (`slack_huddle_channel`,
+    `slack_conflict_channel`), which are pushed to GitHub Actions variables
+    and read by workflows. This one is read by the *product*: the deferred
+    EC2 Mac Dedicated Host release (#3995) hands it to the Step Functions
+    state machine that posts the release outcome, because that message is
+    delivered hours after the operator's terminal has gone.
+
+    Defaults to `DEFAULT_SLACK_CHANNEL` rather than "" -- unlike a token,
+    there is a correct default here (the owner's nyxGPT channel), and an
+    empty channel would silently degrade a notification whose whole purpose
+    is to arrive when nobody is watching.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        The configured channel id, or `DEFAULT_SLACK_CHANNEL` if unset
+    """
+    return cfg.get("monitoring", "slack_channel", fallback="").strip() or DEFAULT_SLACK_CHANNEL
 
 
 def get_openai_api_key(cfg: ConfigParser) -> str:
@@ -2086,6 +2118,11 @@ def get_effective_config_summary(cfg: ConfigParser) -> dict[str, object]:
             _REDACTED if get_monitoring_slack_webhook_url(cfg) else ""
         ),
         "monitoring.slack_bot_token": (_REDACTED if get_monitoring_slack_bot_token(cfg) else ""),
+        # Not redacted, and deliberately so: a channel id is not a credential,
+        # and the whole reason it is summarized is that "which channel did the
+        # deferred host release post to?" must be answerable from the startup
+        # log rather than by re-deriving the fallback (#3995).
+        "monitoring.slack_channel": get_monitoring_slack_channel(cfg),
         "openai.api_key": (_REDACTED if get_openai_api_key(cfg) else ""),
         "github.pat": (_REDACTED if get_github_pat(cfg) else ""),
         "secrets.provider": get_secrets_provider(cfg),
@@ -2150,6 +2187,8 @@ __all__ = [
     "resolve_grafana_admin_password",
     "get_monitoring_slack_webhook_url",
     "get_monitoring_slack_bot_token",
+    "get_monitoring_slack_channel",
+    "DEFAULT_SLACK_CHANNEL",
     "get_openai_api_key",
     "get_github_pat",
     "get_github_repo_owner",

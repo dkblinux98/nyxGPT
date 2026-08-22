@@ -18,8 +18,12 @@ documentation are linked out to instead of duplicated here:
   locality (`--local` is accepted as an explicit no-op, #3948); deploying to a
   cloud target is `nyxgpt cloud ...` below, not a flag on these
 - Cloud/AWS (`nyxgpt cloud ...`) — deploy (`--kubernetes` runs the stack on a
-  single-node k3s cluster on the instance), `nyxgpt cloud status` (what is
-  deployed and how to reach it), `nyxgpt cloud ops` (read-only inspections
+  single-node k3s cluster on the instance; `--os macos` allocates an EC2 Mac
+  Dedicated Host after a priced, typed confirmation and schedules its deferred
+  release at teardown — see
+  [EC2 Mac targets](cloud.md#ec2-mac-targets)), `nyxgpt cloud status` (what is
+  deployed and how to reach it, including a Dedicated Host still billing after
+  the deployment is gone), `nyxgpt cloud ops` (read-only inspections
   run on the instance), `nyxgpt cloud canary` (canary rollout against a
   Kubernetes cloud deployment), tunnel, destroy, the end-to-end
   `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see

@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_infra
+from nyxgpt import cloud_infra, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.config import VALID_SESSION_BACKENDS
 
@@ -176,35 +176,24 @@ DEPLOY_OS_CHOICES: tuple[str, ...] = (OS_FAMILY_AUTO, OS_FAMILY_LINUX, OS_FAMILY
 # is the pre-#3867 behavior.
 _MAC_INSTANCE_TYPE_RE = re.compile(r"^mac\d+(-[a-z0-9]+)?\.metal$")
 
-# What `--os macos` says when there is no EC2 Mac to provision.
+# `--os macos` with no `--host` used to stop here with a refusal, on the
+# grounds that allocating a Dedicated Host would spend the operator's money on
+# "a resource this configuration cannot then tear down". #3995 retired both
+# halves of that:
 #
-# The substrate (terraform/aws/modules/compute) provisions default-tenancy
-# instances; EC2 Mac runs only on a Dedicated Host, and an allocated host is
-# billed for a 24-hour minimum whether or not an instance is running on it and
-# cannot be released before that. Allocating one behind a flag would spend the
-# operator's money on a resource this configuration cannot then tear down, so
-# the deploy stops here instead -- and stops *before* applying anything, so
-# the failure costs nothing.
+#  * the configuration *can* tear it down -- `destroy` terminates the Mac at
+#    once and defers only the host release, which AWS refuses inside the
+#    24-hour minimum, to a one-shot EventBridge schedule; and
+#  * spending money without asking is a consent problem, and consent is how
+#    every other irreversible spend in this CLI is authorized. So the deploy
+#    prices the host live, prints what it will cost and when it can be
+#    released, and requires a typed word (`--yes` skips the typing, never the
+#    disclosure).
 #
-# What it must never do is send the operator to the AWS console (#3867): the
-# way out is another wrapped `nyxgpt` command, not a script to paste.
-MACOS_NO_TARGET_MESSAGE = (
-    "`--os macos` targets an EC2 Mac, and `nyxgpt cloud infra` cannot allocate one.\n"
-    "\n"
-    "macOS runs only on EC2's Mac instance types (mac1.metal, mac2*.metal), which\n"
-    "require a Dedicated Host. An allocated host bills for a 24-hour minimum whether\n"
-    "or not an instance runs on it, and cannot be released before that -- so the\n"
-    "substrate deliberately provisions default-tenancy instances only, rather than\n"
-    "spending that on a resource it could not tear down again.\n"
-    "\n"
-    "Point the deploy at a Mac that already exists and it provisions it end to end,\n"
-    "entirely through nyxgpt:\n"
-    "\n"
-    "    nyxgpt cloud deploy --os macos --host <mac-public-ip> --ssh-user ec2-user\n"
-    "\n"
-    "That pipes the same macOS bootstrap over the same wrapped SSH path the Linux\n"
-    "deploy uses. See docs/cloud.md, 'EC2 Mac targets'."
-)
+# What the path must never do is send the operator to the AWS console or to a
+# raw `aws` shell (#3867, and #3995's finding that #3867 moved that seam
+# rather than removing it). Allocation, launch and bootstrap are one command.
+# See `nyxgpt.cloud_mac` and docs/cloud.md, "EC2 Mac targets".
 
 # The session backend a cloud deploy selects unless told otherwise (#3865).
 #
@@ -2191,44 +2180,81 @@ def _deploy(
     # Empty for a `--host` box: that machine is not ours, so there are no
     # applied settings to read an instance type out of (#3867 + #3956).
     applied_settings: dict[str, Any] = {}
+    # Empty unless this run allocated (or reconciled) an EC2 Mac Dedicated
+    # Host of its own (#3995).
+    mac_allocation: dict[str, Any] = {}
 
     if plan.os_family == OS_FAMILY_MACOS:
-        # Stop before anything is applied or billed. The substrate cannot
-        # allocate the Dedicated Host an EC2 Mac needs (see
-        # MACOS_NO_TARGET_MESSAGE), so a Mac deploy is only meaningful
-        # against a Mac the operator already has and named with --host.
-        if not host_flag:
-            raise CloudCommandError(MACOS_NO_TARGET_MESSAGE)
-        # And do not apply the substrate for it either: `apply_infra` would
-        # reconcile (or create) the Linux single-box substrate, which is a
-        # different machine from the Mac being provisioned -- it would bill
-        # for an instance nothing then deploys to.
-        steps.append(
-            {
-                "step": "infra",
-                "skipped": True,
-                "reason": (
-                    "the EC2 Mac was supplied with --host; nyxGPT's substrate provisions "
-                    "default-tenancy Linux instances and does not manage this machine"
+        # Never `apply_infra` for a Mac: that reconciles (or creates) the
+        # Linux single-box substrate, which is a different machine from the
+        # Mac being provisioned -- it would bill for an instance nothing then
+        # deploys to. The Mac's own network, security group, Dedicated Host
+        # and instance live in `cloud_mac`'s isolated Terraform root instead.
+        if host_flag:
+            steps.append(
+                {
+                    "step": "infra",
+                    "skipped": True,
+                    "reason": (
+                        "the EC2 Mac was supplied with --host; nyxGPT's substrate provisions "
+                        "default-tenancy Linux instances and does not manage this machine"
+                    ),
+                    "outputs": {},
+                }
+            )
+            steps.append(
+                {
+                    "step": "access",
+                    "owner_ip_cidr": "",
+                    "open_ports": [22],
+                    "mechanism": "ssh-tunnel-to-loopback",
+                    "managed": False,
+                }
+            )
+            target = DeployTarget(
+                host=host_flag,
+                user=plan.ssh_user,
+                identity_file=(
+                    str(Path(plan.identity_file).expanduser()) if plan.identity_file else ""
                 ),
-                "outputs": {},
-            }
-        )
-        steps.append(
-            {
-                "step": "access",
-                "owner_ip_cidr": "",
-                "open_ports": [22],
-                "mechanism": "ssh-tunnel-to-loopback",
-                "managed": False,
-            }
-        )
-        target = DeployTarget(
-            host=host_flag,
-            user=plan.ssh_user,
-            identity_file=str(Path(plan.identity_file).expanduser()) if plan.identity_file else "",
-            region=str(getattr(args, "region", None) or ""),
-        )
+                region=str(getattr(args, "region", None) or ""),
+            )
+        else:
+            # #3995: no `--host` is now an offer, not a refusal. `allocate`
+            # prices the host, requires consent, allocates it and launches the
+            # Mac on it -- and records the host id and its release time before
+            # anything else can fail, because a host whose id is lost is a
+            # charge nothing can stop.
+            allocation = cloud_mac.allocate(args, assume_yes=bool(getattr(args, "yes", False)))
+            mac_allocation = allocation
+            steps.append({"step": "mac-host", **allocation})
+            steps.append(
+                {
+                    "step": "access",
+                    "owner_ip_cidr": str(allocation.get("owner_ip_cidr") or ""),
+                    "open_ports": [22],
+                    "mechanism": "ssh-tunnel-to-loopback",
+                    "managed": True,
+                }
+            )
+            mac_host = str(allocation.get("public_ip") or "")
+            if not mac_host:
+                raise CloudCommandError(
+                    "The Dedicated Host and Mac instance were created but AWS reported no "
+                    f"public address for instance {allocation.get('instance_id') or 'unknown'}. "
+                    "Nothing was lost -- `nyxgpt cloud status` shows the host, and re-running "
+                    "`nyxgpt cloud deploy --os macos` reconciles it without allocating again."
+                )
+            target = DeployTarget(
+                host=mac_host,
+                user=plan.ssh_user,
+                identity_file=(
+                    str(Path(plan.identity_file).expanduser()) if plan.identity_file else ""
+                ),
+                region=str(allocation.get("region") or ""),
+                instance_id=str(allocation.get("instance_id") or ""),
+                security_group_id=str(allocation.get("security_group_id") or ""),
+            )
     else:
         update_deploy_attempt("infra")
         infra = cloud_infra.apply_infra(args)
@@ -2346,6 +2372,12 @@ def _deploy(
         # and reported by `cloud status` and the Infrastructure page, because
         # "which OS is that box running" is otherwise unanswerable from here.
         "os_family": plan.os_family,
+        # #3995. Set only when nyxGPT allocated the Dedicated Host itself, so
+        # `destroy` can tell "a Mac we created and must schedule the release
+        # of" from "a Mac the operator pointed us at and we must not touch".
+        # The authoritative record is `~/.nyxGPT/cloud/state.json` (which
+        # outlives this file by design); this is the deploy-side breadcrumb.
+        "mac_host_id": str(mac_allocation.get("host_id") or ""),
         "host": target.host,
         "instance_id": target.instance_id,
         "region": target.region,
@@ -2453,6 +2485,40 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
     # torn down, which is unrecoverable once `deploy.json` is gone.
     previous = load_deploy_state()
     tunnel = stop_tunnel()
+
+    # #3995: the EC2 Mac comes down first and on its own terms. `cloud_mac.
+    # teardown` terminates the instance immediately and schedules the host
+    # release for when AWS will accept it, and it never raises -- a host that
+    # cannot be scheduled must not stop the substrate, the tunnel and the
+    # deploy record from coming down, because the operator's next question is
+    # "what is still running?" and the answer has to be short.
+    mac: dict[str, Any] = {"managed": False}
+    if cloud_mac.load_mac_record() or cloud_mac.mac_state_exists():
+        mac = cloud_mac.teardown(args)
+
+    # A Mac-only deployment never applied the substrate (see `deploy`), so
+    # there is no Terraform state for `destroy_infra` to work from and its
+    # "nothing to destroy" error would be the whole teardown's exit code --
+    # after the Mac had already been torn down successfully.
+    if mac.get("managed") and not cloud_infra.TFSTATE_FILE.exists():
+        DEPLOY_STATE_FILE.unlink(missing_ok=True)
+        record_history(
+            "destroy",
+            "succeeded",
+            version=str(previous.get("version") or ""),
+            host=str(previous.get("host") or ""),
+            instance_id=str(previous.get("instance_id") or ""),
+            region=str(previous.get("region") or mac.get("region") or ""),
+            detail=_mac_teardown_detail(mac),
+        )
+        return {
+            "action": "destroy",
+            "tunnel": tunnel,
+            "settings": {},
+            "unmanaged_target": "",
+            "mac": mac,
+        }
+
     try:
         result = cloud_infra.destroy_infra(args)
     except Exception as exc:
@@ -2477,11 +2543,15 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
     # was deliberately destroyed. The history keeps the event.
     DEPLOY_ATTEMPT_FILE.unlink(missing_ok=True)
     settings = result.get("settings", {})
-    # An operator-supplied EC2 Mac is not part of the substrate this just tore
-    # down -- nyxGPT never created it and cannot terminate it (#3867). Say so
-    # rather than let "Cloud deployment destroyed" imply a Mac that is still
-    # running, and still billing, was included.
-    macos_target = str(previous.get("os_family") or "") == OS_FAMILY_MACOS
+    # An EC2 Mac the *operator* supplied with `--host` is not part of the
+    # substrate this just tore down -- nyxGPT never created it and cannot
+    # terminate it (#3867). Say so rather than let "Cloud deployment
+    # destroyed" imply a Mac that is still running, and still billing, was
+    # included. A Mac nyxGPT allocated itself (#3995) is the opposite case and
+    # is reported by `mac` above.
+    macos_target = str(previous.get("os_family") or "") == OS_FAMILY_MACOS and not mac.get(
+        "managed"
+    )
     record_history(
         "destroy",
         "succeeded",
@@ -2493,7 +2563,11 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
             "tunnel closed, substrate torn down; the EC2 Mac target was left running "
             "(nyxGPT does not manage it)"
             if macos_target
-            else "tunnel closed, substrate torn down"
+            else (
+                f"tunnel closed, substrate torn down; {_mac_teardown_detail(mac)}"
+                if mac.get("managed")
+                else "tunnel closed, substrate torn down"
+            )
         ),
     )
     return {
@@ -2501,7 +2575,28 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         "tunnel": tunnel,
         "settings": settings,
         "unmanaged_target": previous.get("host", "") if macos_target else "",
+        "mac": mac,
     }
+
+
+def _mac_teardown_detail(mac: dict[str, Any]) -> str:
+    """One sentence describing what happened to the Mac and its Dedicated Host."""
+    host_id = str(mac.get("host_id") or "unknown")
+    release_at = str(mac.get("release_at") or "unknown")
+    terminated = (
+        "Mac instance terminated"
+        if mac.get("instance_terminated")
+        else ("the Mac instance did NOT come down")
+    )
+    if mac.get("release_scheduled"):
+        return (
+            f"{terminated}; Dedicated Host {host_id} stays allocated until {release_at} "
+            "(AWS's 24-hour minimum) and its release is scheduled"
+        )
+    return (
+        f"{terminated}; Dedicated Host {host_id} is STILL ALLOCATED and its release could "
+        f"not be scheduled: {'; '.join(str(e) for e in mac.get('errors') or []) or 'no reason recorded'}"
+    )
 
 
 # The wrapped commands that own each cloud lifecycle action, returned with
@@ -2853,6 +2948,15 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         # deploy from before #3867, or no deploy at all -- which is not the
         # same claim as "linux".
         "os_family": str(record.get("os_family") or ""),
+        # #3995. The EC2 Mac Dedicated Host outlives both the instance and the
+        # deploy record by construction: `destroy` terminates the Mac at once
+        # but AWS refuses to release the host for 24 hours, so between those
+        # two moments the only thing that still costs money is the one thing
+        # every other field here has stopped describing. Empty dict when
+        # nothing is outstanding. Read from `~/.nyxGPT/cloud/state.json`, so
+        # it still answers after `deploy.json` is gone -- and, like everything
+        # else on this surface, with no AWS call.
+        "mac_host": cloud_mac.pending_release(),
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
@@ -2900,6 +3004,19 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
             "No observability stack and no self-heal watchdog: that bootstrap does not run "
             "`nyxgpt ops install`. See docs/cloud.md, 'EC2 Mac targets'."
         )
+        # The single most expensive thing about this deploy, said at the end
+        # where the operator is actually looking (#3995). A Dedicated Host is
+        # not something to discover on next month's bill.
+        mac_step: dict[str, Any] = next(
+            (step for step in result.get("steps", []) if step.get("step") == "mac-host"), {}
+        )
+        if mac_step.get("host_id"):
+            print(
+                f"Dedicated Host {mac_step['host_id']} is allocated and billing. AWS will not "
+                f"release it before {mac_step.get('release_at') or 'its 24-hour minimum closes'}"
+                " -- `nyxgpt cloud destroy --yes` terminates the Mac immediately and schedules "
+                "the host release for then. `nyxgpt cloud status` shows it until it is gone."
+            )
     elif plan.get("kubernetes"):
         # elif, not a second if: `resolve_plan` refuses macOS + --kubernetes,
         # so these two are mutually exclusive by construction (#3956).
@@ -3035,6 +3152,62 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
     print(f"  {commands['allow_ip']}  -- refresh SSH access if your public IP has changed")
     print(f"  {commands['destroy']}  -- tear the instance down if you do not want it")
 
+def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
+    """Print the EC2 Mac Dedicated Host block, when one is outstanding (#3995).
+
+    Nothing at all when there is no host -- a permanent "no Dedicated Host"
+    row on every Linux deployment would be noise. When there *is* one this is
+    deliberately loud: it is the only resource nyxGPT creates that keeps
+    costing money after everything else is gone, and the whole reason the
+    observability rule applies to it.
+    """
+    if not mac_host or not mac_host.get("host_id"):
+        return
+    print("\nEC2 Mac Dedicated Host (still billing)")
+    _print_row("Host", f"{mac_host['host_id']} ({mac_host.get('instance_type') or 'unknown type'})")
+    _print_row(
+        "Location",
+        f"{mac_host.get('region') or 'unknown'} / {mac_host.get('availability_zone') or 'unknown'}",
+    )
+    _print_row("Allocated", mac_host.get("allocated_at") or "unknown")
+    if mac_host.get("releasable_now"):
+        release_note = f"{mac_host.get('release_at') or 'unknown'} -- that moment has passed"
+    else:
+        release_note = f"{mac_host.get('release_at') or 'unknown'} (AWS's 24-hour minimum)"
+    _print_row("Releasable at", release_note)
+    if mac_host.get("release_scheduled") and mac_host.get("releasable_now"):
+        # Deliberately not "released": nothing on this machine watched the
+        # schedule fire, so claiming the charge has stopped would be an
+        # assertion nothing checked. Slack has the outcome; the next
+        # lifecycle command asks AWS and clears this row if the host is gone.
+        _print_row(
+            "Release",
+            "the scheduled release has fired -- Slack has the outcome. This row clears on the "
+            "next `nyxgpt cloud deploy --os macos` or `nyxgpt cloud destroy --yes`, which asks "
+            "AWS whether the host is really gone",
+        )
+    elif mac_host.get("release_scheduled"):
+        _print_row(
+            "Release",
+            "scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack",
+        )
+    else:
+        _print_row(
+            "Release",
+            "NOT scheduled yet -- `nyxgpt cloud destroy --yes` terminates the Mac and "
+            "schedules it",
+        )
+    accrued = mac_host.get("accrued_cost")
+    rate = mac_host.get("hourly_rate")
+    if accrued is not None and rate:
+        _print_row(
+            "Accrued",
+            f"${float(accrued):.2f} at ${float(rate):.4f}/hour "
+            f"(the {cloud_mac.HOST_MINIMUM_HOURS}-hour minimum is charged either way)",
+        )
+    else:
+        _print_row("Accrued", "unknown -- no rate was recorded for this host")
+
 
 def _print_status_summary(status: dict[str, Any]) -> None:
     """Print `nyxgpt cloud status` in the form an operator reads (#3813).
@@ -3059,6 +3232,12 @@ def _print_status_summary(status: dict[str, Any]) -> None:
             f"`{commands['status']}` where `{commands['deploy']}` was run, or deploy from here "
             f"with `{commands['deploy']}`."
         )
+        # Printed even here, and especially here: the ordinary end state of a
+        # macOS teardown is "no deployment, one Dedicated Host still billing
+        # until tomorrow". Reporting only the deployment would make the single
+        # remaining charge invisible at exactly the moment it is the only
+        # thing left (#3995).
+        _print_pending_mac_host(status.get("mac_host") or {})
         return
 
     if status["source"] in (SOURCE_DEPLOY_ATTEMPT, SOURCE_SUBSTRATE_RECORD):
@@ -3130,6 +3309,8 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         )
     else:
         _print_row("Substrate", "unknown -- this deploy predates the record of it")
+
+    _print_pending_mac_host(status.get("mac_host") or {})
 
     access = infra.get("access_model") or {}
     if access.get("open_ports"):
@@ -3421,6 +3602,48 @@ def _tunnel_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_mac_teardown(mac: dict[str, Any]) -> None:
+    """Report what happened to the Mac and its Dedicated Host (#3995).
+
+    Silent when nyxGPT did not manage a Mac. When it did, this is the part of
+    the teardown an operator must not miss: the instance is gone but the host
+    is not, deliberately, and something has to say when it will be and who
+    will be told.
+    """
+    if not mac.get("managed"):
+        return
+    host_id = str(mac.get("host_id") or "unknown")
+    if mac.get("instance_terminated"):
+        print("The EC2 Mac instance was terminated.")
+    else:
+        print(
+            "WARNING: the EC2 Mac instance did NOT come down. It costs $0.00/hour on a "
+            "Dedicated Host, but it also keeps the host from being scrubbed and released."
+        )
+    if mac.get("release_scheduled"):
+        channel = str((mac.get("schedule") or {}).get("slack_channel") or "")
+        where = f" ({channel})" if channel else ""
+        print(
+            f"Dedicated Host {host_id} stays allocated until "
+            f"{mac.get('release_at') or 'its 24-hour minimum closes'} -- AWS refuses to release "
+            "one before that. A one-shot AWS schedule releases it then and posts the outcome "
+            f"to Slack{where}."
+            "\n`nyxgpt cloud status` reports the host, its release time and the accrued cost "
+            "until it is gone."
+        )
+    else:
+        print(
+            f"WARNING: Dedicated Host {host_id} is STILL ALLOCATED and its release is NOT "
+            "scheduled. It bills until it is released."
+        )
+        for error in mac.get("errors") or []:
+            print(f"  - {error}")
+        print(
+            "Fix the cause and re-run `nyxgpt cloud destroy --yes` -- it is idempotent and "
+            "will schedule the release without touching anything that is already gone."
+        )
+
+
 def deploy_command(args: argparse.Namespace) -> int:
     """`nyxgpt cloud {deploy,destroy,tunnel,credentials,status,ops}` entry point."""
     subcommand = getattr(args, "cloud_cmd", "")
@@ -3462,6 +3685,7 @@ def deploy_command(args: argparse.Namespace) -> int:
                     "did not create it and cannot terminate it. Release it (and its Dedicated "
                     "Host) yourself if you are done with it; the host bills until you do."
                 )
+            _print_mac_teardown(destroyed.get("mac") or {})
         elif subcommand == "tunnel":
             return _tunnel_command(args)
         elif subcommand == "credentials":

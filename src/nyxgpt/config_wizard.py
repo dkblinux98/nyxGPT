@@ -511,6 +511,12 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     # Same reasoning for the merge-conflict notice channel (#3911/#3979): a
     # channel id pushed to a world-readable Actions variable, not a secret.
     ("monitoring", "slack_conflict_channel"): _Override(validator=_validate_optional_str),
+    # The channel nyxGPT's *runtime* notifications land in (#3995) -- today the
+    # deferred EC2 Mac Dedicated Host release, which posts hours after the
+    # teardown that scheduled it. A channel id, not a credential, so it is
+    # editable and readable like the two above; unlike them it is read by the
+    # product rather than pushed to Actions.
+    ("monitoring", "slack_channel"): _Override(validator=_validate_optional_str),
     ("log_aggregation", "enabled"): _Override(validator=_validate_bool, observability=True),
     ("log_aggregation", "grafana_explore_url"): _Override(validator=_validate_url),
     ("self_heal", "check_interval_seconds"): _Override(validator=_bounded_float(min_value=1.0)),

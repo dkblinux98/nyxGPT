@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud_deploy, cloud_infra
+from nyxgpt import cloud_deploy, cloud_infra, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 
 
@@ -34,6 +34,14 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", cloud_dir / "infra.json")
+    # #3995's EC2 Mac roots keep state of their own, and their module-level
+    # paths bind at import -- unpatched, `mac_state_exists()` would answer from
+    # the developer's real ~/.nyxGPT and a test would pass or fail depending on
+    # whose machine ran it.
+    monkeypatch.setattr(cloud_mac, "MAC_TFSTATE_FILE", cloud_dir / "mac.tfstate")
+    monkeypatch.setattr(cloud_mac, "MAC_RELEASE_TFSTATE_FILE", cloud_dir / "mac-release.tfstate")
+    monkeypatch.setattr(cloud_mac, "MAC_TFVARS_FILE", cloud_dir / "mac.tfvars")
+    monkeypatch.setattr(cloud_mac, "MAC_RELEASE_TFVARS_FILE", cloud_dir / "mac-release.tfvars")
     return cloud_dir
 
 
@@ -2048,21 +2056,41 @@ def test_provisioning_a_mac_does_not_claim_a_self_heal_watchdog(monkeypatch):
     assert seen["remote_command"].startswith("sudo -n ")
 
 
-def test_a_mac_deploy_with_nowhere_to_run_fails_before_anything_is_applied(stubbed_deploy):
-    with pytest.raises(CloudCommandError) as excinfo:
-        cloud_deploy.deploy(_args(os_family="macos"))
+def test_a_mac_deploy_with_no_host_offers_to_allocate_instead_of_refusing(
+    monkeypatch, stubbed_deploy, _isolated_cloud_home
+):
+    """#3995 replaced the refusal at `--os macos` with no `--host`. What used to
+    raise now allocates -- after a typed confirmation -- and never applies the
+    Linux substrate, which would bill for a box nothing deploys to."""
+    allocated = {}
 
-    message = str(excinfo.value)
-    # Nothing was applied: the failure costs the operator nothing.
-    assert stubbed_deploy == []
-    # It names the constraint and its price, per the issue's requirement that
-    # the wrapped flow surface the cost before allocating.
-    assert "Dedicated Host" in message
-    assert "24-hour minimum" in message
-    # And the way out is another wrapped command, never the console.
-    assert "nyxgpt cloud deploy --os macos --host" in message
-    for forbidden in ("console", "paste", "user-data"):
-        assert forbidden not in message.lower()
+    def _fake_allocate(args, *, assume_yes=False):
+        allocated["assume_yes"] = assume_yes
+        return {
+            "allocated": True,
+            "host_id": "h-0abc",
+            "instance_id": "i-0mac",
+            "public_ip": "203.0.113.7",
+            "security_group_id": "sg-0mac",
+            "region": "us-east-1",
+            "owner_ip_cidr": "198.51.100.5/32",
+            "release_at": "2026-08-23T18:30:00+00:00",
+        }
+
+    monkeypatch.setattr(cloud_mac, "allocate", _fake_allocate)
+
+    result = cloud_deploy.deploy(_args(os_family="macos", no_tunnel=True, yes=True))
+
+    # The Linux substrate is still never applied for a Mac.
+    assert stubbed_deploy == ["ssh", "provision"]
+    assert allocated["assume_yes"] is True
+    step = next(s for s in result["steps"] if s["step"] == "mac-host")
+    assert step["host_id"] == "h-0abc"
+    assert result["target"]["host"] == "203.0.113.7"
+    assert result["target"]["instance_id"] == "i-0mac"
+    recorded = json.loads((_isolated_cloud_home / "deploy.json").read_text())
+    assert recorded["mac_host_id"] == "h-0abc"
+    assert recorded["os_family"] == "macos"
 
 
 def test_a_supplied_mac_is_provisioned_without_applying_the_linux_substrate(
@@ -2129,6 +2157,136 @@ def test_destroying_after_a_mac_deploy_says_the_mac_is_still_running(
 
     assert result["unmanaged_target"] == "198.51.100.77"
     assert "left running" in cloud_deploy.deploy_history()[-1]["detail"]
+
+
+def test_destroying_a_mac_nyxgpt_allocated_does_not_report_it_as_unmanaged(
+    monkeypatch, _isolated_cloud_home
+):
+    """The `--host` case above says "nyxGPT does not manage it". A Mac nyxGPT
+    allocated itself (#3995) is the opposite claim, and printing both would
+    tell an operator to go release a host that is already scheduled."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "203.0.113.7", "version": "3.0.0", "os_family": "macos"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(
+        cloud_mac,
+        "teardown",
+        lambda args: {
+            "managed": True,
+            "host_id": "h-0abc",
+            "release_at": "2026-08-23T18:30:00+00:00",
+            "instance_terminated": True,
+            "release_scheduled": True,
+            "schedule": {"slack_channel": "C0ABH478QC8"},
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(cloud_mac, "load_mac_record", lambda: {"mac_host_id": "h-0abc"})
+    monkeypatch.setattr(
+        cloud_infra, "destroy_infra", lambda args: {"settings": {"aws_region": "us-east-1"}}
+    )
+
+    result = cloud_deploy.destroy(_args(yes=True))
+
+    assert result["unmanaged_target"] == ""
+    assert result["mac"]["release_scheduled"] is True
+    detail = cloud_deploy.deploy_history()[-1]["detail"]
+    assert "h-0abc" in detail
+    assert "2026-08-23T18:30:00+00:00" in detail
+
+
+def test_a_mac_only_teardown_succeeds_with_no_substrate_state_to_destroy(
+    monkeypatch, _isolated_cloud_home
+):
+    """A macOS deploy never applies the Linux substrate, so `destroy_infra`'s
+    "nothing to destroy" error would otherwise become the whole teardown's exit
+    code -- after the Mac had already come down successfully."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "203.0.113.7", "version": "3.0.0", "os_family": "macos"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"stopped": True})
+    monkeypatch.setattr(cloud_mac, "load_mac_record", lambda: {"mac_host_id": "h-0abc"})
+    monkeypatch.setattr(
+        cloud_mac,
+        "teardown",
+        lambda args: {
+            "managed": True,
+            "host_id": "h-0abc",
+            "region": "us-east-1",
+            "release_at": "2026-08-23T18:30:00+00:00",
+            "instance_terminated": True,
+            "release_scheduled": True,
+            "schedule": {},
+            "errors": [],
+        },
+    )
+
+    def _never(_args):
+        raise AssertionError("the substrate has no state and must not be destroyed")
+
+    monkeypatch.setattr(cloud_infra, "destroy_infra", _never)
+    monkeypatch.setattr(cloud_infra, "TFSTATE_FILE", _isolated_cloud_home / "terraform.tfstate")
+
+    result = cloud_deploy.destroy(_args(yes=True))
+
+    assert result["mac"]["host_id"] == "h-0abc"
+    assert not (_isolated_cloud_home / "deploy.json").exists()
+
+
+def test_status_surfaces_a_pending_host_release_even_with_no_deployment_left(monkeypatch):
+    """The ordinary end state of a macOS teardown: no deployment, one Dedicated
+    Host still billing until tomorrow. A status that reported only the
+    deployment would make the single remaining charge invisible at exactly the
+    moment it is all that is left."""
+    monkeypatch.setattr(
+        cloud_mac,
+        "pending_release",
+        lambda: {"host_id": "h-0abc", "release_at": "2026-08-23T18:30:00+00:00"},
+    )
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["known"] is False
+    assert status["mac_host"]["host_id"] == "h-0abc"
+
+
+def test_the_status_summary_prints_the_pending_host_when_nothing_is_deployed(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cloud_mac,
+        "pending_release",
+        lambda: {
+            "host_id": "h-0abc",
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "availability_zone": "us-east-1c",
+            "allocated_at": "2026-08-22T18:00:00+00:00",
+            "release_at": "2026-08-23T18:30:00+00:00",
+            "release_scheduled": True,
+            "hourly_rate": 0.65,
+            "accrued_cost": 15.6,
+            "releasable_now": False,
+            "billing": True,
+        },
+    )
+
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status())
+
+    out = capsys.readouterr().out
+    assert "h-0abc" in out
+    assert "2026-08-23T18:30:00+00:00" in out
+    assert "$15.60" in out
+    assert "still billing" in out
+
+
+def test_a_linux_deployment_prints_no_dedicated_host_block(capsys):
+    """A permanent "no Dedicated Host" row on every Linux deployment would be
+    noise, and noise is how the row that matters gets skimmed past."""
+    cloud_deploy._print_pending_mac_host({})
+
+    assert capsys.readouterr().out == ""
 
 
 def test_destroying_after_a_linux_deploy_has_nothing_left_over_to_report(

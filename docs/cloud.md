@@ -98,7 +98,11 @@ works here too and is remembered for later runs, plus:
 
 | Flag | Meaning |
 | --- | --- |
-| `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). See [EC2 Mac targets](#ec2-mac-targets) |
+| `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). With no `--host`, `--os macos` prices and allocates an EC2 Mac Dedicated Host after a typed confirmation. See [EC2 Mac targets](#ec2-mac-targets) |
+| `--yes` | Skip the typed confirmation before allocating a Dedicated Host, so `--os macos` stays scriptable. The cost disclosure is still printed |
+| `--mac-instance-type` | EC2 Mac type to allocate a host for (default `mac2.metal`, the cheapest family) |
+| `--mac-az` | Availability zone for the Dedicated Host (default: the first zone EC2 says offers the family) |
+| `--mac-ami-id` | Pin the macOS AMI (default: the newest `amzn-ec2-macos-*` for the type's architecture) |
 | `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used). Ignored under `--dev` |
 | `--dev` | Deploy **your working tree** instead of a published release — Linux targets only, see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
 | `--kubernetes` / `--no-kubernetes` | Run the stack on a single-node k3s cluster on the instance instead of natively, applying the same `k8s/*.yaml` manifests — this is what makes `nyxgpt cloud canary` available. Linux targets only. Remembered for later runs. See [Kubernetes on the instance](#kubernetes-on-the-instance-3956) |
@@ -114,28 +118,78 @@ works here too and is remembered for later runs, plus:
 ### EC2 Mac targets
 
 `nyxgpt cloud deploy --os macos` provisions an EC2 Mac the same way it
-provisions a Linux instance: **nyxGPT renders the macOS bootstrap and pipes it
-to the machine over the wrapped SSH path itself.** There is no script to copy,
-nowhere to paste one, and no AWS console step (#3867).
+provisions a Linux instance: **nyxGPT allocates the Dedicated Host, launches
+the Mac on it, renders the macOS bootstrap and pipes it to the machine over
+the wrapped SSH path itself.** There is no script to copy, nowhere to paste
+one, no `aws` command to run and no AWS console step (#3867, #3995).
 
 ```bash
-nyxgpt cloud deploy --os macos --host <mac-public-ip> --ssh-user ec2-user
+nyxgpt cloud deploy --os macos              # prices a host, asks, allocates, deploys
+nyxgpt cloud deploy --os macos --yes        # same, without the typed confirmation
+nyxgpt cloud deploy --os macos --host <ip>  # a Mac you already have
 ```
 
-`--host` is required for a Mac, and the deploy tells you so — with the reason
-— before it applies or bills anything:
+#### Allocating the Dedicated Host
 
-**nyxGPT does not allocate the Dedicated Host an EC2 Mac needs.** macOS runs
-only on EC2's Mac instance types (`mac1.metal`, `mac2*.metal`), which require
-a [Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html).
-An allocated host bills for a **24-hour minimum** whether or not an instance
-runs on it, and cannot be released before that window closes — so
-`nyxgpt cloud infra` provisions default-tenancy instances only rather than
-spending that on a resource it could not then tear down. `--os macos` with no
-`--host` therefore fails immediately, naming the constraint; it does not
-apply the substrate, so the refusal costs nothing.
+macOS runs only on EC2's Mac instance types (`mac1.metal`, `mac2*.metal`),
+which require a
+[Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html).
+An allocated host bills a **24-hour minimum** whether or not an instance runs
+on it, and **AWS refuses to release one before that window closes**. That is a
+real, non-refundable charge, so `--os macos` with no `--host` discloses it and
+asks before allocating anything:
 
-What the deploy does for a Mac you point it at:
+```
+`--os macos` needs an EC2 Mac, and an EC2 Mac needs a Dedicated Host.
+nyxGPT can allocate one now. Read this first -- it is a real, non-refundable charge:
+
+  Host family        mac2 (instance type mac2.metal)
+  Region / AZ        us-east-1 / us-east-1a
+  Rate               $0.6500/hour (USD, live from the AWS Pricing API)
+  Minimum charge     $15.60 for the 24-hour minimum, charged even if you destroy in a minute
+  Releasable at      2026-08-23T18:30:00 UTC
+
+Type `allocate` to allocate the Dedicated Host, or anything else to stop:
+```
+
+- **The rate is looked up, never hardcoded.** It comes from the AWS Pricing
+  API, queried for that family in that region at prompt time. The spread
+  across Mac families is 2.4× (`mac2` is the cheapest, `mac2-m2pro` the
+  dearest), so a constant in the source would be wrong for most operators. If
+  the lookup fails, the prompt says `UNKNOWN` and names the reason — it never
+  substitutes a number nothing checked. The *instance* really is $0.00/hour:
+  on a Dedicated Host you pay for the host.
+- **`--yes` skips the typing, not the disclosure.** The block above is still
+  printed, so a scripted run leaves the numbers in its log.
+- **Which region is used, and it says so.** The region comes from your nyxGPT
+  cloud configuration (`--region`, then `~/.nyxGPT/cloud/infra.json`, then
+  `config.ini`'s `[cloud]` reference) — *not* from your AWS CLI default, which
+  is frequently a different region.
+- **Which zone is queried, not assumed.** Mac capacity is per-AZ and differs
+  by family. nyxGPT asks EC2 which zones offer the type and uses the first;
+  `--mac-az` picks another, and the prompt lists the alternatives.
+- **`--mac-instance-type`** chooses the family (default `mac2.metal`);
+  `--mac-ami-id` pins the AMI, which otherwise resolves to the newest
+  `amzn-ec2-macos-*` for the type's architecture.
+- **The host and the Mac live in their own Terraform root module**
+  (`terraform/aws/mac`), with their own VPC, their own owner-IP-scoped
+  security group and their own state file. Nothing is shared with the Linux
+  substrate, which is never applied for a macOS deploy — reconciling it would
+  bill for an instance nothing then deploys to.
+- **Re-running is safe.** A second `nyxgpt cloud deploy --os macos` reconciles
+  the host you already have. It does not re-price, re-ask or allocate a second
+  host (which would be a second 24-hour minimum) — **and it re-applies the Mac
+  you have, not a newer one.** The AMI the instance booted and its root volume
+  size are recorded at allocation and fed back on every reconcile, and the
+  module additionally ignores AMI drift on an existing instance. Both matter
+  because `ami` and a shrinking root volume force *replacement*, and replacing
+  an EC2 Mac terminates it, takes its disk with it, and puts the host into an
+  hour-long scrub that the replacement then cannot launch onto. Moving an
+  existing Mac to a newer macOS is therefore deliberate: `nyxgpt cloud
+  destroy`, then deploy again (or pass `--mac-ami-id` on the first allocation).
+
+What the deploy does once the Mac is up — the same for a host it allocated and
+for one you named with `--host`:
 
 - Runs the [EC2 Mac bootstrap](#what-the-rendered-scripts-do): Homebrew,
   the remote tap, `nyxgpt-api`/`nyxgpt-web`, `brew services start`. Repo-less,
@@ -162,18 +216,86 @@ What the deploy does for a Mac you point it at:
   running elsewhere instead. `nyxgpt cloud status` reports the target OS
   so this difference is visible after the scrollback is gone, and so does the
   admin Infrastructure page.
-- Leaves the security group alone. That Mac is not the instance nyxGPT's
-  substrate manages, so `nyxgpt cloud allow-ip` does not apply to it — SSH
-  reachability is yours to arrange.
+- Opens TCP 22 to your address and nothing else. A Mac nyxGPT allocated gets
+  its own security group with the same single owner-scoped SSH rule the Linux
+  substrate uses, re-detected on every deploy. A Mac you supplied with
+  `--host` is not nyxGPT's to configure, so `nyxgpt cloud allow-ip` does not
+  apply to it and SSH reachability for *that* machine is yours to arrange.
 
 Everything after provisioning is identical to the Linux path:
 `nyxgpt cloud tunnel` is still the only access path, and the app and web UI
 still bind `127.0.0.1` on the instance.
 
-**Teardown.** `nyxgpt cloud destroy --yes` closes the tunnel and tears down
-nyxGPT's own substrate — which never contained your Mac. It says so, and names
-the address still running: releasing that instance and its Dedicated Host is
-yours to do, and the host keeps billing until you do.
+#### Teardown, and the deferred host release
+
+`nyxgpt cloud destroy --yes` **terminates the Mac immediately** and defers only
+the host release, because AWS will not accept one inside the 24-hour window. A
+naive `terraform destroy` over the host would half-fail there — the trap that
+leaves an operator billing for something they believe is gone. So:
+
+1. The Mac instance, its VPC and its security group are destroyed now.
+2. The Dedicated Host is **removed from Terraform's state, not released**, so
+   the teardown cannot fail on it.
+3. A **one-shot [EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)
+   schedule** is created for `allocation + 24h + 30 minutes`. It has
+   `ActionAfterCompletion=DELETE`, so it removes itself after firing and
+   leaves no orphan.
+4. The schedule starts a **Step Functions state machine** that calls
+   `ReleaseHosts` and posts the outcome to Slack.
+
+The teardown prints the host id and its release timestamp, and a
+host-release failure never blocks the rest of the destroy — the substrate, the
+tunnel and the deploy record still come down, and the warning names what is
+left.
+
+**What you see in Slack.** The state machine posts to the channel in
+`[monitoring] slack_channel` (see
+[configuration.md](configuration.md#monitoring)) using the bot token already
+in `config.ini`, carried by an EventBridge **Connection** — no AWS Chatbot, no
+new Slack app and no Lambda. Success reads *"nyxGPT released EC2 Mac Dedicated
+Host h-… . It has stopped billing."*; failure is a `:rotating_light:` that
+says the host is **still billing** and points back at `nyxgpt cloud destroy`.
+
+Two details that would otherwise make the report a lie, and are handled:
+
+- **Slack returns HTTP 200 on failure.** `invalid_auth` and
+  `channel_not_found` come back `200` with `"ok": false`, so the state machine
+  branches on `$.ResponseBody.ok` rather than on the status code.
+- **`ReleaseHosts` returns 200 on failure too.** A host still being *scrubbed*
+  after its instance was terminated comes back in `Unsuccessful`, not as an
+  exception — so a `Retry` block would never fire. The state machine waits and
+  re-attempts on a counter instead (up to four hours), and the 30-minute
+  buffer on the fire time keeps the first attempt out of the obviously-too-
+  early window.
+
+**Watching it.** `nyxgpt cloud status` shows the host until it is gone — id,
+region and AZ, when it was allocated, when it becomes releasable, whether the
+release is scheduled, and the accrued cost at the recorded rate. It shows it
+*after* the deployment is destroyed too, which is the whole point: that is the
+state where the host is the only thing still costing money.
+
+```
+EC2 Mac Dedicated Host (still billing)
+  Host           h-0abc1234 (mac2.metal)
+  Location       us-east-1 / us-east-1a
+  Allocated      2026-08-22T18:00:00+00:00
+  Releasable at  2026-08-23T18:30:00+00:00 (AWS's 24-hour minimum)
+  Release        scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack
+  Accrued        $15.60 at $0.6500/hour (the 24-hour minimum is charged either way)
+```
+
+The same block appears on the admin dashboard's Infrastructure page, and on
+both surfaces it is *observed*, never driven — the release is already
+scheduled in AWS and there is nothing for a page to press.
+
+Once the fire time passes, the row says the schedule **has fired** rather than
+that the host is released: nothing on your machine watched it, so claiming the
+charge has stopped would be an assertion nobody checked. Slack has the real
+answer. The next `nyxgpt cloud destroy --yes` or
+`nyxgpt cloud deploy --os macos` asks AWS whether the host is really gone and
+clears the row if it is — and keeps it if the question could not be asked,
+because a record deleted on the strength of expired credentials would hide a
+resource that is still billing.
 
 The one thing no CI job can run is a real `mac*.metal` instance — GitHub
 Actions has no macOS EC2 runner and Apple's licensing does not permit macOS in
@@ -182,7 +304,13 @@ a container (see [live-verification-ci.md](live-verification-ci.md)). What
 runs the installed `nyxgpt cloud deploy` against a real sshd and asserts the
 macOS bootstrap is what arrives, elevated, and that the Linux one still
 arrives for a Linux plan; [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)
-installs the same formulas from the same remote tap on a real macOS runner.
+installs the same formulas from the same remote tap on a real macOS runner;
+and [`terraform-aws-validate.yml`](../.github/workflows/terraform-aws-validate.yml)
+validates the Dedicated Host and deferred-release root modules on every change
+to them. Neither the allocation nor the deferred release can be executed in CI
+— there is no EC2 Mac hardware and no way to make AWS's 24-hour clock pass —
+which is the named exception in
+[live-verification-ci.md](live-verification-ci.md), not a gap.
 
 ### `nyxgpt cloud status` — where is my instance? (#3813)
 
@@ -1280,8 +1408,10 @@ checkout.
 
 EC2 Mac instances require a
 [Dedicated Host](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-mac-instances.html)
-with a 24-hour minimum allocation -- an AWS billing/allocation constraint,
-not a nyxGPT one, and the reason nyxGPT does not allocate one for you
+with a 24-hour minimum allocation -- an AWS billing/allocation constraint, not
+a nyxGPT one. `nyxgpt cloud deploy --os macos` allocates that host for you
+after disclosing what it costs and asking, and defers its release past the
+24-hour window rather than leaving it to you
 (see [EC2 Mac targets](#ec2-mac-targets)). Any other Linux distro (no systemd, e.g. Alpine) or
 Windows AMI is out of scope, per the native-install OS dispatch
 (`_unsupported_os_result` in `src/nyxgpt/ops.py`) and CLAUDE.md's

@@ -228,6 +228,25 @@ type CloudConnection = {
 // the record -- and neither is *deployed*, which is why the badge below reads
 // `deployed` and not `known`: reporting DEPLOYED for a provision that died
 // partway is the same class of lie the whole issue is about.
+
+// An EC2 Mac Dedicated Host that has not been released yet (#3995). Every
+// field is empty/false/null when there is none.
+type MacHost = {
+  host_id: string;
+  instance_id: string;
+  instance_type: string;
+  region: string;
+  availability_zone: string;
+  allocated_at: string;
+  release_at: string;
+  release_scheduled: boolean;
+  hourly_rate: number | null;
+  accrued_cost: number | null;
+  currency: string;
+  releasable_now: boolean;
+  billing: boolean;
+};
+
 type CloudDeployStatus = {
   source: 'deploy-record' | 'local-instance' | 'deploy-attempt' | 'substrate-record' | 'none';
   known: boolean;
@@ -264,6 +283,13 @@ type CloudDeployStatus = {
   // Which target OS's bootstrap provisioned the instance (#3867). Empty when
   // the deploy record predates `--os`, which is not the same claim as 'linux'.
   os_family: string;
+  // An EC2 Mac Dedicated Host that is still allocated (#3995). Present with an
+  // empty host_id when there is none. It outlives both the instance and the
+  // deploy record by design -- `cloud destroy` terminates the Mac at once but
+  // AWS refuses to release the host for 24 hours -- so it is the one thing on
+  // this page that can be true while every other field says 'nothing is
+  // deployed', and the one thing still costing money when it is.
+  mac_host: MacHost;
   connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
@@ -1253,6 +1279,71 @@ export default function InfrastructurePage() {
                 </div>
               )}
             </>
+          )}
+
+          {/* #3995. Outside the known/unknown branch above, deliberately: the
+              ordinary end state of a macOS teardown is "no deployment, one
+              Dedicated Host still billing until tomorrow", and a block that
+              only rendered for a live deployment would hide the single
+              remaining charge at exactly the moment it is all that is left.
+              Observed, never driven (Definition of Done): the release is
+              already scheduled in AWS, and the pointer names the wrapped
+              command that schedules it when it is not. */}
+          {cloud?.mac_host?.host_id && (
+            <div style={{ marginTop: '1rem' }}>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                EC2 Mac Dedicated Host — still billing
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                AWS bills an allocated Dedicated Host for a 24-hour minimum and refuses to release
+                one before that window closes, so <code>nyxgpt cloud destroy</code> terminates the
+                Mac immediately and defers only the host release. This host outlives the instance
+                and the deploy record by design.
+              </p>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
+                <Row
+                  label="Host"
+                  value={`${cloud.mac_host.host_id}${
+                    cloud.mac_host.instance_type ? ` (${cloud.mac_host.instance_type})` : ''
+                  }`}
+                />
+                <Row
+                  label="Location"
+                  value={`${cloud.mac_host.region || 'unknown'} / ${
+                    cloud.mac_host.availability_zone || 'unknown'
+                  }`}
+                />
+                <Row label="Allocated" value={cloud.mac_host.allocated_at || 'unknown'} />
+                <Row
+                  label="Releasable at"
+                  value={
+                    cloud.mac_host.releasable_now
+                      ? `${cloud.mac_host.release_at || 'unknown'} — that moment has passed`
+                      : `${cloud.mac_host.release_at || 'unknown'} (AWS’s 24-hour minimum)`
+                  }
+                />
+                <Row
+                  label="Release"
+                  value={
+                    cloud.mac_host.release_scheduled && cloud.mac_host.releasable_now
+                      ? 'the scheduled release has fired — Slack has the outcome. Not “released”: nothing here watched it, and the row clears on the next lifecycle command, which asks AWS'
+                      : cloud.mac_host.release_scheduled
+                      ? 'scheduled — a one-shot AWS schedule releases it and reports the outcome to Slack'
+                      : `not scheduled yet — \`${
+                          cloud?.commands?.destroy ?? 'nyxgpt cloud destroy --yes'
+                        }\` terminates the Mac and schedules it`
+                  }
+                />
+                <Row
+                  label="Accrued"
+                  value={
+                    cloud.mac_host.accrued_cost !== null && cloud.mac_host.hourly_rate
+                      ? `$${cloud.mac_host.accrued_cost.toFixed(2)} at $${cloud.mac_host.hourly_rate.toFixed(4)}/hour (the 24-hour minimum is charged either way)`
+                      : 'unknown — no rate was recorded for this host'
+                  }
+                />
+              </ul>
+            </div>
           )}
         </div>
 
