@@ -38,6 +38,12 @@ class InfoResponse(BaseModel):
     #: Agent tooling's configured release branch (`[github] RELEASE_BRANCH`),
     #: kept distinct from the running version (#3716).
     release_branch: str | None = None
+    #: Which tier `release_version` belongs to -- `stable`, `rc`, `dev` or
+    #: `unknown` (`nyxgpt.version.version_channel`). Sent as its own field
+    #: rather than left for each consumer to re-derive from the string: the
+    #: web header, the settings screen and any future client must all agree
+    #: on whether an acceptance install is a candidate or a release (#3982).
+    release_channel: str | None = None
 
 
 class SessionsListResponse(BaseModel):
