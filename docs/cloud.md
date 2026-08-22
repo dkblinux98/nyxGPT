@@ -151,7 +151,15 @@ What the deploy does for a Mac you point it at:
   `[rag] cassandra_hosts` at it.
 - Enables **no** observability stack and **no** self-heal watchdog, for the
   same reason: the macOS bootstrap installs the two formulas and starts them,
-  and does not run `ops install`. `nyxgpt cloud status` reports the target OS
+  and does not run `ops install`. This is a platform constraint, not a
+  revisitable scoping choice: everything the bootstrap skips is
+  Docker-container-based (the observability Compose stack, GlitchTip, the
+  `nyxgpt-cassandra` container), every way of running Docker on macOS works
+  by running a Linux VM, and **EC2 Mac instances do not support nested
+  virtualization** — so no Docker daemon can exist on that target at all.
+  Do not propose adding the container tier to the Mac path; point
+  `--session-backend cassandra` / `[rag] cassandra_hosts` at a Cassandra
+  running elsewhere instead. `nyxgpt cloud status` reports the target OS
   so this difference is visible after the scrollback is gone, and so does the
   admin Infrastructure page.
 - Leaves the security group alone. That Mac is not the instance nyxGPT's
