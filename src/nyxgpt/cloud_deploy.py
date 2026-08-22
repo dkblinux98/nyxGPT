@@ -824,6 +824,16 @@ def build_working_tree_archive(source: Path, dest: Path) -> int:
             capture_output=True,
             text=True,
             timeout=ARCHIVE_TIMEOUT,
+            # Belt-and-braces against AppleDouble `._*` metadata reaching the
+            # instance (observed 2026-08-22: 1,182 `._*` files shipped in one
+            # --dev deploy; Grafana's provisioner then crash-loops parsing
+            # `._dashboards.yml` as YAML). The primary vector was Dropbox
+            # materializing `._*` companions as real files during sync
+            # activity, which `git ls-files --others` then listed -- closed by
+            # the `._*` entry in .gitignore. COPYFILE_DISABLE additionally
+            # stops any macOS bsdtar configuration from synthesizing its own
+            # `._` metadata entries at archive time. A no-op for GNU tar.
+            env={**os.environ, "COPYFILE_DISABLE": "1"},
         )
     except subprocess.TimeoutExpired as exc:
         raise CloudCommandError(

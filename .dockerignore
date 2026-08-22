@@ -34,6 +34,9 @@ out/
 coverage/
 .idea/
 .DS_Store
+# AppleDouble companions -- Dropbox materializes these as real files during
+# sync activity (same vector as the .gitignore entry; 2026-08-22).
+._*
 *.log
 
 # Terraform working dir: provider binaries (63MB), state, and live tfvars

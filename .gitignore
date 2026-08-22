@@ -26,6 +26,13 @@ __pycache__/
 
 # macOS
 .DS_Store
+# AppleDouble metadata companions. On this Dropbox-synced checkout these
+# appear transiently as real files during sync activity; without this entry
+# `git ls-files --others --exclude-standard` lists them, and the cloud --dev
+# deploy ships them to the instance as ordinary files (observed 2026-08-22:
+# 1,182 shipped in one deploy; Grafana's provisioner then crash-loops parsing
+# `._dashboards.yml` as YAML).
+._*
 
 # Logs
 *.log
