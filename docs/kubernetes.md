@@ -163,10 +163,12 @@ Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 the image was last built, reporting `<image>: built` / `rebuilt (source changed since last
 build)` / `already up to date (skipped rebuild)` instead of always
 rebuilding. `nyxgpt-web:local`'s build bakes `NEXT_PUBLIC_API_BASE_URL` into
-the browser bundle at build time (see [web/Dockerfile](../web/Dockerfile));
-since the api/web Services here are `ClusterIP`-only (no NodePort/Ingress),
-this defaults to the same host-local address the [Verify](#4-verify) section
-below reaches through `kubectl port-forward`.
+the browser bundle at build time (see [web/Dockerfile](../web/Dockerfile)); it
+defaults to the same host-local address the [Verify](#4-verify) section below
+publishes. Nothing under `web/src` actually reads it today — every browser call
+is a relative `/api/...` served by a Next.js route handler — so it is passed
+for parity with the Terraform build rather than because the browser needs it
+(#3986).
 
 ## Install modes: artifact (default) and `--dev`
 
@@ -356,11 +358,16 @@ instance.
 
 **How you reach it.** Exactly as for a native cloud deployment: `nyxgpt cloud
 tunnel` forwards `127.0.0.1:8000`/`127.0.0.1:3000` on your workstation over
-SSH. Because the cluster's Services are ClusterIP-only, the deploy installs a
-small **access bridge** on the instance — systemd `--user` services running
-`nyxgpt ops port-forward`, which is what holds those loopback ports for the
-tunnel to forward to. They restart automatically, which matters during a
-canary rollout: replacing a Pod ends a port-forward.
+SSH. The tunnel forwards to the *instance's* loopback, and the k3s cluster does
+not bind it, so the deploy installs a small **access bridge** on the instance —
+systemd `--user` services running `nyxgpt ops port-forward`, which is what
+holds those loopback ports for the tunnel to forward to. They restart
+automatically, which matters during a canary rollout: replacing a Pod ends a
+port-forward. (The host publishing the local `kind` cluster gets since #3986
+does not apply here: the base Services stay `ClusterIP` on this substrate, so
+nothing but port 22 exists on the instance, and `nyxgpt ops install
+--kubernetes` detects k3s and leaves those two loopback ports to the bridge
+rather than starting a forward of its own.)
 
 **Canary rollout against the cloud deployment:**
 
@@ -492,7 +499,26 @@ context has no reachable cluster. This section documents what that step does
 manually, for reference:
 
 ```bash
-kind create cluster --name nyxgpt-local
+# The config is what publishes the app tier on the host (#3986) -- a bare
+# `kind create cluster` publishes nothing, which is why the web UI used to be
+# unreachable after a successful install. `nyxgpt ops install --kubernetes`
+# writes this file to ~/.nyxGPT/k8s/kind-cluster.yaml and passes it.
+cat > kind-cluster.yaml <<'YAML'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30300     # the node port nyxgpt-web is published on
+        hostPort: 3000
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 30800     # ...and nyxgpt-api
+        hostPort: 8000
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+YAML
+kind create cluster --name nyxgpt-local --config kind-cluster.yaml
 ```
 
 If you'd rather bring your own cluster (minikube, Docker Desktop, a remote
@@ -549,7 +575,12 @@ the same stable/canary pair for `nyxgpt-web` (`k8s/deployment-web-stable.yaml`
 / `k8s/deployment-web-canary.yaml`, 1/0 replicas by default), and the
 `nyxgpt-api`/`nyxgpt-api-canary`/`nyxgpt-web`/`nyxgpt-web-canary` Services
 (each pair selects every Pod from either Deployment in that component;
-traffic split is by replica count, not Service selector). `nyxgpt-web`'s
+traffic split is by replica count, not Service selector). Every Service here
+is `ClusterIP`; on a cluster nyxGPT provisioned, the wrapped install publishes
+`nyxgpt-web`/`nyxgpt-api` on node ports `30300`/`30800` afterwards (#3986) —
+see [4. Verify](#4-verify). Doing that by hand is
+`kubectl -n nyxgpt patch svc nyxgpt-web -p '{"spec":{"type":"NodePort",...}}'`,
+which is exactly why it is wrapped. `nyxgpt-web`'s
 Pods get `NYXGPT_API_BASE_URL=http://nyxgpt-api:8000` (the api Service's
 in-cluster DNS name) so its server-side proxy routes reach the api without
 needing the api exposed outside the cluster, and the same `NYXGPT_AUTH_API_KEY`
@@ -571,22 +602,67 @@ dashboard is operable (see
 ## 4. Verify
 
 ```bash
-kubectl -n nyxgpt get pods
-kubectl -n nyxgpt get hpa
-kubectl -n nyxgpt port-forward svc/nyxgpt-api 8000:8000
+nyxgpt ops status
 curl -H "X-API-Key: <your api-key>" http://127.0.0.1:8000/health
 ```
 
-To reach the web UI too, forward its Service on a second terminal via
-`nyxgpt ops port-forward` (the default `nyxgpt-web:local` build expects the
-api at `127.0.0.1:8000`, so forward both at once):
+Then open `http://127.0.0.1:3000` — **no port-forward required** (#3986). The
+`kind` cluster `nyxgpt ops install --kubernetes` provisions is created with
+`extraPortMappings` publishing node ports `30300`/`30800` on the host's
+`3000`/`8000` (loopback only), and the install then publishes `nyxgpt-web` and
+`nyxgpt-api` on those node ports. Because both halves are properties of the
+*cluster* rather than of a running process, the URL keeps working across a
+canary rollout, a self-heal Pod restart and an image change — which a `kubectl
+port-forward` does not: it attaches to one Pod and exits when that Pod is
+replaced.
+
+The NodePort is **applied by the install, not declared in `k8s/`**, and that is
+deliberate. The same manifests are applied by the AWS k3s deployment, whose
+invariant is that nothing but port 22 exists on the instance (#3503,
+[security.md](security.md)); a NodePort in the base manifest would bind on that
+node's interfaces too. So the base Services stay `ClusterIP` everywhere, and
+the patch is applied only where nyxGPT created the cluster *and* mapped its
+ports to loopback. A bring-your-own local cluster gets the same treatment for
+the same reason — opening node ports on a cluster nyxGPT did not create is not
+its call — and is reached through the managed background forward below.
+
+`nyxgpt up --kubernetes` prints the URL once the stack reports healthy, and the
+install verifies it before it returns.
+
+### Reaching a bring-your-own cluster
+
+On a cluster nyxGPT did not create, mapping a host port is not nyxGPT's to
+arrange — the NodePorts exist, but whether they reach your workstation depends
+on where the nodes are. The install therefore establishes a **managed
+background forward** instead, in the same shape as `nyxgpt cloud tunnel
+--background`: detached, its pid recorded, and *supervised*, so it is restarted
+when a Pod is replaced.
 
 ```bash
-nyxgpt ops port-forward
+# Started automatically by the install; these inspect and end it
+nyxgpt ops port-forward --status
+nyxgpt ops port-forward --stop
+
+# Or establish it yourself (web + api together)
+nyxgpt ops port-forward --target app --background
 ```
 
-Then open `http://127.0.0.1:3000`. `nyxgpt up --kubernetes` prints this same
-instruction once the stack reports healthy.
+`nyxgpt ops down --kubernetes` releases it along with the deployment. A
+foreground `nyxgpt ops port-forward` still works and is unchanged, for a
+one-off look at a single Service.
+
+**Not on the AWS k3s deployment**, which already has an owner for those two
+loopback ports: the systemd `--user` [access
+bridge](#kubernetes-on-the-cloud-target) the deploy installs. The install
+detects that substrate and reports the arrangement instead of starting a
+second forward that would win the bind race and leave every bridge unit
+restarting forever.
+
+The web UI does **not** need the api forwarded to reach it: nothing under
+`web/src` reads `NEXT_PUBLIC_API_BASE_URL`, and every browser call is a
+relative `/api/...` served by a Next.js route handler that reaches the api
+in-cluster. The api forward is there for `curl`, the CLI and
+[api.md](api.md)'s examples.
 
 The observability UIs are reached the same way, all four at once:
 
@@ -786,13 +862,14 @@ The **Infrastructure Status** admin page (`/admin/infrastructure`, see
 /api/v1/infra/status`, backed by `ops.infra_status()`) as one of three honest
 states rather than folding every failure into a single "not deployed":
 
-- **NOT DEPLOYED** -- no kubeconfig current-context is configured at all
-  (`kubectl` missing from PATH is folded into this same bucket, since
-  there's then no context to read either way). By definition, no configured
-  cluster means there was never anything to be unreachable. This is also
-  the state once a context *is* configured, the cluster answers, and the
-  `nyxgpt` namespace simply has no Pods.
-- **CANNOT DETERMINE** -- a context is configured but the `kubectl -n
+- **NOT DEPLOYED** -- this process has no cluster to talk to at all: no
+  kubeconfig current-context *and* no in-cluster ServiceAccount credentials
+  (`kubectl` missing from PATH is folded into this same bucket, since there's
+  then nothing to talk to it with). By definition, no configured cluster means
+  there was never anything to be unreachable. This is also the state once a
+  cluster *is* configured, it answers, and the `nyxgpt` namespace simply has
+  no Pods.
+- **CANNOT DETERMINE** -- a cluster is configured but the `kubectl -n
   nyxgpt get pods` probe itself failed (timeout, connection refused to a
   cluster that's meant to exist, an auth failure). This is reserved for a
   cluster that's genuinely supposed to be there, preserving the original
@@ -800,6 +877,31 @@ states rather than folding every failure into a single "not deployed":
   deployed."
 - **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
   namespace.
+
+### Served from inside the cluster (#3988)
+
+In Kubernetes mode this page is rendered by the api Pod, about the cluster
+that Pod runs in — and the detection gate used to ask `kubectl config
+current-context`, which is **empty in a Pod**: in-cluster authentication uses
+the mounted ServiceAccount token and `KUBERNETES_SERVICE_HOST`, not a
+kubeconfig context. The page therefore reported the deployment it was being
+served from as NOT DEPLOYED. Detection now accepts either credential, and the
+payload carries `in_cluster` so the page can say which vantage point the answer
+came from. `k8s/rbac.yaml`'s Role grants the `list` on
+`deployments`/`daemonsets` that the observability card's read needs, so no part
+of the page depends on a cluster's default permissions.
+
+The same vantage point makes two other cards **out of scope** rather than
+merely unknown, and they now say so:
+
+- **Docker Compose** — a Pod has no host filesystem and no Docker socket, so
+  there is no survey to run. It used to report the *container's* own
+  `/root/.nyxGPT/docker-compose.yml` to the operator as the reason.
+- **Native** — the install identity and its remedies (`nyxgpt up`,
+  `nyxgpt ops doctor`) describe the machine this process runs on, which from
+  inside a Pod is not the deployment the operator is asking about.
+
+Run `nyxgpt ops status` on the host to survey either of those there.
 
 Each Pod on that card is badged with the same three states the CLI prints,
 from `kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
@@ -1037,9 +1139,10 @@ nyxgpt canary evaluate               # check the canary track's metrics vs thres
 nyxgpt canary promote [--step N]     # add N percentage points to canary's traffic share (100% promotes)
                        [--force]     # ... even though the canary track has served no traffic (idle cluster)
 nyxgpt canary rollback               # cut all traffic back to the stable deployment
+nyxgpt canary reset                  # return an IDLE canary Deployment carrying replicas to its resting 0
 ```
 
-All six commands accept `--namespace` to override the `[canary] namespace`
+All seven commands accept `--namespace` to override the `[canary] namespace`
 config value (see `example.config.ini`); it defaults to `nyxgpt`. They also
 all accept `--component {api,web}` (default: `api`) to operate on the
 `nyxgpt-web` pair instead -- e.g. `nyxgpt canary deploy --component web`.
@@ -1048,6 +1151,35 @@ standing pool -- see [The replica pool is borrowed, not
 standing](#the-replica-pool-is-borrowed-not-standing-3833)), `step_percent`,
 `error_rate_threshold_percent`, `latency_p95_threshold_ms`, and
 `min_requests_for_evaluation` are also configured in `[canary]`.
+
+### Standing an off-contract canary down (#3991)
+
+`k8s/deployment-canary.yaml` and `k8s/deployment-web-canary.yaml` declare
+`replicas: 0`: the canary track is idle until `nyxgpt canary start` scales it
+up, and `promote`/`rollback` scale it back down. A cluster can still be found
+with an **idle canary carrying replicas** — two Pods holding live Service
+endpoints outside any rollout — by two routes:
+
+- `canary start` scales the canary up before it scales stable, and a failure on
+  that second scale returns before the rollout state is written. The cluster
+  has the replicas; the state file says idle.
+- The rollout state file is `~/.nyxGPT/canary_state.json`, and the api
+  Deployment mounts no volume over it. A rollout started from the dashboard
+  records its state inside the serving Pod's ephemeral filesystem, so the next
+  Pod replacement takes the state with it and leaves the replicas.
+
+In that state `nyxgpt canary rollback` correctly refuses — "No canary rollout
+in progress"; ending a rollout is its contract and there is no rollout to end —
+which used to leave a raw `kubectl scale` as the only way back.
+`nyxgpt canary reset` is the wrapped path: it scales an idle canary to 0 (and
+deflates a still-inflated stable to its resting count), and refuses while a
+rollout *is* in progress, pointing at `rollback`/`promote` instead.
+
+`nyxgpt ops install --kubernetes` runs the same reset for both components after
+the app tier is up, so a fresh install *establishes* the resting contract
+rather than only declaring it. An install never ends a rollout an operator
+deliberately started: the refusal above applies there too, and is reported, not
+overridden.
 
 ### Honest status, mode-aware (#3409)
 
@@ -1087,13 +1219,23 @@ cluster, against a Pod the scheduler actually refuses.
 
 ### SRE/admin dashboard
 
-The same status/deploy/start/evaluate/promote/rollback actions are available
-from the web UI at **Settings → Canary Operations** (`/admin/canary`),
-backed by `GET/POST /api/v1/canary/status`, `/deploy`, `/start`,
-`/evaluate`, `/promote`, and `/rollback` on the FastAPI backend. The page
-has an `api`/`web` tab (#3419): `GET` takes `component` as a query param,
-the `POST` actions take it as a JSON body field (`{"component": "web"}`);
-both default to `api` when omitted.
+The status/start/evaluate/promote/rollback actions are available from the web
+UI at **Settings → Canary Operations** (`/admin/canary`), backed by `GET/POST
+/api/v1/canary/status`, `/start`, `/evaluate`, `/promote`, and `/rollback` on
+the FastAPI backend. The page has an `api`/`web` tab (#3419): `GET` takes
+`component` as a query param, the `POST` actions take it as a JSON body field
+(`{"component": "web"}`); both default to `api` when omitted.
+
+**`deploy` is not among them (#3991).** The page names
+`nyxgpt canary deploy` as text and offers no button for it. The build runs in
+whatever process serves the request, and in Kubernetes mode that is the
+in-cluster api Pod — no checkout, no Docker daemon, and a version that resolves
+to `0.0.0`, so the control could only ever fail with `Failed to build/load
+nyxgpt-web:0.0.0`. It was removed rather than repaired, under the standing rule
+in CLAUDE.md's Definition of Done: a dashboard cannot act on the substrate it is
+itself running on (the same rule that removed the AWS Cloud Infrastructure and
+Portability screens, #3804/#3803). `POST /api/v1/canary/deploy` remains for an
+api process that *can* build — a native install driving a local cluster.
 
 ### Metrics source: the canary track's own Pods (#3829)
 

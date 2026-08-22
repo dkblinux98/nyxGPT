@@ -92,6 +92,11 @@ K8S_INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_k8s_stack_health",
     "_preflight_k8s_capacity",
     "_k8s_observability_health",
+    # #3991 / #3986: the two steps that make the install's promises true --
+    # the canary pair actually resting at 0, and the web UI actually reachable
+    # -- both of which talk to a real cluster and a real host port.
+    "_reconcile_k8s_canary_resting",
+    "_ensure_k8s_host_access",
 )
 
 # Every function `ops._install_terraform_steps()` runs as a step, plus the

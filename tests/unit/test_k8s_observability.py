@@ -158,6 +158,10 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         # and the observability layer, and really polls a cluster.
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
+        ),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_k8s_observability_health", return_value=[]),
@@ -196,6 +200,10 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         # the data-tier wait and this would assert nothing.
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
+        ),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
         patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
@@ -727,6 +735,8 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),

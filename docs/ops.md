@@ -165,9 +165,11 @@ nyxGPT is up: http://127.0.0.1:3000
   (default 180)
 - `--no-wait` — return as soon as `install` finishes, without waiting for
   health or printing the URL
-- Under `--kubernetes`, Services are ClusterIP-only, so `up` prints
-  `nyxgpt ops port-forward` instructions instead of claiming the URL is
-  directly reachable (see [kubernetes.md](kubernetes.md#4-verify))
+- Under `--kubernetes`, `up` prints the same URL as every other mode: since
+  #3986 the install leaves the web UI reachable with no follow-up command —
+  published on the host by the `kind` cluster it provisions, or through a
+  managed background forward on a cluster whose host ports it cannot map (see
+  [kubernetes.md](kubernetes.md#4-verify))
 
 Both are idempotent, same as `install`/`down` themselves: re-running `up`
 just reconciles and re-waits; re-running `down` on an already-torn-down
@@ -1654,17 +1656,26 @@ Exit codes:
 ## `nyxgpt ops port-forward`
 
 Forwards a Kubernetes Service to `127.0.0.1` so it's reachable from the
-operator's own workstation. `k8s/`'s Services are ClusterIP-only -- there's
-no Ingress/LoadBalancer (see [kubernetes.md](kubernetes.md#4-verify)) -- so
-this is the only way to reach the web UI, or any observability UI, after a
-`--kubernetes` install. It's a thin wrapper around `kubectl port-forward` so
-operators never need to type the raw `kubectl` command themselves; `nyxgpt up
---kubernetes` prints this command as its next step once the stack reports
-healthy.
+operator's own workstation. It's a thin wrapper around `kubectl port-forward`
+so operators never need to type the raw `kubectl` command themselves.
 
-`--target` selects what to forward (default `web`): `web`, `api`, `grafana`,
-`prometheus`, `jaeger`, `glitchtip`, or `observability` for all four
-observability UIs at once. Each target's default local port is the one that
+Since #3986 it is **not** how you reach the web UI after a local install: the
+install leaves `http://127.0.0.1:3000` answering on its own. This remains the
+way to reach a cluster whose host ports nyxGPT cannot map (a bring-your-own
+cluster), and the only way to reach the observability UIs, whose Services stay
+ClusterIP.
+
+`--target app` forwards web and api together; `--background` hands the forward
+to a supervised, detached child (`--status` / `--stop` inspect and end it),
+which is what the install establishes on a bring-your-own cluster and what
+`nyxgpt ops down --kubernetes` releases. The supervision matters: a plain
+`kubectl port-forward` attaches to one Pod and exits when that Pod is
+replaced, so an unsupervised background forward would take the UI down on the
+first canary rollout.
+
+`--target` selects what to forward (default `web`): `web`, `api`, `app` for
+web and api together, `grafana`, `prometheus`, `jaeger`, `glitchtip`, or
+`observability` for all four observability UIs at once. Each target's default local port is the one that
 UI is published on in every other mode -- Grafana `3001`, Prometheus `9090`,
 Jaeger `16686`, GlitchTip `8080` -- which is what makes the admin
 dashboard's observability links (built from `[monitoring] grafana_ui_url`

@@ -36,6 +36,24 @@ name: Kubernetes Local Smoke
 # the manifests, the k8s half of the ops layer, the smoke script, or this
 # workflow change.
 #
+# Since #3986 it also answers the question that issue is: after the install
+# returns, can a browser open the UI with NO further command? The smoke no
+# longer opens a port-forward of its own -- doing so was what made it blind to
+# a defect an operator hit immediately -- so every user-path step below drives
+# `http://127.0.0.1:3000` exactly as a browser would. Its fault-injection half
+# re-applies the SHIPPED (ClusterIP) web Service -- which strips the node port
+# the install patched on -- and asserts the address stops answering, then
+# re-runs the install and asserts it comes back; a further step deletes every
+# web Pod and asserts the address still answers, which is the property
+# `kubectl port-forward` never had. The cluster is created from nyxGPT's OWN
+# rendered kind config so the published-NodePort path is the one under test.
+#
+# It also carries #3991's resting-state assertion (both canary Deployments at
+# 0 after a fresh install, `nyxgpt canary reset` as the wrapped way back from
+# an off-contract one, and a re-install reconciling it) and #3988's in-cluster
+# one (the api Pod's own `/api/v1/infra/status` reporting the cluster it is
+# running in as DEPLOYED, with the Compose/native rows scoped out).
+#
 # A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
 # asked: does the install tell a Pod that is merely starting apart from one
 # that will never start? See scripts/k8s-pod-state-smoke.py.
@@ -47,6 +65,9 @@ on:
       # The Kubernetes half of self-heal is asserted against the live cluster
       # in step 8 (#3828), so a change to it must re-run this job.
       - 'src/nyxgpt/self_heal.py'
+      # The canary resting-state reconcile (#3991) is asserted against the
+      # live cluster in steps 8-9, and `canary reset` lives here.
+      - 'src/nyxgpt/canary.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
@@ -60,6 +81,9 @@ on:
       # The Kubernetes half of self-heal is asserted against the live cluster
       # in step 8 (#3828), so a change to it must re-run this job.
       - 'src/nyxgpt/self_heal.py'
+      # The canary resting-state reconcile (#3991) is asserted against the
+      # live cluster in steps 8-9, and `canary reset` lives here.
+      - 'src/nyxgpt/canary.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
@@ -130,8 +154,18 @@ jobs:
         # Created here rather than by the install itself so the ballast is in
         # place before the stack lands on the node (#3825). `nyxgpt ops`
         # reuses a cluster of this reserved name instead of creating one.
+        #
+        # With nyxGPT's OWN config, rendered from the code under test rather
+        # than copied (#3986): a kind cluster created bare publishes no host
+        # ports, so a bare `kind create cluster` here would silently route the
+        # install onto its bring-your-own-cluster path and leave the NodePort
+        # half of the fix -- the half that survives Pod replacement --
+        # unexercised. Rendering it means a change to
+        # `KIND_HOST_PORT_MAPPINGS` cannot drift away from what CI creates.
         run: |
-          kind create cluster --name nyxgpt-local --wait 120s
+          python -c "from nyxgpt import ops; print(ops._kind_cluster_config())" > kind-cluster.yaml
+          cat kind-cluster.yaml
+          kind create cluster --name nyxgpt-local --config kind-cluster.yaml --wait 120s
           ./scripts/k8s-node-ballast.sh 7936
 
       - name: Run Kubernetes local smoke
@@ -142,6 +176,12 @@ jobs:
         run: |
           kubectl -n nyxgpt get pods -o wide || true
           kubectl -n nyxgpt get statefulsets,deployments,daemonsets,svc,pvc || true
+          # What the host can actually reach (#3986): the node's published
+          # ports, the Services' types, and whatever managed forward the
+          # install established.
+          docker port nyxgpt-local-control-plane || true
+          nyxgpt ops port-forward --status || true
+          cat "$HOME/.nyxGPT/k8s/port-forward.log" || true
           # What the scheduler had to work with, against what the stack asked
           # for -- the first thing to look at when a Pod is stuck Pending.
           kubectl describe node | sed -n '/Allocated resources/,/Events/p' || true

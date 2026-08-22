@@ -842,6 +842,10 @@ def test_install_runs_the_preflight_before_applying_anything() -> None:
         # applies; stubbed like the data-tier one so this stays a test about
         # ordering rather than about rollouts.
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
+        ),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_wait_for_k8s_observability", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_apply_k8s_observability", side_effect=_record("apply-observability")),

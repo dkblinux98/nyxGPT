@@ -1520,6 +1520,31 @@ def cmd_canary_rollback(
     return 0 if result.ok else 2
 
 
+def cmd_canary_reset(cfg_path: Path | None, namespace: str | None, component: str = "api") -> int:
+    """Return an idle canary Deployment carrying replicas to its declared resting 0 (#3991).
+
+    The wrapped stand-down for a canary that is off its manifest contract
+    with no rollout to end -- the state in which `rollback` correctly refuses
+    ("No canary rollout in progress") and raw `kubectl scale` used to be the
+    only way back. See `canary.reset` for how a cluster reaches it.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+        component: Which component to reset (default: "api"; "api" or "web").
+
+    Returns:
+        0 if the canary is at rest afterwards, 2 if it could not be reset (or
+        a rollout is in progress, which this refuses to end).
+    """
+    ns = _canary_namespace(cfg_path, namespace)
+    result = canary_mod.reset(ns, component=component)
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
 def cmd_self_heal_status(_cfg_path: Path | None) -> int:
     """Print whether the self-heal watchdog is enabled, per-component health, and recent heal events.
 
@@ -2330,11 +2355,11 @@ def cli(argv: list[str] | None = None) -> int:
     ops_port_forward.add_argument(
         "--target",
         default="web",
-        choices=["web", "api", "grafana", "prometheus", "jaeger", "glitchtip", "observability"],
+        choices=list(ops_mod.K8S_PORT_FORWARD_TARGET_NAMES),
         help=(
-            "What to forward (default: web). `observability` forwards Grafana, Prometheus, "
-            "Jaeger and GlitchTip at once, on the same local ports the admin dashboard's "
-            "observability links already use"
+            "What to forward (default: web). `app` forwards web and api together; "
+            "`observability` forwards Grafana, Prometheus, Jaeger and GlitchTip at once, "
+            "on the same local ports the admin dashboard's observability links already use"
         ),
     )
     ops_port_forward.add_argument(
@@ -2344,6 +2369,33 @@ def cli(argv: list[str] | None = None) -> int:
         # operator chose a port" from "use this target's canonical one"
         # (3000 for web, 3001 for Grafana, 16686 for Jaeger, ...).
         help="Local port to forward to (default: the target's usual port, e.g. 3000 for web)",
+    )
+    ops_port_forward.add_argument(
+        "--background",
+        action="store_true",
+        help=(
+            "Run the forward as a supervised background process instead of in the "
+            "foreground -- it is restarted automatically when a Pod is replaced, and "
+            "survives this shell (#3986)"
+        ),
+    )
+    ops_port_forward.add_argument(
+        "--status",
+        action="store_true",
+        help="Report whether a managed background forward is running, and what it publishes",
+    )
+    ops_port_forward.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the managed background forward",
+    )
+    ops_port_forward.add_argument(
+        "--supervise",
+        action="store_true",
+        # The detached child's own entrypoint -- `--background` is the
+        # operator-facing surface, and a hidden flag keeps `--help` about
+        # what an operator actually chooses between.
+        help=argparse.SUPPRESS,
     )
 
     ops_verify = ops_sub.add_parser(
@@ -3386,6 +3438,20 @@ def cli(argv: list[str] | None = None) -> int:
         "--component", default="api", help="Component to roll back (default: api; or web)"
     )
 
+    canary_reset_p = canary_sub.add_parser(
+        "reset",
+        help=(
+            "Return an IDLE canary Deployment that is carrying replicas to its declared "
+            "resting 0 (refuses while a rollout is in progress -- use rollback for that)"
+        ),
+    )
+    canary_reset_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+    canary_reset_p.add_argument(
+        "--component", default="api", help="Component to reset (default: api; or web)"
+    )
+
     # Add self-heal command (Docker Compose stack watchdog)
     self_heal_p = sub.add_parser(
         "self-heal", help="Self-heal watchdog for the local Docker Compose stack"
@@ -3660,6 +3726,8 @@ def cli(argv: list[str] | None = None) -> int:
             )
         if args.canary_cmd == "rollback":
             return cmd_canary_rollback(args.config, args.namespace, args.component)
+        if args.canary_cmd == "reset":
+            return cmd_canary_reset(args.config, args.namespace, args.component)
 
     if cmd == "self-heal":
         # Same per-invocation correlation id as `ops`/`canary` above -- so a

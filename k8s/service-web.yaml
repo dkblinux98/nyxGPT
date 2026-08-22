@@ -17,4 +17,15 @@ spec:
     - name: http
       port: 3000
       targetPort: http
+  # STAYS ClusterIP here, deliberately (#3986). The local install publishes
+  # this Service on the host by PATCHING it to a NodePort, but only on the
+  # `kind` cluster nyxGPT provisions and only for the node ports that
+  # cluster's `extraPortMappings` publish on 127.0.0.1
+  # (`ops._publish_k8s_app_tier_nodeports`). Declaring the NodePort in the
+  # base manifest instead would apply it everywhere these manifests are
+  # applied -- including the AWS k3s deployment, whose invariant is that
+  # nothing but port 22 is open on the instance (#3503, docs/security.md).
+  # Same posture on a bring-your-own local cluster: nyxGPT does not open node
+  # ports on a cluster it did not create, and reaches it through the managed
+  # background forward instead.
   type: ClusterIP

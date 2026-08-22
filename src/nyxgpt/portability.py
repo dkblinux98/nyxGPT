@@ -242,7 +242,10 @@ TARGETS: tuple[Target, ...] = (
         operate=(
             "nyxgpt ops install --kubernetes",
             "nyxgpt ops status",
-            "nyxgpt ops port-forward",
+            # Not needed to reach the web UI since #3986 -- the install
+            # publishes it on the host -- but still how a bring-your-own
+            # cluster is reached, and the only way to the observability UIs.
+            "nyxgpt ops port-forward --target app",
             "nyxgpt ops port-forward --target observability",
         ),
         teardown="nyxgpt ops down --kubernetes",

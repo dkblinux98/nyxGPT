@@ -1,25 +1,36 @@
-"""`start_port_forward` must survive a web Pod that is not listening yet (#3825).
+"""How `k8s-local-smoke.sh` reaches the web UI -- and why it no longer forwards.
 
-Why this file exists, rather than a ledger entry saying the same thing.
-`k8s-local-smoke` step 8 heals a web Pod for real and returns as soon as the
-REPLACEMENT POD EXISTS -- not when its server is listening. Step 9 then opened
-the tunnel roughly two seconds later. `kubectl port-forward` treats the first
-refused in-pod connection as fatal ("error: lost connection to pod") and exits,
-and the old probe loop had no notion of a dead tunnel: it spent its full 60s
-budget curling a process that had died in the first two seconds, then failed
-with "web Service never answered -- the UI itself is unreachable" while every
-Pod in the cluster was Running/Ready. Run 32214550593 is that failure; the
-identical script content passed on run 32207748890, which is the definition of
-a race rather than a defect in whatever PR happened to be under review.
+**History, because it is the point.** This file was written for #3825, when the
+smoke opened its own `kubectl port-forward svc/nyxgpt-web 3000:3000`. Step 8
+healed a web Pod for real and returned as soon as the REPLACEMENT POD EXISTED,
+not when its server was listening; the tunnel opened seconds later, `kubectl
+port-forward` treated the first refused in-pod connection as fatal ("error:
+lost connection to pod") and exited, and the probe loop spent its full budget
+curling a process that had died in the first two seconds -- failing with "the
+UI itself is unreachable" while every Pod in the cluster was Running/Ready.
+Run 32214550593 is that failure and run 32207748890 is the same script content
+passing, which is the definition of a race. The fix was to rebuild the tunnel
+and to wait for the Deployment first.
 
-The real race needs a live kind cluster and a three-second window, so it cannot
-be reproduced here. What CAN be executed here is the logic that turned the
-window into a hard failure, and that is what these tests do: they run the real
-`start_port_forward` body out of the shipped script against stubbed `kubectl`,
-`curl` and `sleep`, with the stub tunnel dying on its first open exactly as
-kubectl did on the runner. The pre-fix loop is reconstructed alongside it and
-driven through the same stubs, so the fix is measured by the difference rather
-than asserted -- the old shape fails, the shipped shape recovers.
+**#3986 removed the tunnel instead**, and with it the race. Two things changed,
+and this file now guards both:
+
+* The smoke opens no forward at all. That it ever did was itself the blind
+  spot: the smoke reached the UI because IT had built a tunnel, while an
+  operator finishing the very same install had nothing listening on the host
+  -- which is the acceptance failure #3986 reports. Every user-path step now
+  drives `http://127.0.0.1:3000` exactly as a browser does, and reaching it is
+  an assertion rather than setup.
+* Where a forward is still unavoidable (a bring-your-own cluster), it is
+  `ops._supervise_port_forward` that owns it, and restarting a dead one is its
+  whole job -- see `test_supervisor_restarts_a_forward_that_died` in
+  test_k8s_host_access.py. The #3825 failure mode is handled there, in code,
+  rather than in a shell loop inside a test harness.
+
+The pre-fix loop is still reconstructed below and driven through the same
+stubs, so "the tunnel shape was fragile" stays a measured fact rather than a
+claim -- and the shipped `wait_for_web` is driven through an address that only
+starts answering on the fourth probe, so its retry is measured too.
 """
 
 from __future__ import annotations
@@ -51,31 +62,27 @@ start_port_forward() {
 """
 
 
-def _shipped_functions() -> str:
-    """The real `_open_tunnel` / `start_port_forward` bodies, sliced out.
+def _shipped_wait_for_web() -> str:
+    """The real `wait_for_web` body, sliced out of the shipped script.
 
-    Sourcing the whole script would run the nine-step smoke, so the tests
+    Sourcing the whole script would run the fifteen-step smoke, so the tests
     execute exactly the region under test -- and read it from the shipped file
     rather than restating it, so a regression in the script fails these tests.
     """
     text = SMOKE_SCRIPT.read_text()
-    start = text.index("_open_tunnel() {")
-    end = text.index("stop_port_forward() {")
-    body = text[start:end]
-    assert "start_port_forward() {" in body, (
-        "scripts/k8s-local-smoke.sh no longer defines start_port_forward between "
-        "_open_tunnel and stop_port_forward -- this test is slicing the wrong region"
-    )
-    return body
+    start = text.index("wait_for_web() {")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    return text[start:end]
 
 
-def _write_stubs(tmp_path: Path) -> Path:
-    """A PATH whose kubectl reproduces the runner's racing tunnel.
+def _write_stubs(tmp_path: Path, *, answers_on: int) -> Path:
+    """A PATH whose `curl` starts answering only on the `answers_on`-th probe.
 
-    First `port-forward` dies immediately, the way kubectl does when the Pod
-    refuses the connection; any later one stays up and marks the tunnel live.
-    `curl` answers only while that marker exists, and `sleep` is a no-op so the
-    60s budget costs milliseconds here.
+    Models the real window this covers -- kube-proxy programming a freshly
+    published node port, or a web Pod a second or two from listening -- without
+    needing either. `kubectl port-forward` dies on its first open exactly as it
+    did on the runner, so the pre-fix loop below meets the same race it met
+    there. `sleep` is a no-op so a 90s budget costs milliseconds.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -91,28 +98,28 @@ case "$*" in
         n=$(cat "$STATE/opens" 2>/dev/null || echo 0)
         n=$((n + 1))
         echo "$n" >"$STATE/opens"
-        if [ "$n" -eq 1 ]; then
-            # "error: lost connection to pod" -- the Pod refused :3000.
-            rm -f "$STATE/tunnel_up"
-            exit 1
-        fi
-        touch "$STATE/tunnel_up"
-        exec sleep 300
+        # "error: lost connection to pod" -- the Pod refused :3000.
+        exit 1
         ;;
 esac
 exit 0
 """)
     (bin_dir / "curl").write_text(f"""#!/usr/bin/env bash
-test -e "{state}/tunnel_up"
+STATE="{state}"
+n=$(cat "$STATE/probes" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$STATE/probes"
+[ "$n" -ge {answers_on} ]
 """)
     (bin_dir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (bin_dir / "nyxgpt").write_text("#!/usr/bin/env bash\nexit 0\n")
     for stub in bin_dir.iterdir():
         stub.chmod(0o755)
     return bin_dir
 
 
-def _run(tmp_path: Path, functions: str) -> subprocess.CompletedProcess[str]:
-    bin_dir = _write_stubs(tmp_path)
+def _run(tmp_path: Path, functions: str, entry: str, *, answers_on: int = 4):
+    bin_dir = _write_stubs(tmp_path, answers_on=answers_on)
     harness = f"""
 set -u
 NAMESPACE=nyxgpt
@@ -121,7 +128,7 @@ BASE="http://127.0.0.1:${{WEB_PORT}}"
 PF_PID=""
 fail() {{ echo "[FAIL] $*" >&2; exit 1; }}
 {functions}
-start_port_forward && echo "[TUNNEL-OK]"
+{entry} && echo "[WEB-OK]"
 """
     return subprocess.run(
         ["bash", "-c", harness],
@@ -133,60 +140,66 @@ start_port_forward && echo "[TUNNEL-OK]"
     )
 
 
-def test_the_pre_fix_loop_never_recovers_from_a_tunnel_that_died(tmp_path: Path) -> None:
-    """Fault injection: without the fix a three-second window is a hard failure.
+def test_the_smoke_opens_no_tunnel_of_its_own(tmp_path: Path) -> None:
+    """The blind spot #3986 removed, asserted against the shipped script.
 
-    This is the half that must fail. The tunnel dies on its first open, the old
-    loop reopens nothing, and all thirty probes are spent against a process
-    that no longer exists -- the exact shape of run 32214550593.
+    A smoke that builds its own tunnel cannot see an install that leaves the
+    operator without one -- which is the whole acceptance failure. This is the
+    guard that stops a future edit from quietly restoring it.
     """
-    result = _run(tmp_path, PRE_FIX_FUNCTIONS)
+    text = SMOKE_SCRIPT.read_text()
+
+    assert "wait_for_web() {" in text
+    assert "start_port_forward" not in text
+    # `nyxgpt ops port-forward --status` is a diagnostic the script prints; an
+    # actual `kubectl port-forward` is what it must never run.
+    assert 'kubectl -n "$NAMESPACE" port-forward' not in text
+    assert 'port-forward "svc/nyxgpt-web"' not in text
+
+
+def test_the_pre_fix_tunnel_loop_never_recovers_from_a_tunnel_that_died(tmp_path: Path) -> None:
+    """Fault injection, kept: the tunnel shape really was fragile.
+
+    The tunnel dies on its first open, the old loop reopens nothing, and every
+    probe is spent against a process that no longer exists -- the exact shape
+    of run 32214550593, and the reason the smoke no longer depends on one.
+    """
+    result = _run(tmp_path, PRE_FIX_FUNCTIONS, "start_port_forward", answers_on=10_000)
 
     assert result.returncode != 0, (
         "the pre-#3825 loop recovered from a dead tunnel -- the stub is not "
         "reproducing the race this test exists to measure"
     )
     assert "web Service never answered" in result.stderr
-    assert "[TUNNEL-OK]" not in result.stdout
-    assert (
-        tmp_path / "state" / "opens"
-    ).read_text().strip() == "1", "the pre-fix loop opened the tunnel more than once -- it did not"
+    assert "[WEB-OK]" not in result.stdout
+    assert (tmp_path / "state" / "opens").read_text().strip() == "1"
 
 
-def test_the_shipped_loop_rebuilds_the_tunnel_and_recovers(tmp_path: Path) -> None:
-    """The same injected death, run through the shipped function, succeeds."""
-    result = _run(tmp_path, _shipped_functions())
+def test_wait_for_web_retries_until_the_address_answers(tmp_path: Path) -> None:
+    """The shipped probe tolerates the window without owning a process.
 
-    assert (
-        result.returncode == 0
-    ), f"start_port_forward still fails when the first tunnel dies:\n{result.stderr}"
-    assert "[TUNNEL-OK]" in result.stdout
-    assert int((tmp_path / "state" / "opens").read_text().strip()) > 1, (
-        "the tunnel was never rebuilt -- recovery came from somewhere other "
-        "than the fix, so this test is not measuring it"
-    )
-
-
-def test_the_web_deployment_is_awaited_before_the_tunnel_opens(tmp_path: Path) -> None:
-    """The settle that removes the race, rather than tolerating it.
-
-    Rebuilding the tunnel recovers from the window; waiting for the Deployment
-    to report available avoids opening inside it at all. Both matter -- a Pod
-    can refuse a connection for reasons other than the heal in step 8 -- so the
-    ordering is pinned here and cannot be dropped as redundant.
+    A freshly published node port takes a moment to be programmed, and a web
+    Pod replaced in step 7 takes a moment to listen. Neither is a failure, and
+    neither needs a tunnel to be rebuilt -- there is no tunnel.
     """
-    result = _run(tmp_path, _shipped_functions())
-    assert result.returncode == 0
+    result = _run(tmp_path, _shipped_wait_for_web(), "wait_for_web", answers_on=4)
 
-    calls = (tmp_path / "state" / "kubectl.log").read_text().splitlines()
-    rollout = [i for i, c in enumerate(calls) if "rollout status" in c]
-    forwards = [i for i, c in enumerate(calls) if "port-forward" in c]
-    assert rollout, "start_port_forward no longer waits for the web Deployment at all"
-    assert forwards, "start_port_forward no longer opens a tunnel"
-    assert rollout[0] < forwards[0], (
-        "the tunnel is opened before the web Deployment reports available -- "
-        "that is the #3825 race, restored"
+    assert result.returncode == 0, result.stderr
+    assert "[WEB-OK]" in result.stdout
+    assert int((tmp_path / "state" / "probes").read_text().strip()) >= 4, (
+        "the probe succeeded on its first attempt -- the stub is not exercising "
+        "the retry this test measures"
     )
-    assert (
-        "deployment/nyxgpt-web-stable" in calls[rollout[0]]
-    ), "the wait names a workload other than the Deployment behind svc/nyxgpt-web"
+    assert not (tmp_path / "state" / "opens").exists(), (
+        "wait_for_web opened a port-forward -- it must reach the address the "
+        "install established, not build its own (#3986)"
+    )
+
+
+def test_wait_for_web_fails_with_the_reason_that_names_the_defect(tmp_path: Path) -> None:
+    """An address that never answers is #3986's failure, and must read as it."""
+    result = _run(tmp_path, _shipped_wait_for_web(), "wait_for_web", answers_on=10_000)
+
+    assert result.returncode != 0
+    assert "with no port-forward running" in result.stderr
+    assert "#3986" in result.stderr

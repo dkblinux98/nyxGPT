@@ -417,6 +417,8 @@ def test_install_kubernetes_steps_records_success():
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         # Observability is applied in this mode too (#3787), and waited for
         # before the health snapshot reads Pod phases (#3826).
