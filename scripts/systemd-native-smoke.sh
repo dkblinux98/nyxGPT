@@ -176,6 +176,42 @@ check "api    /health" http://127.0.0.1:8000/health 200 || { echo "::error::api 
 check "web    /"       http://127.0.0.1:3000/ 200       || { echo "::error::web    / expected 200"; fail_count=1; }
 check "ollama /"       http://127.0.0.1:11434/ 200      || { echo "::error::ollama / expected 200"; fail_count=1; }
 
+# The web tier reporting its OWN version, not the API's (#3982).
+#
+# Executed rather than unit-tested because the claim is about the machine:
+# `/api/info` derives the web version from the directory the wrapper `cd`s
+# into (`nyxgpt-web-<version>` on Linux, the Homebrew Cellar keg on macOS),
+# and only a real install proves that directory is where the Next.js server
+# actually runs. A unit test can assert the regex; it cannot assert the
+# process's cwd. #3982's incident was exactly this gap -- a 2.1.0 web build
+# served against a 3.0.0-line API while the header read `v3.0.0`, because
+# nothing in the UI had ever asked the web tier what it was.
+#
+# Mode-aware on purpose, and both branches are assertions:
+#   artifact mode  the served build has a version, and it is the one the
+#                  installed package reports -- a matched stack.
+#   dev mode       the checkout's `web/` has no version in its path, so the
+#                  answer must be `unknown`. Claiming a release version for a
+#                  working tree would be the same false confidence in reverse.
+log "Verifying the web tier reports its own version (#3982)"
+info_json=$(curl -s --max-time 20 http://127.0.0.1:3000/api/info || echo '')
+echo "  /api/info -> ${info_json:-<no response>}"
+web_version=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1] or "{}"); print(d.get("web_version") or "")' "$info_json" 2>/dev/null || echo "")
+web_source=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1] or "{}"); print(d.get("web_version_source") or "")' "$info_json" 2>/dev/null || echo "")
+if [[ "$DEV_MODE" -eq 0 ]]; then
+  installed_version=$(python3 -c 'from nyxgpt.version import running_version; print(running_version())' 2>/dev/null || echo "")
+  [[ "$web_source" == "native-build" ]] || {
+    echo "::error::web_version_source was '${web_source:-<none>}', expected native-build"; fail_count=1;
+  }
+  [[ -n "$web_version" && "$web_version" == "$installed_version" ]] || {
+    echo "::error::web tier reported '${web_version:-<none>}', expected '${installed_version}'"; fail_count=1;
+  }
+else
+  [[ "$web_source" == "unknown" && -z "$web_version" ]] || {
+    echo "::error::dev-mode web tier claimed version '${web_version:-<none>}' (source '${web_source}'); a working tree has no release version"; fail_count=1;
+  }
+fi
+
 # The other two commands #3508's acceptance names. Both are read-only, so
 # they are asserted on a stack that is up: `ops status` has to report the
 # native components as running (a Linux `status` that printed macOS's brew

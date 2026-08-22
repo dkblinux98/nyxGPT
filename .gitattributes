@@ -1,0 +1,8 @@
+
+# `.secrets.baseline` carries a `generated_at` clock that detect-secrets
+# rewrites whenever any scanned file's line numbers move, so two branches
+# that both touched scanned files always conflict on that one line even when
+# their findings are identical. The driver unions the findings and keeps the
+# later stamp; see scripts/git/merge-secrets-baseline.py for why not
+# `ours`/`union`, and docs/development.md for the one-time registration.
+.secrets.baseline merge=secrets-baseline
