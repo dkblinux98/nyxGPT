@@ -228,9 +228,10 @@ TARGETS: tuple[Target, ...] = (
             "docker-compose.yml's api/web services carry a `build:` context (`.` and "
             "`./web`), so Compose builds them from a checkout instead of pulling the "
             "published ghcr.io images -- see docs/docker-compose.md's container "
-            "images section. The Compose path is the one that still builds: "
-            "`nyxgpt ops install --terraform` deploys the same two registry "
-            "images with no checkout (#3835).",
+            "images section. The Compose path is the one that still needs a "
+            "CHECKOUT to build: `nyxgpt ops install --terraform` builds the same "
+            "two images with no checkout at all, from the published nyxgpt-api/"
+            "nyxgpt-web source tarballs (#3835, #3985).",
         ),
     ),
     Target(

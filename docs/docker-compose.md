@@ -93,24 +93,31 @@ image reference) reappears in `docker-compose.yml`, `terraform/main.tf`, or
 ## Published container images (GHCR)
 
 `nyxgpt-api`/`nyxgpt-web` are built locally by `docker-compose.yml`'s
-`build:` blocks and by the Kubernetes install, so those two paths need a repo
-checkout to build from. As part of repo-less portability (#3622),
+`build:` blocks, so the Compose path needs a repo checkout to build from. As
+part of repo-less portability (#3622),
 `.github/workflows/release-artifacts.yml` builds and pushes both images to
-GHCR on every GitHub Release:
+GHCR on every GitHub Release, for `linux/amd64` **and** `linux/arm64` (#3985
+— a single-arch index is `no matching manifest for linux/arm64/v8` on every
+Apple Silicon consumer, and that workflow asserts both architectures were
+published before it finishes):
 
 ```
 ghcr.io/dkblinux98/nyxgpt-api:<version>   (and :latest)
 ghcr.io/dkblinux98/nyxgpt-web:<version>   (and :latest)
 ```
 
-`nyxgpt ops install --terraform` consumes them: it pulls these
-images and deploys them with no checkout anywhere in the path, and only
-builds from a working tree when asked for that explicitly with `--dev` (see
-[terraform.md](terraform.md#install-modes-artifact-default-and---dev)). The
-same wiring for the Compose and Kubernetes paths is tracked in
+**No install path consumes these images today.** `nyxgpt ops install
+--terraform` used to pull them; since #3985 it builds its two images from the
+published `nyxgpt-api`/`nyxgpt-web` **source tarballs** instead, as the
+Kubernetes install already did — because these images are published on a
+*release* only, so a release candidate has none, and the `:latest` fallback
+silently deployed the previous stable release under the candidate's name (see
+[terraform.md](terraform.md#install-modes-artifact-default-and---dev)). Both
+those paths still need no checkout; `--dev` builds a working tree only when
+asked for explicitly. Wiring the Compose path to these images is tracked in
 [portability-matrix.md](portability-matrix.md#open-gaps) -- per CLAUDE.md's
-operational command wrapping requirement, that consumption path goes through
-a `nyxgpt`-wrapped command, never a raw `docker pull`/`docker compose`
+operational command wrapping requirement, any such consumption path goes
+through a `nyxgpt`-wrapped command, never a raw `docker pull`/`docker compose`
 instruction.
 
 ## Volumes

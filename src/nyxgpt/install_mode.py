@@ -6,11 +6,13 @@ services needs to agree on which one is live:
 
 - **artifact** (the default, and the only mode before #3789): api/web are
   built from a distributable artifact -- a Homebrew keg on macOS, a source
-  tarball installed into a self-contained venv on Linux, a container image
-  built from the published `nyxgpt-api`/`nyxgpt-web` tarballs in Kubernetes,
-  the published `ghcr.io` images for the Terraform deployment. This is what
-  makes a machine with no checkout installable at all (the repo-less
-  guarantee, #3504), so it stays the default.
+  tarball installed into a self-contained venv on Linux, and for both the
+  Kubernetes and the Terraform deployments a container image built locally
+  from the published `nyxgpt-api`/`nyxgpt-web` source tarballs (#3834, and
+  #3985 which moved Terraform onto the same channel: an rc publishes those
+  tarballs but no `ghcr.io` image, so pulling one could never install a
+  candidate). This is what makes a machine with no checkout installable at
+  all (the repo-less guarantee, #3504), so it stays the default.
 - **dev**: an explicitly opted-into (`nyxgpt up --dev`) checkout-only mode --
   natively the api is an editable venv (`pip install -e <checkout>`) and the
   web UI runs Next's dev server out of `<checkout>/web`; in Kubernetes and
@@ -401,7 +403,10 @@ class InstallModeState:
         if self.is_dev:
             checkout = self.checkout or "unknown checkout"
             return f"dev (images built from the working tree at {checkout}){suffix}"
-        return f"artifact (published container images -- the repo-less default){suffix}"
+        # The refs in `suffix` carry the version (`nyxgpt-api:artifact-3.0.0rc13`),
+        # which is what lets an operator read *which build* is serving off
+        # `ops status` rather than infer it (#3985).
+        return f"artifact (images built from the published nyxgpt-api/nyxgpt-web artifacts){suffix}"
 
 
 def read_install_mode(
