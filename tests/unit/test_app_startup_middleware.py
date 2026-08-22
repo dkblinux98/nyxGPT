@@ -6,7 +6,8 @@ Covers:
 - The `lifespan` startup/shutdown context manager (logging/tracing/error-tracking
   init failures, sessions dir creation failure, Ollama reachability check,
   rate limiter enable/disable, batch processor enable/disable incl. the
-  `_process_chat_batch` closure success/error paths, shutdown cleanup).
+  `_process_chat_batch` closure success/error paths, shutdown cleanup, and the
+  pending-restart flag a started API process retires for itself, #3806).
 - Module-level CORS origin parsing from `NYXGPT_CORS_ORIGINS`.
 - `security_headers_middleware`'s HSTS branch for HTTPS requests.
 - `add_request_id_and_limits`'s malformed Content-Length swallow branch.
