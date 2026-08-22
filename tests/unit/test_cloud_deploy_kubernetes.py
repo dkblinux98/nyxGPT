@@ -26,7 +26,10 @@ the script is unit-testable, but whether k3s comes up is not.
 """
 
 import argparse
+import ipaddress
 import json
+import pathlib
+import re
 import subprocess
 
 import pytest
@@ -513,8 +516,22 @@ def test_the_kubernetes_deploy_retires_a_native_stack_the_instance_was_running()
 def test_neither_teardown_appears_in_the_other_substrates_script():
     """Each script retires the substrate it is replacing, and only that one:
     a native deploy must not tear down the native stack it is about to
-    install, nor a Kubernetes deploy the cluster it is about to use."""
-    assert "k3s-uninstall.sh" not in _script(kubernetes=True)
+    install, nor a Kubernetes deploy the cluster it is about to use.
+
+    The Kubernetes half of that claim is now conditional, and deliberately
+    (#3956 acceptance failure): a cluster whose pod or Service network
+    overlaps the VPC has DNS that cannot work, and the install is skipped
+    whenever k3s is already present -- so without a replacement path the fix
+    would be a no-op on the very instance that found the defect. What the
+    claim still forbids is the UNCONDITIONAL teardown: the uninstall sits
+    behind the measured overlap, so a working cluster is reused as before.
+    """
+    script = _script(kubernetes=True)
+    uninstall = script.index("k3s-uninstall.sh")
+    guard = script.rindex(
+        'if command -v k3s >/dev/null 2>&1 && [ -n "$NYXGPT_VPC_CIDRS" ]', 0, uninstall
+    )
+    assert "nyxgpt_cidrs_overlap" in script[guard:uninstall]
     assert "run_nyxgpt ops down" not in _script()
 
 
@@ -866,3 +883,206 @@ def test_destroy_does_not_drain_a_cluster_it_is_about_to_terminate(
 def test_the_deploy_history_records_which_substrate_was_deployed(_isolated_cloud_home):
     cloud_deploy.record_history("deploy", "succeeded", version="3.0.0", substrate="kubernetes")
     assert cloud_deploy.deploy_history()[-1]["substrate"] == "kubernetes"
+
+
+# --- #3956 acceptance failure (2026-08-22): the VPC/pod-network collision --
+#
+# The merged implementation left k3s on its own default networks --
+# `--cluster-cidr=10.42.0.0/16`, `--service-cidr=10.43.0.0/16` -- and
+# terraform/aws/variables.tf defaults the substrate VPC to 10.42.0.0/16. That
+# is not a near miss. AWS puts the VPC resolver at VPC-base+2 (10.42.0.2), the
+# CNI claims the on-node route for 10.42.0.0/16 and shadows it, CoreDNS's
+# upstream becomes CoreDNS, its loop guard fires, and cluster DNS never comes
+# up for one second. The deploy reported "Ollama did not become ready in time"
+# 95 minutes later, three layers from the cause.
+#
+# The unit tests below hold the pin and the refusal. What EXECUTES them is
+# `scripts/k3s-cloud-smoke.sh` steps 1a/1b, which run the deploy's own
+# bootstrap text with a colliding VPC injected and require it to refuse.
+
+
+def _bootstrap_shell_function(name: str) -> str:
+    """Extract one shell function from the rendered bootstrap, by name.
+
+    The tests that call this EXECUTE the extracted text, so what they measure
+    is the function the instance runs rather than a copy of it that could
+    drift (the #3860 lesson, applied at unit scale).
+    """
+    lines = cloud_deploy.render_k3s_bootstrap().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{name}() {{"))
+    end = next(i for i in range(start, len(lines)) if lines[i] == "}")
+    return "\n".join(lines[start : end + 1])
+
+
+def _terraform_default_vpc_cidr() -> str:
+    """The substrate's VPC network, read from the Terraform variable itself."""
+    variables = (
+        pathlib.Path(__file__).resolve().parents[2] / "terraform" / "aws" / "variables.tf"
+    ).read_text(encoding="utf-8")
+    block = variables.split('variable "vpc_cidr"', 1)[1].split("}", 1)[0]
+    return re.search(r'default\s*=\s*"([^"]+)"', block).group(1)
+
+
+def test_the_k3s_networks_are_pinned_off_k3s_own_defaults():
+    """k3s's defaults ARE the collision: 10.42.0.0/16 and 10.43.0.0/16.
+
+    Unpinned, the pod network is byte-identical to the substrate VPC and the
+    cluster is DNS-dead the moment it starts.
+    """
+    flags = cloud_deploy.K3S_SERVER_FLAGS
+    assert f"--cluster-cidr={cloud_deploy.K3S_CLUSTER_CIDR}" in flags
+    assert f"--service-cidr={cloud_deploy.K3S_SERVICE_CIDR}" in flags
+    assert cloud_deploy.K3S_CLUSTER_CIDR != "10.42.0.0/16"
+    assert cloud_deploy.K3S_SERVICE_CIDR != "10.43.0.0/16"
+
+
+def test_the_pinned_networks_do_not_overlap_the_substrate_vpc():
+    """The two defaults are read from their own sources and compared here.
+
+    Pinning the cluster and then moving `vpc_cidr` onto it later would
+    reintroduce the identical failure with no test to notice, so this asserts
+    against terraform/aws/variables.tf rather than against a copy of its value.
+    """
+    vpc = ipaddress.ip_network(_terraform_default_vpc_cidr())
+    for k3s_cidr in (cloud_deploy.K3S_CLUSTER_CIDR, cloud_deploy.K3S_SERVICE_CIDR):
+        assert not vpc.overlaps(ipaddress.ip_network(k3s_cidr)), (
+            f"the substrate VPC default {vpc} overlaps the k3s network {k3s_cidr} -- "
+            "CoreDNS will loop itself to death and the deploy will fail on an "
+            "unrelated readiness timeout (#3956)"
+        )
+
+
+def test_the_cluster_and_service_networks_do_not_overlap_each_other():
+    assert not ipaddress.ip_network(cloud_deploy.K3S_CLUSTER_CIDR).overlaps(
+        ipaddress.ip_network(cloud_deploy.K3S_SERVICE_CIDR)
+    )
+
+
+def test_the_bootstrap_refuses_a_vpc_that_overlaps_the_pinned_networks():
+    """The pin cannot cover an operator-chosen `vpc_cidr`; the guard can.
+
+    A refusal at bootstrap is the whole point: the alternative is a cluster
+    that installs green and cannot resolve a name, which is exactly what
+    reached owner acceptance.
+    """
+    script = _executed(cloud_deploy.render_k3s_bootstrap())
+    assert "nyxgpt_cidrs_overlap" in script
+    assert "vpc-ipv4-cidr-blocks" in script
+    assert "Refusing to install the cluster" in script
+    assert cloud_deploy.K3S_CLUSTER_CIDR in script
+    assert cloud_deploy.K3S_SERVICE_CIDR in script
+
+
+@pytest.mark.parametrize(
+    ("vpc", "k3s", "overlaps"),
+    [
+        # The reported failure, exactly: the substrate default against k3s's.
+        ("10.42.0.0/16", "10.42.0.0/16", True),
+        ("10.42.0.0/16", "10.43.0.0/16", False),
+        # A wider VPC that contains the cluster network -- the case a naive
+        # string comparison of the two CIDRs would call "different".
+        ("10.0.0.0/8", "10.42.0.0/16", True),
+        # The shipped pin, against the substrate default and the two other
+        # networks an operator is most likely to cut a VPC from.
+        ("10.42.0.0/16", "100.96.0.0/16", False),
+        ("172.31.0.0/16", "100.96.0.0/16", False),
+        ("192.168.0.0/16", "100.97.0.0/16", False),
+        # ...and a VPC cut from RFC 6598 space, which AWS does allow. This is
+        # the case the pin alone cannot cover and the guard exists for.
+        ("100.64.0.0/10", "100.96.0.0/16", True),
+        ("100.64.0.0/10", "100.97.0.0/16", True),
+        ("100.96.5.0/24", "100.96.0.0/16", True),
+        ("100.95.0.0/16", "100.96.0.0/16", False),
+    ],
+)
+def test_the_overlap_helper_the_instance_runs_is_correct(vpc, k3s, overlaps):
+    """Executed, not inspected: the awk from the bootstrap decides each case.
+
+    It is arithmetic rather than `and()`/`lshift()` because Debian and Ubuntu
+    default `awk` to mawk, which has neither -- a version that "reads right"
+    but exits 2 on the target distro would refuse nothing at all.
+    """
+    function = _bootstrap_shell_function("nyxgpt_cidrs_overlap")
+    result = subprocess.run(
+        ["sh", "-c", f'{function}\nnyxgpt_cidrs_overlap "$1" "$2"', "sh", vpc, k3s],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    assert (result.returncode == 0) is overlaps, (
+        f"{vpc} vs {k3s}: helper said "
+        f"{'overlap' if result.returncode == 0 else 'no overlap'}, expected "
+        f"{'overlap' if overlaps else 'no overlap'}"
+    )
+
+
+def test_coredns_forwards_to_the_link_local_resolver_on_aws_only():
+    """Defence in depth, and the reason it is a k3s flag and not a patch.
+
+    k3s re-applies its bundled CoreDNS manifest on every service restart, so
+    the ConfigMap edit the owner hand-applied silently reverts; `--resolv-conf`
+    is what the manifest is rendered against, so it survives. Off EC2 the flag
+    is empty -- 169.254.169.253 exists only inside a VPC, and pointing a
+    non-AWS cluster at it would break DNS to fix a problem it does not have.
+    """
+    script = _executed(cloud_deploy.render_k3s_bootstrap())
+    assert "$NYXGPT_K3S_RESOLV_FLAG" in cloud_deploy.K3S_SERVER_FLAGS
+    assert 'NYXGPT_K3S_RESOLV_FLAG=""' in script
+    assert "nameserver 169.254.169.253" in script
+    assert "--resolv-conf=/etc/rancher/k3s/resolv.conf" in script
+    # Written only under the IMDS-answered branch.
+    aws_branch = script.split('NYXGPT_K3S_RESOLV_FLAG=""', 1)[1]
+    assert aws_branch.lstrip().startswith('if [ -n "$NYXGPT_IMDS_TOKEN" ]; then')
+
+
+def test_a_cluster_already_on_the_colliding_networks_is_replaced_not_reused():
+    """The install is skipped when k3s is already present -- which would make
+    this fix a no-op on the very instance that found the defect.
+
+    Replaced only when the overlap is MEASURED: a pre-fix cluster in a VPC
+    that never collided is working, and rebuilding it would destroy its
+    volumes to fix nothing.
+    """
+    script = _executed(cloud_deploy.render_k3s_bootstrap())
+    guard = script.split("if ! command -v k3s", 1)[0]
+    assert "NYXGPT_OLD_CLUSTER_CIDR" in guard
+    assert "k3s-uninstall.sh" in guard
+    # k3s's own defaults are what an unflagged unit file means.
+    assert 'NYXGPT_OLD_CLUSTER_CIDR="10.42.0.0/16"' in guard
+    assert 'NYXGPT_OLD_SERVICE_CIDR="10.43.0.0/16"' in guard
+
+
+def test_the_rendered_bootstrap_has_no_unsubstituted_placeholder():
+    """A `__NAME__` that reaches the instance is a literal in a shell script.
+
+    The CIDR placeholders were added after `__K3S_SERVER_FLAGS__`, so the
+    single-placeholder assertion this generalises would not have caught them.
+    """
+    rendered = cloud_deploy.render_k3s_bootstrap()
+    assert not re.search(r"__[A-Z0-9_]+__", rendered), re.findall(r"__[A-Z0-9_]+__", rendered)
+
+
+def test_the_existing_cluster_probe_survives_set_e_when_nothing_matches():
+    """`VAR=$(grep ... )` that matches nothing exits 1, and the script runs
+    under `set -euo pipefail` -- so the unflagged unit file, which is exactly
+    the case being detected, would abort the deploy at the probe instead of
+    replacing the cluster.
+
+    Executed rather than read: this is a shell-semantics trap that looks
+    correct on the page, and `bash -n` cannot see it.
+    """
+    lines = cloud_deploy.render_k3s_bootstrap().splitlines()
+    start = next(i for i, line in enumerate(lines) if "NYXGPT_OLD_CLUSTER_CIDR=$(" in line)
+    end = next(
+        i for i, line in enumerate(lines) if 'NYXGPT_OLD_SERVICE_CIDR="10.43.0.0/16"' in line
+    )
+    probe = "\n".join(lines[start : end + 1])
+
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{probe}\necho SURVIVED"],
+        capture_output=True,
+        text=True,
+    )
+    assert "SURVIVED" in result.stdout, result.stderr
+    # ...and it falls back to k3s's own defaults, which are the colliding pair.
+    assert "10.42.0.0/16" in probe
