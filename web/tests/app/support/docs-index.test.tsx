@@ -121,16 +121,19 @@ describe('Support docs index page', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
-  it('shows the running version and the issue link once the context resolves', async () => {
+  it('shows the running version and links filing to the in-app intake page', async () => {
+    // This link used to go to the GitHub compose page. The Support menu was
+    // corrected for #3811 and this one was not, so a reader whose question
+    // the docs did not answer was still handed to github.com -- the same
+    // defect, one click further in.
     serveDocs({ sections: SECTIONS, documents: DOCUMENTS });
     serveContext(CONTEXT);
     render(<SupportDocsIndexPage />);
 
     expect(await screen.findByText('3.0.0')).toBeInTheDocument();
     const issueLink = screen.getByRole('link', { name: /file an issue/i });
-    expect(issueLink).toHaveAttribute('href', CONTEXT.issue_form_url);
-    expect(issueLink).toHaveAttribute('target', '_blank');
-    expect(issueLink).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(issueLink).toHaveAttribute('href', '/support/new');
+    expect(issueLink).not.toHaveAttribute('target');
     // Docs work offline and filing does not; the page has to say which.
     expect(screen.getByText(CONTEXT.network_note)).toBeInTheDocument();
   });

@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from shell_suite import bash4_or_skip
 
 pytestmark = pytest.mark.unit
 
@@ -572,7 +573,7 @@ class TestDrainGateShellBehaviour:
             pytest.skip("jq is required by the shell suite")
         suite = Path(__file__).resolve().parents[1] / "test_drain_gate_lib.sh"
         result = subprocess.run(
-            ["bash", str(suite)],
+            [bash4_or_skip(), str(suite)],
             capture_output=True,
             text=True,
             timeout=180,

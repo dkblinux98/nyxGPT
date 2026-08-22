@@ -62,27 +62,64 @@ spec:
               exec:
                 # Pull the required models once the server is up, so a fresh
                 # install can answer a chat message -- with RAG on or off --
-                # without the operator pulling anything by hand. `ollama pull`
-                # is a no-op when the blob is already in the volume, which
-                # makes this safe on every restart.
+                # without the operator pulling anything by hand. A model
+                # already in the volume is skipped, which is what makes an
+                # offline restart a no-op rather than a crash.
                 #
-                # Trailing `|| true`: a postStart that exits non-zero gets the
-                # container killed, so a transient registry failure -- or an
-                # offline restart of a Pod whose volume ALREADY has the models
-                # -- must not turn into a crash loop. The readiness probe
-                # below, not this hook, is what reports whether they are
-                # actually there.
+                # It used to end in a blanket `|| true`, and that swallowed
+                # every pull failure with no retry and no record (#3956
+                # acceptance failure, 2026-08-22): cluster DNS was down, both
+                # pulls failed instantly, the hook reported success, and the
+                # Pod sat 0/1 forever behind a readiness probe that could
+                # never pass. The deploy surfaced it as "Ollama did not become
+                # ready in time" -- true, and three layers from the cause.
+                #
+                # So: retry with exponential backoff, and when the model is
+                # STILL absent after the last attempt, exit non-zero. kubelet
+                # kills the container and records the hook's output in a
+                # `FailedPostStartHook` event, which is where the operator
+                # can read the actual error -- `lookup registry.ollama.ai ...:
+                # connection refused`, not a timeout on something three
+                # layers downstream of it. The restart retries the pull, so a
+                # genuinely transient outage still heals itself; what it no
+                # longer does is heal itself silently and forever.
+                #
+                # The `ollama show` guard is what keeps the offline-restart
+                # case exempt: a volume that already has both models never
+                # reaches a pull, so it never reaches the failure exit.
                 command:
                   - /bin/sh
                   - -c
                   - |
-                    {
-                      until ollama list >/dev/null 2>&1; do sleep 2; done
-                      for model in "$NYXGPT_DEFAULT_MODEL" "$NYXGPT_EMBEDDING_MODEL"; do
-                        [ -n "$model" ] || continue
-                        ollama show "$model" >/dev/null 2>&1 || ollama pull "$model"
+                    set -u
+                    ERR_LOG=/root/.ollama/nyxgpt-model-pull.err
+                    rm -f "$ERR_LOG"
+                    until ollama list >/dev/null 2>&1; do sleep 2; done
+                    rc=0
+                    for model in "$NYXGPT_DEFAULT_MODEL" "$NYXGPT_EMBEDDING_MODEL"; do
+                      [ -n "$model" ] || continue
+                      ollama show "$model" >/dev/null 2>&1 && continue
+                      attempt=1
+                      delay=5
+                      pulled=0
+                      while [ "$attempt" -le 5 ]; do
+                        if out="$(ollama pull "$model" 2>&1)"; then
+                          pulled=1
+                          break
+                        fi
+                        echo "nyxgpt: pull of '$model' failed (attempt $attempt/5): $out"
+                        echo "pull of '$model' failed (attempt $attempt/5): $out" >> "$ERR_LOG"
+                        attempt=$((attempt + 1))
+                        [ "$attempt" -le 5 ] || break
+                        sleep "$delay"
+                        delay=$((delay * 2))
                       done
-                    } || true
+                      if [ "$pulled" -ne 1 ]; then
+                        echo "nyxgpt: giving up on model '$model' after 5 attempts; last error: $out"
+                        rc=1
+                      fi
+                    done
+                    exit "$rc"
           readinessProbe:
             # Ready means "can serve a chat with the configured model, and an
             # embedding with the configured embedding model" -- not merely

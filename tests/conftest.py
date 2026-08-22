@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from log_guard import externally_held_log_files
+from session_config import TEST_CONFIG_TEXT
 
 from nyxgpt.config import load_config
 from nyxgpt.logging import configure_logging, get_log_dir
@@ -27,6 +28,9 @@ def _ensure_test_config():
 
     Creates a minimal config file if ~/.nyxGPT/config.ini doesn't exist.
     This allows tests to run in CI without requiring a pre-configured environment.
+
+    On a machine that *does* have one, `_isolate_test_log_dir` (below) swaps the
+    same text in for the session -- see `TEST_CONFIG_TEXT`.
     """
     config_path = Path.home() / ".nyxGPT" / "config.ini"
     created_config = False
@@ -34,45 +38,7 @@ def _ensure_test_config():
     if not config_path.exists():
         created_config = True
         config_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create minimal config for tests
-        config_content = """[ollama]
-base_url = http://localhost:11434
-
-[nyxgpt]
-default_model = qwen2.5-coder:latest
-
-[rag]
-cassandra_hosts = localhost
-cassandra_port = 9042
-cassandra_keyspace = nyxgpt
-chat_top_k = 5
-min_score = 0.0
-max_chunks = 10
-chunk_size = 500
-chunk_overlap = 50
-max_context_chars = 10000
-enable_query_expansion = false
-dedupe = true
-
-[sessions]
-dir = ~/.nyxGPT/sessions
-
-[logs]
-dir = ~/.nyxGPT/logs
-level = INFO
-
-[tracing]
-# Tracing defaults to enabled in production (#3415), but the OTel SDK
-# instrumentation `init_tracing` performs (Cassandra/urllib instrumentors, a
-# global TracerProvider) is real, process-wide, and sticky across tests -- so
-# the test fixture config keeps it off unless a test explicitly opts in.
-enabled = false
-
-[dev]
-release_branch = v1.0.0
-"""
-        config_path.write_text(config_content)
+        config_path.write_text(TEST_CONFIG_TEXT)
 
     yield
 
@@ -155,27 +121,26 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
     external_before = externally_held_log_files(prod_log_dir)
 
     tmp_log_dir = tmp_path_factory.mktemp("nyxgpt-test-logs")
+
+    # Install the suite's own config for the session -- the whole file, not a
+    # patch over the operator's (#3983). `_ensure_test_config` above writes the
+    # same text when ~/.nyxGPT/config.ini is *absent*; on a machine (or CI
+    # runner) where an install has already produced a real config, that file
+    # otherwise wins and its operator choices become the suite's inputs:
+    # `[tracing] enabled = true` (the 2026-07-28 production default) starts the
+    # OTel SDK for real, so `X-Request-Id` becomes a 32-char trace id instead of
+    # a 36-char UUID and `/api/v1/tracing` reports enabled; `[nyxgpt]
+    # session_backend = cassandra` and the other observability flags do the same
+    # to 134 more tests (see `TEST_CONFIG_TEXT` for that count and its cause).
+    # The single-key rewrites this replaces closed those reports one at a time
+    # and left the class open. Opt-in tests are unaffected -- they enable a
+    # feature by monkeypatching the module flag or by passing their own
+    # ConfigParser, never through this file.
     redirected_cfg = ConfigParser()
-    redirected_cfg.read_string(original_text)
+    redirected_cfg.read_string(TEST_CONFIG_TEXT)
     if not redirected_cfg.has_section("logging"):
         redirected_cfg.add_section("logging")
     redirected_cfg.set("logging", "dir", str(tmp_log_dir))
-
-    # Force tracing off for the session, for the same reason and by the same
-    # mechanism. `_ensure_test_config` above already keeps it off -- but only
-    # in the minimal config it writes when ~/.nyxGPT/config.ini is *absent*.
-    # On a machine (or a CI runner) where an install has already produced a
-    # real config, that file wins and carries `[tracing] enabled = true` (the
-    # 2026-07-28 production default), so the OTel SDK initializes for real and
-    # tests that assert the safe default invert: `X-Request-Id` becomes a
-    # 32-char trace id instead of a 36-char UUID, and `/api/v1/tracing`
-    # reports enabled. Rewriting the section here covers both cases, and the
-    # opt-in tests are unaffected -- they enable tracing by monkeypatching
-    # `tracing._enabled` or by passing their own ConfigParser, never through
-    # this file.
-    if not redirected_cfg.has_section("tracing"):
-        redirected_cfg.add_section("tracing")
-    redirected_cfg.set("tracing", "enabled", "false")
 
     # Persist the pre-redirect content as a recovery backup *before*
     # overwriting config.ini, so a hard-killed process leaves behind
