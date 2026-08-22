@@ -2132,6 +2132,87 @@ def _remote_tap_formula(name: str, version: str) -> str:
     return f"{name}@{line}rc" if marker else name
 
 
+def _installed_brew_variants(base: str) -> list[str]:
+    """Installed formulas that are `base` or a versioned formula of it.
+
+    Read from `brew list --versions`, i.e. from what is *installed*, not from
+    `brew services list` -- an unregistered keg is invisible to the latter and
+    is still perfectly able to shadow `bin/nyxgpt` and lose a `conflicts_with`
+    race (Q-002's capture: the stable keg installed to completion and only
+    `brew link` failed, which leaves the keg in place).
+
+    A read-only probe, so a non-zero exit answers "nothing found" rather than
+    raising: this only ever *adds* a refusal, and an install that fails because
+    a probe could not run is worse than one that proceeds as it does today.
+    """
+    cp = _run(["brew", "list", "--versions"], check=False, expected=True)
+    if cp.returncode != 0 or not cp.stdout:
+        return []
+    installed = []
+    for row in brew_services.strip_ansi(cp.stdout).splitlines():
+        formula = row.split(" ", 1)[0].strip()
+        if formula and brew_services.is_variant_of(formula, base):
+            installed.append(formula)
+    return brew_services.unique(installed)
+
+
+def _cross_channel_refusal(name: str, formula: str) -> OpsResult | None:
+    """Refuse installing the *stable* `name` while a candidate keg is installed.
+
+    #3850's second failure, and the half of it packaging structurally cannot
+    reach. Since #3853 both channels' published formulas declare
+    `conflicts_with` the other, so brew itself refuses either order -- but a
+    formula can only name a counterpart that existed when it was stamped. The
+    published stable pair was 2.1.0, cut long before `nyxgpt-api@3.0.0rc`
+    existed, so it declares `conflicts_with "nyxgpt-api@2.1.0rc"` and has
+    nothing to say about a 3.0.0 candidate. That is exactly the machine the
+    owner had: `nyxgpt up` from an rc13 keg installed the 2.1.0 stable pair
+    beside it, `brew list --versions` showed four kegs, and launchd started
+    the *stable* pair -- a 2.1.0 web tier in front of a 3.0.0-line API, which
+    reads as a product feature that has gone missing rather than as a channel
+    mix-up. **A near-miss false acceptance failure is the cost of a silent
+    side-by-side install, so this is a refusal and not a warning.**
+
+    Only this direction, and deliberately:
+
+    * *stable onto an installed candidate* -- nothing else checks it in the
+      cross-line case, and the resulting stack is a downgrade of one tier
+      only. Refused here.
+    * *candidate onto an installed stable* -- brew refuses it outright
+      (Q-002's runner capture), so a second refusal here would only
+      duplicate a guard that already holds.
+    * *candidate onto a candidate of another line* -- a legitimate line
+      upgrade. `_stop_superseded_brew_services` retires the old service ahead
+      of the install; refusing would wedge the upgrade path instead.
+
+    The remedy names `brew uninstall` rather than running it: removing
+    software the operator installed is not an install's call to make, which
+    is the same line `_stop_superseded_brew_services` draws.
+    """
+    if formula != name:
+        return None
+    candidates = [f for f in _installed_brew_variants(name) if f != name]
+    if not candidates:
+        return None
+    installed = ", ".join(candidates)
+    return OpsResult(
+        False,
+        f"Refusing to install the stable {name} beside the installed candidate {installed}",
+        f"This machine already has {installed} installed, and this `nyxgpt` reports version "
+        f"{_native_service_version()} -- a version with no `rc` marker, which routes to the "
+        f"stable channel. Installing it would leave both channels installed and let launchd "
+        f"start whichever won the port, which is how a released web tier ended up in front of "
+        f"an unreleased API (#3850).\n"
+        f"If you meant to move to the stable channel: `nyxgpt down`, then "
+        f"`brew uninstall {installed}`, then run this again.\n"
+        f"If you did not -- you installed a candidate and expected to stay on it -- then this "
+        f"keg is misreporting its own version; `nyxgpt --version` should print the candidate "
+        f"(e.g. 3.0.0rc13), not the release line. Upgrade the candidate "
+        f"(`brew update && brew upgrade {installed}`) and run this again. "
+        f"See docs/homebrew.md#a-candidate-install-pulled-in-the-stable-formulas-too.",
+    )
+
+
 def _install_from_remote_tap(name: str) -> list[OpsResult]:
     """Install `name` from the published Homebrew tap and (re)start its service.
 
@@ -2149,6 +2230,11 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
     version = _native_service_version()
     formula = _remote_tap_formula(name, version)
     spec = f"{REMOTE_TAP}/{formula}"
+
+    # Before tapping anything: never put both channels on one machine (#3850).
+    refusal = _cross_channel_refusal(name, formula)
+    if refusal is not None:
+        return [refusal]
 
     cp = _run(["brew", "tap", REMOTE_TAP], check=False)
     if cp.returncode != 0:
@@ -4160,6 +4246,14 @@ def _stop_superseded_brew_services() -> list[OpsResult]:
     This is the fallback for machines already in the bad state, and for the
     local `file://` tap path, whose checked-in formulas are not stamped by
     that script.
+
+    That first line of defence is narrower than it sounds, and #3850 is the
+    bill: a formula names only the counterpart that existed when it was
+    stamped, so the published 2.1.0 stable pair conflicts with
+    `nyxgpt-api@2.1.0rc` and says nothing about `nyxgpt-api@3.0.0rc`. For that
+    cross-line direction this step is not the fallback but the *only* runtime
+    guard, alongside `_cross_channel_refusal`, which stops `nyxgpt up` putting
+    the machine there in the first place.
 
     A stop that fails is reported but does not fail the install: the very
     next steps install and start the service this run owns, and *they* say

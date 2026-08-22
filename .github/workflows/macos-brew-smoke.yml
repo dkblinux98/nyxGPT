@@ -1658,6 +1658,89 @@ jobs:
           command -v nyxgpt
           nyxgpt --version
 
+          # --- #3850: `nyxgpt up` must not ADD the second channel -----------
+          #
+          # Everything above is about a machine that already carries two kegs.
+          # This is about how the owner's machine got there: `nyxgpt up`, run
+          # from an rc13 keg that reported the release line, resolved the
+          # STABLE formula and installed the 2.1.0 pair beside the candidate.
+          # `conflicts_with` did not stop it and structurally could not -- the
+          # published 2.1.0 stable formula was stamped before
+          # `nyxgpt-api@3.0.0rc` existed, so it names `nyxgpt-api@2.1.0rc` as
+          # its counterpart and has nothing to say about a 3.0.0 candidate.
+          # `ops._cross_channel_refusal` is the guard for that direction, and
+          # this is where it gets executed on a real two-keg macOS machine
+          # rather than only against mocks.
+          #
+          # Runs here, before the unstage, because this step has already built
+          # exactly the machine it needs -- a second staging would cost another
+          # keg build to reach a state that is sitting right here. Same-line
+          # (3.0.0 / 3.0.0rc0) rather than the owner's cross-line pair: the
+          # guard does not read the line, and stamping a whole second stable
+          # channel to prove that would buy a runner's worth of build time for
+          # a branch `tests/unit/test_ops_artifact_install.py` already pins.
+          #
+          # Nothing is installed by this block. The refusal returns before the
+          # `brew tap`, which is the property being asserted -- a guard that
+          # only fires after brew has fetched and built is not a guard.
+          echo "=== a stable-channel install is refused while a candidate keg is present (#3850) ==="
+          stable_py="$(ls -d "$(brew --cellar nyxgpt-api)"/*/libexec/venv/bin/python3 | tail -1)"
+          candidate_py="$(ls -d "$(brew --cellar 'nyxgpt-api@3.0.0rc')"/*/libexec/venv/bin/python3 | tail -1)"
+          echo "stable keg python:    $stable_py"
+          echo "candidate keg python: $candidate_py"
+
+          "$stable_py" - <<'PY'
+          import sys
+
+          from nyxgpt import ops
+
+          version = ops._native_service_version()
+          formula = ops._remote_tap_formula("nyxgpt-api", version)
+          print(f"this keg reports {version}, which routes to {formula}")
+          if formula != "nyxgpt-api":
+              sys.exit(f"the stable keg did not route to the stable formula ({formula}) -- "
+                       "this block is measuring something other than the refusal")
+          print(f"installed variants: {ops._installed_brew_variants('nyxgpt-api')}")
+
+          results = ops._install_from_remote_tap("nyxgpt-api")
+          for r in results:
+              print(("ok   " if r.ok else "FAIL ") + r.message)
+              if r.details:
+                  print("      " + r.details.replace("\n", "\n      "))
+          if len(results) != 1 or results[0].ok:
+              sys.exit("the stable install was NOT refused on a machine carrying a candidate keg "
+                       "-- this is #3850's silent side-by-side install (four kegs, launchd "
+                       "starting whichever won the port)")
+          if "nyxgpt-api@3.0.0rc" not in results[0].message:
+              sys.exit("refused, but the message does not name the candidate keg that caused it")
+          print("refused, naming the installed candidate -- the guard holds")
+          PY
+
+          # Non-vacuity, and the direction that must NOT be refused: the same
+          # machine, the same two kegs, driven from the CANDIDATE keg -- which
+          # is what a correctly-stamped rc13 install actually is. A guard that
+          # fires here would wedge every candidate upgrade, which is how a
+          # guard earns its deletion. `_cross_channel_refusal` directly rather
+          # than `_install_from_remote_tap`, so the control installs nothing.
+          "$candidate_py" - <<'PY'
+          import sys
+
+          from nyxgpt import ops
+
+          version = ops._native_service_version()
+          formula = ops._remote_tap_formula("nyxgpt-api", version)
+          print(f"this keg reports {version}, which routes to {formula}")
+          if not formula.endswith("rc"):
+              sys.exit(f"the candidate keg routed to {formula} -- that is #3850's original "
+                       "defect, and the control cannot measure the guard through it")
+          refusal = ops._cross_channel_refusal("nyxgpt-api", formula)
+          print(f"refusal: {refusal}")
+          if refusal is not None:
+              sys.exit("the guard refuses a candidate install on a machine that has a candidate "
+                       "keg -- it would wedge every rc upgrade")
+          print("not refused -- the guard is one-directional, as documented")
+          PY
+
           # Hand the next step the machine state it documents: candidate
           # installed and linked, stable not installed at all. The staged keg
           # and the unlink were this step's own scaffolding and must not

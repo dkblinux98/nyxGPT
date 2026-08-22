@@ -1412,6 +1412,67 @@ rather than mechanism, and nothing can enforce them.
   `.github/workflows/notify-merge-conflicts.yml`;
   `.github/workflows/slack-huddle-smoke.yml`.
 
+- **D-042** · 2026-08-22 · developer agent (#3850, owner acceptance re-test) —
+  **An artifact's declared version is not bookkeeping: on a repo-less install
+  it is the only record of which release channel the machine is on. And a
+  `conflicts_with` declaration can only name a counterpart that existed when
+  the formula was stamped.**
+
+  (a) *Stamp the artifact, not just the formula.* `release_tarball.
+  _create_dist_tarball` copied the checkout's `pyproject.toml` into the api
+  tarball verbatim, and a release branch declares the **stable** version it is
+  heading for — so `nyxgpt-api-3.0.0rc13.tar.gz` shipped `version = "3.0.0"`
+  and the keg's `pip install` registered metadata claiming the stable release.
+  There is no checkout above the package on an artifact install to disagree
+  with that, so it propagates without contradiction: `ops._native_service_
+  version()` reads it, `_remote_tap_formula()` maps a version with no `rc`
+  marker to the **stable** formula, and `nyxgpt up` from the rc13 keg
+  installed the 2.1.0 stable pair beside the candidate and started it — a
+  released web tier in front of an unreleased API, which the owner reported as
+  a product feature that had gone missing. One wrong string, four symptoms.
+  The stamp is applied where the tarball is assembled
+  (`release_tarball._vendor_pyproject`, via `release_candidate.pin_version` —
+  the same rewriter the PyPI publish path uses, so the wheel and the keg
+  cannot come to disagree about one release), which is the single point every
+  channel builds through. `web/package.json` is deliberately **not** stamped:
+  `3.0.0rc13` is not semver, `package-lock.json` would have to agree or `npm
+  ci` refuses, and the web keg's channel is already in its formula name.
+
+  (b) *`conflicts_with` guards a release line, not a machine.*
+  `release_candidate.rc_formulas`' docstring said a machine "can only ever be
+  on one channel at a time, whichever order it is installed in" — true of the
+  same line, and false in general, which is why nothing refused the owner's
+  install. The published stable pair was 2.1.0, cut before
+  `nyxgpt-api@3.0.0rc` existed, so it declares `conflicts_with
+  "nyxgpt-api@2.1.0rc"`. **D-030 closed Q-002's same-line half and named this
+  cross-line gap as handled at runtime; it was not, in the one direction that
+  matters** — `_stop_superseded_brew_services` runs *after* the install has
+  already put the second channel on the machine, and on this machine it read
+  the same poisoned version and stopped the *candidate's* services as the
+  superseded ones. `ops._cross_channel_refusal` is the missing half: a stable
+  install is refused, before the `brew tap`, while any candidate keg is
+  present. Exactly one direction, because the other two are covered or
+  legitimate — candidate-onto-stable brew already refuses (Q-002's capture),
+  and candidate-onto-another-line's-candidate is an ordinary line upgrade that
+  a refusal would wedge.
+
+  The general lesson, which is the reason this is an entry and not a comment:
+  **a guard that names its counterpart by a literal cannot cover a counterpart
+  invented later.** When a declaration is stamped into a published artifact,
+  ask what the artifacts already in the field say — not what the current
+  branch would stamp.
+
+  Evidence (D-006): `macos-brew-smoke.yml`. The keg-install job asserts the
+  built tarball declares the version it is named for and that the installed
+  keg's CLI reports it exactly, with the pre-fix answer injected as the
+  negative control; the `stable-over-candidate` job executes the refusal and
+  its non-refusal control on the two-keg machine it already stages.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3850 (owner acceptance 2026-08-21, macOS, rc13); D-030; Q-002;
+  `src/nyxgpt/release_tarball.py`; `src/nyxgpt/ops.py`;
+  `.github/workflows/macos-brew-smoke.yml`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1533,6 +1594,12 @@ rather than mechanism, and nothing can enforce them.
   the stable formula declares its own line's candidate, both directions are
   hard assertions in CI, and a cross-line candidate is stopped at install time
   rather than by packaging. See **D-030**.
+  **Correction, 2026-08-22 (#3850):** the cross-line half was *named* as
+  handled at install time but was not — `_stop_superseded_brew_services` runs
+  after the second channel is already installed, and it reads the same version
+  the defect poisoned. The owner reached the four-keg machine again on rc13.
+  `ops._cross_channel_refusal` is the guard that direction actually needed.
+  See **D-042**.
 
 - **Q-003** · 2026-08-18 · owner acceptance (#3857) — What stops the web UI's
   client JS from loading: the two builds racing for port 3000 (#3853), or a

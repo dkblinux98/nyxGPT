@@ -578,6 +578,151 @@ def test_install_from_remote_tap_needs_brew(artifact_root, monkeypatch):
     assert results == [ops.OpsResult(False, "Homebrew not found", "")]
 
 
+# --- never both channels on one machine (#3850) ------------------------
+#
+# The owner's rc13 machine ended up with four kegs: the candidate pair it was
+# installed from, plus the 2.1.0 stable pair that `nyxgpt up` installed beside
+# it. `conflicts_with` did not stop it and structurally could not -- the
+# published stable formula was stamped before `nyxgpt-api@3.0.0rc` existed, so
+# it names `nyxgpt-api@2.1.0rc` as its counterpart. These pin the runtime
+# refusal that covers that direction, and the two directions it must NOT
+# refuse, because a guard that also blocks the line upgrade is a guard that
+# gets deleted.
+
+_BREW_LIST = "\n".join(
+    [
+        "cassandra 4.1.3",
+        "nyxgpt-api@3.0.0rc 3.0.0rc13",
+        "nyxgpt-api-canary 1.0.0",
+        "nyxgpt-web@3.0.0rc 3.0.0rc13",
+        "ollama 0.3.12",
+    ]
+)
+
+
+def _brew_list_run(calls, stdout=_BREW_LIST):
+    """A `_run` stand-in that answers `brew list --versions` with `stdout`."""
+
+    def _fake(cmd, **kwargs):
+        calls.append(list(cmd))
+        if list(cmd) == ["brew", "list", "--versions"]:
+            return _cp(0, stdout=stdout)
+        return _cp(0)
+
+    return _fake
+
+
+def test_installed_brew_variants_reads_installed_kegs_not_registered_services():
+    """An unregistered keg still shadows `bin/nyxgpt`, so read `brew list`.
+
+    Q-002's runner capture is the reason: the stable keg installed to
+    completion and only `brew link` failed, which leaves the keg in place --
+    installed, unlinked, and invisible to `brew services list`.
+    """
+    calls = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ops, "_run", _brew_list_run(calls))
+        assert ops._installed_brew_variants("nyxgpt-api") == ["nyxgpt-api@3.0.0rc"]
+    assert ["brew", "list", "--versions"] in calls
+
+
+def test_installed_brew_variants_does_not_swallow_a_similarly_named_formula():
+    """`nyxgpt-api-canary` merely starts the same way; the `@` is required."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ops, "_run", _brew_list_run([]))
+        assert "nyxgpt-api-canary" not in ops._installed_brew_variants("nyxgpt-api")
+
+
+def test_installed_brew_variants_treats_a_failed_probe_as_nothing_found():
+    """A read-only probe that cannot run must not fail an install by itself."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ops, "_run", lambda cmd, **k: _cp(1, stderr="brew: command failed"))
+        assert ops._installed_brew_variants("nyxgpt-api") == []
+
+
+def test_a_stable_install_is_refused_while_a_candidate_keg_is_installed(artifact_root, monkeypatch):
+    """The owner's exact chain, stopped before it taps anything (#3850)."""
+    calls = []
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    # The pre-fix keg's answer: an rc13 keg whose metadata says the release
+    # line, which is what routed `nyxgpt up` to the stable channel.
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0")
+    monkeypatch.setattr(ops, "_run", _brew_list_run(calls))
+    monkeypatch.setattr(
+        ops, "_restart_brew_service", lambda name: pytest.fail("nothing may be started")
+    )
+
+    results = ops._install_from_remote_tap("nyxgpt-api")
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "nyxgpt-api@3.0.0rc" in results[0].message
+    # Refused *before* the tap, so a refusal costs no network and changes no
+    # brew state at all.
+    assert not any(call[:2] == ["brew", "tap"] for call in calls)
+    assert not any(call[:2] == ["brew", "install"] for call in calls)
+    # Both readings are named, because the operator cannot tell them apart
+    # from the outside: a deliberate move to stable, or a keg misreporting
+    # its own version.
+    assert "brew uninstall nyxgpt-api@3.0.0rc" in results[0].details
+    assert "brew upgrade nyxgpt-api@3.0.0rc" in results[0].details
+
+
+def test_a_candidate_install_is_not_refused_by_an_older_line_candidate(artifact_root, monkeypatch):
+    """A candidate line upgrade is legitimate and must still install.
+
+    `_stop_superseded_brew_services` retires the older line's service ahead of
+    the install; refusing here would wedge the upgrade path, which is how a
+    guard earns its deletion.
+    """
+    calls = []
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.1.0rc2")
+    monkeypatch.setattr(ops, "_run", _brew_list_run(calls))
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    results = ops._install_from_remote_tap("nyxgpt-api")
+
+    assert all(r.ok for r in results), results
+    assert ["brew", "install", "dkblinux98/nyxgpt/nyxgpt-api@3.1.0rc"] in calls
+
+
+def test_a_stable_install_is_not_refused_on_a_machine_with_only_the_stable_keg(
+    artifact_root, monkeypatch
+):
+    """The ordinary stable upgrade: one channel installed, and it is this one."""
+    calls = []
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0")
+    monkeypatch.setattr(ops, "_run", _brew_list_run(calls, stdout="nyxgpt-api 2.1.0\n"))
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    results = ops._install_from_remote_tap("nyxgpt-api")
+
+    assert all(r.ok for r in results), results
+    assert ["brew", "install", "dkblinux98/nyxgpt/nyxgpt-api"] in calls
+
+
+def test_a_correctly_stamped_candidate_keg_never_reaches_the_refusal(artifact_root, monkeypatch):
+    """The fix's whole point: with the stamp, the stable branch is never taken.
+
+    This is the same machine as the refusal test above -- rc13 kegs installed,
+    nothing else changed -- with the one string the tarball now carries. The
+    refusal is the backstop; this is the path that must be true.
+    """
+    calls = []
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0rc13")
+    monkeypatch.setattr(ops, "_run", _brew_list_run(calls))
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    for service in ("nyxgpt-api", "nyxgpt-web"):
+        results = ops._install_from_remote_tap(service)
+        assert all(r.ok for r in results), results
+        assert ["brew", "install", f"dkblinux98/nyxgpt/{service}@3.0.0rc"] in calls
+    assert not any(call == ["brew", "install", "dkblinux98/nyxgpt/nyxgpt-api"] for call in calls)
+
+
 # --- the dep steps that reported checkout paths ------------------------
 
 

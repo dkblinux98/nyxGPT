@@ -1153,6 +1153,18 @@ nyxgpt --version
 nyxgpt up
 ```
 
+**Why `conflicts_with` did not stop it**, and what stops it now: both
+channels' formulas declare `conflicts_with` the other (#3853), but a formula
+can only name a counterpart that existed when it was *stamped*. The published
+stable pair was 2.1.0, cut long before `nyxgpt-api@3.0.0rc` existed, so it
+declares `conflicts_with "nyxgpt-api@2.1.0rc"` and has nothing to say about a
+3.0.0 candidate -- brew installs it without complaint. So `nyxgpt up` refuses
+that direction itself: on a machine carrying a candidate keg, an install that
+resolves to the *stable* formula stops before it taps anything and tells you
+which of the two things you meant (`ops._cross_channel_refusal`). Moving to
+the stable channel deliberately is `brew uninstall` of the candidate first --
+the same order brew itself requires within one release line.
+
 ### Web UI can't connect to API
 
 **Symptom**: Web UI shows "Connection Error" or "API Unavailable"

@@ -236,8 +236,16 @@ def rc_formulas(release: str) -> tuple[str, ...]:
 
     Each channel's formulas declare `conflicts_with` the other's -- both
     directions since #3853, because `conflicts_with` is only checked when the
-    formula declaring it is the one being installed -- so a machine can only
-    ever be on one channel at a time, whichever order it is installed in.
+    formula declaring it is the one being installed.
+
+    That covers a machine's two channels **on the same release line**, and
+    only that. A formula can name a counterpart that existed when it was
+    stamped and no other: the published stable pair was 2.1.0, so it declares
+    `conflicts_with "nyxgpt-api@2.1.0rc"` and has nothing to say about
+    `nyxgpt-api@3.0.0rc` -- which is how #3850 ended up with all four kegs
+    installed at once. The cross-line direction is refused at install time by
+    `ops._cross_channel_refusal` instead; do not read this pair as a
+    machine-wide guarantee that only one channel can ever be present.
     """
     return tuple(rc_formula_name(service, release) for service in TAP_SERVICES)
 
