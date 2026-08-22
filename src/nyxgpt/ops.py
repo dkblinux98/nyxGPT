@@ -7971,6 +7971,12 @@ class K8sDeploymentProbe:
 
     @property
     def deployed(self) -> bool:
+        """Whether a deployment is there -- Pods, not merely a reachable cluster.
+
+        Deliberately not the inverse of `determined`: an undetermined read is
+        not deployed *and* not "nothing deployed", which is why callers that
+        report to an operator ask both (see `summary`).
+        """
         return bool(self.pods)
 
     @property
@@ -10393,16 +10399,32 @@ def required_models_status(
     }
 
 
-def _print_required_models_status(*, kubernetes: bool = False) -> None:
+def _print_required_models_status(
+    *, kubernetes: bool = False, cluster_unreadable: str = ""
+) -> None:
     """Print the required-model readiness block of `nyxgpt ops status`.
 
     `kubernetes=True` reports against the deployment's in-cluster Ollama --
     see `required_models_status` for why the caller decides that and not this
     function (#3987).
+
+    `cluster_unreadable` is the third state, and the one this block would
+    otherwise report dishonestly: a cluster is configured but its Pod list did
+    not come back, so nobody can say whether a deployment is there. The block
+    falls back to this host's Ollama -- there is nothing else left to ask --
+    but says so, because "PRESENT" printed under a Deployment mode block that
+    just said `cannot determine` reads as a statement about the deployment,
+    which is the class of false report this whole change exists to end.
     """
     info = required_models_status(kubernetes=kubernetes)
     where = " (in-cluster)" if kubernetes else ""
     print(f"\nRequired models (Ollama at {info['base_url']}{where}):")
+    if cluster_unreadable and not kubernetes:
+        print(
+            f"  Note: the {K8S_NAMESPACE} namespace could not be read ({cluster_unreadable}), "
+            "so these lines describe this host's Ollama only -- not any Kubernetes "
+            "deployment that may be running."
+        )
     # Reachable, though only one way: `required_models` falls back to the code
     # default when the key is *absent*, so this branch is not the no-config
     # case -- it is a config.ini that sets `default_model =` (and
@@ -10653,7 +10675,10 @@ def status(_args) -> int:
     if _which("docker") is None:
         print("\nDocker: docker not found")
 
-    _print_required_models_status(kubernetes=k8s_deployed)
+    _print_required_models_status(
+        kubernetes=k8s_deployed,
+        cluster_unreadable="" if k8s.determined else k8s.reason,
+    )
 
     tf_state = terraform_stack_state()
     if any(state != "absent" for state in tf_state.values()):

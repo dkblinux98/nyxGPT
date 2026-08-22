@@ -144,7 +144,6 @@ def test_an_unreadable_cluster_ollama_is_unknown_and_names_no_transport_detail(m
 def test_the_printed_block_points_at_the_pod_not_the_host_service(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda _prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(ops, "_run", lambda *_a, **_k: _CP(returncode=1))
-    monkeypatch.setattr(ops, "required_models_status", ops.required_models_status)
 
     ops._print_required_models_status(kubernetes=True)
 
@@ -310,13 +309,66 @@ def test_status_asks_the_cluster_for_models_when_pods_are_running(monkeypatch, c
         monkeypatch, ops.K8sDeploymentProbe(_pods(("ollama-0", ops.K8S_STATE_READY)))
     )
     monkeypatch.setattr(
-        ops, "_print_required_models_status", lambda *, kubernetes=False: asked.append(kubernetes)
+        ops,
+        "_print_required_models_status",
+        lambda *, kubernetes=False, **_k: asked.append(kubernetes),
     )
 
     assert ops.status(SimpleNamespace()) == 0
     capsys.readouterr()
 
     assert asked == [True]
+
+
+@pytest.mark.unit
+def test_an_unreadable_namespace_makes_the_model_block_say_it_read_the_host(monkeypatch, capsys):
+    """The third state, and the one that could still mislead: with the
+    namespace unreadable there is nothing to ask but this host, so the block
+    reports it -- but `PRESENT` printed under a `cannot determine` line reads
+    as a statement about the deployment unless the scope is said out loud."""
+    _stub_status_probes(
+        monkeypatch,
+        ops.K8sDeploymentProbe([], "Could not read pod status", determined=False),
+        stub_models=False,
+    )
+    monkeypatch.setattr(
+        ops,
+        "required_models_status",
+        lambda **_k: {
+            "base_url": "http://127.0.0.1:11434",
+            "models": [{"role": "chat", "model": "qwen3:0.6b", "present": True}],
+            "reachable": True,
+            "ready": True,
+            "error": "",
+            "remediation": "",
+        },
+    )
+
+    assert ops.status(SimpleNamespace()) == 0
+
+    out = capsys.readouterr().out
+    assert "the nyxgpt namespace could not be read (Could not read pod status)" in out
+    assert "this host's Ollama only" in out
+
+
+@pytest.mark.unit
+def test_a_deployed_cluster_adds_no_host_only_note(monkeypatch, capsys):
+    """The note is for the unreadable case alone -- printing it when the
+    cluster answered would contradict the `(in-cluster)` header above it."""
+    _stub_status_probes(
+        monkeypatch, ops.K8sDeploymentProbe(_pods(("ollama-0", ops.K8S_STATE_READY)))
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        ops,
+        "_print_required_models_status",
+        lambda *, kubernetes=False, cluster_unreadable="": seen.append(cluster_unreadable),
+    )
+
+    assert ops.status(SimpleNamespace()) == 0
+    capsys.readouterr()
+
+    assert seen == [""]
 
 
 # --- 4. the same three defects in `ops doctor` ---

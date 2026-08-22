@@ -2914,8 +2914,17 @@ def models_required(request: Request) -> dict[str, Any]:
     last install.
 
     Answers from `nyxgpt.ops.required_models_status`, the same function
-    `nyxgpt ops status` prints, so the dashboard and the terminal cannot
-    disagree. Never 502s on an unreachable Ollama: `reachable: false` with
+    `nyxgpt ops status` prints. Each reports the Ollama that serves *its own*
+    process, which on a native install is the one machine's, so the dashboard
+    and the terminal cannot disagree there. Where a Kubernetes deployment is
+    present they can, deliberately (#3987): this endpoint never passes
+    `kubernetes=True` and needs not to -- served from inside an api Pod, the
+    config it loads already names `http://ollama:11434`, the same in-cluster
+    store the CLI reaches from the host over `kubectl exec`. A *native* API
+    answering while a cluster runs alongside it reports this host's Ollama,
+    which is the honest answer for the deployment it belongs to, and is why
+    the two stores are never merged or fallen back between.
+    Never 502s on an unreachable Ollama: `reachable: false` with
     `present: null` per model is the honest answer, and the ollama service's
     own health is reported elsewhere on the same page.
     """
