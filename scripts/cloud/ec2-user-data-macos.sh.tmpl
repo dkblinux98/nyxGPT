@@ -34,9 +34,10 @@
 # Supported instance types and macOS versions: see docs/cloud.md's
 # target-OS support matrix. EC2 Mac requires a Dedicated Host, allocated for
 # a 24-hour minimum -- an AWS billing/allocation constraint, not a nyxGPT
-# one. nyxGPT deliberately does not allocate one: `nyxgpt cloud deploy --os
-# macos` refuses, naming the constraint, rather than spending that on a
-# resource the substrate could not then release (#3867).
+# one. `nyxgpt cloud deploy --os macos` allocates that host itself (#3995):
+# it prices it live, discloses the rate, the 24-hour minimum and the moment
+# it becomes releasable, and allocates only after an explicit confirmation.
+# The earlier refusal this comment used to describe (#3867) is retired.
 set -euxo pipefail
 
 # nyxgpt version requested at render time (informational only -- see above).

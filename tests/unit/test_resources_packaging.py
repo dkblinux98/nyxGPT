@@ -101,6 +101,21 @@ for tf in (
     "terraform/aws/modules/security/main.tf",
     "terraform/aws/modules/compute/main.tf",
     "terraform/aws/tests/plan.tftest.hcl",
+    # #3995: the EC2 Mac Dedicated Host and its deferred-release stack are two
+    # further root modules `nyxgpt cloud deploy --os macos` / `cloud destroy`
+    # apply through `nyxgpt.cloud_mac`. They are separate roots precisely so a
+    # host that cannot be released yet cannot fail the substrate's teardown --
+    # which also means a repo-less install that is missing them cannot allocate
+    # a Mac *or* schedule the release of one it already owns, and the second
+    # failure mode bills the operator until they find the console.
+    "terraform/aws/mac/main.tf",
+    "terraform/aws/mac/variables.tf",
+    "terraform/aws/mac/outputs.tf",
+    "terraform/aws/mac/versions.tf",
+    "terraform/aws/mac-release/main.tf",
+    "terraform/aws/mac-release/variables.tf",
+    "terraform/aws/mac-release/outputs.tf",
+    "terraform/aws/mac-release/versions.tf",
 ):
     assert root.joinpath(tf).is_file(), f"missing {tf}"
 
@@ -181,7 +196,22 @@ def planted_generated_secrets():
     this test invented.
     """
     planted = []
-    for relative in ("k8s/secret.yaml", "k8s/observability/secret.yaml"):
+    for relative in (
+        "k8s/secret.yaml",
+        "k8s/observability/secret.yaml",
+        # #3995: the same fault injection for the two EC2 Mac roots, which a
+        # `terraform apply` run in either drops next to the tracked config --
+        # carrying the real host and instance ids. A plain `terraform.tfvars`
+        # rather than anything under `.terraform/`, and the distinction is the
+        # whole point: `"**/*"` is glob-style and does not match dotfiles, so
+        # a dot-directory could never reach the wheel and planting one would
+        # make this fixture pass no matter what pyproject.toml said. Verified
+        # by building both ways -- drop the `terraform/aws/mac*` entries *or*
+        # their two per-package keys from exclude-package-data and these two
+        # files appear in the wheel.
+        "terraform/aws/mac/terraform.tfvars",
+        "terraform/aws/mac-release/terraform.tfvars",
+    ):
         path = REPO_ROOT / relative
         if path.exists():
             continue
