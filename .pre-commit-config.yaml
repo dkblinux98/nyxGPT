@@ -29,18 +29,23 @@ repos:
       - id: yamllint
         name: Lint YAML files
         # line-length is a WARNING, not an error (owner decision, 2026-08-22).
-        # Three tracked files already exceeded 120 on v3.0.0 -- 13 lines in
-        # macos-brew-smoke.yml, 49 in developer_auto_implement.yml, 1 in
-        # docker-compose.yml -- none of them introduced by the commit that
-        # tripped the hook. Because yamllint exits non-zero on errors, ANY
-        # commit touching those files failed, and the usual escape is
-        # `--no-verify`, which skips EVERY hook including detect-private-key
+        # Measured on v3.0.0 before this change, over all 133 tracked YAML
+        # files: 160 line-length errors across 32 of them. None was introduced
+        # by the commit that tripped the hook -- this is a quarter of the
+        # repository's YAML, accumulated because nothing runs yamllint in CI
+        # and the debt was therefore invisible.
+        #
+        # yamllint exits non-zero on errors, so ANY commit touching one of
+        # those 32 files failed the hook, and the usual escape is
+        # `--no-verify`, which skips EVERY hook -- including detect-private-key
         # and detect-secrets. On 2026-08-22 detect-private-key caught a real
         # key literal (#3992) and end-of-file-fixer a missing newline (#3811)
         # in files agents merely touched; a blanket bypass would have skipped
         # both. Trading a style error for a warning keeps the security hooks
-        # armed, which is the trade that matters. Every other yamllint rule
-        # (syntax, truthy, indentation, ...) still errors and still blocks.
+        # armed, which is the trade that matters.
+        #
+        # Every other yamllint rule (syntax, truthy, indentation, ...) still
+        # errors and still blocks -- verified by fault injection, not assumed.
         args: ['-d', '{extends: default, rules: {line-length: {max: 120, level: warning}, document-start: disable}}']
         types: [yaml]
 
