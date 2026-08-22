@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from ops_step_isolation import INSTALL_STEP_FUNCS
 
 from nyxgpt import ops
 
@@ -924,27 +925,15 @@ def test_detect_deployment_mode_uses_systemd_snapshot_on_linux(monkeypatch):
 
 def test_install_uses_systemd_steps_on_linux(monkeypatch, capsys):
     ok_results = [ops.OpsResult(True, "ok")]
-    for step in (
-        "_sync_packaged_resources",
-        "_clear_intentional_stops",
-        "_install_config",
-        "_reconcile_install_mode",
-        "migrate_legacy_volumes",
-        "_reconcile_phantom_compose_app_containers",
-        "_ensure_web_deps",
-        "_ensure_mcp_deps",
-        "_ensure_cassandra_container",
-        "_install_cassandra_log_follower_service",
-        "_install_ollama_log_follower_service",
-        "_install_ollama_env_agent",
-        "_install_native_api",
-        "_install_native_web",
-        "_ensure_native_ollama_service",
-        "_ensure_required_models",
-        "_cleanup_stale_log_symlinks",
-        "sync_env_from_config",
-        "_generate_compose_config",
-    ):
+    # `INSTALL_STEP_FUNCS` rather than a hand-copied list (#3983): the copy this
+    # replaces was missing `_ensure_docker_engine`, so the step ran for real and
+    # tried `sudo -n systemctl enable --now docker` and `sudo -n mkdir -p
+    # /usr/local/lib/docker/cli-plugins` on the machine running the suite (it
+    # also failed the test outright there, since without a passwordless sudo the
+    # step reports failure). The shared list is guarded by
+    # `test_ops_step_isolation.py`, so a step added later cannot go unpatched
+    # again.
+    for step in INSTALL_STEP_FUNCS:
         monkeypatch.setattr(ops, step, lambda *a, **k: ok_results)
     monkeypatch.setattr(ops, "_emit_results", lambda action, results: True)
     monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))

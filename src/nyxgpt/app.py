@@ -2823,10 +2823,10 @@ def support_context(request: Request) -> dict[str, Any]:
 def support_file_ticket(request: Request, body: api_models.SupportTicketRequest) -> JSONResponse:
     """File a support ticket from this install and return the created issue.
 
-    This is the surface #3811 asked for: the filer answers the questions in
-    the chat, nyxGPT posts the issue, and the response carries the ticket's
-    number and URL so the UI can congratulate them with a link instead of
-    stranding them on github.com.
+    This is the surface #3811 asked for: the filer answers the questions on
+    nyxGPT's own intake page (`/support/new`), nyxGPT posts the issue, and
+    the response carries the ticket's number and URL so the next page they
+    see is their ticket, rather than github.com's compose form.
 
     Three answers, and the difference between them matters to the person
     waiting:

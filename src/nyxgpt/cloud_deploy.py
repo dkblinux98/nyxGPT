@@ -1270,6 +1270,40 @@ fi
 # they bind through whatever the cluster's default StorageClass is, and on
 # k3s that is `local-path`. Disabling it would leave both Pods Pending on
 # unbound PVCs.
+
+# The pod and Service networks, pinned OFF k3s's own defaults.
+#
+# k3s defaults to `--cluster-cidr=10.42.0.0/16` and `--service-cidr=10.43.0.0/16`,
+# and terraform/aws/variables.tf defaults the substrate VPC to 10.42.0.0/16 --
+# byte-identical. That collision is not a near miss, it is fatal and silent
+# (#3956 acceptance failure, 2026-08-22, owner-diagnosed on a real instance):
+#
+#   1. AWS puts the VPC's AmazonProvidedDNS resolver at VPC-base+2, i.e.
+#      10.42.0.2, and hands it to the host over DHCP.
+#   2. k3s starts, and its CNI claims the on-node route for 10.42.0.0/16 --
+#      shadowing the resolver. Host queries to 10.42.0.2 now land on whatever
+#      Pod holds that address, which is CoreDNS itself.
+#   3. CoreDNS forwards to the node's resolv.conf -> 10.42.0.2 -> itself. Its
+#      loop guard fires (`[FATAL] plugin/loop: Loop ... detected for zone "."`)
+#      and it CrashLoopBackOffs. Cluster DNS is never up for one second.
+#   4. Every symptom surfaces layers away from the cause: the deploy fails on
+#      "Ollama did not become ready in time", because the ollama Pod's model
+#      pulls cannot resolve registry.ollama.ai.
+#
+# Fixed on the k3s side rather than by moving the VPC default. Changing
+# `vpc_cidr` forces Terraform to REPLACE the VPC -- and with it the subnet, the
+# instance and its root volume -- on the next apply against an existing
+# substrate, which is a data-loss migration to fix a defect the cluster side
+# can fix with two flags.
+#
+# 100.64.0.0/10 is RFC 6598 (carrier-grade NAT) space: reserved, routable
+# nowhere on the public internet, and outside every RFC 1918 range a VPC is
+# normally cut from (10/8, 172.16/12, 192.168/16). An operator CAN still cut a
+# VPC from it -- AWS allows it -- which is why the pin is paired with the
+# runtime overlap guard in the bootstrap below rather than trusted on its own.
+K3S_CLUSTER_CIDR = "100.96.0.0/16"
+K3S_SERVICE_CIDR = "100.97.0.0/16"
+
 K3S_SERVER_FLAGS: tuple[str, ...] = (
     "--bind-address=$NYXGPT_NODE_IP",
     "--advertise-address=$NYXGPT_NODE_IP",
@@ -1277,6 +1311,12 @@ K3S_SERVER_FLAGS: tuple[str, ...] = (
     "--tls-san=$NYXGPT_NODE_IP",
     "--disable=traefik",
     "--disable=servicelb",
+    f"--cluster-cidr={K3S_CLUSTER_CIDR}",
+    f"--service-cidr={K3S_SERVICE_CIDR}",
+    # Empty off EC2 -- see the resolv.conf block in the bootstrap. `k3s`'s
+    # cluster-dns address is derived from --service-cidr, so it moves with it
+    # and is not pinned separately.
+    "$NYXGPT_K3S_RESOLV_FLAG",
 )
 
 KUBERNETES_LLM_RUNTIME_SECTION = """# --- Single-node Kubernetes (k3s) --------------------------------------
@@ -1303,6 +1343,100 @@ if [ -z "$NYXGPT_NODE_IP" ]; then
 fi
 echo "==> k3s will bind to $NYXGPT_NODE_IP (private) -- nothing listens on the public interface"
 
+# --- Refuse a VPC network that overlaps the pod/Service networks -------
+# The pin above moves the cluster off the substrate's default VPC range; this
+# refuses the case the pin cannot cover -- an operator-chosen `vpc_cidr` that
+# overlaps anyway. Without it the failure mode is a CrashLoopBackOff CoreDNS
+# and a deploy that reports "Ollama did not become ready in time" 95 minutes
+# later, three layers from the cause (#3956 acceptance failure).
+#
+# Arithmetic, not bit operations: `and()`/`lshift()` are gawk extensions and
+# Debian/Ubuntu's default awk is mawk, which has neither. Two CIDRs overlap
+# exactly when they share a network under the SHORTER of the two prefixes.
+nyxgpt_cidrs_overlap() {
+  awk -v a="$1" -v b="$2" '
+    function ipnum(ip,   p) {
+      split(ip, p, ".")
+      return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4]
+    }
+    BEGIN {
+      split(a, x, "/"); split(b, y, "/")
+      pa = (x[2] == "" ? 32 : x[2] + 0); pb = (y[2] == "" ? 32 : y[2] + 0)
+      p = (pa < pb ? pa : pb)
+      size = 2 ^ (32 - p)
+      exit (int(ipnum(x[1]) / size) == int(ipnum(y[1]) / size)) ? 0 : 1
+    }'
+}
+
+# NYXGPT_VPC_CIDRS is read from IMDS on an EC2 instance. It is overridable so
+# the executed-verification job can inject a colliding VPC and prove the
+# refusal fires (there is no hosted runner inside a VPC), and so an operator
+# running this bootstrap on a non-EC2 Linux box can state their own network.
+NYXGPT_VPC_CIDRS="${NYXGPT_VPC_CIDRS:-}"
+if [ -z "$NYXGPT_VPC_CIDRS" ] && [ -n "$NYXGPT_IMDS_TOKEN" ]; then
+  NYXGPT_IMDS_MAC=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $NYXGPT_IMDS_TOKEN" \\
+    "http://169.254.169.254/latest/meta-data/mac" 2>/dev/null || true)
+  if [ -n "$NYXGPT_IMDS_MAC" ]; then
+    NYXGPT_VPC_CIDRS=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $NYXGPT_IMDS_TOKEN" \\
+      "http://169.254.169.254/latest/meta-data/network/interfaces/macs/${NYXGPT_IMDS_MAC}/vpc-ipv4-cidr-blocks" \\
+      2>/dev/null || true)
+  fi
+fi
+if [ -n "$NYXGPT_VPC_CIDRS" ]; then
+  echo "==> VPC IPv4 network(s): $(echo $NYXGPT_VPC_CIDRS)"
+  for nyxgpt_vpc_cidr in $NYXGPT_VPC_CIDRS; do
+    for nyxgpt_k3s_cidr in __K3S_CLUSTER_CIDR__ __K3S_SERVICE_CIDR__; do
+      if nyxgpt_cidrs_overlap "$nyxgpt_vpc_cidr" "$nyxgpt_k3s_cidr"; then
+        echo "the VPC network $nyxgpt_vpc_cidr overlaps the k3s network $nyxgpt_k3s_cidr." >&2
+        echo "Refusing to install the cluster: the CNI would claim on-node routes for that" >&2
+        echo "range and shadow the VPC's DNS resolver, which sends CoreDNS into a query loop" >&2
+        echo "it kills itself over -- cluster AND host DNS dead, surfacing minutes later as an" >&2
+        echo "unrelated readiness timeout. Give the substrate a VPC network that does not" >&2
+        echo "overlap __K3S_CLUSTER_CIDR__ or __K3S_SERVICE_CIDR__ (the vpc_cidr variable in the" >&2
+        echo "substrate's Terraform configuration), then deploy again." >&2
+        exit 1
+      fi
+    done
+  done
+  echo "==> VPC network and k3s pod/Service networks do not overlap"
+else
+  echo "==> no VPC network reported (not an EC2 instance, or IMDS unreachable); overlap check skipped"
+fi
+
+# --- CoreDNS's upstream resolver, on AWS -------------------------------
+# Defence in depth for the same class of failure. k3s's bundled CoreDNS
+# forwards to the node's resolv.conf, so a resolver address that a pod network
+# can ever shadow puts CoreDNS one routing change away from resolving itself.
+# 169.254.169.253 is the SAME AmazonProvidedDNS resolver on its link-local
+# alias: identical answers, and no pod CIDR can shadow 169.254.0.0/16 because
+# no cluster is cut from link-local space.
+#
+# A k3s SERVER FLAG rather than a patch to the CoreDNS ConfigMap: k3s
+# re-applies its bundled CoreDNS manifest on every service restart, so a
+# patched ConfigMap silently reverts. --resolv-conf survives that, because it
+# is what the manifest is rendered against.
+#
+# Empty off EC2: 169.254.169.253 exists only inside a VPC, and pointing a
+# non-AWS machine's cluster at it would break DNS to fix a problem it does not
+# have. That is the path the CI proxy takes, and k3s's own default applies.
+NYXGPT_K3S_RESOLV_FLAG=""
+if [ -n "$NYXGPT_IMDS_TOKEN" ]; then
+  # The VPC's search domain (`ec2.internal`, `<region>.compute.internal`) is
+  # carried over rather than dropped: this file replaces the node's resolv.conf
+  # for every Pod's search list too, and silently losing the domain would break
+  # short-name resolution on a box where it used to work.
+  NYXGPT_DNS_SEARCH=$(awk '/^search /{ $1=""; sub(/^ /, ""); print; exit }' \\
+    /etc/resolv.conf 2>/dev/null || true)
+  sudo mkdir -p /etc/rancher/k3s
+  {
+    echo "nameserver 169.254.169.253"
+    if [ -n "$NYXGPT_DNS_SEARCH" ]; then echo "search $NYXGPT_DNS_SEARCH"; fi
+    echo "options timeout:2 attempts:3"
+  } | sudo tee /etc/rancher/k3s/resolv.conf >/dev/null
+  NYXGPT_K3S_RESOLV_FLAG="--resolv-conf=/etc/rancher/k3s/resolv.conf"
+  echo "==> CoreDNS will forward to 169.254.169.253 (the VPC resolver's link-local alias)"
+fi
+
 # Skipped when k3s is already here, which makes a re-deploy fast and keeps
 # the running cluster's Pods up. The assumption that makes that safe: the
 # existing server was installed by *this* text, so its flags are these
@@ -1312,6 +1446,47 @@ echo "==> k3s will bind to $NYXGPT_NODE_IP (private) -- nothing listens on the p
 # change those flags in a way that has to take effect on an existing box,
 # re-install the server here (or say so in the release notes); the operator's
 # other route is `nyxgpt cloud destroy` and a fresh deploy.
+#
+# The one case that MUST reach an existing box is the flag change this fix is:
+# a cluster whose pod or Service network overlaps the VPC has DNS that cannot
+# work, so leaving it in place would make a re-deploy a silent no-op on top of
+# a broken cluster. It is replaced rather than left, and only when the overlap
+# is measured -- a pre-fix cluster in a VPC that never collided is working, and
+# rebuilding it would destroy its volumes to fix nothing.
+if command -v k3s >/dev/null 2>&1 && [ -n "$NYXGPT_VPC_CIDRS" ]; then
+  # No flag in the unit means k3s's own defaults, which are the colliding pair.
+  # The `|| true` is load-bearing under `set -euo pipefail`: a grep that
+  # matches nothing exits 1, and `VAR=$(...)` propagates that status -- so the
+  # unflagged case (the very one being detected) would abort the deploy here.
+  NYXGPT_OLD_CLUSTER_CIDR=$(grep -oE -- '--cluster-cidr=[0-9./]+' \\
+    /etc/systemd/system/k3s.service 2>/dev/null | head -n1 | cut -d= -f2 || true)
+  NYXGPT_OLD_SERVICE_CIDR=$(grep -oE -- '--service-cidr=[0-9./]+' \\
+    /etc/systemd/system/k3s.service 2>/dev/null | head -n1 | cut -d= -f2 || true)
+  [ -n "$NYXGPT_OLD_CLUSTER_CIDR" ] || NYXGPT_OLD_CLUSTER_CIDR="10.42.0.0/16"
+  [ -n "$NYXGPT_OLD_SERVICE_CIDR" ] || NYXGPT_OLD_SERVICE_CIDR="10.43.0.0/16"
+  for nyxgpt_vpc_cidr in $NYXGPT_VPC_CIDRS; do
+    for nyxgpt_k3s_cidr in "$NYXGPT_OLD_CLUSTER_CIDR" "$NYXGPT_OLD_SERVICE_CIDR"; do
+      if nyxgpt_cidrs_overlap "$nyxgpt_vpc_cidr" "$nyxgpt_k3s_cidr"; then
+        echo "==> the cluster already on this instance uses $nyxgpt_k3s_cidr, which overlaps"
+        echo "==> the VPC network $nyxgpt_vpc_cidr -- its DNS cannot work. Replacing it."
+        sudo /usr/local/bin/k3s-uninstall.sh
+        # Then a check, not a `|| true`: a half-completed uninstall that left
+        # the binary behind would fall through to the "k3s is already here"
+        # fast path below and reuse the broken cluster it just tried to
+        # remove -- the exact silence this block exists to end. `hash -r`
+        # first so the check reads the filesystem rather than a cached lookup.
+        hash -r 2>/dev/null || true
+        if command -v k3s >/dev/null 2>&1; then
+          echo "k3s-uninstall.sh ran but k3s is still installed; the cluster on this" >&2
+          echo "instance cannot resolve names and cannot be replaced in place. Run" >&2
+          echo "'nyxgpt cloud destroy --yes' and deploy again onto a fresh instance." >&2
+          exit 1
+        fi
+        break 2
+      fi
+    done
+  done
+fi
 if ! command -v k3s >/dev/null 2>&1; then
   curl -sfL https://get.k3s.io \\
     | INSTALL_K3S_EXEC="server __K3S_SERVER_FLAGS__" sh -
@@ -1537,8 +1712,10 @@ def render_k3s_bootstrap() -> str:
     difference between proving the deploy's own bootstrap works and proving
     that something like it does (D-006).
     """
-    return KUBERNETES_LLM_RUNTIME_SECTION.replace(
-        "__K3S_SERVER_FLAGS__", " ".join(K3S_SERVER_FLAGS)
+    return (
+        KUBERNETES_LLM_RUNTIME_SECTION.replace("__K3S_SERVER_FLAGS__", " ".join(K3S_SERVER_FLAGS))
+        .replace("__K3S_CLUSTER_CIDR__", K3S_CLUSTER_CIDR)
+        .replace("__K3S_SERVICE_CIDR__", K3S_SERVICE_CIDR)
     )
 
 

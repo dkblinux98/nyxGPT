@@ -17,10 +17,22 @@ name: k3s Cloud Smoke
 # `render_provision_script()`, rather than a hand-maintained copy. A smoke that
 # tests an approximation certifies the approximation -- the #3860 lesson.
 #
-# Two of its seven steps are FAULT INJECTIONS (#3753's both-halves rule): the
-# image-import step proves the Pod fails without the import and runs with it,
-# and the bridge step proves 127.0.0.1:8000 goes dead when the bridge stops, so
-# neither can pass by luck on a runner where something else was listening.
+# Three of its seven steps carry FAULT INJECTIONS (#3753's both-halves rule):
+# the bootstrap step proves an overlapping VPC network is refused and nothing
+# installed, the image-import step proves the Pod fails without the import and
+# runs with it, and the bridge step proves 127.0.0.1:8000 goes dead when the
+# bridge stops -- so none can pass by luck on a runner where something else was
+# listening.
+#
+# The first of those is the 2026-08-22 acceptance failure (#3956): k3s's
+# default pod network was byte-identical to the substrate's default VPC CIDR,
+# so the CNI shadowed the VPC resolver, CoreDNS forwarded to itself and its
+# loop guard killed it, and the deploy failed 95 minutes later on an unrelated
+# "Ollama did not become ready in time". No hosted runner is inside a VPC, so
+# the earlier version of this job was structurally blind to it; the condition
+# is now injected through the bootstrap's own NYXGPT_VPC_CIDRS override, and
+# the job also measures the networks the RUNNING cluster cut and requires
+# CoreDNS Available at zero restarts with no `plugin/loop` in its log.
 #
 # The last step is the `--no-kubernetes` transition, and it needs a running
 # cluster and a running bridge to mean anything -- which is why it runs here
@@ -44,6 +56,7 @@ on:
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/ops.py'
       - 'k8s/**'
+      - 'terraform/aws/variables.tf'
       - 'scripts/k3s-cloud-smoke.sh'
       - '.github/workflows/k3s-cloud-smoke.yml'
   push:
@@ -51,6 +64,7 @@ on:
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/ops.py'
       - 'k8s/**'
+      - 'terraform/aws/variables.tf'
       - 'scripts/k3s-cloud-smoke.sh'
       - '.github/workflows/k3s-cloud-smoke.yml'
   workflow_dispatch:
@@ -98,4 +112,8 @@ jobs:
           sudo journalctl -u k3s --no-pager -n 200 || true
           kubectl get pods -A -o wide || true
           kubectl -n nyxgpt describe pods || true
+          # The #3956 signature: a resolver loop shows up here and nowhere else.
+          kubectl -n kube-system describe pods -l k8s-app=kube-dns || true
+          kubectl -n kube-system logs -l k8s-app=kube-dns --tail=200 || true
+          kubectl -n kube-system get cm coredns -o yaml || true
           systemctl --user status 'nyxgpt-k8s-bridge@*' --no-pager -l || true
