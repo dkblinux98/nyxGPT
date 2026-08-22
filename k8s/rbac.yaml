@@ -27,10 +27,21 @@ metadata:
   # Pod happens to be serving the dashboard request. Read-only, one verb, and
   # the proxied endpoint (/metrics) is the same unauthenticated one Prometheus
   # scrapes.
+  #
+  # `list` on the workload kinds is what the Infrastructure page's in-cluster
+  # read needs (#3988). Served from the api Pod, that page reports the
+  # cluster it is itself running in, and its observability card asks
+  # `kubectl get deploy`/`get daemonset` for the whole namespace -- a LIST,
+  # which `get` alone does not cover. Without these two lines the page would
+  # detect the cluster and then render every observability workload
+  # "absent", which is the same false negative one card over.
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["get", "list", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "statefulsets"]
+    verbs: ["get", "list"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "update", "patch"]
