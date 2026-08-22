@@ -2701,7 +2701,18 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     else:
         release_note = f"{mac_host.get('release_at') or 'unknown'} (AWS's 24-hour minimum)"
     _print_row("Releasable at", release_note)
-    if mac_host.get("release_scheduled"):
+    if mac_host.get("release_scheduled") and mac_host.get("releasable_now"):
+        # Deliberately not "released": nothing on this machine watched the
+        # schedule fire, so claiming the charge has stopped would be an
+        # assertion nothing checked. Slack has the outcome; the next
+        # lifecycle command asks AWS and clears this row if the host is gone.
+        _print_row(
+            "Release",
+            "the scheduled release has fired -- Slack has the outcome. This row clears on the "
+            "next `nyxgpt cloud deploy --os macos` or `nyxgpt cloud destroy --yes`, which asks "
+            "AWS whether the host is really gone",
+        )
+    elif mac_host.get("release_scheduled"):
         _print_row(
             "Release",
             "scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack",

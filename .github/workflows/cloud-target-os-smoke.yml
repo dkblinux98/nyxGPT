@@ -51,6 +51,7 @@ on:
     paths:
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/cloud_mac.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud/ec2-user-data-macos.sh.tmpl'
       - 'scripts/cloud-target-os-smoke.sh'
@@ -59,6 +60,7 @@ on:
     paths:
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud_provision.py'
+      - 'src/nyxgpt/cloud_mac.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud/ec2-user-data-macos.sh.tmpl'
       - 'scripts/cloud-target-os-smoke.sh'

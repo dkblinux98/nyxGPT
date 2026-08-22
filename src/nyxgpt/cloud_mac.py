@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -662,10 +663,19 @@ def forget_host() -> bool:
 
 
 def destroy_mac_instance(plan_values: dict[str, Any]) -> dict[str, Any]:
-    """Terminate the Mac and delete its network, leaving the host allocated."""
+    """Terminate the Mac and delete its network, leaving the host allocated.
+
+    The tfvars the *apply* wrote are reused when they are still there, and
+    only rebuilt from the record when they are not. Same reasoning as
+    `cloud_infra.destroy_infra`'s saved settings, one step further: those
+    values are exactly what created the resources being destroyed, whereas a
+    rebuild has to re-derive an availability zone that has no default and
+    would fail the run if the record never captured one.
+    """
     cloud_infra.sync_terraform_config()
     config_dir = _config_dir(MAC_CONFIG_DIRNAME)
-    _write_tfvars(MAC_TFVARS_FILE, plan_values)
+    if not MAC_TFVARS_FILE.exists():
+        _write_tfvars(MAC_TFVARS_FILE, plan_values)
     _init(config_dir, MAC_TFSTATE_FILE)
     forgot = forget_host()
     cloud_infra.run_terraform(
@@ -883,11 +893,10 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     re-confirmed. Asking an operator to re-consent to a charge they already
     made would train them to type the word without reading it.
     """
+    reconcile_released_host(args)
     existing = load_mac_record()
     if existing and mac_state_exists():
-        plan_values = json.loads(json.dumps(existing))  # cheap copy
-        reconciled = _reconcile_existing(args, existing)
-        return reconciled if reconciled else plan_values
+        return _reconcile_existing(args, existing)
 
     plan = resolve_allocation_plan(args)
     allocated_at = utc_now().replace(microsecond=0)
@@ -999,6 +1008,49 @@ def _slack_settings() -> tuple[str, str]:
         return ("", "")
 
 
+def reconcile_released_host(args: argparse.Namespace) -> bool:
+    """Forget a recorded host AWS says is already gone. Returns True if it cleared one.
+
+    The deferred release fires with nobody watching -- that is the whole
+    design, and it is why Slack carries the outcome. But it means nothing on
+    this machine learns that the host is gone, so the record (and with it the
+    "still billing" row on `nyxgpt cloud status`) would otherwise outlive the
+    charge it describes.
+
+    This is the reconcile, and both lifecycle commands run it first. It asks
+    AWS exactly one question and only acts on a definite *no*:
+    `host_still_allocated` answers `None` when it could not ask, and a record
+    deleted on the strength of expired credentials would hide a resource that
+    is still costing money. Never raises -- a reconcile that cannot run must
+    not stop the command it runs ahead of.
+    """
+    record = load_mac_record()
+    host_id = str(record.get("mac_host_id") or "")
+    if not host_id:
+        return False
+    saved = cloud_infra.load_settings()
+    region = (
+        str(record.get("mac_region") or "")
+        or str(getattr(args, "region", None) or "")
+        or str(saved.get("aws_region") or "")
+    )
+    profile = str(getattr(args, "profile", None) or "") or str(saved.get("aws_profile") or "")
+    try:
+        if host_still_allocated(host_id, region, profile) is not False:
+            return False
+        print(
+            f"Dedicated Host {host_id} has been released -- AWS no longer has it. "
+            "Clearing it from this machine's cloud state."
+        )
+        destroy_release_stack()
+    except Exception as exc:  # pragma: no cover - best effort by design
+        print(f"note: could not clean up the released host's schedule: {exc}", file=sys.stderr)
+    clear_mac_record()
+    MAC_TFSTATE_FILE.unlink(missing_ok=True)
+    MAC_TFVARS_FILE.unlink(missing_ok=True)
+    return True
+
+
 def teardown(args: argparse.Namespace) -> dict[str, Any]:
     """Terminate the Mac now and schedule the host release for when AWS allows it.
 
@@ -1009,6 +1061,8 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
     to come down, and an operator with a stuck host needs the *other* things
     gone so the one that is left is unambiguous.
     """
+    if reconcile_released_host(args):
+        return {"managed": False, "already_released": True}
     record = load_mac_record()
     if not record and not mac_state_exists():
         return {"managed": False}

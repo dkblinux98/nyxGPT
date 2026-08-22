@@ -1400,6 +1400,25 @@ rather than mechanism, and nothing can enforce them.
   `.github/workflows/notify-merge-conflicts.yml`;
   `.github/workflows/slack-huddle-smoke.yml`.
 
+- **D-042** · 2026-08-22 · owner (#3995) — **nyxGPT allocates the EC2 Mac
+  Dedicated Host.** `nyxgpt cloud deploy --os macos` with no `--host` prices the
+  host live from the AWS Pricing API, discloses the rate, the 24-hour minimum
+  and the moment it becomes releasable, and allocates it after a typed
+  confirmation (`--yes` skips the typing, never the disclosure). `nyxgpt cloud
+  destroy` terminates the Mac immediately and defers **only** the host release
+  — which AWS rejects inside the 24-hour window — to a one-shot EventBridge
+  Scheduler schedule (`ActionAfterCompletion=DELETE`) driving a Step Functions
+  state machine that calls `ReleaseHosts` and reports to Slack over an
+  EventBridge Connection holding the existing bot token. No Lambda, no AWS
+  Chatbot, no new Slack app.
+  Two AWS behaviours make the naive version silently wrong and are handled:
+  Slack answers `invalid_auth`/`channel_not_found` with **HTTP 200 and
+  `"ok": false`**, and `ReleaseHosts` answers a still-scrubbing host with
+  **HTTP 200 and the host in `Unsuccessful`** — so neither can be detected by
+  status code or by a Step Functions `Retry`.
+  Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
+  `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1426,27 +1445,6 @@ rather than mechanism, and nothing can enforce them.
   Revisit when: the intelligent watcher is in place and demonstrably fails to
   catch a spend runaway.
   Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
-
-- **P-003** · 2026-08-19 · developer-agent (#3867) — Allocating the EC2
-  Dedicated Host an EC2 Mac requires (an `aws_ec2_host` in
-  `terraform/aws/modules/compute`, mac AMI resolution, host/subnet AZ pinning)
-  is **deliberately not built**. `nyxgpt cloud deploy --os macos` provisions a
-  Mac the operator already has, named with `--host`, and refuses — before
-  applying anything — when there is none.
-  Reason: an allocated host bills a 24-hour minimum whether or not an instance
-  runs on it and cannot be released inside that window, so a `terraform destroy`
-  within the first day fails and leaves the operator paying for a resource this
-  configuration cannot tear down. No CI job can execute any of it (no macOS EC2
-  runner, no macOS in a container), so it would ship unverified and cost real
-  money per attempt to find out. #3867's acceptance criterion offers this
-  branch explicitly: "works end-to-end ... **or** fails fast with a wrapped,
-  documented story".
-  Revisit when: the owner wants nyxGPT to allocate billable Dedicated Hosts,
-  or AWS removes the 24-hour minimum. A wrapped `nyxgpt cloud host
-  allocate/release` (boto3, cost surfaced, explicit `--yes`) is the shape to
-  build then — not Terraform, whose destroy path is where the trap is.
-  Source: #3867; `cloud_deploy.MACOS_NO_TARGET_MESSAGE`; `docs/cloud.md`
-  §EC2 Mac targets.
 
 - **P-004** · 2026-08-20 · owner — `GH_TOKEN_NYXAGENT` and `QA_AGENT_TOKEN`
   (Actions secrets, and `[github]` keys in the owner's `config.ini`) are
@@ -1662,5 +1660,20 @@ them.
   stall: on 2026-08-19 a shepherding session posted comment kicks across
   several hours, reported them as dispatches, and none of them fired. A
   session reading **D-020** alone would repeat it.
+- **S-007** — ~~"Allocating the EC2 Dedicated Host an EC2 Mac requires is
+  deliberately not built; `--os macos` refuses when there is no `--host`."~~
+  (P-003, 2026-08-19, #3867.) Superseded 2026-08-22 by **D-042** (#3995). Both
+  halves of the reason were retired rather than overridden: the configuration
+  *can* tear the host down (the release is deferred, not skipped), and spending
+  the operator's money without asking is a consent problem that disclosure plus
+  a typed confirmation answers — as it does for every other irreversible spend
+  in this CLI. P-003's parting advice, "boto3, not Terraform, whose destroy path
+  is where the trap is", was **not** followed and the reasoning is worth
+  keeping: the trap is not Terraform, it is `terraform destroy` calling
+  `ReleaseHosts` inside the 24-hour window. Two isolated root modules plus a
+  `terraform state rm` of the host before the destroy removes it, and keeps the
+  idempotent reconcile that a boto3 allocate/release pair would have had to
+  reinvent.
+
   ID from `ledger_ids.py next S` (S-003 is taken: it was relocated to the
   private annex, and IDs are never reused).

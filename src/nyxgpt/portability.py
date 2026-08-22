@@ -294,7 +294,10 @@ TARGETS: tuple[Target, ...] = (
             "acceptance run in ACCEPTANCE_SEQUENCE. EC2 Mac targets are "
             "documentation-verified only: GitHub Actions' macOS runners are hosted "
             "(fine for brew installs -- see macos-native -- but not an EC2 "
-            "instance), and a Dedicated Host bills a 24h minimum."
+            "instance). `nyxgpt cloud deploy --os macos` allocates the Dedicated "
+            "Host itself after a priced confirmation (#3995) and `cloud destroy` "
+            "schedules its deferred release, but neither can be executed in CI: a "
+            "host bills a 24h minimum and no job can make that clock pass."
         ),
     ),
 )
