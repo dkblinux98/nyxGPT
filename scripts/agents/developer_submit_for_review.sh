@@ -263,6 +263,37 @@ else
   [[ -f "$body_file" ]] || _die "PR body file not found: $body_file"
 fi
 
+# ---- Inverse-claims sweep: run it, then show your work (#4015) ----
+# developer-runbook.md 5 has required this sweep since #3744 and it was skipped
+# anyway -- four of the five PRs blocked on 2026-08-22 were blocked on nothing
+# but prose the change had falsified. It is run HERE rather than left to memory,
+# and its result is appended to the PR body so a skipped sweep is visible to the
+# reviewer instead of silent.
+#
+# It is ADVISORY. It never blocks a submission: it does not judge truth, so a
+# hit is a question for the author, never a verdict. A failure of the sweep
+# itself (bad range, missing python) is logged and ignored -- a broken checklist
+# generator must not stop finished work from reaching review.
+SWEEP_SCRIPT="$DIR/inverse_claims_sweep.py"
+if [[ -x "$SWEEP_SCRIPT" || -f "$SWEEP_SCRIPT" ]]; then
+  sweep_md="$(mktemp)"
+  if python3 "$SWEEP_SCRIPT" --base "origin/${BASE_BRANCH}" --markdown > "$sweep_md" 2>/dev/null; then
+    python3 "$SWEEP_SCRIPT" --base "origin/${BASE_BRANCH}" --max-items 10 >&2 || true
+    if [[ -z "$tmp_body" ]]; then
+      tmp_body="$(mktemp)"
+      cat "$body_file" > "$tmp_body"
+      body_file="$tmp_body"
+    fi
+    {
+      echo
+      cat "$sweep_md"
+    } >> "$body_file"
+  else
+    _warn "inverse-claims sweep did not run; submitting without it (advisory only)."
+  fi
+  rm -f "$sweep_md"
+fi
+
 # ---- Record a CI override as a claim, never as an excuse (#3971) ----
 # The legitimate case is a failure that reproduces on the base branch without
 # this change. That is a claim about a commit nobody has checked yet, so it is

@@ -719,6 +719,40 @@ sentence. Point at a living source instead: the PyPI project page,
 issue. The reviewer flags a newly introduced expiry-dated claim as a Medium
 finding.
 
+**Run it, do not remember it (#4015).** The sweep above is mechanized:
+
+```bash
+scripts/agents/inverse_claims_sweep.py            # origin/<release branch>...HEAD
+```
+
+It extracts the identifiers your diff changes (commands, endpoints, flags,
+symbols, constants, retired paths) and searches the *prose* of every file the
+diff did not touch — markdown, docstrings, code and workflow comments — for
+sentences that make a **claim** about them. It prints a checklist, **never
+judges truth and never fails on a hit**: you confirm each one.
+`developer_submit_for_review.sh` runs it for you and appends the result to the
+PR body, so a skipped sweep is visible to the reviewer rather than silent. Run
+it yourself while you still have the change in your head; the submit-time copy
+is a receipt, not the check.
+
+**Read the density, not just the list (#4015 amendment).** The output groups
+places by the *fact* they assert, so a cluster of seven is one fact written
+down seven times — the #3811 shape, where the fix had to edit ten files, got
+nine right and missed one. Two consequences for you:
+
+- A tall cluster is where a miss hides. Work through it as one unit.
+- The sweep labels each cluster `restatement` (different wording for different
+  audiences — legitimate, update every one) or `copy-paste` (near-identical
+  wording — a candidate for one canonical statement plus pointers). Those
+  labels are a **guess for a human**, often wrong, and never an instruction to
+  edit. If a `copy-paste` cluster really is redundant, say so in the PR; do not
+  fold it silently into someone else's doc.
+
+Measured over the 2026-08-22 round, the median fact this pipeline changes is
+asserted in **2** places and about a quarter of them in **5 or more**. The
+sweep is mitigation, not a cure: the cure is not writing the same fact down
+five times.
+
 **Motivating incident (#3743, 2026-08-13):** #3727/#3735 shipped repo-less
 PyPI publishing while `README.md` still asserted that it had not shipped and a
 checkout was still required. Both dev and reviewer passed the diff-scoped docs

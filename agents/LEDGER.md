@@ -1496,6 +1496,26 @@ rather than mechanism, and nothing can enforce them.
   Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
   `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
 
+- **D-044** · 2026-08-22 · owner challenge on #4015, accepted by the
+  developer-agent — **The inverse-claims sweep is mitigation, not a cure. The
+  cause of stale-prose review rework is that one behavioural fact is written
+  down in many places, not that authors forget to look.** #3811's fix had to
+  edit ten files because "how a support ticket gets filed" was asserted in
+  seven-plus of them; nine were corrected, one was missed, and the miss cost a
+  review round. Consequences: `scripts/agents/inverse_claims_sweep.py` reports
+  by *fact*, grouping every place that asserts one, and labels each group
+  `restatement` (different wording for different audiences — legitimate and
+  permanent, update all) or `copy-paste` (near-identical wording — a candidate
+  for one canonical statement plus pointers). Those labels are a guess for a
+  human and never an instruction to edit. **Measured over the eight PRs of the
+  2026-08-22 acceptance round** (`--json` over each PR's pre-fix head, 304
+  clusters): the median fact this pipeline changes is asserted in **2** places,
+  but **27% are asserted in 5 or more** and the worst single fact — what
+  `nyxgpt ops status` reports — in **46**. So the sweep is necessary and is not
+  sufficient; see Q-008.
+  Source: #4015 (issue body + owner amendment); `scripts/agents/inverse_claims_sweep.py`;
+  `agents/runbooks/developer-runbook.md` §5.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1689,6 +1709,23 @@ rather than mechanism, and nothing can enforce them.
   rc formula by replacing it with a disabled stub rather than deleting it —
   which keeps the name resolvable and gives a better error than "No available
   formula" — not dropping the declaration.
+
+- **Q-008** · 2026-08-22 · developer-agent (#4015) — Is a deliberate
+  deduplication pass over `docs/` warranted, and which clusters would it
+  target? The #4015 measurement answers the question the owner posed —
+  duplication density is **median 2, but a quarter of facts live in 5+ places
+  and the worst in 46** — which is the "routinely 5+" branch the amendment said
+  would justify a follow-up. What it does *not* answer is how much of that tail
+  is legitimate audience-specific restatement: the sweep's own heuristic calls
+  most wide clusters `restatement` rather than `copy-paste`, and that heuristic
+  is admittedly weak. A cure would mean picking a canonical home per fact and
+  replacing the rest with pointers — which trades review rework for docs a
+  reader must follow links through, and CLAUDE.md's owner has already ruled
+  that trade *bad* for audience-specific prose.
+  Needs: an owner decision on whether to spend a pass, informed by reading the
+  ten widest clusters (`inverse_claims_sweep.py --json` over a broad diff,
+  sorted by density) rather than by the aggregate number alone.
+  Blocks: nothing today — the sweep makes the current duplication survivable.
 
 ## Superseded
 
