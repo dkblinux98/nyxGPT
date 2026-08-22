@@ -261,7 +261,7 @@ _CODE_SPAN_RE = re.compile(r"`([^`\n]{2,90})`")
 _COMMAND_RE = re.compile(
     r"^nyxgpt(?:\s+[a-z][a-z0-9-]*){1,3}(?:\s+--[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9._:-]*)?)*$"
 )
-_FLAG_VALUE_RE = re.compile(r"(--[a-z][a-z0-9-]{1,30})[ =]([a-z][a-z0-9._:-]{1,30})\b")
+_FLAG_VALUE_RE = re.compile(r"(--[a-z][a-z0-9-]{1,30})[ =]([a-z][a-z0-9._:/-]{1,40})")
 _FLAG_RE = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]{2,30}\b")
 _ENDPOINT_RE = re.compile(r"(?<![\w.])/(?:api/v\d+/)?[a-z][a-z0-9_-]*(?:/[a-z0-9_{}:-]+)+")
 _PATH_RE = re.compile(
@@ -808,7 +808,12 @@ def _worktree_sources(root: Path) -> list[tuple[str, str]]:
             continue
         full = root / rel
         try:
-            if not full.is_file() or full.stat().st_size > MAX_FILE_BYTES:
+            if full.is_symlink() or not full.is_file():
+                # `src/nyxgpt/resources/docs/*.md` are tracked symlinks back to
+                # `docs/` (#3621's packaging). Reading both copies doubles every
+                # doc-based density and asks the author to fix one file twice.
+                continue
+            if full.stat().st_size > MAX_FILE_BYTES:
                 continue
             out.append((rel, full.read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError):
@@ -832,6 +837,9 @@ def _rev_sources(root: Path, rev: str) -> list[tuple[str, str]]:
         meta, rel = entry.split("\t", 1)
         parts = meta.split()
         if len(parts) != 3 or parts[1] != "blob" or _is_excluded(rel):
+            continue
+        if parts[0] == "120000":
+            # A symlink blob holds its target path, not prose (see above).
             continue
         wanted.append((parts[2], rel))
     if not wanted:

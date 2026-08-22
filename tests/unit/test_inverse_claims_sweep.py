@@ -147,6 +147,23 @@ def test_hash_colon_comments_lose_the_colon(sweep_mod: ModuleType) -> None:
     assert blocks[0].text == "The bounds mirror support's."
 
 
+def test_symlinked_copies_of_a_doc_are_read_once(sweep_mod: ModuleType) -> None:
+    """`src/nyxgpt/resources/docs/*.md` are symlinks back to `docs/` (#3621).
+
+    Reading both copies doubles every doc-based duplication density and asks the
+    author to fix one file twice -- which is exactly the number this tool exists
+    to measure honestly. Run against this repository, because the symlink layout
+    is the thing under test.
+    """
+    link = REPO_ROOT / "src" / "nyxgpt" / "resources" / "docs" / "api.md"
+    assert link.is_symlink(), "packaging layout changed; this guard needs revisiting"
+
+    blocks = sweep_mod.collect_blocks(REPO_ROOT, sweep_mod.Diff())
+    paths = {b.path for b in blocks}
+    assert "docs/api.md" in paths
+    assert not any(p.startswith("src/nyxgpt/resources/docs/") for p in paths)
+
+
 # ------------------------------------------------------------- claim filtering
 
 
