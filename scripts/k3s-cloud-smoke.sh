@@ -19,12 +19,24 @@
 # hand-maintained approximation of a bootstrap is evidence about the
 # approximation (the #3860 lesson).
 #
-# Seven steps, and two of them are fault injections -- a job that only runs the
-# happy path passes on every machine that fails to reproduce the bug (#3753):
+# Seven steps, and three of them carry fault injections -- a job that only runs
+# the happy path passes on every machine that fails to reproduce the bug
+# (#3753):
 #
-#   1  Execute the deploy's own k3s bootstrap.
+#   1  FAULT INJECTION: a VPC network that overlaps the k3s pod or Service
+#      network must be REFUSED, with nothing installed. This is the
+#      2026-08-22 acceptance failure (#3956): k3s's default pod network and
+#      the substrate's default VPC were the same /16, the CNI shadowed the VPC
+#      resolver, CoreDNS forwarded to itself and its loop guard killed it, and
+#      the deploy failed 95 minutes later on "Ollama did not become ready in
+#      time". This runner is not inside a VPC, so the condition is injected
+#      through the bootstrap's own NYXGPT_VPC_CIDRS override -- without that,
+#      a green run here is structurally blind to the defect (the V-032 class).
+#      Then execute the deploy's own k3s bootstrap for real.
 #   2  Assert the access surface: nothing on 0.0.0.0, no ingress controller,
-#      no LoadBalancer implementation, `local-path` still the default class.
+#      no LoadBalancer implementation, `local-path` still the default class --
+#      and the networks the RUNNING cluster cut, with CoreDNS Available at 0
+#      restarts and no `plugin/loop` in its log.
 #   3  Apply `k8s/` UNCHANGED against the real k3s API server, and prove the
 #      files were not edited to get there (#3506's cluster-flavor-agnostic
 #      premise).
@@ -127,9 +139,54 @@ PY
 log "Bootstrap text (as a --kubernetes deploy sends it):"
 sed 's/^/    | /' "$WORK/k3s-bootstrap.sh"
 
+# --- FAULT INJECTION: the VPC/pod-network collision ------------------------
+# The defect that failed owner acceptance on 2026-08-22 (#3956). k3s's default
+# pod network is 10.42.0.0/16 and the substrate VPC default WAS the same
+# block, so the CNI shadowed the VPC resolver at 10.42.0.2, CoreDNS forwarded
+# to itself, its loop guard killed it, and the deploy failed 95 minutes later
+# on "Ollama did not become ready in time".
+#
+# This runner is not inside a VPC, so the collision cannot arise here on its
+# own -- which is exactly why the merged job was structurally blind to it (the
+# V-032 class). The condition is therefore INJECTED: NYXGPT_VPC_CIDRS is the
+# override the bootstrap reads in place of the IMDS lookup, and the bootstrap
+# must refuse a colliding value outright and install nothing.
+K3S_CLUSTER_CIDR="$(python3 -c 'from nyxgpt import cloud_deploy; print(cloud_deploy.K3S_CLUSTER_CIDR)')"
+K3S_SERVICE_CIDR="$(python3 -c 'from nyxgpt import cloud_deploy; print(cloud_deploy.K3S_SERVICE_CIDR)')"
+log "MEASURED: the shipped k3s networks are $K3S_CLUSTER_CIDR (pods) and $K3S_SERVICE_CIDR (Services)"
+
+for colliding in "$K3S_CLUSTER_CIDR" "$K3S_SERVICE_CIDR" "100.64.0.0/10"; do
+  log "FAULT INJECTION: a VPC on $colliding must be refused"
+  set +e
+  NYXGPT_VPC_CIDRS="$colliding" bash "$WORK/k3s-bootstrap.sh" > "$WORK/refusal.log" 2>&1
+  rc=$?
+  set -e
+  sed 's/^/    | /' "$WORK/refusal.log"
+  [[ $rc -ne 0 ]] \
+    || fail "the bootstrap accepted a VPC network of $colliding -- the cluster it would
+             install has DNS that cannot work, and the deploy fails minutes later on an
+             unrelated readiness timeout (#3956)"
+  grep -q "Refusing to install the cluster" "$WORK/refusal.log" \
+    || fail "the bootstrap exited non-zero on a colliding VPC but did not say why"
+  if command -v k3s >/dev/null 2>&1; then
+    fail "the bootstrap installed k3s despite refusing the network overlap"
+  fi
+done
+log "PASS: an overlapping VPC network is refused, and nothing is installed"
+
 # `set -euo pipefail` and the IMDS fallback are both properties of the text
 # itself, so it is run as-is under bash rather than sourced into this shell.
-bash "$WORK/k3s-bootstrap.sh"
+#
+# NYXGPT_VPC_CIDRS is set to the SUBSTRATE DEFAULT (terraform/aws/variables.tf)
+# rather than left unset: on a real instance IMDS always answers, so the
+# unset path is the runner's fallback and not a deploy's. Setting it proves
+# the shipped pair -- the substrate's VPC and the pinned k3s networks -- passes
+# the guard it now has to pass, which is the combination owner acceptance runs.
+VPC_CIDR="$(awk '/variable "vpc_cidr"/,/^}/' terraform/aws/variables.tf \
+  | awk -F'"' '/default/ {print $2; exit}')"
+[[ -n "$VPC_CIDR" ]] || fail "could not read vpc_cidr's default out of terraform/aws/variables.tf"
+log "MEASURED: the substrate VPC default is $VPC_CIDR"
+NYXGPT_VPC_CIDRS="$VPC_CIDR" bash "$WORK/k3s-bootstrap.sh"
 
 export KUBECONFIG="$HOME/.kube/config"
 [[ -f "$KUBECONFIG" ]] || fail "the bootstrap did not write $KUBECONFIG"
@@ -202,6 +259,69 @@ for unwanted in traefik svclb; do
   fi
 done
 log "PASS: no ingress controller and no LoadBalancer implementation are installed"
+
+# The networks the RUNNING cluster actually cut, not the flags it was asked
+# for: `--cluster-cidr` accepted and silently overridden would read identical
+# in the unit tests and be the same outage (#3956).
+POD_CIDR="$(kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}')"
+log "MEASURED: the node's pod CIDR is ${POD_CIDR:-<unset>}"
+python3 - "$POD_CIDR" "$K3S_CLUSTER_CIDR" <<'PY'
+import ipaddress
+import sys
+
+pod, pinned = sys.argv[1], sys.argv[2]
+assert pod, "the node reports no podCIDR"
+assert ipaddress.ip_network(pinned).supernet_of(ipaddress.ip_network(pod)), (
+    f"the cluster cut its pod network from {pod}, not from the pinned {pinned}"
+)
+print(f"    | PASS: {pod} is inside the pinned {pinned}")
+PY
+
+# kube-dns's ClusterIP is allocated out of --service-cidr, so it is the
+# cheapest live measurement of where the Service network really is.
+DNS_IP="$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')"
+log "MEASURED: the cluster DNS Service address is ${DNS_IP:-<unset>}"
+python3 - "$DNS_IP" "$K3S_SERVICE_CIDR" "$VPC_CIDR" <<'PY'
+import ipaddress
+import sys
+
+dns, pinned, vpc = sys.argv[1], sys.argv[2], sys.argv[3]
+assert dns, "kube-dns has no ClusterIP"
+assert ipaddress.ip_address(dns) in ipaddress.ip_network(pinned), (
+    f"cluster DNS landed on {dns}, outside the pinned Service network {pinned}"
+)
+assert not ipaddress.ip_network(pinned).overlaps(ipaddress.ip_network(vpc)), (
+    f"the Service network {pinned} overlaps the substrate VPC {vpc}"
+)
+print(f"    | PASS: {dns} is inside the pinned {pinned}, which does not overlap the VPC {vpc}")
+PY
+
+# The failure signature itself. On the owner's instance CoreDNS logged
+# `[FATAL] plugin/loop: Loop (10.42.0.2:40206 -> :53) detected for zone "."`
+# and CrashLoopBackOffed 23 times in 95 minutes. Asserting on Ready alone
+# would pass on a Pod that has been killed and restarted twenty times.
+log "Waiting up to 120s for CoreDNS to become Available"
+# The addon deployer applies coredns and local-path independently, so the
+# StorageClass arriving is not proof the Deployment object exists yet;
+# `rollout status` on a missing object fails immediately rather than waiting.
+for _ in $(seq 1 30); do
+  kubectl -n kube-system get deploy coredns >/dev/null 2>&1 && break
+  sleep 2
+done
+kubectl -n kube-system rollout status deploy/coredns --timeout=120s \
+  || fail "CoreDNS never became available -- the exact shape of the #3956 acceptance failure"
+kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide | sed 's/^/    | /'
+COREDNS_RESTARTS="$(kubectl -n kube-system get pods -l k8s-app=kube-dns \
+  -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' \
+  | awk '{ total += $1 } END { print total + 0 }')"
+log "MEASURED: CoreDNS restart count is $COREDNS_RESTARTS"
+[[ "$COREDNS_RESTARTS" -eq 0 ]] \
+  || fail "CoreDNS has restarted $COREDNS_RESTARTS time(s) -- it is Available but not healthy"
+if kubectl -n kube-system logs -l k8s-app=kube-dns --tail=200 2>/dev/null | grep -q "plugin/loop"; then
+  kubectl -n kube-system logs -l k8s-app=kube-dns --tail=50 | sed 's/^/    | /'
+  fail "CoreDNS logged a resolver loop -- its upstream resolves back to itself"
+fi
+log "PASS: CoreDNS is Available with 0 restarts and no resolver loop"
 
 # ---------------------------------------------------------------------------
 step "3/7  k8s/*.yaml applies to k3s UNCHANGED"

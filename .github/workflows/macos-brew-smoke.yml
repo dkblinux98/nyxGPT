@@ -538,6 +538,23 @@ jobs:
             "file://${PWD}/dist/homebrew/dist" --channel rc
           ls -1 dist/homebrew/*.rb
 
+          # #3850 (re-test): the tarball has to *declare* the version it is
+          # named for. rc13 shipped a `nyxgpt-api-3.0.0rc13.tar.gz` whose
+          # vendored pyproject.toml still said `version = "3.0.0"` -- the
+          # release branch's stable number -- so the keg's pip metadata
+          # claimed the stable release and `nyxgpt up` reconciled the stable
+          # channel. Checked here, on the tarball this runner just built, so
+          # a stamping regression is named at the build rather than three
+          # steps later as a confusing version mismatch.
+          DECLARED="$(tar -xzOf "dist/homebrew/dist/nyxgpt-api-${SMOKE_VERSION}.tar.gz" \
+            "nyxgpt-api-${SMOKE_VERSION}/pyproject.toml" \
+            | awk -F'"' '/^version =/{print $2; exit}')"
+          echo "the vendored pyproject.toml declares: ${DECLARED}"
+          test "$DECLARED" = "$SMOKE_VERSION" || {
+            echo "::error::the ${SMOKE_VERSION} tarball declares ${DECLARED}"
+            exit 1
+          }
+
       - name: Create a throwaway local tap
         run: |
           set -euo pipefail
@@ -960,6 +977,69 @@ jobs:
           command -v nyxgpt
           cli_is_operable
 
+      - name: "Prove the candidate keg reports the candidate, and picks the rc channel"
+        # #3850's re-test failure. The CLI-on-PATH fix above held -- the owner
+        # ran `/opt/homebrew/bin/nyxgpt` on an rc13 keg. What it *said* was
+        # `nyxgpt 3.0.0`, and that is the whole defect: an artifact install has
+        # no checkout above the package, so pip metadata is the only thing that
+        # says which channel a keg belongs to. `ops._native_service_version()`
+        # reads it, `ops._remote_tap_formula()` maps a version with no `rc`
+        # marker to the STABLE formula, and so `nyxgpt up` from the candidate
+        # installed the stable 2.1.0 pair beside it and started that -- a 2.1.0
+        # web tier against a 3.0.0-line API, which read as a missing feature.
+        #
+        # The step above proves the command runs; this proves it is the right
+        # build. Both halves are asserted, because either one alone is the
+        # shape of check that already shipped a broken keg twice.
+        env:
+          SMOKE_VERSION: 3.0.0rc0
+        run: |
+          set -euo pipefail
+
+          # One function for the assertion and its negative control -- a
+          # control that re-types the check proves nothing about the check.
+          reported_version_is() {
+            test "$1" = "nyxgpt ${SMOKE_VERSION}"
+          }
+
+          REPORTED="$(nyxgpt --version)"
+          echo "the keg reports: ${REPORTED}"
+
+          # Injected condition: exactly what rc13 printed out of a candidate
+          # keg -- the release line with the rc suffix dropped. The condition
+          # does NOT reproduce naturally here (this checkout's pyproject and
+          # the smoke version share a release line only by coincidence of the
+          # fix), so feed the pre-fix answer in and require a failure.
+          if reported_version_is "nyxgpt ${SMOKE_VERSION%%rc*}"; then
+            echo "::error::the check accepts the stable version out of a candidate keg -- it tests nothing"
+            exit 1
+          fi
+          echo "good: the check rejects the version the pre-fix keg reported"
+
+          reported_version_is "$REPORTED" || {
+            echo "::error::keg is ${SMOKE_VERSION}, but its CLI reports '${REPORTED}'"
+            exit 1
+          }
+
+          # ...and the consequence, at the one function that made the wrong
+          # call. Asserted by running the real routing in the keg's own venv
+          # rather than by running `nyxgpt up`, which would install a second
+          # stack on the runner to observe a decision made before the install.
+          KEG="$(brew --prefix "nyxgpt-api@${SMOKE_VERSION%%rc*}rc")"
+          ROUTE='import sys; from nyxgpt import ops'
+          ROUTE="$ROUTE; print(ops._remote_tap_formula(sys.argv[1], ops._native_service_version()))"
+          for service in nyxgpt-api nyxgpt-web; do
+            FORMULA="$("$KEG/libexec/venv/bin/python3" -c "$ROUTE" "$service")"
+            echo "${service}: a \`nyxgpt up\` from this keg would reconcile ${FORMULA}"
+            case "$FORMULA" in
+              *@*rc) ;;
+              *)
+                echo "::error::a candidate keg routes ${service} to the stable formula '${FORMULA}'"
+                exit 1
+                ;;
+            esac
+          done
+
       - name: Run a no-op CLI subcommand against a machine with no stack
         # `--version` proves the entry point resolves; it does not prove the
         # CLI can do anything once the app code loads. `ops status` reports
@@ -1253,7 +1333,7 @@ jobs:
     # The counterpart-present case (#3860). `keg-install`'s throwaway tap
     # carries no stable formula on purpose, so the only `conflicts_with` shape
     # under test there is the one where the named formula is absent -- benign,
-    # and not the case the owner hit. Both channels are stamped from this
+    # and not the case the owner hit. Both channels are built from this
     # checkout, so this needs no publish and runs on every formula PR.
     if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
     runs-on: macos-15
@@ -1268,7 +1348,7 @@ jobs:
       - name: Install the formula's declared Python dependency
         run: brew install python@3.12
 
-      - name: Stamp both channels from this checkout
+      - name: Build both channels from this checkout
         run: |
           set -euo pipefail
           # A release version on the stable channel (the script's own guardrail
@@ -1278,32 +1358,45 @@ jobs:
           python scripts/build_homebrew_artifacts.py 3.0.0 dist/stable \
             "file://${PWD}/dist/stable/dist"
 
-          # The rc tarball vendors `pyproject.toml` verbatim, so without this
-          # the candidate keg's venv would install a distribution declaring
-          # the STABLE version -- and `nyxgpt.ops._native_service_version`
-          # reads exactly that metadata to decide which channel's formula an
-          # artifact install resolves (`_remote_tap_formula`). A real rc tag
-          # carries the bumped version in pyproject; a keg built from an
-          # unstamped checkout does not, which would make the identity step
-          # below detect "stable" while sitting inside the candidate's own
-          # keg. Stamp it for the rc build only, then put it back so nothing
-          # after this step sees a mutated checkout. Restored from a trap, not
-          # from the next line: under `set -e` a failed rc build would skip an
-          # unguarded restore and leave every later step -- including the log
-          # dumps that would explain the failure -- reading a mutated version.
-          cp pyproject.toml "$RUNNER_TEMP/pyproject.toml.orig"
-          trap 'cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml' EXIT
-          python - <<'PY'
-          import pathlib
-          p = pathlib.Path("pyproject.toml")
-          p.write_text(p.read_text().replace('version = "3.0.0"', 'version = "3.0.0rc0"', 1))
-          PY
-          grep -m1 '^version' pyproject.toml
           python scripts/build_homebrew_artifacts.py 3.0.0rc0 dist/rc \
             "file://${PWD}/dist/rc/dist" --channel rc
-          cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml
-          trap - EXIT
-          grep -m1 '^version' pyproject.toml
+
+          # Each tarball has to DECLARE the version it is named for, because
+          # `nyxgpt.ops._native_service_version` reads exactly that metadata
+          # out of the installed keg to decide which channel's formula an
+          # artifact install resolves (`_remote_tap_formula`) -- and the
+          # identity step below asks each keg, from inside its own venv, which
+          # channel it is in. An rc keg declaring the stable version would make
+          # that step detect "stable" while sitting in the candidate's own keg,
+          # measuring the same channel twice and reading as two.
+          #
+          # The stamp is the BUILDER's since #3850:
+          # `release_tarball._vendor_pyproject` pins the version it was asked
+          # for into the vendored copy, so both builds above declare correctly
+          # no matter what this checkout says, and no step here mutates the
+          # checkout. Until that fix the tarball vendored `pyproject.toml`
+          # as-is, and this step carried a trap-guarded mutation of the
+          # checkout to work around it; the workaround is retired with the
+          # defect it worked around, and what is checked here now is the
+          # builder's own stamp on the two tarballs this runner just built.
+          # `awk` printing nothing fails the comparison, so a tarball with no
+          # version line cannot pass this quietly.
+          declared_version() {
+            tar -xzOf "$1/dist/nyxgpt-api-$2.tar.gz" "nyxgpt-api-$2/pyproject.toml" \
+              | awk -F'"' '/^version =/{print $2; exit}'
+          }
+          for want in 3.0.0:dist/stable 3.0.0rc0:dist/rc; do
+            VERSION="${want%%:*}"
+            DIR="${want##*:}"
+            DECLARED="$(declared_version "$DIR" "$VERSION")"
+            echo "${DIR}: the vendored pyproject.toml declares '${DECLARED}'"
+            test "$DECLARED" = "$VERSION" || {
+              echo "a keg built from this tarball would report '${DECLARED}',"
+              echo "and resolve the channel that version names, not ${VERSION}'s."
+              echo "::error::the ${VERSION} tarball declares '${DECLARED}' (#3850)"
+              exit 1
+            }
+          done
 
           ls -1 dist/stable/*.rb dist/rc/*.rb
 
@@ -1525,7 +1618,8 @@ jobs:
         # measuring nothing).
         #
         # Both directions run, using each keg's own venv python: the candidate
-        # keg's declares 3.0.0rc0 (stamped above) so it detects the candidate
+        # keg's declares 3.0.0rc0 (the builder stamps the tarball it names, and
+        # the build step above asserts it) so it detects the candidate
         # channel, the stable keg's declares 3.0.0 so it detects the stable
         # one. api only, for the same reason the rest of this job is api only.
         run: |
@@ -1917,7 +2011,19 @@ jobs:
           # this is the one that fails if the published formula leaves the CLI
           # unreachable, which is what shipped through rc12.
           command -v nyxgpt || { echo "::error::nyxgpt is not on PATH after brew install"; exit 1; }
-          nyxgpt --version
+          # And it has to report the candidate it IS (#3850, re-test). rc13
+          # answered `nyxgpt 3.0.0` from a `3.0.0rc13` keg, because the tarball
+          # vendored the release branch's pyproject.toml verbatim -- and that
+          # metadata is what `ops._remote_tap_formula` reads to choose a
+          # channel, so `nyxgpt up` installed the stable 2.1.0 pair beside the
+          # candidate and started it. This job installs from the real tap, so
+          # it is the one that would have caught the published keg.
+          REPORTED="$(nyxgpt --version)"
+          echo "the published keg reports: ${REPORTED}"
+          test "$REPORTED" = "nyxgpt ${VERSION}" || {
+            echo "::error::installed ${VERSION} but the CLI reports '${REPORTED}'"
+            exit 1
+          }
           # Documented to always exit 0, so a failure here is the artifact
           # path breaking on a machine with no stack and no checkout.
           nyxgpt ops status

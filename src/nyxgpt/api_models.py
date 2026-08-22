@@ -77,10 +77,11 @@ class ClientErrorReportRequest(BaseModel):
 class SupportTicketRequest(BaseModel):
     """One support ticket, as the web UI's in-app intake collects it (#3811).
 
-    The filer answers these three questions in the chat and nyxGPT files the
-    issue for them -- the version and platform are not asked, because the
-    running install already knows both (`support.environment_summary`) and a
-    user should not have to look either up.
+    The filer answers these three questions on nyxGPT's own intake page
+    (`/support/new`) and nyxGPT files the issue for them -- the version and
+    platform are not asked, because the running install already knows both
+    (`support.environment_summary`) and a user should not have to look
+    either up.
 
     The bounds mirror `nyxgpt.support`'s: the edge refuses an oversized body
     before it becomes a request to GitHub, and `submit_ticket` refuses it
