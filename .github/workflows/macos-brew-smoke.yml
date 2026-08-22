@@ -1178,7 +1178,7 @@ jobs:
     # The counterpart-present case (#3860). `keg-install`'s throwaway tap
     # carries no stable formula on purpose, so the only `conflicts_with` shape
     # under test there is the one where the named formula is absent -- benign,
-    # and not the case the owner hit. Both channels are stamped from this
+    # and not the case the owner hit. Both channels are built from this
     # checkout, so this needs no publish and runs on every formula PR.
     if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
     runs-on: macos-15
@@ -1193,7 +1193,7 @@ jobs:
       - name: Install the formula's declared Python dependency
         run: brew install python@3.12
 
-      - name: Stamp both channels from this checkout
+      - name: Build both channels from this checkout
         run: |
           set -euo pipefail
           # A release version on the stable channel (the script's own guardrail
@@ -1203,32 +1203,45 @@ jobs:
           python scripts/build_homebrew_artifacts.py 3.0.0 dist/stable \
             "file://${PWD}/dist/stable/dist"
 
-          # The rc tarball vendors `pyproject.toml` verbatim, so without this
-          # the candidate keg's venv would install a distribution declaring
-          # the STABLE version -- and `nyxgpt.ops._native_service_version`
-          # reads exactly that metadata to decide which channel's formula an
-          # artifact install resolves (`_remote_tap_formula`). A real rc tag
-          # carries the bumped version in pyproject; a keg built from an
-          # unstamped checkout does not, which would make the identity step
-          # below detect "stable" while sitting inside the candidate's own
-          # keg. Stamp it for the rc build only, then put it back so nothing
-          # after this step sees a mutated checkout. Restored from a trap, not
-          # from the next line: under `set -e` a failed rc build would skip an
-          # unguarded restore and leave every later step -- including the log
-          # dumps that would explain the failure -- reading a mutated version.
-          cp pyproject.toml "$RUNNER_TEMP/pyproject.toml.orig"
-          trap 'cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml' EXIT
-          python - <<'PY'
-          import pathlib
-          p = pathlib.Path("pyproject.toml")
-          p.write_text(p.read_text().replace('version = "3.0.0"', 'version = "3.0.0rc0"', 1))
-          PY
-          grep -m1 '^version' pyproject.toml
           python scripts/build_homebrew_artifacts.py 3.0.0rc0 dist/rc \
             "file://${PWD}/dist/rc/dist" --channel rc
-          cp "$RUNNER_TEMP/pyproject.toml.orig" pyproject.toml
-          trap - EXIT
-          grep -m1 '^version' pyproject.toml
+
+          # Each tarball has to DECLARE the version it is named for, because
+          # `nyxgpt.ops._native_service_version` reads exactly that metadata
+          # out of the installed keg to decide which channel's formula an
+          # artifact install resolves (`_remote_tap_formula`) -- and the
+          # identity step below asks each keg, from inside its own venv, which
+          # channel it is in. An rc keg declaring the stable version would make
+          # that step detect "stable" while sitting in the candidate's own keg,
+          # measuring the same channel twice and reading as two.
+          #
+          # The stamp is the BUILDER's since #3850:
+          # `release_tarball._vendor_pyproject` pins the version it was asked
+          # for into the vendored copy, so both builds above declare correctly
+          # no matter what this checkout says, and no step here mutates the
+          # checkout. Until that fix the tarball vendored `pyproject.toml`
+          # as-is, and this step carried a trap-guarded mutation of the
+          # checkout to work around it; the workaround is retired with the
+          # defect it worked around, and what is checked here now is the
+          # builder's own stamp on the two tarballs this runner just built.
+          # `awk` printing nothing fails the comparison, so a tarball with no
+          # version line cannot pass this quietly.
+          declared_version() {
+            tar -xzOf "$1/dist/nyxgpt-api-$2.tar.gz" "nyxgpt-api-$2/pyproject.toml" \
+              | awk -F'"' '/^version =/{print $2; exit}'
+          }
+          for want in 3.0.0:dist/stable 3.0.0rc0:dist/rc; do
+            VERSION="${want%%:*}"
+            DIR="${want##*:}"
+            DECLARED="$(declared_version "$DIR" "$VERSION")"
+            echo "${DIR}: the vendored pyproject.toml declares '${DECLARED}'"
+            test "$DECLARED" = "$VERSION" || {
+              echo "a keg built from this tarball would report '${DECLARED}',"
+              echo "and resolve the channel that version names, not ${VERSION}'s."
+              echo "::error::the ${VERSION} tarball declares '${DECLARED}' (#3850)"
+              exit 1
+            }
+          done
 
           ls -1 dist/stable/*.rb dist/rc/*.rb
 
@@ -1450,7 +1463,8 @@ jobs:
         # measuring nothing).
         #
         # Both directions run, using each keg's own venv python: the candidate
-        # keg's declares 3.0.0rc0 (stamped above) so it detects the candidate
+        # keg's declares 3.0.0rc0 (the builder stamps the tarball it names, and
+        # the build step above asserts it) so it detects the candidate
         # channel, the stable keg's declares 3.0.0 so it detects the stable
         # one. api only, for the same reason the rest of this job is api only.
         run: |
