@@ -855,19 +855,24 @@ def _run(
     can be hit by one.
     """
     try:
+        # Streaming mode swaps capture_output for an explicit piped stderr
+        # (stdout inherits the terminal, stderr still carries the failure
+        # diagnostic). Built conditionally rather than passing stderr=None in
+        # captured mode, so the default path's call signature is unchanged --
+        # test_run_invokes_subprocess_with_expected_kwargs pins it.
+        output_kwargs: dict[str, Any] = (
+            {"capture_output": False, "stderr": subprocess.PIPE}
+            if stream_stdout
+            else {"capture_output": True}
+        )
         result = subprocess.run(
             bounded_argv(_apply_docker_socket_hop(cmd), timeout),
             check=check,
             text=True,
-            # subprocess.run rejects stdout/stderr alongside capture_output
-            # only when they are non-None, so this pairing is valid in both
-            # modes: captured (stdout+stderr piped) or streaming (stdout
-            # inherits the terminal, stderr piped for the failure diagnostic).
-            capture_output=not stream_stdout,
-            stderr=subprocess.PIPE if stream_stdout else None,
             input=input,
             env=env,
             timeout=timeout,
+            **output_kwargs,
         )
     except subprocess.CalledProcessError as e:
         _log_nonzero_exit(
