@@ -303,39 +303,36 @@ def test_issue_form_url_prefills_environment_and_declares_no_label():
     assert "labels=" not in url
 
 
-def test_issue_form_url_prefills_the_ticket_type_the_filer_chose():
-    """The classification happens in nyxGPT, not on GitHub (#3811)."""
+def test_the_fallback_form_link_carries_no_ticket_type_prefill():
+    """The type is asked once, on the nyxGPT page -- not handed to GitHub.
+
+    The version that failed the #3811 re-test built one link per ticket type
+    with `ticket_type=` prefilled, and the owner's screenshot shows the
+    dropdown arriving as `None` anyway: the answer was collected, thrown
+    away in transit, and asked again. A parameter that is not honoured is
+    not a feature, and the classification now happens where the ticket is
+    actually created.
+    """
     env = {"version": "3.0.0", "platform": "Darwin 24.5.0 (arm64)", "python": "3.11.9"}
-    url = support.issue_form_url(env, "Feature Request")
-    assert "ticket_type=Feature+Request" in url
-    # Still a plain link to GitHub's form: prefilling is the only thing
-    # nyxGPT does. It does not file anything on the user's behalf.
+    url = support.issue_form_url(env)
+    assert "ticket_type" not in url
     assert url.startswith(f"{support.ISSUE_REPO_URL}/issues/new?")
     assert "labels=" not in url
 
 
-def test_an_unknown_ticket_type_is_refused_rather_than_passed_through():
-    """GitHub ignores a prefill matching no option -- silently.
+def test_ticket_type_options_carry_no_link_off_the_product():
+    """The intake page asks the question; nothing about it leaves nyxGPT.
 
-    Passing one through would demote a required question to an unanswered
-    one with nothing anywhere saying why, which is the same failure shape as
-    the label that did not exist (#3810).
+    A `url` here is what the Support menu turned into an anchor to
+    github.com, which is how choosing a ticket type navigated the filer off
+    the product and past its own intake (#3811 re-test). The options are
+    data for a `<select>`, and a link is not part of that.
     """
-    with pytest.raises(ValueError):
-        support.issue_form_url(
-            {"version": "3.0.0", "platform": "Linux", "python": "3.11.9"},
-            "Production Defect",
-        )
-
-
-def test_every_ticket_type_gets_its_own_prefilled_link():
-    env = {"version": "3.0.0", "platform": "Linux 6.1 (x86_64)", "python": "3.11.9"}
-    options = support.ticket_type_options(env)
+    options = support.ticket_type_options()
     assert [option["value"] for option in options] == list(support.TICKET_TYPES)
     for option in options:
         assert option["description"]
-        assert "ticket_type=" in option["url"]
-        assert "version=3.0.0" in option["url"]
+        assert "url" not in option
 
 
 def test_environment_summary_reports_the_running_version():
@@ -378,9 +375,12 @@ def test_context_endpoint_carries_the_issue_link_and_network_caveat():
     # Docs work offline; filing does not, and the UI must be able to say so.
     assert body["requires_network"] is True
     assert "GitHub account" in body["network_note"]
-    # The Support menu builds one filing entry per ticket type from this, so
-    # the filer classifies the ticket before leaving nyxGPT (#3811).
+    # The intake page builds its ticket-type dropdown from this, so the filer
+    # classifies the ticket without leaving nyxGPT (#3811). No entry may
+    # carry a link: the Support menu turned exactly that into an anchor to
+    # github.com, and the filer never reached the product's own intake.
     assert [option["value"] for option in body["ticket_types"]] == list(support.TICKET_TYPES)
+    assert all("url" not in option for option in body["ticket_types"])
 
 
 def test_reading_the_docs_stays_read_only():
