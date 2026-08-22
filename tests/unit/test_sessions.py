@@ -519,19 +519,32 @@ def test_export_includes_all_metadata_fields(tmp_path: Path) -> None:
 
 
 # Helper functions for multiprocessing tests (must be module-level for pickle)
-def _hold_lock_for_duration(file_path: Path, duration: float) -> None:
-    """Helper: hold a lock for specified duration."""
+def _hold_lock_for_duration(file_path: Path, duration: float, acquired=None) -> None:
+    """Helper: hold a lock for specified duration, signalling once it is held.
+
+    `acquired` is a `multiprocessing.Event` the parent waits on instead of
+    sleeping a fixed interval (#3983): macOS spawns rather than forks, so this
+    child re-imports pytest, the test module and all of nyxgpt before it runs
+    at all, and under a full `pytest tests/unit/` that start-up regularly
+    exceeded the half-second the caller used to allow -- the parent then took
+    an uncontended lock and the test failed "DID NOT RAISE TimeoutError" for
+    reasons having nothing to do with locking.
+    """
     import time
 
     with sessions.file_lock(file_path, timeout=10.0):
+        if acquired is not None:
+            acquired.set()
         time.sleep(duration)
 
 
-def _hold_lock_briefly(file_path: Path) -> None:
-    """Helper: hold a lock briefly."""
+def _hold_lock_briefly(file_path: Path, acquired=None) -> None:
+    """Helper: hold a lock briefly, signalling once it is held (see above)."""
     import time
 
     with sessions.file_lock(file_path, timeout=10.0):
+        if acquired is not None:
+            acquired.set()
         time.sleep(0.5)
 
 
@@ -569,18 +582,19 @@ def test_file_lock_acquisition_and_release(tmp_path: Path) -> None:
 def test_file_lock_timeout_when_locked(tmp_path: Path) -> None:
     """Test that file_lock raises TimeoutError when file is already locked."""
     import multiprocessing
-    import time
 
     test_file = tmp_path / "test.lock"
     test_file.touch()
 
     # Start a process that holds the lock for 2 seconds
-    p = multiprocessing.Process(target=_hold_lock_for_duration, args=(test_file, 2.0))
+    acquired = multiprocessing.Event()
+    p = multiprocessing.Process(target=_hold_lock_for_duration, args=(test_file, 2.0, acquired))
     p.start()
 
     try:
-        # Give the process time to acquire the lock
-        time.sleep(0.5)
+        # Wait for the lock to actually be held rather than assuming a fixed
+        # interval is enough for the child to start (#3983).
+        assert acquired.wait(timeout=30), "the lock-holder process never acquired the lock"
 
         # Try to acquire lock with 0.5s timeout (should fail since lock is held)
         with (
@@ -598,18 +612,19 @@ def test_file_lock_timeout_when_locked(tmp_path: Path) -> None:
 def test_file_lock_waits_and_succeeds(tmp_path: Path) -> None:
     """Test that file_lock waits for lock to become available."""
     import multiprocessing
-    import time
 
     test_file = tmp_path / "test.lock"
     test_file.touch()
 
     # Start a process that holds the lock briefly
-    p = multiprocessing.Process(target=_hold_lock_briefly, args=(test_file,))
+    acquired = multiprocessing.Event()
+    p = multiprocessing.Process(target=_hold_lock_briefly, args=(test_file, acquired))
     p.start()
 
     try:
-        # Give the process time to acquire the lock
-        time.sleep(0.2)
+        # Wait for the lock to actually be held -- same race as the test above
+        # (#3983), where the fixed interval was even shorter.
+        assert acquired.wait(timeout=30), "the lock-holder process never acquired the lock"
 
         # Try to acquire lock with 2s timeout (should succeed after waiting)
         with sessions.file_lock(test_file, timeout=2.0) as fd:

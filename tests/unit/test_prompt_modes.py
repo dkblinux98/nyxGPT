@@ -177,14 +177,17 @@ def test_chat_uses_long_mode_for_long_session(
 
     # Mock a session with 12 messages (triggers long mode)
     def fake_load_session(*args, **kwargs):
-        from pathlib import Path
 
         from nyxgpt.sessions import SessionState
 
         state = SessionState(
             name="test-long",
-            session_file=Path("/tmp/test-long.jsonl"),
-            meta_file=Path("/tmp/test-long.meta.json"),
+            # `tmp_path`, not a hardcoded /tmp (#3983): `save_session_messages`
+            # refuses a path outside $HOME or `tempfile.gettempdir()`, and on
+            # macOS that temp dir is the per-user /var/folders/... one -- so
+            # /tmp is outside the allowed data area and the write raised.
+            session_file=tmp_path / "test-long.jsonl",
+            meta_file=tmp_path / "test-long.meta.json",
             messages=[],
             meta={},
         )
@@ -278,14 +281,17 @@ def test_prepare_chat_context_with_adaptive_mode(
 
     # Mock a session with 5 messages (medium mode)
     def fake_load_session(*args, **kwargs):
-        from pathlib import Path
 
         from nyxgpt.sessions import SessionState
 
         state = SessionState(
             name="test-medium",
-            session_file=Path("/tmp/test-medium.jsonl"),
-            meta_file=Path("/tmp/test-medium.meta.json"),
+            # `tmp_path`, not a hardcoded /tmp (#3983): `save_session_messages`
+            # refuses a path outside $HOME or `tempfile.gettempdir()`, and on
+            # macOS that temp dir is the per-user /var/folders/... one -- so
+            # /tmp is outside the allowed data area and the write raised.
+            session_file=tmp_path / "test-medium.jsonl",
+            meta_file=tmp_path / "test-medium.meta.json",
             messages=[],
             meta={},
         )

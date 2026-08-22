@@ -8,14 +8,34 @@ payload, and returns the expected response structure.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from nyxgpt import app as app_module
 from nyxgpt.app import app
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _config_writes_land_in_tmp(monkeypatch, tmp_path):
+    """Point the endpoint's writer at a tmp config.ini (#3983).
+
+    `PATCH /api/v1/config` really writes `~/.nyxGPT/config.ini` -- that is what
+    the endpoint is for. Called with the real path from a unit test, it edited
+    the machine's own operator config (`[logging] level = WARNING`) and, worse
+    for the suite, changed what every test after it read: the session-scoped
+    isolation in tests/conftest.py installs that file once at session start and
+    cannot re-assert it mid-run. These tests are about the response shape, so
+    the write goes somewhere disposable.
+    """
+    target = tmp_path / "config.ini"
+    target.write_text("[logging]\nlevel = INFO\n", encoding="utf-8")
+    monkeypatch.setattr(app_module, "_config_file_path", lambda: Path(target))
+    return target
 
 
 def test_config_patch_endpoint_exists_and_returns_dict():
