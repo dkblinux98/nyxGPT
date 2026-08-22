@@ -111,4 +111,18 @@ describe('ChatPane header stack tier (#3982)', () => {
     await waitFor(() => expect(screen.getByText('v3.0.0')).toBeInTheDocument());
     expect(screen.queryByTestId('version-mismatch-warning')).not.toBeInTheDocument();
   });
+
+  it('does not warn on the stack `docker compose up` produces by default', async () => {
+    // docker-compose.yml defaults NYXGPT_WEB_VERSION to the image tag, so a
+    // stack built from a checkout reports `local` for the web tier and the
+    // package version for the API. Warning here would put a permanent red
+    // badge on every default Compose stack -- a false alarm about two images
+    // from one tree, and the surest way to teach an operator to ignore the
+    // warning on the day it is real.
+    render(<ChatPane sessionName="default" releaseVersion="3.0.0" webVersion="local" />);
+
+    await waitFor(() => expect(screen.getByText('v3.0.0')).toBeInTheDocument());
+    expect(screen.queryByTestId('version-mismatch-warning')).not.toBeInTheDocument();
+    expect(screen.queryByText(/vlocal/)).not.toBeInTheDocument();
+  });
 });

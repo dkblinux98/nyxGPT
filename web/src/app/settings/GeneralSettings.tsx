@@ -189,8 +189,15 @@ export default function GeneralSettings() {
                   fontSize: 13,
                 }}
               >
-                ⚠ {stack.detail}. The two tiers are separate installs; reconcile them
-                with <code>nyxgpt ops install</code>.
+                {/* The remedy is named per substrate rather than as one
+                    command: `nyxgpt ops install` reconciles a native install,
+                    but on Compose or Kubernetes the two tiers are separate
+                    images and the fix is to bring both to the same tag.
+                    Naming only the native command would send a container
+                    operator to run something that does not apply. */}
+                ⚠ {stack.detail}. The two tiers are installed separately. On a native
+                install, reconcile them with <code>nyxgpt ops install</code>; on Compose
+                or Kubernetes, redeploy both tiers from the same release tag.
               </div>
             )}
             <div style={rowStyle}>

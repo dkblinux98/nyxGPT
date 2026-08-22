@@ -420,6 +420,15 @@ machine and used to be an invisible one; the header now names both versions
 and warns when they differ. See
 [configuration.md](configuration.md) for `NYXGPT_WEB_VERSION`.
 
+The "mixed stack" warning is raised only when **both** tiers report a release
+or candidate number (`3.0.0`, `3.0.0rc13`). A tier reporting a build marker
+instead — `local`, which is what Compose defaults the web image tag to, or a
+`.devN` working-tree build — has named its channel, not which build it is, so
+the two cannot be compared and no fault is alleged. Both versions are still
+displayed; only the accusation is withheld. Warning there would put a
+permanent red badge on every default Compose stack, which is the surest way to
+teach an operator to ignore the warning on the day it is real.
+
 ---
 
 ## Models endpoints

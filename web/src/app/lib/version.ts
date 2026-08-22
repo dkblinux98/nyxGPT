@@ -4,11 +4,18 @@
  * The API reports the installed package version (e.g. `3.0.0`); the UI shows
  * it with a leading `v`. Any value that already carries the prefix is left
  * alone, so a tagged version (`v3.0.0`) never renders as `vv3.0.0`.
+ *
+ * The `v` is only ever added to something that *is* a version number. A tier
+ * can legitimately report a non-numeric build marker instead -- Compose
+ * defaults `NYXGPT_WEB_VERSION` to the image tag, which is `local` on a stack
+ * built from a tree -- and rendering that as `vlocal` presents a marker as a
+ * version and reads as corruption. Such a value is passed through verbatim.
  */
 export function formatVersion(version?: string | null): string {
   const trimmed = (version ?? '').trim();
   if (!trimmed) return '';
-  return /^v/i.test(trimmed) ? trimmed : `v${trimmed}`;
+  if (/^v\d/i.test(trimmed)) return trimmed;
+  return /^\d/.test(trimmed) ? `v${trimmed}` : trimmed;
 }
 
 /**
@@ -68,6 +75,18 @@ export function channelLabel(channel: VersionChannel): string {
   }
 }
 
+/**
+ * Whether a channel's version is a number two tiers can be compared on.
+ *
+ * `stable` and `rc` carry a released build number. `dev` carries a marker for
+ * a build nothing published (`local`, `3.0.0.dev1`, `1.2.3+g0ab1`), and
+ * `unknown` carries nothing at all; neither identifies *which* build, so
+ * neither can establish that two tiers differ.
+ */
+function isComparable(channel: VersionChannel): boolean {
+  return channel === 'stable' || channel === 'rc';
+}
+
 export type StackVersions = {
   /** The API process's installed version, from `GET /api/v1/info`. */
   apiVersion?: string | null;
@@ -82,6 +101,13 @@ export type StackVersionSummary = {
   webChannel: VersionChannel;
   /** True when the two tiers are known to be running different versions. */
   mismatch: boolean;
+  /**
+   * True when both tiers reported a version that can be compared with the
+   * other -- i.e. both are a real release or candidate number. False is the
+   * answer for every stack where one side reports a build marker (`local`) or
+   * nothing at all, and it is why `mismatch` stays false there.
+   */
+  comparable: boolean;
   /** The badge for the header: the channel, or `mixed` when the tiers differ. */
   badge: string;
   /** One line naming both versions -- the tooltip and the warning text. */
@@ -98,6 +124,18 @@ export type StackVersionSummary = {
  * never as a mismatch -- claiming a mixed stack on missing data would send
  * an operator chasing a fault that is not there, which is the same class of
  * misdirection in the other direction.
+ *
+ * "Cannot establish" is stricter than "reported nothing" (#3982 review). A
+ * mismatch is claimed only when BOTH tiers report a number that can be
+ * compared with the other -- a release or a candidate. A tier reporting a
+ * dev marker has said which channel it is on, not which build it is: the
+ * default Compose stack sets `NYXGPT_WEB_VERSION` to the image tag `local`
+ * against an API reporting `3.0.0`, and comparing those two strings made
+ * every default `docker compose` stack display a permanent "Mixed stack"
+ * warning about two images built from the same tree. A warning that is
+ * always on is the one an operator learns to scroll past -- which would cost
+ * exactly the incident this function exists for. Such a stack still shows
+ * both versions and both channels; it simply does not allege a fault.
  */
 export function describeStackVersions({
   apiVersion,
@@ -108,10 +146,10 @@ export function describeStackVersions({
   const apiChannel = versionChannel(api);
   const webChannel = versionChannel(web);
 
-  const bothKnown = apiChannel !== 'unknown' && webChannel !== 'unknown';
+  const comparable = isComparable(apiChannel) && isComparable(webChannel);
   // Compare on the normalised strings so `v3.0.0` and `3.0.0` -- the same
   // build described two ways -- are not reported as a mixed stack.
-  const mismatch = bothKnown && formatVersion(api) !== formatVersion(web);
+  const mismatch = comparable && formatVersion(api) !== formatVersion(web);
 
   const detail = mismatch
     ? `Mixed stack: web ${formatVersion(web)} / API ${formatVersion(api)}`
@@ -123,6 +161,7 @@ export function describeStackVersions({
     apiChannel,
     webChannel,
     mismatch,
+    comparable,
     badge: mismatch ? 'mixed' : channelLabel(apiChannel),
     detail,
   };
