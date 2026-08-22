@@ -32,6 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import nyxgpt.app as app_module
+from nyxgpt import restart_state
 from nyxgpt.app import (
     ClientCapabilities,
     _apply_auth_config_updates,
@@ -183,6 +184,83 @@ def test_lifespan_allows_loopback_host_without_auth():
     with TestClient(app) as client:
         resp = client.get("/health")
     assert resp.status_code == 200
+
+
+# ----------------------------
+# lifespan: the completion signal for a restart of `api` itself (#3806)
+#
+# A restart of `api` kills the process that would have reported it finished,
+# so the API process that *comes back* is what retires the pending-restart
+# notice. These tests drive the real lifespan (TestClient's context manager)
+# against an isolated state file.
+# ----------------------------
+
+
+@pytest.fixture
+def _isolated_pending_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(tmp_path / "pending-restart.json"))
+    yield
+    restart_state.reset()
+
+
+def test_lifespan_clears_the_api_pending_restart_it_came_back_from(_isolated_pending_restart):
+    """The owner's #3806 re-test: api restarted fine, notice never cleared.
+
+    The flag was set, the api was restarted, and `/infra/restart-status` kept
+    reporting it because `clear_pending` ran inside the process the restart
+    killed. Starting the API must now retire it -- the process is running the
+    configuration on disk, which is the whole of what the notice was waiting
+    for.
+    """
+    restart_state.mark_pending("api", {"cache.embedding_cache_enabled": "false"})
+    with TestClient(app) as client:
+        assert client.get("/api/v1/infra/restart-status").json()["pending"] == {}
+    assert restart_state.snapshot() == {}
+
+
+def test_lifespan_does_not_clear_another_component(_isolated_pending_restart):
+    """`web`'s restart does not touch this process, so an api start proves nothing about it.
+
+    This is the case that already worked and must not regress: the notice has
+    to survive an API restart it was not waiting for.
+    """
+    restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
+    with TestClient(app) as client:
+        pending = client.get("/api/v1/infra/restart-status").json()["pending"]
+    assert pending["web"]["keys"] == ["auth.api_key"]
+
+
+def test_lifespan_does_not_clear_a_key_marked_after_it_read_its_config(
+    _isolated_pending_restart, monkeypatch
+):
+    """A write that lands mid-startup is left standing rather than assumed applied."""
+    real_load_config = app_module.load_config
+
+    def _load_then_race(*args, **kwargs):
+        cfg = real_load_config(*args, **kwargs)
+        # Someone else writes a restart-required key while this process starts.
+        restart_state.mark_pending("api", {"rag.cassandra_port": "9042"})
+        return cfg
+
+    monkeypatch.setattr(app_module, "load_config", _load_then_race)
+    with TestClient(app) as client:
+        pending = client.get("/api/v1/infra/restart-status").json()["pending"]
+    assert pending["api"]["keys"] == ["rag.cassandra_port"]
+
+
+def test_lifespan_that_refuses_to_start_clears_nothing(_isolated_pending_restart):
+    """A process that never came up has applied nothing -- the notice must stand."""
+    restart_state.mark_pending("api", {"api.port": "8000"})
+    with (
+        patch(
+            "nyxgpt.app.validate_bind_security",
+            return_value="Refusing to start: [api] host = 0.0.0.0 is not loopback-only, ...",
+        ),
+        pytest.raises(RuntimeError, match="Refusing to start"),
+        TestClient(app),
+    ):
+        pass
+    assert "api" in restart_state.snapshot()
 
 
 def test_lifespan_container_runtime_skips_bind_security_check(monkeypatch):
