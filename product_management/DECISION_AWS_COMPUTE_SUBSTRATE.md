@@ -190,3 +190,78 @@ a single-node k3s cluster for canary — no EKS. P6-8, P6-11, and P6-12 may
 now proceed against this substrate, together with the P6-4 private-access
 mechanism approved the same day (#3503: SSH tunnel + owner-IP-scoped
 port-22 security group).
+
+---
+
+## Revision: instance sizing raised to `m5.xlarge` (#3992, 2026-08-22)
+
+**Status:** Amends the sizing example above. The substrate decision itself —
+EC2 single-box, no EKS — is unchanged; only how big that one box is.
+
+### What changed
+
+The shipped default instance type is now **`m5.xlarge`** (4 vCPU / 16 GiB),
+not `m5.large` (2 vCPU / 8 GiB). The `m5.large` figure in option 1's Pros
+above was an illustrative cost example written before anything ran on the
+substrate; it became the Terraform default and the CLI fallback, and no
+measurement ever confirmed it fit.
+
+### Evidence
+
+Owner acceptance of the cloud path on 2026-08-22 (`nyxgpt cloud deploy --dev`,
+EC2 Amazon Linux 2023, all observability profiles on) found the `m5.large`
+instance freezing interactively under ordinary use — SSH banner-exchange
+timeouts, a dead tunnel, an unresponsive web UI — while EC2 status checks
+stayed green. Three distinct triggers reproduced it: a web route compile, a
+plain page navigation, and a RAG document ingest. Each recovery needed a
+reboot, itself ~10 minutes because the wedged OS could not service the ACPI
+request.
+
+The memory census taken on the live instance:
+
+| Consumer | Footprint |
+|---|---|
+| Cassandra JVM (untuned defaults) | ~4.3 GiB (57% of the box) |
+| Next web tier (dev server) | ~1.1 GiB |
+| Observability stack (Grafana, Loki, Prometheus, GlitchTip ×4, Jaeger, otel, promtail) | the bulk of the remainder |
+| Ollama | small resident, spikes under embedding inference |
+
+7.2 of 7.6 GiB was consumed minutes after boot, with no swap provisioned. Any
+real allocation then drove the box into reclaim thrash: interactively dead
+without the OOM killer ever firing (the previous-boot kernel journal recorded
+zero OOM events), which is exactly why the failure was invisible to EC2 status
+checks and left no kill trail to diagnose. An emergency 4 GiB swapfile added
+mid-session immediately absorbed 1.7 GiB and converted the next spike (a
+document ingest at load 17 on 2 vCPUs) from a freeze into a slow-but-alive
+box — the ingest still failed on the embedding call's fixed timeout, CPU-
+starved on 2 vCPUs. Both halves of the shortfall are therefore real: memory
+and cores.
+
+### Decision
+
+Ship `m5.xlarge` as the default. The owner resized the live deployment to it
+(`nyxgpt cloud infra apply --instance-type m5.xlarge`) as the operational fix
+before filing #3992, and chose sizing as the remedy rather than the
+alternatives — Cassandra heap tuning for small instances, swap provisioning in
+the bootstrap, and embedding-timeout retry are all deliberately **not** taken
+here (owner decision, 2026-08-22).
+
+### Cost
+
+Roughly **$140/month** on-demand (~$0.192/hr) versus ~$70/month for
+`m5.large`, plus EBS and the Elastic IP as before. This doubles the compute
+line and is still well under option 2's floor: EKS's ~$73/mo control-plane
+charge is levied *before* any compute, and its idiomatic ≥2-node group would
+sit on top of that. Nothing in the EC2-vs-EKS comparison turns over.
+
+### Existing deployments are not resized
+
+`nyxgpt cloud infra plan`/`apply` persists the resolved settings to
+`~/.nyxGPT/cloud/infra.json`, and `resolve_settings` prefers a remembered
+`instance_type` over the built-in default. An already-provisioned substrate
+therefore keeps its size across a nyxGPT upgrade; taking the new default on an
+existing instance is an explicit `nyxgpt cloud infra apply --instance-type
+m5.xlarge`, which stops, resizes and restarts the instance (root volume and
+Elastic IP preserved). Resizing someone's running deployment as a side effect
+of upgrading would be an unannounced outage, so the default only governs
+substrates that do not exist yet.

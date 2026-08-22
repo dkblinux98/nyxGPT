@@ -81,9 +81,9 @@ variable "egress_cidrs" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the single-box substrate (product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)."
+  description = "EC2 instance type for the single-box substrate (product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md). 4 vCPU / 16 GiB is the floor for the whole stack plus observability -- m5.large froze under ordinary use (#3992)."
   type        = string
-  default     = "m5.large"
+  default     = "m5.xlarge"
 }
 
 variable "root_volume_size" {

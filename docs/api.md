@@ -1606,7 +1606,7 @@ is a rule, not metadata, and an instance cannot see it.
   "provisioned": true,
   "region": "us-east-1",
   "instance_id": "i-0abc123",
-  "instance_type": "m5.large",
+  "instance_type": "m5.xlarge",
   "public_ip": "198.51.100.200",
   "vpc_id": "vpc-0abc",
   "security_group_id": "sg-0abc",

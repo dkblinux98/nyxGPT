@@ -26,7 +26,7 @@ _SETTINGS = {
     "aws_region": "us-east-1",
     "owner_ip_cidr": "198.51.100.7/32",
     "ssh_key_name": "owner-pair",
-    "instance_type": "m5.large",
+    "instance_type": "m5.xlarge",
 }
 
 
