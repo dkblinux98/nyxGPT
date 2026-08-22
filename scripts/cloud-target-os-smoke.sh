@@ -110,10 +110,15 @@ rm -rf "$CLOUD_DIR"
 # AWS call is the availability-zone query, so this run reaches the new code
 # and stops there. That is the assertion -- it stops on *AWS*, not on a policy
 # refusal nyxGPT used to make on principle.
+#
+# `--owner-ip` and `--ssh-public-key` are supplied so the run gets *past* the
+# input resolution that precedes the AWS call: without them it would stop on
+# "no SSH key configured" or on a public-IP echo service being unreachable,
+# and this phase would pass for the wrong reason.
 env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
     -u AWS_PROFILE AWS_EC2_METADATA_DISABLED=true \
     nyxgpt cloud deploy --os macos --version 3.0.0 \
-    --ssh-public-key "$KEY.pub" >"$OUT" 2>&1 && \
+    --ssh-public-key "$KEY.pub" --owner-ip 198.51.100.5 >"$OUT" 2>&1 && \
     fail "deploy --os macos succeeded with no AWS credentials"
 cat "$OUT"
 # The retired refusal (#3995): nyxGPT no longer declines to allocate on
