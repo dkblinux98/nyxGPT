@@ -49,6 +49,14 @@
 # duplicated here -- what this script adds is that the layer comes up *with*
 # the app tier, on one node, in the default install, with nothing left Pending.
 #
+# And since #3990, that the layer RECEIVES what it exists to observe. That gate
+# has to live here rather than in k8s-observability-smoke.yml: telemetry only
+# flows once something produces it, and this is the only job that builds the
+# api and web images and drives a real chat through them. Step 7 asserts the
+# spans from that chat reached Jaeger and that an error raised in the cluster
+# reached GlitchTip -- each half paired with the pre-fix condition (the
+# Pod-local OTLP endpoint, the placeholder Grafana token), which must fail.
+#
 # Prerequisites: Docker, and a `nyxgpt` on PATH (`pip install -e .`). kubectl
 # and kind are installed by `nyxgpt ops install --kubernetes` itself
 # when missing (#3724), so this script does not install them. To reproduce the
@@ -154,7 +162,7 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/9 Bring the stack up: nyxgpt ops install --kubernetes"
+step "1/10 Bring the stack up: nyxgpt ops install --kubernetes"
 # No --skip-observability: this is the command as a user types it (#3826).
 # The layer that flag used to hide is also the one that did not fit the node
 # (#3825), so a gate that installs less than the default cannot see either.
@@ -166,7 +174,7 @@ step "1/9 Bring the stack up: nyxgpt ops install --kubernetes"
 nyxgpt ops install --kubernetes --api-key "$API_KEY"
 ok "install --kubernetes completed with no locality flag"
 
-step "2/9 Every Pod of the default stack was scheduled"
+step "2/10 Every Pod of the default stack was scheduled"
 # #3825: `install` reported success on a node whose memory was 99% reserved,
 # with prometheus left Pending / FailedScheduling for good. Nothing in the
 # steps below would have noticed -- chat worked fine. An unscheduled Pod has
@@ -192,7 +200,7 @@ cannot fit the default stack (size the cluster VM, do not drop observability)"
 fi
 ok "every Pod in the default stack has a node"
 
-step "3/9 The data/LLM tier exists and is Ready"
+step "3/10 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -225,7 +233,7 @@ ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
 # the rollout-status wait above only returned because both were there -- this
 # assertion names which model, so a probe regression fails with the reason.
 
-step "4/9 The observability layer came up with the app tier"
+step "4/10 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -248,19 +256,148 @@ ok "all ten observability workloads are Ready alongside the app tier"
 # step 2 already ruled out the unschedulable case with the node arithmetic
 # printed alongside it (#3826, #3825).
 
-step "5/9 The user path works: sessions list, via the web Service"
+step "5/10 The user path works: sessions list, via the web Service"
 start_port_forward
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "6/9 A real chat round-trip"
+step "6/10 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "7/9 Sessions are shared by every api replica (Cassandra-backed)"
+step "7/10 The observability tier RECEIVES telemetry, not just runs (#3990)"
+# The question step 4 cannot answer. #3990 was an install where all ten
+# observability workloads reported `1/1 ready`, Grafana and Prometheus
+# answered 200, and the tier received NOTHING from the application it exists
+# to observe: the app Pods exported every span to `localhost:4318` -- their own
+# Pods -- and reported no errors at all, while Grafana authenticated to
+# GlitchTip with the placeholder token the manifest ships. Readiness cannot
+# see that (a collector with no clients is as ready as one with a thousand),
+# and neither can manifest review, so this step asks each backend what it has
+# actually RECEIVED, after the chat above has given it something to receive.
+#
+# Each half carries its own fault injection, per the D-006 rule: the pre-fix
+# endpoint and the pre-fix credential are exercised HERE, against this same
+# cluster, and must fail -- otherwise a green line proves nothing.
+
+# 7a. The api's EFFECTIVE config -- what the process is running with, not what
+#     the ConfigMap says -- points at the collector Service.
+# shellcheck disable=SC2016  # $HOME must expand inside the Pod, not out here
+kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- \
+    sh -c 'grep -h "^otlp_endpoint" "${HOME:-/root}/.nyxGPT/config.ini"' \
+    >/tmp/k8s-smoke-otlp.txt ||
+    fail "the api Pod has no [tracing] otlp_endpoint at all -- this is the #3990 regression"
+grep -q "http://otel-collector:4318/v1/traces" /tmp/k8s-smoke-otlp.txt ||
+    fail "the api exports spans to $(cat /tmp/k8s-smoke-otlp.txt) -- not to the in-cluster \
+collector; every span is dropped (#3990)"
+ok "the api Pod exports spans to http://otel-collector:4318/v1/traces"
+
+# 7b. FAULT INJECTION for 7a: prove the endpoint it USED to carry is dead.
+#     Posting an empty OTLP payload from inside the api Pod to both endpoints
+#     shows the collector accepting and the Pod-local default refusing -- so
+#     the assertion above is about a reachable endpoint, not a spelling.
+kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- python -c '
+import httpx
+
+def post(url):
+    try:
+        return str(httpx.post(url, json={"resourceSpans": []}, timeout=5).status_code)
+    except Exception as e:  # connection refused, DNS failure, ...
+        return type(e).__name__
+
+print("collector", post("http://otel-collector:4318/v1/traces"))
+print("pod-local", post("http://localhost:4318/v1/traces"))
+' >/tmp/k8s-smoke-otlp-probe.txt || fail "could not probe the OTLP endpoints from the api Pod"
+cat /tmp/k8s-smoke-otlp-probe.txt
+grep -q "^collector 200$" /tmp/k8s-smoke-otlp-probe.txt ||
+    fail "otel-collector did not accept an OTLP payload from the api Pod"
+if grep -q "^pod-local 200$" /tmp/k8s-smoke-otlp-probe.txt; then
+    fail "something IS listening on the api Pod's own :4318 -- this probe cannot detect \
+the #3990 misdirection and is worthless as a gate"
+fi
+ok "the collector accepts spans and the pre-fix pod-local endpoint refuses them"
+
+# 7c. End to end: Jaeger must now know the nyxGPT services, not only itself.
+#     `{"data":["jaeger-all-in-one"],"total":1}` is the literal payload the
+#     acceptance run captured -- Jaeger's own self-traces, which read in the
+#     UI as "tracing works" while Grafana's trace panels stayed empty.
+services=""
+for _ in $(seq 1 24); do
+    services=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- \
+        wget -q -O - -T 10 http://jaeger:16686/api/services 2>/dev/null || true)
+    case "$services" in *nyxgpt-api*) break ;; esac
+    sleep 5
+done
+echo "jaeger services: $services"
+case "$services" in
+    *nyxgpt-api*) ok "Jaeger holds spans from nyxgpt-api after the chat round-trip" ;;
+    *) fail "Jaeger knows only $services -- the chat above produced no spans the collector \
+ever saw (#3990)" ;;
+esac
+case "$services" in
+    *nyxgpt-web*) ok "Jaeger holds spans from nyxgpt-web (NYXGPT_OTLP_ENDPOINT is wired)" ;;
+    *) fail "Jaeger has no nyxgpt-web spans -- the web Deployment is still tracing to its \
+own Pod (#3990)" ;;
+esac
+
+# 7d. Grafana's GlitchTip credential: provisioned, and accepted. The
+#     placeholder is what produced `401 Unauthorized` on every SRE Home
+#     GlitchTip panel, so it is also this check's fault injection.
+GLITCHTIP_TOKEN=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- \
+    cat /etc/nyxgpt-secrets/glitchtip-grafana-token 2>/dev/null || true)
+[ -n "$GLITCHTIP_TOKEN" ] || fail "Grafana has no GlitchTip token mounted at all"
+[ "$GLITCHTIP_TOKEN" != "UNCONFIGURED-glitchtip-token" ] ||
+    fail "Grafana still holds the placeholder GlitchTip token -- the SRE Home panels will \
+401 (#3990); the install did not provision one"
+kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+    "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
+glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/ >/dev/null" ||
+    fail "GlitchTip rejected the provisioned token -- the SRE Home panels would 401"
+if kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+    'wget -q -O - -T 10 --header="Authorization: Bearer UNCONFIGURED-glitchtip-token" \
+http://glitchtip:8080/api/0/organizations/ >/dev/null' 2>/dev/null; then
+    fail "GlitchTip accepted the PLACEHOLDER token -- this check cannot detect the 401 \
+this issue is about"
+fi
+ok "GlitchTip accepts Grafana's provisioned token and refuses the placeholder"
+
+# 7e. And the errors half end to end: an exception reported inside the cluster
+#     has to reach the in-cluster GlitchTip. The api answers 503 when error
+#     tracking is inactive or has no valid DSN -- i.e. the pre-fix state --
+#     and 202 only once it is really reporting, so this assertion cannot pass
+#     vacuously.
+ERROR_MARKER="k8s-smoke-synthetic-error-$$"
+kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- python -c "
+import sys, httpx
+r = httpx.post(
+    'http://127.0.0.1:8000/api/v1/error-tracking/report',
+    json={'message': '${ERROR_MARKER}'},
+    headers={'X-API-Key': '${API_KEY}'},
+    timeout=30,
+)
+print(r.status_code, r.text[:200])
+sys.exit(0 if r.status_code == 202 else 1)
+" || fail "the api would not report an error (503 means error tracking is inactive or has \
+no valid DSN -- the #3990 state: the api had no [error_tracking] section at all)"
+
+found=""
+for _ in $(seq 1 24); do
+    issues=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+        "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
+glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issues/" \
+        2>/dev/null || true)
+    case "$issues" in *"$ERROR_MARKER"*) found=1; break ;; esac
+    sleep 5
+done
+[ -n "$found" ] ||
+    fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
+resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
+ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
+
+step "8/10 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
 # consecutive requests from one browser see different sessions; the poll below
 # runs enough times to land on every replica. The stable Deployment rests at 1
@@ -282,7 +419,7 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null
 
-step "8/9 Self-heal sees the whole cluster, not just the api pool (#3828)"
+step "9/10 Self-heal sees the whole cluster, not just the api pool (#3828)"
 # Deletes a web Pod for real (the heal action), which is why it runs after the
 # user-path steps and why the tunnel is dropped first -- step 9 reopens it.
 stop_port_forward
@@ -290,7 +427,7 @@ python3 scripts/k8s-self-heal-coverage-smoke.py ||
     fail "self-heal does not cover this deployment -- see the output above (#3828)"
 ok "self-heal names the mode, watches every tier, and heals a non-api Pod"
 
-step "9/9 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "10/10 Fault injection: the pre-#3786 topology must FAIL this same check"
 stop_port_forward
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true

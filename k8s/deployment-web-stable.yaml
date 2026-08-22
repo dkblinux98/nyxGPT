@@ -44,6 +44,26 @@ spec:
                 secretKeyRef:
                   name: nyxgpt-secrets
                   key: api-key
+            # The web tier is a Next.js process: it reads its tracing wiring
+            # from the environment (web/src/instrumentation.ts), NOT from
+            # k8s/configmap.yaml, so the collector rewrite that file makes for
+            # the api has to be repeated here (#3990). Left unset, the default
+            # in that file is `http://localhost:4318/v1/traces` -- which inside
+            # this Pod is this Pod, so every span the web tier produced was
+            # dropped and Jaeger only ever knew about itself.
+            - name: NYXGPT_TRACING_ENABLED
+              value: "true"
+            - name: NYXGPT_OTLP_ENDPOINT
+              value: "http://otel-collector:4318/v1/traces"
+            # Same per-install DSN the api gets, for the errors this tier
+            # reports itself (route handlers and browser reports, see
+            # instrumentation.ts `onRequestError`). Empty until
+            # `nyxgpt ops install --kubernetes` has provisioned GlitchTip.
+            - name: NYXGPT_ERROR_TRACKING_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-secrets
+                  key: error-tracking-dsn
           readinessProbe:
             httpGet:
               path: /

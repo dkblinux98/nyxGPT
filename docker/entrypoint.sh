@@ -25,4 +25,21 @@ if [ -n "${NYXGPT_AUTH_API_KEY:-}" ] && [ -f "$CONFIG_DIR/config.ini" ]; then
     sed -i "s|^api_key[[:space:]]*=.*|api_key = ${NYXGPT_AUTH_API_KEY}|" "$CONFIG_DIR/config.ini"
 fi
 
+# Same treatment for the GlitchTip DSN (#3990). GlitchTip mints a project key
+# per install, so the DSN cannot live in the committed k8s/configmap.yaml the
+# way `[ollama] base_url` does -- the Kubernetes install provisions it into the
+# nyxgpt-secrets Secret (`_k8s_provision_glitchtip`) and it arrives here as an
+# environment variable, while nyxgpt itself reads [error_tracking] dsn from
+# config.ini. Without this the api reported NOTHING to the in-cluster
+# GlitchTip: the section was absent entirely, so error tracking initialised
+# inert and every exception was dropped silently.
+#
+# Empty is a no-op, not an erase: a `--skip-observability` install (and every
+# Compose deploy, which patches config.docker.ini directly instead) leaves the
+# variable unset, and blanking a DSN that config.ini already carries would
+# turn error tracking off behind the operator's back.
+if [ -n "${NYXGPT_ERROR_TRACKING_DSN:-}" ] && [ -f "$CONFIG_DIR/config.ini" ]; then
+    sed -i "s|^dsn[[:space:]]*=.*|dsn = ${NYXGPT_ERROR_TRACKING_DSN}|" "$CONFIG_DIR/config.ini"
+fi
+
 exec uvicorn nyxgpt.app:app --host 0.0.0.0 --port 8000
