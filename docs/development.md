@@ -143,6 +143,34 @@ the working tree. Dropping `--dev` (`nyxgpt up`) reinstalls the same machine
 from artifacts — which is what a release is accepted on. Both are documented
 in [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build).
 
+### One-time git config: the `.secrets.baseline` merge driver
+
+`.secrets.baseline` carries a `generated_at` clock that `detect-secrets`
+rewrites whenever any scanned file's line numbers move. Two branches that both
+touched scanned files therefore conflict on that single line **even when their
+findings are identical** — on 2026-08-22 that produced four identical
+hand-resolutions in one evening of parallel branches, each an opportunity to
+fumble a security-relevant file by hand.
+
+Register the driver once per clone (git worktrees share the clone's config, so
+one registration covers every agent worktree):
+
+```bash
+git config merge.secrets-baseline.name "detect-secrets baseline merge"
+git config merge.secrets-baseline.driver "python3 scripts/git/merge-secrets-baseline.py %O %A %B"
+```
+
+`.gitattributes` maps the file to it. The driver unions both sides' findings
+and keeps the later stamp, and **refuses** — leaving an ordinary conflict for a
+human — if the two sides disagree on `version`, `plugins_used` or
+`filters_used`, since those change what the baseline means. A clone that never
+registers it simply gets the old conflict; nothing degrades.
+
+Not `merge=ours` (silently drops the other branch's new findings) and not
+`merge=union` (concatenates JSON into a file that no longer parses). See
+`scripts/git/merge-secrets-baseline.py` and
+`tests/unit/test_secrets_baseline_merge_driver.py`.
+
 ### Running Tests
 ```bash
 # Unit tests (fast, no dependencies)

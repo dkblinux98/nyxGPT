@@ -65,6 +65,18 @@ type Info = {
   release_version: string | null;
   /** Agent tooling's configured release branch -- not the running version. */
   release_branch?: string | null;
+  /** Which tier `release_version` is: `stable`, `rc`, `dev`, `unknown` (#3982). */
+  release_channel?: string | null;
+  /**
+   * The *web* tier's own running version, stamped into this payload by the
+   * Next.js `/api/info` route rather than reported by the API (#3982). The
+   * two services are installed separately, so one number cannot stand for
+   * both -- a 2.1.0 web build served against a 3.0.0 API and the header said
+   * `v3.0.0`.
+   */
+  web_version?: string | null;
+  /** How `web_version` was established, for the settings About surface. */
+  web_version_source?: string | null;
 };
 
 type SessionsResponse = {
@@ -1608,6 +1620,7 @@ function Home() {
               onSessionUpdated={refreshSessions}
               scrollToMessageIndex={scrollToMessageIndex}
               releaseVersion={info?.release_version}
+              webVersion={info?.web_version}
             />
           </ChunkErrorBoundary>
         </div>

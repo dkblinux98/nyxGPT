@@ -154,7 +154,7 @@ from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
 from nyxgpt.token_counter import count_tokens as _count_usage_tokens
 from nyxgpt.tracing import current_trace_id
-from nyxgpt.version import running_version
+from nyxgpt.version import running_version, version_channel
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -1281,14 +1281,22 @@ def info(request: Request) -> InfoResponse:
     is actually running -- not a configuration value. The agent tooling's
     `[github] RELEASE_BRANCH` setting is reported separately as
     `release_branch` so the two can never be confused (#3716).
+
+    `release_channel` says which tier that version is -- `stable`, `rc`,
+    `dev` or `unknown`. The version string alone cannot be read as a tier by
+    every client independently without them drifting apart, and an operator
+    running acceptance kegs needs the answer to "is this a candidate or a
+    release?" from the same place the version came from (#3982).
     """
     cfg = _req_cfg(request)
+    version_running = running_version()
     return InfoResponse(
         ollama_base_url=get_ollama_base_url(cfg),
         default_model=get_default_model(cfg),
         sessions_dir=str(get_sessions_dir(cfg)),
-        release_version=running_version(),
+        release_version=version_running,
         release_branch=cfg.get("github", "RELEASE_BRANCH", fallback=None),
+        release_channel=version_channel(version_running),
     )
 
 
