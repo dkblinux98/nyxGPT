@@ -18,5 +18,8 @@ owner_ip_cidr = "198.51.100.7/32"
 # ssh_key_name   = "my-existing-pair"
 ssh_public_key = "ssh-ed25519 AAAA... you@workstation"
 
-instance_type    = "m5.large"
+# 4 vCPU / 16 GiB is the sizing floor for the whole stack plus observability;
+# the 2 vCPU / 8 GiB m5.large this used to name froze under ordinary use
+# (#3992, DECISION_AWS_COMPUTE_SUBSTRATE.md).
+instance_type    = "m5.xlarge"
 root_volume_size = 100

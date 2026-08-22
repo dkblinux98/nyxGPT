@@ -2587,7 +2587,7 @@ def cli(argv: list[str] | None = None) -> int:
         )
         parser.add_argument(
             "--instance-type",
-            help="EC2 instance type (default: saved value, then m5.large)",
+            help="EC2 instance type (default: saved value, then m5.xlarge)",
         )
         parser.add_argument(
             "--root-volume-size",

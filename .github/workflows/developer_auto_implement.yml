@@ -2961,6 +2961,17 @@ jobs:
         # The script opens a DRAFT PR (a rescue, not a submission -- this run's
         # checks did not pass) or, when the branch's content is provably
         # already on the release branch, deletes it. It never fails the job.
+        #
+        # NO BRANCH ARGUMENT, deliberately (#3862 round 2). The branch this run
+        # pushed is NOT the branch the workspace is on by the time this step
+        # runs: every `claude-code-action` invocation mints and checks out a
+        # fresh `claude/issue-<n>-<timestamp>`, and one of them -- "Deep
+        # analysis with Claude (Phase 3)" -- runs on the failure path this
+        # backstop exists for. Run 32291977186 ended with the guard reporting
+        # "claude/issue-3956-20260819-2004 never reached origin" while the work
+        # sat unrescued on `claude/issue-3956-20260819-1943`. Passing no branch
+        # makes the script discover them from origin and the workspace's refs
+        # instead; naming one here would re-create the same blind spot.
         if: always()
         continue-on-error: true
         shell: bash
