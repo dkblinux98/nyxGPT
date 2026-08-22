@@ -44,8 +44,13 @@ repos:
         # both. Trading a style error for a warning keeps the security hooks
         # armed, which is the trade that matters.
         #
-        # Every other yamllint rule (syntax, truthy, indentation, ...) still
-        # errors and still blocks -- verified by fault injection, not assumed.
+        # Every yamllint rule that yamllint itself treats as an ERROR (syntax,
+        # indentation, duplicate keys, ...) still errors and still blocks --
+        # verified by fault injection, not assumed. `truthy` is deliberately
+        # NOT in that list: it is a warning in yamllint's own defaults, and
+        # 89 truthy warnings exist repo-wide today, all passing. Listing it
+        # here would be the same class of false claim this comment was just
+        # corrected for.
         args: ['-d', '{extends: default, rules: {line-length: {max: 120, level: warning}, document-start: disable}}']
         types: [yaml]
 
