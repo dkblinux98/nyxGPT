@@ -432,7 +432,7 @@ def get_default_model(cfg: ConfigParser) -> str:
 
     This setting is hot-reloadable via config.ini changes.
     """
-    return cfg.get("nyxgpt", "default_model", fallback="llama3.1:8b").strip()
+    return cfg.get("nyxgpt", "default_model", fallback="qwen3.5:0.8b").strip()
 
 
 def get_ollama_base_url(cfg: ConfigParser) -> str:
