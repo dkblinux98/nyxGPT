@@ -66,3 +66,22 @@ jobs:
 
       - name: terraform test (plan-level)
         run: terraform test
+
+      # The EC2 Mac roots (#3995) are separate root modules inside this same
+      # tree -- `terraform validate` above only loads the substrate's root, so
+      # without these two steps a syntax error or an argument the pinned
+      # provider does not support (which is exactly how `action_after_completion`
+      # was caught: AWS provider 5.x rejects it, so mac-release pins ~> 6.0)
+      # would reach an operator instead of CI. Nothing here needs an AWS
+      # account: `-backend=false` skips state and validate never calls out.
+      - name: terraform validate (EC2 Mac Dedicated Host root)
+        working-directory: terraform/aws/mac
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: terraform validate (deferred host-release root)
+        working-directory: terraform/aws/mac-release
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
