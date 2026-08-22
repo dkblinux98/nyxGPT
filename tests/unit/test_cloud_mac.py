@@ -421,9 +421,15 @@ def test_a_non_mac_type_is_refused_rather_than_asked_of_ec2():
 
 
 def test_the_remembered_substrate_type_is_only_honoured_when_it_names_a_mac(monkeypatch):
-    """`infra.json` remembers `m5.large` for every Linux deploy. Reading it here
-    would ask EC2 for a Dedicated Host of a family that cannot boot macOS."""
-    monkeypatch.setattr(cloud_infra, "load_settings", lambda: {"instance_type": "m5.large"})
+    """`infra.json` remembers the substrate's own type for every Linux deploy.
+    Reading it here would ask EC2 for a Dedicated Host of a family that cannot
+    boot macOS. Pinned to the live default, not a literal, so a change like
+    #3992 (m5.large -> m5.xlarge) cannot leave this asserting the old size."""
+    monkeypatch.setattr(
+        cloud_infra,
+        "load_settings",
+        lambda: {"instance_type": cloud_infra.DEFAULT_INSTANCE_TYPE},
+    )
 
     resolved = cloud_mac.resolve_mac_instance_type(
         _args(mac_instance_type=None, instance_type=None)

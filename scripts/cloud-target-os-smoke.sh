@@ -121,6 +121,15 @@ env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
     --ssh-public-key "$KEY.pub" --owner-ip 198.51.100.5 >"$OUT" 2>&1 && \
     fail "deploy --os macos succeeded with no AWS credentials"
 cat "$OUT"
+# Diagnose the environment before diagnosing the CLI. Without the `[cloud]`
+# extra the run stops on the boto3 requirement *before* the AWS call, and every
+# assertion below would then fail with a message about the CLI's wording when
+# the actual fault is how this smoke's venv was built.
+if grep -qF "boto3 is required" "$OUT"; then
+    fail "the venv running this smoke has no boto3, so the allocation path was
+never reached. Install the wheel with the extra the CLI names:
+    pip install \"\$(ls dist/*.whl)[cloud]\""
+fi
 # The retired refusal (#3995): nyxGPT no longer declines to allocate on
 # principle, so neither its wording nor the workaround it used to offer may
 # come back.

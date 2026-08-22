@@ -28,10 +28,12 @@ name: Cloud Target OS Smoke
 #                          runner would only prove that `dscl` is missing.
 #
 #                          Injects the condition rather than hoping for it
-#                          (#3753's rule). Phase 1 asserts the Mac-with-no-host
-#                          refusal names the Dedicated Host and its 24-hour
-#                          minimum and applied nothing; phase 2 asserts the
-#                          macOS bootstrap arrived, elevated; phase 3 asserts
+#                          (#3753's rule). Phase 1 asserts that `--os macos`
+#                          with no `--host` reaches the allocation path and
+#                          stops on *AWS* (no credentials on the runner) rather
+#                          than on the refusal #3995 retired, and that it
+#                          recorded and billed nothing on the way out; phase 2
+#                          asserts the macOS bootstrap arrived, elevated; phase 3 asserts
 #                          the *Linux* bootstrap arrives over the same path for
 #                          a Linux plan. A deploy still shipping one script
 #                          regardless of --os fails one of those two -- and
@@ -87,13 +89,21 @@ jobs:
       # From the wheel, not `pip install -e .`: the question is what an
       # operator's installed `nyxgpt` puts on the wire, and an editable
       # install answers it from the checkout instead.
+      #
+      # With the `[cloud]` extra, which is the one the allocation path needs:
+      # `cloud deploy --os macos` prices and places the Dedicated Host through
+      # boto3, so a bare wheel stops on "boto3 is required to price and place
+      # an EC2 Mac Dedicated Host" before it ever reaches AWS -- and phase 1's
+      # whole assertion is *where* it stops. Installing the extra is what the
+      # CLI tells the operator to do in that message, so this is the state a
+      # real operator on this path is in, not a convenience for the test.
       - name: Build and install the wheel into a clean venv
         run: |
           python -m pip install --upgrade pip build
           python -m build --wheel
           python -m venv /tmp/cloud-target-os-venv
           /tmp/cloud-target-os-venv/bin/pip install --upgrade pip
-          /tmp/cloud-target-os-venv/bin/pip install dist/*.whl
+          /tmp/cloud-target-os-venv/bin/pip install "$(ls dist/*.whl)[cloud]"
 
       - name: Make sure an sshd is installed
         run: |

@@ -790,8 +790,10 @@ def resolve_mac_instance_type(args: argparse.Namespace) -> str:
     (that flag is already how `--os auto` detects a macOS deploy at all), then
     whatever `~/.nyxGPT/cloud/infra.json` remembers if *it* names a Mac, then
     the cheapest family. The saved value is only honoured when it is a Mac
-    type: `m5.large` is the substrate's default and reading it here would ask
-    EC2 for a Dedicated Host of a family that cannot boot macOS.
+    type: the substrate's default is a general-purpose Linux size
+    (`cloud_infra.DEFAULT_INSTANCE_TYPE`, `m5.xlarge` since #3992) and reading
+    it here would ask EC2 for a Dedicated Host of a family that cannot boot
+    macOS.
     """
     from nyxgpt import cloud_deploy
 

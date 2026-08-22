@@ -1485,6 +1485,9 @@ rather than mechanism, and nothing can enforce them.
   `"ok": false`**, and `ReleaseHosts` answers a still-scrubbing host with
   **HTTP 200 and the host in `Unsuccessful`** — so neither can be detected by
   status code or by a Step Functions `Retry`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed — after the merge with `v3.0.0` gave
+  D-042 to the acceptance-failure standard above. IDs are never reused.
   Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
   `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
 
