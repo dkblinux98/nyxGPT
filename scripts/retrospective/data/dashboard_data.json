@@ -1,40 +1,12 @@
 {
- "generated_at": "2026-08-21T10:20:34.668245+00:00",
+ "generated_at": "2026-08-22T10:26:10.062032+00:00",
  "modules": {
-  "documentation": {
-   "C": 0,
-   "M": 7,
-   "m": 7,
-   "rounds": 4,
-   "issues": 2
-  },
   "cli": {
-   "C": 6,
-   "M": 40,
-   "m": 55,
-   "rounds": 29,
-   "issues": 14
-  },
-  "web-ui": {
-   "C": 0,
-   "M": 10,
-   "m": 15,
-   "rounds": 9,
-   "issues": 8
-  },
-  "api": {
-   "C": 14,
-   "M": 94,
-   "m": 106,
-   "rounds": 49,
-   "issues": 22
-  },
-  "observability": {
    "C": 5,
-   "M": 47,
-   "m": 58,
-   "rounds": 30,
-   "issues": 14
+   "M": 35,
+   "m": 48,
+   "rounds": 25,
+   "issues": 12
   },
   "security": {
    "C": 0,
@@ -43,21 +15,43 @@
    "rounds": 10,
    "issues": 5
   },
+  "api": {
+   "C": 13,
+   "M": 92,
+   "m": 104,
+   "rounds": 47,
+   "issues": 20
+  },
+  "web-ui": {
+   "C": 0,
+   "M": 9,
+   "m": 13,
+   "rounds": 8,
+   "issues": 7
+  },
+  "observability": {
+   "C": 5,
+   "M": 44,
+   "m": 52,
+   "rounds": 28,
+   "issues": 12
+  },
   "testing": {
    "C": 0,
    "M": 1,
    "m": 3,
    "rounds": 1,
    "issues": 1
+  },
+  "documentation": {
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "rounds": 1,
+   "issues": 1
   }
  },
  "days": {
-  "2026-08-14": {
-   "C": 2,
-   "M": 17,
-   "m": 22,
-   "rounds": 12
-  },
   "2026-08-15": {
    "C": 3,
    "M": 26,
@@ -1050,108 +1044,6 @@
    ]
   },
   {
-   "issue": 3752,
-   "pr": 3764,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: README install path fails user-style macOS install - documentation (#3752) (PR #3764)",
-   "module": "documentation",
-   "rounds": 3,
-   "C": 0,
-   "M": 6,
-   "m": 5,
-   "last": "2026-08-14T05:26:57Z",
-   "findings": [
-    [
-     "Medium",
-     "Generated rc install command still omits the trust step"
-    ],
-    [
-     "Medium",
-     "EC2 macOS user-data script taps and installs without trusting"
-    ],
-    [
-     "Minor",
-     "`.github/workflows/macos-brew-smoke.yml:276` (published-tap job) taps + installs without the trust step. CI currently passes (runner Homebrew does not gate yet \u2014 last two runs green), but the job will break when runner images update; a pre-emptive `brew tap-trust \"$TAP\" || true` would future-proof it."
-    ],
-    [
-     "Minor",
-     "`tests/unit/test_portability.py:77` still uses the `dkblinux98/homebrew-nyxgpt` spelling in a checker fixture \u2014 harmless (both spellings resolve to the same tap, and it only exercises the repo-less checker), but aligning it with the canonical name avoids the old spelling lingering as a copy-paste source."
-    ],
-    [
-     "Minor",
-     "References to `dkblinux98/homebrew-nyxgpt` as a *repository* name (`docs/homebrew.md:52,109-111`, `docs/cloud.md:645`, `scripts/retire_rc_formulas.sh:29`, `release-artifacts.yml`) are correct as-is \u2014 that is the repo behind the tap; no change needed. Noted so the next sweep doesn't \"fix\" them."
-    ],
-    [
-     "Medium",
-     "rc publish workflow still hands the owner untrusted macOS acceptance sequences"
-    ],
-    [
-     "Medium",
-     "Acceptance-round note posts the untrusted sequence on the release tracking issue"
-    ],
-    [
-     "Minor",
-     "Web test fixtures now drift from the real API contract: `web/tests/mocks/handlers.ts:474` and `web/tests/app/admin/portability.test.tsx:402` still mock `commands.brew` as the old untrusted string. No runtime bug (the panel renders the string verbatim), but the fixture no longer represents what the API produces; update alongside the Medium fixes so the front-end test keeps testifying to the real contract."
-    ],
-    [
-     "Minor",
-     "`_untrusted_taps`'s line-wise scan cannot flag a one-line `tap && install` chain (see first Medium) \u2014 worth a regression case in `test_the_untrusted_tap_scan_would_catch_a_regression` when fixed."
-    ],
-    [
-     "Medium",
-     "rc publish workflow still hands the owner untrusted macOS acceptance sequences"
-    ],
-    [
-     "Medium",
-     "Acceptance-round note posts the untrusted sequence on the release tracking issue"
-    ]
-   ]
-  },
-  {
-   "issue": 3763,
-   "pr": 3769,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: 2.1.0 homebrew backfill 422s on immutable release - release-artifacts (#3763) (PR #3769)",
-   "module": "cli",
-   "rounds": 3,
-   "C": 0,
-   "M": 4,
-   "m": 4,
-   "last": "2026-08-14T09:29:43Z",
-   "findings": [
-    [
-     "Medium",
-     "Sidecar-reuse path ships formulas whose sha256 cannot match the served assets"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): `docs/systemd.md:83` falsified and left unfixed"
-    ],
-    [
-     "Minor",
-     "`src/nyxgpt/release_tarball.py:223`"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): `src/nyxgpt/portability.py:174` falsified and left unfixed, and it renders on the SRE dashboard"
-    ],
-    [
-     "Minor",
-     "Resolve step swallows API errors when listing assets"
-    ],
-    [
-     "Minor",
-     "Wording nit"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): `src/nyxgpt/portability.py:173-174` falsified and left unfixed (STILL PRESENT from previous review)"
-    ],
-    [
-     "Minor",
-     "Previously reported, still open, still non-blocking: (1) the resolve step's `assets_on()` suppresses API errors (`2>/dev/null || echo \"\"`), so a transient API failure can misclassify a serving sidecar as `SERVED=false` and churn its assets \u2014 suggest the retirement branch re-list without suppression; (2) `docs/portability-matrix.md:69` \"the release's `<version>-homebrew` release\" reads doubled."
-    ]
-   ]
-  },
-  {
    "issue": 3832,
    "pr": 3901,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal infinitely deletes unschedulable Pods (#3832) (PR #3901)",
@@ -1858,172 +1750,6 @@
     [
      "Minor",
      "Seven checks were still in progress at review time (`artifact-install`, `k8s-*` smokes, `linux-native-*`, `session-backend-fault-injection`); all completed green on the previous head and none covers the changed path more directly than the green `config-wizard-save`. Noted for completeness \u2014 the resubmission will get a fresh full run anyway."
-    ]
-   ]
-  },
-  {
-   "issue": 3760,
-   "pr": 3766,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: docker provisioning fails on amazon linux - cloud deploy (#3760) (PR #3766)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 1,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-14T06:37:56Z",
-   "findings": [
-    [
-     "Critical",
-     "`sudo -n docker compose` interpolates `${HOME}` as `/root`, relocating every bind mount"
-    ],
-    [
-     "Medium",
-     "`_run(env=...)`-passed secrets are stripped by the sudo hop, breaking the GlitchTip superuser step"
-    ],
-    [
-     "Minor",
-     "No checksum on the Compose plugin download"
-    ],
-    [
-     "Minor",
-     "Duplicate failing transaction on AL2023"
-    ],
-    [
-     "Minor",
-     "No-root path in `_install_compose_plugin_binary` reports the generic message"
-    ]
-   ]
-  },
-  {
-   "issue": 3761,
-   "pr": 3767,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: node/npm not provisioned for web service - cloud deploy (#3761) (PR #3767)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-14T07:01:35Z",
-   "findings": [
-    [
-     "Medium",
-     "CI security-scan failing \u2014 npm audit: nanoid < 3.3.18 (high)"
-    ],
-    [
-     "Minor",
-     "Fail-fast message can be preempted by `set -euo pipefail`"
-    ],
-    [
-     "Minor",
-     "`curl | sudo -E bash` from nodesource.com"
-    ]
-   ]
-  },
-  {
-   "issue": 3771,
-   "pr": 3772,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: concurrent rc cuts race past the tip-unchanged guard - burned rc7 (#3771) (PR #3772)",
-   "module": "api",
-   "rounds": 1,
-   "C": 1,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-14T10:30:02Z",
-   "findings": [
-    [
-     "Critical",
-     "A queued cut suppresses the running cut, whose spurious \"success\" then permanently claims the unpublished tip"
-    ],
-    [
-     "Medium",
-     "None beyond what the Critical subsumes (its missing-test component is folded into the fix above)."
-    ],
-    [
-     "Minor",
-     "`per_page=30` window now shared with non-success runs"
-    ]
-   ]
-  },
-  {
-   "issue": 3770,
-   "pr": 3773,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: rc smoke per-formula tap trust breaks once stable formulas exist (#3770) (PR #3773)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-14T10:32:10Z",
-   "findings": [
-    [
-     "Medium",
-     "Stale copies of the old `commands.brew` string left in API docs and web test layer (inverse-claims, \u00a71a)"
-    ],
-    [
-     "Minor",
-     "Interactive docs keep the single spelling"
-    ],
-    [
-     "Minor",
-     "Test robustness nit"
-    ]
-   ]
-  },
-  {
-   "issue": 3776,
-   "pr": 3779,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: retro churn-cost metrics - context tokens vs change tokens per issue (#3776) (PR #3779)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 4,
-   "last": "2026-08-14T15:45:54Z",
-   "findings": [
-    [
-     "Medium",
-     "Huddle workflows are listed in `CHURN_WORKFLOWS` but can never produce a round"
-    ],
-    [
-     "Medium",
-     "Three contradictory stories about how the price sheet reaches the dump; two of them can never produce dollars"
-    ],
-    [
-     "Minor",
-     "`retro_template.html` interpolates incident `title`/`summary`/`kind` into `innerHTML` unescaped (churnincidents block). The data is repo-committed and owner-authored, and the rest of the template does the same, so acceptable \u2014 but worth remembering if incident recording ever opens to other writers."
-    ],
-    [
-     "Minor",
-     "`split_tokens` with turn markers but no usage (`tokens: None`, `turns > 0`) reports a \"known\" split of 0/0 with source `no-change`/`turns` rather than `unknown`; the round is still counted in `unknown_token_rounds`, so totals stay honest, but per-issue `unknown_split_rounds` misses it."
-    ],
-    [
-     "Minor",
-     "`split_log_by_steps` segments and `merge_rounds` are keyed by step *name*; two identically-named Claude steps in one job would collide. No current workflow has that, so a comment would suffice."
-    ],
-    [
-     "Minor",
-     "`rollup_issues`: if an issue's first-seen round has `started_at: None`, `first_round_at`/`last_round_at` stay None even when later rounds carry timestamps (guard `entry[key]` is falsy). Cosmetic \u2014 rounds virtually always have timestamps."
-    ]
-   ]
-  },
-  {
-   "issue": 3780,
-   "pr": 3781,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: promotion sweep and drain gate read features parked in Acceptance Failed (#3780) (PR #3781)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-14T21:48:24Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified pre-#3780 claims left in three workflow headers (\u00a71a inverse-claims)"
-    ],
-    [
-     "Minor",
-     "`agents/prompts/scrummaster-agent.prompt.md:17-18` still describes the lane via D-001 only (\"Items held in `Acceptance Failed` are deliberately held state\"). Not falsified \u2014 both populations are deliberate, so the \"never sweep\" instruction stays true \u2014 but the scrummaster runbook was updated to the D-001+D-008 dual wording and the prompt could match. Does not block merge."
     ]
    ]
   },
@@ -2945,42 +2671,6 @@
  ],
  "cleanPRs": [
   {
-   "pr": 3778,
-   "merged": "2026-08-14",
-   "title": "Feature: feat: executed-verification review gate - fixes must run on a real target (#3775)",
-   "module": "api"
-  },
-  {
-   "pr": 3777,
-   "merged": "2026-08-14",
-   "title": "Feature: feat: operating ledger - durable cross-session agent memory in agents/ (#3774)",
-   "module": "api"
-  },
-  {
-   "pr": 3768,
-   "merged": "2026-08-14",
-   "title": "Acceptance Failure: bug: cloud deploy runs install twice and mangles its error output (#3762)",
-   "module": "cli"
-  },
-  {
-   "pr": 3765,
-   "merged": "2026-08-14",
-   "title": "Acceptance Failure: bug: artifact install resolves repo-relative paths - cloud native api service (#3759)",
-   "module": "cli"
-  },
-  {
-   "pr": 3758,
-   "merged": "2026-08-14",
-   "title": "Acceptance Failure: bug: api dist tarball vendors __pycache__ from the checkout - release_tarball (#3757)",
-   "module": "api"
-  },
-  {
-   "pr": 3756,
-   "merged": "2026-08-14",
-   "title": "Acceptance Failure: bug: rc formula install fails at keg venv ensurepip on stock Homebrew macOS (#3753)",
-   "module": "cli"
-  },
-  {
    "pr": 3797,
    "merged": "2026-08-15",
    "title": "Acceptance Failure: bug: acceptance failure 1 for #3509 - Terraform AWS modules - VPC, subnets, secu (#3721)",
@@ -3287,6 +2977,12 @@
    "module": "api"
   },
   {
+   "pr": 3981,
+   "merged": "2026-08-21",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 3980,
    "merged": "2026-08-21",
    "title": "Acceptance Failure: bug: v3.0.0 red - SLACK_CONFLICT_CHANNEL manifest gap, admin coverage (#3979)",
@@ -3300,9 +2996,9 @@
   }
  ],
  "cleanByModule": {
-  "api": 32,
-  "cli": 9,
+  "cli": 6,
   "security": 1,
+  "api": 30,
   "observability": 5,
   "web-ui": 5,
   "documentation": 3,
@@ -3310,14 +3006,14 @@
   "rag": 1
  },
  "totals": {
-  "rounds": 132,
-  "C": 25,
-  "M": 210,
-  "m": 262,
-  "items": 66,
-  "clean": 59,
-  "reviewed": 124,
-  "merged": 133,
+  "rounds": 120,
+  "C": 23,
+  "M": 193,
+  "m": 240,
+  "items": 58,
+  "clean": 54,
+  "reviewed": 111,
+  "merged": 120,
   "unreviewed": 9
  }
 }

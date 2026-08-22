@@ -906,13 +906,20 @@ document.getElementById('themes').innerHTML = TH.top.map(x => `<div class="theme
 /* ---------- last 7 days ---------- */
 const SEV = [["C","crit","Critical"],["M","med","Medium"],["m","minor","Minor"]];
 const t = DATA.totals;
+// Same rule as the divider and the first-pass sentences below: derive the
+// breakdown from the dump rather than restating it by hand. This note read
+// "26 issues + 1 unlinked PR" against a tile showing 66 — a hand-maintained
+// string nobody updated on a refresh, drifting away from the value directly
+// above it (#3808).
+const _linked = (DATA.issues || []).filter(i => i.issue).length;
+const _unlinked = (DATA.issues || []).length - _linked;
 document.getElementById('tiles').innerHTML = [
   {label:'Rejected rounds', value:t.rounds, note:'REQUEST_CHANGES reviews'},
   {label:'Clean passes', value:t.clean, note:`${Math.round(t.clean/t.reviewed*100)}% of ${t.reviewed} reviewed PRs`, dot:'good'},
   {label:'Critical findings', value:t.C, note:'blocking', dot:'crit'},
   {label:'Medium findings', value:t.M, note:'blocking', dot:'med'},
   {label:'Minor findings', value:t.m, note:'non-blocking', dot:'minor'},
-  {label:'Work items hit', value:t.items, note:'26 issues + 1 unlinked PR'},
+  {label:'Work items hit', value:t.items, note:`${_linked} issue-linked · ${_unlinked} unlinked PR${_unlinked===1?'':'s'}`},
 ].map(x => `<div class="tile">
   <div class="label">${x.dot?`<span class="dot ${x.dot}"></span>`:''}${x.label}</div>
   <div class="value">${fmt(x.value)}</div><div class="note">${x.note}</div></div>`).join('');

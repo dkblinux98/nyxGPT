@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-21T10:15:52Z",
+ "generated_at": "2026-08-22T10:17:20Z",
  "repo": "dkblinux98/nyxGPT",
  "issues": {
   "2587": {
@@ -1258,10 +1258,6 @@
    "blocks": [],
    "blocked_by": []
   },
-  "3814": {
-   "blocks": [],
-   "blocked_by": []
-  },
   "3816": {
    "blocks": [],
    "blocked_by": []
@@ -1313,13 +1309,11 @@
   "3834": {
    "blocks": [],
    "blocked_by": [
-    3950
-   ]
-  },
-  "3835": {
-   "blocks": [],
-   "blocked_by": [
-    3950
+    3950,
+    3986,
+    3987,
+    3988,
+    3990
    ]
   },
   "3836": {
@@ -1335,7 +1329,9 @@
     3854,
     3859
    ],
-   "blocked_by": []
+   "blocked_by": [
+    3982
+   ]
   },
   "3854": {
    "blocks": [
@@ -1449,6 +1445,14 @@
     3956
    ]
   },
+  "3835": {
+   "blocks": [],
+   "blocked_by": [
+    3950,
+    3984,
+    3989
+   ]
+  },
   "3956": {
    "blocks": [
     3513,
@@ -1467,6 +1471,56 @@
    "blocked_by": []
   },
   "3979": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3982": {
+   "blocks": [
+    3850
+   ],
+   "blocked_by": []
+  },
+  "3983": {
+   "blocks": [],
+   "blocked_by": []
+  },
+  "3984": {
+   "blocks": [
+    3835
+   ],
+   "blocked_by": []
+  },
+  "3986": {
+   "blocks": [
+    3834
+   ],
+   "blocked_by": []
+  },
+  "3987": {
+   "blocks": [
+    3834
+   ],
+   "blocked_by": []
+  },
+  "3988": {
+   "blocks": [
+    3834
+   ],
+   "blocked_by": []
+  },
+  "3989": {
+   "blocks": [
+    3835
+   ],
+   "blocked_by": []
+  },
+  "3990": {
+   "blocks": [
+    3834
+   ],
+   "blocked_by": []
+  },
+  "3992": {
    "blocks": [],
    "blocked_by": []
   }
