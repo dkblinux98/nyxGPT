@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from shell_suite import bash4_or_skip
 
 pytestmark = pytest.mark.unit
 
@@ -205,7 +206,7 @@ class TestShellHelpers:
     def test_shell_suite_passes(self):
         suite = REPO_ROOT / "tests" / "test_issue_relationships_lib.sh"
         result = subprocess.run(
-            ["bash", str(suite)],
+            [bash4_or_skip(), str(suite)],
             capture_output=True,
             text=True,
             timeout=180,
