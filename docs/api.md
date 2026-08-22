@@ -4684,7 +4684,7 @@ issue in the nyxGPT tracker so the filer never has to visit github.com
 |---|---|---|
 | `/api/v1/support/docs` | GET | Index of the packaged product documentation, grouped |
 | `/api/v1/support/docs/{slug}` | GET | One document rendered to HTML (404 for an unknown slug) |
-| `/api/v1/support/context` | GET | Running version/platform, the prefilled issue-form URL, and `can_submit` |
+| `/api/v1/support/context` | GET | Running version/platform, the ticket types the intake page offers, the fallback issue-form URL, and `can_submit` |
 | `/api/v1/support/tickets` | POST | File a support ticket from this install; returns the created issue |
 
 **`GET /api/v1/support/docs`**

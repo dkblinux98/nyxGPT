@@ -291,6 +291,58 @@ control plane. What is *not* used, and why:
 - **`local-path` stays enabled.** The Cassandra and Ollama StatefulSets bind
   through whatever the cluster's default StorageClass is, and on k3s that is
   `local-path`.
+- **The pod and Service networks are pinned to `100.96.0.0/16` and
+  `100.97.0.0/16`**, off k3s's own defaults, and the deploy **refuses** to
+  install a cluster whose networks overlap the VPC's. See
+  [Why the cluster networks are pinned](#why-the-cluster-networks-are-pinned)
+  below.
+- **CoreDNS forwards to `169.254.169.253`** on an AWS target — the VPC
+  resolver's link-local alias — rather than to whatever the node's
+  `/etc/resolv.conf` holds.
+
+### Why the cluster networks are pinned
+
+k3s defaults to `--cluster-cidr=10.42.0.0/16` for pods and
+`--service-cidr=10.43.0.0/16` for Services. The substrate's VPC defaults to
+`10.42.0.0/16`. Those two were byte-identical, and the result was a cluster
+that could not resolve a name from the moment it started (#3956, found in
+owner acceptance testing 2026-08-22):
+
+1. AWS puts the VPC's DNS resolver at VPC-base + 2 — `10.42.0.2` — and hands
+   it to the instance over DHCP.
+2. k3s starts, and its CNI claims the on-node route for `10.42.0.0/16`,
+   shadowing that resolver. Queries to `10.42.0.2` now land on whatever Pod
+   holds that address.
+3. That Pod is CoreDNS, whose own upstream is the node's resolver — itself.
+   Its loop guard fires (`[FATAL] plugin/loop: Loop … detected for zone "."`)
+   and it CrashLoopBackOffs.
+4. Nothing in the cluster can resolve anything. The visible symptom is three
+   layers away: the Ollama Pod cannot reach the model registry, never becomes
+   Ready, and the deploy reports **"Ollama did not become ready in time"**.
+
+Two things prevent it now, and a third stops it being silent:
+
+- **The pin.** `100.96.0.0/16` and `100.97.0.0/16` are RFC 6598 (carrier-grade
+  NAT) space — outside every RFC 1918 range a VPC is normally cut from. The
+  VPC default is deliberately left alone: changing `vpc_cidr` makes Terraform
+  *replace* the VPC, and with it the subnet, the instance and its root volume.
+- **The refusal.** An operator-chosen `vpc_cidr` can still overlap, so the
+  deploy reads the VPC's own network from instance metadata and refuses to
+  install a cluster on top of an overlap, naming both networks. A cluster
+  already on this instance whose networks overlap is replaced rather than
+  reused — otherwise the "k3s is already here" fast path would leave a
+  permanently DNS-dead cluster in place across every re-deploy.
+- **CoreDNS's upstream.** On AWS it is set to `169.254.169.253`, the same
+  resolver on its link-local alias, which no pod network can shadow. This is
+  a k3s server flag rather than an edit to the CoreDNS ConfigMap on purpose:
+  k3s re-applies its bundled CoreDNS manifest whenever the service restarts,
+  so a patched ConfigMap silently reverts.
+
+The Ollama Pod's model pull is no longer allowed to hide a failure like this
+either: it retries with backoff, and a pull that ultimately fails exits
+non-zero so kubelet records the registry's own error in a
+`FailedPostStartHook` event, instead of the Pod sitting `0/1` forever with the
+reason recorded nowhere.
 
 **How it reuses the workstation path.** The deploy installs k3s, writes a
 kubeconfig the login user owns, and then runs

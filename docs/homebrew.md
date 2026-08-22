@@ -30,9 +30,9 @@ A Homebrew install has no repository checkout, so the documentation you would
 otherwise read from `docs/` ships inside the package instead: once
 `nyxgpt-web` is running, the product documentation is served in the web UI
 under **Support → Docs**, offline and matching the installed version. The same menu's
-**File an Issue** entries report a problem, request a feature or ask a question
-without leaving the app: you answer in nyxGPT, it files the ticket with your
-version and platform attached and links you to it. See [ui.md](ui.md#support-menu).
+**File an Issue** entry reports a problem, requests a feature or asks a
+question without leaving the app: you answer on a nyxGPT page, it files the
+ticket with your version and platform attached, and shows you a link to it. See [ui.md](ui.md#support-menu).
 
 ---
 
