@@ -1417,6 +1417,64 @@ rather than mechanism, and nothing can enforce them.
   `.github/workflows/notify-merge-conflicts.yml`;
   `.github/workflows/slack-huddle-smoke.yml`.
 
+- **D-042** · 2026-08-22 · owner — **An acceptance failure attributable to one
+  issue reopens that issue as the signal, and the rework is a separate issue
+  that blocks it. The machinery does not implement this yet.**
+
+  Owner statement of the current standard, 2026-08-22. Two cases:
+
+  (a) *Attributable to one issue* (the common case). The original issue is
+  **reopened and assigned to the scrummaster** — the reopen is the signal that
+  *this* issue did not pass acceptance, and its last comment says why. A
+  **new** issue is created from that comment and recorded as **blocking** the
+  original. The new issue is what gets worked. The reopened original sits in
+  `Acceptance Failed` until the derived issue reaches `For Release`, at which
+  point the original goes to `For Release`, is assigned to the owner, and is
+  closed.
+
+  (b) *Spanning several issues, or fitting none.* A new issue is filed with
+  **no** relationship — open, assigned to the scrummaster, parked in
+  `Acceptance Failed`. It goes through the process exactly like a brand-new
+  issue. The lane placement is only batching, so rc rounds stay legible.
+
+  **Why both shapes exist, in the owner's words:** a separate issue can be
+  counted as an acceptance failure rather than riding along as a feature with
+  lots of additional work, and counting acceptance failures is useful — but
+  logging the total effort a feature required to reach acceptance on one issue
+  is *also* useful. The split above gets both: the derived issue carries the
+  statistic, the reopened original accumulates the effort trail.
+
+  **This is not what the code does today, and the divergence is the whole
+  reason this entry exists.** `handle_acceptance_failure.yml` creates the
+  derived issue and writes the native blocked-by edge (both halves of (a)
+  already work), but it deliberately leaves the original **closed** — its own
+  header says "The original is never reopened or relabeled". Meanwhile D-008
+  reads an **open** issue in `Acceptance Failed` as *held rework* and the
+  drain gate releases it to `Backlog` for a developer, and
+  `promote_accepted_features.sh` skips open items there as "held rework, not a
+  promotion candidate". So a reopened original is currently dispatched to a
+  developer that has nothing to implement, and can never be promoted. Observed
+  2026-08-22: the gate released #3835 (three open blockers) and #3829 (one)
+  into `Backlog`.
+
+  **The single point of failure is `handle_acceptance_failure.yml` itself.**
+  If it fails, no derived issue is created and no blocking edge is written, so
+  the reopened original sits forever with nothing pointing at it. That is not
+  hypothetical: its run for the owner's 2026-08-22T02:48Z comment on #3829
+  **failed** (run `32547268563`, exit 1) and the report survived only as
+  comment text. Any implementation of this standard has to make that handler
+  fail loudly rather than silently.
+
+  **Revisit when:** the owner says so. This entry records a standard they have
+  changed before and expect to weigh again — the trade between counting
+  acceptance failures and logging whole-feature effort is genuinely two-sided,
+  and "which shape gets the better fix out of the developer agent" is not yet
+  answered. Do not treat it as settled forever; do not re-derive it from the
+  code either, because the code currently disagrees with it.
+  Source: owner statement 2026-08-22 (this session); `CLAUDE.md` §Issue
+  Relationships; D-008; `.github/workflows/handle_acceptance_failure.yml`;
+  `scripts/agents/lib/drain_gate.py`; `scripts/agents/promote_accepted_features.sh`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
