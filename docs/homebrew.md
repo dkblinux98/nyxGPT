@@ -117,6 +117,28 @@ Only source is vendored: gitignored build output (`node_modules`, `.next`,
 `.pyo`) and `.DS_Store` are excluded from every tarball, so a checkout you
 have been developing in produces the same artifact as a fresh one.
 
+### Both taps on one machine
+
+A machine that has tested the published tap alongside the locally built one
+carries `dkblinux98/nyxgpt` **and** `dkblinux98/nyxgpt-local`, and both define
+`nyxgpt-api`/`nyxgpt-web`. Homebrew refuses a bare name in that state rather
+than picking one:
+
+```
+Error: Formulae found in multiple taps:
+         dkblinux98/nyxgpt-local/nyxgpt-api
+         dkblinux98/nyxgpt/nyxgpt-api
+Please use the fully-qualified name to refer to the formula.
+```
+
+So `nyxgpt ops` never names a formula bare (#3861). Install sites always
+passed `<tap>/<formula>`; the lookup and lifecycle calls (`brew list`, `brew
+services start`/`stop`/`restart`) now qualify it too, reading the owning tap
+from the installed keg's own `INSTALL_RECEIPT.json` rather than guessing one.
+Nothing here asks the operator to run brew directly — the qualification
+matters because the wrapped commands are the recovery path, and a wrapped
+command that cannot resolve its own formula is not one.
+
 ---
 
 ## Remote tap

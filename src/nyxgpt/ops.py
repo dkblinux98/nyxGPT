@@ -1551,6 +1551,63 @@ def compose_core_components(mode: DeploymentMode) -> list[str]:
 # --- Restart helpers ---
 
 
+def _brew_cellar() -> Path | None:
+    """Homebrew's Cellar directory, or None when brew is not on PATH."""
+    brew = _which("brew")
+    if brew is None:
+        return None
+    cellar = Path(brew).resolve().parents[1] / "Cellar"
+    return cellar if cellar.is_dir() else None
+
+
+def _brew_formula_spec(name: str) -> str:
+    """`<tap>/<name>` for an installed keg, else `name` unchanged (#3861).
+
+    A bare formula name stops being unambiguous the moment a machine carries
+    two taps that both define it, and every dev machine that has tested the
+    published tap alongside the locally built one is in exactly that state:
+
+        Error: Formulae found in multiple taps:
+                 dkblinux98/nyxgpt-local/nyxgpt-api
+                 dkblinux98/nyxgpt/nyxgpt-api
+        Please use the fully-qualified name to refer to the formula.
+
+    Homebrew refuses the command rather than picking one, so every ops call
+    that names a formula bare -- `brew list --versions`, `brew services
+    start/stop/restart` -- fails there and takes the wrapped flow down with
+    it. The install sites already pass a fully-qualified spec; these lookup
+    and lifecycle sites did not, which is why recovery from a failed install
+    needed raw brew commands.
+
+    Which tap owns the keg is *recorded* by the install, in the keg's
+    `INSTALL_RECEIPT.json` (`source.tap`), so this reads it rather than
+    guessing a preferred tap or spending a `brew info` round-trip on every
+    lookup -- and a guess would be the same class of error as the bare name.
+    Falls back to the bare name when nothing is installed under it (there is
+    no keg to disambiguate, and brew's own error is then the right answer) or
+    when the receipt names no tap.
+    """
+    cellar = _brew_cellar()
+    if cellar is None:
+        return name
+    keg = cellar / name
+    try:
+        receipts = sorted(keg.glob("*/INSTALL_RECEIPT.json"))
+    except OSError:  # pragma: no cover - unreadable Cellar
+        return name
+    for receipt in receipts:
+        try:
+            source = json.loads(receipt.read_text(encoding="utf-8")).get("source") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        tap = source.get("tap") if isinstance(source, dict) else None
+        # `homebrew/core` formulas are never ambiguous and brew spells the
+        # qualified form differently across versions; leave those bare.
+        if isinstance(tap, str) and tap and tap != "homebrew/core":
+            return f"{tap}/{name}"
+    return name
+
+
 def _restart_brew_service(name: str) -> list[OpsResult]:
     """Restart Homebrew service `name` via `brew services restart`.
 
@@ -1560,7 +1617,7 @@ def _restart_brew_service(name: str) -> list[OpsResult]:
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot restart {name}")]
     try:
-        cp = _run(["brew", "services", "restart", name], check=False)
+        cp = _run(["brew", "services", "restart", _brew_formula_spec(name)], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Restarted brew service: {name}")]
         details = _output_excerpt(cp)
@@ -2225,7 +2282,10 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     "already up to date (skipped)"), for the caller to report.
     """
     installed = (
-        _run(["brew", "list", "--versions", name], check=False, expected=True).returncode == 0
+        _run(
+            ["brew", "list", "--versions", _brew_formula_spec(name)], check=False, expected=True
+        ).returncode
+        == 0
     )
     marker = marker_dir / f".{name}.sha256"
     previous_sha256 = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
@@ -2424,7 +2484,7 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
         f"{tap}/nyxgpt-api", "nyxgpt-api", sha256=sha, marker_dir=tap_dir / "dist"
     )
     if decision == "already up to date (skipped reinstall)":
-        _run(["brew", "services", "start", "nyxgpt-api"], check=False)
+        _run(["brew", "services", "start", _brew_formula_spec("nyxgpt-api")], check=False)
         results.append(OpsResult(True, f"nyxgpt-api: {decision}; requested service start", ""))
     else:
         # A new keg was just installed -- restart, not start, so the running
@@ -2493,7 +2553,7 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
         f"{tap}/nyxgpt-web", "nyxgpt-web", sha256=sha, marker_dir=tap_dir / "dist"
     )
     if decision == "already up to date (skipped reinstall)":
-        _run(["brew", "services", "start", "nyxgpt-web"], check=False)
+        _run(["brew", "services", "start", _brew_formula_spec("nyxgpt-web")], check=False)
         results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
     else:
         # A new keg (and new `.next` build output) was just installed --
@@ -11830,7 +11890,7 @@ def _stop_brew_service(name: str) -> list[OpsResult]:
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot stop {name}")]
     try:
-        cp = _run(["brew", "services", "stop", name], check=False)
+        cp = _run(["brew", "services", "stop", _brew_formula_spec(name)], check=False)
     except Exception as e:
         return [
             OpsResult(
@@ -12540,7 +12600,11 @@ def _remove_brew_service_launchd_jobs() -> list[OpsResult]:
     for label in labels:
         formula = label[len(_BREW_SERVICE_LABEL_PREFIX) :]
         if brew is not None:
-            cp = _run(["brew", "services", "stop", formula], check=False, expected=True)
+            cp = _run(
+                ["brew", "services", "stop", _brew_formula_spec(formula)],
+                check=False,
+                expected=True,
+            )
             if cp.returncode == 0:
                 results.append(OpsResult(True, f"Stopped brew service: {formula}"))
         results.extend(_stop_launchagent(label))
@@ -12613,7 +12677,14 @@ def _brew_formula_installed(name: str) -> bool:
     if _which("brew") is None:
         return False
     try:
-        return _run(["brew", "list", "--formula", name], check=False, expected=True).returncode == 0
+        return (
+            _run(
+                ["brew", "list", "--formula", _brew_formula_spec(name)],
+                check=False,
+                expected=True,
+            ).returncode
+            == 0
+        )
     except Exception as e:
         logger.warning("Could not ask brew about %s: %s", name, e, extra={"component": "ops"})
         return False
