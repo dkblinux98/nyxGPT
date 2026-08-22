@@ -26,11 +26,14 @@ permissions:
 #                             the deploy was permanently (and silently) in dev
 #                             mode -- so it keeps testing THIS ref's code.
 #   terraform-artifact-smoke  the default artifact path, run from a wheel
-#                             installed into a venv with no checkout in reach.
-#                             Answers the question the other job structurally
-#                             cannot: can a machine with no repository deploy
-#                             at all? It is the executed evidence for #3835's
-#                             repo-less acceptance criterion.
+#                             installed into a venv with no checkout in reach,
+#                             AT A RELEASE CANDIDATE VERSION (#3985). Answers
+#                             the question the other job structurally cannot:
+#                             can a machine with no repository deploy at all,
+#                             and can it deploy the build acceptance testing
+#                             is actually holding? It is the executed evidence
+#                             for #3835's repo-less acceptance criterion and
+#                             for #3985's rc criterion.
 
 # Scoped to Terraform changes only. Standing up the full `--terraform`
 # stack is expensive, so this must not gate every code review -- it runs only
@@ -38,21 +41,30 @@ permissions:
 # or this workflow changes. Trade-off: it will NOT catch app-code (src/**,
 # web/**), Dockerfile/Compose, or ops.py deploy-logic changes that could break
 # the deploy. Add those globs back here if that broader coverage is wanted.
+#
+# `src/nyxgpt/ops.py` is on the list since #3985: the artifact path's images
+# are now BUILT by ops (from the published source tarballs) rather than pulled
+# from a registry, so a change to that build is a change to what this job
+# deploys. It is the same reason k8s-artifact-smoke.yml carries the glob.
 on:
   pull_request:
     paths:
       - 'terraform/**'
       - 'src/nyxgpt/resources/terraform/**'
+      - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/install_mode.py'
       - 'src/nyxgpt/model_bootstrap.py'
+      - 'src/nyxgpt/release_tarball.py'
       - 'scripts/first-chat-smoke.py'
       - '.github/workflows/terraform-local-smoke.yml'
   push:
     paths:
       - 'terraform/**'
       - 'src/nyxgpt/resources/terraform/**'
+      - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/install_mode.py'
       - 'src/nyxgpt/model_bootstrap.py'
+      - 'src/nyxgpt/release_tarball.py'
       - 'scripts/first-chat-smoke.py'
       - '.github/workflows/terraform-local-smoke.yml'
 
@@ -120,6 +132,56 @@ jobs:
           grep -q "Install mode (terraform): dev" /tmp/status.txt
           grep -q "terraform api: running  \[dev\]" /tmp/status.txt
 
+      # #3984, asserted against the APPLIED STATE rather than the source: the
+      # provider must have built nothing, in the mode where it used to build
+      # the most. Its build streams the context through the daemon's legacy
+      # (pre-BuildKit) endpoint, which on Docker 29.x with the containerd
+      # image store fails deterministically ("archive/tar: invalid tar
+      # header", "unpigz: ... corrupted -- invalid deflate data").
+      #
+      # This runner cannot reproduce THAT failure -- ubuntu-latest runs an
+      # older daemon with the classic image store, where the legacy build
+      # works, which is exactly why this job was green throughout the defect.
+      # So the assertion is the one CI can actually make and that a
+      # regression would break: no `build` block reached the state, and both
+      # images ops built are present. Re-adding `dynamic "build"` fails this
+      # step here and fails test_terraform_stack.py's source-level guard.
+      - name: Terraform itself must have built neither image
+        run: |
+          set -euo pipefail
+          terraform -chdir="$HOME/.nyxGPT/terraform" show -json > /tmp/tfstate.json
+          builds=$(jq '[.values.root_module.resources[]
+                        | select(.type == "docker_image")
+                        | select(.values.build != null and (.values.build | length) > 0)]
+                       | length' /tmp/tfstate.json)
+          echo "  docker_image resources carrying a build block -> ${builds} (expect 0)"
+          [ "$builds" = "0" ] || {
+            echo "::error::the docker provider built an image -- the #3984 regression"
+            jq '.values.root_module.resources[] | select(.type == "docker_image")' /tmp/tfstate.json
+            exit 1
+          }
+          # ...and the images terraform consumed are the ones ops built.
+          docker image inspect nyxgpt-api:local >/dev/null
+          docker image inspect nyxgpt-web:local >/dev/null
+
+      # The other half of #3984's acceptance: staleness is ops' job now, and
+      # a rebuilt tag still has to roll the containers. Touch a fingerprinted
+      # source file, re-install, and require the api container to be a
+      # different container than before.
+      - name: A source change must rebuild and roll the container
+        run: |
+          set -euo pipefail
+          before=$(docker inspect --format '{{.Id}}' nyxgpt-tf-api)
+          echo "# terraform-local-smoke rebuild probe" >> src/nyxgpt/__init__.py
+          nyxgpt ops install --terraform --dev
+          after=$(docker inspect --format '{{.Id}}' nyxgpt-tf-api)
+          echo "  nyxgpt-tf-api ${before:0:12} -> ${after:0:12}"
+          [ "$before" != "$after" ] || {
+            echo "::error::a source change did not roll the api container"
+            exit 1
+          }
+          git checkout -- src/nyxgpt/__init__.py
+
       - name: Verify core + observability are actually serving
         run: |
           set -uo pipefail
@@ -183,14 +245,20 @@ jobs:
         if: always()
         run: nyxgpt ops down --terraform || true
 
-  # Can a machine with NO repository deploy the Terraform stack? (#3835)
+  # Can a machine with NO repository deploy the Terraform stack, at the
+  # version it is actually running? (#3835, #3985)
   #
   # The job above cannot answer that: it installs nyxgpt editable from the
   # checkout, so every repo-relative path it needs happens to exist. Here
   # nyxgpt is a wheel installed into a venv, `REPO_ROOT` resolves inside
   # site-packages, and the install is run from an empty directory -- the
   # Terraform configuration has to come from package data, the api/web images
-  # from a registry, and nothing from a checkout.
+  # from the published source tarballs, and nothing from a checkout.
+  #
+  # The version is stamped as an rc, deliberately: an rc is what acceptance
+  # testing installs, an rc publishes no container image, and the pre-#3985
+  # code silently deployed the previous *stable* release in that case. See the
+  # stamp step below.
   terraform-artifact-smoke:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
@@ -207,14 +275,40 @@ jobs:
         with:
           terraform_version: '1.9.5'
 
-      - name: Build the wheel under test and install it into a clean venv
+      # The version under test is stamped as a RELEASE CANDIDATE before the
+      # wheel is built (#3985, fault injection per CLAUDE.md/#3753). The
+      # branch's declared version is a plain `3.0.0`, and a plain version is
+      # the one case the old code happened to survive -- `ghcr.io/.../
+      # nyxgpt-api:3.0.0` might exist, so the pull could succeed and the job
+      # stay green while the mode was broken for every candidate. An rc is
+      # what the owner actually installs during acceptance, and an rc
+      # publishes NO container image at all (release-artifacts.yml triggers
+      # on `released`; a prerelease fires `prereleased`), so this is the
+      # configuration that failed. Nothing downstream may substitute another
+      # release for it.
+      - name: Stamp an rc version, build the wheel, install it into a clean venv
         run: |
           set -euo pipefail
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          new, n = re.subn(r'^version = "([^"]+)"$', r'version = "\1rc99"', text,
+                           count=1, flags=re.MULTILINE)
+          assert n == 1, "could not stamp the rc version into pyproject.toml"
+          p.write_text(new)
+          PY
           python -m pip install --upgrade pip build
           python -m build --wheel --outdir /tmp/wheel
           mkdir -p /tmp/clean
           python -m venv /tmp/clean/venv
           /tmp/clean/venv/bin/pip install --quiet /tmp/wheel/*.whl
+          RC_VERSION=$(/tmp/clean/venv/bin/python -c \
+            'from nyxgpt import ops; print(ops._native_service_version())')
+          echo "RC_VERSION=${RC_VERSION}" >> "$GITHUB_ENV"
+          case "$RC_VERSION" in *rc99) ;; *)
+            echo "::error::expected an rc version, got ${RC_VERSION}"; exit 1 ;;
+          esac
 
       # Both halves of the "no checkout" claim, before anything is deployed:
       # the wheel must contain the Terraform configuration, and the installed
@@ -234,33 +328,48 @@ jobs:
           print("repo-less:", ops.REPO_ROOT, "| config:", packaged)
           PY
 
-      # The real published-image resolution, against the real registry, from
-      # the repo-less install -- no override. A release candidate has no
-      # images of its own, so this also exercises the reported fallback.
-      - name: Published images must resolve and pull with no checkout
-        working-directory: /tmp/clean
+      # PRE-FIX PATH MUST FAIL (#3985, fault-injection half). The old code
+      # pulled `ghcr.io/<owner>/nyxgpt-api:<version>` and fell back to
+      # `:latest`. Prove the rc image genuinely does not exist, so the green
+      # deploy below cannot be green by having quietly pulled one -- and so a
+      # regression that reintroduces the registry dependency fails here
+      # rather than deploying the wrong release.
+      - name: The rc under test must have no published container image
         run: |
           set -euo pipefail
-          ./venv/bin/python - <<'PY'
-          from nyxgpt import ops
-          images, results = ops._pull_terraform_published_images()
-          for r in results:
-              print(("OK  " if r.ok else "FAIL"), r.message)
-          assert images.get("api") and images.get("web"), results
-          PY
+          ref="ghcr.io/${{ github.repository_owner }}/nyxgpt-api:${RC_VERSION}"
+          if docker manifest inspect "$ref" >/tmp/manifest.txt 2>&1; then
+            echo "::error::${ref} exists -- this job can no longer prove the"
+            echo "::error::artifact path is independent of the registry"
+            exit 1
+          fi
+          echo "  ${ref} -> $(head -1 /tmp/manifest.txt)"
 
-      # The images actually deployed below are built from THIS ref and staged
-      # in the local daemon, exactly as `NYXGPT_ARTIFACT_DIR` stages a tarball
-      # for the native artifact install: the version under test is not
-      # published yet, and deploying last release's images would test last
-      # release. The install path is unchanged -- it consumes ready-made
-      # images and builds nothing.
-      - name: Stage this ref's images as the artifacts under test
+      # The artifacts the install below consumes: the two service source
+      # tarballs a release publishes, built by the same builder the release
+      # publishes with (`release_tarball._create_dist_tarball`) and staged for
+      # `$NYXGPT_ARTIFACT_DIR` -- the supported escape hatch for "this version
+      # is not published yet", exactly as k8s-artifact-smoke.sh stages them.
+      # An rc publishes precisely these, which is the whole reason the
+      # Terraform artifact path builds from them now (#3985).
+      - name: Stage the published-shape source tarballs for the rc under test
         run: |
           set -euo pipefail
-          docker build -t nyxgpt-api:artifact-under-test .
-          docker build -t nyxgpt-web:artifact-under-test \
-            --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 ./web
+          PYTHONPATH="$PWD/src" python - "$RC_VERSION" /tmp/artifacts <<'PY'
+          import sys
+          from pathlib import Path
+
+          from nyxgpt import release_tarball
+
+          version, out = sys.argv[1], Path(sys.argv[2])
+          for name in ("nyxgpt-api", "nyxgpt-web"):
+              print("staged", release_tarball._create_dist_tarball(out, name, version))
+          PY
+          ls /tmp/artifacts/dist
+          # The tarballs are vendored, so the rc stamp has served its purpose:
+          # restore the tracked version before anything else in the job reads
+          # the checkout's pyproject.toml.
+          git checkout -- pyproject.toml
 
       - name: Seed a native config from the tracked example
         run: |
@@ -283,21 +392,48 @@ jobs:
       # --local is passed deliberately here (#3948): it is now a no-op, and
       # this is the executed proof that the flag existing scripts and docs
       # still carry is accepted rather than rejected as unrecognized.
-      - name: nyxgpt ops install --terraform --local (artifact path, no checkout)
+      # No NYXGPT_TF_*_IMAGE override: the real resolution runs. Before #3985
+      # this job DID set them, which is precisely why it never caught the
+      # defect -- the override short-circuited the registry pull the owner's
+      # machine actually took. The only staging is $NYXGPT_ARTIFACT_DIR, the
+      # same escape hatch every other artifact-path smoke uses for a version
+      # that is not published yet.
+      - name: nyxgpt ops install --terraform --local (artifact path, rc, no checkout)
         working-directory: /tmp/clean
         env:
-          NYXGPT_TF_API_IMAGE: nyxgpt-api:artifact-under-test
-          NYXGPT_TF_WEB_IMAGE: nyxgpt-web:artifact-under-test
+          NYXGPT_ARTIFACT_DIR: /tmp/artifacts/dist
         run: /tmp/clean/venv/bin/nyxgpt ops install --terraform --local
 
-      - name: The deployment must report the artifact mode and the images it runs
+      - name: The deployment must run THE RC, and report which build it is
         working-directory: /tmp/clean
         run: |
           set -euo pipefail
           ./venv/bin/nyxgpt ops status | tee /tmp/status.txt
           grep -q "Install mode (terraform): artifact" /tmp/status.txt
-          grep -q "nyxgpt-api:artifact-under-test" /tmp/status.txt
           grep -q "terraform api: running  \[artifact\]" /tmp/status.txt
+          # #3985's acceptance criterion: the running CLI's OWN version, rc
+          # included, named in what status reports.
+          grep -q "nyxgpt-api:artifact-${RC_VERSION}" /tmp/status.txt
+          grep -q "nyxgpt-web:artifact-${RC_VERSION}" /tmp/status.txt
+          # ...and no other release substituted for it, anywhere.
+          if grep -q ":latest" /tmp/status.txt; then
+            echo "::error::a :latest image reached the deployment -- the #3985 regression"
+            exit 1
+          fi
+          # The containers must actually be running those images, not just be
+          # reported as doing so. Compared by image ID, not by name: main.tf
+          # sets `image = docker_image.api.image_id`, so the container records
+          # the digest rather than the tag.
+          for pair in "nyxgpt-tf-api nyxgpt-api" "nyxgpt-tf-web nyxgpt-web"; do
+            set -- $pair
+            running=$(docker inspect --format '{{.Image}}' "$1")
+            want=$(docker image inspect --format '{{.Id}}' "$2:artifact-${RC_VERSION}")
+            echo "  $1 -> ${running:0:19} (want ${want:0:19})"
+            [ "$running" = "$want" ] || {
+              echo "::error::$1 is not running $2:artifact-${RC_VERSION}"
+              exit 1
+            }
+          done
 
       # Fault injection (#3753's template): the runner cannot reach the
       # post-upgrade state of a pre-#3835 deployment naturally -- containers

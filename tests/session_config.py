@@ -33,7 +33,7 @@ TEST_CONFIG_TEXT = """[ollama]
 base_url = http://localhost:11434
 
 [nyxgpt]
-default_model = qwen2.5-coder:latest
+default_model = qwen3.5:0.8b
 # The session tests are about the file backend (the product default); an
 # operator running the Cassandra backend must not turn them into an
 # integration suite against a database this process never started (#3983).
