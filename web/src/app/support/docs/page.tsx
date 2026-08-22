@@ -28,7 +28,6 @@ interface DocumentSection {
 
 interface SupportContext {
   environment: { version: string; platform: string; python: string };
-  issue_form_url: string;
   network_note: string;
 }
 
@@ -117,14 +116,14 @@ export default function SupportDocsIndexPage() {
               Packaged with nyxGPT <strong>{context.environment.version}</strong> — these
               documents match the version you are running and work offline.
             </div>
-            <a
-              href={context.issue_form_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: '#0066cc', textDecoration: 'none' }}
-            >
+            {/* nyxGPT's own intake page, not github.com's compose form
+                (#3811). This link used to leave the app for GitHub, which is
+                the behaviour the owner rejected in acceptance -- the menu
+                entry was fixed and this one, on the page a reader lands on
+                when the docs did not answer their question, was not. */}
+            <Link href="/support/new" style={{ color: '#0066cc', textDecoration: 'none' }}>
               🐛 File an Issue
-            </a>
+            </Link>
             <div style={{ opacity: 0.7, marginTop: 6 }}>{context.network_note}</div>
           </div>
         )}
