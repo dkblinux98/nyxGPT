@@ -512,9 +512,13 @@ PY
     # this tap published. See ../nyxgpt-api.rb's test block for the account.
     assert_predicate bin/"nyxgpt", :exist?
     reported = shell_output("#{bin}/nyxgpt --version")
-    assert_match(/\Anyxgpt \d/, reported)
     # 0.0.0 is nyxgpt.version's "could not be determined" sentinel -- see
     # ../nyxgpt-api.rb.
     refute_match(/\Anyxgpt 0\.0\.0/, reported)
+    # Exactly the keg's own version (#3850, re-test). This is the formula the
+    # owner actually installs, and the one whose rc13 keg reported the stable
+    # 3.0.0 and sent `nyxgpt up` to the wrong channel. See ../nyxgpt-api.rb's
+    # test block for the account.
+    assert_equal "nyxgpt #{version}", reported.strip()
   end
 end
