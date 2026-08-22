@@ -77,7 +77,7 @@ def _validate_ollama_connection(
 # The chat model a fresh install ends up with when Ollama has nothing to pick
 # from -- `nyxgpt ops install` pulls it (#3824). Keep identical to
 # `[nyxgpt] default_model` in example.config.ini.
-SHIPPED_DEFAULT_MODEL = "qwen3:0.6b"
+SHIPPED_DEFAULT_MODEL = "qwen3.5:0.8b"
 
 
 def _select_model(models: list[dict[str, Any]], default: str = SHIPPED_DEFAULT_MODEL) -> str:
