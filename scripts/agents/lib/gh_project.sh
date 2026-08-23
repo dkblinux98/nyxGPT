@@ -1162,9 +1162,19 @@ drain_gate_classify_held() {
       continue
     }
     [[ -n "$payload" ]] || continue
-    blocks="$(blocking_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+    # Same fail-safe as the body read directly above: "one unreadable issue
+    # must not silently open the gate wider than it should" applied only to
+    # the payload, while these two edge reads still answered "no blockers"
+    # on a 5xx (#3999 review).
+    local blocks_raw blocked_by_raw
+    if ! blocks_raw="$(blocking_issues_checked "$issue")" \
+       || ! blocked_by_raw="$(blocked_by_issues_checked "$issue")"; then
+      _warn "drain_gate_classify_held: could not read #${issue}'s dependencies -- leaving it held"
+      continue
+    fi
+    blocks="$(printf '%s' "$blocks_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
     [[ -n "$blocks" ]] || blocks="[]"
-    blocked_by="$(blocked_by_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+    blocked_by="$(printf '%s' "$blocked_by_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
     [[ -n "$blocked_by" ]] || blocked_by="[]"
     # The number comes from the lane list, never from the payload: the
     # classification below has to name issues, and re-deriving it from the
@@ -1241,9 +1251,16 @@ issue_acceptance_role() {
   payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
     --jq '{number, body: (.body // ""), labels: [.labels[]? | if type == "object" then .name else . end]}' 2>/dev/null)" || return 1
   [[ -n "$payload" ]] || return 1
-  blocks="$(blocking_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+  # Fail-safe, matching the payload read above: each of the three roles
+  # authorizes a write, so an unreadable edge must answer "unknown" (return 1)
+  # rather than collapse into one of them. Recoverable in both directions --
+  # the item stays parked and the next poll re-reads it (#3999 review).
+  local blocks_raw blocked_by_raw
+  blocks_raw="$(blocking_issues_checked "$issue")" || return 1
+  blocked_by_raw="$(blocked_by_issues_checked "$issue")" || return 1
+  blocks="$(printf '%s' "$blocks_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
   [[ -n "$blocks" ]] || blocks="[]"
-  blocked_by="$(blocked_by_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+  blocked_by="$(printf '%s' "$blocked_by_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
   [[ -n "$blocked_by" ]] || blocked_by="[]"
   payload="$(jq -c --argjson b "$blocks" --argjson bb "$blocked_by" \
     '. + {blocks: $b, blocked_by: $bb}' <<<"$payload")"
@@ -2548,6 +2565,27 @@ blocked_by_issues() {
   local issue="$1"
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
     --jq '.[].number' 2>/dev/null || true
+}
+
+# The same two reads, but FAILING instead of reporting "no edges" when the API
+# could not be asked (#3999 review). The `2>/dev/null || true` above collapses a
+# 5xx into empty output, and every classifier that reads it then concludes "no
+# blockers" -- which for a reopened original means `work`, released to `Backlog`
+# and dispatched against an issue with nothing to implement. That is the defect
+# #3999 exists to remove, re-created by one transient API error. Callers that
+# make a decision from the answer must use these and treat failure as unknown.
+blocked_by_issues_checked() {
+  local issue="$1" out
+  out="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
+    --jq '.[].number' 2>/dev/null)" || return 1
+  printf '%s' "$out"
+}
+
+blocking_issues_checked() {
+  local issue="$1" out
+  out="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocking" \
+    --jq '.[].number' 2>/dev/null)" || return 1
+  printf '%s' "$out"
 }
 
 # Issue numbers among `issue`'s blocked_by dependencies that are still open

@@ -340,17 +340,56 @@ _assert_contains "and the acknowledgement says so" "$(cat "$TMP/gh_output")" "re
 # =====================================================================
 # Case 5: both handlers carry a loud failure path
 # =====================================================================
-# Static, deliberately: the step only runs `if: failure()`, so the thing
-# worth pinning is that it exists, fires on failure, and reaches the owner
-# on the #3695 DM channel rather than only a red run nobody watches.
+# EXECUTED, not grepped (#3999 review). Substring checks on the YAML pass with
+# a typo'd function name, an unset variable under `set -u`, or a broken
+# heredoc -- and this step runs ONLY on failure, so it rots invisibly. That is
+# the D-040 class: something must execute the loud path, or the feature is
+# unverified by construction. The step body is extracted and run against
+# shimmed writers.
 for wf in handle_acceptance_failure handle_improvement; do
   wf_text="$(cat "$ROOT_DIR/.github/workflows/${wf}.yml")"
-  _assert_contains "${wf}: has a failure-triggered alert step" "$wf_text" "if: failure()"
-  _assert_contains "${wf}: the alert uses the #3695 owner DM path" \
-    "$wf_text" "notify_human_escalation"
-  _assert_contains "${wf}: the alert names the reporting comment" "$wf_text" "COMMENT_URL"
-  _assert_contains "${wf}: the alert names the failing run" "$wf_text" "RUN_URL"
+  _assert_contains "${wf}: the alert step is failure-triggered" "$wf_text" "if: failure()"
   _assert_contains "${wf}: the job can reach Slack" "$wf_text" "SLACK_BOT_TOKEN"
+
+  python3 "$TMP/extract.py" ".github/workflows/${wf}.yml" \
+    "Alert the owner if the handler failed" > "$TMP/alert.sh"
+  : >"$TMP/alert.log"
+
+  # The step sources the fixture's shimmed library itself, so the writers have
+  # to be overridden INSIDE that shim -- defining them beforehand is undone by
+  # the step's own `source`. Appended (case 5 is last, and each iteration
+  # rewrites the tail) rather than forking a second fixture repo.
+  cp "$TMP/repo/scripts/agents/lib/gh_project.sh" "$TMP/shim.bak"
+  cat >> "$TMP/repo/scripts/agents/lib/gh_project.sh" <<SHIM
+issue_comment() { echo "COMMENT|\$1|\$2" >> "$TMP/alert.log"; }
+notify_human_escalation() { echo "ESCALATE|\$1|\$2|\$3|\$4" >> "$TMP/alert.log"; }
+SHIM
+
+  ( cd "$TMP/repo" || exit 1
+    RUNNER_TEMP="$TMP" \
+    COMMENT_URL="https://example.test/comment/1" \
+    RUN_URL="https://example.test/run/9" \
+    COMMENTED="4242" \
+    COMMENTED_INPUT="4242" \
+    bash "$TMP/alert.sh" >/dev/null 2>&1 )
+  alert_rc=$?
+  cp "$TMP/shim.bak" "$TMP/repo/scripts/agents/lib/gh_project.sh"
+
+  _assert_eq "${wf}: the alert step runs to completion" "0" "$alert_rc"
+
+  alert_log="$(cat "$TMP/alert.log" 2>/dev/null || true)"
+  _assert_contains "${wf}: it comments on the reporting issue" "$alert_log" "COMMENT|4242|"
+  _assert_contains "${wf}: it escalates to the owner" "$alert_log" "ESCALATE|4242|"
+  _assert_contains "${wf}: the alert carries the failing run URL" \
+    "$alert_log" "https://example.test/run/9"
+  _assert_contains "${wf}: the alert carries the reporting comment URL" \
+    "$alert_log" "https://example.test/comment/1"
+
+  # Order matters: the comment is the durable record and must land even if the
+  # Slack hop is unwired, so it cannot be sequenced behind the escalation.
+  first_action="$(head -1 "$TMP/alert.log" 2>/dev/null | cut -d'|' -f1)"
+  _assert_eq "${wf}: the comment is written before the escalation" \
+    "COMMENT" "$first_action"
 done
 
 if [[ "$FAILURES" -eq 0 ]]; then

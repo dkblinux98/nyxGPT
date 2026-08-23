@@ -216,10 +216,24 @@ jobs:
           # write handle_acceptance_failure.yml makes. Nothing is written to
           # the body or to a comment. Best-effort; promote_accepted_features.sh
           # heals a missing link on its next sweep.
+          # Precondition for the reopen below, not a nice-to-have: a reopened
+          # original with no blocked_by edge is classified `work` forever and
+          # dispatched against an issue with nothing to implement. And it does
+          # not heal itself -- the sweep's heal loop only reaches candidates it
+          # can already resolve from a native edge or the retired prose marker,
+          # and this derived issue writes no marker (#3999 review). Same fix as
+          # handle_acceptance_failure.yml: the two commands differ only in label
+          # and copy, and a fix applied to one and not the other is how they
+          # diverge.
+          EDGE_OK=1
           if mark_issue_blocked_by "$FEATURE" "$NEW"; then
             echo "Marked #$NEW as blocking #$FEATURE"
           else
-            echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
+            EDGE_OK=0
+            echo "[warn] Could not mark #$NEW as blocking #$FEATURE."
+            echo "[warn] NOT reopening #$FEATURE: without that edge the gate would"
+            echo "[warn] classify it as work and dispatch it. The improvement is"
+            echo "[warn] recorded on #$NEW; re-issue the command when the API is healthy."
           fi
 
           if [[ "$GATED" == "1" ]]; then
@@ -240,10 +254,12 @@ jobs:
           # issue THAT one blocks -- reopening that would be reopening
           # something the owner never marked.
           REOPENED=0
-          if [[ -z "$RELATED" ]]; then
+          if [[ -z "$RELATED" && "$EDGE_OK" == "1" ]]; then
             acceptance_reopen_original "$FEATURE" "$NEW"
             echo "Reopened #$FEATURE as the acceptance signal (D-042)"
             REOPENED=1
+          elif [[ -z "$RELATED" ]]; then
+            echo "Skipped the reopen of #$FEATURE -- see the edge warning above."
           fi
 
           {

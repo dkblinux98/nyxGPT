@@ -232,8 +232,11 @@ jobs:
           fi
 
           # --- Path A: a unique failure against a feature/doc/release/
-          # improvement issue -> file a NEW related failure issue. The
-          # original is untouched.
+          # improvement issue -> file a NEW related failure issue AND reopen
+          # the original into the lane, so the thing that failed is visible
+          # beside its rework (#3999). The original was untouched before that
+          # change; the `acceptance_reopen_original` call below is what altered
+          # it, and this comment said otherwise.
           FEATURE="$COMMENTED"
           FEATURE_TITLE="$(echo "$issue_json" | jq -r '.title')"
 
@@ -321,10 +324,24 @@ jobs:
           # it out of For Release. Transitive blocking is not written as
           # extra edges — promote/drain logic walks the chain instead.
           # Best-effort; the promotion sweep heals missing links.
+          # The edge is a PRECONDITION for the reopen below, not a nice-to-have:
+          # a reopened original with no blocked_by edge is classified `work`
+          # forever and dispatched against an issue with nothing to implement --
+          # the exact defect #3999 removes, made durable (#3999 review).
+          #
+          # And it does not heal itself. The old "promotion sweep will retry"
+          # was wrong for post-#3731 issues: the sweep's heal loop only reaches
+          # candidates it can already resolve from a native edge or the retired
+          # prose marker, and the derived issue deliberately writes no marker.
+          EDGE_OK=1
           if mark_issue_blocked_by "$FEATURE" "$NEW"; then
             echo "Marked #$NEW as blocking #$FEATURE"
           else
-            echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
+            EDGE_OK=0
+            echo "[warn] Could not mark #$NEW as blocking #$FEATURE."
+            echo "[warn] NOT reopening #$FEATURE: without that edge the gate would"
+            echo "[warn] classify it as work and dispatch it. The failure is recorded"
+            echo "[warn] on #$NEW; re-issue the command once the API is healthy."
           fi
 
           # Only the new issue enters the rework cycle. Under the drain
@@ -348,8 +365,12 @@ jobs:
           # Nothing is dispatched against the original; the gate leaves it
           # parked because `acceptance_role` says it is not rework, which is
           # the same call this Path A branch already made.
-          acceptance_reopen_original "$FEATURE" "$NEW"
-          echo "Reopened #$FEATURE as the acceptance-failure signal (D-042)"
+          if [[ "$EDGE_OK" == "1" ]]; then
+            acceptance_reopen_original "$FEATURE" "$NEW"
+            echo "Reopened #$FEATURE as the acceptance-failure signal (D-042)"
+          else
+            echo "Skipped the reopen of #$FEATURE -- see the edge warning above."
+          fi
 
           {
             echo "mode=filed"
