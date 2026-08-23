@@ -737,9 +737,13 @@ The *services* the deploy leaves behind are the third case, and the one that
 reopened #3812. `systemd --user` starts them from a manager whose credentials
 predate the group change, so the API process could not query Docker at all and
 the dashboard reported every observability component as undetermined —
-honestly, but permanently. The watchdog now retries a denied Docker call
-through `sg docker` for the same reason the deploy script does; see [The
-`docker` group hop](self-healing.md#the-docker-group-hop-making-the-probe-run-not-just-report).
+honestly, but permanently. Every Docker call the API process makes now retries
+through `sg docker` for the same reason the deploy script does — the watchdog's
+Compose survey and, since #4022, the container reads behind the Infrastructure
+page's Native and Terraform cards, which until then rendered the same denial as
+a flat `absent` and reported a running Cassandra as gone. Both go through one
+shared implementation; see [The `docker` group
+hop](self-healing.md#the-docker-group-hop-making-the-probe-run-not-just-report).
 
 ### From the dashboard: information only (#3804)
 
