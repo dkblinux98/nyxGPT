@@ -567,7 +567,7 @@ def _prepare_chat_context(
     base_url = _get_str(cfg, "ollama", "base_url", "http://127.0.0.1:11434")
     default_model = _get_str(cfg, "nyxgpt", "default_model", "llama3.1:8b")
     chosen_model = model or default_model
-    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", 180)
+    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", 300)
 
     # Load session messages
     state = load_session(session, cfg, sessions_dir_override=sessions_dir)
