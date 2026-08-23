@@ -41,15 +41,32 @@ Run **integration tests only**:
 pytest -m integration
 ```
 
+## What a pytest run may touch
+
+**Nothing of yours.** The suite gives itself a private `$HOME` in a fresh temp
+directory before any `nyxgpt` module is imported (`tests/home_sandbox.py`,
+#4020), seeded with its own `config.ini`. Your real `~/.nyxGPT` — config,
+secrets, sessions, install-mode markers, Terraform state, logs — is not
+reachable from a test, so there is nothing to back up before running and
+nothing to repair if a run is interrupted.
+
+Until #4020 this was not true: the suite wrote its config into the real
+`~/.nyxGPT/config.ini` and restored it at teardown, which two concurrent pytest
+sessions could and did destroy. Do not reintroduce anything shaped like that.
+
+`docs/unit-suite-expected-failures.md` records what `pytest tests/unit` is
+expected to produce, and the one environment-dependent failure that is not
+yours.
+
 ## Test logs
 
-All test runs (unit and integration) write logs to:
-
-```text
-~/.nyxGPT/logs/tests.log
-```
-
-The log file is **truncated at the start of each pytest run**, so it always reflects the most recent execution.
+Each run's logs go to a session-scoped temp directory (`tests.log` inside it),
+never to the production log directory — `_isolate_test_log_dir` in
+`tests/conftest.py` redirects `[logging] dir` there and then *asserts* at
+teardown that the real `~/.nyxGPT/logs` gained nothing (#3443: a local run's
+synthetic ERROR records once reached Loki and derailed an incident
+investigation). The path is printed by pytest as the session temp dir; the file
+is truncated at the start of each run.
 
 This logging setup mirrors the application and CLI logging configuration to ensure consistency when debugging test failures.
 
@@ -103,6 +120,17 @@ See `web/tests/README.md` for detailed web UI testing documentation.
 ---
 
 ## Standalone CI gate (#3502)
+
+> **Status: shipped, and this section is history.**
+> `.github/workflows/ci-tests.yml` **exists** — read that file, not the YAML
+> quoted below, which is the original 2026-08-03 proposal and has since
+> diverged (suite selection by diff, the web gates, and the `determinism` job
+> added by #4020 are all in the real file and none of them are here).
+> The claim below that **agent tokens cannot write `.github/workflows/*`** is
+> also wrong and was retired on 2026-08-07: `DEVELOPER_AGENT_TOKEN` carries the
+> `workflow` scope and agents push workflow files routinely (see `CLAUDE.md`,
+> "Tooling"). The rationale in the rest of the section is still worth keeping;
+> the instructions are not.
 
 `claude-code-review.yml` runs `pytest tests/unit/` and a non-blocking `mypy`
 only as part of an agent-driven review — there is no independent workflow

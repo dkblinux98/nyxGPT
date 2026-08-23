@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from home_sandbox import REAL_HOME
 
 from nyxgpt import sessions
 from nyxgpt.app import _escape_markdown, _sessions_dir_from_str, app
@@ -56,11 +57,17 @@ def test_sessions_dir_from_str_rejects_traversal_escape() -> None:
     assert _sessions_dir_from_str(str(Path.home() / ".." / ".." / "etc")) is None
 
 
-def test_sessions_dir_from_str_rejects_exact_root_paths() -> None:
+def test_sessions_dir_from_str_rejects_exact_root_paths(monkeypatch) -> None:
     # Exactly $HOME or the temp root itself (not a subdirectory of one) is
     # refused -- the barrier accepts strict descendants only. Pins the
     # intentional behavior change from PR #3657.
-    assert _sessions_dir_from_str(str(Path.home())) is None
+    #
+    # `$HOME` is pointed back at the machine's real home for the home half:
+    # the suite runs in a temp-directory `$HOME` (#4020), so a path equal to it
+    # is a strict descendant of the temp root and the *other* barrier accepts
+    # it. The roots have to be disjoint for this assertion to mean anything.
+    monkeypatch.setenv("HOME", str(REAL_HOME))
+    assert _sessions_dir_from_str(str(REAL_HOME)) is None
     assert _sessions_dir_from_str(tempfile.gettempdir()) is None
 
 

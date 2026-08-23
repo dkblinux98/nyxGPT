@@ -82,11 +82,13 @@ mirroring canary.py's `canary_state.json`.
 
 from __future__ import annotations
 
+import getpass
 import json
 import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -463,7 +465,11 @@ def _which(prog: str) -> str | None:
 
 
 def _run(
-    cmd: list[str], timeout: float = 30.0, *, expected: bool = False
+    cmd: list[str],
+    timeout: float = 30.0,
+    *,
+    expected: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text instead of raising on failure.
 
@@ -478,10 +484,16 @@ def _run(
     read. It is now the same `TIMEOUT_RETURNCODE` result every other bounded
     helper returns (see `subprocess_bounds`), so "the command hung" reads as a
     failed probe like any other rather than as a traceback.
+
+    `env`, when given, replaces the child's environment wholesale (the same
+    contract `subprocess.run` has). Only `_docker_hop_preserves_env` uses it,
+    to prove a candidate hop hands this process's environment through.
     """
     cmd = bounded_argv(cmd, timeout)
     try:
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+        result = subprocess.run(
+            cmd, check=False, text=True, capture_output=True, timeout=timeout, env=env
+        )
     except subprocess.TimeoutExpired as exc:
         logger.warning(
             f"Subprocess {timeout_message(timeout)}: {' '.join(cmd)}",
@@ -501,6 +513,193 @@ def _run(
             },
         )
     return result
+
+
+# How long a "no usable hop here" answer is trusted before it is asked again.
+# The answer can change under a running API process -- an operator who runs
+# `sudo usermod -aG docker <user>` while the service is up makes `sg docker`
+# start working from that moment -- so a permanent negative would make the
+# very repair this module points the operator at require a restart to take
+# effect. Re-asking costs two short subprocesses at most once per interval.
+_DOCKER_HOP_RECHECK_SECONDS = 300.0
+
+_docker_hop_lock = threading.Lock()
+_docker_hop: str | None = None
+_docker_hop_checked_at: float = 0.0
+
+# Substrings that identify "this process may not talk to the Docker socket",
+# as opposed to "Docker answered and said no". Matched case-insensitively
+# against stderr. Docker's CLI and the Compose plugin word it differently
+# ("Docker daemon socket" vs "docker API at unix://"), and the owner's rc12
+# and rc13 instances produced one each -- see `_docker_run`.
+_DOCKER_ACCESS_FAILURE_MARKERS = (
+    "permission denied",
+    "cannot connect to the docker daemon",
+    "connect to the docker api",
+    "is the docker daemon running",
+)
+
+
+def _looks_like_docker_access_failure(cp: subprocess.CompletedProcess[str]) -> bool:
+    """True if `cp` failed because Docker was unreachable, not because Docker said no.
+
+    Only this class of failure is worth retrying through a group hop. A
+    `docker compose up -d` that failed because an image pull 404'd must not
+    drag a hop probe along behind it on every watchdog pass.
+    """
+    stderr = (cp.stderr or "").lower()
+    return any(marker in stderr for marker in _DOCKER_ACCESS_FAILURE_MARKERS)
+
+
+def _hop_argv(cmd: list[str]) -> list[str]:
+    """Wrap `cmd` so it runs with the `docker` group applied (`sg docker -c ...`).
+
+    `sg` takes a *shell string*, not an argv, so the argv has to be rendered
+    into one. `shlex.join` quotes every element -- the sanitizer barrier for
+    this call (CodeQL #4, py/command-line-injection), on top of the
+    `re.fullmatch` barriers each caller already applies to service/container
+    names before they reach an argv at all. It also keeps a compose file path
+    containing a space from silently becoming two arguments.
+    """
+    return ["sg", "docker", "-c", shlex.join(cmd)]
+
+
+def _docker_hop_preserves_env() -> bool:
+    """True if `sg docker` hands this process's environment to the command.
+
+    `sg` execs the user's login shell, and a shell that resets the
+    environment would silently change what Compose sees -- `$HOME` (bind
+    mounts and the project's `.env` lookup) and `COMPOSE_PROJECT_NAME` above
+    all, which decides *which* containers the survey is even about. A hop
+    that answers about a different project is worse than no hop, so this is
+    checked before one is adopted (the same bar `ops._enable_docker_socket_hop`
+    holds its hops to).
+    """
+    sentinel = f"nyxgpt-self-heal-hop-{os.getpid()}"
+    cp = _run(
+        _hop_argv(["sh", "-c", 'printf "%s\\n%s\\n" "$HOME" "$NYXGPT_HOP_PROBE"']),
+        timeout=10.0,
+        expected=True,
+        env={**os.environ, "NYXGPT_HOP_PROBE": sentinel},
+    )
+    if cp.returncode != 0:
+        return False
+    return (cp.stdout or "").strip().splitlines()[-2:] == [
+        os.environ.get("HOME", str(Path.home())),
+        sentinel,
+    ]
+
+
+def _docker_group_hop() -> str | None:
+    """The hop that reaches the Docker socket from here, or None if none is needed/available.
+
+    **Why a long-lived service needs this at all.** Group membership is
+    stamped into a session's credentials when the session is created.
+    `sudo usermod -aG docker <user>` therefore does not reach an already
+    running `systemd --user` manager, and every unit that manager spawns --
+    `nyxgpt-api` included -- inherits the stale group set for the life of the
+    machine's login session. Restarting the *unit* cannot fix that: the unit
+    is forked from the manager, and an unprivileged manager cannot grant
+    itself a group. Only recreating the session (`sudo loginctl
+    terminate-user`, or a reboot) does. `ops._ensure_docker_group_membership`
+    documents the same fact from the install side, and #3632 is the earlier
+    sighting of it -- `nyxgpt ops status` from a fresh shell saw Cassandra
+    running while the API-backed web UI reported it absent.
+
+    That is why #3812's owner re-test still showed eleven observability
+    components as `unknown` on a *fresh* `nyxgpt cloud deploy` after the
+    reporting fix landed: the panel had stopped lying, but nothing had made
+    the survey runnable, so the tier was permanently unobservable from the
+    dashboard -- which the Definition of Done requires it to be.
+
+    `sg docker` closes it without a restart. `sg` reads `/etc/group` live, so
+    it applies the membership the user genuinely already holds; it is the
+    same mechanism `scripts/cloud/ec2-user-data-linux.sh.tmpl` uses for the
+    deploy's own commands and `ops._enable_docker_socket_hop` uses for the
+    rest of an install run.
+
+    **`sg` only, never `sudo`.** ops falls back to `sudo -n docker` because
+    an interactive `ops install` is already a privileged operation. This
+    module runs inside the public-facing API process, so it will only ever
+    claim a group the invoking user is already a member of -- which grants no
+    authority the operator did not already give this account. A host where
+    the group change itself was never made stays reported as unknown, with
+    the reason on screen, which is the correct answer there.
+
+    Returns the hop program name (currently only `"sg"`) or None. Cached, with
+    `_DOCKER_HOP_RECHECK_SECONDS` between negative answers. Only ever called
+    *after* a bare Docker call has already failed for lack of socket access
+    (see `_docker_run`), so a host where Docker works normally never pays for
+    these probes at all.
+    """
+    global _docker_hop, _docker_hop_checked_at
+    with _docker_hop_lock:
+        now = time.monotonic()
+        if _docker_hop is not None:
+            return _docker_hop
+        if _docker_hop_checked_at and (now - _docker_hop_checked_at) < _DOCKER_HOP_RECHECK_SECONDS:
+            return None
+        _docker_hop_checked_at = now
+        if _which("sg") is None or _which("docker") is None:
+            return None
+        try:
+            reaches = _run(
+                _hop_argv(["docker", "info", "--format", "{{.ServerVersion}}"]),
+                timeout=20.0,
+                expected=True,
+            )
+            usable = reaches.returncode == 0 and _docker_hop_preserves_env()
+        except Exception as e:  # pragma: no cover - defensive; a probe must never raise
+            logger.debug("self-heal: docker group hop probe failed: %s: %s", type(e).__name__, e)
+            return None
+        if not usable:
+            return None
+        _docker_hop = "sg"
+        logger.warning(
+            "self-heal: this process cannot reach the Docker socket directly but the "
+            "'docker' group is granted to this user, so Docker calls are run through "
+            "`sg docker`. The service's session predates its group membership; "
+            "`sudo loginctl terminate-user %s` (or a reboot) clears it permanently.",
+            getpass.getuser(),
+            extra={"component": "self_heal", "docker_socket_hop": "sg"},
+        )
+        return _docker_hop
+
+
+def _docker_run(
+    cmd: list[str], timeout: float = 30.0, *, expected: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run a `docker`/`docker compose` command, retrying through the group hop if denied.
+
+    Every Docker call in this module goes through here rather than `_run`, so
+    a session that cannot reach the socket degrades identically everywhere:
+    the survey, the container/health probes, the restarts and the log reads.
+    Fixing only the survey would have produced a panel that could see eleven
+    components and heal none of them.
+
+    The bare command is tried first and its result returned untouched when it
+    succeeds, so a healthy host pays nothing. A hop is looked for only when
+    the failure is a socket-access failure (`_looks_like_docker_access_failure`);
+    once one is established it is used up front. When no hop is available the
+    original failure is returned unchanged -- the caller still reports
+    "unknown" with Docker's own words, which is #3812's fix and stays intact.
+    """
+    if _docker_hop is not None:
+        return _run(_hop_argv(cmd), timeout, expected=expected)
+    cp = _run(cmd, timeout, expected=expected)
+    if cp.returncode == 0 or not _looks_like_docker_access_failure(cp):
+        return cp
+    if _docker_group_hop() is None:
+        return cp
+    return _run(_hop_argv(cmd), timeout, expected=expected)
+
+
+def _reset_docker_hop_cache() -> None:
+    """Forget any established/attempted hop. For tests -- nothing in the app calls it."""
+    global _docker_hop, _docker_hop_checked_at
+    with _docker_hop_lock:
+        _docker_hop = None
+        _docker_hop_checked_at = 0.0
 
 
 def _state_path() -> Path:
@@ -794,7 +993,7 @@ def _native_container_state(name: str) -> str:
     if _which("docker") is None:
         return "unknown"
     try:
-        cp = _run(
+        cp = _docker_run(
             ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
             expected=True,
         )
@@ -814,7 +1013,7 @@ def _native_container_health(name: str) -> str:
     if _which("docker") is None:
         return ""
     try:
-        cp = _run(
+        cp = _docker_run(
             [
                 "docker",
                 "inspect",
@@ -1189,7 +1388,7 @@ def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = Tr
     for profile in sorted(profiles):
         cmd += ["--profile", profile]
     try:
-        cp = _run(cmd + ["config", "--services"], expected=True)
+        cp = _docker_run(cmd + ["config", "--services"], expected=True)
     except Exception as e:
         logger.warning("self-heal: failed to resolve desired compose services: %s", e)
         return set()
@@ -1504,12 +1703,21 @@ def compose_probe() -> ComposeProbe:
       running-and-healthy observability containers were rendered `absent` and
       counted "11 unhealthy". A probe that says it can run must have run.
 
+    Reporting that honestly was necessary and not sufficient: the owner's
+    re-test of #3812 on a *fresh* `nyxgpt cloud deploy` showed the same
+    eleven components as `unknown`, because nothing had made the survey
+    runnable. `_docker_run` now retries a socket-access failure through
+    `sg docker`, so the ordinary form of that condition -- a service session
+    that predates its `docker` group membership -- resolves to real states
+    instead of a permanently blind panel. `available=False` is what remains
+    when even that cannot help.
+
     Never raises: an unqueryable stack is a reportable state, not an error.
     """
     if _which("docker") is None:
         return ComposeProbe(available=False, reason="`docker` is not installed on this host")
     try:
-        cp = _run(
+        cp = _docker_run(
             ["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"],
             expected=True,
         )
@@ -1679,7 +1887,9 @@ def restart_component(service: str) -> HealResult:
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot restart component")
     try:
-        cp = _run(["docker", "compose", "-f", str(COMPOSE_FILE), "restart", service], timeout=120.0)
+        cp = _docker_run(
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "restart", service], timeout=120.0
+        )
     except Exception as e:
         return HealResult(False, f"Failed to restart {service}", f"{type(e).__name__}: {e}")
     if cp.returncode != 0:
@@ -1710,7 +1920,7 @@ def _bring_up_compose_service(service: str) -> HealResult:
         cmd += ["--profile", profile]
     cmd += ["up", "-d", service]
     try:
-        cp = _run(cmd, timeout=120.0)
+        cp = _docker_run(cmd, timeout=120.0)
     except Exception as e:
         return HealResult(False, f"Failed to start {service}", f"{type(e).__name__}: {e}")
     if cp.returncode != 0:
@@ -1762,7 +1972,7 @@ def _restart_native_container(name: str) -> HealResult:
     if _which("docker") is None:
         return HealResult(False, f"docker not found; cannot restart {name}")
     try:
-        cp = _run(["docker", "restart", name], timeout=60.0)
+        cp = _docker_run(["docker", "restart", name], timeout=60.0)
     except Exception as e:
         return HealResult(False, f"Failed to restart {name}", f"{type(e).__name__}: {e}")
     if cp.returncode != 0:
@@ -2017,7 +2227,7 @@ def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
             f"not declared in {COMPOSE_FILE.name}; no logs to fetch",
         )
     try:
-        cp = _run(
+        cp = _docker_run(
             [
                 "docker",
                 "compose",
@@ -2089,7 +2299,7 @@ def _docker_container_logs(container: str, *, tail: int) -> HealResult:
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
     try:
-        cp = _run(["docker", "logs", "--tail", str(tail), container], timeout=30.0)
+        cp = _docker_run(["docker", "logs", "--tail", str(tail), container], timeout=30.0)
     except Exception as e:
         return HealResult(
             False, f"Failed to fetch logs for {container}", f"{type(e).__name__}: {e}"

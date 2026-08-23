@@ -1496,6 +1496,41 @@ rather than mechanism, and nothing can enforce them.
   Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
   `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
 
+- **D-044** · 2026-08-22 · developer agent (#4020) — **The test suite gets a
+  `$HOME` of its own; it never reads, writes or restores the operator's
+  `~/.nyxGPT`.** `tests/home_sandbox.py` moves `$HOME` to a fresh per-process
+  temp directory, seeded with `TEST_CONFIG_TEXT`, before any `nyxgpt` module is
+  imported (several capture `Path.home()` at import time, so it has to be that
+  early — the module raises rather than pretending if it is imported late).
+  This **supersedes the swap-and-restore design of #3443 and #3983/#4006**:
+  writing the suite's config into the real `~/.nyxGPT/config.ini` and restoring
+  it at teardown, with a fixed-path `config.ini.pytest-bak` for crash recovery,
+  is safe for exactly one pytest process and this repo is worked by many
+  concurrent agent sessions.
+  **The measurement, because the conclusion is not guessable from the
+  symptom:** #4020's 5/28/53/67-failure spread was not an in-process leak at
+  all. A `sys.addaudithook` over `open`/`rename`/`unlink` of the config path
+  proved the only in-process writes all session were the fixture's own two,
+  while the file changed under a running session anyway. A controlled
+  reproduction — session B started 45s into session A — flipped A's config to
+  the operator's 13 seconds later (B's fixture found A's `.pytest-bak`, read it
+  as a crashed run's leftovers, and "recovered" it): of A's 6959 tests the 2181
+  before that moment failed **0** and the 4789 after it failed **65**. The
+  failure count was only ever a measure of when some other session started.
+  Undisturbed, the same tree fails 4.
+  Do not "fix" a future recurrence by making the backup cleverer (a unique
+  path, an atomic claim). That addresses the file destruction and leaves the
+  flakes: two sessions still contend for one `config.ini`. Removing the shared
+  resource closes both, and generalises to the rest of `~/.nyxGPT` (secrets,
+  install-mode markers, terraform state, logs), each of which had needed its
+  own isolation fixture as some test reached it (#3789, #3834, #3835, #3947).
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0`.
+  Source: #4020; `tests/home_sandbox.py` (the full measurement is in its module
+  docstring); `tests/unit/test_session_config_isolation.py`
+  (`test_suite_runs_in_a_private_home`); the `determinism` job in
+  `.github/workflows/ci-tests.yml`; `docs/unit-suite-expected-failures.md`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
