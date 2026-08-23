@@ -2471,7 +2471,21 @@ def cli(argv: list[str] | None = None) -> int:
         "--region",
         help=(
             "AWS region (default: read from ~/.nyxGPT/cloud/state.json, then "
+            "the last `cloud infra apply`, then config.ini [cloud] region, then "
             "boto3's normal region resolution)"
+        ),
+    )
+    # #3993: without this, the command authenticated through boto3's default
+    # chain only -- so a configured `[cloud] profile` was ignored and the
+    # lookup ran in the workstation's default account, reporting a live
+    # security group as InvalidGroup.NotFound to an operator who was locked
+    # out and could not check.
+    cloud_allow_ip.add_argument(
+        "--profile",
+        help=(
+            "AWS profile to authenticate with (default: the profile the last "
+            "`nyxgpt cloud infra apply` used, then config.ini [cloud] profile, "
+            "then AWS_PROFILE)"
         ),
     )
 

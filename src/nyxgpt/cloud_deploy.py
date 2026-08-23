@@ -51,6 +51,7 @@ change the substrate it is running on.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -79,6 +80,27 @@ CLOUD_DIR = cloud_infra.CLOUD_DIR
 # What the last successful deploy installed, so `status` can answer without
 # touching AWS or the instance, and a re-run can default to the same version.
 DEPLOY_STATE_FILE = CLOUD_DIR / "deploy.json"
+
+# The deploy *currently or last* attempted, written before anything is
+# provisioned and updated as each phase completes (#3993). Deliberately a
+# separate file from `deploy.json`: that one is the record of a deployment
+# that exists, and writing a half-finished attempt into it would make
+# `nyxgpt cloud status` report DEPLOYED for a stack that was never installed
+# -- trading one lie for a worse one.
+#
+# It exists because a provision that dies partway is exactly the state an
+# operator most needs status to describe, and it was the one state nothing
+# could see: `deploy.json` is written only on success, so after a failed
+# deploy `cloud status` said "UNKNOWN from this machine" while a live,
+# billing instance ran and `state.json` on the same disk named it.
+DEPLOY_ATTEMPT_FILE = CLOUD_DIR / "deploy-attempt.json"
+
+# `status` values for `DEPLOY_ATTEMPT_FILE`. Three, not two: a deploy that is
+# still running is not a failure, and treating it as one would send an
+# operator to debug a provision that is merely slow.
+ATTEMPT_RUNNING = "running"
+ATTEMPT_FAILED = "failed"
+ATTEMPT_SUCCEEDED = "succeeded"
 
 # Append-only record of every deploy and teardown, so the admin dashboard can
 # answer "what happened to this deployment" and not just "what is it now"
@@ -329,6 +351,81 @@ def load_deploy_state() -> dict[str, Any]:
 def _cloud_state() -> dict[str, Any]:
     """Return the substrate outputs `cloud_infra.apply_infra` recorded."""
     return _read_json(cloud_infra.CLOUD_STATE_FILE)
+
+
+def load_deploy_attempt() -> dict[str, Any]:
+    """Return the last deploy attempt this machine started (or `{}`)."""
+    return _read_json(DEPLOY_ATTEMPT_FILE)
+
+
+def begin_deploy_attempt(plan: DeployPlan, host: str = "") -> dict[str, Any]:
+    """Record that a deploy has *started*, before anything is provisioned (#3993).
+
+    Written first so that whatever happens next -- a Terraform failure, an SSH
+    timeout, an `ops install` that dies halfway, the operator's laptop closing
+    -- leaves behind a record naming the target, the version and the phase it
+    got to. Best-effort, like `record_history`: an unwritable state directory
+    must not be the reason a deploy does not happen.
+    """
+    attempt = {
+        "status": ATTEMPT_RUNNING,
+        "phase": "start",
+        "started_at": time.time(),
+        "updated_at": time.time(),
+        "version": plan.version,
+        "host": host,
+        "instance_id": "",
+        "region": "",
+        "os_family": plan.os_family,
+        "substrate": plan.substrate,
+        "dev": plan.dev,
+        "profiles": list(plan.profiles),
+        "error": "",
+    }
+    _write_attempt(attempt)
+    return attempt
+
+
+def update_deploy_attempt(phase: str, **fields: Any) -> dict[str, Any]:
+    """Advance the recorded attempt to `phase`, merging `fields` into it.
+
+    A no-op when no attempt is on file -- `deploy` is the only writer, and a
+    caller that never began one has nothing to advance.
+    """
+    attempt = load_deploy_attempt()
+    if not attempt:
+        return {}
+    attempt.update(fields)
+    attempt["phase"] = phase
+    attempt["updated_at"] = time.time()
+    _write_attempt(attempt)
+    return attempt
+
+
+def finish_deploy_attempt(status: str, phase: str = "", error: str = "") -> dict[str, Any]:
+    """Close out the recorded attempt as `status` (succeeded or failed).
+
+    A succeeded attempt is kept rather than deleted: "the last deploy finished
+    cleanly" is a useful answer, and keeping the file means the *absence* of
+    one always means "no deploy has been attempted from this machine" rather
+    than being ambiguous between that and "it went fine".
+    """
+    attempt = load_deploy_attempt()
+    if not attempt:
+        return {}
+    attempt["status"] = status
+    attempt["error"] = error
+    attempt["updated_at"] = time.time()
+    if phase:
+        attempt["phase"] = phase
+    _write_attempt(attempt)
+    return attempt
+
+
+def _write_attempt(attempt: dict[str, Any]) -> None:
+    """Persist the attempt record, swallowing write errors (see `begin_deploy_attempt`)."""
+    with contextlib.suppress(OSError):
+        _write_json(DEPLOY_ATTEMPT_FILE, attempt)
 
 
 def record_history(action: str, outcome: str, **fields: Any) -> dict[str, Any]:
@@ -1051,6 +1148,29 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
 
 __LLM_RUNTIME_SECTION__
 __NYXGPT_INSTALL__
+
+# --- Put `nyxgpt` on the login user's PATH (#3993) ----------------------
+# The venv above is never activated by a login shell, so an operator who SSHes
+# in to diagnose a failed deploy got `nyxgpt: command not found` from every
+# wrapped command the docs, the dashboard and this script's own output tell
+# them to run -- while the binary sat in a directory nothing named. That turns
+# "read the instance's own doctor" into a scavenger hunt at exactly the moment
+# it matters. A profile.d drop-in rather than an edit to ~/.bashrc: it is
+# idempotent (one file, rewritten), it applies to every login user rather than
+# whichever one this deploy happened to use, and it leaves the operator's own
+# dotfiles alone.
+# The delimiter is quoted so the heredoc is written verbatim: $HOME has to be
+# expanded by the *login shell that sources it*, not by this provisioning run,
+# or every user would get the deploying user's home directory.
+sudo tee /etc/profile.d/nyxgpt.sh >/dev/null <<'PROFILE_EOF'
+# Managed by nyxgpt cloud deploy (#3993) -- rewritten on every deploy.
+if [ -d "$HOME/.nyxGPT/venv/bin" ]; then
+  PATH="$HOME/.nyxGPT/venv/bin:$PATH"
+  export PATH
+fi
+PROFILE_EOF
+sudo chmod 0644 /etc/profile.d/nyxgpt.sh
+echo "==> nyxgpt is on the PATH of any login shell on this instance (/etc/profile.d/nyxgpt.sh); the binary itself is \\$HOME/.nyxGPT/venv/bin/nyxgpt"
 
 # --- Seed config.ini from the installed package ------------------------
 mkdir -p "$HOME/.nyxGPT"
@@ -2036,6 +2156,27 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     plan = resolve_plan(args)
     steps: list[dict[str, Any]] = []
     host_flag = str(getattr(args, "host", None) or "")
+    # Before the substrate is applied, not after the stack is up (#3993): a
+    # deploy that dies partway is the state `cloud status` most needs to be
+    # able to describe, and until this existed it was the one state it could
+    # not see at all. Everything below runs inside the try/except that closes
+    # this record out, so no exit path -- exception or not -- leaves it
+    # claiming to still be running.
+    begin_deploy_attempt(plan, host=host_flag)
+    try:
+        return _deploy(args, plan, steps, host_flag)
+    except BaseException as exc:
+        finish_deploy_attempt(ATTEMPT_FAILED, error=str(exc) or exc.__class__.__name__)
+        raise
+
+
+def _deploy(
+    args: argparse.Namespace,
+    plan: DeployPlan,
+    steps: list[dict[str, Any]],
+    host_flag: str,
+) -> dict[str, Any]:
+    """The body of `deploy`, split out so the attempt record wraps every exit path (#3993)."""
     # Empty for a `--host` box: that machine is not ours, so there are no
     # applied settings to read an instance type out of (#3867 + #3956).
     applied_settings: dict[str, Any] = {}
@@ -2115,8 +2256,23 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
                 security_group_id=str(allocation.get("security_group_id") or ""),
             )
     else:
+        update_deploy_attempt("infra")
         infra = cloud_infra.apply_infra(args)
         steps.append({"step": "infra", "outputs": infra.get("outputs", {})})
+        # `cloud_infra.apply_infra` reports this rather than raising: the
+        # substrate is up and billing, but its outputs could not be read, so
+        # `state.json` still describes an earlier one (#3993). Carried onto the
+        # attempt record so a `cloud status` run afterwards repeats the warning
+        # instead of quietly presenting stale ids as this deploy's.
+        if not infra.get("state_refreshed", True):
+            update_deploy_attempt(
+                "infra",
+                state_stale=True,
+                error=(
+                    "the substrate applied but its Terraform outputs were unreadable, so "
+                    f"{cloud_infra.CLOUD_STATE_FILE} still describes an earlier substrate"
+                ),
+            )
 
         # The P6-4 access path is wired by the apply itself: `resolve_settings`
         # re-detects the operator's current public IP on every run, so the
@@ -2167,6 +2323,12 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
             file=sys.stderr,
         )
 
+    # The target is only known once the substrate has been applied (or the
+    # --host box named), so this is the first point the attempt record can say
+    # *which machine* a failure from here on refers to (#3993).
+    update_deploy_attempt(
+        "ssh", host=target.host, instance_id=target.instance_id, region=target.region
+    )
     waited = wait_for_ssh(target, plan.ssh_timeout)
     steps.append({"step": "ssh", "host": target.host, "waited_seconds": round(waited, 1)})
 
@@ -2175,8 +2337,10 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     # fails should fail with nothing installed rather than half-way through a
     # bootstrap. Only under `--dev`; the artifact path copies nothing.
     if plan.dev:
+        update_deploy_attempt("ship")
         steps.append(ship_working_tree(target, Path(plan.source_dir)))
 
+    update_deploy_attempt("provision")
     steps.append({"step": "provision", **provision_instance(target, plan)})
 
     record = {
@@ -2223,8 +2387,10 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     health: dict[str, Any] = {"healthy": False, "skipped": True}
     tunnel: dict[str, Any] = {"running": False, "skipped": True}
     if plan.open_tunnel:
+        update_deploy_attempt("tunnel")
         tunnel = start_tunnel(target, plan.profiles)
         steps.append({"step": "tunnel", "pid": tunnel.get("pid", 0)})
+        update_deploy_attempt("health")
         health = wait_for_health(plan.health_timeout)
         steps.append({"step": "health", **health})
         if not health["healthy"]:
@@ -2287,6 +2453,7 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
             else "installed; health not checked (no tunnel opened)"
         ),
     )
+    finish_deploy_attempt(ATTEMPT_SUCCEEDED, phase="done")
 
     return {
         "action": "deploy",
@@ -2370,6 +2537,11 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         )
         raise
     DEPLOY_STATE_FILE.unlink(missing_ok=True)
+    # And the attempt record with it (#3993): once the substrate is gone,
+    # "a deploy stopped at `provision`" describes an instance that no longer
+    # exists, and `cloud status` would report NOT COMPLETED for a machine that
+    # was deliberately destroyed. The history keeps the event.
+    DEPLOY_ATTEMPT_FILE.unlink(missing_ok=True)
     settings = result.get("settings", {})
     # An EC2 Mac the *operator* supplied with `--host` is not part of the
     # substrate this just tore down -- nyxGPT never created it and cannot
@@ -2529,6 +2701,17 @@ CANARY_FLAGS: dict[str, tuple[str, ...]] = {
 # a dashboard served from the instance has to answer from what it *is*.
 SOURCE_DEPLOY_RECORD = "deploy-record"
 SOURCE_LOCAL_INSTANCE = "local-instance"
+# No deploy has ever completed here, but this machine started one and it did
+# not finish (#3993). A real, first-hand source -- this workstation wrote the
+# record -- and a state distinct from both "deployed" and "unknown": something
+# was provisioned, it is probably billing, and it is not a working deployment.
+SOURCE_DEPLOY_ATTEMPT = "deploy-attempt"
+# No deploy record and no attempt, but this machine's substrate handoff
+# (`state.json`, written by `cloud infra apply`) names a provisioned instance
+# (#3993). Weaker than a deploy record -- it says a box exists, not that nyxGPT
+# was ever installed on it -- but categorically stronger than UNKNOWN, which
+# was what an operator got while a live instance's id sat on their own disk.
+SOURCE_SUBSTRATE_RECORD = "substrate-record"
 SOURCE_UNKNOWN = "none"
 
 
@@ -2618,8 +2801,22 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
       serving the request is the deployment, so its version and address are
       known first-hand even though no deploy record exists there
       (`source: local-instance`);
-    * neither, on a machine that is neither the operator's nor the instance
-      (`source: none`, `known: False` -- the caller must say *unknown*).
+    * the record of a deploy this machine *started* and did not finish
+      (`source: deploy-attempt`, `deployed: False`) -- a provision that dies
+      partway is the state an operator most needs described, and it was the
+      one state nothing could see (#3993);
+    * the substrate handoff alone (`source: substrate-record`,
+      `deployed: False`) -- `state.json` names a provisioned instance, so a
+      box exists and is billing, but nothing here says nyxGPT was installed
+      on it;
+    * none of those, on a machine that is neither the operator's nor the
+      instance (`source: none`, `known: False` -- the caller must say
+      *unknown*).
+
+    The last three keep D-018's rule intact: each names a source that actually
+    exists on *this* machine, and *unknown* is still what a machine with no
+    source reports. What changed is that "a live instance's id is sitting in
+    my own state file" stopped counting as no source at all.
 
     `probe_health=True` additionally makes one short request to the tunneled
     API health endpoint. Opt-in rather than always-on so the polled default
@@ -2630,10 +2827,17 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
     and the answering process is the one being asked about.
     """
     record = load_deploy_state()
+    attempt = load_deploy_attempt()
     infra = cloud_infra.infra_status()
     on_instance = bool(infra.get("on_ec2"))
     profiles = [str(p) for p in (record.get("profiles") or [])]
     tunnel = tunnel_status()
+
+    # An attempt only *answers* the question when no deploy ever completed
+    # here; a finished deployment plus a later failed attempt is still a
+    # deployment, and the attempt is reported alongside it rather than
+    # replacing it.
+    unfinished_attempt = bool(attempt) and attempt.get("status") != ATTEMPT_SUCCEEDED
 
     if record.get("host"):
         source = SOURCE_DEPLOY_RECORD
@@ -2645,6 +2849,23 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         deployed = True
         # First-hand, not recorded: this is the release answering the request.
         version = installed_version()
+        host = str(infra.get("public_ip") or "")
+    elif unfinished_attempt:
+        # #3993. `deployed` stays False -- nothing here saw a working stack --
+        # but the answer is no longer "unknown": this machine started a deploy
+        # and can say what it was aiming at and how far it got.
+        source = SOURCE_DEPLOY_ATTEMPT
+        deployed = False
+        version = str(attempt.get("version") or "")
+        host = str(attempt.get("host") or infra.get("public_ip") or "")
+    elif infra.get("provisioned"):
+        # #3993. No deploy and no attempt, but the substrate handoff on this
+        # disk names an instance. Reporting UNKNOWN here -- as this did while a
+        # live, billing instance's id sat in `state.json` on the same machine
+        # -- is the blindness this branch exists to remove.
+        source = SOURCE_SUBSTRATE_RECORD
+        deployed = False
+        version = ""
         host = str(infra.get("public_ip") or "")
     else:
         source = SOURCE_UNKNOWN
@@ -2676,11 +2897,22 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         "known": source != SOURCE_UNKNOWN,
         "on_instance": on_instance,
         "deployed": deployed,
+        # The last deploy this machine started, whatever became of it (#3993).
+        # Always present -- `{}` means none has ever been started here -- and
+        # reported even alongside a completed deployment, because "the deploy
+        # you ran an hour ago failed at `provision`" is the answer an operator
+        # is looking for and no other field carries it.
+        "attempt": dict(attempt),
         "version": version,
         "host": host,
-        "instance_id": str(record.get("instance_id") or infra.get("instance_id") or ""),
+        "instance_id": str(
+            record.get("instance_id")
+            or attempt.get("instance_id")
+            or infra.get("instance_id")
+            or ""
+        ),
         "instance_type": str(infra.get("instance_type") or ""),
-        "region": str(record.get("region") or infra.get("region") or ""),
+        "region": str(record.get("region") or attempt.get("region") or infra.get("region") or ""),
         "profiles": profiles,
         # Where this deployment's chat sessions live (#3865). Observable
         # rather than operable, per the Definition of Done: the dashboard
@@ -2855,6 +3087,105 @@ def _health_label(health: dict[str, Any]) -> str:
     return f"unhealthy (the tunneled API answered {status or 'nothing'})"
 
 
+def _attempt_label(attempt: dict[str, Any]) -> str:
+    """Describe a deploy attempt in one line: what it was, how far it got, and why it stopped."""
+    if not attempt:
+        return ""
+    phase = str(attempt.get("phase") or "unknown")
+    version = str(attempt.get("version") or "an unrecorded version")
+    status = str(attempt.get("status") or ATTEMPT_RUNNING)
+    if status == ATTEMPT_SUCCEEDED:
+        return f"{version} completed"
+    verb = "still running" if status == ATTEMPT_RUNNING else "stopped"
+    error = str(attempt.get("error") or "")
+    detail = f" -- {error}" if error else ""
+    return f"{version}, {verb} at the `{phase}` phase{detail}"
+
+
+def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) -> None:
+    """Print the two verdicts between DEPLOYED and UNKNOWN (#3993).
+
+    Kept apart from the DEPLOYED report rather than folded into it with
+    conditionals: almost every row there ("Version", "Build source", "Chat
+    sessions") describes a stack that is installed, and printing them for a
+    deploy that never finished would assert exactly the things this state
+    exists to say are not known. What an operator needs here is narrower --
+    what exists, what it cost them, and which command moves it forward.
+    """
+    infra = status.get("infra") or {}
+    attempt = status.get("attempt") or {}
+    substrate_only = status["source"] == SOURCE_SUBSTRATE_RECORD
+
+    if substrate_only:
+        print("nyxGPT cloud deployment: SUBSTRATE ONLY -- provisioned, but nothing deployed.\n")
+        print(
+            "  (from the substrate handoff on this machine, "
+            f"{cloud_infra.CLOUD_STATE_FILE} -- it names an instance, and no deploy has been "
+            "recorded against it)\n"
+        )
+    else:
+        print(
+            "nyxGPT cloud deployment: NOT COMPLETED -- a deploy started here and did not "
+            "finish.\n"
+        )
+        print(f"  (from the deploy attempt this machine recorded, {DEPLOY_ATTEMPT_FILE})\n")
+        _print_row("Attempt", _attempt_label(attempt))
+
+    _print_row("Instance", status.get("instance_id") or "not recorded")
+    _print_row("Instance type", infra.get("instance_type") or "not recorded")
+    _print_row("Public IP", status.get("host") or "not recorded")
+    _print_row("Region", status.get("region") or "not recorded")
+    _print_row("Security group", infra.get("security_group_id") or "not recorded")
+
+    # D-018 -- never imply an answer nothing checked. This sentence used to
+    # print unconditionally, and two ordinary flows reach here with nothing
+    # provisioned: (a) a deploy that failed at `start`/`infra` before Terraform
+    # created anything (no terraform binary, no AWS credentials, a failed
+    # `terraform init`), which records FAILED with no instance_id and no
+    # substrate record; (b) an operator who declined the EC2 Mac allocation,
+    # whose own recorded error reads "nothing was allocated and nothing is
+    # billed" -- sat inside a frame asserting the opposite. Asserting billing
+    # over either is the same class of lie this verdict was written to end.
+    provisioned = bool(
+        substrate_only
+        or status.get("instance_id")
+        or status.get("host")
+        or infra.get("instance_type")
+        or infra.get("security_group_id")
+    )
+    if provisioned:
+        print(
+            "\nThis is NOT the same as nothing being deployed, and it is not the same as "
+            "unknown: an instance exists and is being billed."
+        )
+    else:
+        print(
+            "\nNothing is recorded as provisioned by this attempt: it failed at or before "
+            "the substrate step, so no instance was created here and nothing from it is "
+            "being billed."
+        )
+    if attempt.get("state_stale"):
+        # The one case where the ids above must not be trusted -- say so here
+        # rather than printing them as though they described this attempt.
+        print(
+            "\nWARNING: the substrate applied but its Terraform outputs could not be read, so "
+            f"the ids above come from an EARLIER substrate. Re-run `{commands['deploy']}` (or "
+            "`nyxgpt cloud infra apply`) to refresh them before acting on them."
+        )
+    print("\nWhat to do next:")
+    print(
+        f"  {commands['deploy']}  -- re-run it; the deploy is idempotent and reconciles "
+        "from here"
+    )
+    print(f"  {commands['allow_ip']}  -- refresh SSH access if your public IP has changed")
+    if provisioned:
+        # Only offered when something is recorded. Against a pre-substrate
+        # failure `cloud destroy` raises "nothing to destroy", so prescribing
+        # it there sends the operator to a dead end to disprove a claim this
+        # function should not have made.
+        print(f"  {commands['destroy']}  -- tear the instance down if you do not want it")
+
+
 def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     """Print the EC2 Mac Dedicated Host block, when one is outstanding (#3995).
 
@@ -2919,6 +3250,12 @@ def _print_status_summary(status: dict[str, Any]) -> None:
     because the question being asked -- "where is my instance and how do I
     reach it?" -- is one a human is asking, and answering it with a nested
     JSON blob made the operator scroll for the public IP either way.
+
+    Four headline verdicts, not two (#3993): DEPLOYED, NOT COMPLETED (a deploy
+    this machine started and did not finish), SUBSTRATE ONLY (a provisioned
+    instance with no deploy recorded against it), and UNKNOWN. A failed deploy
+    printed as UNKNOWN sent the operator looking for another workstation while
+    the instance they had just created was named on their own disk.
     """
     commands = status.get("commands") or LIFECYCLE_COMMANDS
     if not status["known"]:
@@ -2935,6 +3272,10 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         # remaining charge invisible at exactly the moment it is the only
         # thing left (#3995).
         _print_pending_mac_host(status.get("mac_host") or {})
+        return
+
+    if status["source"] in (SOURCE_DEPLOY_ATTEMPT, SOURCE_SUBSTRATE_RECORD):
+        _print_incomplete_summary(status, commands)
         return
 
     infra = status.get("infra") or {}
@@ -3029,6 +3370,13 @@ def _print_status_summary(status: dict[str, Any]) -> None:
     else:
         _print_row("State", f"closed -- open it with `{commands['tunnel']}`")
     _print_row("Stack health", _health_label(status.get("health") or {}))
+    # #3993. A deployment that exists plus a *later* deploy that failed is a
+    # real and confusing state -- the box is up on the previous release while
+    # the operator believes they just shipped a new one. The record above
+    # cannot say it, because it is only ever written on success.
+    attempt = status.get("attempt") or {}
+    if attempt and attempt.get("status") != ATTEMPT_SUCCEEDED:
+        _print_row("Last deploy attempt", _attempt_label(attempt))
     if status.get("urls") and not status["on_instance"]:
         print("\n  Reachable while the tunnel is open:")
         _print_urls(status["urls"])

@@ -338,13 +338,49 @@ raw `ssh` invocation that `nyxgpt cloud tunnel` executes on your behalf.
 That is shown so you can see what is running when a tunnel misbehaves — the
 command to *run* is always the wrapped one.
 
-Where the answer comes from follows the same three-way rule as the substrate
-(see [Which machine is answering](#which-machine-is-answering-3804)): the
-deploy record on the workstation that deployed, the instance itself when the
-command runs there, and otherwise **unknown** — which is not the same as
-nothing being deployed. The connection target is reportable only in the first
-case; on the instance the SSH user and key are the workstation's, and the
-command says so rather than printing a blank.
+Where the answer comes from follows the same rule as the substrate (see
+[Which machine is answering](#which-machine-is-answering-3804)): the deploy
+record on the workstation that deployed, the instance itself when the command
+runs there, and otherwise **unknown** — which is not the same as nothing
+being deployed. The connection target is reportable only in the first case;
+on the instance the SSH user and key are the workstation's, and the command
+says so rather than printing a blank.
+
+#### A deploy that did not finish (#3993)
+
+Between DEPLOYED and UNKNOWN there are two more answers, and both are real
+states an operator lands in:
+
+| Verdict | What it means |
+| --- | --- |
+| `NOT COMPLETED` | A deploy started on this machine and did not finish. The summary names the phase it reached (`start`, `infra`, `ssh`, `ship`, `provision`, `tunnel`, `health`) and the error that stopped it. A failure at `start` or `infra` predates the substrate, so the summary says nothing was provisioned and does not offer `cloud destroy` — there would be nothing for it to tear down (#4007). |
+| `SUBSTRATE ONLY` | An instance is provisioned — `~/.nyxGPT/cloud/state.json` on this machine names it — but no deploy has been recorded against it. |
+
+Neither reports `deployed: true`, and both name the wrapped commands that
+move it forward: re-run `nyxgpt cloud deploy` (idempotent — it reconciles from
+where it stopped), or `nyxgpt cloud allow-ip` if your public IP has changed
+since.
+
+What they say about billing depends on what was actually recorded, never on
+the verdict alone (#4007). When the record shows an instance exists, the
+summary says so plainly — **it is being billed** — and offers `nyxgpt cloud
+destroy --yes` to stop paying for it. A `NOT COMPLETED` that stopped at
+`start` or `infra` instead says nothing was provisioned, and offers no
+destroy: the deploy died before the substrate, so there is nothing to tear
+down and `cloud destroy` would only answer "nothing to destroy".
+
+This exists because a failed provision used to report `UNKNOWN from this
+machine` — sending an operator to look for another workstation while a live,
+billing EC2 instance ran and their own `state.json` named its instance id.
+The record behind it, `deploy-attempt.json`, is written **before** anything is
+provisioned and closed out on every exit path, so a deploy that dies in the
+middle (or takes the laptop's lid with it) still leaves something to read.
+
+A completed deployment plus a *later* failed deploy is its own state and is
+reported as such: the summary stays `DEPLOYED` — the stack really is
+installed — and adds a `Last deploy attempt` row naming the version and phase
+that failed. Without it, an instance running the previous release looks
+identical to one running the release you thought you just shipped.
 
 ### `nyxgpt cloud ops` — inspecting the instance (#3813)
 
@@ -373,6 +409,24 @@ The SSH user and identity file the deploy recorded are reused automatically,
 so a deployment made with a non-default key does not need `--identity-file`
 re-typed on every inspection; `--ssh-user`, `--identity-file` and `--host`
 still override.
+
+#### If you SSH in yourself (#3993)
+
+`nyxgpt` is on the PATH of any login shell on the instance. Both bootstraps
+install a `/etc/profile.d/nyxgpt.sh` drop-in that prepends the CLI's `bin`
+directory, so a plain `ssh` session can run `nyxgpt ops doctor`,
+`nyxgpt ops logs api` and the rest directly:
+
+| How the instance was provisioned | Where the binary lives |
+| --- | --- |
+| `nyxgpt cloud deploy` (SSH-driven, Linux) | `~/.nyxGPT/venv/bin/nyxgpt` |
+| `nyxgpt cloud user-data --os linux` (first-boot bootstrap) | `~/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt` |
+| `--os macos` | on the PATH already — the `nyxgpt-api` keg symlinks it into Homebrew's `bin` |
+
+The wrapped inspection commands above remain the recommended route (they need
+no SSH session at all); this is for the case where you are already on the box
+diagnosing something, and used to get `nyxgpt: command not found` from every
+command the docs told you to run.
 
 ### Reaching it: `nyxgpt cloud tunnel`
 
@@ -765,10 +819,18 @@ backend's own `LIFECYCLE_COMMANDS`, so the two can never drift apart.
 | Path | Contents |
 | --- | --- |
 | `~/.nyxGPT/cloud/deploy.json` | What the last successful deploy installed: version, host, instance, region, enabled profiles |
+| `~/.nyxGPT/cloud/deploy-attempt.json` | The last deploy this machine *started*, whatever became of it — status (`running`/`failed`/`succeeded`), the phase it reached, target and version (#3993). Written before anything is provisioned, so a deploy that dies partway still leaves a record |
 | `~/.nyxGPT/cloud/tunnel.json` | The backgrounded tunnel's pid and forwarded profiles, so `--stop`/`--status` (and the dashboard) find a tunnel another process started |
 | `~/.nyxGPT/cloud/history.jsonl` | One line per deploy, teardown and [smoke run](#nyxgpt-cloud-smoke--the-end-to-end-cloud-test-p6-17-3515) — timestamp, action, outcome, version, instance, and what went wrong on a failure |
 
-All three are read-only inputs to `nyxgpt cloud status`, which
+`deploy-attempt.json` is deliberately a separate file from `deploy.json`, not
+an early write into it: `deploy.json` is the record of a deployment that
+*exists*, and putting a half-finished attempt there would make `nyxgpt cloud
+status` report DEPLOYED for a stack that was never installed. A teardown
+deletes both — once the substrate is gone, "a deploy stopped at `provision`"
+describes an instance that no longer does.
+
+All of them are read-only inputs to `nyxgpt cloud status`, which
 answers without calling AWS or touching the instance — safe to poll, and it
 still answers when your AWS credentials have expired.
 
@@ -962,6 +1024,24 @@ below for why a re-apply is not the way to change it.
 | `~/.nyxGPT/cloud/backend.json` | where remote state lives, once migrated, mode 0600 |
 | `~/.nyxGPT/cloud/state.json` | the ids `allow-ip` (and later `cloud deploy`) read |
 
+`state.json` is **replaced**, not merged, on every apply (#3993). An apply
+writes each of its own keys (`region`, `vpc_id`, `security_group_id`,
+`instance_id`, `instance_type`, `public_ip`, `private_ip`, `ssh_key_name`)
+from the new outputs and *drops* any it did not produce; keys other
+`nyxgpt cloud` commands own are left alone. The merge this replaced kept a
+prior substrate's value for any key the new outputs did not carry, so the
+file could describe two substrates at once — observed live as the new
+instance's id sitting beside a destroyed substrate's `security_group_id`,
+which sent `nyxgpt cloud allow-ip`'s auto-discovery at a group that no longer
+existed, exactly while the operator was locked out and depending on it.
+
+The one thing that does **not** rewrite it is an apply whose outputs could
+not be read at all. `terraform output` returning nothing means "cannot
+determine", not "there is nothing" — blanking every recorded id on a failed
+*read* would be a worse falsehood than the stale one. That case leaves the
+file untouched and prints a warning naming it, because the ids in it are then
+an earlier substrate's and must not be trusted until a re-run refreshes them.
+
 ### Credentials and cost
 
 Provisioning uses boto3-style credential resolution via Terraform's AWS
@@ -1153,7 +1233,8 @@ What it does:
 | --- | --- |
 | `--ip <addr>` | Use this IP or CIDR instead of auto-detecting the caller's current public IP. A bare address (no `/`) is scoped to `/32`; an explicit CIDR is kept as passed. `0.0.0.0/0` is always refused. |
 | `--security-group-id <id>` | Security group to update. Defaults to `~/.nyxGPT/cloud/state.json`'s `security_group_id`. |
-| `--region <region>` | AWS region. Defaults to `~/.nyxGPT/cloud/state.json`'s `region`, then boto3's normal region resolution (`AWS_REGION`/`AWS_DEFAULT_REGION`/profile config). |
+| `--region <region>` | AWS region. Defaults to `~/.nyxGPT/cloud/state.json`'s `region`, then the last `cloud infra apply`'s, then config.ini `[cloud] region`, then boto3's normal region resolution (`AWS_REGION`/`AWS_DEFAULT_REGION`/profile config). |
+| `--profile <name>` | AWS profile to authenticate with. Defaults to the profile the last `nyxgpt cloud infra apply` used, then config.ini `[cloud] profile`, then `AWS_PROFILE`, then boto3's default chain (#3993). |
 
 ### Example
 
@@ -1169,10 +1250,50 @@ Security group sg-0123456789abcdef0: SSH already allowed from 203.0.113.42/32 --
 
 ### Credentials
 
-`allow-ip` uses boto3's normal credential resolution (environment variables,
-`~/.aws/credentials`, an instance/SSO profile, ...) -- it does not collect or
-store AWS credentials itself. See "Guided AWS credentials setup" below for
+`allow-ip` resolves its AWS **profile** the same way the substrate commands
+do, and then hands the rest to boto3's normal credential resolution
+(`~/.aws/credentials`, SSO, an instance role, ...). It never collects or
+stores AWS credentials itself. See "Guided AWS credentials setup" below for
 how to get a profile in place.
+
+The order (#3993):
+
+1. `--profile <name>`
+2. the profile the last `nyxgpt cloud infra apply` recorded
+   (`~/.nyxGPT/cloud/infra.json`)
+3. config.ini `[cloud] profile`
+4. `AWS_PROFILE`
+5. boto3's own default chain
+
+Steps 2 and 3 are the point. Until they existed, `allow-ip` built its client
+with no profile at all, so a workstation whose **default** profile names a
+different account queried that account — and got:
+
+```
+nyxgpt cloud allow-ip: Failed to describe security group sg-0fed18aaeb342c218:
+An error occurred (InvalidGroup.NotFound) ... does not exist
+```
+
+for a security group that was attached to the running instance the whole
+time. That is the worst message this command could produce: it is the
+lockout-recovery tool, so it is read by an operator who cannot SSH in to
+check, and "does not exist" reads as *your infrastructure is gone*. A
+not-found now always names the account and profile the lookup actually used,
+so a credential-resolution mistake can never be mistaken for a destroyed
+substrate:
+
+```
+nyxgpt cloud allow-ip: Failed to describe security group sg-0fed18aaeb342c218:
+An error occurred (InvalidGroup.NotFound) ... does not exist -- that lookup ran
+against AWS account 210987654321, profile 'default'. If the group exists in a
+different account, this is a credential-resolution problem and not a destroyed
+substrate: set `[cloud] profile` in ~/.nyxGPT/config.ini (or pass
+`nyxgpt cloud allow-ip --profile <name>`), then re-run.
+```
+
+Cloud **secrets** resolution (`[secrets] provider = ssm|secretsmanager`,
+[below](#cloud-secrets-ssm--secrets-manager)) had the same gap and takes the
+same profile: `[secrets] profile` when set, otherwise `[cloud] profile`.
 
 ---
 
@@ -1437,12 +1558,21 @@ time instead:
 [secrets]
 provider = ssm            # or "secretsmanager"
 region = us-east-1        # optional -- falls back to boto3's normal region resolution
+profile = nyxgpt          # optional -- falls back to [cloud] profile, then boto3's default chain
 ssm_prefix = /nyxgpt       # provider = ssm
 secretsmanager_id = nyxgpt # provider = secretsmanager
 ```
 
 Leaving `provider` blank (the default) is a local deploy: the three
 credentials are read from `config.ini` exactly as before, unaffected.
+
+`profile` exists for the same reason `allow-ip --profile` does (#3993): these
+clients were built with no profile, so a workstation whose default profile
+names a different account resolved secrets from *that* account — and the
+failure is quieter here than a NotFound, because a parameter that is missing
+from the wrong account is indistinguishable from an unconfigured secret.
+Unset, it inherits `[cloud] profile`, so an operator who configured the cloud
+reference once does not have to configure it twice.
 
 ### SSM Parameter Store layout (`provider = ssm`)
 
