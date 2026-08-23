@@ -650,7 +650,10 @@ Reports:
   tagging its `api`/`web` components. A deployment that is running with
   nothing recorded is reported as `not recorded` (tagged `[unrecorded]` per
   component) rather than defaulting to `artifact`, which for that path would
-  be backwards — see [terraform.md](terraform.md).
+  be backwards — see [terraform.md](terraform.md). The line is printed
+  whenever a marker exists, so when *nothing* is deployed it says so in the
+  same terms the native line does: a record of the last Terraform install,
+  not a statement about whatever is serving now (#3989).
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
   Compose deployment of the same component is also running. If a component is reported
@@ -672,6 +675,9 @@ Reports:
   (images built from the published `nyxgpt-api`/`nyxgpt-web` artifacts) or
   `dev` (images built from a checkout's working tree, #3834). It is reported
   here, not in the native line above, because the two are separate installs
+  — and, when the namespace holds no api/web Pods at all, the mode is
+  named as a record of the last install rather than described as what the
+  Pods are running (#3989)
   ([kubernetes.md](kubernetes.md#install-modes-artifact-and---dev)).
 - **Terraform component state** for each `nyxgpt-tf-*` core container, when any are
   running. If a component is reported running under Terraform *and* under native/Compose
@@ -1401,6 +1407,26 @@ Behavior:
   missing/changed, so re-running never duplicates a dashboard or container.
 - Skips (without failing) on a host with no Docker, since these tools have
   no native/Homebrew path -- see [docker-compose.md](docker-compose.md).
+- **Verifies the containers stayed up before reporting the stack up** (#3993).
+  `docker compose up -d` exits 0 once the containers are *created*, which says
+  nothing about whether the software inside them survived its own boot: a
+  Grafana crash-looping on a bad provisioning file used to be reported as a
+  successful step, and the only visible symptom was the *next* step failing to
+  reconcile its admin credential. The step now watches the services it started
+  for a bounded window (20s) and reports one of three outcomes:
+  - `[OK] Observability stack up: ...` -- every started container was observed
+    running on consecutive readings.
+  - `[FAIL] Observability stack did not stay up: <service> crash-looping or
+    exited` -- with that container's own last log line in the detail, and
+    `nyxgpt ops logs <service>` named for the rest. The config flags below are
+    **not** flipped on, and `nyxgpt ops install` stops before the Grafana
+    credential reconcile rather than authenticating against a restarting
+    container.
+  - `[UNKNOWN] Observability stack started; could not verify the containers
+    stayed up` -- the Docker probe could not run from this session (e.g. the
+    daemon is unreachable, see [self-healing.md](self-healing.md)). Neither
+    success nor failure is claimed: nothing here establishes that the stack is
+    broken, so the install continues, and the reason is printed.
 - Once the profiles are up, flips `[monitoring]`, `[log_aggregation]`, and
   `[tracing] enabled = true` in `~/.nyxGPT/config.ini` so the Admin
   Dashboard's status badges immediately reflect that they're live, instead

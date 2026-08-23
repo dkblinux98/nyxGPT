@@ -35,7 +35,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from collections.abc import Callable, Container, Iterator, Mapping
+from collections.abc import Callable, Container, Iterator, Mapping, Sequence
 from configparser import ConfigParser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1551,6 +1551,25 @@ def compose_core_components(mode: DeploymentMode) -> list[str]:
 # --- Restart helpers ---
 
 
+def _brew_cellar() -> Path | None:
+    """Homebrew's Cellar directory, or None when it cannot be located.
+
+    Delegates to `brew_services` (D-022): `self_heal.py` names formulas too and
+    `ops.py` imports it, so the answer to "which tap owns this keg" has to sit
+    below both rather than be copied into each.
+    """
+    return brew_services.cellar(_which)
+
+
+def _brew_formula_spec(name: str) -> str:
+    """`<tap>/<name>` for an installed keg, else `name` unchanged (#3861).
+
+    Thin delegation, kept as a name because seven call sites use it. The
+    reasoning lives with the implementation in `brew_services.formula_spec`.
+    """
+    return brew_services.formula_spec(name, _which)
+
+
 def _restart_brew_service(name: str) -> list[OpsResult]:
     """Restart Homebrew service `name` via `brew services restart`.
 
@@ -1560,7 +1579,7 @@ def _restart_brew_service(name: str) -> list[OpsResult]:
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot restart {name}")]
     try:
-        cp = _run(["brew", "services", "restart", name], check=False)
+        cp = _run(["brew", "services", "restart", _brew_formula_spec(name)], check=False)
         if cp.returncode == 0:
             return [OpsResult(True, f"Restarted brew service: {name}")]
         details = _output_excerpt(cp)
@@ -2225,7 +2244,10 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     "already up to date (skipped)"), for the caller to report.
     """
     installed = (
-        _run(["brew", "list", "--versions", name], check=False, expected=True).returncode == 0
+        _run(
+            ["brew", "list", "--versions", _brew_formula_spec(name)], check=False, expected=True
+        ).returncode
+        == 0
     )
     marker = marker_dir / f".{name}.sha256"
     previous_sha256 = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
@@ -2424,7 +2446,7 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
         f"{tap}/nyxgpt-api", "nyxgpt-api", sha256=sha, marker_dir=tap_dir / "dist"
     )
     if decision == "already up to date (skipped reinstall)":
-        _run(["brew", "services", "start", "nyxgpt-api"], check=False)
+        _run(["brew", "services", "start", _brew_formula_spec("nyxgpt-api")], check=False)
         results.append(OpsResult(True, f"nyxgpt-api: {decision}; requested service start", ""))
     else:
         # A new keg was just installed -- restart, not start, so the running
@@ -2493,7 +2515,7 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
         f"{tap}/nyxgpt-web", "nyxgpt-web", sha256=sha, marker_dir=tap_dir / "dist"
     )
     if decision == "already up to date (skipped reinstall)":
-        _run(["brew", "services", "start", "nyxgpt-web"], check=False)
+        _run(["brew", "services", "start", _brew_formula_spec("nyxgpt-web")], check=False)
         results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
     else:
         # A new keg (and new `.next` build output) was just installed --
@@ -6921,6 +6943,10 @@ def _down_terraform(_args) -> int:
 # a place an API key belongs.
 K8S_DIR = NYXGPT_HOME / "k8s"
 K8S_NAMESPACE = "nyxgpt"
+
+# Pod-name prefixes of the two *app* workloads, as distinct from the
+# observability Pods that share the namespace (see `_k8s_app_pods_present`).
+K8S_APP_POD_PREFIXES = ("nyxgpt-api-", "nyxgpt-web-")
 K8S_IMAGE = "nyxgpt-api:local"
 
 # The workload that serves this deployment's LLM, and the URL its clients use
@@ -7997,6 +8023,21 @@ def _k8s_pod_states(
         return [], OpsResult(False, "Could not parse pod status", f"{e}\n{_cp_details(cp)}")
     items = payload.get("items") or []
     return [_classify_k8s_pod(p) for p in items if isinstance(p, dict)], None
+
+
+def _k8s_app_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
+    """Whether any api/web Pod is actually in the namespace.
+
+    `_k8s_pod_states` reads *every* Pod in the `nyxgpt` namespace, which
+    includes the in-cluster observability workloads. A namespace holding only
+    those has no api/web to describe, so the install-mode follow-up ("the Pods
+    run images built from that working tree") would be asserting a deployment
+    that is not there -- the Kubernetes twin of the Terraform defect in #3989.
+    The app Deployments are `nyxgpt-api-{stable,canary}` and
+    `nyxgpt-web-{stable,canary}` (k8s/deployment*.yaml), so their Pods are the
+    ones whose names begin with these prefixes.
+    """
+    return any(name.startswith(K8S_APP_POD_PREFIXES) for name in (s.name for s in pod_states))
 
 
 def _k8s_workload_selector(ref: str) -> str:
@@ -10631,7 +10672,22 @@ def status(_args) -> int:
         print(
             f"Install mode (terraform): {terraform_install_mode.label(deployed=terraform_deployed)}"
         )
-        if terraform_install_mode.is_dev:
+        if not terraform_deployed:
+            # The marker alone is enough to print the line above, so this
+            # branch is reached whenever a Terraform install ran on this
+            # machine at some point -- including one that failed, or one that
+            # has since been torn down. Saying so is the whole point (#3989):
+            # the dev follow-up below used to be printed unconditionally and
+            # asserted, in the present tense, that api/web containers exist
+            # and describes what they were built from, on a machine where
+            # `docker cassandra: absent` and every Terraform component
+            # `absent` appeared three lines later. Mirrors the native block
+            # above, which has always drawn this distinction.
+            print(
+                "  No Terraform deployment on this machine -- that is a record of the "
+                "last Terraform install, not a statement about whatever is serving now."
+            )
+        elif terraform_install_mode.is_dev:
             print(
                 "  the api/web containers were built from that working tree, not from "
                 "published images -- artifact-path behavior is NOT what is being "
@@ -10810,7 +10866,16 @@ def status(_args) -> int:
             # this host were installed from.
             k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
             print(f"  Install mode: {k8s_install_mode.label()}")
-            if k8s_install_mode.is_dev:
+            if not _k8s_app_pods_present(pod_states):
+                # Same distinction the native and Terraform lines draw
+                # (#3989): the marker records what the last install built,
+                # and a namespace with no api/web Pods in it is not running
+                # any of it.
+                print(
+                    "  No nyxGPT api/web Pods in this namespace -- that is a record of the "
+                    "last Kubernetes install, not a statement about whatever is serving now."
+                )
+            elif k8s_install_mode.is_dev:
                 checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
                 if checkout is not None and not checkout.exists():
                     print(
@@ -11503,6 +11568,12 @@ def _terraform_install_mode_issues() -> list[str]:
     with it `ops verify`) on every machine that deployed before the marker
     existed would report a healthy stack as broken.
 
+    A marker with *nothing* deployed is reported as a record of the last
+    Terraform install rather than described in the present tense (#3989):
+    the marker alone is enough to reach this function, so a torn-down or
+    failed install would otherwise have its recorded mode read as a
+    description of containers that are not there.
+
     The one issue raised here is the Terraform twin of the native dev-mode
     check: a running dev-mode deployment whose checkout is gone is running
     images nothing can rebuild.
@@ -11512,14 +11583,24 @@ def _terraform_install_mode_issues() -> list[str]:
         return []
     state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
     print(f"Install mode (terraform): {state.label(deployed=deployed)}")
-    if deployed and not state.recorded:
+    if not deployed:
+        # Reached whenever a marker exists and nothing is up -- a torn-down
+        # or failed Terraform install. Printed, never raised: a record of a
+        # past install is not a fault. Said out loud because the line above
+        # otherwise reads as a description of a running stack (#3989).
+        print(
+            "  No Terraform deployment on this machine -- that is a record of the "
+            "last Terraform install, not a statement about whatever is serving now."
+        )
+        return []
+    if not state.recorded:
         print(
             "  (nothing recorded what these containers were built from -- redeploy with "
             "`nyxgpt up --terraform`, or `--dev` for a working-tree build, to "
             "record it)"
         )
         return []
-    if not (state.is_dev and deployed):
+    if not state.is_dev:
         return []
     checkout = Path(state.checkout) if state.checkout else None
     if checkout is not None and checkout.is_dir():
@@ -12056,7 +12137,7 @@ def _stop_brew_service(name: str) -> list[OpsResult]:
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot stop {name}")]
     try:
-        cp = _run(["brew", "services", "stop", name], check=False)
+        cp = _run(["brew", "services", "stop", _brew_formula_spec(name)], check=False)
     except Exception as e:
         return [
             OpsResult(
@@ -12766,7 +12847,11 @@ def _remove_brew_service_launchd_jobs() -> list[OpsResult]:
     for label in labels:
         formula = label[len(_BREW_SERVICE_LABEL_PREFIX) :]
         if brew is not None:
-            cp = _run(["brew", "services", "stop", formula], check=False, expected=True)
+            cp = _run(
+                ["brew", "services", "stop", _brew_formula_spec(formula)],
+                check=False,
+                expected=True,
+            )
             if cp.returncode == 0:
                 results.append(OpsResult(True, f"Stopped brew service: {formula}"))
         results.extend(_stop_launchagent(label))
@@ -12839,7 +12924,14 @@ def _brew_formula_installed(name: str) -> bool:
     if _which("brew") is None:
         return False
     try:
-        return _run(["brew", "list", "--formula", name], check=False, expected=True).returncode == 0
+        return (
+            _run(
+                ["brew", "list", "--formula", _brew_formula_spec(name)],
+                check=False,
+                expected=True,
+            ).returncode
+            == 0
+        )
     except Exception as e:
         logger.warning("Could not ask brew about %s: %s", name, e, extra={"component": "ops"})
         return False
@@ -13982,6 +14074,169 @@ def _sync_host_relay_env(cfg_path: Path | None = None, env_path: Path | None = N
     return OpsResult(True, f"Host API relay disabled ({reason})")
 
 
+# How long `_start_observability_stack` waits for the containers it just
+# started to settle, and how often it looks. `docker compose up -d` exits 0
+# once the containers are *created*, which is a claim about Docker, not about
+# the software inside them: the Grafana crash loop in #3993 was created
+# successfully and then died on its own provisioning directory, over and over,
+# while the step printed "Observability stack up". Twenty seconds is bounded
+# (an install step may not hang) and is comfortably longer than Docker's
+# initial restart backoff, so a container that cannot survive its own boot is
+# observed `restarting` well inside it.
+OBSERVABILITY_SETTLE_TIMEOUT_SECONDS = 20.0
+OBSERVABILITY_SETTLE_POLL_SECONDS = 2.0
+
+# A verdict must hold twice before the step calls the stack settled. One
+# reading taken immediately after `up -d` sees "running" for any container that
+# has not crashed *yet* -- which is every crash loop, for its first second.
+OBSERVABILITY_SETTLE_CONFIRMATIONS = 2
+
+# Number of log lines pulled from a container that failed to settle, of which
+# only the last non-empty one is quoted into the step message.
+_SETTLE_LOG_TAIL = 50
+
+# Compose states that mean a container this step just started is not staying
+# up: `restarting` is the crash loop itself, `exited`/`dead` are the container
+# already gone. (`_parse_compose_ps` has already dropped the one-shot services
+# that exited 0 -- a completed migration is not a crashed container.)
+_CRASHED_CONTAINER_STATES = frozenset({"restarting", "exited", "dead", "removing"})
+
+# The three answers the settle check can give. They are deliberately three and
+# not two: "stayed up", "could not be determined from here" and "definitely
+# failed" call for different operator responses, and collapsing the middle one
+# into either of the outer two is the defect class #3812 and #3993 were both
+# filed against.
+SETTLE_STATE_SETTLED = "settled"
+SETTLE_STATE_UNDETERMINED = "undetermined"
+SETTLE_STATE_CRASHED = "crashed"
+
+
+@dataclass(frozen=True)
+class _SettleVerdict:
+    """What the post-`up -d` stability check established, and why.
+
+    `state` is one of `SETTLE_STATE_SETTLED` / `SETTLE_STATE_UNDETERMINED` /
+    `SETTLE_STATE_CRASHED`. `detail` is the operator-facing reason (the
+    container's own last log line for a crash, the probe's own failure reason
+    for an undetermined verdict) and `services` names the containers the
+    verdict is about.
+    """
+
+    state: str
+    detail: str = ""
+    services: tuple[str, ...] = ()
+
+
+def _observability_failure_reason(service: str) -> str:
+    """The last line `service` printed before it stopped staying up.
+
+    Goes through `self_heal.component_logs` -- the same wrapped path `nyxgpt
+    ops logs <service>` uses -- rather than shelling out to `docker logs`
+    here, so there is one implementation of "read a component's output" and it
+    keeps working in the non-Compose modes. The point of quoting it is #3993's
+    core complaint: the real cause ("Grafana provisioning error: ...") was one
+    line away from the operator and took three SSH sessions to find, because
+    the step reported success and the *next* step reported a credential
+    problem it did not have.
+
+    Never raises and never returns an empty string: a log read that fails says
+    so, because "couldn't read the logs" is still better evidence than silence.
+    """
+    try:
+        result = self_heal.component_logs(service, tail=_SETTLE_LOG_TAIL)
+    except Exception as e:  # pragma: no cover - defensive; component_logs is total
+        return f"(could not read {service} logs: {type(e).__name__}: {e})"
+    if not result.ok:
+        return f"(could not read {service} logs: {result.message})"
+    lines = [line.strip() for line in (result.details or "").splitlines() if line.strip()]
+    if not lines:
+        return "(no log output)"
+    tail = lines[-1]
+    return tail[:197] + "..." if len(tail) > 200 else tail
+
+
+def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
+    """Watch the just-started `services` for a bounded window and rule on them.
+
+    `docker compose up -d` exiting 0 means the containers were created. It says
+    nothing about whether they are still there a second later, which is why the
+    observability step used to report "Observability stack up" over a Grafana in
+    a permanent crash loop, and why the *next* step's "Could not reconcile
+    Grafana admin credential" became the only visible symptom of a completely
+    different fault (#3993).
+
+    Answers with one of three verdicts, never collapsing them:
+
+    - **crashed** -- a service is `restarting`/`exited`/`dead`. Definite: the
+      probe ran and reported a container that is not staying up. Carries that
+      container's own last log line.
+    - **settled** -- every service the probe reported for this stack was
+      `running` on `OBSERVABILITY_SETTLE_CONFIRMATIONS` consecutive readings.
+      Two readings, not one: a container that dies a second after creation
+      reads `running` on the first look.
+    - **undetermined** -- the probe could not run (no Docker access from here:
+      `compose_probe().available` is False, see #3812), reported none of the
+      started services, or the window closed with services neither running nor
+      crashed (e.g. still `created`). Nothing is claimed either way; the caller
+      must not turn this into a success *or* a failure.
+
+    Reuses `self_heal.compose_probe()` rather than adding a second Docker hop:
+    that function is already the project's "ask Docker, and say so if you
+    couldn't" primitive, and duplicating it would mean two answers to one
+    question.
+    """
+    wanted = set(services)
+    deadline = time.monotonic() + OBSERVABILITY_SETTLE_TIMEOUT_SECONDS
+    confirmations = 0
+    last_detail = ""
+    while True:
+        probe = self_heal.compose_probe()
+        if not probe.available:
+            return _SettleVerdict(
+                SETTLE_STATE_UNDETERMINED,
+                probe.reason or "the Compose probe could not run from here",
+                tuple(sorted(wanted)),
+            )
+        observed = {s.service: s for s in probe.statuses if s.service in wanted}
+        crashed = sorted(
+            name for name, s in observed.items() if s.state in _CRASHED_CONTAINER_STATES
+        )
+        if crashed:
+            reasons = "; ".join(
+                f"{name} ({observed[name].state}): {_observability_failure_reason(name)}"
+                for name in crashed
+            )
+            return _SettleVerdict(SETTLE_STATE_CRASHED, reasons, tuple(crashed))
+        if not observed:
+            return _SettleVerdict(
+                SETTLE_STATE_UNDETERMINED,
+                "`docker compose ps` ran but reported none of the services this step "
+                "started, so nothing here establishes whether they are up",
+                tuple(sorted(wanted)),
+            )
+        unsettled = sorted(name for name, s in observed.items() if s.state != "running")
+        if unsettled:
+            confirmations = 0
+            last_detail = "still not running after the settle window: " + ", ".join(
+                f"{name} ({observed[name].state})" for name in unsettled
+            )
+        else:
+            confirmations += 1
+            if confirmations >= OBSERVABILITY_SETTLE_CONFIRMATIONS:
+                return _SettleVerdict(SETTLE_STATE_SETTLED, "", tuple(sorted(observed)))
+        if time.monotonic() >= deadline:
+            return _SettleVerdict(
+                SETTLE_STATE_UNDETERMINED,
+                last_detail
+                or (
+                    "the settle window closed before the containers could be confirmed "
+                    "running twice"
+                ),
+                tuple(sorted(observed)),
+            )
+        time.sleep(OBSERVABILITY_SETTLE_POLL_SECONDS)
+
+
 def _start_observability_stack(
     extra_compose_files: list[Path] | None = None, force_recreate: bool = False
 ) -> list[OpsResult]:
@@ -13994,6 +14249,14 @@ def _start_observability_stack(
     bringing the stack up is the only step needed to get a populated SRE
     view. Re-running is safe: `docker compose up -d` only (re)creates what's
     missing/changed.
+
+    Reports the stack up only once the containers it started are verified to
+    have *stayed* up (`_observability_settle_verdict`, #3993). `up -d` exiting
+    0 means "created", not "running a second later", and a container that
+    crash-loops on its own config was previously reported as a successful
+    step. A crash loop now fails the step with that container's own last log
+    line; a stack whose state could not be read from here is reported as
+    exactly that (`status="UNKNOWN"`), never as either outcome.
 
     The service list passed to `up -d` is resolved dynamically via `docker
     compose config --services` and explicitly excludes `CORE_APP_SERVICES`.
@@ -14067,7 +14330,44 @@ def _start_observability_stack(
             )
         ]
 
+    # `up -d` exiting 0 is not the end of the question (#3993) -- see
+    # `_observability_settle_verdict`.
+    verdict = _observability_settle_verdict(observability_services)
+
+    if verdict.state == SETTLE_STATE_CRASHED:
+        # Definitely failed, and the config flags stay off: the same rule the
+        # `up -d` failure above follows, for the same reason -- a stack that is
+        # not running is not a stack to advertise as enabled.
+        return [
+            OpsResult(
+                False,
+                "Observability stack did not stay up: "
+                + ", ".join(verdict.services)
+                + " crash-looping or exited",
+                f"{verdict.detail} -- read the full output with `nyxgpt ops logs "
+                f"{verdict.services[0]}`, fix the cause, then re-run `nyxgpt ops "
+                "observability`.",
+            )
+        ]
+
     _enable_observability_config()
+
+    if verdict.state == SETTLE_STATE_UNDETERMINED:
+        # Not a success and not a failure: the containers were created (Docker
+        # said so) but nothing here could confirm they stayed up. Saying "up"
+        # would be the #3993 lie with a different cause, and saying "failed"
+        # would be #3812's -- reporting an unqueryable probe as an outage.
+        return [
+            OpsResult(
+                True,
+                "Observability stack started; could not verify the containers stayed up",
+                f"{verdict.detail} -- check `nyxgpt ops status` and `nyxgpt ops doctor` "
+                "from a session that can reach the Docker daemon before relying on "
+                "Grafana http://localhost:3001 / Jaeger http://localhost:16686 / "
+                "GlitchTip http://localhost:8080.",
+                status="UNKNOWN",
+            )
+        ]
 
     return [
         OpsResult(
@@ -14075,6 +14375,7 @@ def _start_observability_stack(
             "Observability stack up: Grafana http://localhost:3001, "
             "Jaeger http://localhost:16686, Loki via Grafana Explore, "
             "GlitchTip http://localhost:8080",
+            "Containers verified running (not restarting) after start. "
             "Dashboards, tracing, and log search are live with no further steps. "
             "GlitchTip's admin user/org/project/DSN are auto-provisioned next by "
             "`nyxgpt ops glitchtip-init` (run automatically as part of `nyxgpt ops "
@@ -14128,6 +14429,18 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
 
     start_results = _start_observability_stack()
     results += start_results
+    # A stack that did not settle is not a stack to reconcile against (#3993):
+    # authenticating against a restarting Grafana turns a crash loop into
+    # "Could not reconcile Grafana admin credential", which is the wrong fault
+    # reported to the operator. `ok=False` here now includes the settle
+    # check's *definite* crash verdict, so the reconcile below never runs
+    # against a container that is not staying up.
+    #
+    # The settle check's undetermined verdict is deliberately NOT a stop: it is
+    # `ok=True` with `status="UNKNOWN"`, because a probe that could not run is
+    # not evidence of a broken stack (#3812). That case falls through to the
+    # `grafana_running` gate below, which asks the same probe and simply
+    # declines to wait on a Grafana it cannot see running.
     if not all(r.ok for r in start_results):
         return results
 

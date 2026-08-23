@@ -179,6 +179,24 @@ sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_PYTHON" -m venv "$CLI_VENV"
 sudo -u "$NYXGPT_TARGET_USER" -H "$CLI_VENV/bin/python" -m pip install --upgrade pip
 sudo -u "$NYXGPT_TARGET_USER" -H "$CLI_VENV/bin/python" -m pip install "$PIP_SPEC"
 
+# Put `nyxgpt` on the login user's PATH (#3993). `run_as_target` below sets
+# PATH for this bootstrap's own invocations only, so without this an operator
+# who SSHes in to diagnose a failed provision gets `nyxgpt: command not found`
+# from every wrapped command the docs and the dashboard tell them to run --
+# while the binary sits in $CLI_VENV/bin, which nothing names. A profile.d
+# drop-in rather than an edit to the user's dotfiles: idempotent (one file,
+# rewritten), applies to every login shell, and leaves ~/.bashrc alone. The
+# delimiter is quoted so $HOME is expanded by the login shell that sources it,
+# not by this run.
+tee /etc/profile.d/nyxgpt.sh >/dev/null <<'PROFILE_EOF'
+# Managed by the nyxGPT EC2 bootstrap (#3993) -- rewritten on every run.
+if [ -d "$HOME/.nyxGPT/opt/nyxgpt-cli/bin" ]; then
+  PATH="$HOME/.nyxGPT/opt/nyxgpt-cli/bin:$PATH"
+  export PATH
+fi
+PROFILE_EOF
+chmod 0644 /etc/profile.d/nyxgpt.sh
+
 # Ollama's official installer (also no repo clone).
 if ! command -v ollama >/dev/null 2>&1; then
   curl -fsSL https://ollama.com/install.sh | sh
