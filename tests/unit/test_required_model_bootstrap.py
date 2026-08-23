@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from nyxgpt import model_bootstrap, ops
+from nyxgpt.config import get_default_model
 
 
 def _cfg(**overrides: str) -> ConfigParser:
@@ -391,12 +392,17 @@ def test_status_reports_defaults_instead_of_raising_when_there_is_no_config(
     assert info["reachable"] is True
     assert info["ready"] is False
     # The code defaults, reported as missing -- what an unconfigured machine
-    # would in fact ask Ollama for.
+    # would in fact ask Ollama for. Asked of `get_default_model` rather than
+    # spelled out: this test is about the no-config branch not raising, and
+    # hard-coding the model name made it fail on every run from the day the
+    # default changed (`llama3.1:8b` -> `qwen3.5:0.8b`, commit 1ece87b0) for a
+    # reason that has nothing to do with what it tests (#4020).
+    code_default = get_default_model(ConfigParser())
     assert [m["role"] for m in info["models"]] == ["chat"]
-    assert info["models"][0]["model"] == "llama3.1:8b"
+    assert info["models"][0]["model"] == code_default
     assert info["models"][0]["present"] is False
     out = capsys.readouterr().out
-    assert "chat: llama3.1:8b -- MISSING" in out
+    assert f"chat: {code_default} -- MISSING" in out
     assert "nyxgpt ops install" in out
 
 

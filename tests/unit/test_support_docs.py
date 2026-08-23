@@ -43,6 +43,7 @@ _NOT_PRODUCT_DOCS = {
     "security-scanning-ci",
     "sprint-autopilot",
     "testing",
+    "unit-suite-expected-failures",
 }
 
 
