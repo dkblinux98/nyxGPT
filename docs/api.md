@@ -1459,6 +1459,11 @@ trying to connect to the Docker daemon socket ... ```), empty when the probe
 is available. A caller reads this as "can't check the observability tier from
 here", never as "the observability tier isn't running" -- see
 [self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
+A socket-access failure is retried once through the `docker` group (`sg
+docker`) before the flag goes `false`, so on the common cause -- a service
+session that predates its group membership -- the survey runs and this stays
+`true`; see [The `docker` group
+hop](self-healing.md#the-docker-group-hop-making-the-probe-run-not-just-report).
 
 When the probe couldn't run, the affected components are reported as a third
 state rather than as absent: `known: false`, `state: "unknown"`, with the

@@ -200,17 +200,27 @@ touching:
   `pytest tests/unit/` run once wrote synthetic ERROR records through the
   real rotating file handler into `~/.nyxGPT/logs`, which promtail shipped
   to Loki and which then derailed a real incident RCA because it looked
-  indistinguishable from a genuine chat failure (#3443). Two structural
-  fixes, both in `tests/conftest.py`'s session-scoped `_isolate_test_log_dir`
-  fixture: it rewrites the real `~/.nyxGPT/config.ini`'s `[logging] dir` to a
-  temp dir for the whole session (restored at teardown), covering every code
-  path that loads the real config; and it sets a `NYXGPT_LOG_DIR` env var
-  that `get_log_dir()` (`logging.py`) uses as the *fallback* when a cfg
-  doesn't set `[logging] dir` at all, covering tests that swap in their own
-  bare/isolated config. The fixture also asserts the real log dir is
-  untouched at teardown. Don't bypass `get_log_dir()` with a hardcoded
-  `~/.nyxGPT/logs` path in new code, and don't rely on per-test caplog
-  discipline as the only safeguard.
+  indistinguishable from a genuine chat failure (#3443). Three structural
+  fixes. First, `tests/home_sandbox.py` moves `$HOME` to a private
+  per-process temp directory before any `nyxgpt` import, so `~/.nyxGPT` is
+  the suite's own and the operator's is unreachable (#4020). Then
+  `tests/conftest.py`'s session-scoped `_isolate_test_log_dir` fixture
+  rewrites that sandbox `config.ini`'s `[logging] dir` to a temp dir for the
+  whole session, covering every code path that loads config; and it sets a
+  `NYXGPT_LOG_DIR` env var that `get_log_dir()` (`logging.py`) uses as the
+  *fallback* when a cfg doesn't set `[logging] dir` at all, covering tests
+  that swap in their own bare/isolated config. The fixture still asserts the
+  operator's real log dir is untouched at teardown, as a tripwire for
+  absolute paths that route around the sandbox. Don't bypass `get_log_dir()`
+  with a hardcoded `~/.nyxGPT/logs` path in new code, and don't rely on
+  per-test caplog discipline as the only safeguard.
+- **Never run `pytest` against a HOME you care about being an experiment.**
+  You do not need to: since #4020 the suite makes its own. What that means in
+  practice is that `~/.nyxGPT` is *not* a place tests can reach, so a new test
+  that needs install-mode markers, secrets, terraform state or a config file
+  should just use them -- the per-call-site isolation fixtures in
+  `tests/unit/conftest.py` (#3789, #3834, #3835, #3947) are now belt-and-braces
+  rather than the only thing between a test and the developer's machine.
 
 ## 3b) Workflow-authoring conventions
 
@@ -718,6 +728,45 @@ sentence. Point at a living source instead: the PyPI project page,
 `docs/portability-matrix.md`, generated command/API docs, the release tracking
 issue. The reviewer flags a newly introduced expiry-dated claim as a Medium
 finding.
+
+**Run it, do not remember it (#4015).** The sweep above is mechanized:
+
+```bash
+scripts/agents/inverse_claims_sweep.py            # origin/<release branch>...HEAD
+```
+
+It extracts the identifiers your diff changes (commands, endpoints, flags,
+symbols, constants, retired paths) and searches the *prose* of every file the
+diff did not touch — markdown, docstrings, code and workflow comments — for
+sentences that make a **claim** about them. It prints a checklist, **never
+judges truth and never fails on a hit**: you confirm each one.
+`developer_submit_for_review.sh` runs it for you and appends the result to the
+PR body, so a skipped sweep is visible to the reviewer rather than silent. Run
+it yourself while you still have the change in your head; the submit-time copy
+is a receipt, not the check.
+
+**Read the density, not just the list (#4015 amendment).** The output groups
+places by the *fact* they assert, so a cluster of seven is one fact written
+down seven times — the #3811 shape, where the fix had to edit ten files, got
+nine right and missed one. Two consequences for you:
+
+- A tall cluster is where a miss hides. Work through it as one unit.
+- The sweep labels each cluster `restatement` (different wording for different
+  audiences — legitimate, update every one) or `copy-paste` (near-identical
+  wording — a candidate for one canonical statement plus pointers). Those
+  labels are a **guess for a human**, often wrong, and never an instruction to
+  edit. If a `copy-paste` cluster really is redundant, say so in the PR; do not
+  fold it silently into someone else's doc.
+
+Measured over the 2026-08-22 round, the median fact this pipeline changes was
+asserted in **2** places and about a quarter of them in **5 or more** — but
+treat those figures as **provisional**: they were produced before this same
+change fixed the sweep's silent two-dot fallback, and as recorded they cannot
+be audited or reproduced (see **D-046**'s provenance caveat). The *shape* they
+describe — a long tail of heavily-restated facts — is corroborated
+independently; the specific numbers await a re-run. Either way the sweep is
+mitigation, not a cure: the cure is not writing the same fact down five
+times.
 
 **Motivating incident (#3743, 2026-08-13):** #3727/#3735 shipped repo-less
 PyPI publishing while `README.md` still asserted that it had not shipped and a
