@@ -14,10 +14,19 @@ name: Restart Activation Smoke
 # itself generates -- and drives the owner's acceptance scenario: rotate,
 # reproduce the 401, see the notice, defer, restart, healthy stack.
 #
-# Step 11 of that script is the fault injection required by #3753's rule: it
+# Steps 12-13 answer the second question inspection cannot: when the API tier
+# restarts ITSELF, does the notice ever go away? The clearing used to run at
+# the end of a callback living inside the API process, so the restart killed it
+# and a restart that worked reported "Saved -- but not yet in effect" forever
+# (#3806 round two). Step 12 restarts a real api process and asserts the flag
+# is gone -- and that a pending `web` entry beside it is untouched.
+#
+# Steps 11 and 13 are the fault injections required by #3753's rule. Step 11
 # rebuilds the classification WITHOUT `auth.api_key` -- the pre-#3806 product
-# -- and asserts no notice is raised. Without it, steps 3-4 would pass on a
-# build that never fixed anything.
+# -- and asserts no notice is raised. Step 13 brings the api back with the
+# startup reconciliation neutered and asserts the flag survives the restart.
+# Without them, steps 3-4 and 12 would pass on a build that never fixed
+# anything.
 #
 # Scoped to the files that can break it: the activation classification, the
 # pending-restart state, the wrapper template, the proxy that sends the key,

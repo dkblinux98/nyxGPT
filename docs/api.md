@@ -867,6 +867,13 @@ An entry clears when the restart actually happens -- through
 `POST /infra/restart-required`, through `nyxgpt ops restart <target>`, or
 because the value was changed back to what the service is already running.
 
+For `api` the clearing is done by the **restarted API process itself**, at the
+end of its startup: a restart of `api` kills the process that would otherwise
+have reported it finished, so nothing inside the dying process can be the
+completion signal (#3806). One consequence worth knowing when polling this
+endpoint: an `api` entry disappears when the new process is *up*, not when the
+restart command returns, so allow for a full cold start.
+
 **Response:**
 
 ```json
@@ -897,7 +904,9 @@ it the matching way -- the same dispatcher backing self-heal's manual "Heal
 Now" button -- so the caller never needs to know or send a raw command.
 Runs off-thread (restarting `api` kills the process handling the request
 once the underlying command lands), so the response reports `"running"`;
-poll `restart-status` to learn when the pending flag clears. Each restart is
+poll `restart-status` to learn when the pending flag clears. `api` is always
+restarted **last** when several components are pending, because the kill ends
+the loop -- restarting it first would strand the others. Each restart is
 recorded as an ops lifecycle action (`nyxgpt_ops_actions_total`, #3390),
 same as any other operator-initiated restart.
 
@@ -1439,6 +1448,11 @@ trying to connect to the Docker daemon socket ... ```), empty when the probe
 is available. A caller reads this as "can't check the observability tier from
 here", never as "the observability tier isn't running" -- see
 [self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
+A socket-access failure is retried once through the `docker` group (`sg
+docker`) before the flag goes `false`, so on the common cause -- a service
+session that predates its group membership -- the survey runs and this stays
+`true`; see [The `docker` group
+hop](self-healing.md#the-docker-group-hop-making-the-probe-run-not-just-report).
 
 When the probe couldn't run, the affected components are reported as a third
 state rather than as absent: `known: false`, `state: "unknown"`, with the

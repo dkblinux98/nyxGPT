@@ -665,9 +665,45 @@ all eleven were up and healthy. The API process's `systemd --user` session
 predated its `docker` group membership, so every `docker compose ps` exited
 125 -- and the old `compose_probe_available()`, which only checked that
 `docker` was on PATH and the compose file existed, reported "available" over
-an empty survey. If the panel reports unknown with a permission-denied or
-daemon-unreachable reason, the components are not the problem: the service's
-session cannot reach Docker, and `nyxgpt ops restart all` re-establishes it.
+an empty survey.
+
+### The `docker` group hop: making the probe run, not just report
+
+Reporting "unknown" is the correct answer to a question that cannot be
+answered. It is not a correct *outcome*: the owner's re-test of #3812 on a
+fresh `nyxgpt cloud deploy` showed the same eleven components undetermined,
+which leaves the observability tier permanently unobservable from the
+dashboard — and the [Definition of Done](../CLAUDE.md) requires an operator
+to be able to see what is running without a terminal.
+
+So the ordinary cause is now repaired in process rather than only described.
+**Group membership is stamped into a session's credentials when the session is
+created.** `sudo usermod -aG docker <user>` therefore never reaches an
+already-running `systemd --user` manager, and every unit that manager spawns —
+`nyxgpt-api` included — inherits the stale group set. Restarting the *units*
+cannot change that: a unit is forked from the manager, and an unprivileged
+manager cannot grant itself a group. Only recreating the session does
+(`sudo loginctl terminate-user <user>`, or a reboot).
+
+`self_heal._docker_run` closes it without either: when a Docker call fails for
+lack of socket access, it retries once through `sg docker`, which reads
+`/etc/group` live and so applies the membership the user genuinely already
+holds. Every Docker call in the module goes through it — the survey, the
+container and health probes, the restarts and the log reads — because a panel
+that can see eleven components and heal none of them is half a fix. A working
+host never pays for it: the bare call is tried first and its result returned
+untouched, and a hop is looked for only on a permission-denied/daemon-
+unreachable failure. `sg` only, never `sudo`: this runs inside the public API
+process, so it will only ever claim a group the invoking user already has.
+
+The same mechanism is used by `ops._enable_docker_socket_hop` for the rest of
+an `ops install` run and by the cloud bootstrap for the deploy's own commands.
+
+**So if the panel still reports unknown** with a permission-denied or
+daemon-unreachable reason, the hop did not help either: the user is not in the
+`docker` group at all, or the daemon is genuinely down. Check with `nyxgpt ops
+status`; if the group is missing, `nyxgpt ops install` adds it and the session
+still has to be recreated as above.
 
 **Loki query** for self-heal events (heal attempts/outcomes) plus operator
 `nyxgpt ops` lifecycle events (see below), used by that timeline panel:

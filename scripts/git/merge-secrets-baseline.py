@@ -94,7 +94,9 @@ def main(argv: list[str]) -> int:
 
     # The clock that caused the conflict: keep the later stamp, so the file
     # never claims to be older than the scan it describes.
-    stamps = [s for s in (ours.get("generated_at"), theirs.get("generated_at")) if isinstance(s, str)]
+    stamps = [
+        s for s in (ours.get("generated_at"), theirs.get("generated_at")) if isinstance(s, str)
+    ]
     if stamps:
         merged["generated_at"] = max(stamps)
 

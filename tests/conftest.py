@@ -7,6 +7,13 @@ from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
+
+# MUST be imported before anything imports `nyxgpt`: importing it moves `$HOME`
+# to a private per-process sandbox, and several `nyxgpt` modules resolve
+# `Path.home()` at import time. See tests/home_sandbox.py for why the suite has
+# a home of its own (#4020). isort keeps it ahead of the `nyxgpt` group, and
+# `home_sandbox` itself fails loudly if the order is ever broken anyway.
+from home_sandbox import REAL_HOME, SANDBOX_HOME
 from log_guard import externally_held_log_files
 from session_config import TEST_CONFIG_TEXT
 
@@ -22,45 +29,56 @@ def _can_connect(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_test_config():
-    """Ensure a config file exists for tests (needed for CI environments).
+def _real_prod_log_dir() -> Path:
+    """Where the *operator's* logs go, resolved without touching their machine.
 
-    Creates a minimal config file if ~/.nyxGPT/config.ini doesn't exist.
-    This allows tests to run in CI without requiring a pre-configured environment.
-
-    On a machine that *does* have one, `_isolate_test_log_dir` (below) swaps the
-    same text in for the session -- see `TEST_CONFIG_TEXT`.
+    `get_log_dir(load_config(None))` cannot answer this any more: since #4020
+    `load_config(None)` reads the sandbox home's config, so it would report the
+    suite's own temp dir and the guard below would be asserting about itself.
+    This reads the real `~/.nyxGPT/config.ini` -- read-only, and tolerating its
+    absence, which is the normal state on a CI runner -- and applies the same
+    fallback `nyxgpt.logging.get_log_dir` does. `~` is expanded against
+    `REAL_HOME` rather than by `expanduser()`, which now answers the sandbox.
     """
-    config_path = Path.home() / ".nyxGPT" / "config.ini"
-    created_config = False
-
-    if not config_path.exists():
-        created_config = True
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(TEST_CONFIG_TEXT)
-
-    yield
-
-    # Clean up created config after tests
-    if created_config and config_path.exists():
-        config_path.unlink()
+    default = REAL_HOME / ".nyxGPT" / "logs"
+    real_config = REAL_HOME / ".nyxGPT" / "config.ini"
+    parser = ConfigParser()
+    try:
+        parser.read(real_config, encoding="utf-8")
+    except Exception:  # noqa: BLE001 - an unreadable operator config is not this suite's business
+        return default
+    configured = parser.get("logging", "dir", fallback=None)
+    if not configured:
+        return default
+    if configured == "~":
+        return REAL_HOME
+    if configured.startswith("~/"):
+        # Not `lstrip("~/")`, which strips *characters* and would eat the
+        # leading dot of a path like `~/.nyxGPT/logs`'s successor if it ever
+        # began with one of those two.
+        return REAL_HOME / configured[2:]
+    return Path(configured)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
-    """Redirect the real config.ini's [logging] dir to a temp dir for the session.
+def _isolate_test_log_dir(tmp_path_factory):
+    """Redirect the sandbox config.ini's [logging] dir to a temp dir for the session.
 
     Root cause of #3443: `_configure_test_logging` (below), and every other
-    code path that loads the real config (`app.py`, `cli.py`, `self_heal.py`,
+    code path that loads the config (`app.py`, `cli.py`, `self_heal.py`,
     `admin_activity.py`, etc.), calls `load_config(None)` and then passes the
     *loaded* `ConfigParser` on to `configure_logging`/`get_log_dir` -- so an
     override keyed on "no cfg was passed" can't reach it. Rewriting
-    `[logging] dir` in the actual `~/.nyxGPT/config.ini` file on disk (for
-    the whole session, restored at teardown) is the one place that's
-    upstream of every one of those call sites: `load_config` is mtime-cached,
-    so this edit takes effect on the next call and needs no per-test
-    cooperation (no caplog, no mocking get_log_dir).
+    `[logging] dir` in the `config.ini` file on disk, for the whole session, is
+    the one place that's upstream of every one of those call sites:
+    `load_config` is mtime-cached, so this edit takes effect on the next call
+    and needs no per-test cooperation (no caplog, no mocking get_log_dir).
+
+    The file it rewrites is the *sandbox* home's config (#4020), seeded with
+    `TEST_CONFIG_TEXT` by `tests/home_sandbox.py` at import time. Nothing here
+    reads, writes or backs up the operator's real `~/.nyxGPT/config.ini` any
+    more -- see that module for the measurement showing why the previous
+    swap-and-restore design could not be made concurrency-safe.
 
     A second gap: some tests swap in their own bare/isolated config (e.g.
     `test_config_sections_endpoint.py` monkeypatches
@@ -75,38 +93,23 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
     Grafana indistinguishable from a real chat failure and derailed an
     incident investigation -- this is what that redirected.
 
-    Also asserts, at session teardown, that the real production log dir
-    (resolved from the *original* config, before the rewrite) gained no
-    files/bytes during the run -- so a future code path that bypasses both
-    of the above and writes to the prod dir directly (e.g. a hardcoded
-    ``~/.nyxGPT/logs`` path) fails the suite instead of silently shipping
-    test noise to Loki again.
+    Also asserts, at session teardown, that the *operator's* production log dir
+    gained no files/bytes during the run -- so a future code path that bypasses
+    both of the above and writes to it directly (a hardcoded absolute path, or
+    one built from `home_sandbox.REAL_HOME`) fails the suite instead of
+    silently shipping test noise to Loki again. Since #4020 the sandbox home
+    makes an accidental `~/.nyxGPT/logs` write structurally impossible, so this
+    is now a tripwire for the deliberate ones rather than the primary defence.
 
-    Crash safety: before overwriting config.ini, the pre-redirect content is
-    also written to a sibling ``config.ini.pytest-bak`` backup. If the
-    process is killed mid-session (OOM, `kill -9`, CI eviction) the teardown
-    below never runs and the real config.ini is left pointing at a tmp dir
-    that will eventually be cleaned up -- silently misdirecting the
-    developer's real logs away from Loki, which is exactly the failure mode
-    this fixture exists to prevent. On the *next* session, an orphaned
-    backup is detected and restored before anything else reads config.ini,
-    so the corruption self-heals instead of persisting (or perpetuating,
-    since a naive restore would otherwise re-snapshot the corrupted file as
-    "original").
+    No crash-safety backup is needed any more, and that is the point: the
+    session's config lives in a per-process temp directory, so a hard-killed
+    run leaves nothing of the operator's to recover. The old
+    ``config.ini.pytest-bak`` was itself the hazard -- a fixed path two
+    concurrent sessions both wrote and both deleted (#4020).
     """
-    config_path = Path.home() / ".nyxGPT" / "config.ini"
-    backup_path = config_path.with_name(config_path.name + ".pytest-bak")
+    config_path = SANDBOX_HOME / ".nyxGPT" / "config.ini"
 
-    if backup_path.exists():
-        # A prior session crashed before restoring config.ini -- recover the
-        # real content now, before anything else (including this fixture)
-        # reads or snapshots it.
-        config_path.write_text(backup_path.read_text())
-        backup_path.unlink()
-
-    original_text = config_path.read_text()
-
-    prod_log_dir = get_log_dir(load_config(None))
+    prod_log_dir = _real_prod_log_dir()
 
     def _snapshot() -> dict[str, tuple[int, float]]:
         if not prod_log_dir.exists():
@@ -122,14 +125,15 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
 
     tmp_log_dir = tmp_path_factory.mktemp("nyxgpt-test-logs")
 
-    # Install the suite's own config for the session -- the whole file, not a
-    # patch over the operator's (#3983). `_ensure_test_config` above writes the
-    # same text when ~/.nyxGPT/config.ini is *absent*; on a machine (or CI
-    # runner) where an install has already produced a real config, that file
-    # otherwise wins and its operator choices become the suite's inputs:
-    # `[tracing] enabled = true` (the 2026-07-28 production default) starts the
-    # OTel SDK for real, so `X-Request-Id` becomes a 32-char trace id instead of
-    # a 36-char UUID and `/api/v1/tracing` reports enabled; `[nyxgpt]
+    # Re-install the suite's own config for the session -- the whole file, not
+    # a patch over the operator's (#3983). `home_sandbox` already seeded this
+    # text; this rewrite adds the `[logging] dir` redirect, and is also what
+    # keeps the guarantee honest if a test rewrote the file before this fixture
+    # ran. On a machine (or CI runner) where an install has produced a real
+    # config, that file used to win and its operator choices became the suite's
+    # inputs: `[tracing] enabled = true` (the 2026-07-28 production default)
+    # starts the OTel SDK for real, so `X-Request-Id` becomes a 32-char trace id
+    # instead of a 36-char UUID and `/api/v1/tracing` reports enabled; `[nyxgpt]
     # session_backend = cassandra` and the other observability flags do the same
     # to 134 more tests (see `TEST_CONFIG_TEXT` for that count and its cause).
     # The single-key rewrites this replaces closed those reports one at a time
@@ -142,10 +146,7 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
         redirected_cfg.add_section("logging")
     redirected_cfg.set("logging", "dir", str(tmp_log_dir))
 
-    # Persist the pre-redirect content as a recovery backup *before*
-    # overwriting config.ini, so a hard-killed process leaves behind
-    # something the next session can recover from.
-    backup_path.write_text(original_text)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     with config_path.open("w", encoding="utf-8") as fh:
         redirected_cfg.write(fh)
 
@@ -155,8 +156,6 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
     yield tmp_log_dir
 
     monkeypatch.undo()
-    config_path.write_text(original_text)
-    backup_path.unlink(missing_ok=True)
 
     after = _snapshot()
 

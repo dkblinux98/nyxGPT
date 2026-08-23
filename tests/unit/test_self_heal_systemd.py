@@ -245,7 +245,7 @@ def test_restart_native_component_unknown_on_linux(monkeypatch):
 def test_restart_native_component_cassandra_still_uses_docker_on_linux(monkeypatch):
     monkeypatch.setattr(self_heal, "_cassandra_active_elsewhere", lambda: None)
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, **k: _cp(0))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **k: _cp(0))
     result = self_heal.restart_native_component("cassandra")
     assert result.ok is True
     assert self_heal.NATIVE_CASSANDRA_CONTAINER in result.message
