@@ -356,11 +356,18 @@ states an operator lands in:
 | `NOT COMPLETED` | A deploy started on this machine and did not finish. The summary names the phase it reached (`start`, `infra`, `ssh`, `ship`, `provision`, `tunnel`, `health`) and the error that stopped it. A failure at `start` or `infra` predates the substrate, so the summary says nothing was provisioned and does not offer `cloud destroy` — there would be nothing for it to tear down (#4007). |
 | `SUBSTRATE ONLY` | An instance is provisioned — `~/.nyxGPT/cloud/state.json` on this machine names it — but no deploy has been recorded against it. |
 
-Neither reports `deployed: true`. Both say plainly that **an instance exists
-and is being billed**, and both name the wrapped commands that move it
-forward: re-run `nyxgpt cloud deploy` (idempotent — it reconciles from where
-it stopped), `nyxgpt cloud allow-ip` if your public IP has changed since, or
-`nyxgpt cloud destroy --yes` to stop paying for it.
+Neither reports `deployed: true`, and both name the wrapped commands that
+move it forward: re-run `nyxgpt cloud deploy` (idempotent — it reconciles from
+where it stopped), or `nyxgpt cloud allow-ip` if your public IP has changed
+since.
+
+What they say about billing depends on what was actually recorded, never on
+the verdict alone (#4007). When the record shows an instance exists, the
+summary says so plainly — **it is being billed** — and offers `nyxgpt cloud
+destroy --yes` to stop paying for it. A `NOT COMPLETED` that stopped at
+`start` or `infra` instead says nothing was provisioned, and offers no
+destroy: the deploy died before the substrate, so there is nothing to tear
+down and `cloud destroy` would only answer "nothing to destroy".
 
 This exists because a failed provision used to report `UNKNOWN from this
 machine` — sending an operator to look for another workstation while a live,
