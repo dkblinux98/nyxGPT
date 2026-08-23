@@ -13,7 +13,13 @@ Two halves:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import re
+import subprocess
+import sys
+from configparser import ConfigParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -22,6 +28,7 @@ import pytest
 import yaml
 
 from nyxgpt import ops
+from nyxgpt.config import get_error_tracking_config, get_tracing_config
 
 pytestmark = pytest.mark.unit
 
@@ -160,6 +167,10 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
+        # #3990's provisioning step execs into a Pod and opens a port-forward;
+        # it is a step of this install like any other, so it is patched out of
+        # a test about step ORDER.
+        patch.object(ops, "_k8s_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_observability_health", return_value=[]),
         patch.object(
             ops, "_apply_k8s_observability", return_value=[ops.OpsResult(True, "observability")]
@@ -199,6 +210,7 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
         patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
+        patch.object(ops, "_k8s_provision_glitchtip") as provision_glitchtip,
         patch.object(ops, "_k8s_observability_health") as observability_health,
         patch.object(ops, "_record_ops_action"),
     ):
@@ -208,6 +220,9 @@ def test_install_kubernetes_honours_skip_observability() -> None:
 
     apply_observability.assert_not_called()
     wait_observability.assert_not_called()
+    # There is no GlitchTip to provision when the layer was never deployed
+    # (#3990) -- the step belongs to the observability tail, not the app tier.
+    provision_glitchtip.assert_not_called()
     observability_health.assert_not_called()
 
 
@@ -729,6 +744,7 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
+        patch.object(ops, "_k8s_provision_glitchtip", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(
             ops,
@@ -893,6 +909,9 @@ def test_observability_health_fails_an_absent_workload(monkeypatch) -> None:
         "_k8s_observability_workload_state",
         lambda: {"grafana": "1/1 ready", "loki": "absent"},
     )
+    # The #3990 data-flow probes really exec into the grafana Pod; this test is
+    # about the readiness half of the report.
+    monkeypatch.setattr(ops, "_k8s_observability_data_flow", lambda state=None: [])
 
     results = ops._k8s_observability_health()
     by_name = {r.message: r for r in results}
@@ -912,12 +931,17 @@ def test_observability_command_waits_for_the_rollout_before_reporting_health() -
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok) as wait,
+        patch.object(ops, "_k8s_provision_glitchtip", return_value=ok) as provision,
         patch.object(ops, "_k8s_observability_health", return_value=ok) as health,
     ):
         results = ops.observability_kubernetes()
 
     assert all(r.ok for r in results)
     wait.assert_called_once()
+    # Deploying the layer without provisioning GlitchTip leaves Grafana on the
+    # placeholder token and the api with no DSN (#3990) -- a tier that runs
+    # and observes nothing, which is the state this command must not produce.
+    provision.assert_called_once()
     health.assert_called_once()
 
 
@@ -1182,3 +1206,487 @@ def test_a_dead_end_reason_still_fails_fast(monkeypatch) -> None:
 
     assert not results[-1].ok
     assert polls["n"] == ops.K8S_BLOCKED_CONFIRMATIONS
+
+
+# --- The wiring the ConfigMap omitted (#3990) -------------------------------
+#
+# `k8s/configmap.yaml` performed three of the five container-network rewrites
+# the Compose config generation performs (`[ollama] base_url`, `[rag]
+# cassandra_hosts`, `[nyxgpt] session_backend`) and omitted exactly the two
+# that make the observability tier function. The result installed, passed
+# every health check, and observed nothing: every span went to the api Pod's
+# own `localhost:4318`, and no error was ever reported to GlitchTip at all.
+
+CONFIGMAP_PATH = REPO_ROOT / "k8s" / "configmap.yaml"
+K8S_DIR_PATH = REPO_ROOT / "k8s"
+IN_CLUSTER_COLLECTOR = "http://otel-collector:4318/v1/traces"
+
+
+def _pod_config_text() -> str:
+    """The `config.ini` the api Pod actually mounts."""
+    return yaml.safe_load(CONFIGMAP_PATH.read_text())["data"]["config.ini"]
+
+
+def _pod_config() -> ConfigParser:
+    parser = ConfigParser()
+    parser.read_string(_pod_config_text())
+    return parser
+
+
+def _app_deployments() -> dict[str, dict]:
+    docs: dict[str, dict] = {}
+    for path in sorted(K8S_DIR_PATH.glob("deployment-*.yaml")):
+        for doc in yaml.safe_load_all(path.read_text()):
+            if doc and doc["kind"] == "Deployment":
+                docs[doc["metadata"]["name"]] = doc
+    return docs
+
+
+def _container_env(deployment: dict) -> dict[str, dict]:
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    return {entry["name"]: entry for entry in container.get("env", [])}
+
+
+def test_pod_config_sends_spans_to_the_in_cluster_collector() -> None:
+    """The rewrite the Compose path makes in `_COMPOSE_CONFIG_OVERRIDES`."""
+    tracing_config = get_tracing_config(_pod_config())
+    assert tracing_config["enabled"] is True
+    assert tracing_config["otlp_endpoint"] == IN_CLUSTER_COLLECTOR
+
+
+def test_pod_config_without_a_tracing_section_traces_to_the_pod_itself() -> None:
+    """Fault injection for the assertion above: strip the section this fix
+    added and the fallback is `localhost`, which inside a Pod is that Pod --
+    the exact defect (#3990). Without this, the test above would keep passing
+    against a file that merely mentioned the collector in a comment."""
+    stripped = ConfigParser()
+    stripped.read_string(re.sub(r"\n\[tracing\].*?(?=\n\[)", "", _pod_config_text(), flags=re.S))
+
+    assert not stripped.has_section("tracing")
+    assert "localhost" in get_tracing_config(stripped)["otlp_endpoint"]
+
+
+def test_tracing_endpoint_names_a_service_the_overlay_ships() -> None:
+    """A collector hostname with no Service behind it resolves to nothing --
+    the same silent failure in a different disguise."""
+    host = IN_CLUSTER_COLLECTOR.removeprefix("http://").split(":")[0]
+    assert host in set(_by_kind("Service"))
+
+
+def test_pod_config_declares_error_tracking_with_a_runtime_filled_dsn() -> None:
+    """The section must exist (or the api reports nothing at all) with an
+    EMPTY dsn: GlitchTip mints a project key per install, so the value cannot
+    live in a committed manifest -- it arrives from the Secret."""
+    error_tracking = get_error_tracking_config(_pod_config())
+    assert error_tracking["enabled"] is True
+    assert error_tracking["dsn"] == ""
+    # ...and the line has to BE there for docker/entrypoint.sh's sed to have
+    # something to rewrite.
+    assert re.search(r"^\s*dsn\s*=", _pod_config_text(), flags=re.MULTILINE)
+
+
+def test_browser_facing_urls_stay_localhost() -> None:
+    """The same split the Compose path makes: service-to-service endpoints are
+    rewritten, `*_ui_url` values are opened from the operator's browser
+    through `nyxgpt ops port-forward` and must not be."""
+    parser = _pod_config()
+    _service, jaeger_port, _remote = ops.K8S_PORT_FORWARD_TARGETS["jaeger"]
+    _service, glitchtip_port, _remote = ops.K8S_PORT_FORWARD_TARGETS["glitchtip"]
+
+    assert get_tracing_config(parser)["jaeger_ui_url"] == f"http://localhost:{jaeger_port}"
+    assert (
+        get_error_tracking_config(parser)["glitchtip_ui_url"]
+        == f"http://localhost:{glitchtip_port}"
+    )
+
+
+def test_web_deployments_carry_the_collector_endpoint_in_their_env() -> None:
+    """The web tier is a Next.js process reading web/src/instrumentation.ts's
+    env vars, NOT the ConfigMap -- so the rewrite has to be repeated there.
+    The startup line the acceptance run captured (`otlp_endpoint=
+    http://localhost:4318/v1/traces`) came from a web Pod."""
+    web = {n: d for n, d in _app_deployments().items() if n.startswith("nyxgpt-web")}
+    assert set(web) == {"nyxgpt-web-stable", "nyxgpt-web-canary"}
+    for name, deployment in web.items():
+        env = _container_env(deployment)
+        assert env["NYXGPT_OTLP_ENDPOINT"]["value"] == IN_CLUSTER_COLLECTOR, name
+        assert env["NYXGPT_TRACING_ENABLED"]["value"] == "true", name
+
+
+def test_every_app_deployment_reads_the_dsn_from_the_secret() -> None:
+    """Both tracks of both tiers: a canary Pod that reports no errors is the
+    same blindness as a stable one that does."""
+    deployments = _app_deployments()
+    assert set(deployments) == {
+        "nyxgpt-api-stable",
+        "nyxgpt-api-canary",
+        "nyxgpt-web-stable",
+        "nyxgpt-web-canary",
+    }
+    for name, deployment in deployments.items():
+        ref = _container_env(deployment)["NYXGPT_ERROR_TRACKING_DSN"]["valueFrom"]["secretKeyRef"]
+        assert ref["name"] == "nyxgpt-secrets", name
+        assert ref["key"] == ops.K8S_ERROR_TRACKING_DSN_SECRET_KEY, name
+
+
+def test_the_secret_template_declares_the_dsn_key() -> None:
+    """A `secretKeyRef` to a key that does not exist leaves every app Pod in
+    CreateContainerConfigError -- worse than the blindness it was fixing."""
+    secret = yaml.safe_load((K8S_DIR_PATH / "secret.example.yaml").read_text())
+    assert secret["stringData"][ops.K8S_ERROR_TRACKING_DSN_SECRET_KEY] == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="entrypoint.sh runs GNU sed inside the Linux image; BSD sed -i takes a suffix argument",
+)
+def test_entrypoint_merges_the_dsn_into_the_pod_config(tmp_path) -> None:
+    """Executed, not inspected: the shipped `sed` line is run against the real
+    ConfigMap contents, because a merge that silently matches nothing is
+    exactly as broken as no merge at all."""
+    entrypoint = (REPO_ROOT / "docker" / "entrypoint.sh").read_text()
+    line = next(
+        line
+        for line in entrypoint.splitlines()
+        if "sed -i" in line and "NYXGPT_ERROR_TRACKING_DSN" in line
+    )
+    config = tmp_path / "config.ini"
+    config.write_text(_pod_config_text(), encoding="utf-8")
+    dsn = "http://publickey@glitchtip:8080/1"
+
+    subprocess.run(
+        ["sh", "-c", line.replace('"$CONFIG_DIR/config.ini"', f'"{config}"')],
+        env={"NYXGPT_ERROR_TRACKING_DSN": dsn, "PATH": os.environ.get("PATH", "")},
+        check=True,
+    )
+
+    merged = ConfigParser()
+    merged.read_string(config.read_text(encoding="utf-8"))
+    assert get_error_tracking_config(merged)["dsn"] == dsn
+    # The api-key merge above it must still work on the same file.
+    assert merged.get("auth", "api_key") == ""
+
+
+# --- Provisioning the in-cluster GlitchTip (#3990) --------------------------
+
+
+def _bootstrap_secret_files(tmp_path, monkeypatch):
+    """Stand-ins for the two bootstrapped Secret manifests ops writes into."""
+    k8s_dir = tmp_path / "k8s"
+    observability_dir = k8s_dir / "observability"
+    observability_dir.mkdir(parents=True)
+    (k8s_dir / "secret.yaml").write_text(
+        'stringData:\n  api-key: "k"\n  error-tracking-dsn: ""\n', encoding="utf-8"
+    )
+    (observability_dir / "secret.yaml").write_text(
+        f'stringData:\n  glitchtip-grafana-token: "{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "K8S_DIR", k8s_dir)
+    monkeypatch.setattr(ops, "K8S_OBSERVABILITY_DIR", observability_dir)
+    return k8s_dir / "secret.yaml", observability_dir / "secret.yaml"
+
+
+def _provisionable_cluster(tmp_path, monkeypatch, *, dsn="http://key@localhost:8080/1"):
+    """Patch out everything between `createsuperuser` and the project key, so
+    the test is about what this module does with the two values it gets."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    (home / ".nyxGPT" / "config.ini").write_text(
+        "[error_tracking]\nadmin_email = admin@nyxgpt.local\nadmin_password = pw\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops, "_k8s_observability_workload_state", lambda: {"glitchtip": "1/1 ready"}
+    )
+    monkeypatch.setattr(
+        ops, "_k8s_glitchtip_ensure_superuser", lambda *a: ops.OpsResult(True, "superuser")
+    )
+    monkeypatch.setattr(
+        ops, "_k8s_port_forward", lambda *a, **k: contextlib.nullcontext("http://127.0.0.1:65000")
+    )
+    monkeypatch.setattr(
+        ops, "_glitchtip_login", lambda *a: (MagicMock(), ops.OpsResult(True, "login"))
+    )
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_api_token", lambda *a: ("tok-abc", ops.OpsResult(True, "token"))
+    )
+    monkeypatch.setattr(ops, "_glitchtip_http_client", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_organization", lambda *a: ("nyxgpt", ops.OpsResult(True, "org"))
+    )
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_team", lambda *a: ("nyxgpt", ops.OpsResult(True, "team"))
+    )
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_team_membership", lambda *a: ops.OpsResult(True, "member")
+    )
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_project", lambda *a: ("nyxgpt-backend", ops.OpsResult(True, "prj"))
+    )
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_project_key", lambda *a: (dsn, ops.OpsResult(True, "key"))
+    )
+    monkeypatch.setattr(ops, "_restart_k8s_grafana", lambda: ops.OpsResult(True, "restarted"))
+
+
+def test_provisioning_writes_the_dsn_and_the_token_into_the_secrets(tmp_path, monkeypatch) -> None:
+    """The two values a Kubernetes deployment was missing entirely."""
+    app_secret, observability_secret = _bootstrap_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (ran.append(cmd), MagicMock(returncode=0, stdout="", stderr=""))[1],
+    )
+
+    results = ops._k8s_provision_glitchtip()
+
+    assert all(r.ok for r in results), [r.message for r in results]
+    # Rewritten to the in-cluster Service: a Pod using GlitchTip's own
+    # browser-facing localhost DSN drops every event silently (#3565).
+    assert 'error-tracking-dsn: "http://key@glitchtip:8080/1"' in app_secret.read_text()
+    assert 'glitchtip-grafana-token: "tok-abc"' in observability_secret.read_text()
+    assert ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER not in observability_secret.read_text()
+    # Both files are applied, so the cluster and the manifests agree -- a
+    # cluster-only patch would be reverted by the next `kubectl apply -k`.
+    assert ["kubectl", "apply", "-f", str(app_secret)] in ran
+    assert ["kubectl", "apply", "-f", str(observability_secret)] in ran
+    # An environment is fixed at process start, so the Pods that booted with
+    # an empty DSN have to be replaced -- and waited for, or everything that
+    # reads the cluster after the install describes a half-rolled stack.
+    restarted = [c[-1] for c in ran if "restart" in c]
+    assert restarted == ["deploy/nyxgpt-api-stable", "deploy/nyxgpt-web-stable"]
+    waited = [c for c in ran if "status" in c and "rollout" in c]
+    assert {c[c.index("status") + 1] for c in waited} == set(restarted)
+
+
+def test_reprovisioning_the_same_values_restarts_nothing(tmp_path, monkeypatch) -> None:
+    """Idempotent in the same sense as the Compose path: a re-install that
+    mints the same DSN and token must not bounce the api, web and Grafana."""
+    _bootstrap_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: MagicMock(returncode=0, stdout="", stderr=""))
+    ops._k8s_provision_glitchtip()
+
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (ran.append(cmd), MagicMock(returncode=0, stdout="", stderr=""))[1],
+    )
+    with patch.object(ops, "_restart_k8s_grafana") as restart_grafana:
+        results = ops._k8s_provision_glitchtip()
+
+    assert all(r.ok for r in results)
+    restart_grafana.assert_not_called()
+    assert not [c for c in ran if "rollout" in c]
+
+
+def test_provisioning_skips_when_glitchtip_is_not_ready(monkeypatch) -> None:
+    """A skip, not a failure: the app tier is fine without error tracking, and
+    an install must not fail over a workload that is still rolling out."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops, "_k8s_observability_workload_state", lambda: {"glitchtip": "0/1 ready"}
+    )
+
+    results = ops._k8s_provision_glitchtip()
+
+    assert all(r.ok for r in results)
+    assert "Skipped GlitchTip provisioning" in results[0].message
+    assert "glitchtip-init --kubernetes" in results[0].details
+
+
+def test_the_superuser_password_never_reaches_argv(monkeypatch) -> None:
+    """`kubectl exec` has no `-e VAR` forwarding, and `_run` logs the command
+    it ran -- so an argv-borne password would be logged on every idempotent
+    re-run (CodeQL #105/#106). It goes in on stdin instead."""
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops._k8s_glitchtip_ensure_superuser("admin@nyxgpt.local", "sup3r-s3cret")
+
+    assert result.ok
+    assert "sup3r-s3cret" not in " ".join(captured["cmd"])  # type: ignore[arg-type]
+    assert captured["input"] == "sup3r-s3cret\n"
+
+
+def test_writing_a_secret_value_reports_whether_it_changed(tmp_path) -> None:
+    path = tmp_path / "secret.yaml"
+    path.write_text('stringData:\n  error-tracking-dsn: ""\n', encoding="utf-8")
+
+    changed, result = ops._write_k8s_secret_value(path, "error-tracking-dsn", "http://k@g:8080/1")
+    assert changed and result.ok
+
+    changed_again, result_again = ops._write_k8s_secret_value(
+        path, "error-tracking-dsn", "http://k@g:8080/1"
+    )
+    assert not changed_again and result_again.ok
+
+
+def test_an_already_bootstrapped_secret_gains_the_new_key(tmp_path, monkeypatch) -> None:
+    """The upgrade trap this fix would otherwise have set: both Secrets are
+    written once and left alone, so a machine that installed BEFORE
+    `error-tracking-dsn` existed would apply a Secret without it -- and a
+    `secretKeyRef` to a missing key leaves every api and web Pod in
+    CreateContainerConfigError, which is far worse than no error tracking."""
+    monkeypatch.setattr(ops, "K8S_DIR", tmp_path)
+    (tmp_path / "secret.example.yaml").write_text(
+        'stringData:\n  api-key: "change-me"\n  error-tracking-dsn: ""\n', encoding="utf-8"
+    )
+    # A pre-#3990 secret.yaml: the real API key, and no DSN key at all.
+    (tmp_path / "secret.yaml").write_text(
+        'stringData:\n  # keep me\n  api-key: "the-real-key"\n', encoding="utf-8"
+    )
+
+    results = ops._ensure_k8s_secret(None)
+    written = (tmp_path / "secret.yaml").read_text()
+
+    assert all(r.ok for r in results)
+    assert 'error-tracking-dsn: ""' in written
+    # ...and nothing else moved: the existing credential and its comments stay.
+    assert 'api-key: "the-real-key"' in written
+    assert "# keep me" in written
+
+
+def test_writing_an_unknown_secret_key_fails_with_the_remedy(tmp_path) -> None:
+    """A Secret bootstrapped before this key existed must not be reported as
+    successfully written -- it is a manifest the operator has to re-bootstrap."""
+    path = tmp_path / "secret.yaml"
+    path.write_text('stringData:\n  api-key: "k"\n', encoding="utf-8")
+
+    changed, result = ops._write_k8s_secret_value(path, "error-tracking-dsn", "x")
+
+    assert not changed and not result.ok
+    assert "re-bootstrap" in result.details
+
+
+# --- Running is not receiving (#3990) ---------------------------------------
+
+
+def _telemetry_run(responses: dict[str, tuple[int, str]]):
+    """A `_run` stand-in answering the in-cluster probes by URL substring."""
+
+    def fake_run(cmd, **kwargs):
+        haystack = " ".join(cmd)
+        for needle, (returncode, stdout) in responses.items():
+            if needle in haystack:
+                return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="no match")
+
+    return fake_run
+
+
+def test_jaegers_own_self_traces_do_not_count_as_telemetry(monkeypatch) -> None:
+    """The literal payload the acceptance run captured: Jaeger knew exactly one
+    service, itself. Ten workloads reported `1/1 ready` over the top of it."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops, "_run", _telemetry_run({"jaeger": (0, '{"data":["jaeger-all-in-one"],"total":1}')})
+    )
+
+    result = ops._k8s_traces_flow_result()
+
+    assert ops._result_status_label(result) == ops.K8S_NO_DATA_LABEL
+    assert result.ok  # a stack nobody has chatted with is not a broken stack
+    assert "no nyxGPT spans" in result.message
+
+
+def test_nyxgpt_spans_in_jaeger_are_reported_as_flowing(monkeypatch) -> None:
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _telemetry_run({"jaeger": (0, '{"data":["jaeger-all-in-one","nyxgpt-api","nyxgpt-web"]}')}),
+    )
+
+    result = ops._k8s_traces_flow_result()
+
+    assert ops._result_status_label(result) == "OK"
+    assert "nyxgpt-api" in result.message and "nyxgpt-web" in result.message
+
+
+def test_the_placeholder_grafana_token_is_reported_not_hidden(monkeypatch) -> None:
+    """The second symptom: `Bearer UNCONFIGURED-glitchtip-token` and a 401 on
+    every SRE Home GlitchTip panel."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _telemetry_run({"cat": (0, f"{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}\n")}),
+    )
+
+    result = ops._k8s_errors_flow_result()
+
+    assert ops._result_status_label(result) == ops.K8S_NO_DATA_LABEL
+    assert "placeholder" in result.message
+    assert "401" in result.details
+
+
+def test_a_real_token_glitchtip_accepts_is_reported_as_working(monkeypatch) -> None:
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops, "_run", _telemetry_run({"cat": (0, "tok-abc\n"), "organizations": (0, "[]")})
+    )
+
+    result = ops._k8s_errors_flow_result()
+
+    assert ops._result_status_label(result) == "OK"
+
+
+def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
+    """The signal AC5 asks for: ten `1/1 ready` workloads receiving nothing
+    must not read as a healthy observability stack (the #3812 shape)."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops,
+        "_k8s_observability_workload_state",
+        lambda: dict.fromkeys(
+            (*ops.K8S_OBSERVABILITY_DEPLOYMENTS, *ops.K8S_OBSERVABILITY_DAEMONSETS), "1/1 ready"
+        ),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _telemetry_run(
+            {
+                "jaeger": (0, '{"data":["jaeger-all-in-one"]}'),
+                "prometheus": (0, '{"data":{"activeTargets":[{"health":"up"}]}}'),
+                "loki": (0, '{"data":[]}'),
+                "cat": (0, f"{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}\n"),
+            }
+        ),
+    )
+
+    results = ops._k8s_observability_health()
+    labels = {r.message: ops._result_status_label(r) for r in results}
+
+    # Every workload is ready...
+    assert all(labels[f"observability {name}: 1/1 ready"] == "OK" for name in ("grafana", "jaeger"))
+    # ...and the tier is still not receiving what it exists to receive.
+    assert [m for m, label in labels.items() if label == ops.K8S_NO_DATA_LABEL] == [
+        "observability traces: Jaeger has no nyxGPT spans yet",
+        "observability logs: Loki has received nothing",
+        "observability errors: Grafana's GlitchTip token is still the placeholder",
+    ]
+    assert all(r.ok for r in results)
+
+
+def test_data_flow_is_not_probed_through_a_grafana_that_is_not_ready(monkeypatch) -> None:
+    """Four `[NO DATA]` lines about a tier that is mid-rollout would be the
+    wall of false negatives #3827 removed from the readiness half."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    with patch.object(ops, "_run") as run:
+        assert ops._k8s_observability_data_flow({"grafana": "0/1 ready"}) == []
+        assert ops._k8s_observability_data_flow({"grafana": "absent"}) == []
+    run.assert_not_called()

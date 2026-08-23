@@ -84,3 +84,55 @@ data:
     cassandra_port = 9042
     cassandra_keyspace = nyxgpt
     cassandra_table = rag_chunks
+
+    [tracing]
+    # THE CONTAINER-NETWORK REWRITE THIS FILE USED TO OMIT (#3990). Without a
+    # [tracing] section the api falls back to config.py's default
+    # `http://localhost:4318/v1/traces`, which inside a Pod is *that Pod* --
+    # so every span was exported into a socket nothing listens on, the
+    # OTLPSpanExporter dropped them silently (it is fire-and-forget by
+    # design), otel-collector received nothing, and Jaeger knew exactly one
+    # service: itself. An operator saw "traces in Jaeger, nothing in
+    # Grafana", which is not a Grafana defect at all.
+    #
+    # `otel-collector` is the Service in k8s/observability/otel-collector.yaml
+    # -- the same hostname the Compose/Terraform deploys rewrite this to
+    # (`_COMPOSE_CONFIG_OVERRIDES` in src/nyxgpt/ops.py). The web tier is
+    # wired to the same collector through NYXGPT_OTLP_ENDPOINT in
+    # k8s/deployment-web-{stable,canary}.yaml: it is a Next.js process and
+    # reads env, not this file.
+    enabled = true
+    service_name = nyxgpt-api
+    otlp_endpoint = http://otel-collector:4318/v1/traces
+    # BROWSER-facing, so it stays localhost: the operator reaches Jaeger
+    # through `nyxgpt ops port-forward --target jaeger`, which publishes it
+    # on this exact port (K8S_PORT_FORWARD_TARGETS). Same split the Compose
+    # path makes between service-to-service endpoints and *_ui_url values.
+    jaeger_ui_url = http://localhost:16686
+
+    [error_tracking]
+    # The other omitted rewrite (#3990). With no [error_tracking] section the
+    # api reported nothing to GlitchTip at all, so the SRE dashboard's error
+    # panels were empty even once Grafana's token was valid.
+    #
+    # `dsn` is deliberately EMPTY here and filled at runtime, exactly like
+    # `[auth] api_key` above: a DSN carries a per-install project key minted
+    # by the in-cluster GlitchTip, so it cannot be a constant in a committed
+    # manifest. `nyxgpt ops install --kubernetes` provisions it
+    # (`_k8s_provision_glitchtip` in src/nyxgpt/ops.py -- the Kubernetes
+    # equivalent of `nyxgpt ops glitchtip-init`), stores it in the
+    # nyxgpt-secrets Secret, and docker/entrypoint.sh merges
+    # NYXGPT_ERROR_TRACKING_DSN into this line on container start. An empty
+    # DSN leaves error tracking inert rather than broken (see
+    # error_tracking.init_error_tracking), which is what a
+    # `--skip-observability` install should get.
+    #
+    # The DSN GlitchTip mints names its own browser-facing host, so ops
+    # rewrites its host:port to the in-cluster `glitchtip:8080` Service
+    # before storing it -- a Pod using the browser-facing localhost DSN
+    # silently drops every event (#3565, the same failure in Compose).
+    enabled = true
+    dsn =
+    # BROWSER-facing, like jaeger_ui_url above: `nyxgpt ops port-forward
+    # --target glitchtip` publishes GlitchTip on this port.
+    glitchtip_ui_url = http://localhost:8080
