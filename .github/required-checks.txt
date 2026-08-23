@@ -110,6 +110,9 @@ files-a-ticket
 terraform-artifact-smoke
 reviewable-head-behaves
 gate-is-delegated
+# The round-state classification rules (#4015). Path-filtered, so it is free
+# on the PRs it does not run for -- absent is not pending.
+round-state-rules-hold
 
 [not-required]
 # The review's own runs, including the gate itself. Requiring any of them

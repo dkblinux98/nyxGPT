@@ -26,6 +26,7 @@ newly written install sequence is covered the day it lands.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -252,8 +253,36 @@ def _untrusted_taps(script: str) -> list[str]:
     return untrusted
 
 
+def _tracked_files() -> set[Path] | None:
+    """Every git-tracked path, or None when git cannot answer.
+
+    "Shipped" means tracked. The walk below cannot tell the difference on its
+    own: `.claude/worktrees/` is git-ignored (.gitignore) and is exactly where
+    this project's own agent tooling puts worktrees, so a developer with one
+    open had this scan read a second copy of *this file* and report its own
+    string literals as offenders -- three failures that exist only on their
+    machine and never in CI. Skipping by name would fix that one directory and
+    leave the trap for the next ignored path.
+    """
+    try:
+        out = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["git", "ls-files", "-z"],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - git absent
+        return None
+    if out.returncode != 0:  # pragma: no cover - not a work tree
+        return None
+    return {Path(entry) for entry in out.stdout.split("\0") if entry}
+
+
 def _scanned_files() -> list[Path]:
     """Every shipped text file the untrusted-tap scan reads."""
+    tracked = _tracked_files()
     files = []
     for path in sorted(_REPO_ROOT.rglob("*")):
         if path.suffix not in _SCANNED_SUFFIXES or not path.is_file():
@@ -266,8 +295,30 @@ def _scanned_files() -> list[Path]:
             continue
         if relative in _SCAN_ALLOWLIST:
             continue
+        if tracked is not None and relative not in tracked:
+            continue
         files.append(relative)
     return files
+
+
+def test_the_scan_reads_tracked_files_only_and_still_reads_a_lot_of_them():
+    """ "Shipped" means tracked, and the scan must not quietly narrow to nothing.
+
+    `.claude/worktrees/` is git-ignored and is where this project's own agent
+    tooling puts worktrees, so the filesystem walk used to read a second copy
+    of this very file and report its string literals as offenders -- three
+    failures reproducible only on a developer's machine, never in CI. The
+    lower bound is here because "skip untracked" is one typo away from
+    "skip everything", which would leave a green guard that reads nothing.
+    """
+    files = _scanned_files()
+
+    # `.claude/agents`, `hooks` and `skills` are tracked and belong in the scan;
+    # only `worktrees` is git-ignored. The assertion has to tell them apart.
+    ignored = [f for f in files if f.parts[:2] == (".claude", "worktrees")]
+    assert not ignored, f"read git-ignored worktree paths: {ignored[:3]}"
+    assert len(files) > 200, f"the scan collapsed to {len(files)} files"
+    assert Path("docs/homebrew.md") in files, "stopped reading a file it must cover"
 
 
 def test_no_shipped_file_taps_without_trusting_before_it_installs():
