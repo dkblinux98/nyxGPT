@@ -1,0 +1,81 @@
+name: Acceptance Standard Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "When the owner reports an acceptance failure, does the machinery do what
+#    owner standard D-042 says — reopen and PARK the original, work the
+#    derived issue, promote and close the original when its blockers clear —
+#    and does the handler that starts all of it fail loudly instead of
+#    silently?"
+#
+# Inspection has already failed at both halves of that:
+#
+#   * The drain gate read "open in Acceptance Failed" as held rework and
+#    released #3835 and #3829 into Backlog on 2026-08-22, where neither could
+#    be worked; promote_accepted_features.sh skipped the same issues as
+#    "held rework", so they could never reach For Release either. The
+#    standard and the code were exact opposites, and nothing said so.
+#
+#   * handle_acceptance_failure.yml's unique-failure count ran
+#    `... | grep -E '^[0-9]+$' | …` under `set -o pipefail`, so the FIRST
+#    failure filed against any issue killed the step with no output at all.
+#    Runs 32547268563 (#3829) and 32583495118 (#3993) both ate an owner
+#    acceptance report that way, on the same day, before anyone noticed.
+#
+# The three suites run the real code — the handler step bodies are extracted
+# from the workflow YAML and executed, so this cannot pass against a copy
+# that has drifted — against stub `gh` fixtures, no network. Each suite
+# carries a retired-form case proving the assertions can fail (#3775).
+#
+# This is the ONLY job that runs these three suites, so their paths are the
+# trigger set below; if you add a consumer of drain_gate.py's
+# `acceptance_role`, add it here too.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/lib/drain_gate.py"
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/promote_accepted_features.sh"
+      - ".github/workflows/handle_acceptance_failure.yml"
+      - ".github/workflows/handle_improvement.yml"
+      - "tests/test_drain_gate_lib.sh"
+      - "tests/test_promote_accepted_features.sh"
+      - "tests/test_acceptance_failure_handler.sh"
+      - ".github/workflows/acceptance-standard-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/lib/drain_gate.py"
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/promote_accepted_features.sh"
+      - ".github/workflows/handle_acceptance_failure.yml"
+      - ".github/workflows/handle_improvement.yml"
+      - "tests/test_drain_gate_lib.sh"
+      - "tests/test_promote_accepted_features.sh"
+      - "tests/test_acceptance_failure_handler.sh"
+      - ".github/workflows/acceptance-standard-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance-standard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: "Drain gate: a reopened original parks, handler-filed rework drains"
+        run: bash tests/test_drain_gate_lib.sh
+
+      - name: "Promotion: a reopened original is promoted, reassigned and closed"
+        run: bash tests/test_promote_accepted_features.sh
+
+      - name: "Handlers: the first failure files, the original reopens, failures alert"
+        run: bash tests/test_acceptance_failure_handler.sh

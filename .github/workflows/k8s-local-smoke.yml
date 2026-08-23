@@ -18,6 +18,15 @@ name: Kubernetes Local Smoke
 # tested a command no user types, and could not have supplied #3787's executed
 # evidence because it excluded the layer #3787 added.
 #
+# Since #3990 it also asks the question readiness cannot answer: does the
+# observability tier RECEIVE anything? That defect shipped ten workloads at
+# `1/1 ready` on a cluster where every span went to the app Pod's own
+# `localhost:4318` and no error reached GlitchTip at all. Step 7 drives a real
+# chat, then asserts Jaeger holds nyxgpt-api and nyxgpt-web spans and that an
+# error raised in the cluster arrives in the in-cluster GlitchTip -- with the
+# pre-fix endpoint and the placeholder token exercised alongside, so a build
+# without the fix cannot pass it.
+#
 # Since #3825 it runs that default install on a node ballasted down to the
 # 7936Mi a stock 8GiB Docker Desktop VM offers, and asserts every Pod was
 # SCHEDULED. That defect was a stack whose requests exceeded the operator's

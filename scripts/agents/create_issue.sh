@@ -454,7 +454,12 @@ if [[ -n "$BLOCKS" ]]; then
   if mark_issue_blocked_by "$BLOCKS" "$ISSUE_NUMBER"; then
     echo "[create-issue]   ✓ #${BLOCKS} is now blocked by #${ISSUE_NUMBER}" >&2
   else
-    echo "[warning] Could not mark #${ISSUE_NUMBER} as blocking #${BLOCKS} (promotion sweep will retry)" >&2
+    # Not "the sweep will retry": for post-#3731 issues the heal loop only
+    # reaches candidates resolvable from a native edge or the retired prose
+    # marker, and this issue writes no marker (#3999 review). Nothing reopens
+    # on this path, so the link is simply missing until someone re-adds it.
+    echo "[warning] Could not mark #${ISSUE_NUMBER} as blocking #${BLOCKS} -- the link is" >&2
+    echo "[warning] NOT self-healing; re-run with --blocks once the API is healthy." >&2
   fi
 fi
 

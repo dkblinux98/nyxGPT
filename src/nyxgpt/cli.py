@@ -2276,6 +2276,22 @@ def cli(argv: list[str] | None = None) -> int:
             "(zero-touch error tracking); no-ops if glitchtip isn't up/healthy"
         ),
     )
+    ops_glitchtip_init.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help=(
+            "Provision the in-cluster GlitchTip instead of the Compose one, writing the "
+            "DSN and Grafana's token into the deployment's Secrets (#3990)"
+        ),
+    )
+    ops_glitchtip_init.add_argument(
+        "--local",
+        action="store_true",
+        help=(
+            "Target the local machine -- the default, and accepted explicitly (a no-op) "
+            "so existing scripts keep working"
+        ),
+    )
     _add_quiet_flag(ops_glitchtip_init)
 
     ops_sub.add_parser(

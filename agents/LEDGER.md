@@ -283,7 +283,11 @@ rather than mechanism, and nothing can enforce them.
   rework (#3730), the owner parks there the *features they have tested and
   failed*, keeping tested-failed work visually separate from work still to test.
   The discriminator is issue **state**: **open** = held rework, released to
-  `Backlog` when the gate opens; **closed** = a parked feature, which
+  `Backlog` when the gate opens (**amended 2026-08-23 by #3999: state alone no
+  longer separates the two populations — a reopened original is also open, so
+  the discriminator is now the three-role classification in
+  `issue_acceptance_role`, and an open item with open blocked-by edges is a
+  waiting original rather than work**); **closed** = a parked feature, which
   `promote_accepted_features.sh` treats exactly like one parked in
   `Acceptance Testing` (promoted to `For Release` when its whole transitive
   blocked-by closure is accepted) and which **nothing else may move** — the
@@ -1474,6 +1478,17 @@ rather than mechanism, and nothing can enforce them.
   Source: owner statement 2026-08-22 (this session); `CLAUDE.md` §Issue
   Relationships; D-008; `.github/workflows/handle_acceptance_failure.yml`;
   `scripts/agents/lib/drain_gate.py`; `scripts/agents/promote_accepted_features.sh`.
+
+  **Amended 2026-08-23 by #3999 — the divergence is closed.** The paragraphs
+  above that describe the code disagreeing with this standard ("This is not
+  what the code does today…", "deliberately leaves the original **closed**",
+  "do not re-derive it from the code either, because the code currently
+  disagrees with it") are **history, not current state**: #3999 implements the
+  standard, so the original *is* reopened and the code now agrees with the
+  entry. Kept rather than rewritten because the entry is owner-authored and
+  this ledger is read in full at every session start — a session that finds
+  the old text and hunts for a divergence that no longer exists loses the same
+  time twice over. Precedent: D-029's "amended by D-040" note.
 - **D-043** · 2026-08-22 · owner (#3995) — **nyxGPT allocates the EC2 Mac
   Dedicated Host.** `nyxgpt cloud deploy --os macos` with no `--host` prices the
   host live from the AWS Pricing API, discloses the rate, the 24-hour minimum

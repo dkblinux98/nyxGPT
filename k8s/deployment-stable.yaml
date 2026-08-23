@@ -43,6 +43,20 @@ spec:
                 secretKeyRef:
                   name: nyxgpt-secrets
                   key: api-key
+            # The GlitchTip DSN this deployment reports errors to (#3990).
+            # Provisioned per-install by `nyxgpt ops install --kubernetes`
+            # (`_k8s_provision_glitchtip`) into the nyxgpt-secrets Secret and
+            # merged into `[error_tracking] dsn` by docker/entrypoint.sh --
+            # the api reads config.ini, not the environment. It cannot be
+            # baked into k8s/configmap.yaml because GlitchTip mints a new
+            # project key per install. Empty until provisioning has run (and
+            # on a `--skip-observability` install), which leaves error
+            # tracking inert rather than misdirected.
+            - name: NYXGPT_ERROR_TRACKING_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-secrets
+                  key: error-tracking-dsn
           volumeMounts:
             - name: config
               mountPath: /etc/nyxgpt/config

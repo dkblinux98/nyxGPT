@@ -168,7 +168,11 @@ The same lane is also where the owner parks **features they have tested and
 failed**, so that what has failed stays visible in one place. Those are
 closed issues, and the machinery reads the difference: closed items in the
 lane are parked and are moved only by the promotion sweep, once everything
-blocking them is accepted; open items are the round's held rework.
+blocking them is accepted. Open items are no longer all held rework — since
+#3999 a failed feature's **original is reopened** into the lane too, so an
+open item with open blocked-by edges is an original *waiting* on its rework
+rather than work to dispatch. See
+[acceptance-drain-gate.md](acceptance-drain-gate.md) for the three roles.
 
 The other end of the cycle is automated from the same signal: the owner
 moving the **release tracking issue** to "For Release" is the release
