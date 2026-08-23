@@ -369,6 +369,22 @@ def test_the_submit_script_runs_the_sweep_and_cannot_be_blocked_by_it() -> None:
     )
     assert 'cat "$sweep_err"' in block, "a sweep that has something to say must be shown"
     assert "|| true" in block, "the sweep still must not be able to fail the submission"
+    # BOTH branches must speak, and this must be asserted per-branch. A single
+    # `'cat "$sweep_err"' in block` is satisfied by the success branch alone, so
+    # deleting the hard-failure diagnostic left every test green -- the fix for a
+    # silent-failure defect was itself unpinned, which is this PR's own defect
+    # class one level up. Split at the `else` and pin each side separately.
+    success_branch, _, failure_branch = code.partition("\n  else\n")
+    assert failure_branch, "the sweep block must keep its hard-failure else-branch"
+    for branch_name, branch in (("success", success_branch), ("hard-failure", failure_branch)):
+        assert 'cat "$sweep_err"' in branch, (
+            f"the {branch_name} branch must show what the sweep wrote to stderr -- "
+            "a crashed sweep is otherwise as silent as the 2>/dev/null this removed"
+        )
+    assert "produced no diagnostic output" in failure_branch, (
+        "a sweep that fails with an empty stderr must still say so, or the "
+        "failure path is silent in exactly the case that produces no output"
+    )
 
 
 def test_an_empty_three_dot_range_refuses_rather_than_sweeping_backwards(tmp_path: Path) -> None:

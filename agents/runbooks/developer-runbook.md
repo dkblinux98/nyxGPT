@@ -758,10 +758,15 @@ nine right and missed one. Two consequences for you:
   edit. If a `copy-paste` cluster really is redundant, say so in the PR; do not
   fold it silently into someone else's doc.
 
-Measured over the 2026-08-22 round, the median fact this pipeline changes is
-asserted in **2** places and about a quarter of them in **5 or more**. The
-sweep is mitigation, not a cure: the cure is not writing the same fact down
-five times.
+Measured over the 2026-08-22 round, the median fact this pipeline changes was
+asserted in **2** places and about a quarter of them in **5 or more** — but
+treat those figures as **provisional**: they were produced before this same
+change fixed the sweep's silent two-dot fallback, and as recorded they cannot
+be audited or reproduced (see **D-046**'s provenance caveat). The *shape* they
+describe — a long tail of heavily-restated facts — is corroborated
+independently; the specific numbers await a re-run. Either way the sweep is
+mitigation, not a cure: the cure is not writing the same fact down five
+times.
 
 **Motivating incident (#3743, 2026-08-13):** #3727/#3735 shipped repo-less
 PyPI publishing while `README.md` still asserted that it had not shipped and a
