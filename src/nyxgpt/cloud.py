@@ -17,6 +17,17 @@ security group via `--security-group-id`/`--region`, or by reading
 (`{"security_group_id": ..., "region": ...}`) -- so `allow-ip` needs no
 arguments after a deploy.
 
+**Credentials (#3993).** Every AWS client built here resolves its profile the
+way the substrate commands do -- `--profile`, then the profile the last
+`cloud infra apply` recorded in `infra.json`, then config.ini `[cloud]
+profile`, then `AWS_PROFILE`, then boto3's own default chain (`_resolve_profile`).
+Building a bare `boto3.client` instead meant `[cloud] profile` was ignored and
+the query ran in whatever account the workstation's *default* profile names, so
+a security group that plainly existed came back `InvalidGroup.NotFound` -- to
+an operator who, being locked out, could not check. That is why a not-found
+here names the account and profile it queried rather than reporting a bare
+absence.
+
 `nyxgpt cloud user-data` (P6-12/#3511, `nyxgpt.cloud_provision`) renders the
 per-target-OS bootstrap script. `nyxgpt cloud deploy --os` is what delivers
 it to an instance (#3867); the substrate still attaches no Terraform
@@ -28,6 +39,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -88,11 +100,22 @@ def _resolve_security_group_id(args: argparse.Namespace) -> str:
 
 
 def _resolve_region(args: argparse.Namespace) -> str | None:
-    """Resolve the AWS region from `--region`, else the cloud state file, else `None`."""
+    """Resolve the AWS region from `--region`, the cloud state file, config.ini, else `None`.
+
+    The config.ini step matches `cloud_infra.resolve_settings` (#3993): a
+    region reachable by the substrate commands but not by this one is the same
+    class of gap as the profile, and produces the same wrong-place lookup.
+    `None` still means "let boto3 resolve it", which is the honest answer when
+    nothing here knows.
+    """
     explicit = getattr(args, "region", None)
     if explicit:
         return str(explicit)
-    region = _load_cloud_state().get("region")
+    region = (
+        _load_cloud_state().get("region")
+        or _saved_infra_settings().get("aws_region")
+        or _configured_cloud_reference().get("region")
+    )
     return str(region) if region else None
 
 
@@ -135,8 +158,68 @@ def normalize_cidr(ip_or_cidr: str) -> str:
     return cidr
 
 
-def _get_ec2_client(region: str | None) -> Any:
-    """Build a boto3 EC2 client, raising a clean error if boto3 isn't installed."""
+def _configured_cloud_reference() -> dict[str, str]:
+    """Return config.ini's `[cloud]` profile/region reference, or empty strings on failure.
+
+    Mirrors `cloud_infra._configured_cloud_reference`. Imported lazily because
+    this module is imported *by* `cloud_infra` (and through it by most of the
+    `nyxgpt cloud` surface): a module-scope import of the config stack would
+    close an import cycle. A missing or invalid config.ini must never block the
+    lockout-recovery command -- every value it supplies also has a flag and an
+    environment fallback.
+    """
+    try:
+        from nyxgpt import aws_credentials_setup
+        from nyxgpt import config as config_mod
+
+        return aws_credentials_setup.cloud_reference_status(config_mod.load_config())
+    except Exception:
+        return {"profile": "", "region": ""}
+
+
+def _saved_infra_settings() -> dict[str, Any]:
+    """Return what the last `cloud infra apply` recorded (`infra.json`), or `{}`."""
+    try:
+        from nyxgpt import cloud_infra
+
+        return cloud_infra.load_settings()
+    except Exception:
+        return {}
+
+
+def _resolve_profile(args: argparse.Namespace) -> str:
+    """Resolve the AWS profile by the same documented order the substrate commands use.
+
+    `--profile` > the profile the last `cloud infra apply` recorded
+    (`infra.json`) > config.ini `[cloud] profile` > `AWS_PROFILE` > `""`
+    (boto3's own default chain). That is exactly
+    `cloud_infra.resolve_settings`'s order, and matching it is the whole point
+    (#3993): until this existed every client built here authenticated through
+    boto3's default chain alone, so an operator whose *default* profile names a
+    different account got `InvalidGroup.NotFound` for a security group that
+    plainly exists -- reported, at that moment, to someone locked out of the
+    instance and unable to check.
+    """
+    return str(
+        getattr(args, "profile", None)
+        or _saved_infra_settings().get("aws_profile")
+        or _configured_cloud_reference().get("profile")
+        or os.environ.get("AWS_PROFILE")
+        or ""
+    )
+
+
+def _get_ec2_client(region: str | None, profile: str = "") -> Any:
+    """Build a boto3 EC2 client for `profile`, raising a clean error if boto3 isn't installed.
+
+    A named profile goes through `boto3.Session(profile_name=...)` (#3993):
+    the bare `boto3.client` this used unconditionally consults only the
+    process environment, so a configured `[cloud] profile` was silently
+    dropped and every call landed in whichever account the workstation's
+    default profile names. With no profile resolved, the bare form is kept --
+    it *is* boto3's default session, and going through an explicit one would
+    change nothing except which code path a credential bug hides in.
+    """
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudCommandError(
@@ -146,22 +229,108 @@ def _get_ec2_client(region: str | None) -> Any:
     if region:
         kwargs["region_name"] = region
     try:
+        if profile:
+            return boto3.Session(profile_name=profile).client("ec2", **kwargs)
         return boto3.client("ec2", **kwargs)
     except Exception as exc:
-        raise CloudCommandError(f"Failed to create an AWS EC2 client: {exc}") from exc
+        suffix = f" for profile {profile!r}" if profile else ""
+        raise CloudCommandError(f"Failed to create an AWS EC2 client{suffix}: {exc}") from exc
 
 
-def _describe_ssh_ingress_cidrs(ec2_client: Any, security_group_id: str) -> list[str]:
-    """Return every IPv4 CIDR currently allowed by `security_group_id`'s port-22 TCP rule(s)."""
+def describe_credential_context(region: str | None, profile: str = "") -> str:
+    """Return a short "AWS account 1234, profile 'x'" description of who the caller is.
+
+    Best-effort and never fatal: this only ever *annotates* another error, and
+    an STS call that fails (expired credentials, no network) must not replace
+    the failure the operator is actually being told about. The profile is named
+    even when the account lookup fails, because "which profile did I just use"
+    is the half of the answer that identifies a credential-resolution mistake.
+    """
+    profile_label = f"profile {profile!r}" if profile else "no profile (boto3's default chain)"
+    boto3 = try_import("boto3")
+    if boto3 is None:
+        return profile_label
+    try:
+        kwargs: dict[str, Any] = {"region_name": region} if region else {}
+        client = (
+            boto3.Session(profile_name=profile).client("sts", **kwargs)
+            if profile
+            else boto3.client("sts", **kwargs)
+        )
+        account = str(client.get_caller_identity().get("Account", ""))
+    except Exception:
+        return f"{profile_label}; the account it resolves to could not be determined"
+    if not account:
+        return profile_label
+    return f"AWS account {account}, {profile_label}"
+
+
+def _error_code(exc: Exception) -> str:
+    """Extract botocore's `Error.Code` from a ClientError, or `''` for anything else.
+
+    Read off the response dict rather than by catching typed botocore
+    exceptions, so this module keeps working on an install without boto3 --
+    the same reason `cloud_state._error_code` does it this way.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        if isinstance(error, dict):
+            return str(error.get("Code", ""))
+    return ""
+
+
+def _not_found_detail(describe_credentials: Any) -> str:
+    """Return the "which account did I even ask?" sentence appended to a NotFound error.
+
+    `InvalidGroup.NotFound` has two very different causes and, until #3993,
+    one message: the group is gone, or the call went to the wrong account.
+    Told the first when the truth was the second -- while locked out of the
+    instance, which is the only time this command runs -- an operator reads it
+    as "my infrastructure has been destroyed" and goes looking for a disaster
+    that did not happen. Naming the account and profile the query actually used
+    makes a credential-resolution mistake self-evident and costs one STS call
+    on the failure path only.
+    """
+    context = describe_credentials() if callable(describe_credentials) else ""
+    if not context:
+        return ""
+    return (
+        f" -- that lookup ran against {context}. If the group exists in a different "
+        "account, this is a credential-resolution problem and not a destroyed "
+        "substrate: set `[cloud] profile` in ~/.nyxGPT/config.ini (or pass "
+        "`nyxgpt cloud allow-ip --profile <name>`), then re-run. "
+        "`nyxgpt cloud status` reports the substrate this machine has recorded."
+    )
+
+
+def _describe_ssh_ingress_cidrs(
+    ec2_client: Any, security_group_id: str, describe_credentials: Any = None
+) -> list[str]:
+    """Return every IPv4 CIDR currently allowed by `security_group_id`'s port-22 TCP rule(s).
+
+    `describe_credentials` is an optional zero-argument callable returning a
+    description of the credentials in use. It is invoked only when the lookup
+    fails with a not-found -- see `_not_found_detail` for why, and so that the
+    happy path never pays for an STS round trip.
+    """
     try:
         response = ec2_client.describe_security_groups(GroupIds=[security_group_id])
     except Exception as exc:
+        detail = (
+            _not_found_detail(describe_credentials)
+            if _error_code(exc) == "InvalidGroup.NotFound"
+            else ""
+        )
         raise CloudCommandError(
-            f"Failed to describe security group {security_group_id}: {exc}"
+            f"Failed to describe security group {security_group_id}: {exc}{detail}"
         ) from exc
     groups = response.get("SecurityGroups", [])
     if not groups:
-        raise CloudCommandError(f"Security group {security_group_id} not found")
+        raise CloudCommandError(
+            f"Security group {security_group_id} not found"
+            + _not_found_detail(describe_credentials)
+        )
 
     cidrs: list[str] = []
     for permission in groups[0].get("IpPermissions", []):
@@ -177,7 +346,10 @@ def _describe_ssh_ingress_cidrs(ec2_client: Any, security_group_id: str) -> list
 
 
 def refresh_ssh_ingress_rule(
-    ec2_client: Any, security_group_id: str, new_cidr: str
+    ec2_client: Any,
+    security_group_id: str,
+    new_cidr: str,
+    describe_credentials: Any = None,
 ) -> tuple[list[str], bool]:
     """Point `security_group_id`'s port-22 ingress rule at `new_cidr`.
 
@@ -189,8 +361,11 @@ def refresh_ssh_ingress_rule(
     `(old_cidrs, changed)` -- `changed` is `False` when `new_cidr` was
     already the only allowed source (idempotent no-op, no AWS API mutation
     calls made).
+
+    `describe_credentials` is forwarded to the describe call and used only to
+    annotate a not-found failure (#3993).
     """
-    old_cidrs = _describe_ssh_ingress_cidrs(ec2_client, security_group_id)
+    old_cidrs = _describe_ssh_ingress_cidrs(ec2_client, security_group_id, describe_credentials)
     if old_cidrs == [new_cidr]:
         return old_cidrs, False
 
@@ -241,14 +416,23 @@ def allow_ip(args: argparse.Namespace) -> int:
     try:
         security_group_id = _resolve_security_group_id(args)
         region = _resolve_region(args)
+        # Resolved once and reused for both the EC2 client and the failure
+        # annotation, so the two can never disagree about which identity was
+        # used (#3993).
+        profile = _resolve_profile(args)
         explicit_ip = getattr(args, "ip", None)
         new_cidr = (
             normalize_cidr(explicit_ip)
             if explicit_ip
             else normalize_cidr(detect_current_public_ip())
         )
-        ec2_client = _get_ec2_client(region)
-        old_cidrs, changed = refresh_ssh_ingress_rule(ec2_client, security_group_id, new_cidr)
+        ec2_client = _get_ec2_client(region, profile)
+        old_cidrs, changed = refresh_ssh_ingress_rule(
+            ec2_client,
+            security_group_id,
+            new_cidr,
+            lambda: describe_credential_context(region, profile),
+        )
     except CloudCommandError as exc:
         print(f"nyxgpt cloud allow-ip: {exc}", file=sys.stderr)
         return 1

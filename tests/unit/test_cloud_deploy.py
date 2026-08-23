@@ -25,6 +25,10 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     cloud_dir.mkdir(parents=True)
     monkeypatch.setattr(cloud_deploy, "CLOUD_DIR", cloud_dir)
     monkeypatch.setattr(cloud_deploy, "DEPLOY_STATE_FILE", cloud_dir / "deploy.json")
+    # #3993: without this the suite reads the developer's own
+    # ~/.nyxGPT/cloud/deploy-attempt.json and reports whatever their last real
+    # deploy did.
+    monkeypatch.setattr(cloud_deploy, "DEPLOY_ATTEMPT_FILE", cloud_dir / "deploy-attempt.json")
     monkeypatch.setattr(cloud_deploy, "DEPLOY_HISTORY_FILE", cloud_dir / "history.jsonl")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_STATE_FILE", cloud_dir / "tunnel.json")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
@@ -156,6 +160,28 @@ def test_provision_script_never_clones_the_repository():
     assert "git://" not in lowered
     assert ".git" not in lowered
     assert "curl" in lowered  # it does fetch things -- just never source control
+
+
+def test_provision_script_puts_nyxgpt_on_the_login_users_path():
+    """#3993: an operator who SSHes in to diagnose must be able to run `nyxgpt`.
+
+    The venv is never activated by a login shell, so every wrapped command the
+    docs, the dashboard and this script's own output name answered `nyxgpt:
+    command not found` -- while the binary sat in a directory nothing told the
+    operator about. That turned "run the instance's own doctor" into a
+    scavenger hunt at the exact moment it mattered.
+    """
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+
+    assert "/etc/profile.d/nyxgpt.sh" in script
+    assert 'PATH="$HOME/.nyxGPT/venv/bin:$PATH"' in script
+    # Quoted heredoc delimiter: $HOME must be expanded by the login shell that
+    # sources the file, not by the provisioning run, or every user would get
+    # the deploying user's home directory.
+    assert "<<'PROFILE_EOF'" in script
+    # And it happens before the stack comes up, so a bring-up failure still
+    # leaves a usable CLI behind to diagnose it with.
+    assert script.index("/etc/profile.d/nyxgpt.sh") < script.index("run_nyxgpt ops install")
 
 
 def test_provision_script_installs_the_pinned_published_release():
@@ -1418,6 +1444,225 @@ def test_status_command_is_unknown_rather_than_not_deployed(monkeypatch, capsys)
     assert code == 0
     assert "UNKNOWN" in out
     assert "not the same as nothing being deployed" in out
+
+
+# --- a failed deploy is describable, not invisible (#3993) ----------------
+#
+# The defect: `deploy.json` was written only on success, so a provision that
+# died partway left no record at all -- and `cloud status` reported "UNKNOWN
+# from this machine" while a live, billing EC2 instance ran and `state.json`
+# on the same disk named its instance id and IPs. That is precisely the state
+# an operator most needs status to describe, and it was the one state it could
+# not see.
+
+
+def _write_attempt(cloud_dir, **overrides):
+    """Write the record `nyxgpt cloud deploy` leaves after a run that did not finish."""
+    attempt = {
+        "status": cloud_deploy.ATTEMPT_FAILED,
+        "phase": "provision",
+        "started_at": 1.0,
+        "updated_at": 2.0,
+        "version": "3.0.0",
+        "host": "198.51.100.10",
+        "instance_id": "i-0abc",
+        "region": "us-east-1",
+        "error": "Could not reconcile Grafana admin credential",
+    }
+    attempt.update(overrides)
+    (cloud_dir / "deploy-attempt.json").write_text(json.dumps(attempt), encoding="utf-8")
+    return attempt
+
+
+def test_deploy_records_the_attempt_before_provisioning(
+    stubbed_deploy, _isolated_cloud_home, monkeypatch
+):
+    """The record has to exist *before* the work, or a crash leaves nothing."""
+    seen: list[dict] = []
+
+    def _capture(target, plan):
+        seen.append(cloud_deploy.load_deploy_attempt())
+        return {"version": plan.version, "profiles": plan.profiles}
+
+    monkeypatch.setattr(cloud_deploy, "provision_instance", _capture)
+
+    cloud_deploy.deploy(_args(no_tunnel=True))
+
+    assert seen and seen[0]["status"] == cloud_deploy.ATTEMPT_RUNNING
+    assert seen[0]["phase"] == "provision"
+    assert seen[0]["host"] == "198.51.100.10"
+
+
+def test_a_successful_deploy_closes_the_attempt_out(stubbed_deploy, _isolated_cloud_home):
+    cloud_deploy.deploy(_args(no_tunnel=True))
+
+    attempt = cloud_deploy.load_deploy_attempt()
+    assert attempt["status"] == cloud_deploy.ATTEMPT_SUCCEEDED
+    assert attempt["phase"] == "done"
+
+
+def test_a_failed_deploy_leaves_a_record_naming_the_phase(
+    stubbed_deploy, _isolated_cloud_home, monkeypatch
+):
+    """The core of #3993: the failure itself must leave something behind."""
+
+    def _explode(target, plan):
+        raise CloudCommandError("[FAIL] Could not reconcile Grafana admin credential")
+
+    monkeypatch.setattr(cloud_deploy, "provision_instance", _explode)
+
+    with pytest.raises(CloudCommandError):
+        cloud_deploy.deploy(_args(no_tunnel=True))
+
+    attempt = cloud_deploy.load_deploy_attempt()
+    assert attempt["status"] == cloud_deploy.ATTEMPT_FAILED
+    assert attempt["phase"] == "provision"
+    assert "Grafana" in attempt["error"]
+    assert attempt["instance_id"] == "i-0abc"
+
+
+def test_status_describes_a_failed_deploy_instead_of_reporting_unknown(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """The owner's observation, exactly: a live instance reported as UNKNOWN."""
+    _write_attempt(_isolated_cloud_home)
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {"provisioned": True, "instance_id": "i-0abc", "security_group_id": "sg-0abc"},
+    )
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "UNKNOWN" not in out
+    assert "NOT COMPLETED" in out
+    assert "provision" in out
+    assert "Grafana" in out
+    assert "i-0abc" in out
+    assert "an instance exists and is being billed" in out
+
+
+def test_a_deploy_that_failed_before_the_substrate_claims_no_billing(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """D-018 inside the fix written to enforce it (#4007 review).
+
+    A deploy can fail at `start`/`infra` before Terraform creates anything --
+    no terraform binary, no AWS credentials, a failed `terraform init`. The
+    attempt records FAILED with no instance_id and no substrate record, and the
+    summary used to print "an instance exists and is being billed" over it, then
+    prescribe `cloud destroy`, which raises "nothing to destroy". Both are
+    claims nothing checked.
+    """
+    _write_attempt(
+        _isolated_cloud_home,
+        phase="infra",
+        instance_id="",
+        host="",
+        error="terraform init failed: no such binary",
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "NOT COMPLETED" in out
+    assert "an instance exists and is being billed" not in out
+    assert "nothing is recorded as provisioned by this attempt" in out.lower()
+    assert "cloud destroy" not in out, "destroy sends the operator to 'nothing to destroy'"
+
+
+def test_a_declined_mac_allocation_is_not_reported_as_billing(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """`confirm_allocation` records "nothing was allocated and nothing is billed".
+
+    That error line used to sit inside a frame asserting the exact opposite.
+    """
+    _write_attempt(
+        _isolated_cloud_home,
+        phase="infra",
+        instance_id="",
+        host="",
+        error="Not confirmed -- nothing was allocated and nothing is billed",
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert "nothing was allocated and nothing is billed" in out
+    assert "an instance exists and is being billed" not in out
+
+
+def test_status_payload_marks_a_failed_deploy_as_not_deployed(monkeypatch, _isolated_cloud_home):
+    """Describable is not the same as deployed -- the three outcomes stay apart."""
+    _write_attempt(_isolated_cloud_home)
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["source"] == cloud_deploy.SOURCE_DEPLOY_ATTEMPT
+    assert status["known"] is True
+    assert status["deployed"] is False
+    assert status["attempt"]["phase"] == "provision"
+
+
+def test_status_falls_back_to_the_substrate_record(monkeypatch, _isolated_cloud_home):
+    """No deploy and no attempt, but this machine's own state file names an instance."""
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {"provisioned": True, "instance_id": "i-0abc", "public_ip": "198.51.100.10"},
+    )
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["source"] == cloud_deploy.SOURCE_SUBSTRATE_RECORD
+    assert status["known"] is True
+    assert status["deployed"] is False
+    assert status["instance_id"] == "i-0abc"
+
+
+def test_status_still_reports_unknown_with_no_source_at_all(monkeypatch, _isolated_cloud_home):
+    """D-018 is intact: a machine with nothing to answer from still says unknown."""
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["source"] == cloud_deploy.SOURCE_UNKNOWN
+    assert status["known"] is False
+
+
+def test_a_completed_deployment_still_reports_a_later_failed_attempt(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """The box is up on the old release while the operator thinks they shipped a new one."""
+    _write_deploy_record(_isolated_cloud_home)
+    _write_attempt(_isolated_cloud_home, version="3.1.0", phase="health")
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": True})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "DEPLOYED" in out, "a real deployment must not be downgraded by a later failure"
+    assert "Last deploy attempt" in out
+    assert "3.1.0" in out
+
+
+def test_destroy_clears_the_attempt_record(stubbed_deploy, _isolated_cloud_home, monkeypatch):
+    """A torn-down instance must not keep reporting NOT COMPLETED."""
+    _write_attempt(_isolated_cloud_home)
+    monkeypatch.setattr(cloud_infra, "destroy_infra", lambda args: {"action": "destroy"})
+    monkeypatch.setattr(cloud_deploy, "stop_tunnel", lambda: {"running": False})
+
+    cloud_deploy.destroy(_args(yes=True))
+
+    assert cloud_deploy.load_deploy_attempt() == {}
 
 
 def test_status_command_probes_health_by_default(monkeypatch, _isolated_cloud_home, capsys):
