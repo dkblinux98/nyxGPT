@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from home_sandbox import REAL_HOME
 
 from nyxgpt import cloud_secrets
 from nyxgpt.config import (
@@ -1396,13 +1397,22 @@ chat_timeout_seconds = not_a_number
 # ---------------------------------------------------------------------------
 
 
-def test_expand_path_refuses_exact_allowed_roots() -> None:
+def test_expand_path_refuses_exact_allowed_roots(monkeypatch) -> None:
     """A configured path resolving EXACTLY to $HOME or the temp root -- rather
     than strictly inside one -- is refused: the barrier accepts descendants
     only (`startswith(root + os.sep)`). Pins the intentional behavior change
-    from the single-condition guard restructure (PR #3657)."""
+    from the single-condition guard restructure (PR #3657).
+
+    `$HOME` is pointed back at the machine's real home for the home half.
+    Since #4020 the suite's own `$HOME` is a temp directory, so a path equal to
+    it is a strict *descendant* of the temp root and the second branch accepts
+    it -- which would make this assertion pass or fail for a reason that has
+    nothing to do with the guard it is about. The two roots have to be
+    genuinely disjoint for "exactly a root is refused" to mean anything.
+    """
+    monkeypatch.setenv("HOME", str(REAL_HOME))
     with pytest.raises(ValueError, match="allowed data area"):
-        _expand_path(str(Path.home()))
+        _expand_path(str(REAL_HOME))
     with pytest.raises(ValueError, match="allowed data area"):
         _expand_path(tempfile.gettempdir())
 

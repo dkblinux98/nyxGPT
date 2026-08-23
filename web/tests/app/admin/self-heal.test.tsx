@@ -1074,7 +1074,13 @@ describe('SelfHealPage', () => {
     expect(
       screen.getAllByText(/exited 125: permission denied while trying to connect/).length
     ).toBeGreaterThan(0);
-    expect(screen.getByText(/nyxgpt ops restart all/)).toBeInTheDocument();
+    // The remediation must be one that can actually work. `nyxgpt ops restart
+    // all` cannot: a systemd --user unit is forked from a manager whose
+    // supplementary groups were stamped in when the session was created, and
+    // an unprivileged manager cannot grant itself a group -- only recreating
+    // the session does (#3812 re-test).
+    expect(screen.queryByText(/nyxgpt ops restart all/)).not.toBeInTheDocument();
+    expect(screen.getByText(/loginctl terminate-user/)).toBeInTheDocument();
   });
 
   it('omits the reason sentence when the API reports no reason', async () => {

@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from home_sandbox import REAL_HOME
 
 from nyxgpt import sessions
 
@@ -389,14 +390,22 @@ def test_session_file_for_refuses_symlink_escape(tmp_path: Path) -> None:
         sessions.session_file_for("escape", tmp_path)
 
 
-def test_resolve_sessions_dir_refuses_exact_allowed_roots() -> None:
+def test_resolve_sessions_dir_refuses_exact_allowed_roots(monkeypatch) -> None:
     """A sessions dir resolving EXACTLY to $HOME or the temp root -- rather
     than strictly inside one -- is refused: the barriers accept descendants
     only (`startswith(root + os.sep)`), and neither root itself is ever a
     legitimate sessions directory. Pins the intentional behavior change from
-    the single-condition guard restructure (PR #3657)."""
+    the single-condition guard restructure (PR #3657).
+
+    `$HOME` is pointed back at the machine's real home for the home half: the
+    suite's own `$HOME` is a temp directory (#4020), so a path equal to it is a
+    strict descendant of the *temp* root and the second barrier accepts it,
+    which would prove nothing about the first. The two roots have to be
+    disjoint for "exactly a root is refused" to be a statement about the guard.
+    """
+    monkeypatch.setenv("HOME", str(REAL_HOME))
     with pytest.raises(ValueError, match="allowed data area"):
-        sessions._resolve_sessions_dir(Path.home())
+        sessions._resolve_sessions_dir(REAL_HOME)
     with pytest.raises(ValueError, match="allowed data area"):
         sessions._resolve_sessions_dir(Path(tempfile.gettempdir()))
 

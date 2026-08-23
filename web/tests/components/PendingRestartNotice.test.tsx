@@ -165,6 +165,43 @@ describe('PendingRestartNotice', () => {
     }
   });
 
+  it('keeps polling while the restarted api is down, then clears when it returns', async () => {
+    // #3806 round two. Restarting `api` takes down the process that answers
+    // this very poll, and the pending flag is only retired at the end of the
+    // replacement process's startup. So the poll MUST tolerate a stretch of
+    // failures and then see the empty set -- giving up early is what reported
+    // a restart that worked as "Saved -- but not yet in effect".
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let attempts = 0;
+      server.use(
+        http.post('/api/v1/infra/restart-required', () =>
+          HttpResponse.json({ targets: ['api'], status: 'running' })
+        ),
+        http.get('/api/v1/infra/restart-status', () => {
+          attempts += 1;
+          // The api is down for the first 20 polls: the process is gone.
+          if (attempts <= 20) return HttpResponse.error();
+          return HttpResponse.json({ pending: {}, restart_command: null, session_disrupting: [] });
+        })
+      );
+
+      const onStatusChange = vi.fn();
+      render(<PendingRestartNotice status={API_PENDING} onStatusChange={onStatusChange} />);
+      fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25000);
+      });
+
+      await waitFor(() => expect(onStatusChange).toHaveBeenCalled());
+      expect(onStatusChange.mock.calls.at(-1)![0].pending).toEqual({});
+      expect(screen.queryByText(/did not report finished in time/i)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('surfaces a failed restart request and re-enables the button', async () => {
     server.use(
       http.post('/api/v1/infra/restart-required', () =>
