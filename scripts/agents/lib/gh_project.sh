@@ -1106,10 +1106,32 @@ acceptance_lane_snapshot() {
   )
 }
 
-# The issues parked awaiting rework by the currently held issues, as a JSON
-# array. Read from each held issue's NATIVE blocking relationship (#3731),
-# with the retired "Related feature: #N" body marker kept as the historical
-# fallback. Those issues park CLOSED in Acceptance Testing -- or in
+# Classifies every OPEN item in the holding lane and reports, as one JSON
+# object:
+#
+#   rework_features  the issues parked awaiting rework by the held issues
+#   rework_issues    the held items that really are handler-filed rework
+#                    (an `@acceptance-failure` / `@improvement` issue) and
+#                    are therefore released to Backlog when the gate opens
+#   parked_open      the held items that are ORIGINALS the owner reopened
+#                    because they failed acceptance (owner standard D-042,
+#                    2026-08-22). The gate leaves those exactly where the
+#                    reopen put them; only promote_accepted_features.sh
+#                    moves them, once their blockers are all accepted.
+#   unrelated_work   the rest -- D-042 (b), a failure with no relationship,
+#                    released with the batch like any other held work.
+#
+# The split is drain_gate.py's `acceptance_role`, read from a rework label
+# plus the native relationship edges and NOT from the issue's open/closed
+# state. State was the old rule and it is what released #3835 and #3829 into
+# Backlog on 2026-08-22 with nothing for a developer to implement: under
+# D-042 an owner reopening an issue means "this did not pass acceptance",
+# which is the opposite of "dispatch a developer".
+#
+# rework_features is read from each held issue's NATIVE blocking
+# relationship (#3731), with the retired "Related feature: #N" body marker
+# kept as the historical fallback. Those issues park CLOSED in Acceptance
+# Testing -- or in
 # Acceptance Failed, where the owner keeps what they have tested and failed
 # (#3780) -- until everything blocking them reaches For Release
 # (promote_accepted_features.sh), so without this the gate would deadlock:
@@ -1126,30 +1148,47 @@ acceptance_lane_snapshot() {
 # An issue that cannot be read contributes nothing -- one unreadable issue
 # must not silently open the gate wider than it should, and the next poll
 # retries.
-drain_gate_rework_features() {
+drain_gate_classify_held() {
   local held_json="$1"
   require_cmd jq
   require_cmd python3
 
-  local issues=() issue payload blocks
+  local issues=() issue payload blocks blocked_by
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
     payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
       --jq '{body: (.body // ""), labels: [.labels[]?.name]}' 2>/dev/null)" || {
-      _warn "drain_gate_rework_features: could not read #${issue} -- ignoring its blocking relationship"
+      _warn "drain_gate_classify_held: could not read #${issue} -- ignoring its blocking relationship"
       continue
     }
     [[ -n "$payload" ]] || continue
-    blocks="$(blocking_issues "$issue" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+    # Same fail-safe as the body read directly above: "one unreadable issue
+    # must not silently open the gate wider than it should" applied only to
+    # the payload, while these two edge reads still answered "no blockers"
+    # on a 5xx (#3999 review).
+    local blocks_raw blocked_by_raw
+    if ! blocks_raw="$(blocking_issues_checked "$issue")" \
+       || ! blocked_by_raw="$(blocked_by_issues_checked "$issue")"; then
+      _warn "drain_gate_classify_held: could not read #${issue}'s dependencies -- leaving it held"
+      continue
+    fi
+    blocks="$(printf '%s' "$blocks_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
     [[ -n "$blocks" ]] || blocks="[]"
-    payload="$(jq -c --argjson b "$blocks" '. + {blocks: $b}' <<<"$payload")"
+    blocked_by="$(printf '%s' "$blocked_by_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+    [[ -n "$blocked_by" ]] || blocked_by="[]"
+    # The number comes from the lane list, never from the payload: the
+    # classification below has to name issues, and re-deriving it from the
+    # API body would only add a way for the two to disagree.
+    payload="$(jq -c --argjson b "$blocks" --argjson bb "$blocked_by" --argjson n "$issue" \
+      '. + {blocks: $b, blocked_by: $bb, number: $n}' <<<"$payload")"
     issues+=("$payload")
   done < <(jq -r '.[]' <<<"$held_json")
 
-  # Nothing readable held -> nothing parks a feature. (Guarded before the
-  # array expansion: `set -u` on bash 3.2 errors on an empty "${a[@]}".)
+  # Nothing readable held -> nothing parks an issue, and nothing is
+  # classified either. (Guarded before the array expansion: `set -u` on
+  # bash 3.2 errors on an empty "${a[@]}".)
   if [[ "${#issues[@]}" -eq 0 ]]; then
-    echo "[]"
+    echo '{"rework_features":[],"rework_issues":[],"parked_open":[],"unrelated_work":[]}'
     return 0
   fi
 
@@ -1157,8 +1196,7 @@ drain_gate_rework_features() {
   # the whole accumulator per held issue.
   printf '%s\n' "${issues[@]}" \
     | jq -s -c '.' \
-    | python3 "${_LIB_DIR}/drain_gate.py" rework \
-    | jq -c '.rework_features'
+    | python3 "${_LIB_DIR}/drain_gate.py" rework
 }
 
 # {"open":bool,"blockers":[...],"held":[...],...} for the live board.
@@ -1167,18 +1205,109 @@ drain_gate_rework_features() {
 drain_gate_state() {
   require_cmd jq
   require_cmd python3
-  local snapshot held rework
+  local snapshot held classified rework parked_open
   snapshot="$(acceptance_lane_snapshot)" || return 1
   # Owner-parked features (CLOSED items in the holding lane, #3780) are not
   # held work: they are subtracted here so the rework lookup does not spend
   # an API call per parked feature, and `decide` subtracts them again from
   # `held` so a gate opening can never move one.
   held="$(jq -c '.acceptance_failed - (.acceptance_failed_parked // [])' <<<"$snapshot")"
-  rework="$(drain_gate_rework_features "$held")" || rework="[]"
-  [[ -n "$rework" ]] || rework="[]"
-  snapshot="$(jq -c --argjson r "$rework" '. + {rework_features: $r}' <<<"$snapshot")"
+  classified="$(drain_gate_classify_held "$held")" \
+    || classified='{"rework_features":[],"rework_issues":[],"parked_open":[],"unrelated_work":[]}'
+  [[ -n "$classified" ]] \
+    || classified='{"rework_features":[],"rework_issues":[],"parked_open":[],"unrelated_work":[]}'
+  rework="$(jq -c '.rework_features // []' <<<"$classified")"
+  # The OPEN originals (D-042). Handed to `decide` so a gate opening can
+  # never release one -- the same protection #3780 gave the CLOSED ones.
+  parked_open="$(jq -c '.parked_open // []' <<<"$classified")"
+  snapshot="$(jq -c --argjson r "$rework" --argjson p "$parked_open" \
+    '. + {rework_features: $r, acceptance_failed_parked_open: $p}' <<<"$snapshot")"
   RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
     python3 "${_LIB_DIR}/drain_gate.py" decide <<<"$snapshot"
+}
+
+# Prints ONE of "rework" / "original" / "work" for `issue` -- THE
+# discriminator of owner standard D-042 (2026-08-22).
+#
+# The rule itself lives in drain_gate.py (`acceptance_role`), deliberately:
+# the handlers that file the work, the gate that releases it and the sweep
+# that promotes it must decide from one implementation, or they contradict
+# each other -- which is exactly the defect #3999 fixed. Read that docstring
+# for why the signals are a rework label plus the native relationship edges,
+# and why open/closed state is no longer one of them.
+#
+# Prints nothing and returns 1 when the issue cannot be read. "Unknown" must
+# not collapse into any of the three answers: each of them authorizes a
+# write (dispatch a developer / promote and close an issue / leave parked),
+# and a transient API failure is evidence for none. Callers skip the issue
+# and let the next sweep decide.
+issue_acceptance_role() {
+  local issue="$1"
+  require_cmd jq
+  require_cmd python3
+  local payload blocks blocked_by
+  # Labels tolerate both shapes the callers hand us: the API's
+  # `{"name": …}` objects, and the plain strings the test fixtures use.
+  payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
+    --jq '{number, body: (.body // ""), labels: [.labels[]? | if type == "object" then .name else . end]}' 2>/dev/null)" || return 1
+  [[ -n "$payload" ]] || return 1
+  # Fail-safe, matching the payload read above: each of the three roles
+  # authorizes a write, so an unreadable edge must answer "unknown" (return 1)
+  # rather than collapse into one of them. Recoverable in both directions --
+  # the item stays parked and the next poll re-reads it (#3999 review).
+  local blocks_raw blocked_by_raw
+  blocks_raw="$(blocking_issues_checked "$issue")" || return 1
+  blocked_by_raw="$(blocked_by_issues_checked "$issue")" || return 1
+  blocks="$(printf '%s' "$blocks_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+  [[ -n "$blocks" ]] || blocks="[]"
+  blocked_by="$(printf '%s' "$blocked_by_raw" | jq -R -n -c '[inputs | select(length > 0) | tonumber]' 2>/dev/null)"
+  [[ -n "$blocked_by" ]] || blocked_by="[]"
+  payload="$(jq -c --argjson b "$blocks" --argjson bb "$blocked_by" \
+    '. + {blocks: $b, blocked_by: $bb}' <<<"$payload")"
+  python3 "${_LIB_DIR}/drain_gate.py" role <<<"$payload"
+}
+
+# Records an acceptance failure on the ORIGINAL issue, per owner standard
+# D-042 (2026-08-22): the reopen IS the signal that this issue did not pass
+# acceptance, its last comment says why, and the derived issue that blocks
+# it is what actually gets worked.
+#
+# Three writes, in order: reopen (if closed), assign the scrummaster, park
+# it in the holding lane. Nothing here dispatches a developer -- there is
+# nothing on the original to implement, and dispatching one was the whole
+# defect (#3999).
+#
+# Best-effort per step and always returns 0: the derived issue and its
+# blocking edge are already written by the time this runs, and a failed
+# assignment must not fail the handler and lose the owner's report.
+acceptance_reopen_original() {
+  local issue="$1" derived="${2:-}" state lane
+  lane="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}"
+
+  state="$(_issue_open_state "$issue")"
+  if [[ "$state" != "OPEN" ]]; then
+    gh issue reopen "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" >/dev/null 2>&1 \
+      || _warn "acceptance_reopen_original: could not reopen #${issue} -- its acceptance failure is recorded on the derived issue only."
+  fi
+
+  if [[ -n "${SCRUM_AGENT:-}" ]]; then
+    assign_issue_verified "$issue" "$SCRUM_AGENT" \
+      || _warn "acceptance_reopen_original: could not assign #${issue} to @${SCRUM_AGENT}."
+  fi
+
+  set_issue_status "$issue" "$lane" \
+    || _warn "acceptance_reopen_original: could not put #${issue} in '${lane}'."
+
+  local derived_note=""
+  [[ -z "$derived" ]] || derived_note=" The work is #${derived}, which now blocks this issue."
+  issue_comment "$issue" "🔁 **Reopened — did not pass acceptance** (owner standard D-042).
+
+This issue is reopened as the signal that it failed acceptance testing; the comment above says why.${derived_note}
+
+It waits here in **${lane}**, assigned to @${SCRUM_AGENT:-the scrummaster agent}. Nothing is dispatched against *this* issue — when everything blocking it reaches **${STATUS_FOR_RELEASE:-For Release}**, transitively, \`promote_accepted_features.sh\` moves it there, assigns it back to @${HUMAN_OWNER:-the human owner} and closes it." \
+    || _warn "acceptance_reopen_original: could not comment on #${issue}."
+
+  return 0
 }
 
 # True when `issue` is agent-process work and may be worked immediately
@@ -1254,7 +1383,7 @@ drain_gate_release() {
   local parked
   parked="$(jq -r '.parked // [] | join(", #")' <<<"$state")"
   [[ -z "$parked" ]] \
-    || echo "[drain-gate] Owner-parked features left in ${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}: #${parked} (moved only by the promotion sweep, #3780)." >&2
+    || echo "[drain-gate] Parked in ${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}, not released: #${parked} -- an owner-parked feature (#3780) or a reopened original (D-042). Moved only by the promotion sweep." >&2
 
   held="$(jq -r '.held[]' <<<"$state")"
   count="$(_count_lines "$held")"
@@ -2436,6 +2565,27 @@ blocked_by_issues() {
   local issue="$1"
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
     --jq '.[].number' 2>/dev/null || true
+}
+
+# The same two reads, but FAILING instead of reporting "no edges" when the API
+# could not be asked (#3999 review). The `2>/dev/null || true` above collapses a
+# 5xx into empty output, and every classifier that reads it then concludes "no
+# blockers" -- which for a reopened original means `work`, released to `Backlog`
+# and dispatched against an issue with nothing to implement. That is the defect
+# #3999 exists to remove, re-created by one transient API error. Callers that
+# make a decision from the answer must use these and treat failure as unknown.
+blocked_by_issues_checked() {
+  local issue="$1" out
+  out="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocked_by" \
+    --jq '.[].number' 2>/dev/null)" || return 1
+  printf '%s' "$out"
+}
+
+blocking_issues_checked() {
+  local issue="$1" out
+  out="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/dependencies/blocking" \
+    --jq '.[].number' 2>/dev/null)" || return 1
+  printf '%s' "$out"
 }
 
 # Issue numbers among `issue`'s blocked_by dependencies that are still open
