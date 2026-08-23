@@ -42,6 +42,16 @@ a real `config.ini` between them, and drives the whole acceptance scenario:
                        product: the 401 wall still happens and NO notice
                        appears. Without this, steps 3-4 would pass on any
                        build, including the broken one (#3753's rule).
+ 12. Self-restart      the api's OWN restart clears the api's own notice, and
+                       leaves `web`'s standing. This is #3806 round two: the
+                       flag was cleared at the end of a callback running
+                       *inside* the api process, so restarting `api` killed
+                       the thread before it ran, and a restart that worked
+                       reported "Saved -- but not yet in effect" forever.
+ 13. Fault injection   redo step 12 against an api started with the startup
+                       reconciliation neutered -- the pre-fix product -- and
+                       assert the flag survives the restart. Without this,
+                       step 12 would pass on the broken build too.
 
 Exit code 0 on success; non-zero with a printed reason otherwise.
 """
@@ -78,6 +88,7 @@ WEB_URL = f"http://127.0.0.1:{WEB_PORT}"
 ORIGINAL_VALUE = f"smoke-original-{uuid.uuid4().hex}"
 ROTATED_VALUE = f"smoke-rotated-{uuid.uuid4().hex}"
 CLI_WRITTEN_VALUE = f"smoke-cli-written-{uuid.uuid4().hex}"
+FINAL_VALUE = f"smoke-final-{uuid.uuid4().hex}"
 
 failures: list[str] = []
 _procs: list[subprocess.Popen] = []
@@ -191,6 +202,34 @@ def start_api(env: dict[str, str]) -> subprocess.Popen:
         stderr=subprocess.STDOUT,
         # Own session, so `stop()`'s killpg targets this server and not the
         # smoke process's own group.
+        preexec_fn=os.setsid,
+    )
+    _procs.append(proc)
+    return proc
+
+
+# The pre-#3806-round-two api: identical in every way except that the startup
+# reconciliation is neutered before the app is imported. `app.py` calls
+# `restart_state_module.clear_started(...)` through the module object, so
+# replacing the attribute reproduces exactly the product that shipped -- one
+# where nothing retired a pending flag when the api came back up.
+_PRE_FIX_API_LAUNCHER = """
+import uvicorn
+from nyxgpt import restart_state
+
+restart_state.clear_started = lambda component, keys: []
+
+uvicorn.run("nyxgpt.app:app", host="127.0.0.1", port={port})
+"""
+
+
+def start_api_without_startup_reconciliation(env: dict[str, str]) -> subprocess.Popen:
+    """Start the api as it behaved BEFORE the fix, for the step 13 fault injection."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PRE_FIX_API_LAUNCHER.format(port=API_PORT)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
         preexec_fn=os.setsid,
     )
     _procs.append(proc)
@@ -518,6 +557,80 @@ def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
             json.loads(injected.stdout.strip()) == {},
             "with the classification stripped (pre-#3806), the rotation raises NO notice "
             "-- so the notice seen in step 4 is produced by this change, not by luck",
+        )
+
+        log("Step 12: the api's own restart clears the api's own notice")
+        # #3806 round two, the owner's re-test. The notice named `api --
+        # cache.embedding_cache_enabled`, the api restarted fine, and the
+        # notice never cleared: `clear_pending` ran at the end of a callback
+        # living in the process the restart killed. A `web` entry is raised
+        # alongside it deliberately -- clearing on startup must retire what
+        # THIS process's restart settled and nothing else.
+        post_json(
+            f"{API_URL}/api/v1/config/sections",
+            {"auth": {"api_key": FINAL_VALUE}, "cache": {"embedding_cache_enabled": True}},
+            headers={"X-API-Key": ROTATED_VALUE},
+        )
+        pending = restart_status(FINAL_VALUE)["pending"]
+        check(
+            pending.get("api", {}).get("keys") == ["cache.embedding_cache_enabled"],
+            "an api-classified save raises an `api` pending entry",
+        )
+        check("web" in pending, "and the `web` rotation alongside it raises a `web` entry")
+
+        # What `nyxgpt ops restart api` ultimately does through
+        # launchd/systemd: this process goes away, a new one takes its place.
+        stop(api_proc)
+        api_proc = start_api(env)
+        if not wait_for(f"{API_URL}/health", expect=(200,)):
+            print("::error::api did not come back after its own restart", flush=True)
+            return 2
+
+        pending = restart_status(FINAL_VALUE)["pending"]
+        check(
+            "api" not in pending,
+            "THE DEFECT, fixed: after the api restarts itself the `api` notice is gone "
+            "-- the process that came back retires the flag the dead one could not",
+        )
+        check(
+            pending.get("web", {}).get("keys") == ["auth.api_key"],
+            "and `web` is untouched: an api restart says nothing about the web tier",
+        )
+
+        log("Step 13: fault injection -- prove step 12 is not vacuous")
+        # Raise a fresh api entry, then bring the api back as the PRE-FIX
+        # product. The flag must survive -- which is the owner's bug, and the
+        # proof that step 12's clearing is produced by this change.
+        post_json(
+            f"{API_URL}/api/v1/config/sections",
+            {"cache": {"response_cache_enabled": True}},
+            headers={"X-API-Key": FINAL_VALUE},
+        )
+        check(
+            "api" in restart_status(FINAL_VALUE)["pending"],
+            "a second api-classified save raises the notice again",
+        )
+        stop(api_proc)
+        api_proc = start_api_without_startup_reconciliation(env)
+        if not wait_for(f"{API_URL}/health", expect=(200,)):
+            print("::error::pre-fix api did not start", flush=True)
+            return 2
+        check(
+            "api" in restart_status(FINAL_VALUE)["pending"],
+            "with the startup reconciliation neutered (pre-fix), a successful api restart "
+            "leaves the notice standing forever -- so step 12 is testing this change",
+        )
+
+        # And the shipped api clears it on the next start: the state is not
+        # wedged by having been through the broken build.
+        stop(api_proc)
+        api_proc = start_api(env)
+        if not wait_for(f"{API_URL}/health", expect=(200,)):
+            print("::error::api did not come back after the fault injection", flush=True)
+            return 2
+        check(
+            "api" not in restart_status(FINAL_VALUE)["pending"],
+            "and the shipped api clears that same standing flag on its next start",
         )
 
     finally:

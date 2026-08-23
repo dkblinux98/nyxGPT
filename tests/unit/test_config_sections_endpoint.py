@@ -433,24 +433,31 @@ def test_restart_required_endpoint_schedules_and_returns_immediately(
 
 
 def test_do_restart_required_clears_pending_on_success(_isolated_config):
-    restart_state_module.mark_pending("api", {"api.port": "8000"})
+    """A component this process outlives is cleared right here, by this process.
+
+    `web` deliberately, not `api`: for `api` this line never executes on a real
+    machine, because the restart kills the process running it (#3806). See
+    `test_do_restart_required_leaves_api_to_clear_itself_on_startup`.
+    """
+    restart_state_module.mark_pending("web", {"auth.api_key": "old"})  # pragma: allowlist secret
     with (
         patch(
             "nyxgpt.app.self_heal_module.heal_now",
             return_value={
                 "checked": [],
-                "healed": [{"service": "api", "ok": True, "message": "Restarted nyxgpt-api"}],
+                "healed": [{"service": "web", "ok": True, "message": "Restarted nyxgpt-web"}],
             },
         ),
         patch("nyxgpt.app.ops_module.record_manual_restart") as mock_record,
     ):
-        app_module._do_restart_required(["api"])
+        app_module._do_restart_required(["web"])
 
     assert restart_state_module.snapshot() == {}
-    mock_record.assert_called_once_with("api", True, "Restarted nyxgpt-api")
+    mock_record.assert_called_once_with("web", True, "Restarted nyxgpt-web")
 
 
 def test_do_restart_required_keeps_pending_on_failure(_isolated_config):
+    """A restart that did not happen must never read as an all-clear."""
     restart_state_module.mark_pending("api", {"api.port": "8000"})
     with patch(
         "nyxgpt.app.self_heal_module.heal_now",
@@ -458,6 +465,48 @@ def test_do_restart_required_keeps_pending_on_failure(_isolated_config):
             "checked": [],
             "healed": [{"service": "api", "ok": False, "message": "brew not found"}],
         },
+    ):
+        app_module._do_restart_required(["api"])
+
+    assert "api" in restart_state_module.snapshot()
+
+
+def test_do_restart_required_restarts_api_last(_isolated_config):
+    """Restarting `api` ends this loop, so it must not run before the others (#3806).
+
+    The api restart kills the process executing `_do_restart_required`. With
+    `api` first, a user pressing one "Restart now" on a `api` + `web` notice
+    would lose the API and come back to a `web` entry that never restarted and
+    a notice that never cleared.
+    """
+    order: list[str] = []
+
+    def _heal(service: str) -> dict:
+        order.append(service)
+        return {"checked": [], "healed": []}
+
+    with patch("nyxgpt.app.self_heal_module.heal_now", side_effect=_heal):
+        app_module._do_restart_required(["api", "web", "cassandra"])
+
+    assert order[-1] == "api"
+    assert set(order) == {"api", "web", "cassandra"}
+
+
+def test_do_restart_required_leaves_api_to_clear_itself_on_startup(_isolated_config):
+    """The api's own flag is NOT cleared here -- the restarted process clears it.
+
+    On a real machine the `heal_now` call for `api` never returns a success
+    result: the `brew services restart` / `docker restart` it issues kills this
+    process first. That is exactly what #3806's second round hit -- the flag
+    survived a *successful* restart, because the line that would have cleared
+    it died with the process. A restart that produces no success result here
+    must leave the flag standing; the completion signal comes from `lifespan`
+    -> `restart_state.clear_started`, once a new process is genuinely up.
+    """
+    restart_state_module.mark_pending("api", {"api.port": "8000"})
+    with patch(
+        "nyxgpt.app.self_heal_module.heal_now",
+        side_effect=RuntimeError("the restart took this process down with it"),
     ):
         app_module._do_restart_required(["api"])
 
