@@ -185,7 +185,7 @@ def _generate_config_ini(
     # [nyxgpt] section
     config.add_section("nyxgpt")
     config.set("nyxgpt", "default_model", model)
-    config.set("nyxgpt", "chat_timeout_seconds", "180")
+    config.set("nyxgpt", "chat_timeout_seconds", "300")
     config.set("nyxgpt", "sessions_dir", "~/.nyxGPT/sessions")
     config.set("nyxgpt", "vectorstore_dir", "~/.nyxGPT/vectorstore")
     config.set("nyxgpt", "auto_summarize_enabled", "true")
