@@ -131,10 +131,19 @@ Error: Formulae found in multiple taps:
 Please use the fully-qualified name to refer to the formula.
 ```
 
-So `nyxgpt ops` never names a formula bare (#3861). Install sites always
+So nothing in nyxGPT names a formula bare (#3861). Install sites always
 passed `<tap>/<formula>`; the lookup and lifecycle calls (`brew list`, `brew
 services start`/`stop`/`restart`) now qualify it too, reading the owning tap
 from the installed keg's own `INSTALL_RECEIPT.json` rather than guessing one.
+
+That includes the **self-heal watchdog**, which is the reason the claim is
+about nyxGPT rather than about `nyxgpt ops` alone. The first version of this
+fix qualified ops' call sites and left `self_heal._restart_brew_service`
+bare, so on a dual-tap machine the automated recovery path still failed
+exactly where the manual commands had just been repaired. Both now resolve
+the spec through one helper, `brew_services.formula_spec` — per D-022, two
+modules that must agree about which tap owns a keg cannot each keep a copy
+of the answer.
 Nothing here asks the operator to run brew directly — the qualification
 matters because the wrapped commands are the recovery path, and a wrapped
 command that cannot resolve its own formula is not one.

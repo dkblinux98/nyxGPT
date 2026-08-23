@@ -27,7 +27,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import ops
+from nyxgpt import ops, self_heal
 
 pytestmark = pytest.mark.unit
 
@@ -113,3 +113,42 @@ def test_formula_installed_probe_uses_the_fully_qualified_formula(monkeypatch, c
 
     assert ops._brew_formula_installed("nyxgpt-api") is True
     assert seen == [["brew", "list", "--formula", "dkblinux98/nyxgpt/nyxgpt-api"]]
+
+
+def test_self_heal_restart_uses_the_qualified_spec(cellar, monkeypatch):
+    """#4018 review: the AUTOMATED recovery path was still naming formulas bare.
+
+    ops' seven sites were qualified by #3861 and self_heal's `brew services
+    restart` was not, so on the dual-tap machine the fix exists for, the
+    watchdog could not restart api/web exactly where the wrapped manual
+    commands had just been repaired.
+    """
+    _install_keg(cellar, "nyxgpt-api", "3.0.0", "dkblinux98/nyxgpt-local")
+    brew = str(cellar.parent / "bin" / "brew")
+    monkeypatch.setattr(self_heal, "_which", lambda tool: brew if tool == "brew" else None)
+    seen = []
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, **_k: seen.append(cmd) or _cp())
+
+    result = self_heal._restart_brew_service("nyxgpt-api")
+
+    assert result.ok is True
+    assert seen, "no brew command was issued"
+    assert seen[0] == [
+        "brew",
+        "services",
+        "restart",
+        "dkblinux98/nyxgpt-local/nyxgpt-api",
+    ], f"self-heal named the formula bare: {seen[0]}"
+
+
+def test_self_heal_still_refuses_an_unsafe_name(cellar, monkeypatch):
+    """Admitting `<tap>/<name>` must not reopen what CodeQL #4 closed."""
+    monkeypatch.setattr(self_heal, "_which", lambda tool: "/usr/bin/brew")
+    seen = []
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, **_k: seen.append(cmd) or _cp())
+
+    result = self_heal._restart_brew_service("nyxgpt-api; rm -rf /")
+
+    assert result.ok is False
+    assert "invalid service name" in result.message
+    assert seen == [], "an unsafe name reached a subprocess"

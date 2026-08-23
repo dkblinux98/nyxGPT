@@ -1552,60 +1552,22 @@ def compose_core_components(mode: DeploymentMode) -> list[str]:
 
 
 def _brew_cellar() -> Path | None:
-    """Homebrew's Cellar directory, or None when brew is not on PATH."""
-    brew = _which("brew")
-    if brew is None:
-        return None
-    cellar = Path(brew).resolve().parents[1] / "Cellar"
-    return cellar if cellar.is_dir() else None
+    """Homebrew's Cellar directory, or None when it cannot be located.
+
+    Delegates to `brew_services` (D-022): `self_heal.py` names formulas too and
+    `ops.py` imports it, so the answer to "which tap owns this keg" has to sit
+    below both rather than be copied into each.
+    """
+    return brew_services.cellar(_which)
 
 
 def _brew_formula_spec(name: str) -> str:
     """`<tap>/<name>` for an installed keg, else `name` unchanged (#3861).
 
-    A bare formula name stops being unambiguous the moment a machine carries
-    two taps that both define it, and every dev machine that has tested the
-    published tap alongside the locally built one is in exactly that state:
-
-        Error: Formulae found in multiple taps:
-                 dkblinux98/nyxgpt-local/nyxgpt-api
-                 dkblinux98/nyxgpt/nyxgpt-api
-        Please use the fully-qualified name to refer to the formula.
-
-    Homebrew refuses the command rather than picking one, so every ops call
-    that names a formula bare -- `brew list --versions`, `brew services
-    start/stop/restart` -- fails there and takes the wrapped flow down with
-    it. The install sites already pass a fully-qualified spec; these lookup
-    and lifecycle sites did not, which is why recovery from a failed install
-    needed raw brew commands.
-
-    Which tap owns the keg is *recorded* by the install, in the keg's
-    `INSTALL_RECEIPT.json` (`source.tap`), so this reads it rather than
-    guessing a preferred tap or spending a `brew info` round-trip on every
-    lookup -- and a guess would be the same class of error as the bare name.
-    Falls back to the bare name when nothing is installed under it (there is
-    no keg to disambiguate, and brew's own error is then the right answer) or
-    when the receipt names no tap.
+    Thin delegation, kept as a name because seven call sites use it. The
+    reasoning lives with the implementation in `brew_services.formula_spec`.
     """
-    cellar = _brew_cellar()
-    if cellar is None:
-        return name
-    keg = cellar / name
-    try:
-        receipts = sorted(keg.glob("*/INSTALL_RECEIPT.json"))
-    except OSError:  # pragma: no cover - unreadable Cellar
-        return name
-    for receipt in receipts:
-        try:
-            source = json.loads(receipt.read_text(encoding="utf-8")).get("source") or {}
-        except (OSError, ValueError, AttributeError):
-            continue
-        tap = source.get("tap") if isinstance(source, dict) else None
-        # `homebrew/core` formulas are never ambiguous and brew spells the
-        # qualified form differently across versions; leave those bare.
-        if isinstance(tap, str) and tap and tap != "homebrew/core":
-            return f"{tap}/{name}"
-    return name
+    return brew_services.formula_spec(name, _which)
 
 
 def _restart_brew_service(name: str) -> list[OpsResult]:
