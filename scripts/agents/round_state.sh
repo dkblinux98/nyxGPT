@@ -47,7 +47,12 @@ fi
 command -v jq >/dev/null || { echo "[error] jq is required" >&2; exit 2; }
 command -v gh >/dev/null || { echo "[error] gh is required" >&2; exit 2; }
 
-RELEASE="${RELEASE_BRANCH:-v3.0.0}"
+# #3614: no script hardcodes a release-branch name. The normal path gets
+# RELEASE_BRANCH from load_config; the NO_CONFIG test path must supply it.
+# A default here would, after the line rolls, compute `lag` against the
+# retired branch -- a nearly-right number, which is rule 1 broken from the
+# inside and exactly what this script exists to refuse.
+RELEASE="${RELEASE_BRANCH:?RELEASE_BRANCH must be set (load_config provides it; set it explicitly when ROUND_STATE_NO_CONFIG=1)}"
 REPO="${REPO_OWNER}/${REPO_NAME}"
 
 issues=()
@@ -67,8 +72,18 @@ git fetch origin -q 2>/dev/null || true
 
 # One query for every PR, so the report is a single point-in-time snapshot
 # rather than a series of reads that can disagree with each other.
-prs="$(gh pr list --repo "$REPO" --state all --limit 300 \
-        --json number,state,mergedAt,reviewDecision,mergeable,closingIssuesReferences)"
+# A failed query leaves $prs empty under `set -uo pipefail` (no -e), and every
+# issue then classifies as "not started" on stdout while the error scrolls by
+# on stderr -- the most misleading output this script can produce, reachable
+# without any rule being wrong. Refuse instead. Truncation is the same defect
+# slower: a merged closing PR outside the window reports as no PR at all.
+PR_LIMIT="${ROUND_STATE_PR_LIMIT:-1000}"
+prs="$(gh pr list --repo "$REPO" --state all --limit "$PR_LIMIT" \
+        --json number,state,mergedAt,reviewDecision,mergeable,closingIssuesReferences)" \
+  || { echo "[error] PR snapshot query failed -- refusing to report a round state it did not compute" >&2; exit 2; }
+if [[ "$(jq 'length' <<<"$prs")" -ge "$PR_LIMIT" ]]; then
+  echo "[warn] PR snapshot hit the ${PR_LIMIT}-PR window; older closing PRs are outside it and their issues may misreport as not started" >&2
+fi
 
 printf "%-7s %-8s %-28s %s\n" ISSUE ISSUE_ST EVIDENCE DETAIL
 for n in "${issues[@]}"; do
@@ -102,10 +117,15 @@ for n in "${issues[@]}"; do
     continue
   fi
 
+  if [[ "$st" == "CLOSED" ]]; then
+    printf "%-7s %-8s %-28s %s\n" "#$n" "$istate" "CLOSED PR#$pr -- abandoned" "no merged fix -- NEEDS NEW WORK"
+    continue
+  fi
+
   rd="$(jq -r '.reviewDecision // "PENDING"' <<<"$row")"
   mg="$(jq -r '.mergeable // "?"' <<<"$row")"
   br="$(git ls-remote --heads origin 2>/dev/null | grep -oE "refs/heads/[^ ]*${n}[^ ]*" | head -1 | sed 's|refs/heads/||')"
   lag="?"
   [[ -n "$br" ]] && lag="$(git rev-list --count "origin/${br}..origin/${RELEASE}" 2>/dev/null || echo '?')"
-  printf "%-7s %-8s %-28s %s\n" "#$n" "$istate" "OPEN PR#$pr $rd" "mergeable=$mg lag=$lag"
+  printf "%-7s %-8s %-28s %s\n" "#$n" "$istate" "$st PR#$pr $rd" "mergeable=$mg lag=$lag"
 done
