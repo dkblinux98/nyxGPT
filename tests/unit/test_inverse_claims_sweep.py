@@ -377,23 +377,34 @@ def test_an_empty_three_dot_range_refuses_rather_than_sweeping_backwards(tmp_pat
     """
     repo = tmp_path / "r"
     repo.mkdir()
-    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+
+    def run(*a: str) -> None:
+        subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+
     run("init", "-q")
     run("config", "user.email", "t@example.com")
     run("config", "user.name", "t")
-    (repo / "doc.md").write_text("nyxgpt ops status never lies about the stack.\n", encoding="utf-8")
+    (repo / "doc.md").write_text(
+        "nyxgpt ops status never lies about the stack.\n", encoding="utf-8"
+    )
     run("add", "-A")
     run("commit", "-qm", "base")
-    first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
     (repo / "doc.md").write_text("changed\n", encoding="utf-8")
     run("add", "-A")
     run("commit", "-qm", "second")
-    second = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
 
     # head BEHIND base: three-dot is empty, two-dot is a reverse diff.
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "--base", second, "--head", first, "--markdown"],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stderr
     assert "sweep the reverse direction" in proc.stderr, proc.stderr
