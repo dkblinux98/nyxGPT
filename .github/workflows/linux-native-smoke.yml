@@ -87,6 +87,16 @@ name: Linux Native Smoke
 #                       caller's group set, because this runner's socket is
 #                       NOT group-protected, so dropping the group against the
 #                       real socket denies nothing and proves nothing.
+#                       That third half also carries #4022: the same denial
+#                       reached ops.py's container reads, where it was still
+#                       rendered as the definite negative `absent` -- the
+#                       Infrastructure card reporting Cassandra gone while it
+#                       ran. From inside the denied session the script asserts
+#                       the read is made to run through `sg docker`, and that
+#                       with no hop available at all (only the stub on PATH,
+#                       so `sg` genuinely is not there) `ops.infra_status()`
+#                       and `ops.detect_deployment_mode()` both say unknown
+#                       with a reason -- never absent.
 #                       Unit tests mock the subprocess; only a real denied
 #                       socket and a real stripped group set show what
 #                       `docker compose ps` actually does.
@@ -106,6 +116,7 @@ on:
     paths:
       - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/self_heal.py'
+      - 'src/nyxgpt/docker_access.py'
       - 'src/nyxgpt/install_mode.py'
       - 'ops/systemd/**'
       - 'ops/launchagents/**'
@@ -127,6 +138,7 @@ on:
     paths:
       - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/self_heal.py'
+      - 'src/nyxgpt/docker_access.py'
       - 'src/nyxgpt/install_mode.py'
       - 'ops/systemd/**'
       - 'ops/launchagents/**'

@@ -37,6 +37,7 @@ const observabilityDeployed = {
 const mockStatusTerraform = {
   mode: 'terraform',
   native: {},
+  native_probe_available: true,
   compose: {},
   compose_probe_available: true,
   conflicts: [],
@@ -65,6 +66,7 @@ const mockStatusTerraform = {
 const mockStatusEmpty = {
   mode: 'none',
   native: {},
+  native_probe_available: true,
   compose: {},
   compose_probe_available: true,
   conflicts: [],
@@ -93,6 +95,7 @@ const mockStatusEmpty = {
 const mockStatusKubernetesNotConfigured = {
   mode: 'none',
   native: {},
+  native_probe_available: true,
   compose: {},
   compose_probe_available: true,
   conflicts: [],
@@ -121,6 +124,7 @@ const mockStatusKubernetesNotConfigured = {
 const mockStatusCannotDetermine = {
   mode: 'none',
   native: {},
+  native_probe_available: true,
   compose: {},
   compose_probe_available: true,
   conflicts: [],
@@ -149,6 +153,7 @@ const mockStatusCannotDetermine = {
 const mockStatusComposeCannotDetermine = {
   mode: 'terraform',
   native: {},
+  native_probe_available: true,
   compose: {},
   compose_probe_available: false,
   compose_probe_reason:
@@ -179,6 +184,7 @@ const mockStatusComposeCannotDetermine = {
 const mockStatusKubernetesServing = {
   mode: 'kubernetes',
   native: {},
+  native_probe_available: true,
   compose: {},
   compose_probe_available: true,
   conflicts: [],
@@ -335,6 +341,35 @@ describe('InfrastructurePage', () => {
       screen.getByText(/the Compose survey could not be run from wherever/)
     ).toBeInTheDocument();
     expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+  });
+
+  it('says the native Cassandra row is unknown, not absent, when the container read was denied (#4022)', async () => {
+    // The owner's EC2 instance: the API process's `systemd --user` session
+    // predates its `docker` group, so `docker ps` is denied -- and until #4022
+    // the card rendered that as `absent`, reporting a running Cassandra as
+    // gone. `unknown` is a different claim and has to read as one.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started', web: 'started', cassandra: 'unknown' },
+          native_probe_available: false,
+          native_probe_reason: '`docker ps` exited 1: permission denied while trying to connect',
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('unknown — cannot determine')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/could not read\s+container state/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/exited 1: permission denied while trying to connect/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/sudo loginctl terminate-user \$USER/)).toBeInTheDocument();
   });
 
   it('names why the compose probe could not run, rather than only that it could not (#3812)', async () => {

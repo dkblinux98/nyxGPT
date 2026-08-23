@@ -1496,6 +1496,33 @@ rather than mechanism, and nothing can enforce them.
   Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
   `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
 
+- **D-045** · 2026-08-22 · developer agent (#4022) — **The Docker socket hop
+  has one implementation, and `sudo` is opt-in at the call site.** Reaching a
+  denied Docker socket through `sg docker` lived twice — `self_heal._docker_run`
+  and `ops._enable_docker_socket_hop` — because `ops.py` imports `self_heal.py`
+  and neither could import the other's copy. The copies diverged on the answer
+  they exist to give identically: self-heal retried and reported `unknown`,
+  while `ops._docker_container_state` did neither and returned `absent` for any
+  non-zero exit, so on the owner's EC2 instance the Infrastructure card and
+  `nyxgpt ops status` reported a running Cassandra as gone. The mechanism now
+  lives in `src/nyxgpt/docker_access.py` — import-free, below both, the same
+  placement rule as `k8s_pod_state.py` (D-022) and `brew_services.py`.
+  **Policy stays with the caller**: every path reachable from the public API
+  process passes `("sg",)` and nothing else, because `sg` claims only a group
+  the invoking user already holds; `ops._enable_docker_socket_hop` spells
+  `("sg", "sudo")` at its own call site, justified there by being reached only
+  from an interactive `ops install`. Nothing inherits `sudo` by default.
+  Consequence for every operator-facing surface: a container read that could
+  not be made is `ops.DOCKER_STATE_UNKNOWN` with Docker's own words for why,
+  never `absent` — `docker ps --filter` has no "no such container" failure
+  mode, so a non-zero exit always means the read did not happen. Callers
+  inferring existence use `_container_deployed`, not `!= "absent"`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4022; `src/nyxgpt/docker_access.py`; `ops._docker_container_probe`;
+  `scripts/self-heal-probe-honesty-smoke.py` (`_assert_ops_container_reads`);
+  `docs/systemd.md`, `docs/self-healing.md`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

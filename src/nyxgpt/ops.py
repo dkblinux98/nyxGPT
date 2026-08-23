@@ -25,7 +25,6 @@ import platform
 import plistlib
 import re
 import secrets
-import shlex
 import shutil
 import socket
 import subprocess
@@ -46,6 +45,7 @@ from nacl import public as nacl_public
 
 from nyxgpt import (
     brew_services,
+    docker_access,
     model_bootstrap,
     release_tarball,
     restart_state,
@@ -333,6 +333,12 @@ class DeploymentMode:
     conflicts: list[str]
     terraform: dict[str, str] = field(default_factory=dict)
     terraform_conflicts: list[str] = field(default_factory=list)
+    # Why a container read came back `unknown`, when one did (#4022). Empty
+    # whenever every read was answered -- so a caller can print the cause of a
+    # `DOCKER_STATE_UNKNOWN` in `native`/`terraform` instead of leaving the
+    # operator to guess at it. Defaulted, so every existing construction
+    # (tests included) stays valid.
+    docker_probe_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -723,53 +729,78 @@ def record_canary_action(
     _record_ops_action(f"canary-{action}", component, result, message)
 
 
-# Set by `_enable_docker_socket_hop` (see its docstring) when this process
-# cannot reach the Docker socket directly -- the invoking session predates its
+# The Docker socket hop this process routes its Docker calls through when it
+# cannot reach the socket directly -- the invoking session predates its
 # `docker` group membership. Either "sg" (re-run the command under the docker
 # group) or "sudo" (passwordless sudo), whichever is available *and* proven to
 # carry this process's environment through unchanged. It is applied centrally
 # in `_run` rather than at the ~40 `["docker", ...]` call sites in this module,
 # so no Docker call path can forget it and re-introduce #3760's mid-deploy
 # "permission denied ... /var/run/docker.sock".
-_DOCKER_SOCKET_HOP: str | None = None
+#
+# The mechanism lives in `docker_access.py`, shared with `self_heal.py`
+# (#4022): the two modules cannot import each other's copy (ops imports
+# self_heal), they each grew one, and the copies diverged on the answer they
+# exist to give identically -- self-heal's retried a denied read through
+# `sg docker` and reported "unknown", while `_docker_container_state` did
+# neither and rendered a running Cassandra as `absent` on the dashboard.
+#
+# **Two entry points, two policies.** `_enable_docker_socket_hop` is the
+# *eager* one: it is reached only from an interactive `nyxgpt ops install`,
+# already a privileged operation, so it may escalate to `sudo`. Everything
+# else here -- crucially `_docker_container_state`, which `/infra/status`
+# polls from inside the public API process -- goes through `_DOCKER_HOP.run`,
+# whose candidates are `sg` only, the same bar `self_heal` holds itself to.
+# `sg` claims a group the invoking user already holds and so grants no
+# authority the operator did not already give this account; `sudo` from a
+# web-reachable process would.
+_DOCKER_SOCKET_HOP_LABELS = docker_access.HOP_LABELS
 
-# How each hop is spelled, and how it reads in an OpsResult.
-_DOCKER_SOCKET_HOP_LABELS = {"sg": "`sg docker`", "sudo": "`sudo -n docker`"}
+
+def _hop_runner(
+    cmd: list[str],
+    *,
+    timeout: float,
+    expected: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """`_run` in the shape `docker_access` asks for (keyword-only, never raising).
+
+    Looked up through the module globals rather than bound, so a test that
+    stubs `ops._run` stubs the hop probes with it.
+    """
+    return _run(cmd, check=False, expected=expected, env=env, timeout=timeout)
+
+
+_DOCKER_HOP = docker_access.DockerSocketHop(
+    runner=_hop_runner,
+    which=lambda name: _which(name),
+    # The safe default, for every lazy retry (see the note above). The install
+    # path passes its wider candidate list explicitly.
+    candidates=("sg",),
+    on_probe_error=lambda hop, e: logger.debug(
+        "ops: %s docker probe failed: %s: %s", hop, type(e).__name__, e
+    ),
+)
 
 
 def _docker_socket_hop() -> str | None:
     """The hop ops is currently routing its Docker calls through, if any."""
-    return _DOCKER_SOCKET_HOP
+    return _DOCKER_HOP.active
 
 
 def _docker_socket_hop_active() -> bool:
     """True while ops is reaching the Docker socket through a hop."""
-    return _DOCKER_SOCKET_HOP is not None
+    return _DOCKER_HOP.active is not None
 
 
 def _wrap_docker_hop(cmd: list[str], hop: str | None) -> list[str]:
     """Rewrite `cmd` to run through `hop`, preserving the environment it sees.
 
-    Both forms are environment-preserving *by construction*, which is the
-    whole point (#3760 review): `docker-compose.yml` interpolates `${HOME}`
-    for every bind mount, and `docker compose exec -e VAR` (bare, no `=value`)
-    forwards secrets out of this process's environment without ever putting
-    them on argv (CodeQL #105/#106). A hop that resets the environment would
-    silently relocate every volume under `/root` and drop those secrets.
-
-    - `sg docker -c ...` re-runs the command with the `docker` group added to
-      the credentials, leaving the environment entirely alone. It takes a
-      command *string*, so argv is shell-quoted with `shlex.join`.
-    - `sudo -n --preserve-env ...` opts out of sudo's default `env_reset`
-      (and, on Amazon Linux/RHEL, its `always_set_home`). `--preserve-env`
-      needs the sudoers SETENV tag, which `NOPASSWD: ALL` implies -- and
-      `_docker_hop_preserves_env` verifies it rather than assuming it.
+    See `docker_access.hop_argv` for why both forms are environment-preserving
+    by construction and what each one costs.
     """
-    if hop == "sg":
-        return ["sg", "docker", "-c", shlex.join(cmd)]
-    if hop == "sudo":
-        return ["sudo", "-n", "--preserve-env", *cmd]
-    return cmd
+    return docker_access.hop_argv(cmd, hop)
 
 
 def _apply_docker_socket_hop(cmd: list[str]) -> list[str]:
@@ -779,9 +810,7 @@ def _apply_docker_socket_hop(cmd: list[str]) -> list[str]:
     already privileged (`_privileged_run` puts `sudo` in front) is never
     double-wrapped, and no non-Docker command is touched.
     """
-    if _DOCKER_SOCKET_HOP is not None and cmd and cmd[0] == "docker":
-        return _wrap_docker_hop(cmd, _DOCKER_SOCKET_HOP)
-    return cmd
+    return _DOCKER_HOP.apply(cmd)
 
 
 # The backstop bound for an ops subprocess: half an hour is far longer than
@@ -1374,21 +1403,103 @@ def _brew_service_is_registered(name: str) -> bool:
     return _brew_service_will_restart(name, plist)
 
 
-def _docker_container_state(name: str) -> str:
-    """Return the docker state ('running', 'exited', ...) for a container, or 'absent'."""
+# The state string a container read carries when the read could not be made
+# at all -- as distinct from `absent`, which asserts Docker answered and there
+# is no such container (#4022). Every operator-facing surface that consumes a
+# container state has to keep the two apart: on the owner's EC2 instance the
+# API process's `systemd --user` session predated its `docker` group, so every
+# read was denied, and rendering that denial as `absent` told the dashboard
+# Cassandra was gone while it was running.
+DOCKER_STATE_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ContainerProbe:
+    """One container read: what it says, and whether it is an answer at all.
+
+    `known=False` means the read did not happen -- `state` is then
+    `DOCKER_STATE_UNKNOWN` and `reason` carries Docker's own words for why, so
+    the Infrastructure card and `ops status` can print the cause instead of
+    sending the operator to a log for it (the pattern `self_heal.ComposeProbe`
+    already set for the Compose survey, #3812).
+    """
+
+    state: str
+    known: bool = True
+    reason: str = ""
+
+
+def _container_deployed(state: str) -> bool:
+    """True if `state` is a *determined* reading that something exists.
+
+    `absent` is a determined negative and `unknown` is not a reading at all,
+    so neither counts as deployed. Used wherever a stack's existence is
+    inferred from its containers -- an unknown read must not promote a denied
+    session into "Terraform is deployed here" any more than into "Cassandra is
+    absent".
+    """
+    return state not in ("absent", DOCKER_STATE_UNKNOWN)
+
+
+def _docker_container_probe(name: str) -> ContainerProbe:
+    """Read one container's docker state, honestly (#4022).
+
+    `docker ps -a --filter name=^<name>$` has no "no such container" failure
+    mode: a container that is not there is exit 0 with empty output. So *any*
+    non-zero exit here means the read did not happen -- a denied socket, an
+    unreachable daemon, an expired bound -- and the only honest rendering of
+    that is `unknown` with the reason, never `absent`. The pre-#4022 code
+    returned `absent` for all of them, which is the whole of this defect.
+
+    The call goes through `_DOCKER_HOP.run`, so a session whose group set
+    predates its `docker` membership -- the `systemd --user` case this fault
+    keeps arriving as -- is retried through `sg docker` and usually answers
+    for real rather than degrading at all. Only when no hop is available does
+    the unknown reading survive to the surface.
+    """
     if _which("docker") is None:
-        return "absent"
-    cp = _run(
+        # A determined negative: with no Docker CLI there is no container.
+        return ContainerProbe("absent")
+    cp = _DOCKER_HOP.run(
         ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
-        check=False,
         expected=True,
         # Polled by `/infra/status` on every dashboard refresh, and the one
         # call here that can dial a daemon that is not answering (a socket
         # hop to a host that stopped responding). Bounded tightly (#3858).
         timeout=PROBE_TIMEOUT_SECONDS,
     )
+    if cp.returncode != 0:
+        return ContainerProbe(
+            DOCKER_STATE_UNKNOWN,
+            known=False,
+            reason=_docker_probe_reason(cp),
+        )
     out = (cp.stdout or "").strip()
-    return out.splitlines()[0].strip() if out else "absent"
+    return ContainerProbe(out.splitlines()[0].strip() if out else "absent")
+
+
+def _docker_probe_reason(cp: subprocess.CompletedProcess[str]) -> str:
+    """A one-line operator-facing cause for a failed container read.
+
+    Docker's own stderr, trimmed -- the same shape `self_heal.compose_probe`
+    puts on the Self-Heal panel, so an operator reading either surface sees
+    the same sentence rather than having to correlate two vocabularies.
+    """
+    detail = (cp.stderr or cp.stdout or "").strip().splitlines()
+    first = detail[0].strip() if detail else "no output"
+    if len(first) > 300:
+        first = first[:297] + "..."
+    return f"`docker ps` exited {cp.returncode}: {first}"
+
+
+def _docker_container_state(name: str) -> str:
+    """The docker state ('running', 'exited', ...) for a container, 'absent', or 'unknown'.
+
+    The string-only view of `_docker_container_probe`, for the callers that
+    only branch on it. Anything rendering the answer to an operator should
+    use the probe instead, so it can print *why* a read is unknown.
+    """
+    return _docker_container_probe(name).state
 
 
 def _compose_stack_snapshot() -> dict[str, str]:
@@ -1453,12 +1564,21 @@ def detect_deployment_mode() -> DeploymentMode:
     `ops.py` otherwise assumes native-only (Homebrew services + one ops-managed
     Cassandra container). This cross-checks the Compose stack so `status`/`restart`
     can see -- and avoid colliding with -- a Compose deployment left running.
+
+    Cassandra's entry can be `DOCKER_STATE_UNKNOWN` (#4022): it is the one
+    native component read out of Docker, and a session that may not talk to
+    the daemon has no answer about it. `docker_probe_reason` carries the cause
+    so `status`/`infra_status` can say so. The conflict checks below are
+    unaffected by construction -- they ask whether a component is *running*,
+    and an unknown reading is not one.
     """
     native = _native_services_snapshot()
-    native["cassandra"] = _docker_container_state("nyxgpt-cassandra")
+    cassandra = _docker_container_probe(CASSANDRA_CONTAINER_NAME)
+    native["cassandra"] = cassandra.state
 
     compose = _compose_stack_snapshot()
     terraform = terraform_stack_state()
+    docker_probe_reason = cassandra.reason
 
     conflicts = [
         component
@@ -1516,6 +1636,7 @@ def detect_deployment_mode() -> DeploymentMode:
         conflicts=conflicts,
         terraform=terraform,
         terraform_conflicts=terraform_conflicts,
+        docker_probe_reason=docker_probe_reason,
     )
 
 
@@ -5328,58 +5449,26 @@ def _ensure_docker_group_membership() -> list[OpsResult]:
     ]
 
 
-# Name of the throwaway variable `_docker_hop_preserves_env` passes through a
-# candidate hop. It stands in for the real `env=`-forwarded secrets
-# (`DJANGO_SUPERUSER_PASSWORD` and friends, see `_glitchtip_ensure_superuser`)
-# without putting a real one on a probe's argv.
-_HOP_ENV_PROBE_VAR = "NYXGPT_DOCKER_HOP_PROBE"
+# Name of the throwaway variable the hop's environment probe passes through a
+# candidate hop. Re-exported from `docker_access` so this module's tests and
+# call sites keep one name for it.
+_HOP_ENV_PROBE_VAR = docker_access.ENV_PROBE_VAR
 
 
 def _docker_hop_preserves_env(hop: str) -> bool:
     """True if `hop` hands this process's environment through unchanged.
 
-    Two variables are checked because two different mechanisms depend on
-    them, and both fail *silently* rather than loudly if the hop resets the
-    environment (#3760 review):
-
-    - `HOME`, which `docker-compose.yml` interpolates into every bind-mount
-      source. Under sudo's `env_reset` + `always_set_home` (the Amazon
-      Linux/RHEL default, i.e. exactly the distro this targets) it becomes
-      `/root`, so the observability stack comes up bound to
-      `/root/.nyxGPT/volumes/...` while the ownership fixes chown the user's
-      home -- Grafana/Prometheus/Loki cannot write their data dirs, and the
-      next non-hop run recreates the containers against the user-home mounts,
-      abandoning whatever was written under `/root`.
-    - an arbitrary caller-supplied variable, standing in for the
-      `_run(env=...)` secrets `docker compose exec -e VAR` forwards into a
-      container without ever putting the value on argv.
-
-    A hop that fails this check is not used at all: a loud "cannot reach the
-    daemon, reconnect" is a better outcome than containers quietly built
-    against the wrong paths.
+    See `docker_access.hop_preserves_env`: `HOME` (Compose bind-mount
+    interpolation) and an `env=`-forwarded variable (the `docker compose exec
+    -e VAR` secret channel) are both checked, because both fail *silently*
+    rather than loudly if the hop resets the environment.
     """
-    home = os.environ.get("HOME")
-    if not home:  # pragma: no cover - defensive; POSIX logins always set HOME
-        return False
-    sentinel = "nyxgpt-hop-probe"
-    script = f'printf "%s\\n%s" "$HOME" "${_HOP_ENV_PROBE_VAR}"'
-    cp = _run(
-        _wrap_docker_hop(["sh", "-c", script], hop),
-        check=False,
-        expected=True,
-        env={**os.environ, _HOP_ENV_PROBE_VAR: sentinel},
-    )
-    return cp.returncode == 0 and cp.stdout == f"{home}\n{sentinel}"
+    return docker_access.hop_preserves_env(hop, _hop_runner)
 
 
 def _docker_hop_reaches_daemon(hop: str) -> bool:
     """True if a `docker` call made through `hop` can talk to the daemon."""
-    cp = _run(
-        _wrap_docker_hop(["docker", "info", "--format", "{{.ServerVersion}}"], hop),
-        check=False,
-        expected=True,
-    )
-    return cp.returncode == 0
+    return docker_access.hop_reaches_daemon(hop, _hop_runner)
 
 
 def _enable_docker_socket_hop() -> bool:
@@ -5400,31 +5489,28 @@ def _enable_docker_socket_hop() -> bool:
     (`sudo -n --preserve-env`) is the second choice, for a host where the
     group change itself could not be made. Either way the hop must prove it
     preserves the environment before it is used -- see
-    `_docker_hop_preserves_env` for why an env-resetting hop is worse than no
-    hop.
+    `docker_access.hop_preserves_env` for why an env-resetting hop is worse
+    than no hop.
+
+    **This is the one place `sudo` is on the list** (#4022). The candidate
+    list is spelled here rather than defaulted on `_DOCKER_HOP`, because the
+    justification for it is local: this function is reached only from
+    `_ensure_docker_engine`, i.e. an interactive `nyxgpt ops install`, which
+    is already a privileged operation. The lazy retries in
+    `_DOCKER_HOP.run` -- reachable from the polled `/infra/status` inside the
+    public API process -- keep the module default of `sg` only. A future
+    caller therefore has to ask for `sudo` deliberately; it cannot inherit it.
 
     Returns True if a hop is now active. The group membership is still added
     either way, so a later login needs no hop at all. Deliberately a last
     resort, tried only *after* the real group change has been attempted and
     found not to have taken effect -- never as a way to skip it.
     """
-    global _DOCKER_SOCKET_HOP
-    if _DOCKER_SOCKET_HOP is not None:
+    if _DOCKER_HOP.active is not None:
         return True
     if _running_as_root() or _which("docker") is None:
         return False
-    for hop in ("sg", "sudo"):
-        if _which(hop) is None:
-            continue
-        try:
-            usable = _docker_hop_reaches_daemon(hop) and _docker_hop_preserves_env(hop)
-        except Exception as e:  # pragma: no cover - defensive, mirrors _docker_daemon_reachable
-            logger.debug("ops: %s docker probe failed: %s: %s", hop, type(e).__name__, e)
-            continue
-        if usable:
-            _DOCKER_SOCKET_HOP = hop
-            return True
-    return False
+    return _DOCKER_HOP.adopt(("sg", "sudo")) is not None
 
 
 def _ensure_docker_engine() -> list[OpsResult]:
@@ -5617,10 +5703,31 @@ def _ensure_cassandra_container() -> list[OpsResult]:
             )
         ]
 
-    state = _docker_container_state(CASSANDRA_CONTAINER_NAME)
+    probe = _docker_container_probe(CASSANDRA_CONTAINER_NAME)
+    state = probe.state
 
     if state == "running":
         return [OpsResult(True, f"Cassandra container already running: {CASSANDRA_CONTAINER_NAME}")]
+
+    if not probe.known:
+        # Refuse rather than fall through to `docker run --name
+        # nyxgpt-cassandra` (#4022). Before this, a denied read reported
+        # `absent` and this step tried to *create* a container that may well
+        # already exist -- a second writer to ~/.nyxGPT/volumes/cassandra is
+        # the exact corruption #3346 refuses elsewhere in this function, and
+        # here it would have been reached on the strength of a read that never
+        # happened.
+        user = getpass.getuser()
+        return [
+            OpsResult(
+                False,
+                "Cannot determine whether the Cassandra container exists: " f"{probe.reason}",
+                "This session may not talk to the Docker daemon and no `sg docker` hop was "
+                f"available, so ops will not create a container that may already be running. "
+                f"Repair: sudo usermod -aG docker {user}, then "
+                f"sudo loginctl terminate-user {user} (or reboot), and re-run.",
+            )
+        ]
 
     if state != "absent":
         cp = _run(["docker", "start", CASSANDRA_CONTAINER_NAME], check=False)
@@ -6579,7 +6686,20 @@ def _build_terraform_docker_images() -> list[OpsResult]:
 
 
 def terraform_stack_state() -> dict[str, str]:
-    """{component: docker state} for the Terraform-managed containers (used by status/doctor)."""
+    """{component: docker state} for the Terraform-managed containers (used by status/doctor).
+
+    A value may be `DOCKER_STATE_UNKNOWN` (#4022): these reads sit on exactly
+    the same denied-socket path as the native Cassandra one -- the same
+    `docker ps` against the same daemon -- so they got the same fix rather
+    than being left as the next sighting of it. Use `_container_deployed`
+    rather than `!= "absent"` when inferring whether a Terraform stack exists
+    here: an unreadable container is evidence of neither presence nor absence.
+
+    The *reason* an entry is unknown is not carried here, because there is
+    only ever one: this process cannot reach the Docker daemon. Callers read
+    it from `DeploymentMode.docker_probe_reason`, which the native Cassandra
+    read on the same daemon has already recorded.
+    """
     return {
         component: _docker_container_state(name) for component, name in TERRAFORM_CONTAINERS.items()
     }
@@ -6602,10 +6722,24 @@ def _terraform_state_has_resources() -> bool:
 
 
 def _terraform_stack_health() -> list[OpsResult]:
-    """Report each Terraform-managed container's state, plus the stack's output URLs."""
+    """Report each Terraform-managed container's state, plus the stack's output URLs.
+
+    An unreadable container is reported as unreadable, not as down (#4022): a
+    denied Docker socket says nothing about whether the container is running,
+    and `[FAIL] terraform cassandra: absent` for a healthy stack is the same
+    false negative on the CLI that the dashboard was showing.
+    """
     results = [
         OpsResult(
-            state == "running", f"terraform {component}: {state}", TERRAFORM_CONTAINERS[component]
+            state == "running",
+            f"terraform {component}: {state}"
+            + (
+                " (this session cannot read Docker container state)"
+                if state == DOCKER_STATE_UNKNOWN
+                else ""
+            ),
+            TERRAFORM_CONTAINERS[component],
+            status="UNKNOWN" if state == DOCKER_STATE_UNKNOWN else "",
         )
         for component, state in terraform_stack_state().items()
     ]
@@ -9740,19 +9874,44 @@ def infra_status() -> dict[str, Any]:
     cause to the page ("`docker compose ps` exited 125: permission denied
     ...") so the operator does not have to go looking in a log for it --
     see `self_heal.compose_probe`.
+
+    `native_probe_available`/`native_probe_reason` are the same pair for the
+    **native** card, and `terraform.probe_available` was rebuilt on the same
+    rule (#4022). Native Cassandra is the one native component read out of
+    Docker, and until #4022 a read this process was not allowed to make came
+    back as the flat string `absent` -- so on the owner's EC2 instance, whose
+    API process runs under a `systemd --user` manager whose group set predates
+    `usermod -aG docker`, the card reported Cassandra gone while it was
+    serving. The read now retries through `sg docker` first and, when even
+    that cannot be had, says `unknown` with Docker's own words. The Terraform
+    card's flag stopped being "is there a docker CLI" for the same reason
+    #3812 took that shape away from Compose: on that instance the CLI existed
+    and every call was denied.
     """
     mode_info = detect_deployment_mode()
     compose_probe = self_heal.compose_probe()
 
     docker_available = _which("docker") is not None
     tf_state = terraform_stack_state()
+    # `probe_available` was "is there a docker CLI", which is the same
+    # existence-check-instead-of-a-run mistake #3812 removed from
+    # `compose_probe_available`: on the owner's instance the CLI existed and
+    # every call was denied, so the card said "available" over reads it could
+    # not make. It is now answered by whether the reads *happened* (#4022).
+    tf_probe_available = docker_available and DOCKER_STATE_UNKNOWN not in tf_state.values()
+    # One daemon, one denial: the reason the native Cassandra read could not be
+    # made is the reason these could not either.
+    tf_probe_reason = "" if tf_probe_available else mode_info.docker_probe_reason
     # The Terraform deployment's own install mode (#3835) -- never the native
     # marker, which describes a different deployment that may well be in the
     # other mode.
     tf_install_mode_state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
-    tf_deployed = docker_available and any(state != "absent" for state in tf_state.values())
+    # `_container_deployed`, not `!= "absent"`: an unreadable container is not
+    # evidence of a deployment any more than it is evidence of an absent one.
+    tf_deployed = docker_available and any(_container_deployed(s) for s in tf_state.values())
     terraform = {
-        "probe_available": docker_available,
+        "probe_available": tf_probe_available,
+        "probe_reason": tf_probe_reason,
         "deployed": tf_deployed,
         "containers": tf_state,
         "install_mode": {
@@ -9921,6 +10080,12 @@ def infra_status() -> dict[str, Any]:
         "mode": running_mode,
         "install_mode": install_mode,
         "native": mode_info.native,
+        # The native card's own "can't determine" signal (#4022). Cassandra is
+        # the one native component read out of Docker, so a denied socket
+        # leaves exactly that entry unreadable; the card renders it as
+        # unreadable rather than as `absent`, with the cause beside it.
+        "native_probe_available": mode_info.native.get("cassandra") != DOCKER_STATE_UNKNOWN,
+        "native_probe_reason": mode_info.docker_probe_reason,
         "compose": mode_info.compose,
         "compose_probe_available": compose_probe.available,
         "compose_probe_reason": compose_probe.reason,
@@ -10411,7 +10576,7 @@ def status(_args) -> int:
             "(published tap/tarball) is NOT what is being exercised here."
         )
 
-    terraform_deployed = any(state != "absent" for state in mode.terraform.values())
+    terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
     if terraform_deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists():
         # Attributed the same way as the native line above, and printed only
@@ -10441,13 +10606,31 @@ def status(_args) -> int:
         print(f"  native  {component}: {state}{suffix}")
     # Cassandra is the one Docker-managed piece of a local-first install --
     # labeling it "native" here misstated the topology.
-    print(f"  docker  cassandra: {mode.native.get('cassandra', 'absent')}")
+    cassandra_state = mode.native.get("cassandra", "absent")
+    if cassandra_state == DOCKER_STATE_UNKNOWN:
+        # Never printed as `absent` (#4022): this session could not make the
+        # read, which is a different fact from the container not being there.
+        # The operator gets the cause and the permanent repair instead of a
+        # confident wrong answer -- and `nyxgpt ops status` and the web UI's
+        # Infrastructure page now say the same thing here, which before this
+        # fix they could not (docs/systemd.md documented the disagreement).
+        print(f"  docker  cassandra: {cassandra_state} (cannot determine from this session)")
+        if mode.docker_probe_reason:
+            print(f"      {mode.docker_probe_reason}")
+        user = getpass.getuser()
+        print(
+            "      This session may not talk to the Docker daemon, and no `sg docker` hop "
+            f"was available. Repair: sudo usermod -aG docker {user}, then "
+            f"sudo loginctl terminate-user {user} (or reboot)."
+        )
+    else:
+        print(f"  docker  cassandra: {cassandra_state}")
     if mode.compose:
         for component, state in sorted(mode.compose.items()):
             print(f"  compose {component}: {state}")
     else:
         print("  compose: not detected (no Docker Compose stack running)")
-    running_terraform = {c: s for c, s in mode.terraform.items() if s != "absent"}
+    running_terraform = {c: s for c, s in mode.terraform.items() if _container_deployed(s)}
     if running_terraform:
         # Tri-state, matching the deployment line above: dev, artifact, or
         # unrecorded when something is running that no install recorded.
@@ -10553,7 +10736,7 @@ def status(_args) -> int:
     _print_required_models_status()
 
     tf_state = terraform_stack_state()
-    if any(state != "absent" for state in tf_state.values()):
+    if any(_container_deployed(state) for state in tf_state.values()):
         print("\nTerraform-managed stack (nyxgpt ops down --terraform to tear down):")
         for component, state in sorted(tf_state.items()):
             print(f"  terraform {component}: {state}")
@@ -11243,7 +11426,7 @@ def _terraform_install_mode_issues() -> list[str]:
     check: a running dev-mode deployment whose checkout is gone is running
     images nothing can rebuild.
     """
-    deployed = any(state != "absent" for state in terraform_stack_state().values())
+    deployed = any(_container_deployed(state) for state in terraform_stack_state().values())
     if not (deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists()):
         return []
     state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
@@ -11413,14 +11596,24 @@ def doctor(_args) -> int:
         if _which(tool) is None:
             issues.append(f"Missing tool in PATH: {tool}")
 
-    if (
-        _which("docker") is not None
-        and _docker_container_state(CASSANDRA_CONTAINER_NAME) == "absent"
-    ):
-        issues.append(
-            f"Missing local Cassandra container: {CASSANDRA_CONTAINER_NAME} "
-            "(run: nyxgpt ops install)"
-        )
+    if _which("docker") is not None:
+        # Two different findings, kept apart (#4022). "Missing" is a claim
+        # about the container; a denied Docker socket is a claim about this
+        # session, and telling the operator to re-run `ops install` because a
+        # read was refused sends them to fix a machine that is fine.
+        cassandra_probe = _docker_container_probe(CASSANDRA_CONTAINER_NAME)
+        if not cassandra_probe.known:
+            user = getpass.getuser()
+            issues.append(
+                f"Cannot read Docker container state from this session ({cassandra_probe.reason}) "
+                f"-- container status is unknown, not absent (run: sudo usermod -aG docker "
+                f"{user}, then sudo loginctl terminate-user {user})"
+            )
+        elif cassandra_probe.state == "absent":
+            issues.append(
+                f"Missing local Cassandra container: {CASSANDRA_CONTAINER_NAME} "
+                "(run: nyxgpt ops install)"
+            )
 
     if _which("docker") is not None:
         restarting = sorted(

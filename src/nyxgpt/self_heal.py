@@ -88,7 +88,6 @@ import logging
 import os
 import platform
 import re
-import shlex
 import shutil
 import subprocess
 import threading
@@ -97,7 +96,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import brew_services
+from nyxgpt import brew_services, docker_access
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.config import (
     get_error_tracking_enabled,
@@ -486,8 +485,9 @@ def _run(
     failed probe like any other rather than as a traceback.
 
     `env`, when given, replaces the child's environment wholesale (the same
-    contract `subprocess.run` has). Only `_docker_hop_preserves_env` uses it,
-    to prove a candidate hop hands this process's environment through.
+    contract `subprocess.run` has). Only `docker_access.hop_preserves_env`
+    uses it, to prove a candidate hop hands this process's environment
+    through.
     """
     cmd = bounded_argv(cmd, timeout)
     try:
@@ -515,155 +515,91 @@ def _run(
     return result
 
 
-# How long a "no usable hop here" answer is trusted before it is asked again.
-# The answer can change under a running API process -- an operator who runs
-# `sudo usermod -aG docker <user>` while the service is up makes `sg docker`
-# start working from that moment -- so a permanent negative would make the
-# very repair this module points the operator at require a restart to take
-# effect. Re-asking costs two short subprocesses at most once per interval.
-_DOCKER_HOP_RECHECK_SECONDS = 300.0
+# The Docker socket hop, shared with `ops.py` (#4022). The mechanism -- probe
+# `sg docker`, verify it reaches the daemon *and* preserves the environment,
+# cache the answer, retry a denied call through it -- lives in
+# `docker_access.py` because both modules need it and `self_heal` cannot
+# import `ops` (ops imports self_heal). Before #4022 each kept its own copy
+# and they had already diverged on the answer they exist to give identically:
+# this one retried and reported "unknown", `ops._docker_container_state` did
+# neither and called a running Cassandra `absent`.
+#
+# **`sg` only, never `sudo`.** ops escalates to `sudo -n docker` on its
+# install path because an interactive `ops install` is already a privileged
+# operation. This module runs inside the public-facing API process, so it
+# will only ever claim a group the invoking user is already a member of --
+# which grants no authority the operator did not already give this account. A
+# host where the group change itself was never made stays reported as
+# unknown, with the reason on screen, which is the correct answer there.
+#
+# **Why a long-lived service needs a hop at all.** Group membership is
+# stamped into a session's credentials when the session is created, so
+# `sudo usermod -aG docker <user>` does not reach an already running
+# `systemd --user` manager, and every unit that manager spawns -- `nyxgpt-api`
+# included -- inherits the stale group set for the life of the machine's
+# login session. Restarting the *unit* cannot fix that; only recreating the
+# session (`sudo loginctl terminate-user`, or a reboot) does.
+# `ops._ensure_docker_group_membership` documents the same fact from the
+# install side, and #3632 is the earlier sighting of it -- `nyxgpt ops status`
+# from a fresh shell saw Cassandra running while the API-backed web UI
+# reported it absent. It is also why #3812's owner re-test still showed
+# eleven observability components as `unknown` on a *fresh* `nyxgpt cloud
+# deploy` after the reporting fix landed: the panel had stopped lying, but
+# nothing had made the survey runnable, so the tier was permanently
+# unobservable from the dashboard -- which the Definition of Done requires it
+# to be.
 
-_docker_hop_lock = threading.Lock()
-_docker_hop: str | None = None
-_docker_hop_checked_at: float = 0.0
 
-# Substrings that identify "this process may not talk to the Docker socket",
-# as opposed to "Docker answered and said no". Matched case-insensitively
-# against stderr. Docker's CLI and the Compose plugin word it differently
-# ("Docker daemon socket" vs "docker API at unix://"), and the owner's rc12
-# and rc13 instances produced one each -- see `_docker_run`.
-_DOCKER_ACCESS_FAILURE_MARKERS = (
-    "permission denied",
-    "cannot connect to the docker daemon",
-    "connect to the docker api",
-    "is the docker daemon running",
+def _hop_runner(
+    cmd: list[str],
+    *,
+    timeout: float,
+    expected: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """`_run` in the shape `docker_access` asks for (keyword-only, never raising)."""
+    return _run(cmd, timeout, expected=expected, env=env)
+
+
+def _on_hop_adopted(hop: str) -> None:
+    """Say once, loudly, that Docker is now being reached the long way round."""
+    logger.warning(
+        "self-heal: this process cannot reach the Docker socket directly but the "
+        "'docker' group is granted to this user, so Docker calls are run through "
+        "%s. The service's session predates its group membership; "
+        "`sudo loginctl terminate-user %s` (or a reboot) clears it permanently.",
+        docker_access.HOP_LABELS.get(hop, hop),
+        getpass.getuser(),
+        extra={"component": "self_heal", "docker_socket_hop": hop},
+    )
+
+
+_DOCKER_HOP = docker_access.DockerSocketHop(
+    runner=_hop_runner,
+    # Looked up through the module globals, not bound: a test that stubs
+    # `self_heal._which` stubs the hop probe with it.
+    which=lambda name: _which(name),
+    candidates=("sg",),
+    on_adopt=_on_hop_adopted,
+    on_probe_error=lambda hop, e: logger.debug(
+        "self-heal: docker %s hop probe failed: %s: %s", hop, type(e).__name__, e
+    ),
 )
 
 
 def _looks_like_docker_access_failure(cp: subprocess.CompletedProcess[str]) -> bool:
-    """True if `cp` failed because Docker was unreachable, not because Docker said no.
-
-    Only this class of failure is worth retrying through a group hop. A
-    `docker compose up -d` that failed because an image pull 404'd must not
-    drag a hop probe along behind it on every watchdog pass.
-    """
-    stderr = (cp.stderr or "").lower()
-    return any(marker in stderr for marker in _DOCKER_ACCESS_FAILURE_MARKERS)
+    """True if `cp` failed because Docker was unreachable, not because Docker said no."""
+    return docker_access.looks_like_access_failure(cp)
 
 
 def _hop_argv(cmd: list[str]) -> list[str]:
-    """Wrap `cmd` so it runs with the `docker` group applied (`sg docker -c ...`).
-
-    `sg` takes a *shell string*, not an argv, so the argv has to be rendered
-    into one. `shlex.join` quotes every element -- the sanitizer barrier for
-    this call (CodeQL #4, py/command-line-injection), on top of the
-    `re.fullmatch` barriers each caller already applies to service/container
-    names before they reach an argv at all. It also keeps a compose file path
-    containing a space from silently becoming two arguments.
-    """
-    return ["sg", "docker", "-c", shlex.join(cmd)]
-
-
-def _docker_hop_preserves_env() -> bool:
-    """True if `sg docker` hands this process's environment to the command.
-
-    `sg` execs the user's login shell, and a shell that resets the
-    environment would silently change what Compose sees -- `$HOME` (bind
-    mounts and the project's `.env` lookup) and `COMPOSE_PROJECT_NAME` above
-    all, which decides *which* containers the survey is even about. A hop
-    that answers about a different project is worse than no hop, so this is
-    checked before one is adopted (the same bar `ops._enable_docker_socket_hop`
-    holds its hops to).
-    """
-    sentinel = f"nyxgpt-self-heal-hop-{os.getpid()}"
-    cp = _run(
-        _hop_argv(["sh", "-c", 'printf "%s\\n%s\\n" "$HOME" "$NYXGPT_HOP_PROBE"']),
-        timeout=10.0,
-        expected=True,
-        env={**os.environ, "NYXGPT_HOP_PROBE": sentinel},
-    )
-    if cp.returncode != 0:
-        return False
-    return (cp.stdout or "").strip().splitlines()[-2:] == [
-        os.environ.get("HOME", str(Path.home())),
-        sentinel,
-    ]
+    """Wrap `cmd` so it runs with the `docker` group applied (`sg docker -c ...`)."""
+    return docker_access.hop_argv(cmd, "sg")
 
 
 def _docker_group_hop() -> str | None:
-    """The hop that reaches the Docker socket from here, or None if none is needed/available.
-
-    **Why a long-lived service needs this at all.** Group membership is
-    stamped into a session's credentials when the session is created.
-    `sudo usermod -aG docker <user>` therefore does not reach an already
-    running `systemd --user` manager, and every unit that manager spawns --
-    `nyxgpt-api` included -- inherits the stale group set for the life of the
-    machine's login session. Restarting the *unit* cannot fix that: the unit
-    is forked from the manager, and an unprivileged manager cannot grant
-    itself a group. Only recreating the session (`sudo loginctl
-    terminate-user`, or a reboot) does. `ops._ensure_docker_group_membership`
-    documents the same fact from the install side, and #3632 is the earlier
-    sighting of it -- `nyxgpt ops status` from a fresh shell saw Cassandra
-    running while the API-backed web UI reported it absent.
-
-    That is why #3812's owner re-test still showed eleven observability
-    components as `unknown` on a *fresh* `nyxgpt cloud deploy` after the
-    reporting fix landed: the panel had stopped lying, but nothing had made
-    the survey runnable, so the tier was permanently unobservable from the
-    dashboard -- which the Definition of Done requires it to be.
-
-    `sg docker` closes it without a restart. `sg` reads `/etc/group` live, so
-    it applies the membership the user genuinely already holds; it is the
-    same mechanism `scripts/cloud/ec2-user-data-linux.sh.tmpl` uses for the
-    deploy's own commands and `ops._enable_docker_socket_hop` uses for the
-    rest of an install run.
-
-    **`sg` only, never `sudo`.** ops falls back to `sudo -n docker` because
-    an interactive `ops install` is already a privileged operation. This
-    module runs inside the public-facing API process, so it will only ever
-    claim a group the invoking user is already a member of -- which grants no
-    authority the operator did not already give this account. A host where
-    the group change itself was never made stays reported as unknown, with
-    the reason on screen, which is the correct answer there.
-
-    Returns the hop program name (currently only `"sg"`) or None. Cached, with
-    `_DOCKER_HOP_RECHECK_SECONDS` between negative answers. Only ever called
-    *after* a bare Docker call has already failed for lack of socket access
-    (see `_docker_run`), so a host where Docker works normally never pays for
-    these probes at all.
-    """
-    global _docker_hop, _docker_hop_checked_at
-    with _docker_hop_lock:
-        now = time.monotonic()
-        if _docker_hop is not None:
-            return _docker_hop
-        if _docker_hop_checked_at and (now - _docker_hop_checked_at) < _DOCKER_HOP_RECHECK_SECONDS:
-            return None
-        _docker_hop_checked_at = now
-        if _which("sg") is None or _which("docker") is None:
-            return None
-        try:
-            reaches = _run(
-                _hop_argv(["docker", "info", "--format", "{{.ServerVersion}}"]),
-                timeout=20.0,
-                expected=True,
-            )
-            usable = reaches.returncode == 0 and _docker_hop_preserves_env()
-        except Exception as e:  # pragma: no cover - defensive; a probe must never raise
-            logger.debug("self-heal: docker group hop probe failed: %s: %s", type(e).__name__, e)
-            return None
-        if not usable:
-            return None
-        _docker_hop = "sg"
-        logger.warning(
-            "self-heal: this process cannot reach the Docker socket directly but the "
-            "'docker' group is granted to this user, so Docker calls are run through "
-            "`sg docker`. The service's session predates its group membership; "
-            "`sudo loginctl terminate-user %s` (or a reboot) clears it permanently.",
-            getpass.getuser(),
-            extra={"component": "self_heal", "docker_socket_hop": "sg"},
-        )
-        return _docker_hop
+    """The hop that reaches the Docker socket from here, or None if none is needed/available."""
+    return _DOCKER_HOP.resolve()
 
 
 def _docker_run(
@@ -675,31 +611,16 @@ def _docker_run(
     a session that cannot reach the socket degrades identically everywhere:
     the survey, the container/health probes, the restarts and the log reads.
     Fixing only the survey would have produced a panel that could see eleven
-    components and heal none of them.
-
-    The bare command is tried first and its result returned untouched when it
-    succeeds, so a healthy host pays nothing. A hop is looked for only when
-    the failure is a socket-access failure (`_looks_like_docker_access_failure`);
-    once one is established it is used up front. When no hop is available the
-    original failure is returned unchanged -- the caller still reports
-    "unknown" with Docker's own words, which is #3812's fix and stays intact.
+    components and heal none of them (#3812). See
+    `docker_access.DockerSocketHop.run` for the bare-first, hop-on-denial
+    policy.
     """
-    if _docker_hop is not None:
-        return _run(_hop_argv(cmd), timeout, expected=expected)
-    cp = _run(cmd, timeout, expected=expected)
-    if cp.returncode == 0 or not _looks_like_docker_access_failure(cp):
-        return cp
-    if _docker_group_hop() is None:
-        return cp
-    return _run(_hop_argv(cmd), timeout, expected=expected)
+    return _DOCKER_HOP.run(cmd, timeout=timeout, expected=expected)
 
 
 def _reset_docker_hop_cache() -> None:
     """Forget any established/attempted hop. For tests -- nothing in the app calls it."""
-    global _docker_hop, _docker_hop_checked_at
-    with _docker_hop_lock:
-        _docker_hop = None
-        _docker_hop_checked_at = 0.0
+    _DOCKER_HOP.reset()
 
 
 def _state_path() -> Path:
