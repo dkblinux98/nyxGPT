@@ -114,9 +114,9 @@ _open_tunnel() {
 
 start_port_forward() {
     : >/tmp/k8s-smoke-portforward.log
-    # Let the web Deployment report available BEFORE forwarding to it. Step 8
+    # Let the web Deployment report available BEFORE forwarding to it. Step 9
     # heals a web Pod for real and returns as soon as the replacement Pod
-    # EXISTS, not when its server is listening, so step 9 used to open the
+    # EXISTS, not when its server is listening, so step 10 used to open the
     # tunnel against a Pod seconds old. This is a settle, not an assertion --
     # the probe loop below is still the only thing that decides pass/fail.
     kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-web-stable \
@@ -162,7 +162,7 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/10 Bring the stack up: nyxgpt ops install --kubernetes"
+step "1/11 Bring the stack up: nyxgpt ops install --kubernetes"
 # No --skip-observability: this is the command as a user types it (#3826).
 # The layer that flag used to hide is also the one that did not fit the node
 # (#3825), so a gate that installs less than the default cannot see either.
@@ -174,7 +174,7 @@ step "1/10 Bring the stack up: nyxgpt ops install --kubernetes"
 nyxgpt ops install --kubernetes --api-key "$API_KEY"
 ok "install --kubernetes completed with no locality flag"
 
-step "2/10 Every Pod of the default stack was scheduled"
+step "2/11 Every Pod of the default stack was scheduled"
 # #3825: `install` reported success on a node whose memory was 99% reserved,
 # with prometheus left Pending / FailedScheduling for good. Nothing in the
 # steps below would have noticed -- chat worked fine. An unscheduled Pod has
@@ -200,7 +200,7 @@ cannot fit the default stack (size the cluster VM, do not drop observability)"
 fi
 ok "every Pod in the default stack has a node"
 
-step "3/10 The data/LLM tier exists and is Ready"
+step "3/11 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -233,7 +233,65 @@ ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
 # the rollout-status wait above only returned because both were there -- this
 # assertion names which model, so a probe regression fails with the reason.
 
-step "4/10 The observability layer came up with the app tier"
+step "4/11 ops status/doctor report on THIS deployment, not the host (#3987)"
+# Executed evidence for #3987 (#3775). The defect it fixes is invisible to
+# inspection and to unit tests, because it is about which machine the command
+# asks: on the owner's acceptance run `ops status` reported the two models
+# above -- the ones step 3 has just proved are in the cluster -- as `UNKNOWN
+# (Ollama unreachable)`, because it probed the host's `127.0.0.1:11434`, and
+# printed a ~50-line urllib traceback above that verdict. Only a run against a
+# live deployment can show the difference, and this is the one job that has
+# one. It goes here, immediately after the models are verified present, so a
+# PRESENT here is checked against ground truth established two steps up.
+#
+# No fault injection needed (the rule's usual companion, CLAUDE.md/#3753): the
+# pre-fix failure is what this step's own assertions describe, and it happens
+# *naturally* on any live Kubernetes deployment -- the host Ollama is absent
+# by design in this mode. `127.0.0.1:11434` in the Required models header IS
+# the pre-fix output, so asserting against it fails on a revert.
+STATUS_OUT=$(nyxgpt ops status 2>&1) || fail "nyxgpt ops status exited non-zero"
+echo "$STATUS_OUT"
+if grep -q "Traceback" <<<"$STATUS_OUT"; then
+    fail "ops status printed a Python traceback -- an unreachable dependency is one line"
+fi
+grep -qE "^  kubernetes: ${NAMESPACE} namespace: [0-9]+/[0-9]+ pod\(s\) ready" <<<"$STATUS_OUT" ||
+    fail "the 'Deployment mode' block does not name Kubernetes above a running cluster"
+ok "the Deployment mode block names the running Kubernetes deployment"
+# The block header, sliced out on its own: `127.0.0.1:11434` legitimately
+# appears elsewhere in a status report (the Ollama env agent), so the
+# assertion has to be about the line that says which Ollama was asked.
+MODELS_HEADER=$(grep -E "^Required models \(Ollama at " <<<"$STATUS_OUT") ||
+    fail "ops status printed no Required models block at all"
+grep -q "(in-cluster)" <<<"$MODELS_HEADER" ||
+    fail "the required-model check did not read the in-cluster Ollama: ${MODELS_HEADER}"
+if grep -q "127.0.0.1" <<<"$MODELS_HEADER"; then
+    fail "the required-model check probed the host -- this is the #3987 defect: ${MODELS_HEADER}"
+fi
+for role_model in "chat: ${MODEL}" "embedding: ${EMBEDDING_MODEL}"; do
+    grep -qE "^  ${role_model}.* -- PRESENT$" <<<"$STATUS_OUT" ||
+        fail "ops status does not report ${role_model} as PRESENT, though step 3 read it \
+straight out of the cluster's Ollama"
+done
+ok "required models resolve PRESENT from the in-cluster Ollama, with no traceback"
+# doctor, per the issue's fourth acceptance criterion. Its exit code is not
+# the assertion: a CI runner with a Kubernetes-only install legitimately has
+# native-side findings, so the check is on what it SAYS about models.
+DOCTOR_OUT=$(nyxgpt ops doctor 2>&1) || true
+echo "$DOCTOR_OUT"
+if grep -q "Traceback" <<<"$DOCTOR_OUT"; then
+    fail "ops doctor printed a Python traceback"
+fi
+grep -qE "^Kubernetes deployment: ${NAMESPACE} namespace: [0-9]+/[0-9]+ pod\(s\) ready" \
+    <<<"$DOCTOR_OUT" ||
+    fail "ops doctor does not name the Kubernetes deployment its checks are reported against"
+grep -q "reported against the cluster" <<<"$DOCTOR_OUT" ||
+    fail "ops doctor does not say model readiness is read from the cluster"
+if grep -q "pull into the cluster" <<<"$DOCTOR_OUT"; then
+    fail "ops doctor reports a missing required model against a cluster that has both"
+fi
+ok "ops doctor reports model readiness against the cluster, and finds nothing missing"
+
+step "5/11 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -256,19 +314,19 @@ ok "all ten observability workloads are Ready alongside the app tier"
 # step 2 already ruled out the unschedulable case with the node arithmetic
 # printed alongside it (#3826, #3825).
 
-step "5/10 The user path works: sessions list, via the web Service"
+step "6/11 The user path works: sessions list, via the web Service"
 start_port_forward
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "6/10 A real chat round-trip"
+step "7/11 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "7/10 The observability tier RECEIVES telemetry, not just runs (#3990)"
+step "8/11 The observability tier RECEIVES telemetry, not just runs (#3990)"
 # The question step 4 cannot answer. #3990 was an install where all ten
 # observability workloads reported `1/1 ready`, Grafana and Prometheus
 # answered 200, and the tier received NOTHING from the application it exists
@@ -397,7 +455,7 @@ done
 resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
 ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
 
-step "8/10 Sessions are shared by every api replica (Cassandra-backed)"
+step "9/11 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
 # consecutive requests from one browser see different sessions; the poll below
 # runs enough times to land on every replica. The stable Deployment rests at 1
@@ -419,7 +477,7 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null
 
-step "9/10 Self-heal sees the whole cluster, not just the api pool (#3828)"
+step "10/11 Self-heal sees the whole cluster, not just the api pool (#3828)"
 # Deletes a web Pod for real (the heal action), which is why it runs after the
 # user-path steps and why the tunnel is dropped first -- step 9 reopens it.
 stop_port_forward
@@ -427,20 +485,20 @@ python3 scripts/k8s-self-heal-coverage-smoke.py ||
     fail "self-heal does not cover this deployment -- see the output above (#3828)"
 ok "self-heal names the mode, watches every tier, and heals a non-api Pod"
 
-step "10/10 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "11/11 Fault injection: the pre-#3786 topology must FAIL this same check"
 stop_port_forward
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true
 start_port_forward
 if curl -fsS -o /dev/null "${BASE}/api/sessions" 2>/dev/null; then
     fail "the session list still loaded with no Cassandra in the cluster -- \
-step 5 cannot detect the #3786 regression"
+step 6 cannot detect the #3786 regression"
 fi
 ok "without Cassandra the session list fails (the UI's 'Failed to load sessions')"
 if chat_round_trip "${SESSION}-nofix" >/tmp/k8s-smoke-nofix.log 2>&1; then
     cat /tmp/k8s-smoke-nofix.log >&2
     fail "chat still answered with no Ollama and no Cassandra in the cluster -- \
-step 6 cannot detect the #3786 regression and is worthless as a gate"
+step 7 cannot detect the #3786 regression and is worthless as a gate"
 fi
 ok "without the data/LLM tier the chat round-trip fails, as it must"
 
