@@ -9,6 +9,7 @@ from home_sandbox import REAL_HOME
 
 from nyxgpt import cloud_secrets
 from nyxgpt.config import (
+    DEFAULT_CHAT_TIMEOUT_SECONDS,
     SECRETS_SYNC_MANIFEST,
     _expand_path,
     get_ann_oversample_factor,
@@ -1388,8 +1389,27 @@ chat_timeout_seconds = not_a_number
     caplog.set_level(logging.WARNING, logger="nyxgpt.config")
     timeout = get_chat_timeout_seconds(cfg)
 
-    assert timeout == 180
+    # Pins agreement, not a literal. This asserted 180 while the fallback said
+    # 300, so it certified the drift instead of catching it: an operator with a
+    # malformed value got the very regression the raise exists to remove, under
+    # a log line that said otherwise (#4028 review).
+    assert timeout == DEFAULT_CHAT_TIMEOUT_SECONDS
     assert "Invalid nyxgpt.chat_timeout_seconds" in caplog.text
+    assert str(DEFAULT_CHAT_TIMEOUT_SECONDS) in caplog.text, (
+        "the warning must name the value actually returned -- a log that says "
+        "one number while the code returns another misdirects the debugging"
+    )
+
+
+def test_the_valid_and_invalid_paths_return_the_same_shipped_default(tmp_path: Path) -> None:
+    """An absent value and a malformed one must not disagree about the default."""
+    absent = tmp_path / "absent.ini"
+    _write(absent, "[nyxgpt]\n")
+    broken = tmp_path / "broken.ini"
+    _write(broken, "[nyxgpt]\nchat_timeout_seconds = abc\n")
+
+    assert get_chat_timeout_seconds(load_config(str(absent))) == DEFAULT_CHAT_TIMEOUT_SECONDS
+    assert get_chat_timeout_seconds(load_config(str(broken))) == DEFAULT_CHAT_TIMEOUT_SECONDS
 
 
 # ---------------------------------------------------------------------------

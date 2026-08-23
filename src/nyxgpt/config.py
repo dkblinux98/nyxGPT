@@ -443,16 +443,29 @@ def get_ollama_base_url(cfg: ConfigParser) -> str:
     return cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
 
 
+# One statement of the shipped chat timeout. Both the `fallback=` and the
+# invalid-value branch below read it, because they already drifted once: this
+# change raised the fallback to 300 and the except branch kept returning 180
+# while logging "using 300", so an operator with a malformed value got exactly
+# the regression this fix exists to remove, with a log line misdirecting the
+# debugging (#4028 review).
+DEFAULT_CHAT_TIMEOUT_SECONDS = 300
+
+
 def get_chat_timeout_seconds(cfg: ConfigParser) -> int:
     """Return the configured per-request chat timeout (``[nyxgpt] chat_timeout_seconds``)."""
     try:
-        return cfg.getint("nyxgpt", "chat_timeout_seconds", fallback=300)
+        return cfg.getint("nyxgpt", "chat_timeout_seconds", fallback=DEFAULT_CHAT_TIMEOUT_SECONDS)
     except (ValueError, TypeError) as e:
         import logging
 
         log = logging.getLogger(__name__)
-        log.warning("Invalid nyxgpt.chat_timeout_seconds in config, using 300: %s", e)
-        return 180
+        log.warning(
+            "Invalid nyxgpt.chat_timeout_seconds in config, using %s: %s",
+            DEFAULT_CHAT_TIMEOUT_SECONDS,
+            e,
+        )
+        return DEFAULT_CHAT_TIMEOUT_SECONDS
 
 
 def _expand_path(value: str) -> Path:
