@@ -60,7 +60,7 @@ services:
     # never run env-sync. Both are pulled even with RAG off: `rag_enabled` is
     # a per-session toggle, and turning it on must not stall on a download.
     environment:
-      NYXGPT_DEFAULT_MODEL: ${NYXGPT_DEFAULT_MODEL:-qwen3:0.6b}
+      NYXGPT_DEFAULT_MODEL: ${NYXGPT_DEFAULT_MODEL:-qwen3.5:0.8b}
       NYXGPT_EMBEDDING_MODEL: ${NYXGPT_EMBEDDING_MODEL:-nomic-embed-text}
     # `$$` is Compose's escape for a literal `$` -- these are shell variables
     # read inside the container, not values Compose should interpolate.

@@ -56,7 +56,7 @@ class RequiredModel:
     """`chat` or `embedding` -- what the model is required *for*."""
 
     name: str
-    """The model as configured, e.g. `qwen3:0.6b`."""
+    """The model as configured, e.g. `qwen3.5:0.8b`."""
 
     setting: str
     """The config key it came from, for error messages that name the fix."""

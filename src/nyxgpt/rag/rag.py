@@ -1163,6 +1163,10 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
             model=model,
             messages=messages,
             timeout_s=10,  # Short timeout for expansion
+            # Nothing reads this call's reasoning either, and 10s is below even
+            # the *fast* default-mode sample (11.0s): with the shipped reasoning
+            # model this call could only time out or burn budget (#4029 review).
+            think=False,
         )
 
         # Parse JSON response

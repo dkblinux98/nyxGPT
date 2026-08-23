@@ -442,7 +442,7 @@ offering the restart (#3806).
 2. **Increase timeout:**
    ```ini
    [nyxgpt]
-   chat_timeout_seconds = 180  # Default is 60
+   chat_timeout_seconds = 600  # Default is 300
    ```
 
 3. **Check system resources:**

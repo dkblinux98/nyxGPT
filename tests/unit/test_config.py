@@ -9,6 +9,8 @@ from home_sandbox import REAL_HOME
 
 from nyxgpt import cloud_secrets
 from nyxgpt.config import (
+    DEFAULT_CHAT_THINK,
+    DEFAULT_CHAT_TIMEOUT_SECONDS,
     SECRETS_SYNC_MANIFEST,
     _expand_path,
     get_ann_oversample_factor,
@@ -30,6 +32,7 @@ from nyxgpt.config import (
     get_cassandra_health_check_interval,
     get_cassandra_pool_size,
     get_cassandra_reconnect_max_attempts,
+    get_chat_think,
     get_chat_timeout_seconds,
     get_context_warning_threshold,
     get_context_window_size,
@@ -1368,6 +1371,48 @@ default_model = llama3.1:8b
 
 
 # ---------------------------------------------------------------------------
+# get_chat_think
+# ---------------------------------------------------------------------------
+
+
+def test_chat_think_is_off_by_default(tmp_path: Path) -> None:
+    """Owner decision 2026-08-23: the shipped model reasons, and we read only
+    the answer -- so reasoning is off unless asked for."""
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\n")
+    assert get_chat_think(load_config(str(ini))) is False
+    assert DEFAULT_CHAT_THINK is False
+
+
+def test_chat_think_can_be_turned_on(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\nthink = true\n")
+    assert get_chat_think(load_config(str(ini))) is True
+
+
+def test_chat_think_falls_back_to_the_shipped_default_when_malformed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\nthink = maybe\n")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+
+    assert get_chat_think(load_config(str(ini))) is DEFAULT_CHAT_THINK
+    assert "Invalid nyxgpt.think" in caplog.text
+
+
+def test_the_shipped_config_file_states_think(tmp_path: Path) -> None:
+    """example.config.ini is the source of the shipped default; it must say so.
+
+    The k8s ConfigMap is compared against this file, so an unstated key there
+    means the two layers can drift silently -- which is exactly how the model
+    bump reached Python and not Kubernetes."""
+    shipped = load_config(str(Path(__file__).resolve().parents[2] / "example.config.ini"))
+    assert shipped.has_option("nyxgpt", "think")
+    assert get_chat_think(shipped) is DEFAULT_CHAT_THINK
+
+
+# ---------------------------------------------------------------------------
 # get_chat_timeout_seconds: except branch
 # ---------------------------------------------------------------------------
 
@@ -1388,8 +1433,27 @@ chat_timeout_seconds = not_a_number
     caplog.set_level(logging.WARNING, logger="nyxgpt.config")
     timeout = get_chat_timeout_seconds(cfg)
 
-    assert timeout == 180
+    # Pins agreement, not a literal. This asserted 180 while the fallback said
+    # 300, so it certified the drift instead of catching it: an operator with a
+    # malformed value got the very regression the raise exists to remove, under
+    # a log line that said otherwise (#4028 review).
+    assert timeout == DEFAULT_CHAT_TIMEOUT_SECONDS
     assert "Invalid nyxgpt.chat_timeout_seconds" in caplog.text
+    assert str(DEFAULT_CHAT_TIMEOUT_SECONDS) in caplog.text, (
+        "the warning must name the value actually returned -- a log that says "
+        "one number while the code returns another misdirects the debugging"
+    )
+
+
+def test_the_valid_and_invalid_paths_return_the_same_shipped_default(tmp_path: Path) -> None:
+    """An absent value and a malformed one must not disagree about the default."""
+    absent = tmp_path / "absent.ini"
+    _write(absent, "[nyxgpt]\n")
+    broken = tmp_path / "broken.ini"
+    _write(broken, "[nyxgpt]\nchat_timeout_seconds = abc\n")
+
+    assert get_chat_timeout_seconds(load_config(str(absent))) == DEFAULT_CHAT_TIMEOUT_SECONDS
+    assert get_chat_timeout_seconds(load_config(str(broken))) == DEFAULT_CHAT_TIMEOUT_SECONDS
 
 
 # ---------------------------------------------------------------------------

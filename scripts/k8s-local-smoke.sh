@@ -73,7 +73,7 @@ SESSION="k8s-smoke-$$"
 # Must match k8s/configmap.yaml's `[nyxgpt] default_model` / `[rag]
 # embedding_model` -- the StatefulSet pulls both and its readiness probe gates
 # on both (#3824), so a mismatch here would assert on a model nothing pulls.
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen3:0.6b}"
+MODEL="${NYXGPT_SMOKE_MODEL:-qwen3.5:0.8b}"
 EMBEDDING_MODEL="${NYXGPT_SMOKE_EMBEDDING_MODEL:-nomic-embed-text}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 PF_PID=""
