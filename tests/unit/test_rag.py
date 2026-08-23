@@ -918,7 +918,7 @@ def test_expand_query_enabled_with_valid_response(
 
     monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
 
-    def mock_ollama_chat(base_url, model, messages, timeout_s):
+    def mock_ollama_chat(base_url, model, messages, timeout_s, **_kw):
         return '["variant 1", "variant 2"]'
 
     # ollama_chat is imported inside expand_query, so mock the module
@@ -943,7 +943,7 @@ def test_expand_query_handles_markdown_json(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
 
-    def mock_ollama_chat(base_url, model, messages, timeout_s):
+    def mock_ollama_chat(base_url, model, messages, timeout_s, **_kw):
         return '```json\n["variant 1", "variant 2"]\n```'
 
     monkeypatch.setattr("nyxgpt.ollama_client.ollama_chat", mock_ollama_chat)
@@ -965,7 +965,7 @@ def test_expand_query_error_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
 
-    def mock_ollama_chat(base_url, model, messages, timeout_s):
+    def mock_ollama_chat(base_url, model, messages, timeout_s, **_kw):
         raise Exception("LLM error")
 
     monkeypatch.setattr("nyxgpt.ollama_client.ollama_chat", mock_ollama_chat)
@@ -2096,3 +2096,37 @@ def test_compute_evaluation_metrics_score_percentiles() -> None:
     assert score_dist["p75"] >= score_dist["p50"]
     assert score_dist["p95"] >= score_dist["p75"]
     assert score_dist["p99"] >= score_dist["p95"]
+
+
+def test_query_expansion_does_not_let_the_model_reason(monkeypatch):
+    """The third and last ollama_chat caller (#4029 review).
+
+    Expansion parses its output as JSON, so nothing reads the reasoning -- and
+    it passes timeout_s=10, below even the fast default-mode sample (11.0s).
+    Left to reason, this call could only time out or burn budget.
+    """
+    import configparser
+
+    cfg = configparser.ConfigParser()
+    cfg["rag"] = {"enable_query_expansion": "true"}
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["default"] = {"model": "test-model"}
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return '["variant 1", "variant 2"]'
+
+    monkeypatch.setattr("nyxgpt.ollama_client.ollama_chat", _capture)
+
+    from nyxgpt.rag.rag import expand_query
+
+    expand_query("original query")
+
+    assert seen, "ollama_chat was never called"
+    assert seen.get("think") is False, (
+        "query expansion let the model reason; nothing reads that reasoning and "
+        "its 10s timeout cannot survive it"
+    )

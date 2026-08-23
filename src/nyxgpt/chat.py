@@ -20,8 +20,11 @@ from typing import Any, cast
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.cache import CacheBackend, DiskCache, MemoryCache, NoOpCache, hash_text
 from nyxgpt.config import (
+    DEFAULT_CHAT_TIMEOUT_SECONDS,
+    get_chat_think,
     get_context_warning_threshold,
     get_context_window_size,
+    get_default_model,
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
@@ -95,6 +98,10 @@ class ChatContext:
     rag_chunks: int
     rag_context: list[dict] | None = None  # RAG retrieval results
     output_format: dict[str, Any] | None = None  # JSON schema for structured output
+    # Whether the model may emit chain-of-thought (`[nyxgpt] think`, off by
+    # default). Carried on the context so the streaming and non-streaming
+    # paths cannot disagree about it.
+    think: bool | None = None
 
 
 def _cfg(config_path: str | None) -> Any:
@@ -565,9 +572,18 @@ def _prepare_chat_context(
     cfg = _cfg(config_path)
 
     base_url = _get_str(cfg, "ollama", "base_url", "http://127.0.0.1:11434")
-    default_model = _get_str(cfg, "nyxgpt", "default_model", "llama3.1:8b")
+    # `get_default_model`, not a fourth literal. This line carried
+    # "llama3.1:8b" -- a model no install pulls -- so an absent
+    # `default_model` sent the live chat path at something that was not there,
+    # and docs/configuration.md documented that value as the default because
+    # of it. One getter, one answer (owner rule, 2026-08-23).
+    default_model = get_default_model(cfg)
     chosen_model = model or default_model
-    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", 300)
+    # DEFAULT_CHAT_TIMEOUT_SECONDS, not a literal 300: #4028 hoisted that
+    # constant precisely because this value had already drifted between two
+    # spellings, and re-hardcoding it here would reopen the same gap.
+    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", DEFAULT_CHAT_TIMEOUT_SECONDS)
+    think = get_chat_think(cfg)
 
     # Load session messages
     state = load_session(session, cfg, sessions_dir_override=sessions_dir)
@@ -719,6 +735,7 @@ def _prepare_chat_context(
         chosen_model=chosen_model,
         base_url=base_url,
         chat_timeout_s=chat_timeout_s,
+        think=think,
         rag_used=should_use_rag,
         rag_chunks=rag_chunks,
         rag_context=rag_rows,
@@ -876,6 +893,7 @@ def chat(
             messages=context.messages,
             timeout_s=context.chat_timeout_s,
             output_format=context.output_format,
+            think=context.think,
         )
     except Exception as e:
         logger.error(
@@ -1034,6 +1052,7 @@ def chat_stream(
             timeout_s=context.chat_timeout_s,
             on_retry=_retry_callback,
             output_format=context.output_format,
+            think=context.think,
         ):
             # Yield any queued retry messages first
             for retry_msg in retry_messages:

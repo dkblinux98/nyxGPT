@@ -465,3 +465,50 @@ def test_score_relevance_json_decode_error(monkeypatch: pytest.MonkeyPatch) -> N
         pytest.raises(RerankError, match="Failed to parse reranking score"),
     ):
         _score_relevance("test query", "test document", config)
+
+
+def test_reranker_does_not_let_the_model_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fourth ollama caller, invisible to an `ollama_chat(` sweep (#4029 review).
+
+    This one builds the /api/chat payload itself with urllib, so it was missed
+    when the other three were threaded. It caps the reply at `num_predict: 50`
+    -- with the shipped reasoning model that budget goes entirely on thinking
+    and no score comes back, so reranking degrades silently.
+    """
+    import json as _json
+    from unittest.mock import Mock
+
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import RerankerConfig, _score_relevance
+
+    config = RerankerConfig(
+        base_url="http://localhost:11434",
+        model="qwen2.5:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
+    )
+
+    sent: dict = {}
+
+    def _capture(req, *_a, **_k):
+        sent.update(_json.loads(req.data.decode("utf-8")))
+        resp = Mock()
+        resp.read.return_value = _json.dumps({"message": {"content": '{"score": 0.9}'}}).encode()
+        resp.__enter__ = Mock(return_value=resp)
+        resp.__exit__ = Mock(return_value=False)
+        return resp
+
+    monkeypatch.setattr("urllib.request.urlopen", _capture)
+
+    _score_relevance("query", "document text", config)
+
+    assert sent, "no request was sent"
+    assert sent.get("think") is False, (
+        "the reranker let the model reason into a 50-token budget; nothing "
+        "reads that reasoning and the score never arrives"
+    )

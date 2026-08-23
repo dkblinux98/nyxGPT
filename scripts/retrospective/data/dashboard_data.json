@@ -1,39 +1,39 @@
 {
- "generated_at": "2026-08-22T10:26:10.062032+00:00",
+ "generated_at": "2026-08-23T10:32:07.088614+00:00",
  "modules": {
-  "cli": {
-   "C": 5,
-   "M": 35,
-   "m": 48,
-   "rounds": 25,
-   "issues": 12
-  },
-  "security": {
-   "C": 0,
-   "M": 11,
-   "m": 18,
-   "rounds": 10,
-   "issues": 5
-  },
   "api": {
-   "C": 13,
-   "M": 92,
-   "m": 104,
-   "rounds": 47,
-   "issues": 20
+   "C": 17,
+   "M": 106,
+   "m": 122,
+   "rounds": 55,
+   "issues": 24
   },
   "web-ui": {
    "C": 0,
-   "M": 9,
+   "M": 8,
    "m": 13,
-   "rounds": 8,
-   "issues": 7
+   "rounds": 7,
+   "issues": 6
+  },
+  "security": {
+   "C": 0,
+   "M": 13,
+   "m": 20,
+   "rounds": 11,
+   "issues": 5
+  },
+  "cli": {
+   "C": 3,
+   "M": 42,
+   "m": 58,
+   "rounds": 29,
+   "issues": 15
   },
   "observability": {
-   "C": 5,
-   "M": 44,
-   "m": 52,
-   "rounds": 28,
+   "C": 4,
+   "M": 41,
+   "m": 45,
+   "rounds": 29,
    "issues": 12
   },
   "testing": {
@@ -52,12 +52,6 @@
   }
  },
  "days": {
-  "2026-08-15": {
-   "C": 3,
-   "M": 26,
-   "m": 32,
-   "rounds": 15
-  },
   "2026-08-16": {
    "C": 0,
    "M": 4,
@@ -87,6 +81,18 @@
    "M": 3,
    "m": 10,
    "rounds": 3
+  },
+  "2026-08-22": {
+   "C": 0,
+   "M": 20,
+   "m": 30,
+   "rounds": 14
+  },
+  "2026-08-23": {
+   "C": 4,
+   "M": 25,
+   "m": 25,
+   "rounds": 14
   }
  },
  "issues": [
@@ -240,87 +246,103 @@
    ]
   },
   {
-   "issue": 3788,
-   "pr": 3794,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: keg pip bootstrap fails under python@3.12 3.12.14 pip import guard (#3788) (PR #3794)",
+   "issue": 4015,
+   "pr": 4019,
+   "title": "[dkblinux98/nyxGPT] Agent: fix: mechanize the inverse-claims sweep - stale prose is 80% of review rework (#4015) (PR #4019)",
    "module": "api",
-   "rounds": 5,
+   "rounds": 6,
    "C": 0,
-   "M": 11,
-   "m": 7,
-   "last": "2026-08-15T07:12:22Z",
+   "M": 12,
+   "m": 10,
+   "last": "2026-08-23T05:33:34Z",
    "findings": [
     [
      "Medium",
-     "#3788 fault injection never fires: symlink-blind path scoping in the fault finder"
+     "Silent reverse-diff fallback poisons the advertised run-over-history mode"
     ],
     [
      "Medium",
-     "Missing executed verification for the formula change on macOS"
-    ],
-    [
-     "Medium",
-     "`brew upgrade python@3.12` without `brew update` is a no-op"
+     "The submit-time wiring skipped silently on its own first live use, and the failure path is designed to be invisible"
     ],
     [
      "Minor",
-     "`brew upgrade python@3.12 || true` swallows genuine upgrade failures, not just \"already installed\" no-ops; after adding `brew update`, consider letting a real upgrade failure be visible (the injection step keeps version drift non-fatal either way)."
+     "The cheap prefilter is not the superset it claims to be"
     ],
     [
      "Minor",
-     "`test_macos_smoke_injects_the_keg_pip_failure_from_3788` could additionally assert `\"brew update\"` once that lands, so the drift-mitigation contract is pinned by the Linux suite like the rest."
-    ],
-    [
-     "Medium",
-     "#3788 fault injection still never fires: the fault sitecustomize shadows the keg's own sitecustomize and de-scopes itself"
-    ],
-    [
-     "Medium",
-     "Missing executed verification for the formula change on macOS"
+     "`default_base()` hardcodes `origin/v3.0.0`"
     ],
     [
      "Minor",
-     "The \"keg sitecustomize\" diagnostic (`.github/workflows/macos-brew-smoke.yml:145-151`) only checks `sysconfig.get_paths()[\"purelib\"]` and printed `none`, while the run demonstrates pip resolution is governed by path setup the fault can shadow \u2014 extend it to also check the prefix site-packages (`/opt/homebrew/lib/python3.12/site-packages/sitecustomize.py`) so the log states the machine truth."
+     "The implement-prompt's sweep instruction still describes only the manual grep"
+    ],
+    [
+     "Medium",
+     "[STILL PRESENT \u2014 round 1, Medium 1] Silent reverse-diff fallback"
+    ],
+    [
+     "Medium",
+     "[STILL PRESENT \u2014 round 1, Medium 2] Submit-time sweep failure is invisible"
     ],
     [
      "Minor",
-     "`test_macos_smoke_injects_the_keg_pip_failure_from_3788` asserts `\"brew update\" in script` \u2014 trivially true since the string also appears in a comment/warning; anchoring on the command line proper would make the pin sturdier."
+     "Unchanged from round 1; none block: the count-prefilter skips multi-word terms wrapped across lines (`inverse_claims_sweep.py:1193-1196`), `default_base()` hardcodes `origin/v3.0.0` (line 488), and `.github/workflows/developer_auto_implement.yml:1089` still describes only the manual grep."
     ],
     [
      "Medium",
-     "#3788 fault injection still never fires: the scope anchor must be the realpath of the pip module *file*, not of its directory"
+     "[STILL PRESENT \u2014 round 1, Medium 1] Silent reverse-diff fallback"
     ],
     [
      "Medium",
-     "Missing executed verification for the formula change on macOS"
+     "[STILL PRESENT \u2014 round 1, Medium 2] Submit-time sweep failure is invisible"
     ],
     [
      "Minor",
-     "The :396-403 warning prints \"the chain did not fully restore it\" for what is actually symlink topology, which misdirected this round's log reading; with the Medium 1 fix the comparison becomes truthful, but consider making its message state both values it compared."
+     "Unchanged from round 1; none block: the count-prefilter skips multi-word terms wrapped across lines (`inverse_claims_sweep.py:1193-1196`), `default_base()` hardcodes `origin/v3.0.0`, and `.github/workflows/developer_auto_implement.yml:1089` still describes only the manual grep without naming the new tool (verified this session)."
     ],
     [
      "Medium",
-     "#3788 injection removes the symlink, not the file: capture `WHEEL_PY` as the realpath"
+     "[Residual of round-1 Medium 2] Sweep hard-failure is still invisible: `$sweep_err` is captured and never shown, and no trace reaches the PR body"
     ],
     [
      "Medium",
-     "Missing executed verification for the formula change on macOS"
+     "[Residual of round-1 Medium 1] D-046's measurement is still unauditable, and this PR's own fix now makes its stated method non-reproducible"
     ],
     [
      "Minor",
-     "The self-check's probe child (`[sys.executable, \"-c\", probe]`) exercises the same prefix `sys.path` route as the parent, so its two checks are nearly redundant; probing the resolved (Cellar) route instead would have caught this round's defect before the negative control did. Advisory \u2014 covered by the note in Medium 1."
-    ],
-    [
-     "Medium",
-     "#3788 injection removes the symlink, not the file: capture `WHEEL_PY` as the realpath"
-    ],
-    [
-     "Medium",
-     "Missing executed verification for the formula change on macOS"
+     "`sweep_err` temp file leaks (not removed at `developer_submit_for_review.sh:303`) \u2014 fold into Medium 1's fix."
     ],
     [
      "Minor",
-     "(Carried over, advisory) The self-check's probe child exercises the same prefix `sys.path` route as the parent; probing the resolved (Cellar) route as well would catch symlink-vs-realpath divergence before the negative control does. Does not block merge."
+     "Unchanged from round 1, none block: the count-prefilter skips multi-word terms wrapped across lines (`inverse_claims_sweep.py`), `default_base()` hardcodes `origin/v3.0.0`, and `developer_auto_implement.yml:1089` still describes only the manual grep without naming the new tool."
+    ],
+    [
+     "Medium",
+     "The failure-path fix is unpinned, and the fix itself made the existing pin vacuous for that path"
+    ],
+    [
+     "Medium",
+     "The runbook's copy of the D-046 numbers is uncaveated while the ledger's copy is now marked provisional"
+    ],
+    [
+     "Minor",
+     "No PR-body marker on a hard sweep failure. Downgraded from the previous round's demand, deliberately: the AC marks PR posting optional and the success-path receipt makes absence detectable. A one-line `_Inverse-claims sweep did not run: <first line>_` marker would still be an improvement; does not block."
+    ],
+    [
+     "Minor",
+     "`agents/LEDGER.md` Q-008 opens with \"The #4015 measurement answers the question the owner posed\" using the same provisional numbers; D-046's caveat explicitly cross-references Q-008, so a reader is covered \u2014 a softening clause would be tidier; does not block."
+    ],
+    [
+     "Minor",
+     "Carried over unchanged from earlier rounds, none block: the count-prefilter can skip multi-word terms wrapped across lines; `default_base()` hardcodes `origin/v3.0.0`; `developer_auto_implement.yml:1089` still describes the manual grep without naming the tool."
+    ],
+    [
+     "Medium",
+     "The failure-path fix is unpinned, and the fix itself made the existing pin vacuous for that path"
+    ],
+    [
+     "Medium",
+     "The runbook's copy of the D-046 numbers is uncaveated while the ledger's copy is now marked provisional"
     ]
    ]
   },
@@ -374,71 +396,6 @@
     [
      "Medium",
      "Inverse-claims (\u00a71a): actor-gate table cells still falsified \u2014 carried from three prior rounds, unaddressed"
-    ]
-   ]
-  },
-  {
-   "issue": 3789,
-   "pr": 3791,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: dev install mode - run current checkout HEAD without the keg build (#3789) (PR #3791)",
-   "module": "cli",
-   "rounds": 4,
-   "C": 1,
-   "M": 4,
-   "m": 8,
-   "last": "2026-08-15T20:17:53Z",
-   "findings": [
-    [
-     "Critical",
-     "Dev-mode web UI returns 500 on every request \u2014 the feature does not work end-to-end"
-    ],
-    [
-     "Medium",
-     "Web coverage gate fails: branches 99.93% < 100% threshold"
-    ],
-    [
-     "Minor",
-     "`_launchd_agent_loaded` is implemented twice (`src/nyxgpt/ops.py` and `src/nyxgpt/self_heal.py`); the import-cycle rationale is documented in `install_mode.py`'s docstring, so this is acceptable, but if a third copy ever appears it belongs in `install_mode.py`. Does not block merge."
-    ],
-    [
-     "Medium",
-     "`ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT` \u2014 destructive on a dev-mode machine"
-    ],
-    [
-     "Minor",
-     "`src/nyxgpt/cli.py:1591` `--dev` help text ends \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads most naturally as \"a checkout\", but `--dev` without a checkout errors (exit 2) rather than falling back to the artifact path. Suggest \"without this flag the artifact path is used\"."
-    ],
-    [
-     "Minor",
-     "`docs/self-healing.md:50-52` and `214-216` still describe native api/web healing as unconditionally `brew services restart`; after this PR that is mode-dependent (dev mode heals via `launchctl kickstart`). The behavior is documented in `docs/ops.md`'s `--dev` section and the prose was already OS-approximate, but a one-line pointer would keep the two pages from disagreeing."
-    ],
-    [
-     "Minor",
-     "Carried from last round: `_launchd_agent_loaded` is implemented in both `ops.py` and `self_heal.py`; acceptable given the documented import-cycle rationale \u2014 a third copy should move to `install_mode.py`."
-    ],
-    [
-     "Medium",
-     "[UNRESOLVED FROM PREVIOUS REVIEW] `ops.install` unit tests execute the real `_reconcile_install_mode` against the developer's actual `~/.nyxGPT`"
-    ],
-    [
-     "Minor",
-     "`src/nyxgpt/cli.py:1591` `--dev` help text: \"Requires a checkout; without it the artifact path is used\" \u2014 \"it\" reads as \"a checkout\", but `--dev` without a checkout errors (exit 2). Suggest \"without this flag the artifact path is used\"."
-    ],
-    [
-     "Minor",
-     "`docs/self-healing.md:50-52,214-216` still describe native api/web healing as unconditionally `brew services restart`; now mode-dependent (dev heals via `launchctl kickstart`). A one-line pointer to `docs/ops.md`'s `--dev` section would keep the pages from disagreeing."
-    ],
-    [
-     "Minor",
-     "`_launchd_agent_loaded` duplicated in `ops.py` and `self_heal.py` (documented import-cycle rationale; a third copy should move to `install_mode.py`)."
-    ],
-    [
-     "Medium",
-     "Gate pytest failure: `test_install_terraform_steps_records_success` executes three real machine-mutating steps and passes/fails by environment"
-    ],
-    [
-     "Minor",
-     "`_launchd_agent_loaded` duplicated in `ops.py:3688` and `self_heal.py:524` (carried; documented import-cycle rationale \u2014 a third copy should trigger the move into `install_mode.py`)."
     ]
    ]
   },
@@ -1044,6 +1001,87 @@
    ]
   },
   {
+   "issue": null,
+   "pr": 4017,
+   "title": "[dkblinux98/nyxGPT] feat: derive acceptance-round state instead of composing it by hand (PR #4017)",
+   "module": "api",
+   "rounds": 4,
+   "C": 4,
+   "M": 7,
+   "m": 6,
+   "last": "2026-08-23T07:14:07Z",
+   "findings": [
+    [
+     "Critical",
+     "Stale `agents/CONTEXT_INDEX.md` turns the release branch red on merge"
+    ],
+    [
+     "Medium",
+     "A closed-unmerged PR is reported as `OPEN PR#N`"
+    ],
+    [
+     "Medium",
+     "The snapshot can be silently empty or truncated, producing false \"not started\" rows"
+    ],
+    [
+     "Medium",
+     "New hardcoded release-branch literal"
+    ],
+    [
+     "Medium",
+     "Nothing in CI ever executes `tests/test_round_state.sh`"
+    ],
+    [
+     "Minor",
+     "Branch discovery is a substring-match proxy"
+    ],
+    [
+     "Minor",
+     "`--lane` mode can feed PR card numbers to `gh issue view`"
+    ],
+    [
+     "Minor",
+     "`code_scan_report.yml:15`'s dispatch default is still `refs/heads/v2.1.0` \u2014 pre-existing, noted while running \u00a71f; it is also one of the guard's 14 base hits."
+    ],
+    [
+     "Critical",
+     "Unclassified `pull_request` job turns the release branch red on merge"
+    ],
+    [
+     "Medium",
+     "None new."
+    ],
+    [
+     "Minor",
+     "Carried from the previous round, still present, still non-blocking: (1) branch discovery is a substring grep (`refs/heads/[^ ]*${n}[^ ]*`), so a short issue number can match an unrelated branch name, and on the OPEN-PR row `headRefName` from the snapshot would be exact; (2) `--lane` mode can feed PR card numbers to `gh issue view`, printing `ISSUE_ST=?` rows for non-issues."
+    ],
+    [
+     "Critical",
+     "Unclassified `pull_request` job turns the release branch red on merge (carried, unaddressed)"
+    ],
+    [
+     "Medium",
+     "None new."
+    ],
+    [
+     "Minor",
+     "Carried, still present, still non-blocking: (1) branch discovery is a substring grep (`refs/heads/[^ ]*${n}[^ ]*`), so a short issue number can match an unrelated branch; (2) `--lane` mode can feed PR card numbers to `gh issue view`, printing `ISSUE_ST=?` rows for non-issues."
+    ],
+    [
+     "Critical",
+     "Unclassified `pull_request` job turns the release branch red on merge (carried, unaddressed)"
+    ],
+    [
+     "Medium",
+     "None new."
+    ],
+    [
+     "Minor",
+     "Carried, still present, still non-blocking: (1) branch discovery is a substring grep (`refs/heads/[^ ]*${n}[^ ]*`), so a short issue number can match an unrelated branch; (2) `--lane` mode can feed PR card numbers to `gh issue view`, printing `ISSUE_ST=?` rows for non-issues."
+    ]
+   ]
+  },
+  {
    "issue": 3832,
    "pr": 3901,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal infinitely deletes unschedulable Pods (#3832) (PR #3901)",
@@ -1243,75 +1281,149 @@
    ]
   },
   {
-   "issue": 3784,
-   "pr": 3795,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: nyxgpt cloud smoke - artifact install path end-to-end on amazonlinux 2023 (#3784) (PR #3795)",
+   "issue": 3987,
+   "pr": 4000,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops status probes the native machine in Kubernetes mode (#3987) (PR #4000)",
    "module": "observability",
-   "rounds": 2,
-   "C": 1,
-   "M": 6,
-   "m": 8,
-   "last": "2026-08-15T23:15:39Z",
+   "rounds": 3,
+   "C": 0,
+   "M": 4,
+   "m": 2,
+   "last": "2026-08-22T21:29:23Z",
    "findings": [
     [
-     "Critical",
-     "The blocking `artifact-install` job cannot pass: the `--wheel` escape hatch does not cover the api/web runtime artifacts"
+     "Medium",
+     "Missing executed verification on the live Kubernetes deployment (AC5, \u00a71c/#3775)"
     ],
     [
      "Medium",
-     "Vitest coverage gate fails: no tests for the two new web files"
+     "Missing documentation for user-facing CLI changes, including a claim this PR falsifies (\u00a71a/#3744)"
+    ],
+    [
+     "Minor",
+     "`tests/unit/test_ops_status_kubernetes_mode.py:684` \u2014 `monkeypatch.setattr(ops, \"required_models_status\", ops.required_models_status)` is a no-op line; drop it. Does not block."
+    ],
+    [
+     "Minor",
+     "When the probe answers `cannot determine` (cluster configured but unreadable), `k8s_deployed` is False so the Required models block falls back to probing the host and prints the native \"once the ollama service is up\" guidance under a block that just said the cluster could not be read. Defensible (the deployment genuinely cannot be asked), but worth a thought while touching the docs \u2014 a `cannot determine`-aware line would be more honest. Does not block."
     ],
     [
      "Medium",
-     "`classify_failure` misdiagnosed the first real failure \u2014 over-broad signatures matched incidental log lines"
+     "Falsified claim left in a third location: docs/api.md:437-440 (\u00a71a/#3744)"
     ],
     [
      "Medium",
-     "Fault-injection verdict inversion accepts ANY failure as \"the smoke saw the fault\""
-    ],
+     "(Carried over, unfixed) Falsified claim at docs/api.md:437-440 (\u00a71a/#3744)"
+    ]
+   ]
+  },
+  {
+   "issue": 3995,
+   "pr": 3996,
+   "title": "[dkblinux98/nyxGPT] feat: allocate the EC2 Mac Dedicated Host from nyxgpt cloud deploy --os macos (#3995) (PR #3996)",
+   "module": "cli",
+   "rounds": 3,
+   "C": 0,
+   "M": 4,
+   "m": 6,
+   "last": "2026-08-22T20:46:15Z",
+   "findings": [
     [
-     "Minor",
-     "Error banner renders \"[object Object]\" on backend 409s"
-    ],
-    [
-     "Minor",
-     "Concurrent CLI runs silently destroy each other"
-    ],
-    [
-     "Minor",
-     "`--health-timeout` help text says \"default: 900\""
+     "Medium",
+     "Falsified claim left in the tree \u2014 the PR's own file (\u00a71a, blocking)"
     ],
     [
      "Medium",
-     "Vitest coverage gate fails: no tests for the two new web files"
+     "Reconcile can silently destroy and recreate the operator's Mac (\"Re-running is safe\" is not, blocking)"
+    ],
+    [
+     "Minor",
+     "Documented recovery flow exits with an error after succeeding"
+    ],
+    [
+     "Minor",
+     "No test for `get_monitoring_slack_channel`'s fallback"
     ],
     [
      "Medium",
-     "`classify_failure`: add the artifact-obtain signature and narrow the systemd one"
+     "Falsified claim survives in the macOS user-data template (\u00a71a, blocking)"
+    ],
+    [
+     "Minor",
+     "Documented recovery flow exits with an error after succeeding"
+    ],
+    [
+     "Minor",
+     "No test for `get_monitoring_slack_channel`'s fallback"
     ],
     [
      "Medium",
-     "Fault-injection inversion must require the *injected* failure, not any failure"
+     "Falsified claim survives in the macOS user-data template (\u00a71a, blocking, carried from loop 3 \u2014 unaddressed)"
     ],
     [
      "Minor",
-     "\"[object Object]\" error banner"
+     "Documented recovery flow exits with an error after succeeding"
     ],
     [
      "Minor",
-     "Concurrent CLI runs silently destroy each other"
+     "No test for `get_monitoring_slack_channel`'s fallback"
+    ]
+   ]
+  },
+  {
+   "issue": 3993,
+   "pr": 4007,
+   "title": "[dkblinux98/nyxGPT] Agent: improvement: cloud deploy failure paths lie or go blind - misreported steps, blind status, stale state (#3993) (PR #4007)",
+   "module": "cli",
+   "rounds": 3,
+   "C": 0,
+   "M": 4,
+   "m": 7,
+   "last": "2026-08-23T08:18:01Z",
+   "findings": [
+    [
+     "Medium",
+     "Acceptance criterion 1 is not implemented: the observability step still declares the stack up without verifying its containers stably run."
+    ],
+    [
+     "Medium",
+     "The incomplete-status summary asserts \"an instance exists and is being billed\" in reachable states where that is false and nothing checked it."
     ],
     [
      "Minor",
-     "`--health-timeout` help says \"default: 900\""
+     "Pre-push rebase, disclosed."
     ],
     [
      "Minor",
-     "New this round \u2014 \"`3.0.0` on this line\" literals"
+     "A deploy killed without a Python exception (power loss, SIGKILL) leaves the attempt at `status=running` forever; `_attempt_label` will say \"still running\" indefinitely. Consider aging the label off `updated_at` in a follow-up."
     ],
     [
      "Minor",
-     "New this round \u2014 cross-module use of the private `release_tarball._create_dist_tarball`"
+     "The `.secrets.baseline` additions were verified: all are test fixtures / drifted line numbers in files this PR does not touch (baseline churn from the v3.0.0 merges; #4012 tracks the churn itself). No real secrets."
+    ],
+    [
+     "Medium",
+     "docs/cloud.md still asserts the exact behaviour this PR's own third commit removed."
+    ],
+    [
+     "Minor",
+     "A deploy against an operator-supplied `--host` box that fails mid-provision records `host`, so the summary asserts \"an instance exists and is being billed\" about a machine nyxGPT never provisioned and cannot know is billed. The operator named the box themselves, so the harm is low \u2014 consider \"an instance exists (the `--host` target)\" phrasing in a follow-up."
+    ],
+    [
+     "Minor",
+     "In the narrow `state_stale` case where the apply succeeded, `terraform output` was unreadable *and* `state.json` held no prior ids, the pre-substrate branch would print \"nothing from it is being billed\" while the substrate is in fact up; the unconditional state-stale WARNING and the attempt's own error row both still print the truth alongside, so the operator is not actually misled. Follow-up material."
+    ],
+    [
+     "Minor",
+     "Round 1's minors stand: a SIGKILL'd deploy leaves the attempt at `status=running` forever (\"still running\" label should age off `updated_at` in a follow-up); `.secrets.baseline` churn re-verified \u2014 this round's edits only *remove* stale entries and shift line numbers, no real secrets."
+    ],
+    [
+     "Medium",
+     "docs/cloud.md:359-363 asserts the removed unconditional billing behaviour (carried from the previous review, unfixed)."
+    ],
+    [
+     "Minor",
+     "Unchanged from the previous reviews (same head): the `--host` phrasing nuance; the narrow `state_stale` pre-substrate wording overlap; the SIGKILL'd attempt aging; `.secrets.baseline` churn (verified removals only)."
     ]
    ]
   },
@@ -1754,114 +1866,51 @@
    ]
   },
   {
-   "issue": 3790,
-   "pr": 3792,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: retry token in dev agent stop message self-triggers an infinite loop (#3790) (PR #3792)",
+   "issue": 4008,
+   "pr": 4013,
+   "title": "[dkblinux98/nyxGPT] fix: make yamllint line-length a warning so security hooks stay armed (PR #4013)",
    "module": "security",
-   "rounds": 1,
+   "rounds": 2,
    "C": 0,
-   "M": 1,
-   "m": 4,
-   "last": "2026-08-15T05:51:16Z",
+   "M": 3,
+   "m": 6,
+   "last": "2026-08-22T23:27:56Z",
    "findings": [
     [
      "Medium",
-     "Falsified manual-kick instructions left in the tree (\u00a71a)"
-    ],
-    [
-     "Minor",
-     "Escalation message slightly overpromises"
-    ],
-    [
-     "Minor",
-     "`%sth` ordinal"
-    ],
-    [
-     "Minor",
-     "Stale script reference (pre-existing)"
-    ],
-    [
-     "Minor",
-     "Owner ergonomics note (deliberate per AC)"
-    ]
-   ]
-  },
-  {
-   "issue": 3786,
-   "pr": 3799,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s --local stack has no data/LLM tier - web up but no chat possible (#3786) (PR #3799)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 0,
-   "last": "2026-08-15T07:05:23Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified claim left in `docs/kubernetes.md` (\u00a71a, #3744)"
-    ]
-   ]
-  },
-  {
-   "issue": 3787,
-   "pr": 3800,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s --local deploys no observability layer (#3787) (PR #3800)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-15T07:34:44Z",
-   "findings": [
-    [
-     "Medium",
-     "Pytest failures: `down_kubernetes` tests depend on gitignored files existing in the working tree"
+     "The committed comment records falsified measurements, and AC4's sweep was never reported"
     ],
     [
      "Medium",
-     "Vitest failures: Infrastructure page fixtures missing the new required `observability` field, and the page crashes on its absence"
+     "Same comment: \"Every other yamllint rule (syntax, truthy, indentation, ...) still errors and still blocks\" \u2014 `truthy` does not"
     ],
     [
      "Minor",
-     "`docs/ops.md` port-forward/verify section interleaving (pre-existing, but this PR edits those exact lines)"
+     "The PR body's \"visible to anyone adding one\" oversells: pre-commit hides a *passing* hook's output by default, so line-length warnings will not normally be seen at commit time. Adding `verbose: true` to the hook would make them visible; optional, and the trade (noise on every YAML commit) is a judgment call \u2014 not blocking."
     ],
     [
      "Minor",
-     "Orphaned cluster-scoped RBAC on manual secret deletion"
+     "`CONTRIBUTING.md:144-147` describes the yamllint style rules; a parenthetical that the 120 limit reports as a warning (while other rules block) would keep it precise. Also pre-existing and untouched by this PR: `CONTRIBUTING.md:58-61,82-89` still list black/ruff/mypy as pre-commit hooks, which were moved to CI-only on 2026-08-18 per `AGENTS.md` \u2014 worth its own cleanup, not this PR's falsification."
     ],
     [
      "Minor",
-     "Repo-relative `K8S_DIR`"
-    ]
-   ]
-  },
-  {
-   "issue": 3508,
-   "pr": 3798,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: Linux-native install path - systemd units with OS dispatch (#3508) (PR #3798)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 1,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-15T20:17:34Z",
-   "findings": [
-    [
-     "Critical",
-     "`nyxgpt up --skip-observability` can never succeed on a default config, and the PR's evidence job is red because of it"
+     "No ledger entry for the owner reversal. Acceptable as-is: the decision is recorded in the guard's own comment, which is the doctrine-preferred location; an entry riding along would also be fine."
     ],
     [
      "Medium",
-     "Missing executed verification on Linux (\u00a71c, consequence of the above)"
+     "`truthy` still falsely listed among rules that \"still error and still block\""
     ],
     [
      "Minor",
-     "`tests/conftest.py` `embedding_backend_available` docstring: \"a availability check\" \u2192 \"an availability check\". Does not block."
+     "The PR body still says \"reflowing those 63 lines\" in its restore-path paragraph; the tree is corrected but the body was not. Not merged content \u2014 worth a one-line edit for the record, not blocking."
     ],
     [
      "Minor",
-     "`scripts/systemd-native-smoke.sh:313`: the multi-line `log \"WARNING: \u2026\"` string prints with embedded leading whitespace on its second line. Cosmetic; does not block."
+     "`CONTRIBUTING.md:147` (\"Truthy values: `true`/`false` or `yes`/`no`\") is pre-existing prose this PR does not touch and does not falsify \u2014 but `yes`/`no` are precisely what the truthy rule warns about, so the line was already wrong before this PR. Worth folding into the existing CONTRIBUTING cleanup noted last round; not blocking."
+    ],
+    [
+     "Minor",
+     "Issue #4008's AC5 (a CI guard so yamllint debt cannot silently return) remains unimplemented as written; under the owner-approved config approach the forced-bypass mechanism is removed for the one rule with debt, and a new error-level violation fails loudly at the introducing commit, so the criterion's motivation is substantially dissolved. Noted for the owner's acceptance pass; consistent with the previous round, not blocking."
     ]
    ]
   },
@@ -2667,33 +2716,216 @@
      "`config_wizard.find_config_drift`"
     ]
    ]
+  },
+  {
+   "issue": 3850,
+   "pr": 4001,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: brew install exposes no `nyxgpt` command - the documented install flow cannot work (#3850) (PR #4001)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-22T18:35:59Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claim + dead workaround left pinned in `stable-over-candidate` (\u00a71a)"
+    ],
+    [
+     "Minor",
+     "`scripts/build_homebrew_artifacts.py:95`"
+    ],
+    [
+     "Minor",
+     "PR body"
+    ]
+   ]
+  },
+  {
+   "issue": 3982,
+   "pr": 4002,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: header version cannot distinguish rc, stable, or mixed-tier stacks (#3982) (PR #4002)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 3,
+   "last": "2026-08-22T18:39:37Z",
+   "findings": [
+    [
+     "Medium",
+     "False permanent \"Mixed stack\" warning (with garbled version text) on the default Compose stack"
+    ],
+    [
+     "Medium",
+     "Missing executed verification on macOS for the `homebrew-keg` derivation branch (\u00a71c, #3775)"
+    ],
+    [
+     "Minor",
+     "The settings mismatch box hardcodes `nyxgpt ops install` as the remedy; on Compose/Kubernetes substrates that is not the reconciling command. Worth revisiting while fixing Medium 1 (whose fix may make the box unreachable on those substrates anyway). Does not block on its own."
+    ],
+    [
+     "Minor",
+     "TS `PRERELEASE` (`/(?:a|b|rc)\\d+$/i`) and Python `_PRERELEASE_RE` agree on every realistic input; unanchored oddities (e.g. a string merely *ending* in `a1`) fall out identically in both, so no action needed \u2014 noted only because the two-implementation drift risk is the thing the mirrored suites exist to catch."
+    ],
+    [
+     "Minor",
+     "Pre-existing CodeQL alert #131 (`py/stack-trace-exposure`, `src/nyxgpt/app.py:811`) sits in a file this PR touches but outside the diff; filed here for the record per \u00a71f, not this PR's to fix."
+    ]
+   ]
+  },
+  {
+   "issue": 3811,
+   "pr": 4005,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Support tickets file unlabeled and leak into the agent loop (#3811) (PR #4005)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 3,
+   "last": "2026-08-22T19:15:19Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claim left in the tree (\u00a71a): `src/nyxgpt/api_models.py:74`."
+    ],
+    [
+     "Minor",
+     "Ledger D-034's mechanism wording is now dated"
+    ],
+    [
+     "Minor",
+     "`ticketType` initial state can drift from the rendered options"
+    ],
+    [
+     "Minor",
+     "Alert #131 (`py/stack-trace-exposure`, `app.py:811`) pre-exists in a file this PR touches only with a docstring hunk \u2014 reported per \u00a71f, not worked here."
+    ]
+   ]
+  },
+  {
+   "issue": 3812,
+   "pr": 4014,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal reports observability absent when the docker probe cannot run (#3812) (PR #4014)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-22T23:45:45Z",
+   "findings": [
+    [
+     "Medium",
+     "Generality (\u00a71e): the denied-session fault class survives in `ops.py`, on the same dashboard, on the same machine."
+    ],
+    [
+     "Minor",
+     "`scripts/self-heal-probe-honesty-smoke.py` (`run_group_denied_half`): the `sg docker -c true` preflight passes `timeout=30` to `subprocess.run` without catching `TimeoutExpired`, so a host that hangs there fails with a traceback instead of the script's own `die()` diagnostic. Still fails loudly \u2014 does not block."
+    ],
+    [
+     "Minor",
+     "`self_heal._docker_group_hop` holds `_docker_hop_lock` across up to ~30s of subprocess probes, so concurrent watchdog/API callers on a broken host serialize behind the probe. Bounded (once per 300s, only in the already-broken state) \u2014 does not block, noting for the record."
+    ]
+   ]
+  },
+  {
+   "issue": 4022,
+   "pr": 4026,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-08-23T07:40:13Z",
+   "findings": [
+    [
+     "Medium",
+     "`canary.current_mode()` now asserts \"terraform\" from reads that never happened (`src/nyxgpt/canary.py:668`)"
+    ],
+    [
+     "Minor",
+     "`ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in the same API process, so a denied session can pay the probe pair twice (once per module) and the two can transiently disagree during the recheck window. The smoke resets both, so it is understood; a comment aside, nothing to do now \u2014 noted so a future \"why did it probe twice\" reader finds it. Does not block merge."
+    ],
+    [
+     "Minor",
+     "`_terraform_stack_health` reports an unknown read as `ok=False` with `status=\"UNKNOWN\"` \u2014 consistent with the #3827 pattern; just confirming this was read and judged deliberate. Does not block merge."
+    ]
+   ]
+  },
+  {
+   "issue": 3989,
+   "pr": 4018,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: terraform install-mode line describes containers that do not exist (#3989) (PR #4018)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 3,
+   "last": "2026-08-23T07:40:52Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing executed verification on macOS Homebrew (\u00a71c, #3775)"
+    ],
+    [
+     "Medium",
+     "The bare-name fault class survives in self-heal, and the PR's own docs claim is falsified by it (\u00a71e + \u00a71a)"
+    ],
+    [
+     "Minor",
+     "`_brew_cellar` misses the Intel-macOS/Linuxbrew layout"
+    ],
+    [
+     "Minor",
+     "`.secrets.baseline` new entry at ops.py:13277"
+    ],
+    [
+     "Minor",
+     "Pre-existing bare-name `brew services` examples in `docs/homebrew.md`"
+    ]
+   ]
+  },
+  {
+   "issue": null,
+   "pr": 4028,
+   "title": "[dkblinux98/nyxGPT] fix: raise the chat timeout for the larger shipped model (PR #4028)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 3,
+   "m": 3,
+   "last": "2026-08-23T08:36:59Z",
+   "findings": [
+    [
+     "Medium",
+     "Invalid-config fallback still returns 180 while logging \"using 300\""
+    ],
+    [
+     "Medium",
+     "Two falsified default claims left in the tree (\u00a71a)"
+    ],
+    [
+     "Medium",
+     "Outcome claim contradicted by executed evidence; remaining defect and sweep-remainder unnamed (\u00a71c/\u00a71d/\u00a71e)"
+    ],
+    [
+     "Minor",
+     "`docs/performance.md:673` \u2014 the \"Recommended adjustments\" entry \"CPU-only, large model: `chat_timeout_seconds = 300`\" now recommends the default; reword (e.g. suggest 600) while touching this file. Does not block."
+    ],
+    [
+     "Minor",
+     "`docs/troubleshooting.md:778` \u2014 the sample error text \"no response within 180s\" shows the old default in example output (the real message interpolates the configured value). Cosmetic; does not block."
+    ],
+    [
+     "Minor",
+     "`scripts/first-chat-smoke.py:216` \u2014 the comment pins the server default (\"300\") with nothing enforcing client(420) > server default if the default moves again; acceptable as-is since the comment cites its source, just noting the coupling. Does not block."
+    ]
+   ]
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 3797,
-   "merged": "2026-08-15",
-   "title": "Acceptance Failure: bug: acceptance failure 1 for #3509 - Terraform AWS modules - VPC, subnets, secu (#3721)",
-   "module": "cli"
-  },
-  {
-   "pr": 3796,
-   "merged": "2026-08-15",
-   "title": "Feature: feat: Terraform AWS modules - VPC, subnets, security groups, compute (#3509)",
-   "module": "security"
-  },
-  {
-   "pr": 3793,
-   "merged": "2026-08-15",
-   "title": "Acceptance Failure: bug: cloud api service venv built with system python3 (3.9) despite >=3.11 floor (#3782)",
-   "module": "api"
-  },
-  {
-   "pr": 3785,
-   "merged": "2026-08-15",
-   "title": "Acceptance Failure: bug: ops runner swallows subprocess stderr on failure - pip error invisible (#3783)",
-   "module": "cli"
-  },
   {
    "pr": 3823,
    "merged": "2026-08-16",
@@ -2993,27 +3225,93 @@
    "merged": "2026-08-21",
    "title": "wip: feat: a red or pending head is not reviewable - api (#3971)",
    "module": "api"
+  },
+  {
+   "pr": 4012,
+   "merged": "2026-08-22",
+   "title": "fix: stop .secrets.baseline conflicting on its own clock",
+   "module": "security"
+  },
+  {
+   "pr": 4011,
+   "merged": "2026-08-22",
+   "title": "Agent: bug: terraform artifact path cannot install an rc - no images, and none arm64 (#3985)",
+   "module": "cli"
+  },
+  {
+   "pr": 4010,
+   "merged": "2026-08-22",
+   "title": "Acceptance Failure: bug: cloud deploy has no --kubernetes -- #3506's k3s decision was never implemented (#3956)",
+   "module": "cli"
+  },
+  {
+   "pr": 4006,
+   "merged": "2026-08-22",
+   "title": "Acceptance Failure: bug: full suites red on branch head - pytest config leakage and one stale web test (#3983)",
+   "module": "web-ui"
+  },
+  {
+   "pr": 4003,
+   "merged": "2026-08-22",
+   "title": "Improvement: improvement: default cloud instance type to m5.xlarge - m5.large cannot run the stack (#3992)",
+   "module": "api"
+  },
+  {
+   "pr": 3998,
+   "merged": "2026-08-22",
+   "title": "docs(ledger): record the owner's acceptance-failure standard as D-042",
+   "module": "documentation"
+  },
+  {
+   "pr": 3997,
+   "merged": "2026-08-22",
+   "title": "Agent: fix: work reaches the remote without a PR, so it is never reviewed, never merged and never cleaned up (#3862)",
+   "module": "api"
+  },
+  {
+   "pr": 3994,
+   "merged": "2026-08-22",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4024,
+   "merged": "2026-08-23",
+   "title": "style: black the merge driver - it broke the formatting gate on v3.0.0",
+   "module": "api"
+  },
+  {
+   "pr": 4023,
+   "merged": "2026-08-23",
+   "title": "Acceptance Failure: bug: unit suite is non-deterministic - 5 to 67 failures for identical code (#4020)",
+   "module": "api"
+  },
+  {
+   "pr": 4021,
+   "merged": "2026-08-23",
+   "title": "Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806)",
+   "module": "api"
   }
  ],
  "cleanByModule": {
+  "api": 35,
   "cli": 6,
-  "security": 1,
-  "api": 30,
   "observability": 5,
-  "web-ui": 5,
-  "documentation": 3,
+  "web-ui": 6,
+  "documentation": 4,
   "testing": 3,
-  "rag": 1
+  "rag": 1,
+  "security": 1
  },
  "totals": {
-  "rounds": 120,
-  "C": 23,
-  "M": 193,
-  "m": 240,
-  "items": 58,
-  "clean": 54,
-  "reviewed": 111,
-  "merged": 120,
+  "rounds": 133,
+  "C": 24,
+  "M": 212,
+  "m": 263,
+  "items": 64,
+  "clean": 61,
+  "reviewed": 121,
+  "merged": 130,
   "unreviewed": 9
  }
 }
