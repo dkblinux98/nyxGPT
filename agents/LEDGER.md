@@ -1521,12 +1521,19 @@ rather than mechanism, and nothing can enforce them.
   those logs is **not** implicated: it names `shopify/shopify`, and its
   apparent adjacency to the failure is an artifact of
   `_combined_output_excerpt` bounding stdout and stderr separately and then
-  concatenating them. (d) There is no TTY/subprocess divergence — an
-  already-installed keg makes `brew install` a no-op that exits 0, which is
-  why the interactive retry "succeeded"; only a run that rebuilds reaches the
-  failing step. (e) `_install_from_remote_tap`'s `brew upgrade` fallback was
+  concatenating them. (d) **No TTY/subprocess divergence is supported by the
+  logs.** Two *different* ops invocations three minutes apart — `brew install
+  --overwrite` at 19:28 and `brew reinstall` at 19:36 — both rebuilt and both
+  failed identically, and `brew install` against an already-complete keg is a
+  no-op that exits 0, which is the state the failed run left for the
+  interactive retry. Do not re-open this as an environment question without
+  new evidence. (e) `_install_from_remote_tap`'s `brew upgrade` fallback was
   tolerating the same class *by accident* (upgrade exits 0 when it does
-  nothing) — both paths now decide on the keg.
+  nothing) — both paths now decide on the keg. (f) Homebrew's `puts e` prints
+  a bare exception message with no `Error:` prefix, so the elision that hid it
+  is answered by a **size** floor, not a pattern: measured on `cli.log.2`,
+  every failing brew install stdout was 63-67 lines while `npm`/`pip` ran to
+  hundreds, so output at or under 80 lines is now logged whole.
   Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #3861; `src/nyxgpt/ops.py` (`_BREW_SOFT_FAILURE_MARKERS`,
