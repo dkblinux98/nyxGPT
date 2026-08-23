@@ -14,8 +14,10 @@ Nothing real is downloaded, built or started: `httpx.stream`, `_run` and
 dev-checkout path it mirrors.
 """
 
+import json
 import subprocess
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -532,12 +534,47 @@ def test_install_homebrew_web_uses_the_published_tap_without_a_checkout(artifact
     assert "docs/homebrew.md#candidate-channel" in results[0].details
 
 
-def test_install_from_remote_tap_falls_back_to_upgrade(artifact_root, monkeypatch):
-    """An already-installed formula the tap has moved past is an upgrade."""
+def _fake_remote_keg(tmp_path, formula="nyxgpt-api", version="3.0.0"):
+    """A Cellar/opt layout `_verify_installed_brew_keg` will accept (#3861)."""
+    keg = tmp_path / "Cellar" / formula / version
+    (keg / "bin").mkdir(parents=True)
+    exe = keg / "bin" / formula
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+    (keg / "INSTALL_RECEIPT.json").write_text(
+        json.dumps({"time": int(time.time())}), encoding="utf-8"
+    )
+    (tmp_path / "opt").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "opt" / formula).symlink_to(keg)
+    (tmp_path / "bin").mkdir(exist_ok=True)
+    return keg
+
+
+def _brew_dirs(cmd, tmp_path):
+    """Answer `brew --cellar`/`--prefix`/`linkage` out of `tmp_path`, else None."""
+    if cmd[:2] == ["brew", "--cellar"]:
+        return _cp(0, stdout=f"{tmp_path / 'Cellar'}\n")
+    if cmd[:2] == ["brew", "--prefix"]:
+        return _cp(0, stdout=f"{tmp_path}\n")
+    if cmd[:2] == ["brew", "linkage"]:
+        return _cp(0)
+    return None
+
+
+def test_install_from_remote_tap_falls_back_to_upgrade(artifact_root, monkeypatch, tmp_path):
+    """An already-installed formula the tap has moved past is an upgrade.
+
+    The fallback survives #3861, but its verdict no longer comes from the
+    upgrade's exit code -- see the companion test below for why that mattered.
+    """
     calls = []
+    _fake_remote_keg(tmp_path)
 
     def _run(cmd, **kwargs):
         calls.append(list(cmd))
+        dirs = _brew_dirs(cmd, tmp_path)
+        if dirs is not None:
+            return dirs
         if cmd[:2] == ["brew", "install"]:
             return _cp(1, stderr="already installed")
         return _cp(0)
@@ -551,6 +588,67 @@ def test_install_from_remote_tap_falls_back_to_upgrade(artifact_root, monkeypatc
 
     assert all(r.ok for r in results), results
     assert ["brew", "upgrade", "dkblinux98/nyxgpt/nyxgpt-api"] in calls
+
+
+def test_install_from_remote_tap_does_not_trust_a_no_op_upgrade(
+    artifact_root, monkeypatch, tmp_path
+):
+    """The divergence named in #3861's acceptance comment, closed.
+
+    `brew upgrade` exits 0 when it does nothing at all -- "already up-to-date"
+    is a success as far as the status is concerned. So this path reported `ok`
+    for exactly the class of failure `_brew_install_or_reinstall` was calling
+    fatal, and the two install routes disagreed about the same machine state
+    by accident rather than by design. Both now decide on the keg.
+    """
+    (tmp_path / "Cellar").mkdir(parents=True)
+    (tmp_path / "bin").mkdir(parents=True)
+
+    def _run(cmd, **kwargs):
+        dirs = _brew_dirs(cmd, tmp_path)
+        if dirs is not None:
+            return dirs
+        if cmd[:2] == ["brew", "install"]:
+            return _cp(1, stderr="Error: Failure while executing; `pip` exited 1")
+        return _cp(0)  # including `brew upgrade`, which "succeeds" doing nothing
+
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0")
+    monkeypatch.setattr(ops, "_run", _run)
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    results = ops._install_from_remote_tap("nyxgpt-api")
+
+    assert results[0].ok is False
+    assert "no installed keg for nyxgpt-api" in results[0].details
+
+
+def test_install_from_remote_tap_survives_a_post_install_soft_failure(
+    artifact_root, monkeypatch, tmp_path
+):
+    """And the same tolerance as the local-tap path, for the same reason (#3861)."""
+    _fake_remote_keg(tmp_path)
+
+    def _run(cmd, **kwargs):
+        dirs = _brew_dirs(cmd, tmp_path)
+        if dirs is not None:
+            return dirs
+        if cmd[:2] == ["brew", "install"]:
+            return _cp(1, stderr="Error: Failed to fix install linkage")
+        if cmd[:2] == ["brew", "upgrade"]:
+            raise AssertionError("a verified soft failure must not fall through to upgrade")
+        return _cp(0)
+
+    monkeypatch.setattr(ops, "_which", lambda name: "/opt/homebrew/bin/brew")
+    monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0")
+    monkeypatch.setattr(ops, "_run", _run)
+    monkeypatch.setattr(ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, name)])
+
+    results = ops._install_from_remote_tap("nyxgpt-api")
+
+    assert all(r.ok for r in results), results
+    assert "Failed to fix install linkage" in results[0].details
+    assert results[0].status == "WARN"
 
 
 def test_install_from_remote_tap_reports_both_failures(artifact_root, monkeypatch):
