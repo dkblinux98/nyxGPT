@@ -213,7 +213,12 @@ def main() -> int:
         action="store_true",
         help="Only assert the positive half (for a run that must not spend a second pull).",
     )
-    parser.add_argument("--chat-timeout", type=float, default=300.0)
+    # Deliberately longer than the API's own `[nyxgpt] chat_timeout_seconds`
+    # (300 as of #3987's CI escalation). If the client gives up first, the smoke
+    # reports a client timeout and throws away the server's diagnosis of what
+    # actually went wrong -- the failure mode that made the 2026-08-23 red head
+    # take a log dig to explain.
+    parser.add_argument("--chat-timeout", type=float, default=420.0)
     args = parser.parse_args()
 
     api_key = _api_key()
