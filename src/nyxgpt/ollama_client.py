@@ -434,12 +434,17 @@ def ollama_chat_stream_tokens(
         on_retry: Optional callback(attempt, delay, error) called before each retry
         output_format: Optional JSON schema for structured output (Ollama ``format`` field).
             When provided, the model is constrained to produce JSON matching the schema.
+        think: Whether the model may emit chain-of-thought (Ollama ``think`` field).
+            ``None`` leaves it unset and the model decides. See ``[nyxgpt] think``.
 
     Yields:
         Text chunks from assistant response
 
     Raises:
-        RuntimeError: If connection fails after retries or HTTP error occurs
+        RuntimeError: If connection fails after retries, an HTTP error occurs, or
+            the model returned reasoning and no answer (empty ``content`` with a
+            non-empty ``thinking``) -- raised on ``done``, before which nothing
+            has been yielded.
     """
     url = base_url.rstrip("/") + "/api/chat"
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
@@ -462,7 +467,11 @@ def ollama_chat_stream_tokens(
         msg = obj.get("message") or {}
         part = msg.get("content")
         if isinstance(part, str) and part:
-            yielded_content = True
+            # `strip()` for the guard, matching the non-streaming path: a reply
+            # of pure whitespace is not an answer, and counting it as one let
+            # the blank-reply case through here while the other path caught it.
+            if part.strip():
+                yielded_content = True
             yield part
         thinking_part = msg.get("thinking")
         if isinstance(thinking_part, str) and thinking_part.strip():

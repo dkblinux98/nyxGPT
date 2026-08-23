@@ -1544,10 +1544,14 @@ rather than mechanism, and nothing can enforce them.
   That single fact reddened `terraform-local-smoke`, `linux-native-smoke` and
   the k8s smokes across eleven PRs.
   Consequences: `[nyxgpt] think` (default **false**) is threaded to Ollama's
-  `think` field by **all three** of its callers -- chat, auto-summarize
-  (`sessions.py`) and RAG query expansion (`rag/rag.py`); the latter two parse
-  their output as JSON, so nothing reads their reasoning, and auto-summarize
-  ships ON, which made it the costliest instance. An empty `content` alongside
+  `think` field by **all four** of its callers -- chat, auto-summarize
+  (`sessions.py`), RAG query expansion (`rag/rag.py`) and the RAG reranker
+  (`rag/reranker.py`); all three of the latter parse their output as a number
+  or JSON, so nothing reads their reasoning, and auto-summarize ships ON,
+  which made it the costliest instance. The reranker was missed twice because
+  it builds the `/api/chat` payload itself rather than calling `ollama_chat`,
+  so a `grep "ollama_chat("` sweep cannot see it -- the sweep has to be over
+  *entry points to the model*, not over one function's name. An empty `content` alongside
   a non-empty `thinking` is a named error rather than a blank reply on **both**
   the streaming and non-streaming paths -- the streaming one matters most,
   being the web UI's. And the model bump is completed across the layers it

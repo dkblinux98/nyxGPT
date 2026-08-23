@@ -193,6 +193,26 @@ def test_streaming_reasoning_with_no_answer_is_also_an_error() -> None:
         list(ollama_chat_stream_tokens("http://x", "m", [{"role": "user", "content": "hi"}]))
 
 
+def test_whitespace_only_streamed_content_does_not_count_as_an_answer() -> None:
+    """Whitespace is not an answer, and the guard must agree with the other path.
+
+    `yielded_content` was set on any non-empty part, so a reply of pure
+    whitespace satisfied it here while `strip()` caught it on the
+    non-streaming path -- the same blank reply, treated two ways (#4029).
+    """
+    resp = _streaming_response(
+        [
+            b'{"message": {"thinking": "deliberating"}}',
+            b'{"message": {"content": "   "}, "done": true}',
+        ]
+    )
+    with (
+        patch("urllib.request.urlopen", return_value=resp),
+        pytest.raises(RuntimeError, match="reasoning but no answer"),
+    ):
+        list(ollama_chat_stream_tokens("http://x", "m", [{"role": "user", "content": "hi"}]))
+
+
 def test_streaming_thinking_alongside_a_real_answer_is_not_an_error() -> None:
     """Reasoning is only a problem when it replaces the answer, not when it precedes it."""
     resp = _streaming_response(

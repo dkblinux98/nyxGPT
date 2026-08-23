@@ -149,6 +149,13 @@ def _score_relevance(query: str, document: str, config: RerankerConfig) -> float
         "model": config.model,
         "messages": messages,
         "stream": False,
+        # The fourth ollama caller, and the one a `grep "ollama_chat("` sweep
+        # cannot see: this builds the /api/chat payload itself rather than
+        # going through ollama_client (#4029 review). With the shipped
+        # reasoning model and `num_predict: 50`, the model spends the entire
+        # budget thinking and returns no score -- reranking silently degrades.
+        # Nothing reads reasoning here; the reply is parsed as a number.
+        "think": False,
         "options": {
             "temperature": 0.0,  # Deterministic scoring
             "num_predict": 50,  # Limit response length
