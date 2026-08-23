@@ -23,7 +23,7 @@ from ops_step_isolation import (
     patch_steps,
 )
 
-from nyxgpt import ops, self_heal
+from nyxgpt import docker_access, ops, self_heal
 
 # Captured before the autouse fixture below can ever monkeypatch it, so tests
 # that exercise this function's real logic can restore it for their duration.
@@ -519,7 +519,11 @@ def test_restart_docker_container_recovers_previously_running_container(monkeypa
         return CP(returncode=0)
 
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
-    monkeypatch.setattr(ops, "_docker_container_state", fake_docker_container_state)
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe(fake_docker_container_state(name)),
+    )
     monkeypatch.setattr(ops, "_run", fake_run)
 
     results = ops._restart_docker_container("nyxgpt-cassandra")
@@ -551,7 +555,11 @@ def test_restart_docker_container_reports_down_when_unrecoverable(monkeypatch):
         return CP(returncode=0)
 
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
-    monkeypatch.setattr(ops, "_docker_container_state", fake_docker_container_state)
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe(fake_docker_container_state(name)),
+    )
     monkeypatch.setattr(ops, "_run", fake_run)
 
     results = ops._restart_docker_container("nyxgpt-cassandra")
@@ -568,7 +576,7 @@ def test_detect_deployment_mode_flags_conflict(monkeypatch):
         "_brew_services_snapshot",
         lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
     )
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"api": "running", "web": "exited"})
 
     mode = ops.detect_deployment_mode()
@@ -590,7 +598,7 @@ def test_detect_deployment_mode_native_only_cassandra_reports_no_conflict(monkey
         "_brew_services_snapshot",
         lambda: {"nyxgpt-api": "stopped", "nyxgpt-web": "stopped", "ollama": "stopped"},
     )
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
 
     native_cassandra = self_heal.ComponentStatus(
         service="cassandra",
@@ -619,7 +627,7 @@ def test_detect_deployment_mode_true_dual_backend_conflict_still_reported(monkey
         "_brew_services_snapshot",
         lambda: {"nyxgpt-api": "stopped", "nyxgpt-web": "stopped", "ollama": "stopped"},
     )
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
 
     compose_cassandra = self_heal.ComponentStatus(
         service="cassandra",
@@ -657,7 +665,9 @@ def test_detect_deployment_mode_flags_terraform_conflict(monkeypatch):
             return "running"
         return "absent"
 
-    monkeypatch.setattr(ops, "_docker_container_state", fake_docker_state)
+    monkeypatch.setattr(
+        ops, "_docker_container_probe", lambda name: ops.ContainerProbe(fake_docker_state(name))
+    )
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     mode = ops.detect_deployment_mode()
@@ -673,7 +683,7 @@ def test_detect_deployment_mode_no_terraform_conflict_when_terraform_absent(monk
         "_brew_services_snapshot",
         lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
     )
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     mode = ops.detect_deployment_mode()
@@ -722,7 +732,7 @@ def test_ops_status_warns_on_conflict(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {"nyxgpt-api": "started"})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"api": "running"})
 
     rc = ops.status(MagicMock())
@@ -750,7 +760,7 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
 
     # Cassandra container is present and running
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     # ...and no Terraform deployment is up. Without this, the blanket
     # `_docker_container_state` stub above also answers "running" for the
@@ -796,7 +806,7 @@ def test_ops_doctor_warns_when_web_deps_missing(monkeypatch, capsys, tmp_path):
 def test_ops_doctor_fail_when_missing_config(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
@@ -824,7 +834,7 @@ def test_ops_doctor_names_the_line_of_an_unparseable_config(monkeypatch, capsys,
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
@@ -857,7 +867,7 @@ def test_ops_doctor_shows_the_offending_line_text(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
@@ -878,7 +888,7 @@ def test_ops_doctor_warns_when_cassandra_container_missing(monkeypatch, capsys, 
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
@@ -903,7 +913,7 @@ def test_ops_doctor_flags_compose_service_stuck_restarting(monkeypatch, capsys, 
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(
         ops, "_compose_stack_snapshot", lambda: {"grafana": "restarting", "loki": "running"}
     )
@@ -1415,7 +1425,7 @@ def test_ops_doctor_flags_unreachable_otlp_collector(monkeypatch, capsys, tmp_pa
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(ops.tracing, "otlp_endpoint_reachable", lambda endpoint, **kw: False)
 
@@ -1439,7 +1449,7 @@ def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
@@ -1466,7 +1476,7 @@ def test_ops_doctor_prints_loki_volume_by_logger_when_available(monkeypatch, cap
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
@@ -1500,7 +1510,7 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
@@ -1525,7 +1535,7 @@ def test_ops_doctor_flags_missing_grafana_doctor_token(monkeypatch, capsys, tmp_
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
@@ -1554,7 +1564,7 @@ def test_ops_doctor_flags_grafana_401_rejected_token(monkeypatch, capsys, tmp_pa
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     # No Terraform deployment -- same reason as `test_ops_doctor_ok` (#3983).
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
@@ -2583,6 +2593,234 @@ def test_docker_container_state_empty_output_is_absent(monkeypatch):
     assert ops._docker_container_state("nyxgpt-cassandra") == "absent"
 
 
+# --- A read this session may not make is unknown, never absent (#4022) -------
+
+_DOCKER_DENIED_STDERR = (
+    "permission denied while trying to connect to the Docker daemon socket at "
+    "unix:///var/run/docker.sock"
+)
+
+
+@pytest.fixture
+def _fresh_docker_hop():
+    """Keep one test's adopted hop out of the next one's probe."""
+    ops._DOCKER_HOP.reset()
+    yield
+    ops._DOCKER_HOP.reset()
+
+
+def _denied_docker_run(monkeypatch, *, hop_works: bool):
+    """Stub `ops._run` so bare docker calls are denied and hopped ones may work.
+
+    Mirrors the injected condition `scripts/self-heal-probe-honesty-smoke.py`
+    reproduces for real with `setpriv --clear-groups`: the group set is the
+    only difference between the two calls.
+    """
+    seen: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        if cmd[:2] != ["sg", "docker"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=_DOCKER_DENIED_STDERR)
+        if not hop_works:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="sg: unknown group")
+        if "printf" in cmd[-1]:
+            env = kwargs.get("env") or {}
+            home = os.environ.get("HOME", str(Path.home()))
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{home}\n{env.get(docker_access.ENV_PROBE_VAR, '')}\n"
+            )
+        if "docker info" in cmd[-1]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="27.1.1\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="running\n")
+
+    monkeypatch.setattr(ops, "_run", _fake_run)
+    monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
+    return seen
+
+
+@pytest.mark.unit
+def test_denied_container_read_reports_unknown_not_absent(monkeypatch, _fresh_docker_hop):
+    """The defect itself. On the owner's EC2 instance the API process's
+    `systemd --user` session predates its `docker` group, so `docker ps` is
+    denied -- and the pre-#4022 code returned `absent` for any non-zero exit,
+    telling the dashboard Cassandra was gone while it was serving. There is no
+    "no such container" failure mode for this command: a non-zero exit means
+    the read did not happen."""
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/docker" if prog == "docker" else None)
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr=_DOCKER_DENIED_STDERR
+        ),
+    )
+
+    probe = ops._docker_container_probe("nyxgpt-cassandra")
+
+    assert probe.state == ops.DOCKER_STATE_UNKNOWN
+    assert probe.known is False
+    assert "permission denied" in probe.reason
+    assert probe.state != "absent"
+
+
+@pytest.mark.unit
+def test_denied_container_read_is_retried_through_the_docker_group(monkeypatch, _fresh_docker_hop):
+    """Reporting "cannot determine" is honest but leaves the component
+    permanently unobservable from the dashboard, which the Definition of Done
+    does not allow -- so the denied read is *made to run* through `sg docker`
+    first, exactly as `self_heal` does (#3812), from the one shared
+    implementation."""
+    seen = _denied_docker_run(monkeypatch, hop_works=True)
+
+    probe = ops._docker_container_probe("nyxgpt-cassandra")
+
+    assert probe.state == "running"
+    assert probe.known is True
+    # The bare call was tried first (a healthy host must pay nothing), and the
+    # answer came from a hopped one.
+    assert seen[0][:1] == ["docker"]
+    assert any(cmd[:2] == ["sg", "docker"] for cmd in seen)
+    assert ops._docker_socket_hop() == "sg"
+
+
+@pytest.mark.unit
+def test_container_read_never_escalates_to_sudo_from_a_status_path(monkeypatch, _fresh_docker_hop):
+    """`sg` claims a group the user already holds; `sudo` would grant
+    authority the operator did not give this account, and this read is
+    reachable from `/infra/status` inside the public API process. The install
+    path opts into `sudo` explicitly (`_enable_docker_socket_hop`); nothing
+    here may inherit it."""
+    seen = _denied_docker_run(monkeypatch, hop_works=False)
+
+    probe = ops._docker_container_probe("nyxgpt-cassandra")
+
+    assert probe.known is False
+    assert not any(cmd[:1] == ["sudo"] for cmd in seen), seen
+
+
+@pytest.mark.unit
+def test_infra_status_native_card_says_cannot_determine(monkeypatch, _fresh_docker_hop):
+    """What the Infrastructure card renders: `unknown` plus the cause, not a
+    confident `absent` (#4022). Same shape as `compose_probe_available`."""
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {"api": "started"})
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe(
+            ops.DOCKER_STATE_UNKNOWN,
+            known=False,
+            reason="`docker ps` exited 1: permission denied ...",
+        ),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: f"/usr/bin/{prog}" if prog == "docker" else None
+    )
+    monkeypatch.setattr(
+        ops.self_heal, "compose_probe", lambda: ops.self_heal.ComposeProbe(available=True)
+    )
+
+    result = ops.infra_status()
+
+    assert result["native"]["cassandra"] == ops.DOCKER_STATE_UNKNOWN
+    assert result["native_probe_available"] is False
+    assert "permission denied" in result["native_probe_reason"]
+    # And the Terraform card, whose containers are read off the same daemon.
+    assert result["terraform"]["probe_available"] is False
+    assert result["terraform"]["deployed"] is False
+
+
+@pytest.mark.unit
+def test_status_prints_cannot_determine_instead_of_absent(monkeypatch, capsys, _fresh_docker_hop):
+    """`nyxgpt ops status` is the other half of the pair `docs/systemd.md` used
+    to describe as legitimately disagreeing. It prints the same verdict the
+    card shows, with the permanent repair."""
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "started", "cassandra": ops.DOCKER_STATE_UNKNOWN},
+            compose={},
+            conflicts=[],
+            docker_probe_reason="`docker ps` exited 1: permission denied ...",
+        ),
+    )
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops, "_print_required_models_status", lambda: None)
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
+
+    ops.status(MagicMock())
+
+    out = capsys.readouterr().out
+    assert "docker  cassandra: unknown (cannot determine from this session)" in out
+    assert "permission denied" in out
+    assert "loginctl terminate-user" in out
+    assert "docker  cassandra: absent" not in out
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_refuses_an_unreadable_state(monkeypatch, _fresh_docker_hop):
+    """Falling through to `docker run --name nyxgpt-cassandra` on the strength
+    of a read that never happened would create a second writer to
+    ~/.nyxGPT/volumes/cassandra -- the corruption this function refuses
+    elsewhere (#3346)."""
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe(
+            ops.DOCKER_STATE_UNKNOWN, known=False, reason="`docker ps` exited 1: permission denied"
+        ),
+    )
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: ran.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    results = ops._ensure_cassandra_container()
+
+    assert results[0].ok is False
+    assert "Cannot determine" in results[0].message
+    assert not any(cmd[:2] == ["docker", "run"] for cmd in ran), ran
+
+
+@pytest.mark.unit
+def test_doctor_separates_an_unreadable_container_from_a_missing_one(
+    monkeypatch, capsys, tmp_path, _fresh_docker_hop
+):
+    """ "Missing" is a claim about the container; a denied socket is a claim
+    about this session. Telling the operator to re-run `ops install` because a
+    read was refused sends them to fix a machine that is fine."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe(
+            ops.DOCKER_STATE_UNKNOWN, known=False, reason="`docker ps` exited 1: permission denied"
+        ),
+    )
+
+    ops.doctor(MagicMock())
+
+    out = capsys.readouterr().out
+    assert "unknown, not absent" in out
+    assert "Missing local Cassandra container" not in out
+
+
 @pytest.mark.unit
 def test_compose_stack_snapshot_returns_service_states():
     status = self_heal.ComponentStatus(
@@ -2742,7 +2980,7 @@ def test_restart_docker_container_no_docker(monkeypatch):
 @pytest.mark.unit
 def test_restart_docker_container_run_raises(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
 
     def raise_run(cmd, **k):
         raise OSError("boom")
@@ -2757,7 +2995,7 @@ def test_restart_docker_container_run_raises(monkeypatch):
 @pytest.mark.unit
 def test_restart_docker_container_success(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
     results = ops._restart_docker_container("nyxgpt-cassandra")
     assert results[0].ok is True
@@ -2769,7 +3007,7 @@ def test_restart_docker_container_fails_when_not_previously_running(monkeypatch)
     # was_running is False (container was already stopped/absent) -- restart fails,
     # and since it wasn't running before there's nothing to "recover".
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "exited")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("exited"))
 
     def fake_run(cmd, **k):
         if cmd[:2] == ["docker", "restart"]:
@@ -3541,8 +3779,8 @@ def test_ensure_cassandra_container_already_running():
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
         patch.object(
             ops,
-            "_docker_container_state",
-            lambda name: "running" if name == "nyxgpt-cassandra" else "absent",
+            "_docker_container_probe",
+            lambda name: ops.ContainerProbe("running" if name == "nyxgpt-cassandra" else "absent"),
         ),
     ):
         results = ops._ensure_cassandra_container()
@@ -3556,8 +3794,10 @@ def test_ensure_cassandra_container_refuses_when_terraform_cassandra_running():
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
         patch.object(
             ops,
-            "_docker_container_state",
-            lambda name: "running" if name == "nyxgpt-tf-cassandra" else "absent",
+            "_docker_container_probe",
+            lambda name: ops.ContainerProbe(
+                "running" if name == "nyxgpt-tf-cassandra" else "absent"
+            ),
         ),
     ):
         results = ops._ensure_cassandra_container()
@@ -3570,7 +3810,7 @@ def test_ensure_cassandra_container_starts_existing_stopped_container():
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
-        patch.object(ops, "_docker_container_state", lambda name: "exited"),
+        patch.object(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("exited")),
         patch.object(
             ops,
             "_run",
@@ -3587,7 +3827,7 @@ def test_ensure_cassandra_container_starts_existing_stopped_container():
 def test_ensure_cassandra_container_start_failure_reports_details():
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
-        patch.object(ops, "_docker_container_state", lambda name: "exited"),
+        patch.object(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("exited")),
         patch.object(
             ops,
             "_run",
@@ -3609,7 +3849,7 @@ def test_ensure_cassandra_container_creates_when_absent(monkeypatch, tmp_path):
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
-        patch.object(ops, "_docker_container_state", lambda name: "absent"),
+        patch.object(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent")),
         patch.object(
             ops,
             "_run",
@@ -3649,7 +3889,7 @@ def test_ensure_cassandra_container_creates_with_env_overrides(monkeypatch, tmp_
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
-        patch.object(ops, "_docker_container_state", lambda name: "absent"),
+        patch.object(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent")),
         patch.object(
             ops,
             "_run",
@@ -3666,7 +3906,7 @@ def test_ensure_cassandra_container_create_failure_reports_details(monkeypatch, 
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
-        patch.object(ops, "_docker_container_state", lambda name: "absent"),
+        patch.object(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent")),
         patch.object(
             ops,
             "_run",
@@ -5392,7 +5632,7 @@ def test_ops_status_shows_compose_components_without_conflict(monkeypatch, capsy
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(
         ops, "_compose_stack_snapshot", lambda: {"grafana": "running", "api": "running"}
     )
@@ -5424,7 +5664,7 @@ def test_ops_status_omits_compose_config_hint_for_observability_only(monkeypatch
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
 
     rc = ops.status(MagicMock())
@@ -5447,7 +5687,7 @@ def test_ops_status_brew_and_docker_not_found(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda _: None)
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.status(MagicMock())
@@ -5473,7 +5713,7 @@ def test_ops_status_launchctl_error(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_run", fake_run)
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.status(MagicMock())
@@ -5545,7 +5785,7 @@ def test_ops_doctor_web_deps_present_and_undici_resolves(monkeypatch, capsys, tm
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     # doctor now probes whether the docker daemon is actually reachable (#3632);
     # this test's narrow subprocess.run stub is only for the node resolve probe.
@@ -5574,7 +5814,7 @@ def test_ops_doctor_web_deps_present_but_undici_unresolvable(monkeypatch, capsys
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(
         ops.subprocess,
@@ -5600,7 +5840,7 @@ def test_ops_doctor_can_resolve_handles_exception(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     def raise_run(cmd, cwd=None, text=True, capture_output=True):
@@ -5810,8 +6050,8 @@ def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
     # isn't exercising.
     monkeypatch.setattr(
         ops,
-        "_docker_container_state",
-        lambda name: "running" if name == "nyxgpt-cassandra" else "absent",
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe("running" if name == "nyxgpt-cassandra" else "absent"),
     )
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
@@ -5872,7 +6112,7 @@ def test_detect_deployment_mode_logs_conflict_at_warning(caplog, monkeypatch):
         "_brew_services_snapshot",
         lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
     )
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"api": "running", "web": "exited"})
 
     with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
@@ -10739,7 +10979,7 @@ def test_ops_doctor_flags_glitchtip_secrets_issues(monkeypatch, capsys, tmp_path
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
 
     rc = ops.doctor(MagicMock())
@@ -11575,8 +11815,8 @@ def test_terraform_init_plan_apply_stops_on_apply_failure(monkeypatch):
 def test_terraform_stack_state_maps_components(monkeypatch):
     monkeypatch.setattr(
         ops,
-        "_docker_container_state",
-        lambda name: "running" if name == "nyxgpt-tf-api" else "absent",
+        "_docker_container_probe",
+        lambda name: ops.ContainerProbe("running" if name == "nyxgpt-tf-api" else "absent"),
     )
     state = ops.terraform_stack_state()
     assert state["api"] == "running"
@@ -13871,7 +14111,7 @@ def test_status_shows_terraform_stack_when_present(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: None)
     monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running", "web": "absent"})
 
@@ -13947,7 +14187,7 @@ def test_status_classifies_pending_and_blocked_pods_apart(monkeypatch, capsys):
     )
     monkeypatch.setattr(ops, "_run", fake_run)
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(
         ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
@@ -13983,7 +14223,7 @@ def test_status_classifies_observability_workloads(monkeypatch, capsys):
     )
     monkeypatch.setattr(ops, "_run", fake_run)
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(
         ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
@@ -14018,7 +14258,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", fake_which)
     monkeypatch.setattr(ops, "_run", fake_run)
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     # Isolate from real kubectl/canary probing -- this test only cares about the pod listing.
     monkeypatch.setattr(
@@ -14047,7 +14287,7 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
     monkeypatch.setattr(ops, "_which", fake_which)
     monkeypatch.setattr(ops, "_run", fake_run)
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
     monkeypatch.setattr(
         ops,
@@ -14179,7 +14419,7 @@ def test_doctor_does_not_flag_terraform_state_after_clean_destroy(monkeypatch, t
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent", "web": "absent"})
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
@@ -14218,7 +14458,9 @@ def test_doctor_flags_dual_stack(monkeypatch, tmp_path, capsys):
             return "running"
         return "absent"
 
-    monkeypatch.setattr(ops, "_docker_container_state", fake_docker_state)
+    monkeypatch.setattr(
+        ops, "_docker_container_probe", lambda name: ops.ContainerProbe(fake_docker_state(name))
+    )
 
     rc = ops.doctor(MagicMock())
     out = capsys.readouterr().out

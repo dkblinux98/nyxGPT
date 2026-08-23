@@ -358,7 +358,7 @@ def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     monkeypatch.setattr(
         ops,
         "detect_deployment_mode",
-        lambda: SimpleNamespace(native={}, compose={}, conflicts=set()),
+        lambda: SimpleNamespace(native={}, compose={}, conflicts=set(), docker_probe_reason=""),
     )
     monkeypatch.setattr(ops, "terraform_stack_state", dict)
     monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/kubectl")

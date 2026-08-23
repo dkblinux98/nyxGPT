@@ -70,6 +70,13 @@ type InfraStatus = {
     out_of_scope_reason?: string;
   };
   native: Record<string, string>;
+  // Whether the native card's Docker-backed read (Cassandra, the one native
+  // component that is a container) could be made at all (#4022). False means
+  // this API process may not talk to the Docker daemon, so `native.cassandra`
+  // is `unknown` and must not be read as "not running" — the exact false
+  // negative that told the owner Cassandra was absent while it was serving.
+  native_probe_available: boolean;
+  native_probe_reason?: string;
   compose: Record<string, string>;
   compose_probe_available: boolean;
   // Why the probe could not run, when it could not (#3812) -- reported so the
@@ -78,7 +85,11 @@ type InfraStatus = {
   compose_probe_reason?: string;
   conflicts: string[];
   terraform: {
+    // Answered by whether the container reads happened, not by whether a
+    // `docker` binary exists (#4022) — the same correction #3812 made to
+    // `compose_probe_available`.
     probe_available: boolean;
+    probe_reason?: string;
     deployed: boolean;
     containers: Record<string, string>;
     // The Terraform deployment's OWN install mode (#3835): 'artifact' (images
@@ -403,6 +414,12 @@ function podStateBadgeStyle(state: string): React.CSSProperties {
   };
 }
 
+// The state a component carries when the read could not be made at all --
+// `ops.DOCKER_STATE_UNKNOWN` (#4022). Rendered amber and spelled out, never
+// folded in with the greys: 'absent' asserts the container is not there,
+// 'unknown' asserts only that this process was not allowed to look.
+const CONTAINER_STATE_UNKNOWN = 'unknown';
+
 function ComponentList({ components }: { components: Record<string, string> }) {
   const entries = Object.entries(components);
   if (entries.length === 0) {
@@ -410,14 +427,18 @@ function ComponentList({ components }: { components: Record<string, string> }) {
   }
   return (
     <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
-      {entries.map(([component, state]) => (
-        <li key={component} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
-          <span>{component}</span>
-          <span style={{ color: state === 'running' || state === 'started' ? '#22c55e' : 'var(--foreground-muted)' }}>
-            {state}
-          </span>
-        </li>
-      ))}
+      {entries.map(([component, state]) => {
+        const unknown = state === CONTAINER_STATE_UNKNOWN;
+        const running = state === 'running' || state === 'started';
+        return (
+          <li key={component} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
+            <span>{component}</span>
+            <span style={{ color: unknown ? '#f59e0b' : running ? '#22c55e' : 'var(--foreground-muted)' }}>
+              {unknown ? 'unknown — cannot determine' : state}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -650,13 +671,24 @@ export default function InfrastructurePage() {
           <div style={boxStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Native</h2>
-              {nativeOutOfScope ? (
-                <span style={badgeStyle(false, true)}>NOT IN SCOPE</span>
-              ) : (
-                <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
-                  {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
-                </span>
-              )}
+              {/* Two different "cannot say" conditions, and they are not the
+                  same claim: out-of-scope means there is nothing to determine
+                  here, so it short-circuits; an unavailable probe means the
+                  mode is real but unread, which belongs beside the mode. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {nativeOutOfScope ? (
+                  <span style={badgeStyle(false, true)}>NOT IN SCOPE</span>
+                ) : (
+                  <>
+                    {!status.native_probe_available && (
+                      <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
+                    )}
+                    <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
+                      {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
             {/* An install identity, and the remedies that go with it, describe
                 the MACHINE this api process runs on. From inside a Pod that is
@@ -713,6 +745,23 @@ export default function InfrastructurePage() {
                 installs. Run <code>nyxgpt up</code> (add <code>--dev</code> from a checkout) to
                 record one, and <code>nyxgpt ops doctor</code> to list any services left behind by
                 an earlier install.
+              </p>
+            )}
+            {!status.native_probe_available && (
+              <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                Cassandra runs as a Docker container, and this API process could not read
+                container state — so its row below says <code>unknown</code>, which is not the
+                same as &quot;not running&quot;.
+                {status.native_probe_reason ? (
+                  <>
+                    {' '}
+                    Reason: <code>{status.native_probe_reason}</code>.
+                  </>
+                ) : null}{' '}
+                This is usually a service session that predates its <code>docker</code> group
+                membership; recreate the session with{' '}
+                <code>sudo loginctl terminate-user $USER</code> to fix it permanently. Check the
+                current state with <code>nyxgpt ops status</code>.
               </p>
             )}
             <ComponentList components={status.native} />
@@ -833,7 +882,15 @@ export default function InfrastructurePage() {
             {!status.terraform.probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                 Cannot determine from this deployment mode — docker isn&apos;t reachable from
-                wherever this API process is running.
+                wherever this API process is running, so nothing below can be read as &quot;not
+                running&quot;.
+                {status.terraform.probe_reason ? (
+                  <>
+                    {' '}
+                    Reason: <code>{status.terraform.probe_reason}</code>.
+                  </>
+                ) : null}{' '}
+                Check it yourself with <code>nyxgpt ops status</code>.
               </p>
             ) : (
               <ComponentList components={status.terraform.containers} />

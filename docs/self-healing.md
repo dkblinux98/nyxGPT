@@ -685,19 +685,30 @@ cannot change that: a unit is forked from the manager, and an unprivileged
 manager cannot grant itself a group. Only recreating the session does
 (`sudo loginctl terminate-user <user>`, or a reboot).
 
-`self_heal._docker_run` closes it without either: when a Docker call fails for
-lack of socket access, it retries once through `sg docker`, which reads
+`nyxgpt/docker_access.py` closes it without either: when a Docker call fails
+for lack of socket access, it retries once through `sg docker`, which reads
 `/etc/group` live and so applies the membership the user genuinely already
-holds. Every Docker call in the module goes through it — the survey, the
+holds. Every Docker call in `self_heal` goes through it — the survey, the
 container and health probes, the restarts and the log reads — because a panel
 that can see eleven components and heal none of them is half a fix. A working
 host never pays for it: the bare call is tried first and its result returned
 untouched, and a hop is looked for only on a permission-denied/daemon-
-unreachable failure. `sg` only, never `sudo`: this runs inside the public API
-process, so it will only ever claim a group the invoking user already has.
+unreachable failure. `sg` only, never `sudo`, on any path reachable from the
+API process: it will only ever claim a group the invoking user already has.
 
-The same mechanism is used by `ops._enable_docker_socket_hop` for the rest of
-an `ops install` run and by the cloud bootstrap for the deploy's own commands.
+**One implementation, not two (#4022).** The hop lived twice — once here and
+once as `ops._enable_docker_socket_hop` — and the copies diverged on the
+question they exist to answer identically. `ops._docker_container_state`, which
+feeds `native["cassandra"]` on the Infrastructure card and in `nyxgpt ops
+status`, neither retried nor distinguished: it returned `absent` for any
+non-zero exit, so on the very instance whose Self-Heal panel had stopped lying
+the Native card still reported a running Cassandra as gone. Both modules now
+call `docker_access` (`ops.py` imports `self_heal.py`, so anything the two
+share has to sit below both — the same rule that placed `k8s_pod_state.py` and
+`brew_services.py`). `ops._enable_docker_socket_hop` is the one caller that
+opts into `sudo`, and it says so at its call site: it is reached only from an
+interactive `nyxgpt ops install`. The cloud bootstrap uses `sg docker` for the
+deploy's own commands for the same reason.
 
 **So if the panel still reports unknown** with a permission-denied or
 daemon-unreachable reason, the hop did not help either: the user is not in the

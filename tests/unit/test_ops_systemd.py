@@ -915,7 +915,7 @@ def test_stop_native_log_follower_dispatches_to_systemd(monkeypatch):
 
 def test_detect_deployment_mode_uses_systemd_snapshot_on_linux(monkeypatch):
     monkeypatch.setattr(ops, "_systemd_services_snapshot", lambda: {"nyxgpt-api": "started"})
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     mode = ops.detect_deployment_mode()
@@ -1184,9 +1184,16 @@ def test_docker_access_doctor_issue_silent_without_docker(monkeypatch):
 
 
 @pytest.fixture
-def _no_docker_socket_hop(monkeypatch):
-    """Keep the process-wide Docker socket hop out of neighbouring tests."""
-    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", None)
+def _no_docker_socket_hop():
+    """Keep the process-wide Docker socket hop out of neighbouring tests.
+
+    The hop's state moved from a module global into a
+    `docker_access.DockerSocketHop` shared with `self_heal` (#4022), so it is
+    reset on both sides of the test rather than monkeypatched.
+    """
+    ops._DOCKER_HOP.reset()
+    yield
+    ops._DOCKER_HOP.reset()
 
 
 def test_docker_engine_installs_on_amazon_linux_without_a_compose_package(monkeypatch):
@@ -1472,7 +1479,7 @@ def test_hop_env_probe_checks_home_and_a_forwarded_variable(monkeypatch, _no_doc
 
 def test_run_routes_docker_through_the_hop_while_it_is_active(monkeypatch, _no_docker_socket_hop):
     """The rewrite lives in `_run` so no Docker call site can forget it."""
-    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", "sg")
+    ops._DOCKER_HOP.force("sg")
     seen = []
 
     def _fake_subprocess_run(cmd, **kwargs):
@@ -1496,7 +1503,7 @@ def test_hop_quotes_compose_argv_and_keeps_secrets_off_the_shell_string(
     """`sg -c` takes a command *string*, so argv must be shell-quoted -- and the
     `-e VAR` secret forwarding stays bare (value in the environment, never on
     the command line) exactly as `_glitchtip_ensure_superuser` builds it."""
-    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", "sg")
+    ops._DOCKER_HOP.force("sg")
     argv = [
         "docker",
         "compose",
@@ -1524,7 +1531,7 @@ def test_run_logs_the_unwrapped_argv_so_redaction_still_applies(
 ):
     """`_redact_cmd` masks argv element by element; `sg -c` collapses argv into
     one shell string it could not see into, so the log keeps the logical argv."""
-    monkeypatch.setattr(ops, "_DOCKER_SOCKET_HOP", "sg")
+    ops._DOCKER_HOP.force("sg")
     monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(1, stderr="boom"))
 
     with caplog.at_level(logging.WARNING, logger="nyxgpt.ops"):

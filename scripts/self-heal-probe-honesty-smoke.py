@@ -47,6 +47,18 @@ fault-injection pattern from ``macos-brew-smoke.yml``):
   ``ubuntu-latest`` it is not, and asserting against the real socket there
   denied nothing and had no teeth. See ``_write_stub_docker``.
 
+The group-denied half also carries #4022, because the same denial reached
+``ops.py``'s container reads and was still being rendered as the definite
+negative ``absent`` there -- so the Infrastructure card said Cassandra was
+gone while it was running, and ``docs/systemd.md`` documented that
+disagreement as expected behaviour. From inside the same denied session, the
+script asserts both halves of that fix (``_assert_ops_container_reads``): with
+``sg docker`` reachable the read is *made to run* and reports the container
+running; with no hop available at all -- injected by leaving only the stub on
+``PATH``, so ``sg`` genuinely is not there -- it reports ``unknown`` with the
+reason, on ``ops.infra_status()`` and ``ops.detect_deployment_mode()`` alike,
+and never ``absent``.
+
 Linux-only by construction (the first two halves need a plain Linux docker
 engine and root to own the denied socket); it exits 0 with a skip notice
 elsewhere.
@@ -299,10 +311,20 @@ DENIED_GROUP_MARKER = "group-denied-child: probe reported the running container"
 # in for the observability containers the owner's instance had up and healthy.
 STUB_PROJECT_CONTAINER = f"{PROJECT}-{STARTED_SERVICE}-1"
 
+# The ops-managed Cassandra container -- the one native component read straight
+# out of Docker, and the one the Infrastructure card called `absent` on the
+# owner's instance while it was serving (#4022). Spelled here rather than
+# imported, because the stub is written before nyxgpt is (re)imported and has
+# to be identical across the sudo/setpriv/sg hops.
+CASSANDRA_CONTAINER = "nyxgpt-cassandra"
+
+DENIED_OPS_HOP_MARKER = "group-denied-child: ops read the running container through the hop"
+DENIED_OPS_UNKNOWN_MARKER = "group-denied-child: ops reported unknown, not absent, with no hop"
+
 # The two wordings Docker actually produces when a process may not open the
 # socket, both seen on the owner's instances: the CLI's (rc12) and the Compose
 # plugin's (rc13). They are reproduced verbatim so the stub exercises the same
-# `_DOCKER_ACCESS_FAILURE_MARKERS` matching a real denial does -- a stub that
+# `docker_access.ACCESS_FAILURE_MARKERS` matching a real denial does -- a stub that
 # invented its own wording could pass while the shipped matcher failed to
 # recognise the real thing.
 CLI_DENIED_STDERR = (
@@ -332,6 +354,7 @@ import sys
 DOCKER_GID = {gid}
 SERVICE = {service!r}
 CONTAINER = {container!r}
+CASSANDRA = {cassandra!r}
 CLI_DENIED = {cli_denied!r}
 COMPOSE_DENIED = {compose_denied!r}
 
@@ -341,6 +364,15 @@ is_compose = argv[:1] == ["compose"]
 if DOCKER_GID not in os.getgroups():
     sys.stderr.write((COMPOSE_DENIED if is_compose else CLI_DENIED) + "\\n")
     sys.exit(1)
+
+# `docker ps -a --filter name=^<name>$ --format {{{{.State}}}}` -- the ops-side
+# container read (#4022). Only the ops-managed Cassandra container is up here;
+# every other name gets the honest empty answer, which is a real `absent`.
+if argv[:2] == ["ps", "-a"]:
+    wanted = next((a[len("name=^"):-1] for a in argv if a.startswith("name=^")), "")
+    if wanted == CASSANDRA:
+        sys.stdout.write("running\\n")
+    sys.exit(0)
 
 if is_compose and "ps" in argv:
     sys.stdout.write(
@@ -400,6 +432,7 @@ def _write_stub_docker(bin_dir: Path, docker_gid: int) -> Path:
             gid=docker_gid,
             service=STARTED_SERVICE,
             container=STUB_PROJECT_CONTAINER,
+            cassandra=CASSANDRA_CONTAINER,
             cli_denied=CLI_DENIED_STDERR,
             compose_denied=COMPOSE_DENIED_STDERR,
         ),
@@ -479,10 +512,10 @@ def run_group_denied_child() -> None:
             "the probe still cannot run, so the observability tier stays unobservable "
             f"from the dashboard -- that is the re-test failure. reason: {probe.reason}"
         )
-    if self_heal._docker_hop != "sg":
+    if self_heal._DOCKER_HOP.active != "sg":
         die(
             "the probe reported available without establishing the `sg` hop "
-            f"(_docker_hop={self_heal._docker_hop!r}) -- it did not get there the way "
+            f"(hop={self_heal._DOCKER_HOP.active!r}) -- it did not get there the way "
             "the fix claims, so this half is not evidence for it"
         )
     data = self_heal.status()
@@ -492,6 +525,117 @@ def run_group_denied_child() -> None:
     if data["unknown_count"] != 0:
         die(f"components were still reported unknown: {data['unknown_count']}")
     log(DENIED_GROUP_MARKER)
+
+    _assert_ops_container_reads(stub)
+
+
+def _assert_ops_container_reads(stub: str) -> None:
+    """The #4022 half: the same denial, on the `ops.py` container reads.
+
+    #3812 fixed self-heal's Compose survey. `ops._docker_container_state` --
+    which feeds `native["cassandra"]`, and through it both the Infrastructure
+    card and `nyxgpt ops status` -- was still returning `absent` for *any*
+    non-zero exit, so on this exact session the dashboard said Cassandra was
+    gone while it was running. Both outcomes are asserted here, because the
+    fix has two halves and either alone is a different bug:
+
+    1. **With `sg docker` available** the read must be *made to run* and report
+       the container running. Reporting "cannot determine" here would leave the
+       component permanently unobservable from the dashboard, which the
+       Definition of Done does not allow.
+    2. **With no hop available at all** (a host where the group change itself
+       was never made -- injected by putting only the stub on PATH, so `sg`
+       genuinely is not there) the read must be `unknown` with a reason, and
+       **never** `absent`.
+
+    The pre-fix behaviour is demonstrated first, from inside the condition, so
+    a regression cannot pass here vacuously.
+    """
+    import nyxgpt.ops as ops
+
+    # The pre-fix predicate, run for real: the bare read this session makes is
+    # denied, and the pre-#4022 reduction of that ("any non-zero exit ->
+    # absent") is what put `absent` on the dashboard for a running container.
+    bare = subprocess.run(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"name=^{CASSANDRA_CONTAINER}$",
+            "--format",
+            "{{.State}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if bare.returncode == 0:
+        die(
+            "the bare container read succeeded without the docker group -- the injection "
+            "has no teeth here, so a regression would pass silently"
+        )
+    pre_fix_state = "absent"  # exactly what the old code returned for this cp
+    if pre_fix_state != "absent":  # pragma: no cover - documents the pre-fix value
+        die("the pre-fix reduction is not what this check thinks it is")
+    log(
+        "group-denied-child: the bare container read is denied, and the pre-fix code "
+        f"reduced that to {pre_fix_state!r} -- the false negative under test"
+    )
+
+    # (1) The shipped read, with `sg docker` reachable.
+    probe = ops._docker_container_probe(CASSANDRA_CONTAINER)
+    if not probe.known or probe.state != "running":
+        die(
+            "a running container was not reported running by ops from a denied session: " f"{probe}"
+        )
+    if ops._docker_socket_hop() != "sg":
+        die(
+            "ops answered without establishing the `sg` hop "
+            f"(hop={ops._docker_socket_hop()!r}) -- not the way the fix claims"
+        )
+    status = ops.infra_status()
+    if status["native"].get("cassandra") != "running":
+        die(f"the Infrastructure card's native section is wrong: {status['native']}")
+    if status["native_probe_available"] is not True:
+        die("the card reported cannot-determine over a read that succeeded")
+    log(DENIED_OPS_HOP_MARKER)
+
+    # (2) The same session with no hop to be had: only the stub on PATH, so
+    # `sg` genuinely is not installed as far as this process can tell.
+    restore_path = os.environ["PATH"]
+    os.environ["PATH"] = str(Path(stub).parent)
+    try:
+        if shutil.which("sg") is not None:
+            die("`sg` is still resolvable, so the no-hop condition was not injected")
+        # Both holders, because `infra_status` runs the Compose survey too and
+        # an established `sg` hop would now try to exec a program that is no
+        # longer on PATH.
+        ops._DOCKER_HOP.reset()
+        ops.self_heal._DOCKER_HOP.reset()
+        probe = ops._docker_container_probe(CASSANDRA_CONTAINER)
+        if probe.state == "absent":
+            die(
+                "a read this session could not make was reported `absent` -- that is the "
+                "defect itself, unfixed"
+            )
+        if probe.known or probe.state != ops.DOCKER_STATE_UNKNOWN or not probe.reason:
+            die(f"the unreadable container was not reported as unknown-with-reason: {probe}")
+        status = ops.infra_status()
+        if status["native"].get("cassandra") != ops.DOCKER_STATE_UNKNOWN:
+            die(f"the Infrastructure card did not say unknown: {status['native']}")
+        if status["native_probe_available"] is not False or not status["native_probe_reason"]:
+            die("the card claimed the probe was available over a read it could not make")
+        # `nyxgpt ops status` prints `mode.native['cassandra']` -- the same
+        # value, from the same call. The two surfaces cannot disagree, which
+        # is what docs/systemd.md used to document as expected behaviour.
+        mode = ops.detect_deployment_mode()
+        if mode.native.get("cassandra") != ops.DOCKER_STATE_UNKNOWN or not mode.docker_probe_reason:
+            die(f"`ops status` would not have said cannot-determine: {mode.native}")
+        log(DENIED_OPS_UNKNOWN_MARKER)
+    finally:
+        os.environ["PATH"] = restore_path
+        ops._DOCKER_HOP.reset()
+        ops.self_heal._DOCKER_HOP.reset()
 
 
 def run_group_denied_half(root: Path) -> None:
@@ -581,11 +725,17 @@ def run_group_denied_half(root: Path) -> None:
     sys.stderr.write(cp.stderr)
     if cp.returncode != 0:
         die(f"the group-denied child failed (exit {cp.returncode}) -- see its output above")
-    if DENIED_GROUP_MARKER not in cp.stdout:
-        die("the child did not reach its assertion; this half proved nothing")
+    for marker in (DENIED_GROUP_MARKER, DENIED_OPS_HOP_MARKER, DENIED_OPS_UNKNOWN_MARKER):
+        if marker not in cp.stdout:
+            die(f"the child did not reach its assertion ({marker!r}); this half proved nothing")
     log(
         "group-denied: a session without the docker group still observed the running "
         "container -- the tier is visible on the dashboard, not permanently unknown"
+    )
+    log(
+        "group-denied: and with no hop available at all, ops reported the container "
+        "unknown-with-reason rather than absent, on both `ops status` and the "
+        "Infrastructure card (#4022)"
     )
 
 
