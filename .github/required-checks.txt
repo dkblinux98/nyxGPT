@@ -107,22 +107,6 @@ pipeline
 self-heal-unschedulable-smoke
 label-exists
 files-a-ticket
-# CYCLE-SCOPED SUSPENSION (2026-08-23, owner decision).
-# `terraform-local-smoke` is suspended from the required set for the remainder
-# of this acceptance cycle. It is not flaky and it is not wrong: it fails on
-# `first-chat-smoke` because the shipped `default_model` (qwen3.5:0.8b, set in
-# 1ece87b0) returns an empty reply, and it therefore fails identically on every
-# head regardless of that head's diff. Gating on it blocked seven PRs for a
-# defect none of them introduced or touch.
-#
-# The rule this applies (owner, 2026-08-23): a check gates a PR only where it
-# covers what that PR actually changes. The k8s, native and brew smokes stay
-# required precisely because they DO cover the PRs they block.
-#
-# RESTORE BEFORE THE END-OF-CYCLE FULL RUN: un-comment the entry below, then
-# run the full suite once and fix what it finds -- including the empty-reply
-# defect itself, which is still open and still real.
-#terraform-local-smoke
 terraform-artifact-smoke
 reviewable-head-behaves
 gate-is-delegated
@@ -137,6 +121,22 @@ claude-review
 head-gate
 head-not-reviewable
 execute-review-decision
+
+# CYCLE-SCOPED SUSPENSION (2026-08-23, owner decision). Not permanent, and not
+# a judgement that the smoke is wrong -- it is right. `first-chat-smoke` fails
+# because the shipped `default_model` (qwen3.5:0.8b, 1ece87b0) returns an empty
+# reply, so it fails identically on every head regardless of that head's diff,
+# and it held seven PRs for a defect none of them introduced or touch.
+#
+# It is classified here rather than deleted because `test_every_pull_request_job
+# _is_classified` requires every PR job to be one or the other -- an unclassified
+# job means a review could start while it is red, which is the hole this file
+# exists to close. Commenting the entry out left exactly that hole and reddened
+# v3.0.0 (run 32620353861); the guard caught it, as designed.
+#
+# RESTORE TO [required] BEFORE THE END-OF-CYCLE FULL RUN, and fix the
+# empty-reply defect, which is still open and still real.
+terraform-local-smoke
 
 # Project bookkeeping. None of these judges the code, and a flake in one must
 # not hold a green PR out of review.
