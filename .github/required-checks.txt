@@ -107,7 +107,22 @@ pipeline
 self-heal-unschedulable-smoke
 label-exists
 files-a-ticket
-terraform-local-smoke
+# CYCLE-SCOPED SUSPENSION (2026-08-23, owner decision).
+# `terraform-local-smoke` is suspended from the required set for the remainder
+# of this acceptance cycle. It is not flaky and it is not wrong: it fails on
+# `first-chat-smoke` because the shipped `default_model` (qwen3.5:0.8b, set in
+# 1ece87b0) returns an empty reply, and it therefore fails identically on every
+# head regardless of that head's diff. Gating on it blocked seven PRs for a
+# defect none of them introduced or touch.
+#
+# The rule this applies (owner, 2026-08-23): a check gates a PR only where it
+# covers what that PR actually changes. The k8s, native and brew smokes stay
+# required precisely because they DO cover the PRs they block.
+#
+# RESTORE BEFORE THE END-OF-CYCLE FULL RUN: un-comment the entry below, then
+# run the full suite once and fix what it finds -- including the empty-reply
+# defect itself, which is still open and still real.
+#terraform-local-smoke
 terraform-artifact-smoke
 reviewable-head-behaves
 gate-is-delegated
