@@ -200,17 +200,27 @@ touching:
   `pytest tests/unit/` run once wrote synthetic ERROR records through the
   real rotating file handler into `~/.nyxGPT/logs`, which promtail shipped
   to Loki and which then derailed a real incident RCA because it looked
-  indistinguishable from a genuine chat failure (#3443). Two structural
-  fixes, both in `tests/conftest.py`'s session-scoped `_isolate_test_log_dir`
-  fixture: it rewrites the real `~/.nyxGPT/config.ini`'s `[logging] dir` to a
-  temp dir for the whole session (restored at teardown), covering every code
-  path that loads the real config; and it sets a `NYXGPT_LOG_DIR` env var
-  that `get_log_dir()` (`logging.py`) uses as the *fallback* when a cfg
-  doesn't set `[logging] dir` at all, covering tests that swap in their own
-  bare/isolated config. The fixture also asserts the real log dir is
-  untouched at teardown. Don't bypass `get_log_dir()` with a hardcoded
-  `~/.nyxGPT/logs` path in new code, and don't rely on per-test caplog
-  discipline as the only safeguard.
+  indistinguishable from a genuine chat failure (#3443). Three structural
+  fixes. First, `tests/home_sandbox.py` moves `$HOME` to a private
+  per-process temp directory before any `nyxgpt` import, so `~/.nyxGPT` is
+  the suite's own and the operator's is unreachable (#4020). Then
+  `tests/conftest.py`'s session-scoped `_isolate_test_log_dir` fixture
+  rewrites that sandbox `config.ini`'s `[logging] dir` to a temp dir for the
+  whole session, covering every code path that loads config; and it sets a
+  `NYXGPT_LOG_DIR` env var that `get_log_dir()` (`logging.py`) uses as the
+  *fallback* when a cfg doesn't set `[logging] dir` at all, covering tests
+  that swap in their own bare/isolated config. The fixture still asserts the
+  operator's real log dir is untouched at teardown, as a tripwire for
+  absolute paths that route around the sandbox. Don't bypass `get_log_dir()`
+  with a hardcoded `~/.nyxGPT/logs` path in new code, and don't rely on
+  per-test caplog discipline as the only safeguard.
+- **Never run `pytest` against a HOME you care about being an experiment.**
+  You do not need to: since #4020 the suite makes its own. What that means in
+  practice is that `~/.nyxGPT` is *not* a place tests can reach, so a new test
+  that needs install-mode markers, secrets, terraform state or a config file
+  should just use them -- the per-call-site isolation fixtures in
+  `tests/unit/conftest.py` (#3789, #3834, #3835, #3947) are now belt-and-braces
+  rather than the only thing between a test and the developer's machine.
 
 ## 3b) Workflow-authoring conventions
 
