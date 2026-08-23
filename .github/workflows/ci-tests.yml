@@ -148,10 +148,21 @@ jobs:
       - name: Run the unit suite twice, the second overlapping a third session
         run: |
           set -uo pipefail
+          # GitHub runs `run:` with `bash -e` whatever the script sets, and the
+          # old body piped pytest into `grep`. A green suite means grep matches
+          # nothing and exits 1; `pipefail` propagates that, and `-e` aborts
+          # INSIDE the function before its `return 0` can neutralise it. So this
+          # guard failed precisely when the suite was clean -- three minutes of
+          # work, no output at all, exit 1 -- and it started doing so the moment
+          # #4020/#4023 actually fixed the non-determinism it exists to police.
+          # The pipeline is split so grep reads the log as a plain file and its
+          # "no matches" is handled explicitly rather than by a `return` that
+          # errexit never reaches.
           run_suite() {  # $1 = report path
-            pytest tests/unit -p no:cacheprovider -q --no-header 2>&1 \
-              | tee "$1.log" \
-              | grep -E '^(FAILED|ERROR) ' | sed 's/ - .*//' | sort > "$1"
+            set +e
+            pytest tests/unit -p no:cacheprovider -q --no-header > "$1.log" 2>&1
+            grep -E '^(FAILED|ERROR) ' "$1.log" | sed 's/ - .*//' | sort > "$1"
+            set -e
             return 0
           }
           run_suite /tmp/run1.txt
