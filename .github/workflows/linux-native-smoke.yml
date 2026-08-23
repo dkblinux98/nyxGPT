@@ -106,6 +106,7 @@ on:
       - 'scripts/service-venv-python-smoke.py'
       - 'scripts/linux-observability-smoke.py'
       - 'scripts/self-heal-probe-honesty-smoke.py'
+      - 'scripts/observability-settle-smoke.py'
       - 'docker-compose.yml'
       - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
@@ -127,6 +128,7 @@ on:
       - 'scripts/service-venv-python-smoke.py'
       - 'scripts/linux-observability-smoke.py'
       - 'scripts/self-heal-probe-honesty-smoke.py'
+      - 'scripts/observability-settle-smoke.py'
       - 'docker-compose.yml'
       - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
@@ -382,3 +384,40 @@ jobs:
         run: |
           docker ps -a || true
           docker version || true
+
+  # Cheap: two alpine containers, no stack bring-up, no install. Runs on every
+  # PR touching ops.py because this defect reached owner acceptance as three
+  # SSH debugging sessions (#3993): the step reported "[OK] Observability stack
+  # up" over a crash-looping Grafana, and the only fault shown was the *next*
+  # step's credential reconcile. Unit tests cannot see it -- its substance is
+  # what a real `docker compose ps` says about a container a real engine keeps
+  # restarting.
+  observability-settle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # All three halves, and the script fails loudly rather than passing
+      # vacuously if this runner does NOT reproduce the pre-fix condition
+      # (`docker compose up -d` exiting 0 over a container that cannot stay up).
+      - name: A crash-looping container must fail the step with its own reason
+        run: python3 scripts/observability-settle-smoke.py
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          for c in $(docker ps -aq); do
+            echo "--- docker logs $c ---"
+            docker logs --tail 50 "$c" || true
+          done
