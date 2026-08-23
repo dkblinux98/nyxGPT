@@ -45,7 +45,7 @@ SESSION="k8s-artifact-smoke-$$"
 # pulls exactly the configured models and its readiness probe gates on them
 # (#3824), so a stale name here asks Ollama for a model nothing pulled and the
 # chat 404s while the stack is healthy.
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen3:0.6b}"
+MODEL="${NYXGPT_SMOKE_MODEL:-qwen3.5:0.8b}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 # Everything the product may see lives outside the checkout.
 WORKDIR="${NYXGPT_SMOKE_WORKDIR:-/tmp/nyxgpt-artifact-smoke}"

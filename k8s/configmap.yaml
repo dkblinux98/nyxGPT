@@ -6,8 +6,14 @@ metadata:
 data:
   config.ini: |
     [nyxgpt]
-    default_model = qwen3:0.6b
+    default_model = qwen3.5:0.8b
     chat_timeout_seconds = 180
+    # The shipped default_model is a reasoning model and nyxGPT reads only the
+    # answer, so leaving this on makes every in-cluster message pay for hidden
+    # reasoning tokens that are then discarded -- on the Pod's CPU that means
+    # timeouts, not just slowness. Matches example.config.ini; the two are the
+    # same fact and drifted once already (#4022/#4028 reviews).
+    think = false
     # Chat session storage backend. "file" keeps sessions on each pod's own
     # filesystem, which forks the session list per pod/replica -- and the
     # stable Deployment is not pinned to one Pod: a canary rollout grows the
