@@ -1237,10 +1237,21 @@ deployment mode, one of
 explaining which mode provides canary. The four named modes are a positive
 detection from the Compose marker, the Terraform stack state and a populated
 Kubernetes namespace — never an inference from a *failed* kubectl call.
-`"unknown"` is the one case where no mode could be established: the
-Kubernetes probe timed out, and `mode_message` says so rather than claiming
-`"native"`, which would assert something about the substrate that nothing
-managed to check (#3858).
+`"unknown"` is the one case where no mode could be established, and it has
+**two causes** — `mode_message` names which, because they need opposite
+repairs (#4022):
+
+- **the Kubernetes probe timed out** — the cluster did not answer; check that
+  the current kubeconfig context points at a reachable one;
+- **Docker could not be read at all** — typically the process is not in the
+  `docker` group, so whether a Terraform-managed stack runs here is unknown
+  and *no Kubernetes probe was run*. The repair is the group
+  (`sudo usermod -aG docker $USER`, then `sudo loginctl terminate-user $USER`
+  or reboot), not kubeconfig.
+
+Either way it reports `"unknown"` rather than claiming `"native"`, which
+would assert something about the substrate that nothing managed to check
+(#3858).
 
 `metrics` is the **canary track's** own vitals -- read from the Pods
 labelled `track=canary`, never from the counters of the process answering

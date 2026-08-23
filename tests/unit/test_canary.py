@@ -208,6 +208,7 @@ def _kubernetes_mode(monkeypatch):
     test about what the tracks report has to say which mode it is testing.
     """
     monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("kubernetes", ""))
 
 
 @pytest.mark.unit
@@ -486,6 +487,97 @@ def test_current_mode_compose(monkeypatch):
 def test_current_mode_terraform(monkeypatch):
     monkeypatch.setattr(canary.ops_module, "terraform_stack_state", lambda: {"api": "running"})
     assert canary.current_mode() == "terraform"
+
+
+@pytest.mark.unit
+def test_current_mode_does_not_claim_terraform_from_reads_that_never_happened(monkeypatch):
+    """#4022 review: a denied Docker session reads `unknown`, not `absent`.
+
+    The old predicate was `state != "absent"`, so every unknown promoted a
+    *native* install into "terraform" -- reached from the API process through
+    `status()`, telling the operator canary "doesn't apply in terraform mode".
+    D-027's rule for this function is that it answers "unknown" rather than
+    asserting a substrate nothing could see.
+    """
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "unknown", "web": "unknown", "cassandra": "unknown"},
+    )
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=""))
+
+    mode = canary.current_mode()
+
+    assert mode != "terraform", "asserted a substrate from reads that never happened"
+    assert mode == "unknown", "an all-unknown read is not evidence of a native install either"
+
+
+@pytest.mark.unit
+def test_current_mode_still_sees_terraform_when_one_container_really_runs(monkeypatch):
+    """The guard must not invert the true positive: a real container still counts."""
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "running", "web": "unknown"},
+    )
+    assert canary.current_mode() == "terraform"
+
+
+@pytest.mark.unit
+def test_the_unreadable_docker_unknown_names_docker_not_a_kubectl_timeout(monkeypatch):
+    """Two unknowns, opposite repairs (#4022 review).
+
+    The mode can be unknown because kubectl timed out, or because Docker could
+    not be read at all -- and on the second, no Kubernetes probe runs. Telling
+    that operator "the Kubernetes probe timed out ... check your kubeconfig
+    context" is a confident wrong diagnosis on this issue's own scenario: the
+    actual repair is the docker group.
+    """
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "unknown", "web": "unknown"},
+    )
+    monkeypatch.setattr(canary, "_which", lambda _tool: None)  # no kubectl at all
+
+    mode, cause = canary._current_mode_with_reason()
+    assert (mode, cause) == ("unknown", "docker-unreadable")
+
+    msg = canary._non_kubernetes_mode_message(mode, cause)
+    assert "docker group" in msg, "the repair the operator actually needs is unnamed"
+    assert "usermod" in msg
+    assert "timed out" not in msg, "claimed a probe timed out when no probe ran"
+    assert "kubeconfig" not in msg, "sent the operator at kubeconfig for a Docker fault"
+
+
+@pytest.mark.unit
+def test_the_kubectl_timeout_unknown_still_names_the_cluster(monkeypatch):
+    """The other unknown must keep its own diagnosis -- this is not a rename."""
+    msg = canary._non_kubernetes_mode_message("unknown", "kubectl-timeout")
+    assert "kubeconfig" in msg
+    assert "docker group" not in msg
+
+
+@pytest.mark.unit
+def test_unreadable_docker_does_not_hide_a_live_kubernetes_cluster(monkeypatch):
+    """Regression: the unknown verdict must not short-circuit the kubectl probe.
+
+    A first cut answered "unknown" as soon as the Terraform read came back
+    all-unknown, before kubectl ran -- so on a machine whose Docker is
+    unreadable but which *is* running Kubernetes, canary reported itself
+    unsupported and canary-track-metrics-smoke failed. Positive evidence from
+    kubectl outranks a Docker read that never happened.
+    """
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "unknown", "web": "unknown"},
+    )
+    monkeypatch.setattr(
+        canary, "_run", lambda cmd, **_k: CP(stdout="nyxgpt-api-stable-abc 1/1 Running")
+    )
+
+    assert canary.current_mode() == "kubernetes"
 
 
 @pytest.mark.unit
@@ -1934,6 +2026,7 @@ def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypa
     # makes no cluster call at all (#3858), so the mode has to be declared for
     # this test to be about metrics attribution rather than about that guard.
     monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("kubernetes", ""))
     monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
     monkeypatch.setattr(
         canary,
@@ -1968,6 +2061,7 @@ def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypa
 def test_status_measures_both_tracks_during_a_rollout(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 25, "history": []})
     monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("kubernetes", ""))
     monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
     monkeypatch.setattr(
         canary,

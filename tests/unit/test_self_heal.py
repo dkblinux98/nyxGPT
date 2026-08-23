@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nyxgpt import docker_access
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal
 
@@ -3832,7 +3833,11 @@ def _hop_aware_run(monkeypatch, *, hop_works=True, hop_preserves_env=True, bare_
             home = os.environ.get("HOME", str(Path.home()))
             if not hop_preserves_env:
                 return CP(stdout="/\n\n")
-            return CP(stdout=f"{home}\n{env.get('NYXGPT_HOP_PROBE', '')}\n")
+            # The probe variable's name is `docker_access`'s to choose since
+            # the hop became shared with ops (#4022) -- read, never spelled
+            # out here, so a rename cannot leave this stub quietly answering
+            # the wrong question.
+            return CP(stdout=f"{home}\n{env.get(docker_access.ENV_PROBE_VAR, '')}\n")
         if "docker info" in cmd[-1]:
             return CP(stdout="27.1.1\n")
         return CP(stdout='{"Name":"nyxgpt-grafana-1","Service":"grafana","State":"running"}\n')
