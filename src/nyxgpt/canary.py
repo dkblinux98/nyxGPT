@@ -663,6 +663,7 @@ def current_mode() -> str:
     """
     if _compose_mode():
         return "compose"
+    tf_unreadable = False
     try:
         tf_state = ops_module.terraform_stack_state()
         # `_container_deployed`, not `!= "absent"` (#4022 review). Since this
@@ -674,13 +675,14 @@ def current_mode() -> str:
         # function, and it contradicts `terraform_stack_state`'s own docstring.
         if any(ops_module._container_deployed(state) for state in tf_state.values()):
             return "terraform"
-        if tf_state and all(
+        # Nothing readable is not the same as nothing there, but it must not
+        # short-circuit the kubectl probe either: a machine whose Docker is
+        # unreadable can still be running Kubernetes, and positive evidence
+        # from kubectl outranks an unreadable Docker. Remembered here and
+        # answered only if nothing else identifies the substrate.
+        tf_unreadable = bool(tf_state) and all(
             state == ops_module.DOCKER_STATE_UNKNOWN for state in tf_state.values()
-        ):
-            # Nothing was read, so nothing is known. Falling through to "native"
-            # here would be the same confident-wrong-answer fault one branch
-            # over -- the operator needs to see the probe failure (D-027).
-            return "unknown"
+        )
     except Exception:
         pass
     if _which("kubectl") is not None:
@@ -693,6 +695,11 @@ def current_mode() -> str:
             return "unknown"
         if cp.returncode == 0 and (cp.stdout or "").strip():
             return "kubernetes"
+    # Only now: nothing positively identified the substrate, and the Terraform
+    # read never happened. "native" would be a confident answer built on a
+    # probe that failed, which is what D-027 forbids for this function.
+    if tf_unreadable:
+        return "unknown"
     return "native"
 
 

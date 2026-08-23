@@ -523,6 +523,28 @@ def test_current_mode_still_sees_terraform_when_one_container_really_runs(monkey
 
 
 @pytest.mark.unit
+def test_unreadable_docker_does_not_hide_a_live_kubernetes_cluster(monkeypatch):
+    """Regression: the unknown verdict must not short-circuit the kubectl probe.
+
+    A first cut answered "unknown" as soon as the Terraform read came back
+    all-unknown, before kubectl ran -- so on a machine whose Docker is
+    unreadable but which *is* running Kubernetes, canary reported itself
+    unsupported and canary-track-metrics-smoke failed. Positive evidence from
+    kubectl outranks a Docker read that never happened.
+    """
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "unknown", "web": "unknown"},
+    )
+    monkeypatch.setattr(
+        canary, "_run", lambda cmd, **_k: CP(stdout="nyxgpt-api-stable-abc 1/1 Running")
+    )
+
+    assert canary.current_mode() == "kubernetes"
+
+
+@pytest.mark.unit
 def test_current_mode_kubernetes(monkeypatch):
     monkeypatch.setattr(
         canary, "_run", lambda cmd, **_k: CP(stdout="nyxgpt-api-stable-abc 1/1 Running")
