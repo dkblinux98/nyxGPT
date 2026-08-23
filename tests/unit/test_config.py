@@ -2386,9 +2386,65 @@ def test_get_secrets_functions_pass_configured_region_and_prefix(
         (
             "ssm",
             "auth_api_key",
-            {"region": "eu-west-1", "ssm_prefix": "/custom", "secretsmanager_id": "nyxgpt"},
+            {
+                "region": "eu-west-1",
+                "ssm_prefix": "/custom",
+                "secretsmanager_id": "nyxgpt",
+                # #3993: empty is "boto3's default chain", which is what an
+                # install that configures no profile should get.
+                "profile": "",
+            },
         )
     ]
+
+
+def test_secrets_resolution_uses_the_configured_aws_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#3993: these clients were built with no profile at all.
+
+    A workstation whose *default* AWS profile names a different account
+    resolved secrets from that account -- and a parameter missing from the
+    wrong account is indistinguishable from an unconfigured secret, so the
+    failure is quieter than `allow-ip`'s NotFound and just as wrong.
+    """
+    ini = tmp_path / "config.ini"
+    _write(ini, "[secrets]\nprovider = ssm\n[cloud]\nprofile = nyxgpt\n")
+    cfg = load_config(str(ini))
+
+    calls: list = []
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: calls.append(kwargs) or "cloud-value",
+    )
+
+    get_auth_api_key(cfg)
+
+    assert calls and calls[0]["profile"] == "nyxgpt"
+
+
+def test_secrets_profile_overrides_the_cloud_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install whose secrets live in a different account than its substrate."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        "[secrets]\nprovider = ssm\nprofile = secrets-account\n[cloud]\nprofile = nyxgpt\n",
+    )
+    cfg = load_config(str(ini))
+
+    calls: list = []
+    monkeypatch.setattr(
+        cloud_secrets,
+        "resolve_secret",
+        lambda provider, key, **kwargs: calls.append(kwargs) or "cloud-value",
+    )
+
+    get_auth_api_key(cfg)
+
+    assert calls and calls[0]["profile"] == "secrets-account"
 
 
 def test_validate_config_rejects_unknown_secrets_provider(tmp_path: Path) -> None:
