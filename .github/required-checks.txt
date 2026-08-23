@@ -95,6 +95,7 @@ linux-observability
 service-venv-python
 host-relay-posture
 self-heal-probe-honesty
+observability-settle
 Install the working tree's formulas
 Install the candidate onto a machine that already has the stable
 Install the published candidate from the real tap

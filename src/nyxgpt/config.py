@@ -1752,6 +1752,24 @@ def get_secrets_region(cfg: ConfigParser) -> str | None:
     return value or None
 
 
+def get_secrets_profile(cfg: ConfigParser) -> str:
+    """Return the AWS profile to resolve cloud secrets with, or `""` for boto3's default chain.
+
+    `[secrets] profile` when set, else the account-wide `[cloud] profile` the
+    `nyxgpt cloud` commands already use. #3993: the sweep for bare
+    `boto3.client(...)` constructions found `cloud_secrets` building its
+    clients with no profile at all, so a workstation whose *default* profile
+    names a different account resolved secrets from the wrong account -- the
+    same defect as `cloud allow-ip`'s, with a quieter failure (a missing
+    parameter reads as an unconfigured secret). Resolved here rather than
+    inside `cloud_secrets` because that module is imported by this one and
+    runs *during* config resolution: reading config.ini from there would
+    recurse.
+    """
+    explicit = cfg.get("secrets", "profile", fallback="").strip()
+    return explicit or cfg.get("cloud", "profile", fallback="").strip()
+
+
 def get_secrets_ssm_prefix(cfg: ConfigParser) -> str:
     """Return the SSM Parameter Store path prefix (`[secrets] ssm_prefix`).
 
@@ -1792,6 +1810,7 @@ def _resolve_cloud_secret(cfg: ConfigParser, key: str) -> str | None:
             region=get_secrets_region(cfg),
             ssm_prefix=get_secrets_ssm_prefix(cfg),
             secretsmanager_id=get_secrets_secretsmanager_id(cfg),
+            profile=get_secrets_profile(cfg),
         )
     except cloud_secrets.CloudSecretsError as exc:
         # #3837 (CodeQL #115): the exception *type* is the diagnostic; its

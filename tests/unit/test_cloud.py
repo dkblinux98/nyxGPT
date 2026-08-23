@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from nyxgpt import cloud
+from nyxgpt import cloud, cloud_infra
 
 
 class _FakeEC2Client:
@@ -49,6 +49,13 @@ class _FakeEC2Client:
 @pytest.fixture(autouse=True)
 def _isolated_cloud_state(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud, "CLOUD_STATE_FILE", tmp_path / "cloud" / "state.json")
+    # #3993 widened profile/region resolution beyond the state file, so every
+    # other source it now consults has to be neutralised here too -- otherwise
+    # the suite answers from the developer's own infra.json, config.ini and
+    # AWS_PROFILE, and passes or fails according to their AWS setup.
+    monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", tmp_path / "cloud" / "infra.json")
+    monkeypatch.setattr(cloud, "_configured_cloud_reference", lambda: {"profile": "", "region": ""})
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
 
 
 # --- normalize_cidr -----------------------------------------------------
@@ -249,14 +256,14 @@ def test_get_ec2_client_passes_region(monkeypatch):
 
 
 def _allow_ip_args(**overrides):
-    defaults = {"ip": None, "security_group_id": "sg-123", "region": None}
+    defaults = {"ip": None, "security_group_id": "sg-123", "region": None, "profile": None}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
 
 def test_allow_ip_updates_rule_and_prints_old_new(monkeypatch, capsys):
     client = _FakeEC2Client(existing_cidrs=["198.51.100.1/32"])
-    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region: client)
+    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region, profile="": client)
     monkeypatch.setattr(cloud, "detect_current_public_ip", lambda: "203.0.113.5")
 
     exit_code = cloud.allow_ip(_allow_ip_args())
@@ -269,7 +276,7 @@ def test_allow_ip_updates_rule_and_prints_old_new(monkeypatch, capsys):
 
 def test_allow_ip_is_idempotent(monkeypatch, capsys):
     client = _FakeEC2Client(existing_cidrs=["203.0.113.5/32"])
-    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region: client)
+    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region, profile="": client)
     monkeypatch.setattr(cloud, "detect_current_public_ip", lambda: "203.0.113.5")
 
     exit_code = cloud.allow_ip(_allow_ip_args())
@@ -283,7 +290,7 @@ def test_allow_ip_is_idempotent(monkeypatch, capsys):
 
 def test_allow_ip_uses_explicit_ip_override_without_detecting(monkeypatch):
     client = _FakeEC2Client(existing_cidrs=[])
-    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region: client)
+    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region, profile="": client)
 
     def _should_not_be_called():
         raise AssertionError("detect_current_public_ip should not be called when --ip is given")
@@ -310,3 +317,224 @@ def test_allow_ip_reports_missing_security_group(capsys):
 
     assert exit_code == 1
     assert "security group" in capsys.readouterr().err.lower()
+
+
+# --- credential resolution (#3993) ----------------------------------------
+#
+# The defect these cover: `_get_ec2_client` built a bare `boto3.client`, so a
+# workstation whose *default* AWS profile names a different account got
+# `InvalidGroup.NotFound` for a security group that existed -- reported to an
+# operator who, being locked out of SSH, could not check. `allow-ip` is the
+# recovery tool for exactly that state, so its failure reading as "your
+# infrastructure is gone" is the worst possible failure mode it could have.
+
+
+def _fake_boto3(record: list, sts_account: str = "111122223333") -> SimpleNamespace:
+    """A boto3 stand-in recording how each client was built (bare vs. named Session)."""
+
+    def _client(service, **kwargs):
+        record.append(("bare", service, kwargs))
+        return SimpleNamespace(get_caller_identity=lambda: {"Account": sts_account})
+
+    def _session(profile_name):
+        def _session_client(service, **kwargs):
+            record.append((profile_name, service, kwargs))
+            return SimpleNamespace(get_caller_identity=lambda: {"Account": sts_account})
+
+        return SimpleNamespace(client=_session_client)
+
+    return SimpleNamespace(client=_client, Session=_session)
+
+
+class _NotFoundEC2Client:
+    """An EC2 client answering every describe with botocore's InvalidGroup.NotFound."""
+
+    def describe_security_groups(self, **kwargs):
+        error = Exception(
+            "An error occurred (InvalidGroup.NotFound) when calling the "
+            "DescribeSecurityGroups operation: The security group "
+            "'sg-0fed18aaeb342c218' does not exist"
+        )
+        error.response = {"Error": {"Code": "InvalidGroup.NotFound"}}
+        raise error
+
+
+def test_resolve_profile_prefers_the_explicit_flag(monkeypatch):
+    monkeypatch.setattr(cloud, "_saved_infra_settings", lambda: {"aws_profile": "from-infra"})
+    monkeypatch.setattr(
+        cloud, "_configured_cloud_reference", lambda: {"profile": "from-config", "region": ""}
+    )
+    monkeypatch.setenv("AWS_PROFILE", "from-env")
+
+    assert cloud._resolve_profile(argparse.Namespace(profile="from-flag")) == "from-flag"
+
+
+def test_resolve_profile_falls_back_to_the_last_applied_substrate(monkeypatch):
+    monkeypatch.setattr(cloud, "_saved_infra_settings", lambda: {"aws_profile": "from-infra"})
+    monkeypatch.setattr(
+        cloud, "_configured_cloud_reference", lambda: {"profile": "from-config", "region": ""}
+    )
+
+    assert cloud._resolve_profile(argparse.Namespace(profile=None)) == "from-infra"
+
+
+def test_resolve_profile_falls_back_to_config_ini(monkeypatch):
+    """The owner's exact configuration: `[cloud] profile` set and nothing else."""
+    monkeypatch.setattr(
+        cloud, "_configured_cloud_reference", lambda: {"profile": "nyxgpt", "region": ""}
+    )
+
+    assert cloud._resolve_profile(argparse.Namespace(profile=None)) == "nyxgpt"
+
+
+def test_resolve_profile_falls_back_to_the_environment(monkeypatch):
+    monkeypatch.setenv("AWS_PROFILE", "from-env")
+
+    assert cloud._resolve_profile(argparse.Namespace(profile=None)) == "from-env"
+
+
+def test_resolve_profile_is_empty_when_nothing_configures_one():
+    assert cloud._resolve_profile(argparse.Namespace(profile=None)) == ""
+
+
+def test_get_ec2_client_uses_a_session_for_the_resolved_profile(monkeypatch):
+    """The fix itself: a resolved profile must reach boto3 rather than be dropped."""
+    record: list = []
+    monkeypatch.setattr(
+        cloud, "try_import", lambda name: _fake_boto3(record) if name == "boto3" else None
+    )
+
+    cloud._get_ec2_client("us-east-1", "nyxgpt")
+
+    assert record == [("nyxgpt", "ec2", {"region_name": "us-east-1"})]
+
+
+def test_get_ec2_client_stays_on_the_default_chain_without_a_profile(monkeypatch):
+    record: list = []
+    monkeypatch.setattr(
+        cloud, "try_import", lambda name: _fake_boto3(record) if name == "boto3" else None
+    )
+
+    cloud._get_ec2_client("us-east-1")
+
+    assert record == [("bare", "ec2", {"region_name": "us-east-1"})]
+
+
+def test_allow_ip_authenticates_with_the_configured_profile(monkeypatch):
+    """End to end and flag-free: `[cloud] profile` alone must reach the EC2 client.
+
+    The owner's reported scenario. Before the fix nothing resolved the profile
+    at all and the client was built bare, so the describe ran in whichever
+    account the workstation's default profile names.
+    """
+    monkeypatch.setattr(
+        cloud, "_configured_cloud_reference", lambda: {"profile": "nyxgpt", "region": ""}
+    )
+    monkeypatch.setattr(cloud, "detect_current_public_ip", lambda: "203.0.113.5")
+
+    built: list = []
+
+    def _capture(region, profile=""):
+        built.append((region, profile))
+        return _FakeEC2Client(existing_cidrs=["198.51.100.1/32"])
+
+    monkeypatch.setattr(cloud, "_get_ec2_client", _capture)
+
+    exit_code = cloud.allow_ip(_allow_ip_args())
+
+    assert exit_code == 0
+    assert built == [(None, "nyxgpt")]
+
+
+def test_not_found_names_the_account_and_profile_it_queried(monkeypatch, capsys):
+    """A NotFound must never read as destroyed infrastructure (#3993).
+
+    The group id was right and the group existed; the query went to the wrong
+    account. Nothing in the old message could tell those two apart, and the
+    operator seeing it had no SSH access with which to check.
+    """
+    monkeypatch.setattr(cloud, "detect_current_public_ip", lambda: "203.0.113.5")
+    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region, profile="": _NotFoundEC2Client())
+    monkeypatch.setattr(
+        cloud,
+        "describe_credential_context",
+        lambda region, profile: "AWS account 999888777666, profile 'nyxgpt'",
+    )
+
+    exit_code = cloud.allow_ip(_allow_ip_args(security_group_id="sg-0fed18aaeb342c218"))
+
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "AWS account 999888777666, profile 'nyxgpt'" in err
+    assert "credential-resolution problem" in err
+    assert "not a destroyed substrate" in err
+
+
+def test_a_non_not_found_error_is_not_annotated(monkeypatch, capsys):
+    """Only a NotFound earns the account annotation.
+
+    A throttle or a network failure says nothing about which account was
+    queried, and paying an extra STS round trip on every failure would slow
+    down the one command an operator runs while locked out.
+    """
+
+    class _ThrottledClient:
+        def describe_security_groups(self, **kwargs):
+            error = Exception("Rate exceeded")
+            error.response = {"Error": {"Code": "RequestLimitExceeded"}}
+            raise error
+
+    called: list = []
+    monkeypatch.setattr(cloud, "detect_current_public_ip", lambda: "203.0.113.5")
+    monkeypatch.setattr(cloud, "_get_ec2_client", lambda region, profile="": _ThrottledClient())
+    monkeypatch.setattr(
+        cloud,
+        "describe_credential_context",
+        lambda region, profile: (called.append(1), "unused")[1],
+    )
+
+    exit_code = cloud.allow_ip(_allow_ip_args())
+
+    assert exit_code == 1
+    assert called == [], "STS must not be called for an unrelated failure"
+    assert "credential-resolution problem" not in capsys.readouterr().err
+
+
+def test_describe_credential_context_reports_the_account(monkeypatch):
+    record: list = []
+    monkeypatch.setattr(
+        cloud,
+        "try_import",
+        lambda name: _fake_boto3(record, sts_account="123456789012") if name == "boto3" else None,
+    )
+
+    assert cloud.describe_credential_context("us-east-1", "nyxgpt") == (
+        "AWS account 123456789012, profile 'nyxgpt'"
+    )
+    assert record == [("nyxgpt", "sts", {"region_name": "us-east-1"})]
+
+
+def test_describe_credential_context_survives_an_sts_failure(monkeypatch):
+    """Best-effort by design: annotating an error must never replace it."""
+
+    def _boom(profile_name):
+        raise RuntimeError("expired token")
+
+    monkeypatch.setattr(
+        cloud,
+        "try_import",
+        lambda name: SimpleNamespace(client=None, Session=_boom) if name == "boto3" else None,
+    )
+
+    result = cloud.describe_credential_context("us-east-1", "nyxgpt")
+
+    assert "profile 'nyxgpt'" in result
+    assert "could not be determined" in result
+
+
+def test_resolve_region_falls_back_to_config_ini(monkeypatch):
+    monkeypatch.setattr(
+        cloud, "_configured_cloud_reference", lambda: {"profile": "", "region": "eu-west-1"}
+    )
+
+    assert cloud._resolve_region(argparse.Namespace(region=None)) == "eu-west-1"
