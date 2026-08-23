@@ -31,12 +31,19 @@ on:
 # cancel-in-progress because a review of a superseded head is worse than no
 # review: it is the stale verdict above, and the newer run re-reviews the same
 # PR anyway.
-concurrency:
-  group: >-
-    claude-review-${{ github.event.pull_request.number
-      || github.event.issue.number
-      || inputs.pr_number }}
-  cancel-in-progress: true
+# NO WORKFLOW-LEVEL `concurrency:` -- it is on the two jobs below instead.
+#
+# GitHub evaluates workflow-level concurrency BEFORE job-level `if:`, so a run
+# whose every job skips still claims the group and cancels whatever is in it.
+# An `issue_comment` on a PR lands in the same `claude-review-<PR>` group as
+# that PR's review -- including the review agent's OWN handback, escalation and
+# verdict comments. So a review cancelled itself by commenting: on #4025 a run
+# started 14:23:39, posted its gate comment 14:23:45, and was killed 14:23:47
+# by the run that comment triggered. Three of five dispatches died that way.
+#
+# Job-level groups fix the mechanism: a skipped job never enters a group. The
+# two stages take DIFFERENT groups on purpose -- one shared group would make
+# the jobs of a single run cancel each other.
 
 jobs:
   # A red or pending head is not reviewable (#3971).
@@ -60,6 +67,12 @@ jobs:
   # tests/test_reviewable_head_gate.sh drives it and
   # .github/workflows/reviewable-head-smoke.yml runs that on a real runner.
   head-gate:
+    concurrency:
+      group: >-
+        claude-review-gate-${{ github.event.pull_request.number
+          || github.event.issue.number
+          || inputs.pr_number }}
+      cancel-in-progress: true
     # Only run when:
     # 1. Review-agent is requested as reviewer (review_requested)
     # 2. PR updated (synchronize) and review-agent is already assigned
@@ -215,6 +228,16 @@ jobs:
           echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
 
   claude-review:
+    # The stage #3815 is about: two runs reviewing one head produced
+    # CHANGES_REQUESTED and APPROVED from the same author two seconds apart.
+    # Newest still wins; what changed is that a skipped run no longer counts
+    # as a newer one.
+    concurrency:
+      group: >-
+        claude-review-run-${{ github.event.pull_request.number
+          || github.event.issue.number
+          || inputs.pr_number }}
+      cancel-in-progress: true
     needs: head-gate
     if: needs.head-gate.outputs.decision == 'proceed'
     runs-on: ubuntu-latest

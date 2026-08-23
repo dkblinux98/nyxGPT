@@ -38,28 +38,61 @@ def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
+_GUARDED_JOBS = ("head-gate", "claude-review")
+
+
 class TestOneReviewRunPerPullRequest:
-    def test_review_workflow_declares_a_concurrency_group(self):
-        assert "concurrency" in _load(REVIEW), (
-            "claude-code-review.yml has no concurrency group, so two runs can "
-            "review the same head at once (#3815)"
+    def test_concurrency_is_declared_per_job_not_per_workflow(self):
+        """Workflow-level concurrency let a review cancel itself by commenting.
+
+        GitHub evaluates workflow-level `concurrency:` BEFORE job-level `if:`,
+        so a run whose every job skips still claims the group and cancels
+        whatever is in it. An `issue_comment` on a PR shares the review's
+        group -- including the review agent's own handback, escalation and
+        verdict comments. Observed on #4025: a run started 14:23:39, posted
+        its gate comment 14:23:45, and was killed 14:23:47 by the run that
+        comment triggered. A skipped JOB never enters a group, so moving the
+        declaration down fixes the mechanism.
+        """
+        wf = _load(REVIEW)
+        assert "concurrency" not in wf, (
+            "workflow-level concurrency is back: a comment-triggered run that "
+            "skips every job will cancel an in-flight review again"
+        )
+        for job in _GUARDED_JOBS:
+            assert "concurrency" in wf["jobs"][job], (
+                f"{job} has no concurrency group, so two runs can review the "
+                "same head at once (#3815)"
+            )
+
+    def test_the_two_stages_do_not_share_a_group(self):
+        """One group across both jobs would make a single run cancel itself."""
+        wf = _load(REVIEW)
+        groups = {j: wf["jobs"][j]["concurrency"]["group"] for j in _GUARDED_JOBS}
+        assert len(set(groups.values())) == len(groups), (
+            f"the guarded jobs share a concurrency group and would cancel each "
+            f"other within one run: {groups}"
         )
 
-    def test_the_group_is_keyed_on_the_pull_request(self):
-        group = _load(REVIEW)["concurrency"]["group"]
+    def test_each_group_is_keyed_on_the_pull_request(self):
+        wf = _load(REVIEW)
         # Every trigger this workflow accepts must resolve to the PR number,
         # or two runs over one PR land in different groups and race anyway.
-        for expr in (
-            "github.event.pull_request.number",
-            "github.event.issue.number",
-            "inputs.pr_number",
-        ):
-            assert expr in group, f"concurrency group does not cover {expr}: {group!r}"
+        for job in _GUARDED_JOBS:
+            group = wf["jobs"][job]["concurrency"]["group"]
+            for expr in (
+                "github.event.pull_request.number",
+                "github.event.issue.number",
+                "inputs.pr_number",
+            ):
+                assert expr in group, f"{job} group does not cover {expr}: {group!r}"
 
     def test_a_superseded_review_run_is_cancelled(self):
-        assert _load(REVIEW)["concurrency"]["cancel-in-progress"] is True, (
-            "without cancel-in-progress a run over a stale head survives to "
-            "submit the verdict that started #3815 round 2"
+        wf = _load(REVIEW)
+        for job in _GUARDED_JOBS:
+            assert wf["jobs"][job]["concurrency"]["cancel-in-progress"] is True, (
+                f"{job}: without cancel-in-progress a run over a stale head "
+                "survives to submit the verdict that started #3815 round 2"
         )
 
 
