@@ -1170,7 +1170,23 @@ def sweep(
 ) -> SweepResult:
     diff_text = _git(["diff", "--unified=0", f"{base}...{head}"], root)
     if not diff_text.strip():
-        diff_text = _git(["diff", "--unified=0", base, head], root)
+        # `base...head` is empty in two very different situations, and they must
+        # not be conflated. Either head genuinely adds nothing over the merge
+        # base (nothing to sweep -- correct, and the two-dot diff would then
+        # sweep the REVERSE direction, reporting the base's prose as though this
+        # change introduced it), or the range is wrong. Falling back silently
+        # made a wrong range look like a clean sweep -- the exact failure this
+        # tool exists to catch, in the tool itself. So: say which, out loud.
+        two_dot = _git(["diff", "--unified=0", base, head], root)
+        if two_dot.strip():
+            print(
+                f"inverse-claims-sweep: `{base}...{head}` is empty but `{base} {head}` "
+                f"is not -- {head} is at or behind {base}, so a two-dot diff would "
+                "sweep the reverse direction. Refusing to guess; sweeping nothing. "
+                "Pass an explicit --head if this is not what you meant.",
+                file=sys.stderr,
+            )
+        diff_text = ""
     diff = parse_diff(diff_text)
     terms = extract_terms(diff)
     blocks = collect_blocks(root, diff, corpus_rev)

@@ -277,8 +277,17 @@ fi
 SWEEP_SCRIPT="$DIR/inverse_claims_sweep.py"
 if [[ -x "$SWEEP_SCRIPT" || -f "$SWEEP_SCRIPT" ]]; then
   sweep_md="$(mktemp)"
-  if python3 "$SWEEP_SCRIPT" --base "origin/${BASE_BRANCH}" --markdown > "$sweep_md" 2>/dev/null; then
+  sweep_err="$(mktemp)"
+  if python3 "$SWEEP_SCRIPT" --base "origin/${BASE_BRANCH}" --markdown > "$sweep_md" 2>"$sweep_err"; then
     python3 "$SWEEP_SCRIPT" --base "origin/${BASE_BRANCH}" --max-items 10 >&2 || true
+    # A sweep that ran but had something to say (a refused range, a corpus it
+    # could not read) must be heard. Advisory means it cannot BLOCK; it never
+    # meant it cannot SPEAK. Swallowing this made a broken sweep look identical
+    # to a clean one -- the same silent-success defect the sweep itself hunts.
+    if [[ -s "$sweep_err" ]]; then
+      echo "[dev] inverse-claims sweep reported:" >&2
+      cat "$sweep_err" >&2
+    fi
     if [[ -z "$tmp_body" ]]; then
       tmp_body="$(mktemp)"
       cat "$body_file" > "$tmp_body"

@@ -355,4 +355,46 @@ def test_the_submit_script_runs_the_sweep_and_cannot_be_blocked_by_it() -> None:
     assert "#4015" in text
     block = text.split("Inverse-claims sweep", 1)[1].split("---- Record a CI override", 1)[0]
     assert "It is ADVISORY" in block
-    assert "2>/dev/null" in block, "a sweep failure must not surface as a submission failure"
+    # Advisory means the sweep cannot BLOCK submission. It never meant the sweep
+    # cannot SPEAK: discarding its stderr made a broken sweep look identical to a
+    # clean one, which is the silent-success defect this whole tool hunts. So the
+    # contract is "runs, is heard, cannot stop the submission".
+    assert "2>/dev/null" not in block, (
+        "the sweep's stderr must not be discarded -- a broken sweep would then be "
+        "indistinguishable from a clean one"
+    )
+    assert 'cat "$sweep_err"' in block, "a sweep that has something to say must be shown"
+    assert "|| true" in block, "the sweep still must not be able to fail the submission"
+
+
+def test_an_empty_three_dot_range_refuses_rather_than_sweeping_backwards(tmp_path: Path) -> None:
+    """`base...head` empty means either nothing to sweep or a wrong range.
+
+    The two-dot fallback conflated them: when head is at or behind base it
+    sweeps the REVERSE direction, reporting the base's own prose as though this
+    change had introduced it -- a wrong answer that looks like a clean run. The
+    sweep now refuses and names the reason on stderr.
+    """
+    repo = tmp_path / "r"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (repo / "doc.md").write_text("nyxgpt ops status never lies about the stack.\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "base")
+    first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / "doc.md").write_text("changed\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "second")
+    second = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+
+    # head BEHIND base: three-dot is empty, two-dot is a reverse diff.
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--base", second, "--head", first, "--markdown"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "sweep the reverse direction" in proc.stderr, proc.stderr
+    assert "Refusing to guess" in proc.stderr
