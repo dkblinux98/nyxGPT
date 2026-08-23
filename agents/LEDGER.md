@@ -1544,10 +1544,14 @@ rather than mechanism, and nothing can enforce them.
   That single fact reddened `terraform-local-smoke`, `linux-native-smoke` and
   the k8s smokes across eleven PRs.
   Consequences: `[nyxgpt] think` (default **false**) is threaded to Ollama's
-  `think` field by both the streaming and non-streaming paths; an empty
-  `content` alongside a non-empty `thinking` is now a named error rather than a
-  blank reply; and the model bump is completed across the layers it never
-  reached — `k8s/configmap.yaml`, `k8s/statefulset-ollama.yaml`, the two k8s
+  `think` field by **all three** of its callers -- chat, auto-summarize
+  (`sessions.py`) and RAG query expansion (`rag/rag.py`); the latter two parse
+  their output as JSON, so nothing reads their reasoning, and auto-summarize
+  ships ON, which made it the costliest instance. An empty `content` alongside
+  a non-empty `thinking` is a named error rather than a blank reply on **both**
+  the streaming and non-streaming paths -- the streaming one matters most,
+  being the web UI's. And the model bump is completed across the layers it
+  never reached — `k8s/configmap.yaml`, `k8s/statefulset-ollama.yaml`, the two k8s
   smokes and `docker-compose.yml`. `chat.py`'s fourth default (`llama3.1:8b`,
   a model no install pulls) is retired in favour of `get_default_model`, and
   `test_k8s_manifests` now compares the manifests against `example.config.ini`

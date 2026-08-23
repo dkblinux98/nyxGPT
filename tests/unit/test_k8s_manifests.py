@@ -155,6 +155,10 @@ def test_k8s_default_models_match_the_shipped_defaults():
     cfg = _api_config()
     assert cfg.get("nyxgpt", "default_model") == shipped.get("nyxgpt", "default_model")
     assert cfg.get("rag", "embedding_model") == shipped.get("rag", "embedding_model")
+    # `think` is the same fact in two files, and this PR's whole thesis is that
+    # an untested duplicated fact drifts. The ConfigMap's comment claimed the
+    # match; only an assertion keeps it (#4029 review).
+    assert cfg.getboolean("nyxgpt", "think") == shipped.getboolean("nyxgpt", "think")
 
 
 @pytest.mark.unit

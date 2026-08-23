@@ -449,14 +449,31 @@ def ollama_chat_stream_tokens(
         payload["think"] = think
 
     start = time.monotonic()
+    # The same reasoning-with-no-answer case the non-streaming path names, and
+    # this is the path the web UI uses -- so without it the silent blank reply
+    # survives exactly where a user would meet it (#4029 review). Raising on
+    # `done` is safe: nothing has been yielded in that case, so there is no
+    # half-emitted answer to contradict.
+    yielded_content = False
+    saw_thinking = False
     for obj in post_json_lines(
         url, payload, timeout_s=timeout_s, max_retries=max_retries, on_retry=on_retry
     ):
         msg = obj.get("message") or {}
         part = msg.get("content")
         if isinstance(part, str) and part:
+            yielded_content = True
             yield part
+        thinking_part = msg.get("thinking")
+        if isinstance(thinking_part, str) and thinking_part.strip():
+            saw_thinking = True
         if obj.get("done") is True:
+            if not yielded_content and saw_thinking:
+                raise RuntimeError(
+                    f"{model} returned reasoning but no answer (streaming). "
+                    "Set `[nyxgpt] think = false` to stop it reasoning, or raise "
+                    "`chat_timeout_seconds` so it can finish."
+                )
             logger.debug(
                 "Ollama streaming request completed",
                 extra={

@@ -174,6 +174,40 @@ def test_reasoning_with_no_answer_is_an_error_not_an_empty_reply() -> None:
         ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}])
 
 
+def test_streaming_reasoning_with_no_answer_is_also_an_error() -> None:
+    """The web UI streams, so the silent blank had to be closed there too.
+
+    Raising on `done` is safe precisely because nothing was yielded: there is
+    no half-emitted answer for the error to contradict.
+    """
+    resp = _streaming_response(
+        [
+            b'{"message": {"thinking": "weighing it up..."}}',
+            b'{"message": {"thinking": "still weighing..."}, "done": true}',
+        ]
+    )
+    with (
+        patch("urllib.request.urlopen", return_value=resp),
+        pytest.raises(RuntimeError, match="reasoning but no answer"),
+    ):
+        list(ollama_chat_stream_tokens("http://x", "m", [{"role": "user", "content": "hi"}]))
+
+
+def test_streaming_thinking_alongside_a_real_answer_is_not_an_error() -> None:
+    """Reasoning is only a problem when it replaces the answer, not when it precedes it."""
+    resp = _streaming_response(
+        [
+            b'{"message": {"thinking": "hmm"}}',
+            b'{"message": {"content": "OK"}, "done": true}',
+        ]
+    )
+    with patch("urllib.request.urlopen", return_value=resp):
+        chunks = list(
+            ollama_chat_stream_tokens("http://x", "m", [{"role": "user", "content": "hi"}])
+        )
+    assert "".join(chunks) == "OK"
+
+
 def test_an_ordinary_empty_reply_is_still_returned_not_raised() -> None:
     """Only reasoning-with-no-answer is an error; an empty answer is an answer."""
     resp = _mock_response(b'{"message": {"content": ""}}')

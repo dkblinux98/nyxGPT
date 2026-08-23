@@ -261,7 +261,7 @@ def test_expand_query_strips_generic_code_fence(monkeypatch: pytest.MonkeyPatch)
     cfg["default"] = {"model": "test-model"}
     monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
 
-    def mock_ollama_chat(base_url, model, messages, timeout_s):
+    def mock_ollama_chat(base_url, model, messages, timeout_s, **_kw):
         return '```\n["variant 1"]\n```'
 
     monkeypatch.setattr("nyxgpt.ollama_client.ollama_chat", mock_ollama_chat)
