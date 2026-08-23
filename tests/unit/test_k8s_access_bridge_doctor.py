@@ -155,10 +155,13 @@ def test_doctor_asks_the_bridge_only_when_a_kubernetes_install_is_recorded():
     assert gate < call
     assert "issues.extend(_k8s_access_bridge_issues())" in source
     # And the failure hint the deploy prints points here, so the two must not
-    # drift apart into a pointer at a check that does not exist.
+    # drift apart into a pointer at a check that does not exist. Scoped to
+    # `_deploy` (the body) rather than `deploy` (the wrapper): #3993 split the
+    # attempt-record bookkeeping out into the wrapper, so the hint itself --
+    # and every other step -- now lives in the body.
     from nyxgpt import cloud_deploy
 
-    assert "reports the bridge units by name" in inspect.getsource(cloud_deploy.deploy)
+    assert "reports the bridge units by name" in inspect.getsource(cloud_deploy._deploy)
 
 
 @pytest.mark.unit

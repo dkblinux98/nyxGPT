@@ -28,6 +28,15 @@ name: Cloud Status Smoke
 #                       phase 2 therefore cannot come from a command that
 #                       prints the same thing regardless.
 #
+#                       Phases 1b/1c (#3993) inject the two states between
+#                       those: a deploy this machine started and did not
+#                       finish, and a provisioned substrate with no deploy
+#                       against it. Both used to print UNKNOWN -- reported to
+#                       an operator whose own state file named the live,
+#                       billing instance. Phase 1 running immediately before
+#                       them, from the same binary and the same $HOME, is what
+#                       proves the new verdicts are not printed unconditionally.
+#
 # What it does NOT cover: a real EC2 instance answering `nyxgpt cloud ops`
 # (that needs a billed deployment -- `nyxgpt cloud smoke` is the command that
 # does it), and the React rendering of the cloud page (covered by
@@ -37,12 +46,22 @@ on:
   pull_request:
     paths:
       - 'src/nyxgpt/cloud_deploy.py'
+      # #3993: `cloud status`'s substrate fallback reads what these two write
+      # (`state.json`, `infra.json`), so a change to either can change what it
+      # reports without touching cloud_deploy.py at all.
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud-status-smoke.sh'
       - '.github/workflows/cloud-status-smoke.yml'
   push:
     paths:
       - 'src/nyxgpt/cloud_deploy.py'
+      # #3993: `cloud status`'s substrate fallback reads what these two write
+      # (`state.json`, `infra.json`), so a change to either can change what it
+      # reports without touching cloud_deploy.py at all.
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud-status-smoke.sh'
       - '.github/workflows/cloud-status-smoke.yml'
