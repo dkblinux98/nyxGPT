@@ -651,10 +651,14 @@ def _current_mode_with_reason() -> tuple[str, str]:
     `ops.detect_deployment_mode()`/`ops.terraform_stack_state()` already use: the
     NYXGPT_COMPOSE_FILE marker, then a running Terraform-managed container stack,
     then a populated Kubernetes namespace, falling back to "native" (Homebrew
-    services, no Terraform/Kubernetes stack detected). Returns one of "compose",
-    "terraform", "kubernetes", "native", "unknown".
+    services, no Terraform/Kubernetes stack detected). Returns `(mode, cause)`:
+    mode one of "compose", "terraform", "kubernetes", "native", "unknown";
+    cause is "" for every determinate mode, else "kubectl-timeout" or
+    "docker-unreadable".
 
-    "unknown" is the answer when the Kubernetes probe *timed out* (#3858).
+    "unknown" has two causes (#3858, #4022): the Kubernetes probe *timed out*,
+    or Docker was unreadable so the Terraform read never happened -- and with
+    no kubectl, no probe ran at all.
     Falling back to "native" there would be an assertion about the substrate
     that nothing checked -- a cluster that is configured but not answering is
     precisely the case where "you are not running Kubernetes" is most likely
