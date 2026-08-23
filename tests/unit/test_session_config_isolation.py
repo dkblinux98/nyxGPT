@@ -1,12 +1,18 @@
 """Standing guard: the unit suite runs against its own config, never the machine's (#3983).
 
-`_isolate_test_log_dir` in `tests/conftest.py` installs `TEST_CONFIG_TEXT` as
-`~/.nyxGPT/config.ini` for the session and restores the operator's file at
-teardown. Without it, a developer machine that actually runs the stack -- the
-normal state -- feeds its own operator choices to the suite: a full
+`tests/home_sandbox.py` moves `$HOME` to a private per-process temp directory
+seeded with `TEST_CONFIG_TEXT`, and `_isolate_test_log_dir` in
+`tests/conftest.py` re-installs that text (plus the `[logging] dir` redirect)
+for the session. Without it, a developer machine that actually runs the stack
+-- the normal state -- feeds its own operator choices to the suite: a full
 `pytest tests/unit/` on the v3.0.0 head failed 134 tests purely from
 `[nyxgpt] session_backend = cassandra` plus the observability `enabled` flags,
 while the same tree passed in CI, whose runners have no operator config.
+
+Until #4020 the isolation worked by writing that text into the operator's real
+`~/.nyxGPT/config.ini` and restoring it at teardown, which is safe for exactly
+one pytest process at a time. `test_suite_runs_in_a_private_home` below is the
+guard for the replacement.
 
 None of those 134 reports named the cause: they surfaced as connection
 refused, or as a `*_reports_disabled_by_default` test seeing "enabled". These
@@ -22,6 +28,7 @@ from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
+from home_sandbox import REAL_HOME, SANDBOX_HOME
 from session_config import TEST_CONFIG_TEXT
 
 from nyxgpt.config import (
@@ -32,6 +39,30 @@ from nyxgpt.config import (
     get_tracing_enabled,
     load_config,
 )
+
+
+@pytest.mark.unit
+def test_suite_runs_in_a_private_home() -> None:
+    """The operator's `~/.nyxGPT` must be unreachable, not merely restored (#4020).
+
+    Two concurrent pytest sessions sharing one `~/.nyxGPT/config.ini` is what
+    produced #4020's 5-to-67-failure spread, and what twice destroyed the
+    owner's real config together with its backup. The fix is that no session
+    resolves `~` to the operator's home at all; this asserts that, so a future
+    change that puts the real path back fails here with the reason rather than
+    as 60-odd unrelated-looking failures somewhere else.
+
+    `Path.home()` is asked rather than `$HOME`, because it is what every
+    `nyxgpt` module actually calls.
+    """
+    assert Path.home() == SANDBOX_HOME, (
+        f"the suite is running with HOME={Path.home()}, not the sandbox "
+        f"{SANDBOX_HOME} -- see tests/home_sandbox.py"
+    )
+    assert Path.home() != REAL_HOME, (
+        "the suite resolved `~` to the machine's real home -- every test that "
+        "writes under ~/.nyxGPT is writing to the operator's machine"
+    )
 
 
 @pytest.mark.unit

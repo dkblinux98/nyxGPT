@@ -74,8 +74,22 @@ name: Linux Native Smoke
 #                       reports unknown-with-reason and heals nothing -- and
 #                       finally, with the daemon reachable and a real container
 #                       up, that the same survey still reports real states.
+#                       A third half covers the re-test that reopened #3812:
+#                       `setpriv --clear-groups` reproduces a session that
+#                       lacks the `docker` group while /etc/group grants it --
+#                       a systemd --user service started before `usermod -aG
+#                       docker`, which is what a cloud deploy leaves behind. A
+#                       bare docker call there is denied, and the probe must
+#                       still report the running container (retried through
+#                       `sg docker`) rather than leaving the tier permanently
+#                       unobservable. That half is hermetic: the denial comes
+#                       from a stub `docker` first on PATH keyed only on the
+#                       caller's group set, because this runner's socket is
+#                       NOT group-protected, so dropping the group against the
+#                       real socket denies nothing and proves nothing.
 #                       Unit tests mock the subprocess; only a real denied
-#                       socket shows what `docker compose ps` actually does.
+#                       socket and a real stripped group set show what
+#                       `docker compose ps` actually does.
 #   host-relay-posture  Can a container reach a loopback-bound native API,
 #                       and does doctor catch a host still carrying the
 #                       manual `[api] host = 0.0.0.0` workaround? Drives
@@ -374,7 +388,7 @@ jobs:
 
       # Both halves, and the script fails loudly rather than passing vacuously
       # if this runner does NOT reproduce the daemon-unreachable condition.
-      - name: An unqueryable probe must report unknown, never absent
+      - name: A probe must run where it can, and report unknown -- never absent -- where it cannot
         run: python3 scripts/self-heal-probe-honesty-smoke.py
 
       - name: Diagnostics on failure

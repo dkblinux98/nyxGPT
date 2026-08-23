@@ -679,6 +679,14 @@ falling back to `sudo -n --preserve-env` — and it verifies the hop preserves
 `/home/ec2-user` rather than `/root`
 ([Docker group membership](systemd.md#privileged-install-steps)).
 
+The *services* the deploy leaves behind are the third case, and the one that
+reopened #3812. `systemd --user` starts them from a manager whose credentials
+predate the group change, so the API process could not query Docker at all and
+the dashboard reported every observability component as undetermined —
+honestly, but permanently. The watchdog now retries a denied Docker call
+through `sg docker` for the same reason the deploy script does; see [The
+`docker` group hop](self-healing.md#the-docker-group-hop-making-the-probe-run-not-just-report).
+
 ### From the dashboard: information only (#3804)
 
 The admin dashboard's **[Infrastructure Status](ui.md)** page
