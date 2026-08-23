@@ -20,6 +20,7 @@ from typing import Any, cast
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.cache import CacheBackend, DiskCache, MemoryCache, NoOpCache, hash_text
 from nyxgpt.config import (
+    DEFAULT_CHAT_TIMEOUT_SECONDS,
     get_chat_think,
     get_context_warning_threshold,
     get_context_window_size,
@@ -578,7 +579,10 @@ def _prepare_chat_context(
     # of it. One getter, one answer (owner rule, 2026-08-23).
     default_model = get_default_model(cfg)
     chosen_model = model or default_model
-    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", 180)
+    # DEFAULT_CHAT_TIMEOUT_SECONDS, not a literal 300: #4028 hoisted that
+    # constant precisely because this value had already drifted between two
+    # spellings, and re-hardcoding it here would reopen the same gap.
+    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", DEFAULT_CHAT_TIMEOUT_SECONDS)
     think = get_chat_think(cfg)
 
     # Load session messages
