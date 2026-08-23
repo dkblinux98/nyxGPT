@@ -117,6 +117,12 @@ jobs:
       # ~/.nyxGPT never reproduced it. Seeding one whose values are the
       # *opposite* of the suite's expectations means a leak of the machine's
       # config into the suite shows up as failures rather than as nothing.
+      #
+      # This seed makes a leak *loud*; it is not what detects one. A read-only
+      # leak would fail both runs identically and slip past the diff below --
+      # `test_suite_runs_in_a_private_home` (tests/unit/test_session_config_isolation.py)
+      # is the assertion that catches the sandbox not being in effect, and it
+      # runs in the `test` job above like any other test.
       - name: Seed an operator-style ~/.nyxGPT/config.ini
         run: |
           mkdir -p "$HOME/.nyxGPT"
