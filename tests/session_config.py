@@ -9,9 +9,11 @@ from __future__ import annotations
 
 # The one config the unit suite runs against, on every machine (#3983).
 #
-# Not "a config to fall back on when the machine has none": `_isolate_test_log_dir`
-# below installs *this* text for the session even when a real
-# `~/.nyxGPT/config.ini` exists, and restores the operator's file at teardown.
+# Not "a config to fall back on when the machine has none": `tests/home_sandbox.py`
+# seeds *this* text as the `config.ini` of a private per-process `$HOME`, so the
+# operator's real `~/.nyxGPT/config.ini` is never read, written or restored
+# (#4020); `_isolate_test_log_dir` re-installs it with the session's
+# `[logging] dir` redirect.
 # The reason is that the suite's expectations are the product's *defaults*, and
 # an operator config states an operator's *choices* -- so on any machine that
 # actually runs the stack (the normal state for a developer) those choices

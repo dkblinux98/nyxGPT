@@ -129,12 +129,12 @@ def test_session_config_keeps_tracing_disabled() -> None:
     """Guard for the isolation the tests below depend on.
 
     Production defaults tracing to *enabled* (2026-07-28), so on any machine
-    where an install has already written ~/.nyxGPT/config.ini the suite runs
-    against a config that switches the OTel SDK on for real -- process-wide
-    and sticky. `_isolate_test_log_dir` in tests/conftest.py rewrites the
-    section off for the session; if that ever stops happening, fail here with
-    the cause rather than in the four downstream tests that only see the
-    symptom."""
+    where an install has already written ~/.nyxGPT/config.ini the suite would
+    run against a config that switches the OTel SDK on for real -- process-wide
+    and sticky. Since #4020 that file is out of reach: the suite has a `$HOME`
+    of its own (tests/home_sandbox.py) seeded with `TEST_CONFIG_TEXT`, which
+    has the section off. If that ever stops happening, fail here with the cause
+    rather than in the four downstream tests that only see the symptom."""
     assert get_tracing_enabled(load_config(None)) is False
 
 
