@@ -208,6 +208,7 @@ def _kubernetes_mode(monkeypatch):
     test about what the tracks report has to say which mode it is testing.
     """
     monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("kubernetes", ""))
 
 
 @pytest.mark.unit
@@ -520,6 +521,41 @@ def test_current_mode_still_sees_terraform_when_one_container_really_runs(monkey
         lambda: {"api": "running", "web": "unknown"},
     )
     assert canary.current_mode() == "terraform"
+
+
+@pytest.mark.unit
+def test_the_unreadable_docker_unknown_names_docker_not_a_kubectl_timeout(monkeypatch):
+    """Two unknowns, opposite repairs (#4022 review).
+
+    The mode can be unknown because kubectl timed out, or because Docker could
+    not be read at all -- and on the second, no Kubernetes probe runs. Telling
+    that operator "the Kubernetes probe timed out ... check your kubeconfig
+    context" is a confident wrong diagnosis on this issue's own scenario: the
+    actual repair is the docker group.
+    """
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "unknown", "web": "unknown"},
+    )
+    monkeypatch.setattr(canary, "_which", lambda _tool: None)  # no kubectl at all
+
+    mode, cause = canary._current_mode_with_reason()
+    assert (mode, cause) == ("unknown", "docker-unreadable")
+
+    msg = canary._non_kubernetes_mode_message(mode, cause)
+    assert "docker group" in msg, "the repair the operator actually needs is unnamed"
+    assert "usermod" in msg
+    assert "timed out" not in msg, "claimed a probe timed out when no probe ran"
+    assert "kubeconfig" not in msg, "sent the operator at kubeconfig for a Docker fault"
+
+
+@pytest.mark.unit
+def test_the_kubectl_timeout_unknown_still_names_the_cluster(monkeypatch):
+    """The other unknown must keep its own diagnosis -- this is not a rename."""
+    msg = canary._non_kubernetes_mode_message("unknown", "kubectl-timeout")
+    assert "kubeconfig" in msg
+    assert "docker group" not in msg
 
 
 @pytest.mark.unit
@@ -1990,6 +2026,7 @@ def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypa
     # makes no cluster call at all (#3858), so the mode has to be declared for
     # this test to be about metrics attribution rather than about that guard.
     monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("kubernetes", ""))
     monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
     monkeypatch.setattr(
         canary,
@@ -2024,6 +2061,7 @@ def test_status_reports_canary_track_metrics_and_skips_stable_when_idle(monkeypa
 def test_status_measures_both_tracks_during_a_rollout(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 25, "history": []})
     monkeypatch.setattr(canary, "current_mode", lambda: "kubernetes")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("kubernetes", ""))
     monkeypatch.setattr(canary, "track_metrics", REAL_TRACK_METRICS)
     monkeypatch.setattr(
         canary,

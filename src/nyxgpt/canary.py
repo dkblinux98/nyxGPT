@@ -642,7 +642,7 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHea
     )
 
 
-def current_mode() -> str:
+def _current_mode_with_reason() -> tuple[str, str]:
     """Best-effort classification of which deployment mode this process is running under.
 
     Not inferred from a failed kubectl call against the canary/stable Deployments
@@ -662,7 +662,7 @@ def current_mode() -> str:
     confident wrong mode.
     """
     if _compose_mode():
-        return "compose"
+        return "compose", ""
     tf_unreadable = False
     try:
         tf_state = ops_module.terraform_stack_state()
@@ -674,7 +674,7 @@ def current_mode() -> str:
         # terraform mode". That is the exact inversion D-027 forbids for this
         # function, and it contradicts `terraform_stack_state`'s own docstring.
         if any(ops_module._container_deployed(state) for state in tf_state.values()):
-            return "terraform"
+            return "terraform", ""
         # Nothing readable is not the same as nothing there, but it must not
         # short-circuit the kubectl probe either: a machine whose Docker is
         # unreadable can still be running Kubernetes, and positive evidence
@@ -692,18 +692,23 @@ def current_mode() -> str:
             timeout=PROBE_TIMEOUT_SECONDS,
         )
         if timed_out(cp):
-            return "unknown"
+            return "unknown", "kubectl-timeout"
         if cp.returncode == 0 and (cp.stdout or "").strip():
-            return "kubernetes"
+            return "kubernetes", ""
     # Only now: nothing positively identified the substrate, and the Terraform
     # read never happened. "native" would be a confident answer built on a
     # probe that failed, which is what D-027 forbids for this function.
     if tf_unreadable:
-        return "unknown"
-    return "native"
+        return "unknown", "docker-unreadable"
+    return "native", ""
 
 
-def _mode_message(mode: str) -> str | None:
+def current_mode() -> str:
+    """The deployment mode alone; see `_current_mode_with_reason` for the cause."""
+    return _current_mode_with_reason()[0]
+
+
+def _mode_message(mode: str, cause: str = "") -> str | None:
     """Explain why canary doesn't apply outside Kubernetes mode, and which mode provides it.
 
     `None` means "canary does apply here", which is only ever Kubernetes mode.
@@ -713,11 +718,24 @@ def _mode_message(mode: str) -> str | None:
     """
     if mode == "kubernetes":
         return None
-    return _non_kubernetes_mode_message(mode)
+    return _non_kubernetes_mode_message(mode, cause)
 
 
-def _non_kubernetes_mode_message(mode: str) -> str:
-    """The reason canary state is unavailable in `mode`, for a caller that knows it isn't Kubernetes."""
+def _non_kubernetes_mode_message(mode: str, cause: str = "") -> str:
+    """The reason canary state is unavailable in `mode`, for a caller that knows it isn't Kubernetes.
+
+    `cause` distinguishes the two ways the mode can be unknown. They need
+    opposite operator responses, and naming the wrong one sends the reader to
+    kubeconfig when the actual fault is a Docker group they are not in.
+    """
+    if mode == "unknown" and cause == "docker-unreadable":
+        return (
+            "Could not determine the deployment mode: this process cannot read Docker, "
+            "so whether a Terraform-managed stack is running here is unknown -- no "
+            "Kubernetes probe was run. Add yourself to the docker group "
+            "(`sudo usermod -aG docker $USER`, then `sudo loginctl terminate-user $USER` "
+            "or reboot) and re-run."
+        )
     if mode == "unknown":
         return (
             f"Could not determine the deployment mode: the Kubernetes probe "
@@ -1332,7 +1350,7 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
     call per stable Pod on every status poll, which is not worth spending
     when there is no canary to compare it against.
     """
-    mode = current_mode()
+    mode, mode_cause = _current_mode_with_reason()
     spec, err = _component_spec(component)
     if spec is None:
         assert err is not None
@@ -1372,7 +1390,7 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
         stable_health = deployment_health(spec.stable_deployment, namespace)
         canary_health = deployment_health(spec.canary_deployment, namespace)
     else:
-        skipped = TrackHealth("not_deployed", _non_kubernetes_mode_message(mode))
+        skipped = TrackHealth("not_deployed", _non_kubernetes_mode_message(mode, mode_cause))
         stable_health = canary_health = skipped
     kubectl_present = _which("kubectl") is not None
     active = bool(state.get("active", False))
@@ -1385,7 +1403,7 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
     # remove. Outside Kubernetes mode the panels report the mode as the reason
     # they are not attributable, which is the honest answer.
     if not mode_supported:
-        unmeasured_reason = _non_kubernetes_mode_message(mode)
+        unmeasured_reason = _non_kubernetes_mode_message(mode, mode_cause)
         canary_metrics = TrackMetrics(track="canary", attributable=False, reason=unmeasured_reason)
         stable_metrics = TrackMetrics(track="stable", attributable=False, reason=unmeasured_reason)
     else:
@@ -1448,7 +1466,7 @@ def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[s
         ),
         "mode": mode,
         "mode_supported": mode_supported,
-        "mode_message": _mode_message(mode),
+        "mode_message": _mode_message(mode, mode_cause),
     }
 
 
