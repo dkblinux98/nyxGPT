@@ -4356,7 +4356,7 @@ def test_install_homebrew_api_already_up_to_date_uses_start_not_restart(monkeypa
     monkeypatch.setattr(
         ops,
         "_brew_install_or_reinstall",
-        lambda *a, **k: "already up to date (skipped reinstall)",
+        lambda *a, **k: ops._BrewInstallOutcome("already up to date (skipped reinstall)"),
     )
     run_calls = []
     monkeypatch.setattr(
@@ -4479,7 +4479,7 @@ def test_install_homebrew_web_already_up_to_date_uses_start_not_restart(monkeypa
     monkeypatch.setattr(
         ops,
         "_brew_install_or_reinstall",
-        lambda *a, **k: "already up to date (skipped reinstall)",
+        lambda *a, **k: ops._BrewInstallOutcome("already up to date (skipped reinstall)"),
     )
     run_calls = []
     monkeypatch.setattr(
@@ -4613,10 +4613,10 @@ def test_brew_install_or_reinstall_installs_when_not_present(monkeypatch, tmp_pa
             else calls.append(cmd) or subprocess.CompletedProcess(cmd, 0)
         ),
     )
-    decision = ops._brew_install_or_reinstall(
-        "tap/nyxgpt-api", "nyxgpt-api", sha256="abc123", marker_dir=tmp_path
+    outcome = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="abc123", marker_dir=tmp_path, version="1.2.3"
     )
-    assert decision == "installed"
+    assert outcome.decision == "installed"
     assert ["brew", "fetch", "--force", "tap/nyxgpt-api"] in calls
     assert ["brew", "install", "--overwrite", "tap/nyxgpt-api"] in calls
     assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "abc123"
@@ -4631,10 +4631,10 @@ def test_brew_install_or_reinstall_reinstalls_when_source_changed(monkeypatch, t
         "_run",
         lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
     )
-    decision = ops._brew_install_or_reinstall(
-        "tap/nyxgpt-api", "nyxgpt-api", sha256="new-sha", marker_dir=tmp_path
+    outcome = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="new-sha", marker_dir=tmp_path, version="1.2.3"
     )
-    assert "reinstalled" in decision
+    assert "reinstalled" in outcome.decision
     assert ["brew", "reinstall", "tap/nyxgpt-api"] in calls
     assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "new-sha"
 
@@ -4648,10 +4648,10 @@ def test_brew_install_or_reinstall_skips_when_unchanged(monkeypatch, tmp_path):
         "_run",
         lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
     )
-    decision = ops._brew_install_or_reinstall(
-        "tap/nyxgpt-api", "nyxgpt-api", sha256="same-sha", marker_dir=tmp_path
+    outcome = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="same-sha", marker_dir=tmp_path, version="1.2.3"
     )
-    assert "skipped" in decision
+    assert "skipped" in outcome.decision
     assert calls == [["brew", "list", "--versions", "nyxgpt-api"]]
     assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "same-sha"
 
@@ -4674,7 +4674,7 @@ def test_brew_install_or_reinstall_raises_and_keeps_no_marker_on_failure(monkeyp
 
     with pytest.raises(RuntimeError, match="brew reinstall nyxgpt-api failed"):
         ops._brew_install_or_reinstall(
-            "tap/nyxgpt-api", "nyxgpt-api", sha256="newsha", marker_dir=tmp_path
+            "tap/nyxgpt-api", "nyxgpt-api", sha256="newsha", marker_dir=tmp_path, version="1.2.3"
         )
     assert not (tmp_path / ".nyxgpt-api.sha256").exists()
 

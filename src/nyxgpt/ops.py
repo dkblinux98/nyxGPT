@@ -927,9 +927,37 @@ _OUTPUT_EXCERPT_HEAD_LINES = 5
 _OUTPUT_EXCERPT_TAIL_LINES = 20
 _OUTPUT_EXCERPT_MAX_LINE_CHARS = 500
 
+# How many *salient* lines to rescue out of the elided middle (#3861), and
+# what makes a line salient.
+#
+# The head+tail bound above threw away the one thing worth keeping, twice, on
+# the same defect. Homebrew's post-install failure path prints its diagnosis
+# in the MIDDLE of stdout -- `FormulaInstaller#fix_dynamic_linkage` does
+# `ofail "Failed to fix install linkage"` to stderr and then `puts e` (the
+# actual exception) plus "The formula built, but ..." to stdout, before the
+# caveats and the `==> Summary` line that the tail then keeps. So the excerpt
+# in `~/.nyxGPT/logs/cli.log` for the 2026-08-21 acceptance failure ended at a
+# bare "Error: Failed to fix install linkage" with the cause inside
+# `... [42 lines omitted] ...`, and two diagnosis rounds were spent guessing
+# at it. (The 2026-07-29 instance of the *same* failure, logged before this
+# bounding existed, named its cause outright: `Error: Failed changing dylib ID
+# of .../tiktoken/_tiktoken.cpython-312-darwin.so from @rpath/... to
+# /opt/homebrew/opt/nyxgpt-api/...`.)
+#
+# A head+tail window is the wrong shape for a tool that reports progress at
+# both ends and failures in between. The fix is not a bigger window -- an
+# `npm ci` or a pip backtrack would blow any window -- it is to keep the lines
+# that say something went wrong, wherever they are, and to stay bounded by
+# capping how many of them are kept.
+_OUTPUT_EXCERPT_SALIENT_LINES = 12
+_OUTPUT_EXCERPT_SALIENT_RE = re.compile(
+    r"^\s*(?:error|warning|fatal|failed|exception|traceback)\b[: ]",
+    re.IGNORECASE,
+)
+
 
 def _bounded_output(text: str | None) -> str:
-    """Return `text` reduced to a bounded head+tail excerpt.
+    """Return `text` reduced to a bounded head+tail excerpt, keeping error lines.
 
     Empty/None input yields `""`. Short output is returned verbatim (stripped),
     so the common case reads exactly as it did before this bounding existed.
@@ -939,6 +967,14 @@ def _bounded_output(text: str | None) -> str:
     single line over `_OUTPUT_EXCERPT_MAX_LINE_CHARS` is clipped too, so one
     pathological line (a minified stack trace, a base64 blob) can't blow the
     bound on its own.
+
+    Up to `_OUTPUT_EXCERPT_SALIENT_LINES` lines from the elided middle that
+    look like an error/warning are carried out with the marker (the *last*
+    such lines, which sit nearest the failure), so a diagnosis printed
+    mid-stream survives the bound -- see `_OUTPUT_EXCERPT_SALIENT_LINES` for
+    the two occasions this cost. The rescued lines are labelled as coming
+    from the omitted region and are still shown in their original order, so
+    nothing here can be misread as the end of the output.
     """
     if not text or not text.strip():
         return ""
@@ -954,10 +990,20 @@ def _bounded_output(text: str | None) -> str:
     if len(lines) <= keep:
         return "\n".join(lines)
     omitted = len(lines) - keep
+    middle = lines[_OUTPUT_EXCERPT_HEAD_LINES : len(lines) - _OUTPUT_EXCERPT_TAIL_LINES]
+    salient = [line for line in middle if _OUTPUT_EXCERPT_SALIENT_RE.match(line)]
+    salient = salient[-_OUTPUT_EXCERPT_SALIENT_LINES:] if salient else []
+    marker = f"... [{omitted} lines omitted] ..."
+    if salient:
+        marker = (
+            f"... [{omitted} lines omitted; the {len(salient)} error/warning "
+            "line(s) among them follow] ..."
+        )
     return "\n".join(
         [
             *lines[:_OUTPUT_EXCERPT_HEAD_LINES],
-            f"... [{omitted} lines omitted] ...",
+            marker,
+            *salient,
             *lines[-_OUTPUT_EXCERPT_TAIL_LINES:],
         ]
     )
@@ -2164,22 +2210,59 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
     if _run(["brew", "tap-trust", REMOTE_TAP], check=False, expected=True).returncode != 0:
         _run(["brew", "trust", REMOTE_TAP], check=False, expected=True)
 
+    started_at = time.time()
     cp = _run(["brew", "install", spec], check=False)
+    warning = ""
     if cp.returncode != 0:
-        # An already-installed formula that the tap has since moved on from
-        # is an upgrade, not an install, and brew says so rather than doing
-        # it -- so try that before reporting a failure.
-        cp_upgrade = _run(["brew", "upgrade", spec], check=False)
-        if cp_upgrade.returncode != 0:
-            return [
-                OpsResult(
-                    False,
-                    f"Failed to install {spec} from the published tap",
-                    f"{_cp_details(cp)}\n{_cp_details(cp_upgrade)}",
+        # Two different nonzero exits arrive here and they are not the same
+        # thing (#3861).
+        #
+        # The first is a Homebrew post-install *soft* failure -- the install
+        # completed, an `ofail` step after it did not, and brew's exit status
+        # reports the latter. Resolve it against the keg, exactly as
+        # `_brew_install_or_reinstall` does; the two paths used to disagree
+        # about this class purely by accident, because the `brew upgrade`
+        # fallback below happens to exit 0 on an already-installed formula and
+        # so reported `ok` for the very failure the other path called fatal.
+        #
+        # The second is a genuine "already installed, this is an upgrade"
+        # refusal, which is what that fallback was written for -- and which is
+        # now decided on the keg too, because `brew upgrade` also exits 0 when
+        # it does nothing at all.
+        soft_failure = _brew_soft_failure_reason(_cp_details(cp))
+        verified, evidence = (
+            _verify_installed_brew_keg(
+                formula, spec=spec, entrypoint=name, installed_after=started_at
+            )
+            if soft_failure
+            else (False, "brew reported no post-install soft failure")
+        )
+        if soft_failure and verified:
+            warning = (
+                f"Homebrew reported a post-install soft failure and exited "
+                f"{cp.returncode}: {soft_failure}. The keg was still installed -- "
+                f"verified here, not assumed: {evidence}."
+            )
+        else:
+            cp_upgrade = _run(["brew", "upgrade", spec], check=False)
+            verified, evidence = _verify_installed_brew_keg(formula, spec=spec, entrypoint=name)
+            if not verified:
+                return [
+                    OpsResult(
+                        False,
+                        f"Failed to install {spec} from the published tap",
+                        f"{_cp_details(cp)}\n{_cp_details(cp_upgrade)}\n{evidence}",
+                    )
+                ]
+            if cp_upgrade.returncode != 0:
+                warning = (
+                    f"`brew upgrade {spec}` exited {cp_upgrade.returncode}, but the keg "
+                    f"verifies as installed and usable: {evidence}."
                 )
-            ]
 
     detail = f"version {version}"
+    if warning:
+        detail = f"{detail}\n{warning}"
     if formula != name:
         # brew names a service after its formula, so a candidate keg's
         # service is `nyxgpt-api@3.0.0rc`, not `nyxgpt-api`.
@@ -2201,12 +2284,241 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
             "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by. "
             "See docs/homebrew.md#candidate-channel."
         )
-    results = [OpsResult(True, f"Installed {formula} from {REMOTE_TAP}", detail)]
+    results = [
+        OpsResult(
+            True,
+            f"Installed {formula} from {REMOTE_TAP}",
+            detail,
+            status="WARN" if warning else "",
+        )
+    ]
     results.extend(_restart_brew_service(formula))
     return results
 
 
-def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir: Path) -> str:
+# Homebrew's post-build *soft* failures, verbatim from its own source
+# (`Library/Homebrew/formula_installer.rb`, lines 1214/1242/1250/1259/1313/1324
+# in the Homebrew this project runs against). Each of these is an `ofail`, not
+# an `odie`: the formula is already built, the keg is already in the Cellar and
+# `FormulaInstaller#finish` carries on past it -- it only sets `Homebrew.failed`,
+# which `brew.rb`'s `exit Homebrew.failed? ? 1 : 0` turns into an exit status of
+# 1 at the very end. So "brew exited 1" and "the install failed" are different
+# claims, and #3861's acceptance failure is what happens when ops treats them as
+# the same one.
+#
+# The failure the owner hit was `Failed to fix install linkage`. Its cause is
+# structural, not environmental: for a source build Homebrew runs
+# `fix_dynamic_linkage` unconditionally (`formula_installer.rb:999` -- only a
+# *poured bottle* with `skip_relocation` may skip it, and this project ships no
+# bottles), and that step rewrites the `LC_ID_DYLIB` install name of every
+# Mach-O dylib in the keg to the keg's full `opt` path. `tiktoken`'s
+# maturin-built `_tiktoken.cpython-312-darwin.so` is such a dylib, its ID is the
+# 38-byte `@rpath/_tiktoken.cpython-312-darwin.so`, and the replacement
+# (`/opt/homebrew/opt/nyxgpt-api/libexec/venv/lib/python3.12/site-packages/
+# tiktoken/_tiktoken.cpython-312-darwin.so`) is ~111 bytes, which does not fit
+# the load-command padding the wheel was linked with -- ruby-macho raises and
+# `Keg#change_dylib_id` re-raises. That is exactly what the 2026-07-29 log
+# recorded, in full, before ops' output bounding started eliding it.
+#
+# Nothing is actually broken by that failure: an `@rpath` ID on a Python
+# extension module is correct, because CPython `dlopen`s it by path and nothing
+# ever links against its ID -- which is why `brew linkage` reported the keg
+# clean while `brew` had exited 1.
+#
+# There is no formula-level setting that can prevent it, so ops cannot make the
+# nonzero exit go away. What it can do is stop using an ambiguous signal: the
+# exit code says brew ran and something in it failed, not *what*. So a nonzero
+# exit is resolved against the keg itself (`_verify_brew_keg`) -- the same move
+# `_stop_brew_service` already makes in the other direction, where brew exits 0
+# without having de-registered anything.
+_BREW_SOFT_FAILURE_MARKERS: tuple[str, ...] = (
+    "Failed to fix install linkage",
+    "The `brew link` step did not complete successfully",
+    "An unexpected error occurred during the `brew link` step",
+    "Failed to install service files",
+    "Failed to create ",
+)
+
+
+def _brew_soft_failure_reason(output: str) -> str | None:
+    """The Homebrew post-install soft failure `output` reports, or None.
+
+    Matches only the `ofail` wordings listed in `_BREW_SOFT_FAILURE_MARKERS`,
+    and only on a line brew itself marked as an error (`Error: ...`), so an
+    incidental mention in a caveats block or in a formula's own build log
+    cannot be read as one. If Homebrew rewords one of these, this returns None
+    and the caller falls back to treating the exit as fatal -- the safe
+    direction, and a visible one, because the operator then sees the raw
+    Homebrew text in the failure detail.
+    """
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Error:"):
+            continue
+        detail = stripped[len("Error:") :].strip()
+        for marker in _BREW_SOFT_FAILURE_MARKERS:
+            if detail.startswith(marker):
+                return detail
+    return None
+
+
+def _brew_path(flag: str) -> Path | None:
+    """`brew --prefix`/`--cellar` (no formula argument), or None if brew can't say.
+
+    Deliberately called without a formula name: with two taps carrying the same
+    formula names -- every machine that has tested the published tap alongside
+    the local one -- `brew --prefix <bare name>` is ambiguous and errors, while
+    the bare directory query never is (#3861).
+    """
+    if _which("brew") is None:
+        return None
+    cp = _run(["brew", flag], check=False, expected=True, timeout=60)
+    if cp.returncode != 0 or not (cp.stdout or "").strip():
+        return None
+    return Path((cp.stdout or "").strip().splitlines()[0])
+
+
+def _verify_brew_keg(
+    formula: str,
+    *,
+    version: str,
+    spec: str,
+    entrypoint: str,
+    installed_after: float | None = None,
+) -> tuple[bool, str]:
+    """Is the keg `formula`@`version` really installed, linked and usable?
+
+    This is the observation that replaces trusting `brew`'s exit code (see
+    `_BREW_SOFT_FAILURE_MARKERS`). Every check is against the machine, none
+    against what brew said:
+
+    1. the keg directory exists in the Cellar at exactly `version`;
+    2. its `INSTALL_RECEIPT.json` parses, and -- when `installed_after` is
+       given -- was written at or after that moment. This is the check that
+       stops a *restored backup* from reading as a successful reinstall:
+       `brew reinstall` moves the old keg aside and puts it back if the build
+       dies, so the directory and the version both survive a genuine failure
+       and only the receipt's timestamp tells the two apart;
+    3. `<prefix>/opt/<formula>` resolves to that keg -- the `opt` path is what
+       the generated LaunchAgent plist execs, so a keg with no `opt` link is
+       not runnable however complete it looks;
+    4. the keg's `bin/<entrypoint>` exists and is executable;
+    5. `brew linkage --test <spec>` finds no missing libraries.
+
+    Returns `(ok, detail)`, where `detail` names the first check that failed
+    (or lists what passed) so a failure is never reported as a bare "not
+    verified".
+    """
+    cellar = _brew_path("--cellar")
+    prefix = _brew_path("--prefix")
+    if cellar is None or prefix is None:
+        return False, "could not read `brew --cellar`/`brew --prefix`"
+
+    keg = cellar / formula / version
+    if not keg.is_dir():
+        return False, f"no keg at {keg}"
+
+    receipt = keg / "INSTALL_RECEIPT.json"
+    try:
+        receipt_data = json.loads(receipt.read_text(encoding="utf-8"))
+        receipt_time = float(receipt_data.get("time", 0))
+    except (OSError, ValueError, TypeError):
+        return False, f"unreadable install receipt at {receipt}"
+    if installed_after is not None and receipt_time + 5 < installed_after:
+        return False, (
+            f"the keg at {keg} predates this install "
+            f"(receipt time {receipt_time:.0f} < {installed_after:.0f}) -- brew restored "
+            "the previous keg rather than completing this one"
+        )
+
+    opt = prefix / "opt" / formula
+    try:
+        opt_ok = opt.resolve() == keg.resolve()
+    except OSError:
+        opt_ok = False
+    if not opt_ok:
+        return False, f"{opt} does not resolve to {keg}"
+
+    exe = keg / "bin" / entrypoint
+    if not (exe.is_file() and os.access(exe, os.X_OK)):
+        return False, f"no executable {exe}"
+
+    linkage = _run(["brew", "linkage", "--test", spec], check=False, expected=True, timeout=300)
+    if linkage.returncode != 0:
+        return False, (
+            f"`brew linkage --test {spec}` reports missing libraries:\n"
+            f"{_output_excerpt(linkage)}"
+        )
+
+    # Reported, deliberately NOT gated on. `<prefix>/bin/<entrypoint>` is the
+    # PATH-visible symlink, and it is exactly what Homebrew's `brew link`
+    # `ofail` leaves unmade -- but the case that produces it here is two kegs
+    # of the same component owning one link (the owner's 2026-08-17 run, where
+    # `nyxgpt-api@3.0.0rc` held `/opt/homebrew/bin/nyxgpt-api`), and in that
+    # state the command still runs, from the other keg. Failing the whole
+    # install on it would turn a benign collision into a hard stop, so the
+    # answer is carried into the warning instead of into the verdict. The
+    # *service* does not depend on it either way: the plist execs the `opt`
+    # path checked above.
+    link = prefix / "bin" / entrypoint
+    if not link.exists():
+        link_state = f"{link} is NOT linked (run `nyxgpt ops doctor` to see what owns it)"
+    elif link.resolve() == exe.resolve():
+        link_state = f"{link} points at this keg"
+    else:
+        link_state = f"{link} points at {link.resolve()}, not this keg"
+
+    return True, (
+        f"keg {keg} is complete, linked at {opt}, `brew linkage --test` is clean; {link_state}"
+    )
+
+
+def _verify_installed_brew_keg(
+    formula: str,
+    *,
+    spec: str,
+    entrypoint: str,
+    installed_after: float | None = None,
+) -> tuple[bool, str]:
+    """`_verify_brew_keg` against whatever version of `formula` is installed now.
+
+    For the published tap the expected version is a moving target -- the tap
+    can carry a newer release candidate than the running artifact reports --
+    so pinning the check to a version this process computed would fail a
+    perfectly good install. What matters there is that *a* complete keg of
+    this formula is installed; the freshness half of the check
+    (`installed_after`) still says whether this run produced it.
+    """
+    version = _installed_keg_version(formula)
+    if version is None:
+        return False, f"no installed keg for {formula}"
+    return _verify_brew_keg(
+        formula,
+        version=version,
+        spec=spec,
+        entrypoint=entrypoint,
+        installed_after=installed_after,
+    )
+
+
+@dataclass(frozen=True)
+class _BrewInstallOutcome:
+    """What `_brew_install_or_reinstall` decided, plus any soft failure it tolerated.
+
+    `warning` is empty on a clean install. When brew reported a post-install
+    soft failure that the keg verification then contradicted, it carries the
+    Homebrew wording and the evidence -- so an operator is told the install
+    step did not fully succeed even though the component is usable, rather
+    than being shown a bare "installed" that hides it.
+    """
+
+    decision: str
+    warning: str = ""
+
+
+def _brew_install_or_reinstall(
+    spec: str, name: str, *, sha256: str, marker_dir: Path, version: str, entrypoint: str = ""
+) -> _BrewInstallOutcome:
     """`brew install`/`reinstall` formula `name`, skipping the work when unchanged.
 
     Compares the just-built tarball's `sha256` against the one recorded the
@@ -2220,10 +2532,19 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     without it brew would reinstall from a stale cached tarball and fail the
     formula's sha256 check.
 
-    Returns a short human-readable string describing which of the three
-    decisions was made ("installed" / "reinstalled (source changed)" /
-    "already up to date (skipped)"), for the caller to report.
+    Returns a `_BrewInstallOutcome`: which of the three decisions was made
+    ("installed" / "reinstalled (source changed)" / "already up to date
+    (skipped)"), plus any Homebrew post-install soft failure that was
+    tolerated because the keg verified complete anyway.
+
+    A nonzero exit from brew is NOT taken at face value (#3861). If it names
+    one of Homebrew's post-build `ofail` steps *and* `_verify_brew_keg` finds
+    the keg complete, linked and clean, the install is reported as done with
+    that warning attached; anything else still raises. See
+    `_BREW_SOFT_FAILURE_MARKERS` for why both halves are required and why
+    neither alone would do.
     """
+    entrypoint = entrypoint or name
     installed = (
         _run(["brew", "list", "--versions", name], check=False, expected=True).returncode == 0
     )
@@ -2231,9 +2552,10 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     previous_sha256 = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
 
     if installed and previous_sha256 == sha256:
-        return "already up to date (skipped reinstall)"
+        return _BrewInstallOutcome("already up to date (skipped reinstall)")
 
     _run(["brew", "fetch", "--force", spec], check=False)
+    started_at = time.time()
     if installed:
         cp = _run(["brew", "reinstall", spec], check=False)
         action, decision = "reinstall", "reinstalled (source changed since last install)"
@@ -2241,18 +2563,50 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
         cp = _run(["brew", "install", "--overwrite", spec], check=False)
         action, decision = "install", "installed"
 
+    warning = ""
     if cp.returncode != 0:
-        # Surface the failure instead of reporting a false success, and do NOT
-        # record the checksum: writing the marker on a failed build would make
-        # the next run see a matching checksum and skip, so the broken install
-        # would never be retried (the bug that let a failed api keg rebuild
-        # report "reinstalled" and then stick as a stale wrapper).
         detail = _output_excerpt(cp)
-        raise RuntimeError(f"brew {action} {name} failed: {detail}")
+        soft_failure = _brew_soft_failure_reason(_cp_details(cp))
+        verified, evidence = (
+            _verify_brew_keg(
+                name,
+                version=version,
+                spec=spec,
+                entrypoint=entrypoint,
+                installed_after=started_at,
+            )
+            if soft_failure
+            else (False, "brew reported no post-install soft failure")
+        )
+        if not (soft_failure and verified):
+            # Surface the failure instead of reporting a false success, and do
+            # NOT record the checksum: writing the marker on a failed build
+            # would make the next run see a matching checksum and skip, so the
+            # broken install would never be retried (the bug that let a failed
+            # api keg rebuild report "reinstalled" and then stick as a stale
+            # wrapper).
+            raise RuntimeError(f"brew {action} {name} failed: {detail}\n{evidence}")
+        warning = (
+            f"Homebrew reported a post-install soft failure and exited "
+            f"{cp.returncode}: {soft_failure}. The keg was still built and "
+            f"installed -- verified here, not assumed: {evidence}. This is an "
+            "`ofail` in Homebrew's own post-install phase (it sets the exit "
+            "status without stopping the install), so the component is usable; "
+            "nothing to retry."
+        )
+        logger.warning(
+            "ops: brew %s %s exited %d on a post-install soft failure (%s); keg verified: %s",
+            action,
+            name,
+            cp.returncode,
+            soft_failure,
+            evidence,
+            extra={"component": "ops", "formula": name, "soft_failure": soft_failure},
+        )
 
     _ensure_dir(marker_dir)
     marker.write_text(sha256, encoding="utf-8")
-    return decision
+    return _BrewInstallOutcome(decision, warning)
 
 
 # Where `_docker_build_if_needed` records the sha256 fingerprint of the source
@@ -2364,6 +2718,112 @@ _API_IMAGE_FINGERPRINT_RELPATHS = (
 _API_IMAGE_FINGERPRINT_PATHS = [REPO_ROOT / rel for rel in _API_IMAGE_FINGERPRINT_RELPATHS]
 
 
+def _installed_keg_version(formula: str) -> str | None:
+    """The version of the currently installed `formula` keg, or None if there is none.
+
+    Read off the Cellar directory rather than `brew list --versions <name>`,
+    for the reason `_brew_path` records: with two taps carrying the same
+    formula names a bare name is ambiguous to brew, and the Cellar layout
+    never is. When several versions are present the one `<prefix>/opt/<formula>`
+    resolves to wins -- that is the keg the service's plist actually execs --
+    falling back to the highest-sorting directory name.
+    """
+    cellar = _brew_path("--cellar")
+    if cellar is None:
+        return None
+    versions = sorted(p.name for p in (cellar / formula).glob("*") if p.is_dir())
+    if not versions:
+        return None
+    prefix = _brew_path("--prefix")
+    if prefix is not None:
+        opt = prefix / "opt" / formula
+        try:
+            linked = opt.resolve().name
+        except OSError:
+            linked = ""
+        if linked in versions:
+            return linked
+    return versions[-1]
+
+
+def _recover_after_failed_native_install(
+    formula: str, *, component: str, entrypoint: str
+) -> list[OpsResult]:
+    """Leave a running stack -- or a wrapped way back to one -- after a failed install step.
+
+    #3861's second finding, and a violation in its own right: when the api and
+    web install steps failed, ops never reached their `brew services restart`
+    calls, so a machine that had been serving on :8000/:3000 was left with
+    every registration stopped and no listener at all. The only route back was
+    raw `brew services start` plus `brew services info`, which is exactly what
+    CLAUDE.md's Operational Command Wrapping rule says an operator must never
+    need.
+
+    So a failed install no longer ends the step. If a *complete* keg for the
+    component is still installed -- verified against the machine by
+    `_verify_brew_keg`, not assumed from the fact that a directory exists --
+    its service is (re)started here, and the operator is told which build is
+    now serving. If there is no usable keg, nothing is started (starting a
+    half-written keg would trade "down" for "crash-looping") and the result
+    names the wrapped commands that diagnose and retry.
+
+    Either way the returned results carry `nyxgpt`-wrapped remediation only.
+    The install's own failure result is the caller's to append; nothing here
+    reports the install as having succeeded.
+    """
+    remediation = (
+        f"Retry with `nyxgpt up`; inspect with `nyxgpt ops doctor`, "
+        f"`nyxgpt ops status` and `nyxgpt ops logs {component}`. "
+        f"`nyxgpt ops restart {component}` restarts just this component."
+    )
+    version = _installed_keg_version(formula)
+    if version is None:
+        return [
+            OpsResult(
+                False,
+                f"No previously installed {formula} keg to fall back to; {component} stays down",
+                remediation,
+            )
+        ]
+
+    verified, evidence = _verify_brew_keg(
+        formula,
+        version=version,
+        spec=formula,
+        entrypoint=entrypoint,
+    )
+    if not verified:
+        return [
+            OpsResult(
+                False,
+                f"The installed {formula} {version} keg is not usable; {component} stays down",
+                f"{evidence}. {remediation}",
+            )
+        ]
+
+    results = _restart_brew_service(formula)
+    if all(r.ok for r in results):
+        results.append(
+            OpsResult(
+                True,
+                f"Recovery: {component} is running from the installed {formula} {version} keg",
+                f"The install step above failed, so this is the previous build, not a new one. "
+                f"{evidence}. {remediation}",
+                status="NOTE",
+            )
+        )
+    else:
+        results.append(
+            OpsResult(
+                False,
+                f"Recovery: could not start {component} from the installed "
+                f"{formula} {version} keg",
+                remediation,
+            )
+        )
+    return results
+
+
 def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
     """Build and install the `nyxgpt-api` Homebrew formula into `tap`, then (re)start the service.
 
@@ -2420,9 +2880,28 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     dst.write_text(content, encoding="utf-8")
     results.append(OpsResult(True, "Installed nyxgpt-api formula", str(dst)))
 
-    decision = _brew_install_or_reinstall(
-        f"{tap}/nyxgpt-api", "nyxgpt-api", sha256=sha, marker_dir=tap_dir / "dist"
-    )
+    try:
+        outcome = _brew_install_or_reinstall(
+            f"{tap}/nyxgpt-api",
+            "nyxgpt-api",
+            sha256=sha,
+            marker_dir=tap_dir / "dist",
+            version=version,
+        )
+    except RuntimeError as exc:
+        # The install really failed (not one of Homebrew's post-install soft
+        # failures -- `_brew_install_or_reinstall` has already resolved those
+        # against the keg). Report it, then leave the operator a stack rather
+        # than a hole: #3861.
+        results.append(OpsResult(False, "Failed to install nyxgpt-api", str(exc)))
+        results.extend(
+            _recover_after_failed_native_install(
+                "nyxgpt-api", component="api", entrypoint="nyxgpt-api"
+            )
+        )
+        return results
+
+    decision = outcome.decision
     if decision == "already up to date (skipped reinstall)":
         _run(["brew", "services", "start", "nyxgpt-api"], check=False)
         results.append(OpsResult(True, f"nyxgpt-api: {decision}; requested service start", ""))
@@ -2430,7 +2909,14 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
         # A new keg was just installed -- restart, not start, so the running
         # process actually picks it up instead of continuing to serve the
         # old build's code (#3472).
-        results.append(OpsResult(True, f"nyxgpt-api: {decision}", ""))
+        results.append(
+            OpsResult(
+                True,
+                f"nyxgpt-api: {decision}",
+                outcome.warning,
+                status="WARN" if outcome.warning else "",
+            )
+        )
         results.extend(_restart_brew_service("nyxgpt-api"))
 
     return results
@@ -2489,9 +2975,25 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     dst.write_text(content, encoding="utf-8")
     results.append(OpsResult(True, "Installed nyxgpt-web formula", str(dst)))
 
-    decision = _brew_install_or_reinstall(
-        f"{tap}/nyxgpt-web", "nyxgpt-web", sha256=sha, marker_dir=tap_dir / "dist"
-    )
+    try:
+        outcome = _brew_install_or_reinstall(
+            f"{tap}/nyxgpt-web",
+            "nyxgpt-web",
+            sha256=sha,
+            marker_dir=tap_dir / "dist",
+            version=version,
+        )
+    except RuntimeError as exc:
+        # See `_install_homebrew_api` -- same contract, same reason (#3861).
+        results.append(OpsResult(False, "Failed to install nyxgpt-web", str(exc)))
+        results.extend(
+            _recover_after_failed_native_install(
+                "nyxgpt-web", component="web", entrypoint="nyxgpt-web"
+            )
+        )
+        return results
+
+    decision = outcome.decision
     if decision == "already up to date (skipped reinstall)":
         _run(["brew", "services", "start", "nyxgpt-web"], check=False)
         results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
@@ -2499,7 +3001,14 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
         # A new keg (and new `.next` build output) was just installed --
         # restart, not start, so the running process actually picks it up
         # instead of continuing to serve the old build's chunk manifest.
-        results.append(OpsResult(True, f"nyxgpt-web: {decision}", ""))
+        results.append(
+            OpsResult(
+                True,
+                f"nyxgpt-web: {decision}",
+                outcome.warning,
+                status="WARN" if outcome.warning else "",
+            )
+        )
         results.extend(_restart_brew_service("nyxgpt-web"))
 
     return results
