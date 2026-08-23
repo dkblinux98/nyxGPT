@@ -359,7 +359,11 @@ def test_the_submit_script_runs_the_sweep_and_cannot_be_blocked_by_it() -> None:
     # cannot SPEAK: discarding its stderr made a broken sweep look identical to a
     # clean one, which is the silent-success defect this whole tool hunts. So the
     # contract is "runs, is heard, cannot stop the submission".
-    assert "2>/dev/null" not in block, (
+    # Check the CODE, not the prose: a comment explaining why the redirect was
+    # removed legitimately contains the string. Strip comment lines first --
+    # otherwise documenting the fix would fail the test that pins it.
+    code = "\n".join(line for line in block.split("\n") if not line.lstrip().startswith("#"))
+    assert "2>/dev/null" not in code, (
         "the sweep's stderr must not be discarded -- a broken sweep would then be "
         "indistinguishable from a clean one"
     )

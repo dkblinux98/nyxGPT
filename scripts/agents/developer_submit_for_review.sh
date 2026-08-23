@@ -298,9 +298,19 @@ if [[ -x "$SWEEP_SCRIPT" || -f "$SWEEP_SCRIPT" ]]; then
       cat "$sweep_md"
     } >> "$body_file"
   else
+    # The HARD-failure path -- the sweep exited nonzero, which is the mode that
+    # actually fired on this feature's own first submission. Capturing stderr
+    # and then not reading it here left a crashed sweep as silent as the
+    # `2>/dev/null` this commit removed: same defect, one branch over.
     _warn "inverse-claims sweep did not run; submitting without it (advisory only)."
+    if [[ -s "$sweep_err" ]]; then
+      echo "[dev] the sweep failed with:" >&2
+      cat "$sweep_err" >&2
+    else
+      echo "[dev] the sweep failed and produced no diagnostic output." >&2
+    fi
   fi
-  rm -f "$sweep_md"
+  rm -f "$sweep_md" "$sweep_err"
 fi
 
 # ---- Record a CI override as a claim, never as an excuse (#3971) ----

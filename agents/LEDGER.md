@@ -1513,6 +1513,21 @@ rather than mechanism, and nothing can enforce them.
   but **27% are asserted in 5 or more** and the worst single fact — what
   `nyxgpt ops status` reports — in **46**. So the sweep is necessary and is not
   sufficient; see Q-008.
+
+  **Provenance caveat, and it is load-bearing (review finding, #4019).** Those
+  numbers were produced *before* this same change fixed the sweep's silent
+  two-dot fallback, and the entry recorded no base/head pairs. Every one of
+  those PRs' pre-fix heads is an ancestor of `origin/v3.0.0`, which is exactly
+  the invocation where `base...head` is empty and the old code silently swept
+  the **reverse** direction. So the figures may be artifacts of the defect this
+  entry's own commit removes, and as recorded they cannot be audited or
+  reproduced. Treat them as **provisional**: the shape of the finding (a long
+  tail of heavily-restated facts) is corroborated independently — tuning noise
+  down by dropping over-frequent terms lost a known finding, because the thing
+  that makes a term look like noise *is* the duplication — but the specific
+  medians and maxima want a re-run under the fixed tool, with the exact refs
+  recorded, before anything is decided on them. Q-008 must not be answered
+  from these numbers alone.
   Source: #4015 (issue body + owner amendment); `scripts/agents/inverse_claims_sweep.py`;
   `agents/runbooks/developer-runbook.md` §5.
 
