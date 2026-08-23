@@ -7619,6 +7619,16 @@ K8S_NAMESPACE = "nyxgpt"
 K8S_APP_POD_PREFIXES = ("nyxgpt-api-", "nyxgpt-web-")
 K8S_IMAGE = "nyxgpt-api:local"
 
+# The workload that serves this deployment's LLM, and the URL its clients use
+# (#3987). `k8s/configmap.yaml` gives the api Pods `[ollama] base_url =
+# http://ollama:11434`, so that -- not the host's `127.0.0.1:11434` -- is the
+# Ollama a Kubernetes deployment's model readiness is a question about. The
+# fully-qualified name is what gets *printed*: an operator reading a status
+# report on the host has to be able to tell the two apart at a glance, and
+# `http://ollama:11434` alone resolves to nothing there.
+K8S_OLLAMA_WORKLOAD = "statefulset/ollama"
+K8S_OLLAMA_BASE_URL = f"http://ollama.{K8S_NAMESPACE}.svc.cluster.local:11434"
+
 # The deployment's data/LLM tier (#3786): the in-cluster Cassandra that holds
 # chat sessions for every api replica and the in-cluster Ollama that answers
 # them (k8s/statefulset-cassandra.yaml, k8s/statefulset-ollama.yaml). The
@@ -8731,6 +8741,112 @@ def _k8s_workload_selector(ref: str) -> str:
     if not isinstance(labels, dict) or not labels:
         return ""
     return ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+
+
+@dataclass(frozen=True)
+class K8sDeploymentProbe:
+    """One read of the nyxGPT namespace: what is deployed, or why that is unknown.
+
+    `determined` is the #3468 distinction the CLI was missing entirely: a
+    *configured* cluster whose Pod list could not be read is CANNOT DETERMINE,
+    and reporting it as "nothing deployed" is the false negative that issue
+    removed from the Infrastructure page. A machine with no kubectl, or a
+    kubectl with no current context, is not that case -- nothing there was
+    ever pointed at a cluster, so "not detected" is a fact rather than a guess.
+    """
+
+    pods: list[K8sWorkloadState]
+    reason: str = ""
+    determined: bool = True
+
+    @property
+    def deployed(self) -> bool:
+        """Whether a deployment is there -- Pods, not merely a reachable cluster.
+
+        Deliberately not the inverse of `determined`: an undetermined read is
+        not deployed *and* not "nothing deployed", which is why callers that
+        report to an operator ask both (see `summary`).
+        """
+        return bool(self.pods)
+
+    @property
+    def summary(self) -> str:
+        """The one-line rendering of this probe for a status report."""
+        if self.pods:
+            ready = sum(1 for p in self.pods if p.state == K8S_STATE_READY)
+            return f"{K8S_NAMESPACE} namespace: {ready}/{len(self.pods)} pod(s) ready"
+        if not self.determined:
+            return f"cannot determine ({self.reason})"
+        return f"not detected ({self.reason})"
+
+
+def _k8s_deployment_probe() -> K8sDeploymentProbe:
+    """Read the nyxGPT namespace once, for every block that needs to know (#3987).
+
+    `ops status` used to reach the cluster only in its own dedicated section at
+    the bottom, so every block above it -- the "Deployment mode" summary and
+    the required-model check -- described the native machine as though nothing
+    else could be serving, and the owner's Kubernetes acceptance run read as
+    "nothing is deployed" above 14 running Pods. Those blocks now take this
+    probe rather than each growing one of its own, which also means they
+    cannot disagree with each other about whether a deployment exists.
+
+    The current-context check comes before the Pod read on purpose: it is the
+    cheaper question, it is the one that is true on most machines running this
+    command, and it is what separates "no cluster here" from "a cluster that
+    did not answer" (see `K8sDeploymentProbe.determined`, and `infra_status`,
+    which classifies the dashboard's copy of this the same way).
+    """
+    if _which("kubectl") is None:
+        return K8sDeploymentProbe([], "kubectl not found")
+    if not _kubectl_context():
+        return K8sDeploymentProbe([], "no cluster configured -- kubectl has no current context")
+    states, read_failure = _k8s_pod_states(expected=True)
+    if read_failure is not None:
+        return K8sDeploymentProbe([], read_failure.message, determined=False)
+    return K8sDeploymentProbe(states, f"no pods in the {K8S_NAMESPACE} namespace")
+
+
+def _k8s_installed_model_names() -> tuple[set[str] | None, str, str]:
+    """The models the *in-cluster* Ollama holds; `(names, error_class, detail)`.
+
+    `names` is None when the cluster's Ollama could not be asked at all, and
+    `error_class` then names the failure in one classifier-style word. The
+    split is the #3837 contract: `required_models_status`'s dict is returned
+    verbatim by `GET /models/required`, so only `error_class` may travel with
+    it -- `detail` carries kubectl's own words (cluster names, node addresses,
+    proxy state) and goes to the log.
+
+    Read with `kubectl exec ... -- ollama list` rather than over HTTP because
+    the Service is a ClusterIP: from the host there is no route to
+    `http://ollama:11434` without a port-forward, and standing one up to
+    answer a status question would be a heavier side effect than the question
+    deserves. `statefulset/ollama` (not `ollama-0`) so the ref stays correct
+    if the StatefulSet is ever scaled or renamed by ordinal.
+    """
+    if _which("kubectl") is None:
+        return None, "KubectlNotFound", "kubectl is not on PATH"
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "exec", K8S_OLLAMA_WORKLOAD, "--", "ollama", "list"],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if timed_out(cp):
+        return None, "KubectlTimeout", f"the cluster {timeout_message(PROBE_TIMEOUT_SECONDS)}"
+    if cp.returncode != 0:
+        return None, "KubectlExecFailed", _cp_details(cp)
+    names: set[str] = set()
+    for line in (cp.stdout or "").splitlines():
+        fields = line.split()
+        # `ollama list` prints a NAME/ID/SIZE/MODIFIED table; the first column
+        # already carries the explicit tag, so `normalize_model_name` is a
+        # no-op on it and stays only so this set is comparable with the
+        # HTTP-path one without either caller knowing which produced it.
+        if not fields or fields[0].upper() == "NAME":
+            continue
+        names.add(model_bootstrap.normalize_model_name(fields[0]))
+    return names, "", ""
 
 
 def _k8s_blocked_pods(namespace: str = "", *, selector: str = "") -> list[K8sWorkloadState]:
@@ -11004,7 +11120,10 @@ def up(args) -> int:
 
 
 def required_models_status(
-    cfg: ConfigParser | None = None, cfg_path: Path | None = None
+    cfg: ConfigParser | None = None,
+    cfg_path: Path | None = None,
+    *,
+    kubernetes: bool = False,
 ) -> dict[str, Any]:
     """Report whether Ollama holds every model this install requires (#3824).
 
@@ -11015,6 +11134,23 @@ def required_models_status(
     `reachable` is False when Ollama could not be asked at all; `present` is
     then None per model rather than False, because "cannot tell" is not
     "missing".
+
+    `kubernetes=True` asks the Ollama *in the cluster* instead of the one this
+    machine's config names (#3987). It is a parameter rather than a probe
+    because only the caller knows which deployment the question is about: the
+    owner's Kubernetes acceptance run got `UNKNOWN (Ollama unreachable)` for
+    two models that `kubectl -n nyxgpt exec ollama-0 -- ollama list` showed
+    were both present, because the host has no Ollama on `127.0.0.1:11434`
+    and is not supposed to -- the install stops it. `ops status`/`ops doctor`
+    pass True when they have seen Pods; the API surface never does, and needs
+    not to: an api Pod's own config already points at `http://ollama:11434`,
+    which is the same Ollama by the route that actually exists from there.
+
+    The two sources are deliberately *not* merged or fallen back between. A
+    host that has both a native Ollama and a Kubernetes deployment has two
+    model stores that can legitimately differ, and answering "is this
+    deployment ready" out of the other one's store is the same class of false
+    report this parameter exists to end.
     """
     from nyxgpt.config import get_ollama_base_url, load_config
 
@@ -11030,26 +11166,48 @@ def required_models_status(
         # degrades to reporting those as MISSING/UNKNOWN, which is the honest
         # answer when there is no config to read.
         cfg = load_config(cfg_path) if cfg_path.exists() else ConfigParser()
-    base_url = get_ollama_base_url(cfg)
+    base_url = K8S_OLLAMA_BASE_URL if kubernetes else get_ollama_base_url(cfg)
     wanted = model_bootstrap.required_models(cfg)
 
     installed: set[str] | None
     error = ""
-    try:
-        installed = model_bootstrap.installed_model_names(base_url=base_url)
-    except Exception as e:
-        installed = None
-        # #3837 (CodeQL #129, py/stack-trace-exposure). Same fault class as
-        # #123 one file over, and found by the same sweep: this dict is
-        # returned straight out of `GET /models/required` (`app.py`), so a
-        # caught exception's message reaching it reaches a browser. The bare
-        # `except Exception` is the point -- whatever `installed_model_names`
-        # raises against an unreachable Ollama is an httpx transport error,
-        # and its string names the base URL's resolution failure and the
-        # host's proxy. The class is what the dashboard renders ("Ollama did
-        # not answer (ConnectError)"); the message goes to the log.
-        logger.warning("Ollama model lookup failed at %s", base_url, exc_info=e)
-        error = type(e).__name__
+    if kubernetes:
+        installed, error, detail = _k8s_installed_model_names()
+        if installed is None:
+            logger.warning(
+                "Ollama model lookup failed in the %s namespace (%s): %s",
+                K8S_NAMESPACE,
+                error,
+                detail,
+            )
+    else:
+        try:
+            installed = model_bootstrap.installed_model_names(base_url=base_url)
+        except Exception as e:
+            installed = None
+            # #3837 (CodeQL #129, py/stack-trace-exposure). Same fault class as
+            # #123 one file over, and found by the same sweep: this dict is
+            # returned straight out of `GET /models/required` (`app.py`), so a
+            # caught exception's message reaching it reaches a browser. The bare
+            # `except Exception` is the point -- whatever `installed_model_names`
+            # raises against an unreachable Ollama is an httpx transport error,
+            # and its string names the base URL's resolution failure and the
+            # host's proxy. The class is what the dashboard renders ("Ollama did
+            # not answer (ConnectError)"); the message goes to the log.
+            #
+            # Logged as one formatted line, not `exc_info=e` (#3987). The
+            # #3837 constraint is about what reaches the *browser* and is
+            # unchanged -- `error` is still the class name alone -- but the
+            # traceback was ~50 lines of urllib frames on the terminal of
+            # every `nyxgpt ops status`, printed two lines above the graceful
+            # "UNKNOWN (Ollama unreachable)" verdict it duplicated. An
+            # unreachable dependency is a normal outcome of a status probe,
+            # and the stack of a caught, handled exception says nothing an
+            # operator can act on that the class and message do not.
+            logger.warning(
+                "Ollama model lookup failed at %s: %s: %s", base_url, type(e).__name__, e
+            )
+            error = type(e).__name__
 
     missing = (
         []
@@ -11077,10 +11235,32 @@ def required_models_status(
     }
 
 
-def _print_required_models_status() -> None:
-    """Print the required-model readiness block of `nyxgpt ops status`."""
-    info = required_models_status()
-    print(f"\nRequired models (Ollama at {info['base_url']}):")
+def _print_required_models_status(
+    *, kubernetes: bool = False, cluster_unreadable: str = ""
+) -> None:
+    """Print the required-model readiness block of `nyxgpt ops status`.
+
+    `kubernetes=True` reports against the deployment's in-cluster Ollama --
+    see `required_models_status` for why the caller decides that and not this
+    function (#3987).
+
+    `cluster_unreadable` is the third state, and the one this block would
+    otherwise report dishonestly: a cluster is configured but its Pod list did
+    not come back, so nobody can say whether a deployment is there. The block
+    falls back to this host's Ollama -- there is nothing else left to ask --
+    but says so, because "PRESENT" printed under a Deployment mode block that
+    just said `cannot determine` reads as a statement about the deployment,
+    which is the class of false report this whole change exists to end.
+    """
+    info = required_models_status(kubernetes=kubernetes)
+    where = " (in-cluster)" if kubernetes else ""
+    print(f"\nRequired models (Ollama at {info['base_url']}{where}):")
+    if cluster_unreadable and not kubernetes:
+        print(
+            f"  Note: the {K8S_NAMESPACE} namespace could not be read ({cluster_unreadable}), "
+            "so these lines describe this host's Ollama only -- not any Kubernetes "
+            "deployment that may be running."
+        )
     # Reachable, though only one way: `required_models` falls back to the code
     # default when the key is *absent*, so this branch is not the no-config
     # case -- it is a config.ini that sets `default_model =` (and
@@ -11091,15 +11271,30 @@ def _print_required_models_status() -> None:
     if not info["reachable"]:
         for m in info["models"]:
             print(f"  {m['role']}: {m['model']} -- UNKNOWN (Ollama unreachable)")
-        print(
-            f"  Ollama did not answer ({info['error']}) -- run `nyxgpt ops status` again "
-            "once the ollama service is up."
+        # Named for the deployment being reported on: telling an operator to
+        # bring "the ollama service" up when the Ollama in question is a Pod
+        # points at the wrong machine (#3987).
+        next_step = (
+            f"check `kubectl -n {K8S_NAMESPACE} get pods -l app=ollama` -- the Pod that "
+            "serves this deployment is not answering"
+            if kubernetes
+            else "run `nyxgpt ops status` again once the ollama service is up"
         )
+        print(f"  Ollama did not answer ({info['error']}) -- {next_step}.")
         return
     for m in info["models"]:
         print(f"  {m['role']}: {m['model']} -- {'PRESENT' if m['present'] else 'MISSING'}")
     if not info["ready"]:
         print(f"  {info['remediation']}")
+        if kubernetes:
+            # `missing_models_hint` is written for the machine it runs on, and
+            # both commands it names act on this host's Ollama -- neither one
+            # reaches the Pod that is actually short of the model (#3987).
+            print(
+                "  Those commands pull into this host's Ollama, which is not what serves "
+                "this deployment -- re-run `nyxgpt ops install --kubernetes` to pull into "
+                "the cluster."
+            )
 
 
 def status(_args) -> int:
@@ -11112,12 +11307,26 @@ def status(_args) -> int:
     Kubernetes mode, when pods are present) each canary-capable component's
     stable/canary rollout state via `_serving_status` (see #3419).
 
+    Where a Kubernetes deployment is present it is named in the "Deployment
+    mode" block and the required-model check is asked of the *in-cluster*
+    Ollama rather than this host's (#3987) -- see `_k8s_deployment_pods`.
+
     Always returns 0.
     """
     logger.info("ops: status starting", extra={"component": "ops", "action": "status"})
     print("nyxGPT ops status")
 
     mode = detect_deployment_mode()
+    # Read once, up front, and passed to every block below that would
+    # otherwise assume the native machine is the whole story (#3987): the
+    # "Deployment mode" summary and the required-model check both used to be
+    # printed before this command ever looked at the cluster, so a fully
+    # running 14-Pod deployment was reported as "nothing detected" with its
+    # models UNKNOWN. The dedicated Kubernetes section further down reuses
+    # this same probe rather than paying for a second `kubectl get pods`.
+    k8s = _k8s_deployment_probe()
+    k8s_pods = k8s.pods
+    k8s_deployed = k8s.deployed
 
     # Printed before the component states, and per component below, so a
     # dev-mode pass can never be read as an artifact-path pass (#3789).
@@ -11222,6 +11431,16 @@ def status(_args) -> int:
             print(f"  compose {component}: {state}")
     else:
         print("  compose: not detected (no Docker Compose stack running)")
+    # Kubernetes belongs in the block *titled* "Deployment mode" (#3987). The
+    # Pods were already described further down in their own section, but a
+    # block that enumerates native/docker/compose/terraform and stops reads as
+    # "nothing is deployed" printed immediately above a running cluster --
+    # which is what the owner's Kubernetes acceptance run saw. This is the CLI
+    # cousin of #3828's "Detected mode: Nothing detected running" on the
+    # dashboard, on a different code path: `status`'s own structure, not
+    # `self_heal.detect_deployment_mode`, so that fix could not reach here.
+    pointer = " -- see the Kubernetes section below" if k8s_deployed else ""
+    print(f"  kubernetes: {k8s.summary}{pointer}")
     running_terraform = {c: s for c, s in mode.terraform.items() if _container_deployed(s)}
     if running_terraform:
         # Tri-state, matching the deployment line above: dev, artifact, or
@@ -11325,7 +11544,10 @@ def status(_args) -> int:
     if _which("docker") is None:
         print("\nDocker: docker not found")
 
-    _print_required_models_status()
+    _print_required_models_status(
+        kubernetes=k8s_deployed,
+        cluster_unreadable="" if k8s.determined else k8s.reason,
+    )
 
     tf_state = terraform_stack_state()
     if any(_container_deployed(state) for state in tf_state.values()):
@@ -11333,7 +11555,7 @@ def status(_args) -> int:
         for component, state in sorted(tf_state.items()):
             print(f"  terraform {component}: {state}")
 
-    if _which("kubectl") is not None:
+    if k8s_deployed:
         # Classified, not `kubectl get pods --no-headers` echoed verbatim
         # (#3827). That raw table renders a Pod pulling an image and a Pod no
         # node will ever take identically -- both just say `Pending` -- which
@@ -11341,7 +11563,11 @@ def status(_args) -> int:
         # command every failure message here tells the operator to run next.
         # Same classifier, same three labels, same reasons as the install's
         # own report.
-        pod_states, _ = _k8s_pod_states(expected=True)
+        #
+        # The Pods come from the single read taken at the top of this command
+        # (#3987) -- the blocks above report on the same deployment and must
+        # not be able to disagree with this section about whether it exists.
+        pod_states = k8s_pods
         if pod_states:
             context = _kubectl_context()
             cluster_note = (
@@ -11815,7 +12041,9 @@ def _ollama_env_drift_issue() -> str | None:
     return None
 
 
-def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
+def _missing_required_models_issue(
+    cfg_path: Path | None = None, *, kubernetes: bool = False
+) -> str | None:
     """Report a configured chat/embedding model Ollama does not have (#3824).
 
     `nyxgpt ops install` pulls both, so a machine missing one has either not
@@ -11827,6 +12055,15 @@ def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
     Silent when Ollama is unreachable: that is the ollama service's own
     failure, already reported by `nyxgpt ops status`/self-heal, and guessing
     "model missing" from it would misname the fault.
+
+    `kubernetes=True` asks the deployment's in-cluster Ollama instead of the
+    one this machine's config names, for the same reason `ops status` does
+    (#3987). Doctor's native-machine reading was not a false *report* here --
+    an unreachable host Ollama makes it silent rather than wrong -- but it was
+    a false *silence*: on a Kubernetes deployment the check never ran at all,
+    so the one fault it exists to catch, a Pod short of a model the config
+    requires, could not be found by the command an operator runs to find
+    faults.
     """
     from nyxgpt.config import get_ollama_base_url, load_config
 
@@ -11835,6 +12072,33 @@ def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
         return None
     try:
         cfg = load_config(cfg_path)
+        if kubernetes:
+            installed, error, detail = _k8s_installed_model_names()
+            if installed is None:
+                # The same silence as an unreachable native Ollama, and for
+                # the same reason: an Ollama that cannot be asked is a fault
+                # of its own, reported by the Pod lines in `ops status`, and
+                # inferring "model missing" from it would misname it.
+                logger.info(
+                    "ops: skipping the required-model check, the in-cluster Ollama did "
+                    "not answer: %s: %s",
+                    error,
+                    detail,
+                    extra={"component": "ops", "action": "doctor"},
+                )
+                return None
+            missing = [
+                m
+                for m in model_bootstrap.required_models(cfg)
+                if model_bootstrap.normalize_model_name(m.name) not in installed
+            ]
+            if not missing:
+                return None
+            return (
+                f"{model_bootstrap.missing_models_hint(missing)} That Ollama is the one "
+                f"in the {K8S_NAMESPACE} namespace, not this host's -- re-run "
+                "`nyxgpt ops install --kubernetes` to pull into the cluster."
+            )
         missing = model_bootstrap.missing_required_models(
             base_url=get_ollama_base_url(cfg), cfg=cfg
         )
@@ -12117,8 +12381,29 @@ def doctor(_args) -> int:
     install_mode = read_install_mode()
     print(f"Install mode (native api/web): {install_mode.label()}")
     k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
+    # Whether the checks below should be asking the cluster rather than this
+    # host (#3987). Gated on the marker so a machine that has never deployed
+    # to Kubernetes pays nothing for the question: `ops doctor` runs on every
+    # native install, and a `kubectl get pods` against a configured-but-absent
+    # cluster is a probe with a timeout attached. A marker left behind by a
+    # torn-down deployment just yields no Pods, and the native reading stands.
+    k8s = (
+        _k8s_deployment_probe()
+        if k8s_install_mode.recorded
+        else K8sDeploymentProbe([], "no Kubernetes install recorded on this machine")
+    )
+    k8s_deployed = k8s.deployed
     if k8s_install_mode.recorded:
         print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
+        # Said out loud, next to the mode, so the checks below are read
+        # against the right machine (#3987) -- doctor otherwise names a
+        # Kubernetes install mode and then reports exclusively on this host.
+        print(f"Kubernetes deployment: {k8s.summary}")
+        print(
+            "  Model readiness below is reported against the cluster, not this host."
+            if k8s_deployed
+            else "  The checks below report on this host."
+        )
         if k8s_install_mode.is_dev:
             k8s_checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
             if k8s_checkout is None or not k8s_checkout.is_dir():
@@ -12308,7 +12593,7 @@ def doctor(_args) -> int:
     if linux_ollama_conflict_issue:
         issues.append(linux_ollama_conflict_issue)
 
-    missing_models_issue = _missing_required_models_issue()
+    missing_models_issue = _missing_required_models_issue(kubernetes=k8s_deployed)
     if missing_models_issue:
         issues.append(missing_models_issue)
 

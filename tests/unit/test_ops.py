@@ -14157,6 +14157,11 @@ def test_status_classifies_pending_and_blocked_pods_apart(monkeypatch, capsys):
     }
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(pods))
         return CP(stdout="")
@@ -14193,6 +14198,11 @@ def test_status_classifies_observability_workloads(monkeypatch, capsys):
     """`0/1 ready` is PENDING in `ops status` too, not a bare count (#3827)."""
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
@@ -14230,6 +14240,11 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
@@ -14259,6 +14274,11 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")

@@ -36,6 +36,15 @@ name: Kubernetes Local Smoke
 # the manifests, the k8s half of the ops layer, the smoke script, or this
 # workflow change.
 #
+# Since #3987 it also runs `nyxgpt ops status` and `nyxgpt ops doctor` against
+# the live deployment (step 4) and asserts they report on IT, not on the
+# runner: the required models resolve PRESENT out of the in-cluster Ollama,
+# the "Deployment mode" block names Kubernetes, and neither command prints a
+# traceback. That defect is invisible to unit tests -- it is about which
+# machine the command asks -- and its pre-fix output (`127.0.0.1:11434` in the
+# Required models header, models UNKNOWN) happens naturally here, so no fault
+# injection is needed for the step to fail on a revert.
+#
 # A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
 # asked: does the install tell a Pod that is merely starting apart from one
 # that will never start? See scripts/k8s-pod-state-smoke.py.
@@ -45,7 +54,7 @@ on:
       - 'k8s/**'
       - 'src/nyxgpt/ops.py'
       # The Kubernetes half of self-heal is asserted against the live cluster
-      # in step 8 (#3828), so a change to it must re-run this job.
+      # in step 9 (#3828), so a change to it must re-run this job.
       - 'src/nyxgpt/self_heal.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
@@ -58,7 +67,7 @@ on:
       - 'k8s/**'
       - 'src/nyxgpt/ops.py'
       # The Kubernetes half of self-heal is asserted against the live cluster
-      # in step 8 (#3828), so a change to it must re-run this job.
+      # in step 9 (#3828), so a change to it must re-run this job.
       - 'src/nyxgpt/self_heal.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
