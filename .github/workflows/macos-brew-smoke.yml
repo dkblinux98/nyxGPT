@@ -1206,6 +1206,159 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "good: the web keg reports its own version ($VERSION) beside the API's ($UPSTREAM)"
 
+      - name: "A Homebrew post-install soft failure is not an install failure (#3861)"
+        # The owner's 2026-08-21 acceptance run: `nyxgpt up` reported `native
+        # api service` and `native web service` FAILED and left the machine
+        # with no listener on :8000 or :3000 -- while both kegs were complete,
+        # both `opt` links were intact and `brew linkage` was clean. The
+        # nonzero exit was real. What it reported was not the install.
+        #
+        # Homebrew's post-build phase uses `ofail`, not `odie`
+        # (`formula_installer.rb` lines 1214/1242/1250/1259/1313/1324). `ofail`
+        # sets `Homebrew.failed` and RETURNS: the installer finishes the keg,
+        # prints the caveats and `==> Summary`, and only `brew.rb`'s closing
+        # `exit Homebrew.failed? ? 1 : 0` turns the flag into a status of 1.
+        # `Failed to fix install linkage` -- the one the owner hit -- is
+        # unavoidable for a source build (`formula_installer.rb:999` runs
+        # `fix_dynamic_linkage` unconditionally unless a *poured bottle* opts
+        # out, and this project ships no bottles), so ops cannot make the exit
+        # go away. It can stop reading it as the install's verdict.
+        #
+        # THE CONDITION IS INJECTED, and it has to be: a runner installs one
+        # channel from one tap into a clean prefix, so no `ofail` fires here
+        # naturally. What is injected is the owner's own 2026-08-17 shape --
+        # a non-keg file sitting on the link target, so `brew link` cannot
+        # make the symlink -- because that member of the class reproduces
+        # deterministically while the tiktoken dylib-ID one depends on a wheel
+        # the resolver picks. Both are the same `ofail` path and the same exit
+        # status; the fix is aimed at the path, not at either wording.
+        #
+        # The dual-tap half of the same acceptance comment rides along: a
+        # SECOND tap carrying the same formula names is created first, so
+        # every brew call ops makes below is made on a machine where a bare
+        # formula name is ambiguous -- the state of every dev machine that has
+        # tested the published tap alongside the local one.
+        env:
+          SMOKE_VERSION: 3.0.0rc0
+        run: |
+          set -uo pipefail
+          FORMULA="nyxgpt-api@${SMOKE_VERSION%%rc*}rc"
+          SPEC="nyxgpt/brew-smoke/${FORMULA}"
+          KEG="$(brew --prefix "$FORMULA")"
+          LINK="$(brew --prefix)/bin/nyxgpt-api"
+
+          # --- the machine state: two taps, one formula name -------------
+          brew tap-new nyxgpt/dual-tap --no-git 2>/dev/null || brew tap-new nyxgpt/dual-tap
+          SECOND="$(brew --repository nyxgpt/dual-tap)"
+          mkdir -p "$SECOND/Formula"
+          cp dist/homebrew/*.rb "$SECOND/Formula/"
+          brew tap-trust nyxgpt/dual-tap || brew trust nyxgpt/dual-tap \
+            || echo "::warning::neither 'brew tap-trust' nor 'brew trust' accepted the second tap"
+          ambiguous=0
+          brew info "$FORMULA" > "$RUNNER_TEMP/ambiguity.log" 2>&1 || ambiguous=$?
+          echo "bare \`brew info $FORMULA\` exited $ambiguous"
+          if [ "$ambiguous" = "0" ]; then
+            echo "::error::two taps carry ${FORMULA} and brew still resolved the bare name -- this step is no longer running on the machine state #3861 describes"
+            exit 1
+          fi
+          grep -qi 'multiple taps' "$RUNNER_TEMP/ambiguity.log" || {
+            echo "--- brew info output ---"; cat "$RUNNER_TEMP/ambiguity.log"
+            echo "::error::the bare name failed, but not for tap ambiguity -- the dual-tap state was not reached"
+            exit 1
+          }
+          echo "good: the bare formula name is ambiguous, as it is on the owner's Mac"
+
+          # --- an interpreter that survives the keg being rebuilt ---------
+          # A copied venv still resolves its root from the executable's own
+          # location, and this one lives outside the Cellar -- so the reinstall
+          # below cannot pull site-packages out from under the process that is
+          # driving it.
+          cp -R "$KEG/libexec/venv" "$RUNNER_TEMP/opsvenv"
+          OPS_PY="$RUNNER_TEMP/opsvenv/bin/python3"
+          "$OPS_PY" -c 'from nyxgpt import ops; print("ops loaded from", ops.__file__)'
+
+          # --- inject: a non-keg file on the link target ------------------
+          rm -f "$LINK"
+          : > "$LINK"
+          test -f "$LINK" && ! test -L "$LINK" || {
+            echo "::error::could not plant a plain file at ${LINK}"; exit 1; }
+
+          # --- measure: raw brew, so the class is proved on this runner ---
+          rc=0
+          brew reinstall "$SPEC" > "$RUNNER_TEMP/ofail.log" 2>&1 || rc=$?
+          echo "raw \`brew reinstall\` exited $rc"
+          tail -30 "$RUNNER_TEMP/ofail.log"
+          if [ "$rc" = "0" ]; then
+            echo "::error::the injected link conflict did not make brew exit non-zero -- everything below would pass vacuously"
+            exit 1
+          fi
+          grep -q 'Error: The `brew link` step did not complete successfully' "$RUNNER_TEMP/ofail.log" || {
+            echo "::error::brew exited ${rc} for some reason other than the link ofail -- see the log above"
+            exit 1
+          }
+          brew list --versions "$FORMULA" || {
+            echo "::error::the keg is gone, so this is a real install failure and not the ofail case"
+            exit 1
+          }
+          test -x "$KEG/bin/nyxgpt-api" || {
+            echo "::error::the keg has no nyxgpt-api wrapper -- not the ofail case"; exit 1; }
+          echo "good: brew exited ${rc} with a complete keg -- the class #3861 is about, reproduced"
+
+          # --- the fix: ops resolves that exit against the keg ------------
+          cat > "$RUNNER_TEMP/soft_failure.py" <<'PY'
+          import pathlib
+          import sys
+
+          from nyxgpt import ops
+
+          spec, formula, version, marker_dir = sys.argv[1:5]
+
+          outcome = ops._brew_install_or_reinstall(
+              spec,
+              formula,
+              sha256="ci-3861",
+              marker_dir=pathlib.Path(marker_dir),
+              version=version,
+              entrypoint="nyxgpt-api",
+          )
+          print("DECISION:", outcome.decision)
+          print("WARNING:", outcome.warning)
+          if not outcome.warning:
+              sys.exit("ops reported a clean install -- brew's soft failure was not surfaced at all")
+          if "brew link" not in outcome.warning:
+              sys.exit("the warning does not name the Homebrew step that failed")
+
+          # The tolerance is not blanket, and this is the half that says so:
+          # a formula that does not exist fails BEFORE Homebrew has a keg, so
+          # there is nothing for the verification to find and the exit status
+          # must still be fatal.
+          try:
+              ops._brew_install_or_reinstall(
+                  "nyxgpt/brew-smoke/nyxgpt-no-such-formula",
+                  "nyxgpt-no-such-formula",
+                  sha256="ci-3861",
+                  marker_dir=pathlib.Path(marker_dir),
+                  version="0.0.0",
+                  entrypoint="nyxgpt-no-such-formula",
+              )
+          except RuntimeError as exc:
+              print("CONTROL: a real failure still raises:", str(exc).splitlines()[0])
+          else:
+              sys.exit("a formula that does not exist installed 'successfully' -- the tolerance is blanket")
+          PY
+          "$OPS_PY" "$RUNNER_TEMP/soft_failure.py" \
+            "$SPEC" "$FORMULA" "$SMOKE_VERSION" "$RUNNER_TEMP/marker" || {
+            echo "::error::ops did not survive a Homebrew post-install soft failure (#3861)"
+            exit 1
+          }
+
+          # --- restore, and prove the runner is whole for the steps after -
+          rm -f "$LINK"
+          brew link --overwrite "$SPEC" 2>&1 | tail -5
+          test -L "$LINK" || { echo "::error::${LINK} was not restored"; exit 1; }
+          command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the injection"; exit 1; }
+          nyxgpt --version
+
       - name: "Teardown: prove the wrapped uninstall clears what `brew uninstall` cannot"
         # #3859. The owner ran `brew uninstall` on both candidate formulas and
         # then `brew untap`, and was left with api and web still serving on

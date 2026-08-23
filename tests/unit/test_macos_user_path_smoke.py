@@ -1085,3 +1085,108 @@ def test_the_review_contract_refuses_component_evidence_for_a_scenario_criterion
     assert "#3516" in runbook, (
         "the rule lost the case that produced it, which is what makes it " "un-arguable in a review"
     )
+
+
+# --- the soft-failure step (#3861) -------------------------------------
+
+SOFT_FAILURE_STEP = "A Homebrew post-install soft failure is not an install failure (#3861)"
+
+
+def _keg_install_step(name: str) -> dict:
+    """One named step of `keg-install`, by its exact `name:`."""
+    steps = _workflow()["jobs"]["keg-install"]["steps"]
+    for step in steps:
+        if step.get("name") == name:
+            return step
+    raise AssertionError(
+        f"`keg-install` no longer has a step named {name!r}; "
+        f"it has {[s.get('name') for s in steps]}"
+    )
+
+
+def test_the_soft_failure_step_injects_the_condition_it_measures() -> None:
+    """A runner never reaches an `ofail` on its own, so the state is forced (#3861).
+
+    `keg-install` installs one channel from one tap into a clean prefix: no
+    link collides, nothing fails after the build, and a step that just ran
+    `brew install` and checked the exit code would be green whether or not ops
+    could survive the owner's machine. The condition is planted -- a non-keg
+    file on the link target -- and the raw `brew reinstall` is measured FIRST,
+    so the step fails loudly if the injection stops producing a nonzero exit
+    instead of passing vacuously.
+    """
+    run = _keg_install_step(SOFT_FAILURE_STEP)["run"]
+    assert ': > "$LINK"' in run, (
+        "the step no longer plants a non-keg file on the link target, so no "
+        "Homebrew post-install soft failure is produced and everything after "
+        "it passes without measuring anything"
+    )
+    assert "brew reinstall" in run and "ofail.log" in run, (
+        "the step no longer runs the raw `brew reinstall` whose exit status is "
+        "the thing under test"
+    )
+    assert "would pass vacuously" in run, (
+        "the non-vacuity guard is gone: a run where the injection silently "
+        "stopped working would read as evidence that the fix holds"
+    )
+
+
+def test_the_soft_failure_step_proves_the_keg_survived_the_nonzero_exit() -> None:
+    """ "Complete keg, exit 1" is the whole claim -- both halves are asserted.
+
+    The owner's report and this fix both rest on it: brew's `ofail` sets the
+    exit status *after* the keg is built and linked. A step that asserted only
+    the nonzero exit would equally match a build that died, which is the case
+    that must still be fatal.
+    """
+    run = _keg_install_step(SOFT_FAILURE_STEP)["run"]
+    assert "brew list --versions" in run and "$KEG/bin/nyxgpt-api" in run, (
+        "the step no longer proves the keg is complete after the failing "
+        "install, so it cannot tell an ofail from a real build failure"
+    )
+
+
+def test_the_soft_failure_step_runs_on_the_dual_tap_state() -> None:
+    """The other half of the same acceptance comment (#3861).
+
+    Every machine that has tested the published tap beside the local one
+    carries two taps with the same formula names, and on those machines a bare
+    formula name is an error. Running this step on a single-tap machine would
+    exercise brew calls that cannot be ambiguous.
+    """
+    run = _keg_install_step(SOFT_FAILURE_STEP)["run"]
+    assert "brew tap-new nyxgpt/dual-tap" in run, (
+        "the second tap is gone, so the step no longer runs on the machine "
+        "state the acceptance failure describes"
+    )
+    assert "multiple taps" in run, (
+        "the step no longer proves the bare name is actually ambiguous -- it "
+        "would keep passing on a machine where the dual-tap state was never "
+        "reached"
+    )
+
+
+def test_the_soft_failure_step_keeps_a_negative_control() -> None:
+    """The tolerance must not be blanket, and the runner is where that is proved.
+
+    Unit tests can assert it against a fake `brew`; this asserts it against the
+    real one, in the same process and the same machine state, so "ops ignores
+    brew's exit code now" cannot be true without this step going red.
+    """
+    run = _keg_install_step(SOFT_FAILURE_STEP)["run"]
+    assert "nyxgpt-no-such-formula" in run, (
+        "the negative control is gone: nothing in the runner then distinguishes "
+        "the fix from ops ignoring brew's exit status entirely"
+    )
+    assert (
+        "the tolerance is blanket" in run
+    ), "the control no longer fails when a nonexistent formula 'installs'"
+
+
+def test_the_soft_failure_step_restores_the_runner_it_broke() -> None:
+    """The steps after it install the web keg and prove the teardown."""
+    run = _keg_install_step(SOFT_FAILURE_STEP)["run"]
+    assert "brew link --overwrite" in run and "command -v nyxgpt" in run, (
+        "the step no longer restores the link it planted a file over, so every "
+        "later step in `keg-install` runs on a machine this one broke"
+    )

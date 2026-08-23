@@ -1495,6 +1495,45 @@ rather than mechanism, and nothing can enforce them.
   D-042 to the acceptance-failure standard above. IDs are never reused.
   Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
   `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
+- **D-045** · 2026-08-22 · developer-agent (#3861) — **A non-zero `brew` exit is
+  a question, not a verdict; ops answers it by reading the keg.** Homebrew's
+  post-build phase uses `ofail`, not `odie` (`formula_installer.rb` 1214 /
+  1242 / 1250 / 1259 / 1313 / 1324): it finishes the keg, makes the `opt`
+  link, prints the caveats, and only `brew.rb`'s closing
+  `exit Homebrew.failed? ? 1 : 0` turns the flag into a status. So "complete
+  keg, exit 1" is the *designed* shape, and `_brew_install_or_reinstall`
+  treating any non-zero exit as fatal is what failed the owner's 2026-08-21
+  `nyxgpt up`. On a non-zero exit ops now requires **both** a recognised
+  `ofail` wording and a keg that verifies against the machine (Cellar
+  directory at the built version, an `INSTALL_RECEIPT.json` written by this
+  run — which is what tells a fresh keg from the one `brew reinstall` restores
+  when a build really dies — the `opt` link resolving to it, an executable
+  entry point, and a clean `brew linkage --test`); anything else still raises,
+  and the source checksum that would let the next run skip is not recorded.
+  Consequences: (a) `Failed to fix install linkage` cannot be prevented — for a
+  source build `formula_installer.rb:999` runs `fix_dynamic_linkage`
+  unconditionally, only a poured bottle with `skip_relocation` may skip it, and
+  this project ships no bottles; do not go looking for a formula setting again.
+  (b) The cause is a `tiktoken` wheel whose Mach-O header cannot hold the
+  rewritten install name — cosmetic here, because CPython `dlopen`s an
+  extension by path and nothing links against its id, which is why
+  `brew linkage` was clean while `brew` exited 1. (c) The tap-trust warning in
+  those logs is **not** implicated: it names `shopify/shopify`, and its
+  apparent adjacency to the failure is an artifact of
+  `_combined_output_excerpt` bounding stdout and stderr separately and then
+  concatenating them. (d) There is no TTY/subprocess divergence — an
+  already-installed keg makes `brew install` a no-op that exits 0, which is
+  why the interactive retry "succeeded"; only a run that rebuilds reaches the
+  failing step. (e) `_install_from_remote_tap`'s `brew upgrade` fallback was
+  tolerating the same class *by accident* (upgrade exits 0 when it does
+  nothing) — both paths now decide on the keg.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3861; `src/nyxgpt/ops.py` (`_BREW_SOFT_FAILURE_MARKERS`,
+  `_verify_brew_keg`, `_recover_after_failed_native_install`);
+  `docs/homebrew.md` §When Homebrew exits non-zero on a keg that is complete;
+  `.github/workflows/macos-brew-smoke.yml` → `keg-install` → "A Homebrew
+  post-install soft failure is not an install failure (#3861)".
 
 ## Parked
 

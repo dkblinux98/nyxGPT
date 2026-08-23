@@ -233,6 +233,14 @@ lines with an explicit `... [N lines omitted] ...` marker between them, and
 an over-long single line is clipped with `... [line truncated]`. Nothing is
 dropped silently, and no failure is ever reported with zero output.
 
+A head-and-tail window is the wrong shape for a tool that reports progress at
+both ends and failures in between, so up to a dozen error/warning lines from
+the elided middle are carried out with the marker, which says how many
+(#3861). Homebrew is the case that produced this rule: it prints the *cause*
+of a failed post-install step mid-stream and its caveats afterwards, so the
+bound kept the headline and dropped the line that said why — and two rounds of
+diagnosis were spent on the difference.
+
 A step that checks several things reports one coherent status rather than a
 mix the reader has to reconcile (#3762):
 
@@ -322,6 +330,22 @@ This command:
   (`nyxgpt-web`) under `~/.nyxGPT/opt/<component>` and (re)starts their
   systemd --user units, unconditionally rebuilding on every run -- see
   [systemd.md](systemd.md#installing-the-services).
+- **macOS**: a non-zero exit from `brew` is resolved against the **keg**, not
+  taken as the install's verdict. Homebrew's post-build phase uses `ofail`,
+  which finishes the keg and then sets the exit status; the component is
+  reported installed with a `[WARN]` line naming the Homebrew step that
+  failed, and anything the keg check does not confirm is still a hard failure.
+  See [When Homebrew exits non-zero on a keg that is
+  complete](homebrew.md#when-homebrew-exits-non-zero-on-a-keg-that-is-complete)
+  for the mechanism and for what is checked (#3861).
+- When an `api`/`web` install step really does fail, the step does not simply
+  stop: if a complete keg for that component is still installed, its service is
+  started from it and the result says which build is now serving. The stack is
+  never left with the previous registrations stopped and nothing started in
+  their place, and the remediation names `nyxgpt` commands
+  (`nyxgpt up`, `nyxgpt ops doctor`, `nyxgpt ops status`,
+  `nyxgpt ops restart api|web`, `nyxgpt ops logs api|web`) — never a raw
+  `brew services` invocation (#3861).
 - Registers and loads the required log-follower agents (LaunchAgents on
   macOS, systemd --user units on Linux), including the Ollama logs follower
   (tails Ollama's logs into `~/.nyxGPT/logs/ollama.log`, from the

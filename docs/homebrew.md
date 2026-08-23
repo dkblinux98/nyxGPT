@@ -630,6 +630,57 @@ halves: with the preflight stripped out the install walks straight past the
 fault the way it used to, and with it in place `brew install` refuses before
 the venv exists.
 
+### When Homebrew exits non-zero on a keg that is complete
+
+`brew` exiting 1 and "the install failed" are different claims, and Homebrew
+says so itself. Its post-build phase uses `ofail`, not `odie` — five sites in
+`formula_installer.rb`: `Failed to create <opt_prefix>`, three `brew link`
+wordings, `Failed to install service files`, and `Failed to fix install
+linkage`. `ofail` sets a flag and *returns*: the installer finishes the keg,
+makes the `opt` link, prints the caveats and `==> Summary`, and only the
+closing `exit Homebrew.failed? ? 1 : 0` in `brew.rb` turns the flag into an
+exit status. So a complete, usable keg and an exit status of 1 arrive
+together, by design.
+
+`Failed to fix install linkage` is the one this install hits. For a source
+build Homebrew always runs `fix_dynamic_linkage` (only a *poured bottle* that
+declares `skip_relocation` may skip it, and nyxGPT ships no bottles), and that
+step rewrites the `LC_ID_DYLIB` install name of every Mach-O dylib in the keg
+to the keg's full `opt` path. `tiktoken`'s `_tiktoken.cpython-312-darwin.so`
+is such a dylib; its id is the 38-byte `@rpath/_tiktoken.cpython-312-darwin.so`
+and the replacement is ~111 bytes, which does not fit the load-command padding
+the wheel was linked with, so ruby-macho raises and Homebrew reports:
+
+```
+Error: Failed changing dylib ID of …/site-packages/tiktoken/_tiktoken.cpython-312-darwin.so
+  from @rpath/_tiktoken.cpython-312-darwin.so
+    to /opt/homebrew/opt/nyxgpt-api/libexec/venv/…/_tiktoken.cpython-312-darwin.so
+Error: Failed to fix install linkage
+```
+
+**Nothing is broken by it.** An `@rpath` id on a Python extension module is
+correct — CPython `dlopen`s it by path and nothing links against its id —
+which is why `brew linkage` reports the keg clean while `brew` has exited 1.
+There is no formula-level setting that can turn the step off, so nyxGPT cannot
+make the exit status go away.
+
+What `nyxgpt ops install` does instead is stop using the exit status as the
+verdict. On a non-zero exit it checks the **keg**: the Cellar directory at the
+version just built, an `INSTALL_RECEIPT.json` written by *this* run (which is
+what tells a freshly built keg from the previous one `brew reinstall` restores
+when a build really dies), `<prefix>/opt/<formula>` resolving to it, an
+executable entry point, and `brew linkage --test` finding nothing missing. If
+all of that holds *and* the message is one of Homebrew's five `ofail`
+wordings, the component is reported installed with a `[WARN]` line naming the
+step that failed. Anything else — an unrecognised error, or a keg that does
+not verify — is still a hard failure, and the checksum that would let the next
+run skip the rebuild is not recorded.
+
+Both halves are required on purpose. The wording alone would tolerate `Failed
+to create <opt_prefix>`, after which there is no usable component at all; the
+keg alone would tolerate a build that never ran, because a stale keg from the
+previous install is present on almost every machine.
+
 ### Why the build environment gets a `sitecustomize.py`
 
 Before it creates the venv, the `nyxgpt-api` install block writes a
