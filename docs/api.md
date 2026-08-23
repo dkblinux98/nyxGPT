@@ -472,7 +472,7 @@ per model — "cannot tell" is not "missing" — rather than as an error status.
   "ready": true,
   "remediation": "",
   "models": [
-    {"role": "chat", "model": "qwen3:0.6b", "setting": "[nyxgpt] default_model", "present": true},
+    {"role": "chat", "model": "qwen3.5:0.8b", "setting": "[nyxgpt] default_model", "present": true},
     {"role": "embedding", "model": "nomic-embed-text", "setting": "[rag] embedding_model", "present": true}
   ]
 }

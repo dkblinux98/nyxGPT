@@ -3681,3 +3681,39 @@ def test_batch_update_metadata_handles_exception(
     assert success == 0
     assert failure == 1
     assert failed == ["update-fail"]
+
+
+def test_auto_summarize_does_not_let_the_model_reason(tmp_path, monkeypatch):
+    """The costliest instance of D-048's class (#4029 review).
+
+    Auto-summarize ships ON (every 5 messages) and parses its output as JSON,
+    so nothing reads its reasoning -- yet it called ollama_chat without
+    `think`, leaving the shipped reasoning model to reason at its own default.
+    On a default install that meant every fifth message paying the
+    913-11,553-token nondeterministic cost this change exists to remove, whose
+    long tail blows this call's timeout and surfaces as "summarize failed".
+    """
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "think-off-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "Hello"})
+    msgs.append({"role": "assistant", "content": "Hi there"})
+    sessions.save_session_messages(sf, msgs)
+
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return json.dumps({"title": "T", "summary": "S", "tags": []})
+
+    monkeypatch.setattr(sessions, "ollama_chat", _capture)
+
+    ok, _msg = sessions.summarize_session("think-off-test", sessions_dir)
+    assert ok
+
+    assert seen, "ollama_chat was never called"
+    assert seen.get("think") is False, (
+        "auto-summarize let the model reason; nothing reads that reasoning and "
+        "it is what blows this call's timeout"
+    )
