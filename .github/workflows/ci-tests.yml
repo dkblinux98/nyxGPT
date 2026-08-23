@@ -80,6 +80,112 @@ jobs:
           PYTEST_ARGS: ${{ steps.select.outputs.pytest_args }}
         run: pytest $PYTEST_ARGS -v
 
+  # #4020: the suite was non-deterministic for eight months and nothing here
+  # could see it, because a clean runner has none of the shared machine state
+  # the flakes came from -- one operator `~/.nyxGPT/config.ini` that concurrent
+  # pytest sessions took turns overwriting. The single run above passes either
+  # way, so it is not a guard against that class returning.
+  #
+  # This job is. It runs the same suite twice in the same session with a second
+  # session deliberately overlapping the first, and fails if the two runs
+  # disagree about which tests failed. Under the fix each session has a private
+  # `$HOME` (tests/home_sandbox.py) and the overlap is a no-op; if anyone
+  # reintroduces a shared path under the real home, the concurrent run diverges
+  # from the solo one and this fails with both lists.
+  #
+  # Comparing the *set of failed node ids*, not the count: two runs failing 3
+  # tests each for different reasons is exactly the bug, and a count comparison
+  # calls it green.
+  determinism:
+    runs-on: ubuntu-latest
+    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install nyxgpt (editable, dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # An operator config is what turned this defect on: a runner with no
+      # ~/.nyxGPT never reproduced it. Seeding one whose values are the
+      # *opposite* of the suite's expectations means a leak of the machine's
+      # config into the suite shows up as failures rather than as nothing.
+      #
+      # This seed makes a leak *loud*; it is not what detects one. A read-only
+      # leak would fail both runs identically and slip past the diff below --
+      # `test_suite_runs_in_a_private_home` (tests/unit/test_session_config_isolation.py)
+      # is the assertion that catches the sandbox not being in effect, and it
+      # runs in the `test` job above like any other test.
+      - name: Seed an operator-style ~/.nyxGPT/config.ini
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          cat > "$HOME/.nyxGPT/config.ini" <<'EOF'
+          [nyxgpt]
+          default_model = operator-choice:latest
+          session_backend = cassandra
+
+          [tracing]
+          enabled = true
+
+          [monitoring]
+          enabled = true
+
+          [log_aggregation]
+          enabled = true
+
+          [error_tracking]
+          enabled = true
+          EOF
+          sha256sum "$HOME/.nyxGPT/config.ini" | tee /tmp/config-before.sha
+
+      - name: Run the unit suite twice, the second overlapping a third session
+        run: |
+          set -uo pipefail
+          run_suite() {  # $1 = report path
+            pytest tests/unit -p no:cacheprovider -q --no-header 2>&1 \
+              | tee "$1.log" \
+              | grep -E '^(FAILED|ERROR) ' | sed 's/ - .*//' | sort > "$1"
+            return 0
+          }
+          run_suite /tmp/run1.txt
+          # A concurrent session is the condition that produced #4020's
+          # 5/28/53/67 spread, and what it takes to reproduce is another
+          # session's *fixture setup and teardown* -- not a whole second suite.
+          # So the overlap is a one-file session on a loop: same hazard, far
+          # more of it per minute, and it costs a fraction of a suite run.
+          touch /tmp/keep-overlapping
+          ( while [ -e /tmp/keep-overlapping ]; do
+              pytest tests/unit/test_session_config_isolation.py \
+                -p no:cacheprovider -q --no-header >>/tmp/overlap.log 2>&1
+            done ) &
+          OVERLAP=$!
+          run_suite /tmp/run2.txt
+          rm -f /tmp/keep-overlapping
+          wait $OVERLAP || true
+
+          echo "::group::run 1 failures"; cat /tmp/run1.txt; echo "::endgroup::"
+          echo "::group::run 2 failures (concurrent)"; cat /tmp/run2.txt; echo "::endgroup::"
+          if ! diff -u /tmp/run1.txt /tmp/run2.txt; then
+            echo "::error::the unit suite is not deterministic -- two runs of the same" \
+                 "tree disagreed about which tests failed (see the diff above, #4020)"
+            exit 1
+          fi
+          echo "both runs agreed on $(wc -l < /tmp/run1.txt) failing test(s)"
+
+      - name: The suite must not have touched the operator's config
+        run: |
+          sha256sum -c /tmp/config-before.sha \
+            || { echo "::error::pytest modified ~/.nyxGPT/config.ini (#4020)"; exit 1; }
+          test ! -e "$HOME/.nyxGPT/config.ini.pytest-bak" \
+            || { echo "::error::pytest left a backup in the operator's ~/.nyxGPT (#4020)"; exit 1; }
+
   # The web gates (tsc / eslint / vitest) also lived only in the review workflow.
   # Self-gating on the diff rather than a workflow-level `paths:` filter, so the
   # job reports a definite conclusion on every PR instead of vanishing -- a check
