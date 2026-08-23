@@ -598,13 +598,16 @@ describe('AdminDashboardPage', () => {
           expect(screen.getByRole('button', { name: /restarting/i })).toBeInTheDocument();
         });
 
-        // 30 poll attempts at 1s each -- still pending every time.
+        // 90 poll attempts at 1s each -- still pending every time. The budget
+        // is sized for a restarted `api` process to come back and clear the
+        // flag itself (#3806), so it is deliberately longer than the restart
+        // command takes to return.
         await act(async () => {
-          await vi.advanceTimersByTimeAsync(31000);
+          await vi.advanceTimersByTimeAsync(91000);
         });
 
         await waitFor(() => {
-          expect(screen.getByText(/did not complete in time/i)).toBeInTheDocument();
+          expect(screen.getByText(/did not report finished in time/i)).toBeInTheDocument();
         });
         // Still shown -- a restart that never clears must not silently disappear.
         expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
