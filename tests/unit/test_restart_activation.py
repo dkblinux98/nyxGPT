@@ -21,6 +21,9 @@ The tests below cover the general mechanism rather than that one key:
 * `TestPendingState` -- the state is on disk (so the CLI writer and the API
   reader see one set), survives a process boundary, and retires itself on
   either a restart or a revert.
+* `TestSelfRestartCompletionSignal` -- a component cannot clear its own flag
+  from inside the process its restart kills, so the process that comes back
+  clears it instead.
 * `TestSurfaces` -- the CLI notice names the service and the wrapped command.
 """
 
@@ -290,6 +293,49 @@ class TestPendingState:
         state_file = tmp_path / "corrupt.json"
         state_file.write_text("{not json", encoding="utf-8")
         monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(state_file))
+        assert restart_state.snapshot() == {}
+
+
+class TestSelfRestartCompletionSignal:
+    """The flag a component cannot clear from inside the process it kills (#3806).
+
+    Round one of #3806 cleared the pending flag at the end of the callback that
+    performed the restart. For `web` that works -- the API process outlives it.
+    For `api` it cannot: the restart kills the process holding the callback, so
+    a *successful* restart left the flag on disk and the dashboard sat on
+    "Saved -- but not yet in effect" until it timed out. `clear_started` moves
+    the completion signal to the only actor that always survives to report it:
+    the process that came back.
+    """
+
+    def test_a_started_process_retires_its_own_pending_keys(self):
+        restart_state.mark_pending("api", {"cache.embedding_cache_enabled": "true"})
+        cleared = restart_state.clear_started("api", ["cache.embedding_cache_enabled"])
+        assert cleared == ["cache.embedding_cache_enabled"]
+        assert restart_state.snapshot() == {}
+
+    def test_it_never_touches_another_component(self):
+        """An `api` restart must not silently clear what `web` is still waiting for."""
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.mark_pending("web", {"auth.api_key": "old"})
+        restart_state.clear_started("api", ["api.port", "auth.api_key"])
+        assert restart_state.snapshot()["web"]["keys"] == ["auth.api_key"]
+
+    def test_a_key_marked_after_the_snapshot_survives(self):
+        """Conservative by design: the starting process may not have loaded it.
+
+        The caller snapshots what is pending *before* it reads its config, so a
+        write that landed after that read is not claimed as applied. A notice
+        that stays up one restart too long is honest; one that clears early is
+        the defect.
+        """
+        restart_state.mark_pending("api", {"api.port": "8000", "rag.cassandra_port": "9042"})
+        restart_state.clear_started("api", ["api.port"])
+        assert restart_state.snapshot()["api"]["keys"] == ["rag.cassandra_port"]
+
+    def test_nothing_pending_is_a_no_op(self):
+        assert restart_state.clear_started("api", ["api.port"]) == []
+        assert restart_state.clear_started("api", []) == []
         assert restart_state.snapshot() == {}
 
 
