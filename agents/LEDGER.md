@@ -1495,7 +1495,7 @@ rather than mechanism, and nothing can enforce them.
   D-042 to the acceptance-failure standard above. IDs are never reused.
   Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
   `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
-- **D-045** · 2026-08-22 · developer-agent (#3861) — **A non-zero `brew` exit is
+- **D-047** · 2026-08-22 · developer-agent (#3861) — **A non-zero `brew` exit is
   a question, not a verdict; ops answers it by reading the keg.** Homebrew's
   post-build phase uses `ofail`, not `odie` (`formula_installer.rb` 1214 /
   1242 / 1250 / 1259 / 1313 / 1324): it finishes the keg, makes the `opt`
