@@ -60,8 +60,11 @@ service-manager-agnostic layer.
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Iterable, Mapping
+import shutil
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 
 __all__ = [
     "LIVE_STATES",
@@ -274,3 +277,92 @@ def unique(names: Iterable[str]) -> list[str]:
             seen.add(name)
             ordered.append(name)
     return ordered
+
+
+# ---- Fully-qualified formula names (#3861, #4018 review) --------------------
+#
+# Lives here for the same D-022 reason the rest of this module does: `ops.py`
+# and `self_heal.py` both name Homebrew formulas, `ops.py` imports
+# `self_heal.py`, and two modules that must agree about which tap owns a keg
+# cannot each keep a copy of the answer. The first version of the #3861 fix
+# qualified only ops' seven sites and left self_heal's `brew services restart`
+# bare -- so on the dual-tap machine the fix exists for, the *automated*
+# recovery path still failed where the manual one had been repaired.
+
+# A single path segment brew will accept. Kept identical to the inline barrier
+# self_heal has carried since CodeQL #4 so that admitting `<tap>/<name>` widens
+# nothing: the qualified form is validated segment by segment against this same
+# character class, never by relaxing it to allow `/`.
+_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def is_safe_formula_spec(spec: str) -> bool:
+    """True if `spec` is a bare name or `<owner>/<tap>/<name>`, all segments safe."""
+    parts = spec.split("/")
+    if len(parts) not in (1, 3):
+        return False
+    return all(_SEGMENT.fullmatch(part) for part in parts)
+
+
+def cellar(which: Callable[[str], str | None] | None = None) -> Path | None:
+    """Homebrew's Cellar directory, or None when it cannot be located.
+
+    `HOMEBREW_CELLAR` is consulted first because it is brew's own answer.
+    Otherwise both layouts are tried: Apple Silicon resolves
+    `/opt/homebrew/bin/brew` to a prefix whose sibling `Cellar` is correct,
+    while Intel macOS and Linuxbrew resolve into `.../Homebrew`, whose parent
+    holds the Cellar. The old `parents[1]` alone silently returned None there,
+    degrading every caller back to the bare name (#4018 review, Minor).
+    """
+    import os
+
+    env = os.environ.get("HOMEBREW_CELLAR")
+    if env and Path(env).is_dir():
+        return Path(env)
+    # `which` is injected so each caller keeps its own lookup (and its tests'
+    # seam) rather than this module reaching around them.
+    brew = (which or shutil.which)("brew")
+    if brew is None:
+        return None
+    resolved = Path(brew).resolve()
+    for candidate in (resolved.parents[1] / "Cellar", resolved.parents[2] / "Cellar"):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def formula_spec(name: str, which: Callable[[str], str | None] | None = None) -> str:
+    """`<tap>/<name>` for an installed keg, else `name` unchanged (#3861).
+
+    A bare formula name stops being unambiguous the moment a machine carries
+    two taps that both define it, and brew then refuses the command outright
+    ("Formulae found in multiple taps ... Please use the fully-qualified
+    name") rather than picking one. Which tap owns the keg is *recorded* by
+    the install, in `INSTALL_RECEIPT.json` (`source.tap`), so this reads it
+    rather than guessing a preferred tap -- a guess would be the same class of
+    error as the bare name.
+
+    Falls back to the bare name when nothing is installed under it (there is no
+    keg to disambiguate, and brew's own error is then the right answer), when
+    the receipt names no tap, or when the result would not be a safe spec.
+    """
+    root = cellar(which)
+    if root is None:
+        return name
+    keg = root / name
+    try:
+        receipts = sorted(keg.glob("*/INSTALL_RECEIPT.json"))
+    except OSError:  # pragma: no cover - unreadable Cellar
+        return name
+    for receipt in receipts:
+        try:
+            source = json.loads(receipt.read_text(encoding="utf-8")).get("source") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        tap = source.get("tap") if isinstance(source, dict) else None
+        # `homebrew/core` formulas are never ambiguous and brew spells the
+        # qualified form differently across versions; leave those bare.
+        if isinstance(tap, str) and tap and tap != "homebrew/core":
+            qualified = f"{tap}/{name}"
+            return qualified if is_safe_formula_spec(qualified) else name
+    return name
