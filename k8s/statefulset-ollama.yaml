@@ -49,7 +49,7 @@ spec:
             # fails with a 404 from Ollama. tests/unit/test_k8s_manifests.py
             # asserts the two match.
             - name: NYXGPT_DEFAULT_MODEL
-              value: qwen3:0.6b
+              value: qwen3.5:0.8b
             # The RAG embedding model, under the same contract against `[rag]
             # embedding_model` in k8s/configmap.yaml (#3824). Pulled and gated
             # on even though `enable_chat_context` ships false: RAG is a

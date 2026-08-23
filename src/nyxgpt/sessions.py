@@ -1157,7 +1157,14 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     ]
 
     try:
-        out = ollama_chat(base_url=base_url, model=model, messages=messages)
+        # think=False, not the configured value: this call's output is parsed
+        # as JSON immediately below, so its reasoning is never read by anyone.
+        # Auto-summarize ships ON (every 5 messages), so leaving the shipped
+        # reasoning model to reason here meant every fifth message on a default
+        # install paid the 913-11,553-token cost D-048 exists to remove -- and
+        # the long tail blows this call's timeout, surfacing as "summarize
+        # failed" rather than as what it is (#4029 review).
+        out = ollama_chat(base_url=base_url, model=model, messages=messages, think=False)
         data = json.loads(out)
     except Exception as e:
         return False, f"summarize failed: {e}"

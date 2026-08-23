@@ -659,7 +659,7 @@ Adjust timeouts for slow hardware:
 
 ```ini
 [nyxgpt]
-chat_timeout_seconds = 180    # Default
+chat_timeout_seconds = 300    # Default
 
 [rag]
 embedding_timeout_seconds = 120    # Default
@@ -670,7 +670,7 @@ embedding_timeout_seconds = 120    # Default
 - Failed embeddings during ingestion
 
 **Recommended adjustments**:
-- **CPU-only, large model**: `chat_timeout_seconds = 300`
+- **CPU-only, large model**: `chat_timeout_seconds = 600` (300 is now the default)
 - **Slow internet to Ollama**: `embedding_timeout_seconds = 180`
 
 ---
@@ -798,7 +798,7 @@ enabled = false
 ```ini
 [nyxgpt]
 default_model = llama3.2:3b
-chat_timeout_seconds = 180
+chat_timeout_seconds = 300
 
 [cache]
 # Enable caching for better performance

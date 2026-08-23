@@ -366,6 +366,7 @@ def ollama_chat(
     messages: list[dict[str, str]],
     timeout_s: float = 120.0,
     output_format: dict[str, Any] | None = None,
+    think: bool | None = None,
 ) -> str:
     """Send a chat request to Ollama and return the assistant reply.
 
@@ -376,6 +377,8 @@ def ollama_chat(
         timeout_s: Request timeout in seconds
         output_format: Optional JSON schema for structured output (Ollama ``format`` field).
             When provided, the model is constrained to produce JSON matching the schema.
+        think: Whether the model may emit chain-of-thought (Ollama ``think`` field).
+            ``None`` leaves it unset and the model decides. See ``[nyxgpt] think``.
 
     Returns:
         Assistant reply text
@@ -387,12 +390,26 @@ def ollama_chat(
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if output_format is not None:
         payload["format"] = output_format
+    if think is not None:
+        payload["think"] = think
     data = post_json(url, payload, timeout_s=timeout_s)
 
     msg = data.get("message") or {}
     content = msg.get("content")
     if not isinstance(content, str):
         raise RuntimeError(f"Unexpected Ollama response: {data}")
+    if not content.strip() and (msg.get("thinking") or "").strip():
+        # A reasoning model that spent its whole budget thinking returns HTTP
+        # 200 with an empty `content` and a full `thinking`. Returning "" made
+        # that indistinguishable from a model with nothing to say: the user saw
+        # a blank reply and no error, and every smoke had to discover it by
+        # asserting on emptiness. Name it instead (#4028).
+        raise RuntimeError(
+            f"{model} returned reasoning but no answer "
+            f"({len(msg['thinking'])} chars of thinking, empty content). "
+            "Set `[nyxgpt] think = false` to stop it reasoning, or raise "
+            "`chat_timeout_seconds` so it can finish."
+        )
     return content
 
 
@@ -404,6 +421,7 @@ def ollama_chat_stream_tokens(
     max_retries: int = 3,
     on_retry: Callable[[int, float, Exception], None] | None = None,
     output_format: dict[str, Any] | None = None,
+    think: bool | None = None,
 ) -> Iterator[str]:
     """Yield incremental assistant text chunks from Ollama (no printing, no buffering).
 
@@ -416,27 +434,55 @@ def ollama_chat_stream_tokens(
         on_retry: Optional callback(attempt, delay, error) called before each retry
         output_format: Optional JSON schema for structured output (Ollama ``format`` field).
             When provided, the model is constrained to produce JSON matching the schema.
+        think: Whether the model may emit chain-of-thought (Ollama ``think`` field).
+            ``None`` leaves it unset and the model decides. See ``[nyxgpt] think``.
 
     Yields:
         Text chunks from assistant response
 
     Raises:
-        RuntimeError: If connection fails after retries or HTTP error occurs
+        RuntimeError: If connection fails after retries, an HTTP error occurs, or
+            the model returned reasoning and no answer (empty ``content`` with a
+            non-empty ``thinking``) -- raised on ``done``, before which nothing
+            has been yielded.
     """
     url = base_url.rstrip("/") + "/api/chat"
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
     if output_format is not None:
         payload["format"] = output_format
+    if think is not None:
+        payload["think"] = think
 
     start = time.monotonic()
+    # The same reasoning-with-no-answer case the non-streaming path names, and
+    # this is the path the web UI uses -- so without it the silent blank reply
+    # survives exactly where a user would meet it (#4029 review). Raising on
+    # `done` is safe: nothing has been yielded in that case, so there is no
+    # half-emitted answer to contradict.
+    yielded_content = False
+    saw_thinking = False
     for obj in post_json_lines(
         url, payload, timeout_s=timeout_s, max_retries=max_retries, on_retry=on_retry
     ):
         msg = obj.get("message") or {}
         part = msg.get("content")
         if isinstance(part, str) and part:
+            # `strip()` for the guard, matching the non-streaming path: a reply
+            # of pure whitespace is not an answer, and counting it as one let
+            # the blank-reply case through here while the other path caught it.
+            if part.strip():
+                yielded_content = True
             yield part
+        thinking_part = msg.get("thinking")
+        if isinstance(thinking_part, str) and thinking_part.strip():
+            saw_thinking = True
         if obj.get("done") is True:
+            if not yielded_content and saw_thinking:
+                raise RuntimeError(
+                    f"{model} returned reasoning but no answer (streaming). "
+                    "Set `[nyxgpt] think = false` to stop it reasoning, or raise "
+                    "`chat_timeout_seconds` so it can finish."
+                )
             logger.debug(
                 "Ollama streaming request completed",
                 extra={
