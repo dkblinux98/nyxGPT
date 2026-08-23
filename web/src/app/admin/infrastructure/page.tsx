@@ -1101,20 +1101,37 @@ export default function InfrastructurePage() {
           ) : !cloud.deployed ? (
             /* #3993. Observable, never operable (D-017): this states what
                exists and names the command that moves it forward, and drives
-               nothing itself. An instance is up and billing -- saying
-               "unknown" here sent the owner looking for another workstation
-               while their own state file named the instance. */
+               nothing itself. Saying "unknown" here sent the owner looking
+               for another workstation while their own state file named the
+               instance. The billing sentence is conditioned on evidence an
+               instance exists (D-018): a deploy that failed at or before the
+               substrate step records no ids, and asserting billing over it is
+               the lie this card was written to end. */
             <p style={{ fontSize: '0.875rem' }}>
               {cloud.source === 'deploy-attempt'
                 ? `A deploy started on this machine and did not finish${
                     cloud.attempt?.phase ? ` — it stopped at the \`${cloud.attempt.phase}\` phase` : ''
                   }${cloud.attempt?.error ? `: ${cloud.attempt.error}` : '.'}`
                 : 'A substrate is provisioned, but no deploy has been recorded against it.'}{' '}
-              An instance exists and is being billed — this is not the same as nothing being
-              deployed, and not the same as unknown. Re-run{' '}
-              <code>{cloud.commands?.deploy ?? 'nyxgpt cloud deploy'}</code> (idempotent), or{' '}
-              <code>{cloud.commands?.destroy ?? 'nyxgpt cloud destroy --yes'}</code> to tear it
-              down.
+              {cloud.source !== 'deploy-attempt' ||
+              cloud.instance_id ||
+              cloud.host ||
+              cloud.instance_type ? (
+                <>
+                  An instance exists and is being billed — this is not the same as nothing being
+                  deployed, and not the same as unknown. Re-run{' '}
+                  <code>{cloud.commands?.deploy ?? 'nyxgpt cloud deploy'}</code> (idempotent), or{' '}
+                  <code>{cloud.commands?.destroy ?? 'nyxgpt cloud destroy --yes'}</code> to tear it
+                  down.
+                </>
+              ) : (
+                <>
+                  Nothing is recorded as provisioned by this attempt: it failed at or before the
+                  substrate step, so no instance was created here and nothing from it is being
+                  billed. Re-run{' '}
+                  <code>{cloud.commands?.deploy ?? 'nyxgpt cloud deploy'}</code> (idempotent).
+                </>
+              )}
             </p>
           ) : (
             <>

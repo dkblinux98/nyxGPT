@@ -1163,6 +1163,43 @@ describe('InfrastructurePage', () => {
     expect(screen.queryByRole('button', { name: /deploy/i })).not.toBeInTheDocument();
   });
 
+  it('does not claim an instance is billing when the deploy failed before the substrate (#4007)', async () => {
+    // D-018 inside the card written to enforce it. A deploy that dies at
+    // `infra` -- no terraform binary, no credentials -- records no ids, and
+    // the card used to assert billing over it and point at `cloud destroy`,
+    // which raises "nothing to destroy".
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-attempt',
+          known: true,
+          deployed: false,
+          host: '',
+          instance_id: '',
+          instance_type: '',
+          attempt: {
+            status: 'failed',
+            phase: 'infra',
+            error: 'terraform init failed: no such binary',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT COMPLETED')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/An instance exists and is being billed/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Nothing is recorded as provisioned by this attempt/)).toBeInTheDocument();
+    // The commands reference table lower down still lists destroy; what must
+    // not appear is the CARD offering it as the next step for this state.
+    expect(screen.queryByText(/to tear it\s+down/)).not.toBeInTheDocument();
+  });
+
   it('reports a provisioned substrate with no deploy against it as SUBSTRATE ONLY (#3993)', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     server.use(

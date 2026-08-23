@@ -1544,6 +1544,60 @@ def test_status_describes_a_failed_deploy_instead_of_reporting_unknown(
     assert "an instance exists and is being billed" in out
 
 
+def test_a_deploy_that_failed_before_the_substrate_claims_no_billing(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """D-018 inside the fix written to enforce it (#4007 review).
+
+    A deploy can fail at `start`/`infra` before Terraform creates anything --
+    no terraform binary, no AWS credentials, a failed `terraform init`. The
+    attempt records FAILED with no instance_id and no substrate record, and the
+    summary used to print "an instance exists and is being billed" over it, then
+    prescribe `cloud destroy`, which raises "nothing to destroy". Both are
+    claims nothing checked.
+    """
+    _write_attempt(
+        _isolated_cloud_home,
+        phase="infra",
+        instance_id="",
+        host="",
+        error="terraform init failed: no such binary",
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "NOT COMPLETED" in out
+    assert "an instance exists and is being billed" not in out
+    assert "nothing is recorded as provisioned by this attempt" in out.lower()
+    assert "cloud destroy" not in out, "destroy sends the operator to 'nothing to destroy'"
+
+
+def test_a_declined_mac_allocation_is_not_reported_as_billing(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """`confirm_allocation` records "nothing was allocated and nothing is billed".
+
+    That error line used to sit inside a frame asserting the exact opposite.
+    """
+    _write_attempt(
+        _isolated_cloud_home,
+        phase="infra",
+        instance_id="",
+        host="",
+        error="Not confirmed -- nothing was allocated and nothing is billed",
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert "nothing was allocated and nothing is billed" in out
+    assert "an instance exists and is being billed" not in out
+
+
 def test_status_payload_marks_a_failed_deploy_as_not_deployed(monkeypatch, _isolated_cloud_home):
     """Describable is not the same as deployed -- the three outcomes stay apart."""
     _write_attempt(_isolated_cloud_home)

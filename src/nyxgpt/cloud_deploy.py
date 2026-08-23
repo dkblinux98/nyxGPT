@@ -2906,12 +2906,13 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         "version": version,
         "host": host,
         "instance_id": str(
-            record.get("instance_id") or attempt.get("instance_id") or infra.get("instance_id") or ""
+            record.get("instance_id")
+            or attempt.get("instance_id")
+            or infra.get("instance_id")
+            or ""
         ),
         "instance_type": str(infra.get("instance_type") or ""),
-        "region": str(
-            record.get("region") or attempt.get("region") or infra.get("region") or ""
-        ),
+        "region": str(record.get("region") or attempt.get("region") or infra.get("region") or ""),
         "profiles": profiles,
         # Where this deployment's chat sessions live (#3865). Observable
         # rather than operable, per the Definition of Done: the dashboard
@@ -3123,8 +3124,10 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
             "recorded against it)\n"
         )
     else:
-        print("nyxGPT cloud deployment: NOT COMPLETED -- a deploy started here and did not "
-              "finish.\n")
+        print(
+            "nyxGPT cloud deployment: NOT COMPLETED -- a deploy started here and did not "
+            "finish.\n"
+        )
         print(f"  (from the deploy attempt this machine recorded, {DEPLOY_ATTEMPT_FILE})\n")
         _print_row("Attempt", _attempt_label(attempt))
 
@@ -3134,10 +3137,33 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
     _print_row("Region", status.get("region") or "not recorded")
     _print_row("Security group", infra.get("security_group_id") or "not recorded")
 
-    print(
-        "\nThis is NOT the same as nothing being deployed, and it is not the same as "
-        "unknown: an instance exists and is being billed."
+    # D-018 -- never imply an answer nothing checked. This sentence used to
+    # print unconditionally, and two ordinary flows reach here with nothing
+    # provisioned: (a) a deploy that failed at `start`/`infra` before Terraform
+    # created anything (no terraform binary, no AWS credentials, a failed
+    # `terraform init`), which records FAILED with no instance_id and no
+    # substrate record; (b) an operator who declined the EC2 Mac allocation,
+    # whose own recorded error reads "nothing was allocated and nothing is
+    # billed" -- sat inside a frame asserting the opposite. Asserting billing
+    # over either is the same class of lie this verdict was written to end.
+    provisioned = bool(
+        substrate_only
+        or status.get("instance_id")
+        or status.get("host")
+        or infra.get("instance_type")
+        or infra.get("security_group_id")
     )
+    if provisioned:
+        print(
+            "\nThis is NOT the same as nothing being deployed, and it is not the same as "
+            "unknown: an instance exists and is being billed."
+        )
+    else:
+        print(
+            "\nNothing is recorded as provisioned by this attempt: it failed at or before "
+            "the substrate step, so no instance was created here and nothing from it is "
+            "being billed."
+        )
     if attempt.get("state_stale"):
         # The one case where the ids above must not be trusted -- say so here
         # rather than printing them as though they described this attempt.
@@ -3147,10 +3173,18 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
             "`nyxgpt cloud infra apply`) to refresh them before acting on them."
         )
     print("\nWhat to do next:")
-    print(f"  {commands['deploy']}  -- re-run it; the deploy is idempotent and reconciles "
-          "from here")
+    print(
+        f"  {commands['deploy']}  -- re-run it; the deploy is idempotent and reconciles "
+        "from here"
+    )
     print(f"  {commands['allow_ip']}  -- refresh SSH access if your public IP has changed")
-    print(f"  {commands['destroy']}  -- tear the instance down if you do not want it")
+    if provisioned:
+        # Only offered when something is recorded. Against a pre-substrate
+        # failure `cloud destroy` raises "nothing to destroy", so prescribing
+        # it there sends the operator to a dead end to disprove a claim this
+        # function should not have made.
+        print(f"  {commands['destroy']}  -- tear the instance down if you do not want it")
+
 
 def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     """Print the EC2 Mac Dedicated Host block, when one is outstanding (#3995).
