@@ -26,6 +26,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -199,11 +200,13 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
     "cassandra": 9042,
 }
 
-# Local web UI URL once the stack is up. Native and Compose/Terraform modes
-# all bind `web` to the same host port (COMPOSE_COMPONENT_PORTS above,
-# app.py's CORS allowlist) -- Kubernetes mode is the one exception, since its
-# Services are ClusterIP-only and need a manual `kubectl port-forward` (see
-# `up()`, docs/kubernetes.md#4-verify).
+# Local web UI URL once the stack is up. EVERY local mode binds `web` to this
+# same host port (COMPOSE_COMPONENT_PORTS above, app.py's CORS allowlist),
+# Kubernetes included since #3986: the provisioned kind cluster publishes the
+# web NodePort here, and a cluster whose host ports nyxGPT cannot map gets a
+# managed background forward onto it instead (`_ensure_k8s_host_access`). It
+# used to be the one exception -- ClusterIP Services and a hand-run
+# `kubectl port-forward` -- which is the defect that issue removed.
 WEB_URL = "http://127.0.0.1:3000"
 
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
@@ -718,7 +721,7 @@ def record_manual_restart(service: str, ok: bool, message: str = "") -> None:
 def record_canary_action(
     action: str, result: str, message: str = "", *, component: str = "api"
 ) -> None:
-    """Record a canary lifecycle action (deploy/start/promote/rollback) per #3390.
+    """Record a canary lifecycle action (deploy/start/promote/rollback/reset) per #3390.
 
     `canary.py` funnels every rollout action through here rather than calling
     `_record_ops_action` directly, keeping the "canary-<action>" command
@@ -7136,6 +7139,52 @@ K8S_APP_TIER_ROLLOUT_TIMEOUT_S = 600
 KIND_CLUSTER_NAME = "nyxgpt-local"
 KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 
+# What the provisioned kind node publishes to the host, as
+# `host port -> Service NodePort` (#3986). These are the two NodePorts pinned
+# in `k8s/service-web.yaml` and `k8s/service.yaml`, mapped onto the same host
+# ports every other local deployment mode binds (COMPOSE_COMPONENT_PORTS), so
+# `http://127.0.0.1:3000` means the same thing in Kubernetes mode as it does
+# natively.
+#
+# This is the half of #3986 that makes an install *finish* usable. A kind
+# cluster created with no config publishes nothing at all, so the previous
+# `kind create cluster --name nyxgpt-local --wait 60s` guaranteed that a
+# successful install left no reachable UI -- the operator had to keep a
+# foreground `kubectl port-forward` alive in a spare terminal, and that
+# forward died with the Pod it attached to.
+#
+# Mapping has to be declared when the cluster is created (a running kind node
+# is a container; its published ports cannot be added later), which is why the
+# NodePort numbers are pinned in the manifests rather than allocated.
+KIND_HOST_PORT_MAPPINGS: tuple[tuple[int, int], ...] = (
+    (3000, 30300),
+    (8000, 30800),
+)
+
+# Which Service each mapping publishes, and on which of its ports:
+# `host port -> (Service, Service port, node port)`. Derived from
+# KIND_HOST_PORT_MAPPINGS so the cluster's mapping and the Service patch
+# cannot drift apart -- they are worthless independently.
+#
+# The NodePort is applied by `_publish_k8s_app_tier_nodeports` rather than
+# declared in `k8s/service*.yaml`, and that is a security decision, not a
+# stylistic one: those manifests are applied by the AWS k3s deployment too,
+# whose invariant is that nothing but port 22 exists on the instance (#3503,
+# docs/security.md). A NodePort in the base manifest would bind on that node's
+# interfaces as well. Patching it on only where nyxGPT created the cluster AND
+# mapped the ports to loopback keeps the base posture ClusterIP everywhere
+# else -- including a bring-your-own local cluster, where opening node ports
+# on someone else's cluster is not nyxGPT's call.
+K8S_HOST_PUBLISHED_SERVICES: dict[int, tuple[str, int, int]] = {
+    3000: ("nyxgpt-web", 3000, 30300),
+    8000: ("nyxgpt-api", 8000, 30800),
+}
+
+# Where the generated kind cluster config is written. Under the ops-managed
+# home, not a temp file, so an operator (or a support transcript) can see
+# exactly what the cluster they are running was created from.
+KIND_CLUSTER_CONFIG_FILE = NYXGPT_HOME / "k8s" / "kind-cluster.yaml"
+
 # Official download endpoints for the two CLI tools the local Kubernetes path
 # needs. Both are "latest/stable" aliases rather than pinned versions, so a
 # clean machine gets a currently-supported binary without nyxGPT having to
@@ -7352,12 +7401,107 @@ def _kind_cluster_exists(name: str = KIND_CLUSTER_NAME) -> bool:
     return name in (cp.stdout or "").split()
 
 
+def _kind_cluster_config() -> str:
+    """Render the kind cluster config the provisioned local cluster is created from (#3986).
+
+    One control-plane node carrying an `extraPortMappings` entry per
+    `KIND_HOST_PORT_MAPPINGS`, which is what publishes the app tier's
+    NodePorts on the host. Bound to `127.0.0.1` rather than `0.0.0.0`: this
+    is a developer workstation cluster holding an api key, and #3195 already
+    settled that nyxGPT's local surfaces are loopback-only.
+    """
+    lines = [
+        "# Generated by `nyxgpt ops install --kubernetes` -- do not edit by hand.",
+        "# Publishes the app tier's NodePorts on the host so the web UI is reachable",
+        "# with no port-forward, and stays reachable across Pod replacement (#3986).",
+        "kind: Cluster",
+        "apiVersion: kind.x-k8s.io/v1alpha4",
+        "nodes:",
+        "  - role: control-plane",
+        "    extraPortMappings:",
+    ]
+    for host_port, node_port in KIND_HOST_PORT_MAPPINGS:
+        lines += [
+            f"      - containerPort: {node_port}",
+            f"        hostPort: {host_port}",
+            '        listenAddress: "127.0.0.1"',
+            "        protocol: TCP",
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def _create_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
-    """Create the local `kind` cluster nyxgpt provisions when no cluster is reachable."""
-    cp = _run(["kind", "create", "cluster", "--name", name, "--wait", "60s"], check=False)
+    """Create the local `kind` cluster nyxgpt provisions when no cluster is reachable.
+
+    Created **with a config** (#3986): `kind create cluster` with no config
+    publishes no host ports, and every Service in `k8s/` used to be
+    ClusterIP, so the cluster this produced had no host-reachable surface at
+    all. See `KIND_HOST_PORT_MAPPINGS`.
+    """
+    try:
+        KIND_CLUSTER_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        KIND_CLUSTER_CONFIG_FILE.write_text(_kind_cluster_config(), encoding="utf-8")
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Could not write the kind cluster config ({KIND_CLUSTER_CONFIG_FILE})",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    cp = _run(
+        [
+            "kind",
+            "create",
+            "cluster",
+            "--name",
+            name,
+            "--config",
+            str(KIND_CLUSTER_CONFIG_FILE),
+            "--wait",
+            "60s",
+        ],
+        check=False,
+    )
     if cp.returncode != 0:
         return [OpsResult(False, f"kind create cluster --name {name} failed", _cp_details(cp))]
-    return [OpsResult(True, f"Created local kind cluster: {name}", _cp_details(cp))]
+    ports = ", ".join(str(host) for host, _node in KIND_HOST_PORT_MAPPINGS)
+    return [
+        OpsResult(
+            True,
+            f"Created local kind cluster: {name} (publishing host ports {ports})",
+            _cp_details(cp),
+        )
+    ]
+
+
+def _kind_node_container(name: str = KIND_CLUSTER_NAME) -> str:
+    """Name of the kind cluster's control-plane node container (`kind`'s own convention)."""
+    return f"{name}-control-plane"
+
+
+def _kind_cluster_publishes_host_ports(name: str = KIND_CLUSTER_NAME) -> bool:
+    """True if the running kind cluster publishes every `KIND_HOST_PORT_MAPPINGS` host port.
+
+    Asked of the node **container**, not of the config file: an operator may
+    be reusing a `nyxgpt-local` cluster created by an older nyxGPT (or by
+    hand) that has no mappings, and a cluster's published ports cannot be
+    changed after creation. A False here is what routes the install to the
+    managed background forward instead of promising a URL that will not
+    answer.
+    """
+    if _which("docker") is None:
+        return False
+    cp = _run(
+        ["docker", "port", _kind_node_container(name)],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return False
+    published = cp.stdout or ""
+    return all(f":{host_port}" in published for host_port, _node in KIND_HOST_PORT_MAPPINGS)
 
 
 def _delete_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
@@ -7437,8 +7581,45 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
     ]
 
 
+# Where a Pod's ServiceAccount credentials are projected, and the environment
+# variable the kubelet injects for the API server. Together they are what
+# "running inside Kubernetes" means to a process (#3988): in-cluster
+# authentication uses these, NOT a kubeconfig context, which is why the api
+# Pod's `kubectl config current-context` is empty while `kubectl get pods` in
+# that same Pod works.
+K8S_SERVICEACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+K8S_IN_CLUSTER_ENV = "KUBERNETES_SERVICE_HOST"
+
+# What `infra_status` reports as the Kubernetes "context" when the process is
+# authenticated in-cluster. There is no context name to report -- saying so is
+# more useful to an operator than an empty string that reads like "none".
+K8S_IN_CLUSTER_CONTEXT_LABEL = "in-cluster (ServiceAccount)"
+
+
+def _in_cluster() -> bool:
+    """True when this process is running inside a Kubernetes Pod (#3988).
+
+    Both signals, not either: the environment variable alone can be inherited
+    by a shell an operator exported it in, and the token directory alone can
+    be a stale mount. Requiring the pair is what keeps this from claiming
+    in-cluster on a workstation.
+
+    This exists because the Infrastructure page, served BY the api Pod, used
+    to report its own cluster as NOT DEPLOYED -- the detection gate asked
+    `kubectl config current-context`, and a Pod has no context.
+    """
+    if not os.environ.get(K8S_IN_CLUSTER_ENV):
+        return False
+    return (K8S_SERVICEACCOUNT_DIR / "token").exists()
+
+
 def _kubectl_context() -> str:
-    """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset."""
+    """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset.
+
+    An empty string does NOT mean "no cluster" -- see `_in_cluster`. A process
+    running in a Pod has no kubeconfig context and full API access; callers
+    deciding whether a cluster is reachable must consider both.
+    """
     cp = _run(
         ["kubectl", "config", "current-context"],
         check=False,
@@ -9028,6 +9209,232 @@ def _wait_for_k8s_app_tier() -> list[OpsResult]:
     )
 
 
+def _reconcile_k8s_canary_resting() -> list[OpsResult]:
+    """Assert the canary Deployments' declared resting state after an install (#3991).
+
+    `kubectl apply -k` sets the manifests' `replicas: 0` on both canary
+    Deployments -- that much is verified, and it means the apply itself never
+    scales them up. What the install did NOT do is *check*: it applied, waited
+    for the stable Deployments, and reported the stack healthy without ever
+    asking whether the canary pair was where its own manifests say it rests.
+    A cluster whose canary track was left carrying replicas by an interrupted
+    rollout (see `canary.reset` for the two routes) therefore came out of a
+    fresh install still off-contract, with two idle canary Pods holding live
+    Service endpoints outside any rollout.
+
+    Reconciling here rather than trusting the apply is the difference between
+    a command that declares a resting state and one that establishes it. It
+    is deliberately the same wrapped surface an operator has
+    (`nyxgpt canary reset`), not a private `kubectl scale`: one code path, so
+    the refusal that protects a live rollout protects the install too.
+    """
+    from nyxgpt import canary as canary_module
+
+    results: list[OpsResult] = []
+    for component in canary_module.COMPONENTS:
+        result = canary_module.reset(K8S_NAMESPACE, component=component)
+        # A refusal because a rollout is genuinely in progress is not an
+        # install failure: the operator started it deliberately, and an
+        # install must not end their rollout behind their back.
+        ok = result.ok or "rollout is in progress" in result.message
+        results.append(OpsResult(ok, f"canary {component}: {result.message}", result.details))
+    return results
+
+
+# How long `_ensure_k8s_host_access` gives the host URL to start answering
+# before it reports the access path as unverified. The Pods are already Ready
+# by the time it runs (`_wait_for_k8s_app_tier`), so this covers only kube-proxy
+# programming the NodePort or the freshly-started forward binding its socket --
+# seconds, not a rollout.
+K8S_HOST_ACCESS_PROBE_BUDGET_S = 60.0
+
+
+def _probe_web_url(url: str, budget_s: float = K8S_HOST_ACCESS_PROBE_BUDGET_S) -> str | None:
+    """Poll `url` until it answers, returning None on success or the last error.
+
+    "Answers" means an HTTP response of any status: the point is that
+    something on the host is listening and reaching the cluster, not that the
+    web UI likes the request. A 404 from Next.js proves the path end to end
+    just as well as a 200.
+    """
+    deadline = time.monotonic() + budget_s
+    last = "no response"
+    while True:
+        try:
+            httpx.get(url, timeout=5.0, follow_redirects=False)
+            return None
+        except httpx.HTTPError as e:
+            last = f"{type(e).__name__}: {e}"
+        if time.monotonic() >= deadline:
+            return last
+        time.sleep(2.0)
+
+
+def _k8s_access_bridge_owns_host_ports() -> bool:
+    """True where the systemd access bridge is (or is about to be) holding 3000/8000.
+
+    The k3s deployment `nyxgpt cloud deploy --kubernetes` provisions reaches
+    its cluster through systemd `--user` units running `nyxgpt ops
+    port-forward` (docs/cloud.md), which bind exactly the two loopback ports
+    `_ensure_k8s_host_access` would otherwise claim -- and the install runs
+    BEFORE the provisioning script installs those units, so a forward started
+    here would win the bind race and leave every bridge unit restarting
+    forever.
+
+    Detected by the substrate (`k3s` on PATH) as well as by the unit template,
+    because on a first deploy the template does not exist yet. k3s is the
+    right signal: it is the substrate the bridge exists for, and ops already
+    branches on it for image import (`_k3s_import_image`).
+    """
+    if not _is_linux():
+        return False
+    if _which("k3s") is not None:
+        return True
+    return (_systemd_user_dir() / f"{K8S_ACCESS_BRIDGE_UNIT}.service").exists()
+
+
+def _publish_k8s_app_tier_nodeports() -> list[OpsResult]:
+    """Patch the api/web Services onto the node ports the cluster maps (#3986).
+
+    Only reached for a cluster nyxGPT provisioned and whose node publishes
+    every `KIND_HOST_PORT_MAPPINGS` host port -- see
+    `K8S_HOST_PUBLISHED_SERVICES` for why this is a patch rather than a line
+    in `k8s/service*.yaml`.
+
+    Idempotent, and it has to be: `kubectl apply -k` sets every field its
+    config declares, so the base manifest's `type: ClusterIP` is re-asserted
+    on each install and this step re-publishes afterwards. That ordering is
+    the reason it lives in the host-access step rather than next to the apply.
+    """
+    results: list[OpsResult] = []
+    for _host_port, (service, port, node_port) in sorted(K8S_HOST_PUBLISHED_SERVICES.items()):
+        patch = json.dumps(
+            {
+                "spec": {
+                    "type": "NodePort",
+                    "ports": [
+                        {
+                            "name": "http",
+                            "port": port,
+                            "targetPort": "http",
+                            "nodePort": node_port,
+                        }
+                    ],
+                }
+            }
+        )
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "patch", "svc", service, "-p", patch],
+            check=False,
+        )
+        if cp.returncode != 0:
+            results.append(
+                OpsResult(
+                    False, f"Could not publish {service} on node port {node_port}", _cp_details(cp)
+                )
+            )
+            return results
+        results.append(OpsResult(True, f"{service} published on node port {node_port}"))
+    return results
+
+
+def _ensure_k8s_host_access() -> list[OpsResult]:
+    """Leave the web UI reachable from the browser when the install returns (#3986).
+
+    The install used to end with every Pod Ready and NOTHING listening on the
+    host: `k8s/`'s Services were all ClusterIP and the provisioned kind
+    cluster published no ports, so the operator had to start a foreground
+    `kubectl port-forward` in a spare terminal before the product could be
+    used -- a forward that then died with the next Pod replacement. Both
+    halves were nyxGPT's own choices, and this step is where they are undone.
+
+    Two paths, because only one of them is nyxGPT's to arrange:
+
+    * **A cluster nyxGPT provisioned** publishes the app tier's NodePorts on
+      the host (`KIND_HOST_PORT_MAPPINGS`). Nothing to start: the mapping is
+      a property of the node and the NodePort a property of the Service, so
+      it survives a canary rollout, a self-heal restart and an image change.
+      This verifies the URL rather than asserting it -- the whole complaint
+      in #3986 is an install that reported success over an unreachable UI.
+    * **Anything else** -- a bring-your-own cluster, or a `nyxgpt-local`
+      created by an older nyxGPT with no port mappings -- gets the managed
+      background forward, in the shape `nyxgpt cloud tunnel --background`
+      established: detached, supervised across Pod replacement, pid recorded
+      so `nyxgpt ops port-forward --status/--stop` and `ops down` can find
+      it. Still not as good as a mapped port, but it is established BY the
+      install rather than left as homework.
+
+    A URL that does not answer is a **warning-shaped failure**, not a silent
+    pass: the stack is up, but the thing the operator asked for is not usable
+    yet, and saying so is the entire point of the issue.
+    """
+    context = _kubectl_context()
+    provisioned = context == KIND_CONTEXT and _kind_cluster_publishes_host_ports()
+    if provisioned:
+        results = _publish_k8s_app_tier_nodeports()
+        if not all(r.ok for r in results):
+            return results
+        failure = _probe_web_url(WEB_URL)
+        if failure is not None:
+            return results + [
+                OpsResult(
+                    False,
+                    f"The cluster publishes {WEB_URL} but it did not answer",
+                    f"{failure}\nCheck `nyxgpt ops status` for the web Pods; if the cluster "
+                    "was created by an older nyxGPT, `nyxgpt ops down --kubernetes` and "
+                    "re-install to recreate it with host port mappings.",
+                )
+            ]
+        return results + [
+            OpsResult(
+                True,
+                f"Web UI reachable at {WEB_URL} (NodePort published by the cluster -- no "
+                "port-forward needed, and it survives Pod replacement)",
+            )
+        ]
+
+    if _k8s_access_bridge_owns_host_ports():
+        # A k3s deployment holds 127.0.0.1:3000/:8000 with systemd `--user`
+        # units running `nyxgpt ops port-forward` (docs/cloud.md's access
+        # bridge, `_k8s_access_bridge_issues`), and `nyxgpt cloud tunnel`
+        # forwards the workstation onto them. Starting a second forward here
+        # would win the bind race -- this step runs BEFORE the provisioning
+        # script installs those units -- and leave every bridge unit
+        # restarting forever against a port it can never have. Report the
+        # arrangement instead of competing with it.
+        return [
+            OpsResult(
+                True,
+                f"{WEB_URL} is held by the Kubernetes access bridge on this instance, not by "
+                "a forward started here",
+                "systemd --user `nyxgpt-k8s-bridge@{api,web}` run the forward; reach it from "
+                "your workstation with `nyxgpt cloud tunnel`. `nyxgpt ops doctor` reports "
+                "the units' state.",
+            )
+        ]
+
+    results = start_port_forward_background("app")
+    if not all(r.ok for r in results):
+        return results
+    failure = _probe_web_url(WEB_URL)
+    if failure is not None:
+        return results + [
+            OpsResult(
+                False,
+                f"Started a background port-forward but {WEB_URL} did not answer",
+                f"{failure}\nSee {K8S_PORT_FORWARD_LOG_FILE} for what the forward reported, "
+                "and `nyxgpt ops port-forward --status`.",
+            )
+        ]
+    return results + [
+        OpsResult(
+            True,
+            f"Web UI reachable at {WEB_URL} (managed background port-forward -- "
+            "`nyxgpt ops port-forward --status` / `--stop`)",
+        )
+    ]
+
+
 # --- Checkout-free image builds for the Kubernetes path (#3834) ---
 #
 # `--kubernetes` used to build both images from `REPO_ROOT` unconditionally,
@@ -9192,9 +9599,12 @@ def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
     `_WEB_VENDOR_EXCLUDES` build artifacts) rather than on the whole build
     context, with the same `NEXT_PUBLIC_API_BASE_URL` build arg default
     Terraform's local deploy uses -- this is inlined into the browser bundle
-    at build time, and like Terraform's containers, a k8s Pod is only
-    reachable from the operator's own workstation (via `kubectl
-    port-forward`), so the same host-local default applies.
+    at build time, and like Terraform's containers, the deployment is reached
+    from the operator's own workstation at `127.0.0.1`, so the same host-local
+    default applies. (Nothing under `web/src` reads that variable today: every
+    browser call is a relative `/api/...` served by a Next.js route handler,
+    which reaches the api in-cluster. It is passed for parity with the
+    Terraform build rather than because a browser needs it -- see #3986.)
 
     That tree is `<checkout>/web` in dev mode and the staged published
     `nyxgpt-web` artifact otherwise (#3834); the artifact carries its own
@@ -9820,9 +10230,10 @@ def _k8s_access_bridge_issues() -> list[str]:
     """Report the access bridge's units, returning `doctor` issues for any down.
 
     Silent where no bridge exists: the template is installed only by a cloud
-    `--kubernetes` deploy, so a local kind/minikube cluster (where the operator
-    runs `nyxgpt ops port-forward` in a terminal) has no units to report and
-    gets no output. Reads only `is-active`; `doctor` never starts anything.
+    `--kubernetes` deploy, so a local kind/minikube cluster (where the install
+    publishes the NodePorts on the host, or manages its own background
+    forward -- #3986) has no units to report and gets no output. Reads only
+    `is-active`; `doctor` never starts anything.
     """
     if not _is_linux():
         return []
@@ -9998,6 +10409,15 @@ def _install_kubernetes_steps(
         # rollout a few seconds old rather than the stack the operator was
         # about to be handed.
         ("wait for app tier", _wait_for_k8s_app_tier),
+        # After the app tier is up, so the reset acts on a settled cluster
+        # rather than racing the rollout it would be reading (#3991).
+        ("canary resting state", _reconcile_k8s_canary_resting),
+        # The step that makes the install's promise true (#3986): a completed
+        # install leaves the web UI reachable from the browser, with no
+        # follow-up command. Before the observability layer, because this is
+        # what the operator is waiting for and `--skip-observability` must not
+        # be able to skip it.
+        ("host access", _ensure_k8s_host_access),
     ]
     if not skip_observability:
         # After the app tier: Prometheus's scrape target and promtail's
@@ -10131,8 +10551,15 @@ def _down_kubernetes_steps() -> list[OpsResult]:
     directory on its own PATH.
     """
     _ensure_nyxgpt_bin_on_path()
+    # First, and unconditionally: `down` must release whatever access path the
+    # install established (#3986). A supervised background forward outlives
+    # the cluster it points at -- it would sit there restarting a `kubectl
+    # port-forward` against a deleted namespace, holding host ports 3000/8000
+    # against the next install. Nothing here needs kubectl, so it runs even on
+    # the paths below that have none.
+    results = stop_port_forward()
     if _which("kubectl") is None:
-        results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
+        results += [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
     elif not (K8S_DIR / "secret.yaml").exists():
         # The app-tier kustomization *references* secret.yaml, so `kubectl
         # delete -k k8s/` on a cluster that never had an app tier fails on
@@ -10141,17 +10568,17 @@ def _down_kubernetes_steps() -> list[OpsResult]:
         # deploys the observability layer on its own (#3787), and its
         # teardown must not be blocked by an app tier that was never
         # installed.
-        results = [OpsResult(True, "No app tier bootstrapped -- skipped kubectl delete -k k8s/")]
+        results += [OpsResult(True, "No app tier bootstrapped -- skipped kubectl delete -k k8s/")]
     else:
         cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
         if cp.returncode == 0:
-            results = [
+            results += [
                 OpsResult(
                     True, "kubectl delete -k k8s/ (namespace and all resources)", _cp_details(cp)
                 )
             ]
         else:
-            results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+            results += [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
 
     if results[-1].ok and _which("kubectl") is not None:
         # After the base delete, not before: the base kustomization owns the
@@ -10211,6 +10638,43 @@ K8S_PORT_FORWARD_TARGETS: dict[str, tuple[str, int, int]] = {
 # so one command makes the whole SRE surface reachable in Kubernetes mode.
 K8S_OBSERVABILITY_PORT_FORWARD_TARGETS = ("grafana", "prometheus", "jaeger", "glitchtip")
 
+# ...and what `--target app` expands to (#3986). docs/kubernetes.md used to
+# tell operators to "forward both at once" and then show a command whose
+# default target forwards only `web`; this is the target that combination
+# actually needs, in the shape `observability` already had. It is also what
+# the install starts in the background on a cluster whose host ports nyxGPT
+# cannot map (see `_ensure_k8s_host_access`).
+K8S_APP_PORT_FORWARD_TARGETS = ("web", "api")
+
+# Every `--target` value, including the two that expand to several forwards.
+# Single source for the CLI's `choices` and for `_port_forward_plan`, so the
+# two cannot disagree about what is accepted.
+K8S_PORT_FORWARD_TARGET_NAMES: tuple[str, ...] = (
+    *K8S_PORT_FORWARD_TARGETS,
+    "app",
+    "observability",
+)
+
+# The managed background forward's pid and plan, so `--status`/`--stop` (and
+# `ops down --kubernetes`) can find a forward started by an earlier process
+# -- the same treatment `nyxgpt cloud tunnel --background` gives its SSH
+# tunnel (`cloud_deploy.TUNNEL_STATE_FILE`), which is the precedent #3986
+# names.
+K8S_PORT_FORWARD_STATE_FILE = NYXGPT_HOME / "k8s" / "port-forward.json"
+
+# Where the detached supervisor's own output goes. A background child
+# outlives the CLI process that started it, so its stderr cannot stay on a
+# pipe nobody will read.
+K8S_PORT_FORWARD_LOG_FILE = NYXGPT_HOME / "k8s" / "port-forward.log"
+
+# How long the supervisor waits before restarting a forward that exited.
+# `kubectl port-forward` dies when the Pod it attached to is replaced
+# (docs/kubernetes.md), which is exactly the case this supervision exists to
+# survive -- a canary rollout or a self-heal restart must not silently take
+# the UI down. Short enough that the gap is not noticeable, long enough that
+# a genuinely unsatisfiable forward (port already bound) does not spin.
+K8S_PORT_FORWARD_RESTART_DELAY_S = 2.0
+
 
 def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
     """Resolve `port-forward`'s args into (target, service, local, remote) rows.
@@ -10223,20 +10687,23 @@ def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
     target = getattr(args, "target", "web") or "web"
     port_override = getattr(args, "port", None)
 
-    if target == "observability":
+    if target in ("observability", "app"):
         if port_override is not None:
             print(
-                "ERROR: --port cannot be combined with --target observability "
-                "(it forwards four UIs; pass --target grafana/prometheus/jaeger/glitchtip "
-                "to override one port)",
+                f"ERROR: --port cannot be combined with --target {target} "
+                "(it forwards several Services; pass a single --target to override one port)",
                 file=sys.stderr,
             )
             return None
-        names = list(K8S_OBSERVABILITY_PORT_FORWARD_TARGETS)
+        names = list(
+            K8S_APP_PORT_FORWARD_TARGETS
+            if target == "app"
+            else K8S_OBSERVABILITY_PORT_FORWARD_TARGETS
+        )
     elif target in K8S_PORT_FORWARD_TARGETS:
         names = [target]
     else:
-        known = ", ".join(sorted([*K8S_PORT_FORWARD_TARGETS, "observability"]))
+        known = ", ".join(sorted(K8S_PORT_FORWARD_TARGET_NAMES))
         print(f"ERROR: unknown --target {target!r} (known targets: {known})", file=sys.stderr)
         return None
 
@@ -10249,33 +10716,298 @@ def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
     return plan
 
 
+@dataclass
+class _PortForwardArgs:
+    """The two fields `_port_forward_plan` reads, for in-process callers.
+
+    `port_forward` is an argparse entrypoint; the install and the background
+    starter need the same plan without inventing a Namespace.
+    """
+
+    target: str = "web"
+    port: int | None = None
+
+
+def _port_forward_argv(service: str, local_port: int, remote_port: int) -> list[str]:
+    """The `kubectl port-forward` invocation for one Service, bound to loopback (#3195)."""
+    return [
+        "kubectl",
+        "-n",
+        K8S_NAMESPACE,
+        "port-forward",
+        f"svc/{service}",
+        f"{local_port}:{remote_port}",
+    ]
+
+
+def _process_alive(pid: int) -> bool:
+    """True if `pid` names a live process this user can signal."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def port_forward_status() -> dict[str, Any]:
+    """Report the managed background forward: whether it runs, and what it publishes.
+
+    Self-healing in the same way `cloud_deploy.tunnel_status` is: a recorded
+    pid that is no longer alive (a reboot, an external `kill`) reads as "not
+    running" rather than as a forward that is still there.
+    """
+    record: dict[str, Any] = {}
+    if K8S_PORT_FORWARD_STATE_FILE.exists():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            loaded = json.loads(K8S_PORT_FORWARD_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                record = loaded
+    pid = int(record.get("pid") or 0)
+    running = _process_alive(pid)
+    return {
+        "running": running,
+        "pid": pid if running else 0,
+        "targets": list(record.get("targets") or []),
+        "urls": list(record.get("urls") or []),
+    }
+
+
+def stop_port_forward() -> list[OpsResult]:
+    """Stop the managed background forward, if one is running.
+
+    Signals the whole process group: the supervisor is detached with
+    `start_new_session=True`, so its `kubectl` children share its group and a
+    group signal is what stops them together. A `kubectl` left behind would
+    keep the local port bound and make the next `--background` fail for a
+    reason that has nothing to do with the cluster.
+    """
+    status = port_forward_status()
+    if not status["running"]:
+        K8S_PORT_FORWARD_STATE_FILE.unlink(missing_ok=True)
+        return [OpsResult(True, "No managed background port-forward is running")]
+    pid = int(status["pid"])
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        # Racing an external kill, or a supervisor that is no longer its own
+        # group leader: fall back to the process itself.
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    K8S_PORT_FORWARD_STATE_FILE.unlink(missing_ok=True)
+    return [
+        OpsResult(
+            True,
+            f"Stopped the managed background port-forward (pid {pid})",
+            ", ".join(status["targets"]),
+        )
+    ]
+
+
+def _supervise_port_forward(plan: list[tuple[str, str, int, int]]) -> int:
+    """Keep every forward in `plan` alive until this process is asked to stop (#3986).
+
+    This is the body of the detached child `--background` starts, and the
+    reason the background forward is not merely a detached `kubectl`:
+    `kubectl port-forward` attaches to ONE Pod and exits when that Pod is
+    replaced, so an unsupervised forward silently takes the UI down on the
+    first canary rollout or self-heal restart -- the failure mode #3986
+    reports against the manual workaround. Restarting it is the whole job.
+
+    Runs until SIGTERM/SIGINT (what `--stop` sends), then terminates every
+    child before returning.
+    """
+    stopping = threading.Event()
+
+    def _request_stop(_signum: int, _frame: Any) -> None:
+        stopping.set()
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    children: dict[str, subprocess.Popen[bytes]] = {}
+    try:
+        while not stopping.is_set():
+            for name, service, local_port, remote_port in plan:
+                proc = children.get(name)
+                if proc is not None and proc.poll() is None:
+                    continue
+                if proc is not None:
+                    print(
+                        f"[{name}] forward exited ({proc.returncode}) -- restarting",
+                        flush=True,
+                    )
+                children[name] = subprocess.Popen(
+                    _port_forward_argv(service, local_port, remote_port)
+                )
+                print(
+                    f"[{name}] forwarding http://127.0.0.1:{local_port} -> "
+                    f"{K8S_NAMESPACE}/svc/{service}:{remote_port}",
+                    flush=True,
+                )
+            stopping.wait(K8S_PORT_FORWARD_RESTART_DELAY_S)
+    finally:
+        for proc in children.values():
+            with contextlib.suppress(Exception):
+                proc.terminate()
+        for proc in children.values():
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=10)
+    return 0
+
+
+def _supervisor_argv(target: str) -> list[str]:
+    """Command line for the detached supervisor child.
+
+    Re-enters this same CLI through the *running interpreter* rather than
+    through a `nyxgpt` on PATH: the api process that may start this (and a
+    venv-installed CLI whose bin directory is not exported) can both be
+    relied on to have the package importable, and neither can be relied on to
+    have the console script findable.
+    """
+    return [
+        sys.executable,
+        "-c",
+        "import sys; from nyxgpt.cli import cli; sys.exit(cli())",
+        "ops",
+        "port-forward",
+        "--target",
+        target,
+        "--supervise",
+    ]
+
+
+def start_port_forward_background(target: str = "app") -> list[OpsResult]:
+    """Start (or report) the managed background forward for `target` (#3986).
+
+    Modelled on `nyxgpt cloud tunnel --background`, which #3986 names as the
+    existing precedent: a detached child in its own process group, its pid
+    recorded so `--status`/`--stop`/`ops down --kubernetes` can find it from
+    another process, and its output in a log file rather than on a pipe
+    nobody will read.
+
+    Idempotent: an already-running forward is reported, not duplicated --
+    starting a second one would only fail on the bound local port.
+    """
+    if _which("kubectl") is None:
+        return [OpsResult(False, "kubectl not found on PATH -- cannot start a port-forward")]
+
+    existing = port_forward_status()
+    if existing["running"]:
+        return [
+            OpsResult(
+                True,
+                f"Background port-forward already running (pid {existing['pid']})",
+                ", ".join(existing["urls"]),
+            )
+        ]
+
+    plan = _port_forward_plan(_PortForwardArgs(target=target))
+    if plan is None:
+        return [OpsResult(False, f"Unknown port-forward target {target!r}")]
+
+    try:
+        K8S_PORT_FORWARD_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log = open(K8S_PORT_FORWARD_LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Could not open the port-forward log ({K8S_PORT_FORWARD_LOG_FILE})",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    with log:
+        process = subprocess.Popen(
+            _supervisor_argv(target),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    urls = [f"http://127.0.0.1:{local}" for _name, _svc, local, _remote in plan]
+    record = {
+        "pid": process.pid,
+        "target": target,
+        "targets": [name for name, _svc, _local, _remote in plan],
+        "urls": urls,
+    }
+    K8S_PORT_FORWARD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    K8S_PORT_FORWARD_STATE_FILE.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return [
+        OpsResult(
+            True,
+            f"Background port-forward started (pid {process.pid}); it is restarted "
+            "automatically when a Pod is replaced",
+            ", ".join(urls),
+        )
+    ]
+
+
 def port_forward(args) -> int:
     """`nyxgpt ops port-forward`: forward a Kubernetes Service to localhost.
 
-    `k8s/`'s Services are ClusterIP-only -- there's no Ingress/LoadBalancer
-    (see docs/kubernetes.md#4-verify) -- so `kubectl port-forward` is the
-    only way to reach them from the operator's own workstation. This wraps
-    that invocation so operators never type the raw `kubectl` command
-    themselves, per CLAUDE.md's Operational Command Wrapping requirement;
-    `nyxgpt up --kubernetes` points here instead of printing it directly.
+    The app tier's own Services are NodePorts since #3986, and on the kind
+    cluster nyxGPT provisions those are published on the host, so reaching
+    the web UI needs no forward at all. This command remains the way to reach
+    a cluster whose host ports nyxGPT cannot map (a bring-your-own cluster,
+    or a `nyxgpt-local` created by an older nyxGPT), and the only way to
+    reach the observability UIs, whose Services stay ClusterIP. It wraps
+    `kubectl port-forward` so operators never type the raw command
+    themselves, per CLAUDE.md's Operational Command Wrapping requirement.
 
-    `--target` selects what to forward (default `web`, unchanged). The
-    observability UIs the in-cluster layer adds (#3787) are reachable the
-    same way, and `--target observability` forwards all of them at once on
-    the ports the admin dashboard already expects -- which is what makes the
-    dashboard's Grafana/Prometheus/Jaeger/GlitchTip links work in Kubernetes
-    mode.
+    `--target` selects what to forward (default `web`, unchanged).
+    `--target app` forwards web and api together -- the combination
+    docs/kubernetes.md used to ask for while showing a command that forwarded
+    one -- and `--target observability` forwards Grafana, Prometheus, Jaeger
+    and GlitchTip at once on the ports the admin dashboard already expects.
 
-    Runs in the foreground until interrupted (Ctrl-C), same as `kubectl
-    port-forward` itself -- there's no "done" state to return early from.
+    `--background` hands the forward to a supervised, detached child instead
+    (pid recorded, `--status`/`--stop` to inspect and end it), which is what
+    the install establishes on a cluster it cannot map host ports for. The
+    supervision is the point: a plain `kubectl port-forward` dies with the
+    Pod it attached to, so an unsupervised background forward would take the
+    UI down on the first canary rollout.
+
+    Without `--background` it runs in the foreground until interrupted
+    (Ctrl-C), same as `kubectl port-forward` itself -- there's no "done"
+    state to return early from.
     """
+    if getattr(args, "status", False):
+        status = port_forward_status()
+        if status["running"]:
+            print(
+                f"Background port-forward running (pid {status['pid']}): "
+                + ", ".join(status["urls"])
+            )
+        else:
+            print("No managed background port-forward is running.")
+        return 0
+    if getattr(args, "stop", False):
+        return 0 if _emit_results("port-forward --stop", stop_port_forward()) else 2
+
     if _which("kubectl") is None:
         print("[FAIL] kubectl not found on PATH", file=sys.stderr)
         return 2
 
+    if getattr(args, "background", False):
+        target = getattr(args, "target", "web") or "web"
+        results = start_port_forward_background(target)
+        return 0 if _emit_results("port-forward --background", results) else 2
+
     plan = _port_forward_plan(args)
     if plan is None:
         return 2
+
+    if getattr(args, "supervise", False):
+        # The detached child's own mode -- keeps every forward in the plan
+        # alive across Pod replacement. Not something an operator runs
+        # directly; `--background` is the surface.
+        return _supervise_port_forward(plan)
 
     logger.info(
         "ops: port-forward starting",
@@ -10297,18 +11029,7 @@ def port_forward(args) -> int:
                 f"{K8S_NAMESPACE}/svc/{service}:{remote_port} ({name})",
                 flush=True,
             )
-            procs.append(
-                subprocess.Popen(
-                    [
-                        "kubectl",
-                        "-n",
-                        K8S_NAMESPACE,
-                        "port-forward",
-                        f"svc/{service}",
-                        f"{local_port}:{remote_port}",
-                    ]
-                )
-            )
+            procs.append(subprocess.Popen(_port_forward_argv(service, local_port, remote_port)))
         print("Ctrl-C to stop.", flush=True)
         # Any forward exiting on its own (Service deleted, port already
         # bound) ends the command: a partially-working set of tunnels is
@@ -10352,14 +11073,24 @@ def infra_status() -> dict[str, Any]:
     reports `serving`, which instance/service is currently handling traffic
     (see `_serving_status`) -- traffic *control* stays on the canary page.
 
-    Kubernetes refines this further (#3468): `configured` reports whether a
-    kubeconfig current-context exists at all (kubectl missing counts as not
-    configured, since there's then no context to read). No configured
-    cluster means there was never anything to be unreachable -- that's a
+    Kubernetes refines this further (#3468): `configured` reports whether
+    this process has a cluster to talk to at all -- a kubeconfig
+    current-context, **or** in-cluster ServiceAccount credentials (#3988;
+    kubectl missing counts as not configured either way). No cluster means
+    there was never anything to be unreachable -- that's a
     confidently-determined NOT DEPLOYED, not CANNOT DETERMINE. The latter is
-    reserved for a *configured* context the probe couldn't reach (timeout,
+    reserved for a *configured* cluster the probe couldn't reach (timeout,
     connection refused to a cluster that's meant to exist, auth failure),
     preserving #3410's original false-NOT-DEPLOYED protection for that case.
+
+    The in-cluster half of that is #3988's whole subject: served from the api
+    Pod, this function used to gate on `kubectl config current-context`
+    alone, which is empty in a Pod -- so the page reported the very cluster
+    it was running in as NOT DEPLOYED. `in_cluster` (top level, and on the
+    `kubernetes` section) says when the answer comes from inside the
+    deployment being described; the Compose survey and the native install
+    identity are then reported as **out of scope** rather than answered from
+    the container's own filesystem.
 
     `compose_probe_available` extends the same "can't determine" distinction
     to the `compose` section (#3588): `False` means `docker compose ps`
@@ -10425,16 +11156,24 @@ def infra_status() -> dict[str, Any]:
     }
 
     kubectl_available = _which("kubectl") is not None
+    in_cluster = _in_cluster()
     kubernetes_context = _kubectl_context() if kubectl_available else ""
+    if not kubernetes_context and in_cluster:
+        # #3988: the page was being served BY a Pod in the cluster it called
+        # NOT DEPLOYED. In-cluster auth uses the mounted ServiceAccount token
+        # and `KUBERNETES_SERVICE_HOST`, never a kubeconfig context, so the
+        # old `bool(current-context)` gate was structurally incapable of
+        # seeing the deployment it was running in.
+        kubernetes_context = K8S_IN_CLUSTER_CONTEXT_LABEL
     kubernetes_configured = bool(kubernetes_context)
     pods: list[str] = []
     pod_states: list[dict[str, str]] = []
     unschedulable: list[str] = []
-    # No kubeconfig/current-context means no cluster was ever configured here --
-    # that's a confidently-determined NOT DEPLOYED (#3468), not the CANNOT
-    # DETERMINE state reserved for a *configured* cluster the probe couldn't
-    # reach (kubectl missing entirely is folded into "not configured" too,
-    # since there's no context to read either way).
+    # No kubeconfig context AND no in-cluster credentials means no cluster was
+    # ever configured here -- that's a confidently-determined NOT DEPLOYED
+    # (#3468), not the CANNOT DETERMINE state reserved for a *configured*
+    # cluster the probe couldn't reach (kubectl missing entirely is folded
+    # into "not configured" too, since there's nothing to talk to it with).
     kubernetes_probe_available = not kubernetes_configured
     if kubernetes_configured:
         # Classified rather than dumped (#3827): the raw `kubectl get pods`
@@ -10490,7 +11229,14 @@ def infra_status() -> dict[str, Any]:
         # cluster nyxgpt provisions when nothing else is reachable, vs. a
         # bring-your-own cluster (minikube, Docker Desktop, a remote context, ...).
         "context": kubernetes_context,
+        # False in-cluster: a Pod cannot see which kind cluster (if any) its
+        # nodes belong to, and guessing would be the same class of confident
+        # wrong answer this issue removed.
         "provisioned": kubernetes_context == KIND_CONTEXT,
+        # Whether this answer comes from inside the cluster being described
+        # (#3988). The page uses it to say so, and to scope the rows below
+        # that a Pod cannot honestly answer.
+        "in_cluster": in_cluster,
         # What the two images in this cluster were built from (#3834): the
         # published artifacts, or a checkout's working tree via
         # `--dev`. `recorded: False` means no marker -- deployed before nyxGPT
@@ -10555,7 +11301,7 @@ def infra_status() -> dict[str, Any]:
     # it: a dashboard showing a healthy native stack must not let a dev-mode
     # install be read as a verdict on the artifact path.
     install_mode_state = read_install_mode()
-    install_mode = {
+    install_mode: dict[str, Any] = {
         "mode": install_mode_state.mode,
         "checkout": install_mode_state.checkout,
         "label": install_mode_state.label(),
@@ -10574,8 +11320,42 @@ def infra_status() -> dict[str, Any]:
         },
     }
 
+    compose_probe_available = compose_probe.available
+    compose_probe_reason = compose_probe.reason
+    if in_cluster:
+        # A Compose survey run from inside a Pod is not a question with an
+        # answer (#3988). The container has no host filesystem and no Docker
+        # socket, so the probe was reporting its own `/root/.nyxGPT/...` path
+        # to the operator as the reason -- a container-internal path, about a
+        # machine the page cannot see. Replaced by a scope statement: this
+        # vantage point does not cover Compose at all.
+        compose_probe_available = False
+        compose_probe_reason = (
+            "Not in scope from here: this API is running inside a Kubernetes Pod, which has "
+            "no host filesystem and no Docker socket. Run `nyxgpt ops status` on the host to "
+            "survey a Docker Compose deployment there."
+        )
+        # Same for the native install identity: whatever marker the container
+        # image happens to carry describes a different machine, and the
+        # remedies the card offers (`nyxgpt up`, `nyxgpt ops doctor`) are
+        # aimed at a host this process cannot reach.
+        install_mode["in_scope"] = False
+        install_mode["out_of_scope_reason"] = (
+            "Not in scope from here: this API is running inside a Kubernetes Pod. The "
+            "Kubernetes card above describes this deployment; a native install is a "
+            "separate one, on a host this process cannot see."
+        )
+    else:
+        install_mode["in_scope"] = True
+        install_mode["out_of_scope_reason"] = ""
+
     return {
         "mode": running_mode,
+        # Where this answer was computed (#3988). `in_cluster` means the page
+        # is describing the deployment it is itself being served from, which
+        # is what makes the Compose/native rows above out of scope rather
+        # than merely unlucky.
+        "in_cluster": in_cluster,
         "install_mode": install_mode,
         "native": mode_info.native,
         # The native card's own "can't determine" signal (#4022). Cassandra is
@@ -10585,8 +11365,8 @@ def infra_status() -> dict[str, Any]:
         "native_probe_available": mode_info.native.get("cassandra") != DOCKER_STATE_UNKNOWN,
         "native_probe_reason": mode_info.docker_probe_reason,
         "compose": mode_info.compose,
-        "compose_probe_available": compose_probe.available,
-        "compose_probe_reason": compose_probe.reason,
+        "compose_probe_available": compose_probe_available,
+        "compose_probe_reason": compose_probe_reason,
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
         "kubernetes": kubernetes,
@@ -10908,11 +11688,11 @@ def up(args) -> int:
         return 2
 
     if getattr(args, "kubernetes", False):
-        print(
-            "nyxGPT is up. Kubernetes Services are ClusterIP-only -- run "
-            "`nyxgpt ops port-forward` in another terminal, then open "
-            f"{WEB_URL} (see docs/kubernetes.md#4-verify)."
-        )
+        # No second terminal (#3986): the install establishes the access path
+        # -- a published NodePort on the cluster nyxGPT provisions, or a
+        # managed background forward on one whose host ports it cannot map --
+        # so this is a URL, not homework.
+        print(f"nyxGPT is up: {WEB_URL}")
         if not skip_observability:
             print(
                 "Observability (Grafana, Prometheus, Jaeger, GlitchTip) runs in the cluster "
@@ -11375,12 +12155,18 @@ def status(_args) -> int:
         pod_states = k8s_pods
         if pod_states:
             context = _kubectl_context()
-            cluster_note = (
-                " (kind cluster nyxgpt provisioned -- torn down together on "
-                "nyxgpt ops down --kubernetes)"
-                if context == KIND_CONTEXT
-                else f" (bring-your-own cluster, context: {context})"
-            )
+            if context == KIND_CONTEXT:
+                cluster_note = (
+                    " (kind cluster nyxgpt provisioned -- torn down together on "
+                    "nyxgpt ops down --kubernetes)"
+                )
+            elif not context and _in_cluster():
+                # Running in a Pod: there is no context to name, and calling
+                # this a "bring-your-own cluster, context: " with an empty
+                # tail was the CLI's version of #3988's false negative.
+                cluster_note = f" ({K8S_IN_CLUSTER_CONTEXT_LABEL} -- this process's own cluster)"
+            else:
+                cluster_note = f" (bring-your-own cluster, context: {context})"
             print(
                 f"\nKubernetes ({K8S_NAMESPACE} namespace, nyxgpt ops down --kubernetes to "
                 f"tear down): {len(pod_states)} pod(s){cluster_note}"

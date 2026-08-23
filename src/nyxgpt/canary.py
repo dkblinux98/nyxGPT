@@ -2280,6 +2280,123 @@ def rollback(
     return CanaryResult(True, message)
 
 
+def reset(namespace: str = DEFAULT_NAMESPACE, *, component: str = "api") -> CanaryResult:
+    """Return an OFF-CONTRACT canary Deployment to its declared resting state (#3991).
+
+    `k8s/deployment-canary.yaml` and `k8s/deployment-web-canary.yaml` declare
+    `replicas: 0` and say so in their comments: the canary track is idle
+    until `start` scales it up. A cluster can nevertheless be found with an
+    idle canary running replicas, and when it is, no wrapped command could
+    put it back -- `rollback` refuses with "No canary rollout in progress",
+    correctly, because ending a rollout is its contract and there is no
+    rollout to end. That left raw `kubectl scale deploy ... --replicas=0` as
+    the only recovery, which is exactly the operational-command-wrapping gap
+    CLAUDE.md forbids.
+
+    How a cluster gets there, both routes verified in the code rather than
+    guessed at:
+
+    * `start` scales the canary up FIRST and only then scales stable
+      (`_scale_pool`'s second branch, the one taken when stable is not
+      growing). If that second scale fails, `start` returns the failure
+      before `state["active"]` is ever written -- canary left carrying
+      replicas, state file saying idle.
+    * The state file lives at `~/.nyxGPT/canary_state.json`, and
+      `k8s/deployment-stable.yaml` mounts no volume over it. A rollout
+      started from the admin dashboard therefore records its state inside the
+      serving api Pod's own ephemeral filesystem, and the next Pod
+      replacement -- a restart, an install, a self-heal delete -- takes the
+      state with it while the cluster keeps the replicas.
+
+    Both land in the same place, and it is the place this command exists for:
+    cluster says N, state says idle, `rollback` refuses. An ACTIVE rollout is
+    refused here in turn -- ending one is `rollback`'s job, and quietly
+    scaling a live rollout to zero from a command named "reset" is how an
+    operator loses traffic they were deliberately serving.
+
+    Stable is left alone unless the pool is still inflated above its resting
+    floor, in which case it is deflated to `DEFAULT_RESTING_REPLICAS` -- the
+    manifests' count, since with no rollout state there is nothing recording
+    what it was resting at.
+    """
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return err
+    if _which("kubectl") is None:
+        return CanaryResult(
+            False, _kubectl_missing_message("kubectl not found; cannot reset the canary track")
+        )
+    state = _load_state(component)
+    if state.get("active"):
+        return CanaryResult(
+            False,
+            f"A canary rollout is in progress at {state.get('weight_percent', 0)}% -- "
+            "use `nyxgpt canary rollback` to end it, or `nyxgpt canary promote` to finish it",
+        )
+
+    live = _desired_replicas(spec.canary_deployment, namespace)
+    if live is None:
+        return CanaryResult(
+            False,
+            f"Could not read {spec.canary_deployment}'s replica count",
+            "The Deployment may not exist yet -- `nyxgpt ops install --kubernetes` deploys it.",
+        )
+    if live == 0:
+        return CanaryResult(True, f"{spec.canary_deployment} is already at its resting 0 replicas")
+
+    logger.warning(
+        "canary: %s is idle but running %d replica(s) -- resetting to 0",
+        spec.canary_deployment,
+        live,
+        extra={
+            "component": "canary",
+            "action": "reset",
+            "canary_component": component,
+            "observed_replicas": live,
+        },
+    )
+    canary_result = _scale(spec.canary_deployment, 0, namespace)
+    if not canary_result.ok:
+        ops_module.record_canary_action(
+            "reset", "failure", canary_result.message, component=component
+        )
+        return canary_result
+
+    notes = [
+        f"Reset {spec.canary_deployment} from {_replica_count(live)} to its resting 0 "
+        "(it was idle: no rollout in progress)"
+    ]
+    stable_live = _desired_replicas(spec.stable_deployment, namespace)
+    if stable_live is not None and stable_live > DEFAULT_RESTING_REPLICAS:
+        stable_result = _scale(spec.stable_deployment, DEFAULT_RESTING_REPLICAS, namespace)
+        notes.append(
+            f"deflated {spec.stable_deployment} from {_replica_count(stable_live)} to "
+            f"{_replica_count(DEFAULT_RESTING_REPLICAS)}"
+            if stable_result.ok
+            else f"could not deflate {spec.stable_deployment}: {stable_result.message}"
+        )
+
+    history = state.setdefault("history", [])
+    history.append({"action": "reset", "from_replicas": live, "ts": time.time()})
+    state["history"] = history[-HISTORY_LIMIT:]
+    _save_state(state, component)
+
+    message = "; ".join(notes)
+    ops_module.record_canary_action("reset", "success", message, component=component)
+    logger.info(
+        "canary: %s",
+        message,
+        extra={
+            "component": "canary",
+            "action": "reset",
+            "outcome": "ok",
+            "canary_component": component,
+        },
+    )
+    return CanaryResult(True, message)
+
+
 __all__ = [
     "CanaryResult",
     "TrackHealth",
@@ -2309,4 +2426,5 @@ __all__ = [
     "evaluate",
     "promote",
     "rollback",
+    "reset",
 ]

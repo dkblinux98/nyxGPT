@@ -1280,6 +1280,17 @@ Stable is never touched, even on failure. Traffic weighting is a separate,
 deliberate action (`start`/`promote` below). Returns `409` if the build,
 image patch, or rollout wait fails.
 
+**No dashboard control calls this (#3991).** The build runs in whatever
+process serves the request, and in Kubernetes mode that is an api Pod — no
+checkout, no Docker daemon, and a version that resolves to `0.0.0` — so the
+Canary page's "Deploy current version to canary" button could only ever fail
+with `Failed to build/load nyxgpt-web:0.0.0`. It was removed rather than
+repaired (a dashboard cannot act on the substrate it is itself running on;
+see CLAUDE.md's Definition of Done and #3804), and the page names
+`nyxgpt canary deploy` instead. The endpoint remains for an api process that
+*can* build — a native install driving a local cluster — and any new caller
+must satisfy itself that it is one.
+
 **Request (optional):**
 
 ```json

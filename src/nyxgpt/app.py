@@ -2263,6 +2263,17 @@ def canary_deploy(request: Request, payload: dict[str, Any] = Body(default={})) 
     deliberate action (`/canary/start` and `/canary/promote`). Returns `409`
     if the build, image patch, or rollout wait fails. Records a
     `canary.deploy` admin activity event on success.
+
+    **No dashboard control calls this, deliberately (#3991).** The build runs
+    in whatever process serves the request, and in Kubernetes mode that is an
+    api Pod: no checkout, no Docker daemon, and a version that resolves to
+    `0.0.0`, so the Canary page's "Deploy current version to canary" button
+    could only ever fail (`Failed to build/load nyxgpt-web:0.0.0`). It was
+    removed rather than repaired -- CLAUDE.md's Definition of Done: a
+    dashboard cannot act on the substrate it is itself running on -- and the
+    page names `nyxgpt canary deploy` instead. The endpoint remains for an api
+    process that CAN build (a native install driving a local cluster), and any
+    new caller must satisfy itself that it is one.
     """
     cfg = _req_cfg(request)
     component = payload.get("component", "api")

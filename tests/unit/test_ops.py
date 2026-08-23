@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import hashlib
 import json
@@ -12176,7 +12177,7 @@ def test_ensure_kubectl_and_cluster_installs_missing_kind(monkeypatch):
     results = ops._ensure_kubectl_and_cluster()
     assert all(r.ok for r in results)
     assert any("Installed kind" in r.message for r in results)
-    assert ["kind", "create", "cluster", "--name", "nyxgpt-local", "--wait", "60s"] in calls
+    assert any(c[:3] == ["kind", "create", "cluster"] and "--config" in c for c in calls)
 
 
 @pytest.mark.unit
@@ -12251,7 +12252,13 @@ def test_ensure_kubectl_and_cluster_provisions_kind_when_absent(monkeypatch):
     results = ops._ensure_kubectl_and_cluster()
     assert all(r.ok for r in results)
     assert any("Created local kind cluster: nyxgpt-local" in r.message for r in results)
-    assert ["kind", "create", "cluster", "--name", "nyxgpt-local", "--wait", "60s"] in calls
+    # --config, always (#3986): a kind cluster created without one publishes no
+    # host ports, which is how a successful install used to leave the web UI
+    # unreachable.
+    create = next(c for c in calls if c[:3] == ["kind", "create", "cluster"])
+    assert create[:5] == ["kind", "create", "cluster", "--name", "nyxgpt-local"]
+    assert "--config" in create
+    assert create[create.index("--config") + 1] == str(ops.KIND_CLUSTER_CONFIG_FILE)
 
 
 @pytest.mark.unit
@@ -13043,6 +13050,8 @@ def test_install_kubernetes_waits_for_the_app_tier_before_reading_health():
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", side_effect=record("data")),
         patch.object(ops, "_wait_for_k8s_app_tier", side_effect=record("app")),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_wait_for_k8s_observability", side_effect=record("observability")),
@@ -13089,6 +13098,8 @@ def test_install_kubernetes_does_not_fail_on_a_pod_that_is_merely_pending(monkey
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
@@ -13153,6 +13164,8 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok) as w,
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
         # The observability layer this mode now deploys too (#3787).
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
@@ -13191,6 +13204,8 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         patch.object(ops, "_sync_packaged_resources", return_value=ok),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
@@ -13469,6 +13484,8 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
         patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
+        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
+        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
         # The in-cluster observability layer is part of this bring-up now
         # (#3787) -- unpatched, these steps would shell out to kubectl.
@@ -13499,11 +13516,15 @@ def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys, t
         ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
     )
     results = ops.down_kubernetes()
-    # The app-tier kustomization, then the observability overlay (#3787),
-    # then the install-mode record for the deployment just removed (#3834).
-    assert [r.ok for r in results] == [True, True, True]
-    assert "k8s/observability/" in results[1].message
-    assert "install-mode record" in results[2].message
+    # The access path the install established (#3986) is released FIRST -- a
+    # supervised background forward outlives the cluster it points at and
+    # would hold host 3000/8000 against the next install -- then the app-tier
+    # kustomization, then the observability overlay (#3787), then the
+    # install-mode record for the deployment just removed (#3834).
+    assert [r.ok for r in results] == [True, True, True, True]
+    assert "port-forward" in results[0].message
+    assert "k8s/observability/" in results[2].message
+    assert "install-mode record" in results[3].message
     assert capsys.readouterr().out == ""
 
 
@@ -15308,10 +15329,15 @@ def test_ops_up_times_out_returns_nonzero(monkeypatch, capsys):
 
 
 @pytest.mark.unit
-def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, capsys):
-    """Kubernetes Services are ClusterIP-only, so `up --kubernetes` must not
-    claim the web URL is directly reachable -- it needs a manual
-    `kubectl port-forward` first (see docs/kubernetes.md#4-verify)."""
+def test_ops_up_kubernetes_mode_hands_over_a_working_url_not_homework(monkeypatch, capsys):
+    """`up --kubernetes` hands the operator a URL, not a second command to run.
+
+    The inverse of what this test used to assert (#3986). The install now
+    establishes the access path itself -- a NodePort published by the
+    provisioned cluster, or a managed background forward on a cluster whose
+    host ports it cannot map -- so telling the operator to open a spare
+    terminal and start a foreground forward is the defect, not the contract.
+    """
     monkeypatch.setattr(ops, "install", lambda args: 0)
     monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
 
@@ -15319,23 +15345,35 @@ def test_ops_up_kubernetes_mode_prints_port_forward_instructions(monkeypatch, ca
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "port-forward" in out
-    assert "kubectl -n nyxgpt port-forward" not in out
     assert ops.WEB_URL in out
+    # No raw kubectl, per CLAUDE.md's Operational Command Wrapping rule...
+    assert "kubectl" not in out
+    # ...and no follow-up command required to reach the UI at all. (The
+    # observability line below it is a different surface and may still name
+    # `--target observability`, so this checks the app-tier instruction
+    # specifically.)
+    assert "another terminal" not in out
+    assert "ClusterIP" not in out
 
 
-@pytest.mark.unit
-def test_ops_up_kubernetes_mode_wraps_kubectl_not_raw(monkeypatch, capsys):
-    """The Operational Command Wrapping policy (CLAUDE.md) forbids instructing
-    users to run a raw `kubectl` command -- `up --kubernetes` must point at
-    the `nyxgpt ops port-forward` wrapper instead."""
-    monkeypatch.setattr(ops, "install", lambda args: 0)
-    monkeypatch.setattr(ops, "_wait_for_stack_healthy", lambda **kw: True)
+def _port_forward_args(**overrides):
+    """An argparse Namespace shaped like `nyxgpt ops port-forward`'s parser.
 
-    ops.up(MagicMock(dev=False, no_wait=False, timeout=180.0, kubernetes=True))
-
-    out = capsys.readouterr().out
-    assert "nyxgpt ops port-forward" in out
+    Every flag the parser defines, defaulted the way argparse defaults it, so
+    a test exercises the branch it names rather than whichever one a
+    MagicMock's auto-attributes happen to make truthy first (#3986).
+    """
+    args = argparse.Namespace(
+        target="web",
+        port=None,
+        background=False,
+        status=False,
+        stop=False,
+        supervise=False,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
 
 
 @pytest.mark.unit
@@ -15343,7 +15381,11 @@ def test_ops_port_forward_missing_kubectl(monkeypatch, capsys):
     """`nyxgpt ops port-forward` fails fast with a clear message if kubectl isn't installed."""
     monkeypatch.setattr(ops, "_which", lambda _: None)
 
-    rc = ops.port_forward(MagicMock(port=3000))
+    # A real Namespace, not a MagicMock: `port-forward` grew --background /
+    # --status / --stop (#3986), and a MagicMock answers every getattr with a
+    # truthy stub, so a mock would take one of those branches instead of the
+    # one under test.
+    rc = ops.port_forward(_port_forward_args(target="web", port=3000))
 
     assert rc == 2
     assert "kubectl not found on PATH" in capsys.readouterr().err
@@ -15366,7 +15408,7 @@ def test_ops_port_forward_invokes_kubectl(monkeypatch, capsys):
 
     monkeypatch.setattr(ops.subprocess, "Popen", fake_popen)
 
-    rc = ops.port_forward(MagicMock(target="web", port=3001))
+    rc = ops.port_forward(_port_forward_args(target="web", port=3001))
 
     assert rc == 0
     assert calls == [

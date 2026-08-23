@@ -34,6 +34,8 @@ on:
       - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/install_mode.py'
       - 'src/nyxgpt/release_tarball.py'
+      # The canary resting-state assertion on the artifact path (#3991).
+      - 'src/nyxgpt/canary.py'
       - 'Dockerfile'
       - 'web/Dockerfile'
       - 'docker/entrypoint.sh'
@@ -46,6 +48,8 @@ on:
       - 'src/nyxgpt/ops.py'
       - 'src/nyxgpt/install_mode.py'
       - 'src/nyxgpt/release_tarball.py'
+      # The canary resting-state assertion on the artifact path (#3991).
+      - 'src/nyxgpt/canary.py'
       - 'Dockerfile'
       - 'web/Dockerfile'
       - 'docker/entrypoint.sh'

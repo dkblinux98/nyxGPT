@@ -172,10 +172,20 @@ set `NYXGPT_BIND_ADDR=0.0.0.0` (or a specific LAN address) alongside
 **Kubernetes** is the one place `host = 0.0.0.0` in `config.ini` is expected
 and correct (`k8s/configmap.yaml`): it's the pod's own network namespace, not
 the host's, and is required for `kube-proxy` to route Service traffic to the
-container at all. `k8s/service.yaml` and `k8s/service-canary.yaml` are both
+container at all. Every Service in `k8s/` is
 `type: ClusterIP` with no `NodePort`/`LoadBalancer`/`Ingress`, so nothing
 routes this outside the cluster by default — see
 [`docs/kubernetes.md`](kubernetes.md).
+
+One deliberate exception, and only where nyxGPT owns the cluster (#3986): on
+the local `kind` cluster `nyxgpt ops install --kubernetes` provisions for
+itself, the install patches `nyxgpt-web`/`nyxgpt-api` onto node ports
+`30300`/`30800`, which that cluster's node maps to `127.0.0.1:3000`/`:8000`
+— **loopback only**, the same binding every other local mode uses. It is a
+patch rather than a line in the manifests precisely so this stays true
+everywhere else: the AWS k3s deployment applies the same manifests and keeps
+the ClusterIP posture below, and a bring-your-own cluster is never given node
+ports it did not ask for.
 
 **AWS deployments** use the SSH-tunnel model above exclusively — no app or
 observability port is ever opened in the security group, only port 22,
