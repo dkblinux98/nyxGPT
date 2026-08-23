@@ -489,6 +489,40 @@ def test_current_mode_terraform(monkeypatch):
 
 
 @pytest.mark.unit
+def test_current_mode_does_not_claim_terraform_from_reads_that_never_happened(monkeypatch):
+    """#4022 review: a denied Docker session reads `unknown`, not `absent`.
+
+    The old predicate was `state != "absent"`, so every unknown promoted a
+    *native* install into "terraform" -- reached from the API process through
+    `status()`, telling the operator canary "doesn't apply in terraform mode".
+    D-027's rule for this function is that it answers "unknown" rather than
+    asserting a substrate nothing could see.
+    """
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "unknown", "web": "unknown", "cassandra": "unknown"},
+    )
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=""))
+
+    mode = canary.current_mode()
+
+    assert mode != "terraform", "asserted a substrate from reads that never happened"
+    assert mode == "unknown", "an all-unknown read is not evidence of a native install either"
+
+
+@pytest.mark.unit
+def test_current_mode_still_sees_terraform_when_one_container_really_runs(monkeypatch):
+    """The guard must not invert the true positive: a real container still counts."""
+    monkeypatch.setattr(
+        canary.ops_module,
+        "terraform_stack_state",
+        lambda: {"api": "running", "web": "unknown"},
+    )
+    assert canary.current_mode() == "terraform"
+
+
+@pytest.mark.unit
 def test_current_mode_kubernetes(monkeypatch):
     monkeypatch.setattr(
         canary, "_run", lambda cmd, **_k: CP(stdout="nyxgpt-api-stable-abc 1/1 Running")

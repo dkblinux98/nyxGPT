@@ -665,8 +665,22 @@ def current_mode() -> str:
         return "compose"
     try:
         tf_state = ops_module.terraform_stack_state()
-        if any(state != "absent" for state in tf_state.values()):
+        # `_container_deployed`, not `!= "absent"` (#4022 review). Since this
+        # change a denied Docker session reads `unknown` rather than collapsing
+        # to `absent`, and `!= "absent"` promoted every one of those into a
+        # confident "terraform" -- on a *native* install, reached from the API
+        # process via `status()`, telling the operator canary "doesn't apply in
+        # terraform mode". That is the exact inversion D-027 forbids for this
+        # function, and it contradicts `terraform_stack_state`'s own docstring.
+        if any(ops_module._container_deployed(state) for state in tf_state.values()):
             return "terraform"
+        if tf_state and all(
+            state == ops_module.DOCKER_STATE_UNKNOWN for state in tf_state.values()
+        ):
+            # Nothing was read, so nothing is known. Falling through to "native"
+            # here would be the same confident-wrong-answer fault one branch
+            # over -- the operator needs to see the probe failure (D-027).
+            return "unknown"
     except Exception:
         pass
     if _which("kubectl") is not None:
