@@ -18,9 +18,10 @@ import { apiErrorText, errorMessage } from '../lib/apiError';
  * Deliberately NOT a toast. The state lives on the backend
  * (`GET /api/v1/infra/restart-status`, backed by
  * `~/.nyxGPT/pending-restart.json`), so this notice survives a page reload, a
- * navigation away and back, a browser restart, and an API restart -- the user
- * can always find out that the saved value and the running value differ. It
- * disappears only when the restart actually happens or the value is reverted.
+ * navigation away and back, a browser restart, and an API restart it was not
+ * waiting for -- the user can always find out that the saved value and the
+ * running value differ. It disappears only when the restart actually happens
+ * or the value is reverted.
  *
  * Mounted on both `/admin` (the wizard, where the change is made) and
  * `/admin/dashboard` (where the user returns), from one component so the two
@@ -38,8 +39,17 @@ export interface RestartStatus {
   session_disrupting: string[];
 }
 
-/** How many times to poll `restart-status` after triggering a restart before giving up. */
-const RESTART_POLL_ATTEMPTS = 30;
+/**
+ * How many times to poll `restart-status` after triggering a restart before giving up.
+ *
+ * Sized for the slowest component to *come back*, not for the restart command
+ * to return. Restarting `api` tears down the process serving this poll and the
+ * pending flag is only retired at the end of the replacement process's startup
+ * (`restart_state.clear_started`, #3806) -- a cold FastAPI start behind a
+ * service manager is comfortably past 30s on a loaded machine, and timing out
+ * early is what makes a restart that *worked* read as one that did not.
+ */
+const RESTART_POLL_ATTEMPTS = 90;
 const RESTART_POLL_INTERVAL_MS = 1000;
 
 export async function fetchRestartStatus(): Promise<RestartStatus | null> {
@@ -132,7 +142,10 @@ export default function PendingRestartNotice({
       // A connection error mid-restart is expected -- the component being
       // restarted may be the one serving this request -- so
       // `fetchRestartStatus` returning null keeps the loop going rather than
-      // failing early.
+      // failing early. For `api` that is the normal case, not an edge one:
+      // this poll is answered by the process being restarted, so it fails for
+      // as long as the restart takes and then answers with an empty pending
+      // set, because the replacement process cleared it on startup (#3806).
       const next = await fetchRestartStatus();
       if (next) {
         onStatusChange(next);
@@ -143,7 +156,11 @@ export default function PendingRestartNotice({
       }
     }
     setAction('failed');
-    setActionError('Restart did not complete in time -- check status and retry.');
+    setActionError(
+      'Restart did not report finished in time. The service may still be coming ' +
+        'back — this notice clears on its own once it does. Check `nyxgpt ops status`, ' +
+        'or retry.'
+    );
   }, [onStatusChange, sessionDisrupting.length]);
 
   if (components.length === 0) return null;
