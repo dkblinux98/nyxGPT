@@ -476,3 +476,32 @@ def test_bounded_output_still_elides_the_outputs_the_bound_was_written_for():
     excerpt = ops._bounded_output("\n".join(lines))
     assert "lines omitted" in excerpt
     assert len(excerpt.splitlines()) < ops._OUTPUT_EXCERPT_VERBATIM_MAX_LINES
+
+
+@pytest.mark.unit
+def test_recovery_does_not_ask_brew_to_resolve_an_ambiguous_name(monkeypatch, tmp_path):
+    """The recovery runs on the machine state that produced #3861: two taps.
+
+    `brew linkage` is the only check in `_verify_brew_keg` that makes brew
+    *resolve a formula*, and the recovery has no tap-qualified spec to give it
+    -- a bare name errors when two taps provide it, which would make the
+    recovery refuse to start a keg that is perfectly good, for the wrong
+    reason. Checks 1-4 read the Cellar layout directly and cannot be
+    ambiguous.
+    """
+    _fake_brew_tree(tmp_path, "nyxgpt-api", "3.0.0", entrypoint="nyxgpt-api")
+    calls: list[list[str]] = []
+    _brew_env(monkeypatch, tmp_path, calls=calls)
+    monkeypatch.setattr(
+        ops, "_restart_brew_service", lambda name: [ops.OpsResult(True, f"Restarted {name}")]
+    )
+
+    results = ops._recover_after_failed_native_install(
+        "nyxgpt-api", component="api", entrypoint="nyxgpt-api"
+    )
+
+    assert any(r.message.startswith("Recovery:") and r.ok for r in results)
+    assert not any(cmd[:2] == ["brew", "linkage"] for cmd in calls), (
+        "the recovery asked brew to resolve a bare formula name, which errors "
+        "on a machine carrying both taps"
+    )

@@ -2396,7 +2396,7 @@ def _verify_brew_keg(
     formula: str,
     *,
     version: str,
-    spec: str,
+    spec: str | None,
     entrypoint: str,
     installed_after: float | None = None,
 ) -> tuple[bool, str]:
@@ -2417,7 +2417,13 @@ def _verify_brew_keg(
        the generated LaunchAgent plist execs, so a keg with no `opt` link is
        not runnable however complete it looks;
     4. the keg's `bin/<entrypoint>` exists and is executable;
-    5. `brew linkage --test <spec>` finds no missing libraries.
+    5. `brew linkage --test <spec>` finds no missing libraries -- skipped when
+       `spec` is None, because that check is the only one here that makes brew
+       *resolve a formula*, and a bare formula name is ambiguous on a machine
+       carrying two taps that both provide it. A caller that has no
+       tap-qualified spec passes None rather than a name that would fail for
+       the wrong reason; checks 1-4 read the Cellar layout directly and are
+       never ambiguous.
 
     Returns `(ok, detail)`, where `detail` names the first check that failed
     (or lists what passed) so a failure is never reported as a bare "not
@@ -2457,12 +2463,16 @@ def _verify_brew_keg(
     if not (exe.is_file() and os.access(exe, os.X_OK)):
         return False, f"no executable {exe}"
 
-    linkage = _run(["brew", "linkage", "--test", spec], check=False, expected=True, timeout=300)
-    if linkage.returncode != 0:
-        return False, (
-            f"`brew linkage --test {spec}` reports missing libraries:\n"
-            f"{_output_excerpt(linkage)}"
-        )
+    if spec is None:
+        linkage_state = "`brew linkage` not run (no tap-qualified spec to ask about)"
+    else:
+        linkage = _run(["brew", "linkage", "--test", spec], check=False, expected=True, timeout=300)
+        if linkage.returncode != 0:
+            return False, (
+                f"`brew linkage --test {spec}` reports missing libraries:\n"
+                f"{_output_excerpt(linkage)}"
+            )
+        linkage_state = "`brew linkage --test` is clean"
 
     # Reported, deliberately NOT gated on. `<prefix>/bin/<entrypoint>` is the
     # PATH-visible symlink, and it is exactly what Homebrew's `brew link`
@@ -2482,9 +2492,7 @@ def _verify_brew_keg(
     else:
         link_state = f"{link} points at {link.resolve()}, not this keg"
 
-    return True, (
-        f"keg {keg} is complete, linked at {opt}, `brew linkage --test` is clean; {link_state}"
-    )
+    return True, f"keg {keg} is complete, linked at {opt}, {linkage_state}; {link_state}"
 
 
 def _verify_installed_brew_keg(
@@ -2803,7 +2811,12 @@ def _recover_after_failed_native_install(
     verified, evidence = _verify_brew_keg(
         formula,
         version=version,
-        spec=formula,
+        # No tap-qualified spec here: the recovery does not know which tap the
+        # keg came from, and a bare name is ambiguous on a two-tap machine --
+        # `brew linkage` would fail for that reason and this would refuse to
+        # start a keg that is perfectly good. Checks 1-4 are what "can this
+        # keg serve?" actually needs.
+        spec=None,
         entrypoint=entrypoint,
     )
     if not verified:
