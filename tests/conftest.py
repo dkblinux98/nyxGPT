@@ -50,8 +50,13 @@ def _real_prod_log_dir() -> Path:
     configured = parser.get("logging", "dir", fallback=None)
     if not configured:
         return default
-    if configured.startswith("~"):
-        return REAL_HOME / configured.lstrip("~/")
+    if configured == "~":
+        return REAL_HOME
+    if configured.startswith("~/"):
+        # Not `lstrip("~/")`, which strips *characters* and would eat the
+        # leading dot of a path like `~/.nyxGPT/logs`'s successor if it ever
+        # began with one of those two.
+        return REAL_HOME / configured[2:]
     return Path(configured)
 
 

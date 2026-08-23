@@ -124,6 +124,12 @@ def _seed(home: Path) -> None:
 def _install() -> Path:
     existing = os.environ.get(_ENV_MARKER)
     if existing:
+        # A pytest session a test spawned as a subprocess: it inherited both
+        # `$HOME` and this marker, so it is already inside the parent's
+        # sandbox. Adopt it rather than making a second one -- and in
+        # particular do not register an `atexit` removal, because the
+        # directory belongs to the parent, which is still using it.
+        os.environ["HOME"] = existing
         return Path(existing)
 
     _assert_not_too_late()
