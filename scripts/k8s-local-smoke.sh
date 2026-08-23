@@ -132,7 +132,7 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/15 Bring the stack up: nyxgpt ops install --kubernetes"
+step "1/17 Bring the stack up: nyxgpt ops install --kubernetes"
 # No --skip-observability: this is the command as a user types it (#3826).
 # The layer that flag used to hide is also the one that did not fit the node
 # (#3825), so a gate that installs less than the default cannot see either.
@@ -144,7 +144,7 @@ step "1/15 Bring the stack up: nyxgpt ops install --kubernetes"
 nyxgpt ops install --kubernetes --api-key "$API_KEY"
 ok "install --kubernetes completed with no locality flag"
 
-step "2/15 Every Pod of the default stack was scheduled"
+step "2/17 Every Pod of the default stack was scheduled"
 # #3825: `install` reported success on a node whose memory was 99% reserved,
 # with prometheus left Pending / FailedScheduling for good. Nothing in the
 # steps below would have noticed -- chat worked fine. An unscheduled Pod has
@@ -170,7 +170,7 @@ cannot fit the default stack (size the cluster VM, do not drop observability)"
 fi
 ok "every Pod in the default stack has a node"
 
-step "3/15 The data/LLM tier exists and is Ready"
+step "3/17 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -203,7 +203,65 @@ ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
 # the rollout-status wait above only returned because both were there -- this
 # assertion names which model, so a probe regression fails with the reason.
 
-step "4/15 The observability layer came up with the app tier"
+step "4/17 ops status/doctor report on THIS deployment, not the host (#3987)"
+# Executed evidence for #3987 (#3775). The defect it fixes is invisible to
+# inspection and to unit tests, because it is about which machine the command
+# asks: on the owner's acceptance run `ops status` reported the two models
+# above -- the ones step 3 has just proved are in the cluster -- as `UNKNOWN
+# (Ollama unreachable)`, because it probed the host's `127.0.0.1:11434`, and
+# printed a ~50-line urllib traceback above that verdict. Only a run against a
+# live deployment can show the difference, and this is the one job that has
+# one. It goes here, immediately after the models are verified present, so a
+# PRESENT here is checked against ground truth established two steps up.
+#
+# No fault injection needed (the rule's usual companion, CLAUDE.md/#3753): the
+# pre-fix failure is what this step's own assertions describe, and it happens
+# *naturally* on any live Kubernetes deployment -- the host Ollama is absent
+# by design in this mode. `127.0.0.1:11434` in the Required models header IS
+# the pre-fix output, so asserting against it fails on a revert.
+STATUS_OUT=$(nyxgpt ops status 2>&1) || fail "nyxgpt ops status exited non-zero"
+echo "$STATUS_OUT"
+if grep -q "Traceback" <<<"$STATUS_OUT"; then
+    fail "ops status printed a Python traceback -- an unreachable dependency is one line"
+fi
+grep -qE "^  kubernetes: ${NAMESPACE} namespace: [0-9]+/[0-9]+ pod\(s\) ready" <<<"$STATUS_OUT" ||
+    fail "the 'Deployment mode' block does not name Kubernetes above a running cluster"
+ok "the Deployment mode block names the running Kubernetes deployment"
+# The block header, sliced out on its own: `127.0.0.1:11434` legitimately
+# appears elsewhere in a status report (the Ollama env agent), so the
+# assertion has to be about the line that says which Ollama was asked.
+MODELS_HEADER=$(grep -E "^Required models \(Ollama at " <<<"$STATUS_OUT") ||
+    fail "ops status printed no Required models block at all"
+grep -q "(in-cluster)" <<<"$MODELS_HEADER" ||
+    fail "the required-model check did not read the in-cluster Ollama: ${MODELS_HEADER}"
+if grep -q "127.0.0.1" <<<"$MODELS_HEADER"; then
+    fail "the required-model check probed the host -- this is the #3987 defect: ${MODELS_HEADER}"
+fi
+for role_model in "chat: ${MODEL}" "embedding: ${EMBEDDING_MODEL}"; do
+    grep -qE "^  ${role_model}.* -- PRESENT$" <<<"$STATUS_OUT" ||
+        fail "ops status does not report ${role_model} as PRESENT, though step 3 read it \
+straight out of the cluster's Ollama"
+done
+ok "required models resolve PRESENT from the in-cluster Ollama, with no traceback"
+# doctor, per the issue's fourth acceptance criterion. Its exit code is not
+# the assertion: a CI runner with a Kubernetes-only install legitimately has
+# native-side findings, so the check is on what it SAYS about models.
+DOCTOR_OUT=$(nyxgpt ops doctor 2>&1) || true
+echo "$DOCTOR_OUT"
+if grep -q "Traceback" <<<"$DOCTOR_OUT"; then
+    fail "ops doctor printed a Python traceback"
+fi
+grep -qE "^Kubernetes deployment: ${NAMESPACE} namespace: [0-9]+/[0-9]+ pod\(s\) ready" \
+    <<<"$DOCTOR_OUT" ||
+    fail "ops doctor does not name the Kubernetes deployment its checks are reported against"
+grep -q "reported against the cluster" <<<"$DOCTOR_OUT" ||
+    fail "ops doctor does not say model readiness is read from the cluster"
+if grep -q "pull into the cluster" <<<"$DOCTOR_OUT"; then
+    fail "ops doctor reports a missing required model against a cluster that has both"
+fi
+ok "ops doctor reports model readiness against the cluster, and finds nothing missing"
+
+step "5/17 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -226,7 +284,7 @@ ok "all ten observability workloads are Ready alongside the app tier"
 # step 2 already ruled out the unschedulable case with the node arithmetic
 # printed alongside it (#3826, #3825).
 
-step "5/15 The web UI is reachable from the host with NO port-forward (#3986)"
+step "6/17 The web UI is reachable from the host with NO port-forward (#3986)"
 # THE assertion #3986 asks for: an HTTP request to the web UI from the host,
 # with no forward running. Before the fix a completed install left nothing
 # listening -- every Pod Ready, `ops status` healthy, and `curl` refused --
@@ -249,8 +307,8 @@ kubectl -n "$NAMESPACE" get svc nyxgpt-web nyxgpt-api \
     -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
 nyxgpt ops port-forward --status
 
-step "6/15 Fault injection: the shipped ClusterIP Service must break that reachability"
-# Without this half, step 5 passes on any build -- the runner would simply be
+step "7/17 Fault injection: the shipped ClusterIP Service must break that reachability"
+# Without this half, step 6 passes on any build -- the runner would simply be
 # reaching the UI some other way and nobody would know. `k8s/service-web.yaml`
 # as committed is ClusterIP (the base posture the AWS deployment relies on,
 # #3503), so re-applying it verbatim IS the pre-fix state: it strips the node
@@ -272,10 +330,10 @@ else
         sleep 2
     done
     [ "$reachable_as_clusterip" -eq 0 ] ||
-        fail "the UI was still reachable with the shipped ClusterIP web Service -- step 5 is \
+        fail "the UI was still reachable with the shipped ClusterIP web Service -- step 6 is \
 vacuous and cannot detect the #3986 regression"
     INJECTED_CLUSTERIP=1
-    ok "the shipped ClusterIP Service leaves ${BASE} unreachable -- step 5 is load-bearing"
+    ok "the shipped ClusterIP Service leaves ${BASE} unreachable -- step 6 is load-bearing"
     # Put it back the way an operator would: re-run the wrapped install. The
     # rest of this script needs a reachable UI, and proving the install
     # RE-ESTABLISHES the access path is worth more than a kubectl patch here.
@@ -285,7 +343,7 @@ vacuous and cannot detect the #3986 regression"
     ok "re-running the install republished the Service and restored ${BASE}"
 fi
 
-step "7/15 Reachability survives Pod replacement (#3986)"
+step "8/17 Reachability survives Pod replacement (#3986)"
 # The property a `kubectl port-forward` does NOT have: it attaches to one Pod
 # and exits when that Pod is replaced, so a canary rollout or a self-heal
 # restart silently took the UI down again -- which is why #3986 rejects the
@@ -296,7 +354,7 @@ kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-web-stable --timeout=30
 wait_for_web
 ok "the same URL answers after every web Pod was replaced"
 
-step "8/15 The canary pair rests at 0, and there is a wrapped way back (#3991)"
+step "9/17 The canary pair rests at 0, and there is a wrapped way back (#3991)"
 for deployment in nyxgpt-api-canary nyxgpt-web-canary; do
     replicas=$(kubectl -n "$NAMESPACE" get "deploy/${deployment}" -o jsonpath='{.spec.replicas}')
     [ "$replicas" = "0" ] ||
@@ -320,7 +378,7 @@ replicas=$(kubectl -n "$NAMESPACE" get deploy/nyxgpt-api-canary -o jsonpath='{.s
     fail "canary reset returned success but nyxgpt-api-canary is still at ${replicas} replicas"
 ok "nyxgpt canary reset returns an off-contract canary to 0 -- no raw kubectl scale"
 
-step "9/15 The install reconciles a canary left off-contract"
+step "10/17 The install reconciles a canary left off-contract"
 # The other half of #3991: the install applies the manifests and must then
 # ASSERT the resting state, not assume it. Scale the canary up and re-run the
 # install; it must come back to rest. (`kubectl apply -k` alone already sets
@@ -337,7 +395,7 @@ replicas=$(kubectl -n "$NAMESPACE" get deploy/nyxgpt-web-canary -o jsonpath='{.s
 not assert the resting contract it applied (#3991)"
 ok "a re-install brings an off-contract canary back to its resting 0"
 
-step "10/15 The Infrastructure page detects this cluster from inside it (#3988)"
+step "11/17 The Infrastructure page detects this cluster from inside it (#3988)"
 # The api Pod answers about the cluster it is running in. The gate used to ask
 # `kubectl config current-context`, which is EMPTY in a Pod -- print it, so the
 # log carries the pre-fix input alongside the post-fix verdict.
@@ -363,19 +421,148 @@ print(f"[OK] in-cluster: {len(k8s[\"pods\"])} Pods, context={k8s[\"context\"]!r}
 ' || fail "the Infrastructure payload served from inside the cluster is wrong (#3988)"
 ok "the page served by the api Pod reports the deployment it is running in"
 
-step "11/15 The user path works: sessions list, via the web Service"
+step "12/17 The user path works: sessions list, via the web Service"
 wait_for_web
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "12/15 A real chat round-trip"
+step "13/17 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "13/15 Sessions are shared by every api replica (Cassandra-backed)"
+step "14/17 The observability tier RECEIVES telemetry, not just runs (#3990)"
+# The question step 4 cannot answer. #3990 was an install where all ten
+# observability workloads reported `1/1 ready`, Grafana and Prometheus
+# answered 200, and the tier received NOTHING from the application it exists
+# to observe: the app Pods exported every span to `localhost:4318` -- their own
+# Pods -- and reported no errors at all, while Grafana authenticated to
+# GlitchTip with the placeholder token the manifest ships. Readiness cannot
+# see that (a collector with no clients is as ready as one with a thousand),
+# and neither can manifest review, so this step asks each backend what it has
+# actually RECEIVED, after the chat above has given it something to receive.
+#
+# Each half carries its own fault injection, per the D-006 rule: the pre-fix
+# endpoint and the pre-fix credential are exercised HERE, against this same
+# cluster, and must fail -- otherwise a green line proves nothing.
+
+# 7a. The api's EFFECTIVE config -- what the process is running with, not what
+#     the ConfigMap says -- points at the collector Service.
+# shellcheck disable=SC2016  # $HOME must expand inside the Pod, not out here
+kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- \
+    sh -c 'grep -h "^otlp_endpoint" "${HOME:-/root}/.nyxGPT/config.ini"' \
+    >/tmp/k8s-smoke-otlp.txt ||
+    fail "the api Pod has no [tracing] otlp_endpoint at all -- this is the #3990 regression"
+grep -q "http://otel-collector:4318/v1/traces" /tmp/k8s-smoke-otlp.txt ||
+    fail "the api exports spans to $(cat /tmp/k8s-smoke-otlp.txt) -- not to the in-cluster \
+collector; every span is dropped (#3990)"
+ok "the api Pod exports spans to http://otel-collector:4318/v1/traces"
+
+# 7b. FAULT INJECTION for 7a: prove the endpoint it USED to carry is dead.
+#     Posting an empty OTLP payload from inside the api Pod to both endpoints
+#     shows the collector accepting and the Pod-local default refusing -- so
+#     the assertion above is about a reachable endpoint, not a spelling.
+kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- python -c '
+import httpx
+
+def post(url):
+    try:
+        return str(httpx.post(url, json={"resourceSpans": []}, timeout=5).status_code)
+    except Exception as e:  # connection refused, DNS failure, ...
+        return type(e).__name__
+
+print("collector", post("http://otel-collector:4318/v1/traces"))
+print("pod-local", post("http://localhost:4318/v1/traces"))
+' >/tmp/k8s-smoke-otlp-probe.txt || fail "could not probe the OTLP endpoints from the api Pod"
+cat /tmp/k8s-smoke-otlp-probe.txt
+grep -q "^collector 200$" /tmp/k8s-smoke-otlp-probe.txt ||
+    fail "otel-collector did not accept an OTLP payload from the api Pod"
+if grep -q "^pod-local 200$" /tmp/k8s-smoke-otlp-probe.txt; then
+    fail "something IS listening on the api Pod's own :4318 -- this probe cannot detect \
+the #3990 misdirection and is worthless as a gate"
+fi
+ok "the collector accepts spans and the pre-fix pod-local endpoint refuses them"
+
+# 7c. End to end: Jaeger must now know the nyxGPT services, not only itself.
+#     `{"data":["jaeger-all-in-one"],"total":1}` is the literal payload the
+#     acceptance run captured -- Jaeger's own self-traces, which read in the
+#     UI as "tracing works" while Grafana's trace panels stayed empty.
+services=""
+for _ in $(seq 1 24); do
+    services=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- \
+        wget -q -O - -T 10 http://jaeger:16686/api/services 2>/dev/null || true)
+    case "$services" in *nyxgpt-api*) break ;; esac
+    sleep 5
+done
+echo "jaeger services: $services"
+case "$services" in
+    *nyxgpt-api*) ok "Jaeger holds spans from nyxgpt-api after the chat round-trip" ;;
+    *) fail "Jaeger knows only $services -- the chat above produced no spans the collector \
+ever saw (#3990)" ;;
+esac
+case "$services" in
+    *nyxgpt-web*) ok "Jaeger holds spans from nyxgpt-web (NYXGPT_OTLP_ENDPOINT is wired)" ;;
+    *) fail "Jaeger has no nyxgpt-web spans -- the web Deployment is still tracing to its \
+own Pod (#3990)" ;;
+esac
+
+# 7d. Grafana's GlitchTip credential: provisioned, and accepted. The
+#     placeholder is what produced `401 Unauthorized` on every SRE Home
+#     GlitchTip panel, so it is also this check's fault injection.
+GLITCHTIP_TOKEN=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- \
+    cat /etc/nyxgpt-secrets/glitchtip-grafana-token 2>/dev/null || true)
+[ -n "$GLITCHTIP_TOKEN" ] || fail "Grafana has no GlitchTip token mounted at all"
+[ "$GLITCHTIP_TOKEN" != "UNCONFIGURED-glitchtip-token" ] ||
+    fail "Grafana still holds the placeholder GlitchTip token -- the SRE Home panels will \
+401 (#3990); the install did not provision one"
+kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+    "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
+glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/ >/dev/null" ||
+    fail "GlitchTip rejected the provisioned token -- the SRE Home panels would 401"
+if kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+    'wget -q -O - -T 10 --header="Authorization: Bearer UNCONFIGURED-glitchtip-token" \
+http://glitchtip:8080/api/0/organizations/ >/dev/null' 2>/dev/null; then
+    fail "GlitchTip accepted the PLACEHOLDER token -- this check cannot detect the 401 \
+this issue is about"
+fi
+ok "GlitchTip accepts Grafana's provisioned token and refuses the placeholder"
+
+# 7e. And the errors half end to end: an exception reported inside the cluster
+#     has to reach the in-cluster GlitchTip. The api answers 503 when error
+#     tracking is inactive or has no valid DSN -- i.e. the pre-fix state --
+#     and 202 only once it is really reporting, so this assertion cannot pass
+#     vacuously.
+ERROR_MARKER="k8s-smoke-synthetic-error-$$"
+kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- python -c "
+import sys, httpx
+r = httpx.post(
+    'http://127.0.0.1:8000/api/v1/error-tracking/report',
+    json={'message': '${ERROR_MARKER}'},
+    headers={'X-API-Key': '${API_KEY}'},
+    timeout=30,
+)
+print(r.status_code, r.text[:200])
+sys.exit(0 if r.status_code == 202 else 1)
+" || fail "the api would not report an error (503 means error tracking is inactive or has \
+no valid DSN -- the #3990 state: the api had no [error_tracking] section at all)"
+
+found=""
+for _ in $(seq 1 24); do
+    issues=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+        "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
+glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issues/" \
+        2>/dev/null || true)
+    case "$issues" in *"$ERROR_MARKER"*) found=1; break ;; esac
+    sleep 5
+done
+[ -n "$found" ] ||
+    fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
+resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
+ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
+
+step "15/17 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
 # consecutive requests from one browser see different sessions; the poll below
 # runs enough times to land on every replica. The stable Deployment rests at 1
@@ -397,7 +584,7 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null
 
-step "14/15 Self-heal sees the whole cluster, not just the api pool (#3828)"
+step "16/17 Self-heal sees the whole cluster, not just the api pool (#3828)"
 # Deletes a web Pod for real (the heal action), which is why it runs after the
 # user-path steps. Nothing has to be torn down first any more (#3986): the
 # address the steps above used is a NodePort (or a supervised forward), not a
@@ -407,7 +594,7 @@ python3 scripts/k8s-self-heal-coverage-smoke.py ||
     fail "self-heal does not cover this deployment -- see the output above (#3828)"
 ok "self-heal names the mode, watches every tier, and heals a non-api Pod"
 
-step "15/15 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "17/17 Fault injection: the pre-#3786 topology must FAIL this same check"
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true
 wait_for_web

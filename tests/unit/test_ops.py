@@ -11508,10 +11508,18 @@ def test_provision_glitchtip_persists_generated_password(monkeypatch, tmp_path):
     assert len(captured_creds["password"]) > 10
 
 
+# `SimpleNamespace`, not `MagicMock`: every attribute of a MagicMock is
+# truthy, so `--kubernetes` (#3990) would read as set on an invocation that
+# never passed it, and these two tests would silently exercise the Kubernetes
+# path instead of the Compose one they are about.
+def _glitchtip_init_args(**overrides):
+    return SimpleNamespace(**{"kubernetes": False, "local": False, "quiet": False, **overrides})
+
+
 @pytest.mark.unit
 def test_glitchtip_init_cli_entrypoint_returns_zero_on_success(capsys):
     with patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "up")]):
-        rc = ops.glitchtip_init(MagicMock())
+        rc = ops.glitchtip_init(_glitchtip_init_args())
         assert rc == 0
         assert "[OK]" in capsys.readouterr().out
 
@@ -11521,9 +11529,28 @@ def test_glitchtip_init_cli_entrypoint_returns_nonzero_on_failure(capsys):
     with patch.object(
         ops, "_provision_glitchtip", return_value=[ops.OpsResult(False, "down", "boom")]
     ):
-        rc = ops.glitchtip_init(MagicMock())
+        rc = ops.glitchtip_init(_glitchtip_init_args())
         assert rc == 2
         assert "[FAIL]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_glitchtip_init_kubernetes_provisions_the_in_cluster_instance(capsys):
+    """`--kubernetes` (#3990) routes to the in-cluster provisioning, which
+    writes the DSN and Grafana's token into the deployment's Secrets -- a Pod
+    reads neither config.ini nor ~/.nyxGPT/secrets."""
+    with (
+        patch.object(ops, "_provision_glitchtip") as compose,
+        patch.object(
+            ops, "_k8s_provision_glitchtip", return_value=[ops.OpsResult(True, "provisioned")]
+        ) as kubernetes,
+    ):
+        rc = ops.glitchtip_init(_glitchtip_init_args(kubernetes=True))
+
+    assert rc == 0
+    assert "[OK]" in capsys.readouterr().out
+    kubernetes.assert_called_once()
+    compose.assert_not_called()
 
 
 # --- Terraform/Kubernetes local deployment wrappers (#3344) ---
@@ -14178,6 +14205,11 @@ def test_status_classifies_pending_and_blocked_pods_apart(monkeypatch, capsys):
     }
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(pods))
         return CP(stdout="")
@@ -14214,6 +14246,11 @@ def test_status_classifies_observability_workloads(monkeypatch, capsys):
     """`0/1 ready` is PENDING in `ops status` too, not a bare count (#3827)."""
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
@@ -14251,6 +14288,11 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")
@@ -14280,6 +14322,11 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
     def fake_run(cmd, check=True, **_k):
+        # A cluster with Pods necessarily has a current context, and since
+        # #3987 `status` reads it first -- no context is what tells it "nothing
+        # here was ever pointed at a cluster", before it pays for a Pod read.
+        if cmd[:3] == ["kubectl", "config", "current-context"]:
+            return CP(stdout="kind-nyxgpt-local\n")
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout=json.dumps(_STATUS_READY_POD_LIST))
         return CP(stdout="")

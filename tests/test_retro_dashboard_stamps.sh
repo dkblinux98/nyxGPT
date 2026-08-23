@@ -71,7 +71,15 @@ stamp("churn.json", now - timedelta(days=30))
 stamp("relationships.json", now)
 stamp("project_fields.json", now)
 stamp("dashboard_data.json", now)
-# all_issues.json is left as the historical bare list: no stamp anywhere.
+# all_issues.json must be UNSTAMPED for this phase -- that is the whole point
+# of it. The old code *assumed* it (the corpus used to ship as a bare list),
+# and that assumption silently stopped holding when the dump began writing
+# {"generated_at", "issues"}: the fixture was stamped, so "an unstamped corpus
+# renders as unknown" could not be exercised at all. Make it so instead of
+# hoping it is.
+_ai = data / "all_issues.json"
+_raw = json.loads(_ai.read_text())
+_ai.write_text(json.dumps(_raw.get("issues", []) if isinstance(_raw, dict) else _raw))
 PY
 
 echo "== build with an unstamped corpus, a fresh dump and a 30-day-old dump"
@@ -107,7 +115,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 path = Path(sys.argv[1]) / "all_issues.json"
-issues = json.loads(path.read_text())
+raw = json.loads(path.read_text())
+# Unwrap first: this stamps the corpus, and stamping something already stamped
+# must be a no-op. The old code assumed the file was always a bare list, so
+# once the dump began writing {"generated_at", "issues"} it wrapped the
+# envelope in a second envelope -- `load_issues` then handed build_qdata a
+# dict, iterating it yielded the KEYS, and `.get()` on a string raised. Red on
+# v3.0.0 for five days. `load_issues` already accepts either shape; this has
+# to as well, or the test pins a shape rather than the property it checks.
+issues = raw.get("issues", []) if isinstance(raw, dict) else raw
 path.write_text(json.dumps({"generated_at": datetime.now(UTC).isoformat(), "issues": issues}))
 PY
 

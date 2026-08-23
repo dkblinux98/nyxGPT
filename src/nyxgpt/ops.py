@@ -7086,6 +7086,16 @@ K8S_NAMESPACE = "nyxgpt"
 K8S_APP_POD_PREFIXES = ("nyxgpt-api-", "nyxgpt-web-")
 K8S_IMAGE = "nyxgpt-api:local"
 
+# The workload that serves this deployment's LLM, and the URL its clients use
+# (#3987). `k8s/configmap.yaml` gives the api Pods `[ollama] base_url =
+# http://ollama:11434`, so that -- not the host's `127.0.0.1:11434` -- is the
+# Ollama a Kubernetes deployment's model readiness is a question about. The
+# fully-qualified name is what gets *printed*: an operator reading a status
+# report on the host has to be able to tell the two apart at a glance, and
+# `http://ollama:11434` alone resolves to nothing there.
+K8S_OLLAMA_WORKLOAD = "statefulset/ollama"
+K8S_OLLAMA_BASE_URL = f"http://ollama.{K8S_NAMESPACE}.svc.cluster.local:11434"
+
 # The deployment's data/LLM tier (#3786): the in-cluster Cassandra that holds
 # chat sessions for every api replica and the in-cluster Ollama that answers
 # them (k8s/statefulset-cassandra.yaml, k8s/statefulset-ollama.yaml). The
@@ -7839,12 +7849,64 @@ def build_and_load_k8s_image(
     return _build_and_load_k8s_image(image, **kwargs)
 
 
-def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
-    """Bootstrap k8s/secret.yaml from the example if it doesn't exist yet (never committed)."""
-    secret_path = K8S_DIR / "secret.yaml"
-    if secret_path.exists():
+# Matches one `  key: "value"` entry of a Secret manifest's `stringData`
+# block -- the only shape either template uses, and the shape
+# `_write_k8s_secret_value` rewrites.
+_K8S_SECRET_ENTRY_RE = re.compile(r'^(\s+)([A-Za-z0-9._-]+):\s*"(.*)"\s*$')
+
+
+def _reconcile_k8s_secret_keys(secret_path: Path, example: Path) -> list[OpsResult]:
+    """Add keys a NEWER template declares to an already-bootstrapped Secret (#3990).
+
+    Both Secret manifests are written once and then left alone, so that an
+    upgrade never rotates a credential out from under the data stored against
+    it. That rule is right, and on its own it is also a trap: a release that
+    adds a key (here `error-tracking-dsn`, which every app Deployment now
+    references with `secretKeyRef`) would apply a Secret WITHOUT it on every
+    machine that had ever installed before, and a `secretKeyRef` to a missing
+    key does not degrade -- it leaves every api and web Pod in
+    `CreateContainerConfigError`. So missing keys are added, carrying the
+    template's own value, and existing keys are never touched.
+
+    Text-append rather than a YAML round-trip: the comments in both templates
+    are load-bearing documentation (#3538's why-not-empty note among them),
+    and `stringData` is the last block in each, so appending is a faithful
+    edit.
+    """
+    if not example.exists():
+        # Nothing to reconcile against; the existing file is what it is.
         return [OpsResult(True, f"{secret_path} already exists")]
+
+    def entries(text: str) -> list[re.Match[str]]:
+        matched = (_K8S_SECRET_ENTRY_RE.match(line) for line in text.splitlines())
+        return [m for m in matched if m is not None]
+
+    existing = secret_path.read_text(encoding="utf-8")
+    present = {m.group(2) for m in entries(existing)}
+    missing = [m for m in entries(example.read_text(encoding="utf-8")) if m.group(2) not in present]
+    if not missing:
+        return [OpsResult(True, f"{secret_path} already exists")]
+
+    added = "\n".join(f'{m.group(1)}{m.group(2)}: "{m.group(3)}"' for m in missing)
+    secret_path.write_text(
+        existing + ("" if existing.endswith("\n") else "\n") + added + "\n", encoding="utf-8"
+    )
+    os.chmod(secret_path, 0o600)
+    names = ", ".join(sorted(m.group(2) for m in missing))
+    return [OpsResult(True, f"Added {names} to the existing {secret_path} from its template")]
+
+
+def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
+    """Bootstrap k8s/secret.yaml from the example if it doesn't exist yet (never committed).
+
+    An existing file keeps every value it has -- rotating the API key under a
+    running deployment is not this step's job -- but gains any key the current
+    template has added since (`_reconcile_k8s_secret_keys`).
+    """
+    secret_path = K8S_DIR / "secret.yaml"
     example = K8S_DIR / "secret.example.yaml"
+    if secret_path.exists():
+        return _reconcile_k8s_secret_keys(secret_path, example)
     if not example.exists():
         return [OpsResult(False, f"Missing {example} to bootstrap the secret from")]
     key = _resolve_api_key(api_key)
@@ -7959,13 +8021,16 @@ def _ensure_k8s_observability_secret() -> list[OpsResult]:
 
     Mirrors `_ensure_k8s_secret`: written once, left alone afterwards, so a
     re-install never rotates GlitchTip's Django SECRET_KEY or its Postgres
-    password out from under the data already stored against them. Delete the
-    file to re-bootstrap it from current config.
+    password out from under the data already stored against them -- except
+    for keys the template has ADDED since, which are appended rather than
+    left missing (`_reconcile_k8s_secret_keys`, and see its docstring for why
+    a missing key is worse than a stale one). Delete the file to re-bootstrap
+    it from current config.
     """
     secret_path = K8S_OBSERVABILITY_DIR / "secret.yaml"
-    if secret_path.exists():
-        return [OpsResult(True, f"{secret_path} already exists")]
     example = K8S_OBSERVABILITY_DIR / "secret.example.yaml"
+    if secret_path.exists():
+        return _reconcile_k8s_secret_keys(secret_path, example)
     if not example.exists():
         return [OpsResult(False, f"Missing {example} to bootstrap the observability secret from")]
 
@@ -8378,6 +8443,112 @@ def _k8s_workload_selector(ref: str) -> str:
     return ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
 
 
+@dataclass(frozen=True)
+class K8sDeploymentProbe:
+    """One read of the nyxGPT namespace: what is deployed, or why that is unknown.
+
+    `determined` is the #3468 distinction the CLI was missing entirely: a
+    *configured* cluster whose Pod list could not be read is CANNOT DETERMINE,
+    and reporting it as "nothing deployed" is the false negative that issue
+    removed from the Infrastructure page. A machine with no kubectl, or a
+    kubectl with no current context, is not that case -- nothing there was
+    ever pointed at a cluster, so "not detected" is a fact rather than a guess.
+    """
+
+    pods: list[K8sWorkloadState]
+    reason: str = ""
+    determined: bool = True
+
+    @property
+    def deployed(self) -> bool:
+        """Whether a deployment is there -- Pods, not merely a reachable cluster.
+
+        Deliberately not the inverse of `determined`: an undetermined read is
+        not deployed *and* not "nothing deployed", which is why callers that
+        report to an operator ask both (see `summary`).
+        """
+        return bool(self.pods)
+
+    @property
+    def summary(self) -> str:
+        """The one-line rendering of this probe for a status report."""
+        if self.pods:
+            ready = sum(1 for p in self.pods if p.state == K8S_STATE_READY)
+            return f"{K8S_NAMESPACE} namespace: {ready}/{len(self.pods)} pod(s) ready"
+        if not self.determined:
+            return f"cannot determine ({self.reason})"
+        return f"not detected ({self.reason})"
+
+
+def _k8s_deployment_probe() -> K8sDeploymentProbe:
+    """Read the nyxGPT namespace once, for every block that needs to know (#3987).
+
+    `ops status` used to reach the cluster only in its own dedicated section at
+    the bottom, so every block above it -- the "Deployment mode" summary and
+    the required-model check -- described the native machine as though nothing
+    else could be serving, and the owner's Kubernetes acceptance run read as
+    "nothing is deployed" above 14 running Pods. Those blocks now take this
+    probe rather than each growing one of its own, which also means they
+    cannot disagree with each other about whether a deployment exists.
+
+    The current-context check comes before the Pod read on purpose: it is the
+    cheaper question, it is the one that is true on most machines running this
+    command, and it is what separates "no cluster here" from "a cluster that
+    did not answer" (see `K8sDeploymentProbe.determined`, and `infra_status`,
+    which classifies the dashboard's copy of this the same way).
+    """
+    if _which("kubectl") is None:
+        return K8sDeploymentProbe([], "kubectl not found")
+    if not _kubectl_context():
+        return K8sDeploymentProbe([], "no cluster configured -- kubectl has no current context")
+    states, read_failure = _k8s_pod_states(expected=True)
+    if read_failure is not None:
+        return K8sDeploymentProbe([], read_failure.message, determined=False)
+    return K8sDeploymentProbe(states, f"no pods in the {K8S_NAMESPACE} namespace")
+
+
+def _k8s_installed_model_names() -> tuple[set[str] | None, str, str]:
+    """The models the *in-cluster* Ollama holds; `(names, error_class, detail)`.
+
+    `names` is None when the cluster's Ollama could not be asked at all, and
+    `error_class` then names the failure in one classifier-style word. The
+    split is the #3837 contract: `required_models_status`'s dict is returned
+    verbatim by `GET /models/required`, so only `error_class` may travel with
+    it -- `detail` carries kubectl's own words (cluster names, node addresses,
+    proxy state) and goes to the log.
+
+    Read with `kubectl exec ... -- ollama list` rather than over HTTP because
+    the Service is a ClusterIP: from the host there is no route to
+    `http://ollama:11434` without a port-forward, and standing one up to
+    answer a status question would be a heavier side effect than the question
+    deserves. `statefulset/ollama` (not `ollama-0`) so the ref stays correct
+    if the StatefulSet is ever scaled or renamed by ordinal.
+    """
+    if _which("kubectl") is None:
+        return None, "KubectlNotFound", "kubectl is not on PATH"
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "exec", K8S_OLLAMA_WORKLOAD, "--", "ollama", "list"],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if timed_out(cp):
+        return None, "KubectlTimeout", f"the cluster {timeout_message(PROBE_TIMEOUT_SECONDS)}"
+    if cp.returncode != 0:
+        return None, "KubectlExecFailed", _cp_details(cp)
+    names: set[str] = set()
+    for line in (cp.stdout or "").splitlines():
+        fields = line.split()
+        # `ollama list` prints a NAME/ID/SIZE/MODIFIED table; the first column
+        # already carries the explicit tag, so `normalize_model_name` is a
+        # no-op on it and stays only so this set is comparable with the
+        # HTTP-path one without either caller knowing which produced it.
+        if not fields or fields[0].upper() == "NAME":
+            continue
+        names.add(model_bootstrap.normalize_model_name(fields[0]))
+    return names, "", ""
+
+
 def _k8s_blocked_pods(namespace: str = "", *, selector: str = "") -> list[K8sWorkloadState]:
     """The Pods that are FAILED right now -- what a wait fast-fails on (#3827).
 
@@ -8475,7 +8646,282 @@ def _k8s_observability_health() -> list[OpsResult]:
                 "Re-run `nyxgpt ops observability --kubernetes`.",
             )
         )
+    results += _k8s_observability_data_flow(state)
     return results
+
+
+# --- Running is not receiving (#3990) ---
+#
+# Every readiness signal this module had answered "is the process up". Ten
+# observability workloads reported `1/1 ready` on a cluster where the api and
+# web Pods were exporting spans to `localhost:4318` -- their own Pods -- and
+# reporting no errors at all, so the tier that installed perfectly observed
+# nothing. Readiness structurally cannot catch that: a collector with no
+# clients is as ready as a collector with a thousand. It is the same shape as
+# #3812, and the reason a green install reached owner acceptance blind.
+#
+# So the report asks each backend what it has RECEIVED, not merely whether it
+# is up. A backend that is up but empty prints `[NO DATA]`: not `[OK]`, and
+# not a failure either -- a stack nobody has chatted with yet legitimately has
+# no spans, and failing the install for that would just teach operators to
+# ignore the line. `ok` stays True for exactly that reason; the line carries
+# the remedy instead (see `OpsResult.status`, #3827).
+K8S_NO_DATA_LABEL = "NO DATA"
+
+# The Pod every probe below runs FROM. Grafana is the natural choice and not
+# an arbitrary one: it is the tier's own consumer (these are the queries its
+# panels make), it already mounts the GlitchTip token the errors probe needs,
+# and its image carries busybox wget -- so one `kubectl exec` answers all four
+# questions without scheduling a Pod of our own on a node that #3825 showed is
+# already tight.
+K8S_TELEMETRY_PROBE_DEPLOYMENT = "grafana"
+
+# Per-request budget for those in-cluster fetches. Short on purpose: these are
+# Service-to-Service hops inside one node, and this probe runs at the end of
+# an install an operator is waiting on.
+K8S_TELEMETRY_PROBE_TIMEOUT_S = 10
+
+# Where Grafana's Deployment mounts the GlitchTip bearer token
+# (k8s/observability/grafana.yaml -> the `glitchtip-grafana-token` key of the
+# nyxgpt-observability-secrets Secret). The errors probe reads the token from
+# the same file Grafana's Infinity datasource expands with `$__file{}`, so it
+# is asking GlitchTip the same question, with the same credential, that the
+# SRE Home panels ask -- which is what makes a green line here mean those
+# panels will not 401.
+K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT = "/etc/nyxgpt-secrets/glitchtip-grafana-token"
+
+
+def _k8s_incluster_get(url: str, *, bearer_token_file: str = "") -> tuple[bool, str]:
+    """GET `url` from inside the cluster through the Grafana Pod; `(ok, body)`.
+
+    `kubectl exec` rather than a port-forward: these are the *in-cluster*
+    addresses (`http://jaeger:16686`), and reaching them the way the tier's
+    own consumer reaches them is the whole point -- a probe run from the
+    workstation through a tunnel would answer a different question than the
+    one an operator is asking ("does Grafana see data?").
+
+    `bearer_token_file` names a path INSIDE that Pod whose contents become an
+    `Authorization: Bearer` header. The token is read in the container and
+    never crosses this process's argv or logs (`_run` logs the command it
+    ran), which is why it is passed as a filename rather than a value.
+    """
+    # `$0` is the shell's own name, so the caller's arguments start at `$1`.
+    script = (
+        'url="$1"; token_file="$2"; timeout="$3"; '
+        'if [ -n "$token_file" ]; then '
+        'wget -q -O - -T "$timeout" '
+        '--header="Authorization: Bearer $(cat "$token_file")" "$url"; '
+        'else wget -q -O - -T "$timeout" "$url"; fi'
+    )
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "exec",
+            f"deploy/{K8S_TELEMETRY_PROBE_DEPLOYMENT}",
+            "--",
+            "sh",
+            "-c",
+            script,
+            "sh",
+            url,
+            bearer_token_file,
+            str(K8S_TELEMETRY_PROBE_TIMEOUT_S),
+        ],
+        check=False,
+        # A backend that answers 401/404, or a Grafana Pod that is not up, is
+        # a normal outcome for a probe -- it is the finding, not an error to
+        # warn about in the log.
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    return cp.returncode == 0, cp.stdout or ""
+
+
+def _no_data(message: str, details: str = "") -> OpsResult:
+    """An `[NO DATA]` line: the backend is up, nothing has arrived (see above)."""
+    return OpsResult(True, message, details, status=K8S_NO_DATA_LABEL)
+
+
+def _k8s_traces_flow_result() -> OpsResult:
+    """Does Jaeger hold spans from nyxGPT, or only its own?
+
+    THE exact symptom of #3990: `/api/services` returned
+    `{"data":["jaeger-all-in-one"]}` -- Jaeger's own self-traces, which read
+    in the UI as "traces are working" while every nyxGPT span was being
+    posted to the app Pod's own localhost. Anything named `nyxgpt-*` here
+    (`nyxgpt-api` from `[tracing] service_name`, `nyxgpt-web` from
+    web/src/instrumentation.ts) can only have arrived through the collector.
+    """
+    ok, body = _k8s_incluster_get("http://jaeger:16686/api/services")
+    if not ok:
+        return _no_data(
+            "observability traces: could not ask Jaeger what it has received",
+            "Jaeger did not answer /api/services from inside the cluster; re-check with "
+            "`nyxgpt ops status`.",
+        )
+    try:
+        services = [str(s) for s in (json.loads(body).get("data") or [])]
+    except (ValueError, AttributeError):
+        return _no_data("observability traces: Jaeger's service list was unreadable", body[:200])
+
+    nyxgpt_services = sorted(s for s in services if s.startswith("nyxgpt"))
+    if nyxgpt_services:
+        return OpsResult(True, f"observability traces: Jaeger has {', '.join(nyxgpt_services)}")
+    return _no_data(
+        "observability traces: Jaeger has no nyxGPT spans yet",
+        "Nothing has been traced since the collector came up. Send one chat message and "
+        "re-check with `nyxgpt ops status`; if it stays empty, the api/web Pods are not "
+        "exporting to `otel-collector` (see [tracing] otlp_endpoint in the nyxgpt-config "
+        "ConfigMap and NYXGPT_OTLP_ENDPOINT on the web Deployments).",
+    )
+
+
+def _k8s_metrics_flow_result() -> OpsResult:
+    """Is Prometheus actually scraping, or merely running?
+
+    The metrics half of the same question. A scrape failure is exactly as
+    silent as a dropped span: Prometheus stays healthy and green and every
+    dashboard renders empty (the native twin of this check is
+    `_prometheus_api_scrape_issue`, #3721).
+    """
+    ok, body = _k8s_incluster_get("http://prometheus:9090/api/v1/targets?state=active")
+    if not ok:
+        return _no_data("observability metrics: could not ask Prometheus for its targets")
+    try:
+        targets = json.loads(body)["data"]["activeTargets"]
+    except (ValueError, KeyError, TypeError):
+        return _no_data(
+            "observability metrics: Prometheus's target list was unreadable", body[:200]
+        )
+
+    up = [t for t in targets if t.get("health") == "up"]
+    if up:
+        return OpsResult(
+            True, f"observability metrics: {len(up)}/{len(targets)} scrape target(s) up"
+        )
+    return _no_data(
+        "observability metrics: no scrape target is up",
+        "Prometheus is running and collecting nothing; every Grafana metrics panel will be "
+        "empty. Check the api Service is reachable from the prometheus Pod.",
+    )
+
+
+def _k8s_logs_flow_result() -> OpsResult:
+    """Has anything been shipped into Loki?
+
+    promtail can be `1/1 ready` and discovering nothing at all -- the labels
+    the dashboards query on come from its relabel rules, so an empty label
+    set means the log panels are blank whatever the DaemonSet reports.
+    """
+    ok, body = _k8s_incluster_get("http://loki:3100/loki/api/v1/label/job/values")
+    if not ok:
+        return _no_data("observability logs: could not ask Loki which jobs it holds")
+    try:
+        jobs = [str(j) for j in (json.loads(body).get("data") or [])]
+    except (ValueError, AttributeError):
+        return _no_data("observability logs: Loki's label list was unreadable", body[:200])
+
+    if jobs:
+        return OpsResult(True, f"observability logs: Loki holds {len(jobs)} job label(s)")
+    return _no_data(
+        "observability logs: Loki has received nothing",
+        "promtail is running but no Pod logs have landed; the log panels will be empty.",
+    )
+
+
+def _k8s_errors_flow_result() -> OpsResult:
+    """Will Grafana's GlitchTip panels authenticate, or 401?
+
+    The second symptom #3990 reported. Grafana's Infinity datasource sends
+    the token at `K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT` as a bearer credential;
+    the manifest ships a deliberately non-empty PLACEHOLDER there (an empty
+    value crash-loops Grafana's alerting validator, #3538), and before this
+    fix nothing ever replaced it -- so every SRE Home GlitchTip panel
+    answered `401 Unauthorized` on every Kubernetes deployment.
+
+    Asked in two steps because the two answers have different remedies: a
+    placeholder means provisioning never ran, while a real token that is
+    refused means it ran and the credential has since been invalidated (the
+    Kubernetes shape of the #3565 drift `ops doctor` already checks for
+    natively).
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "exec",
+            f"deploy/{K8S_TELEMETRY_PROBE_DEPLOYMENT}",
+            "--",
+            "cat",
+            K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT,
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return _no_data(
+            "observability errors: Grafana has no GlitchTip token mounted",
+            f"{K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT} is not readable in the grafana Pod; the "
+            "SRE Home GlitchTip panels cannot authenticate.",
+        )
+    if (cp.stdout or "").strip() == GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER:
+        return _no_data(
+            "observability errors: Grafana's GlitchTip token is still the placeholder",
+            "The SRE Home GlitchTip panels will answer 401 Unauthorized. Provision a real "
+            "token with `nyxgpt ops glitchtip-init --kubernetes`.",
+        )
+
+    ok, _body = _k8s_incluster_get(
+        f"http://{GLITCHTIP_CONTAINER_HOST}:{GLITCHTIP_CONTAINER_PORT}/api/0/organizations/",
+        bearer_token_file=K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT,
+    )
+    if not ok:
+        return _no_data(
+            "observability errors: GlitchTip rejected Grafana's token",
+            "The token is not the placeholder but GlitchTip will not accept it -- its "
+            "project data was probably re-minted underneath it (#3565). Re-run "
+            "`nyxgpt ops glitchtip-init --kubernetes`.",
+        )
+    return OpsResult(True, "observability errors: GlitchTip accepts Grafana's token")
+
+
+def _k8s_observability_data_flow(state: dict[str, str] | None = None) -> list[OpsResult]:
+    """Ask the four telemetry backends what they have RECEIVED (#3990).
+
+    Reported alongside the readiness lines rather than instead of them: the
+    two answer different questions, and the install that shipped this defect
+    is the proof that the readiness answer alone is not enough. Skipped
+    entirely when the probe Pod is not there (nothing to ask from), so a
+    `--skip-observability` cluster or a half-rolled-out layer reports its
+    readiness failure without four confusing follow-on lines.
+
+    `state` is the workload map the caller has already read
+    (`_k8s_observability_workload_state`); passed in rather than re-read
+    because that is a second `kubectl get` for an answer the only caller is
+    holding already.
+    """
+    if _which("kubectl") is None:
+        return []
+    workloads = _k8s_observability_workload_state() if state is None else state
+    probe_state = workloads.get(K8S_TELEMETRY_PROBE_DEPLOYMENT, "absent")
+    # Only ask through a Grafana that is actually serving. A Pod still
+    # starting cannot answer, and four `[NO DATA]` lines about a tier that is
+    # mid-rollout would be exactly the wall of false negatives #3827 removed
+    # from the readiness half of this report.
+    if _classify_k8s_observability_workload(K8S_TELEMETRY_PROBE_DEPLOYMENT, probe_state).state != (
+        K8S_STATE_READY
+    ):
+        return []
+    return [
+        _k8s_traces_flow_result(),
+        _k8s_metrics_flow_result(),
+        _k8s_logs_flow_result(),
+        _k8s_errors_flow_result(),
+    ]
 
 
 # A rollout wait checks for blocked Pods every slice rather than blocking on
@@ -9982,6 +10428,12 @@ def _install_kubernetes_steps(
         # pulling its image is `Pending`, which that snapshot scores as a
         # failure (#3826).
         steps.append(("wait for observability layer", _wait_for_k8s_observability))
+        # After that wait, because it talks to GlitchTip's REST API and needs
+        # the Pod actually serving (#3990). This is the step the Kubernetes
+        # install never had: without it the api reports no errors at all and
+        # Grafana authenticates to GlitchTip with the manifest's placeholder
+        # token, which is what put `401 Unauthorized` on the SRE Home panels.
+        steps.append(("glitchtip provisioning", _k8s_provision_glitchtip))
     for step_name, fn in steps:
         try:
             step_results = fn()
@@ -10054,6 +10506,11 @@ def observability_kubernetes() -> list[OpsResult]:
     # pulls happen to have finished, not whether the layer works.
     results += _wait_for_k8s_observability()
     if all(r.ok for r in results):
+        # The layer is not wired until GlitchTip has been provisioned (#3990)
+        # -- deploying it without this leaves Grafana holding the placeholder
+        # token and the api with no DSN, which is a tier that runs and
+        # observes nothing.
+        results += _k8s_provision_glitchtip()
         results += _k8s_observability_health()
     return results
 
@@ -11248,7 +11705,10 @@ def up(args) -> int:
 
 
 def required_models_status(
-    cfg: ConfigParser | None = None, cfg_path: Path | None = None
+    cfg: ConfigParser | None = None,
+    cfg_path: Path | None = None,
+    *,
+    kubernetes: bool = False,
 ) -> dict[str, Any]:
     """Report whether Ollama holds every model this install requires (#3824).
 
@@ -11259,6 +11719,23 @@ def required_models_status(
     `reachable` is False when Ollama could not be asked at all; `present` is
     then None per model rather than False, because "cannot tell" is not
     "missing".
+
+    `kubernetes=True` asks the Ollama *in the cluster* instead of the one this
+    machine's config names (#3987). It is a parameter rather than a probe
+    because only the caller knows which deployment the question is about: the
+    owner's Kubernetes acceptance run got `UNKNOWN (Ollama unreachable)` for
+    two models that `kubectl -n nyxgpt exec ollama-0 -- ollama list` showed
+    were both present, because the host has no Ollama on `127.0.0.1:11434`
+    and is not supposed to -- the install stops it. `ops status`/`ops doctor`
+    pass True when they have seen Pods; the API surface never does, and needs
+    not to: an api Pod's own config already points at `http://ollama:11434`,
+    which is the same Ollama by the route that actually exists from there.
+
+    The two sources are deliberately *not* merged or fallen back between. A
+    host that has both a native Ollama and a Kubernetes deployment has two
+    model stores that can legitimately differ, and answering "is this
+    deployment ready" out of the other one's store is the same class of false
+    report this parameter exists to end.
     """
     from nyxgpt.config import get_ollama_base_url, load_config
 
@@ -11274,26 +11751,48 @@ def required_models_status(
         # degrades to reporting those as MISSING/UNKNOWN, which is the honest
         # answer when there is no config to read.
         cfg = load_config(cfg_path) if cfg_path.exists() else ConfigParser()
-    base_url = get_ollama_base_url(cfg)
+    base_url = K8S_OLLAMA_BASE_URL if kubernetes else get_ollama_base_url(cfg)
     wanted = model_bootstrap.required_models(cfg)
 
     installed: set[str] | None
     error = ""
-    try:
-        installed = model_bootstrap.installed_model_names(base_url=base_url)
-    except Exception as e:
-        installed = None
-        # #3837 (CodeQL #129, py/stack-trace-exposure). Same fault class as
-        # #123 one file over, and found by the same sweep: this dict is
-        # returned straight out of `GET /models/required` (`app.py`), so a
-        # caught exception's message reaching it reaches a browser. The bare
-        # `except Exception` is the point -- whatever `installed_model_names`
-        # raises against an unreachable Ollama is an httpx transport error,
-        # and its string names the base URL's resolution failure and the
-        # host's proxy. The class is what the dashboard renders ("Ollama did
-        # not answer (ConnectError)"); the message goes to the log.
-        logger.warning("Ollama model lookup failed at %s", base_url, exc_info=e)
-        error = type(e).__name__
+    if kubernetes:
+        installed, error, detail = _k8s_installed_model_names()
+        if installed is None:
+            logger.warning(
+                "Ollama model lookup failed in the %s namespace (%s): %s",
+                K8S_NAMESPACE,
+                error,
+                detail,
+            )
+    else:
+        try:
+            installed = model_bootstrap.installed_model_names(base_url=base_url)
+        except Exception as e:
+            installed = None
+            # #3837 (CodeQL #129, py/stack-trace-exposure). Same fault class as
+            # #123 one file over, and found by the same sweep: this dict is
+            # returned straight out of `GET /models/required` (`app.py`), so a
+            # caught exception's message reaching it reaches a browser. The bare
+            # `except Exception` is the point -- whatever `installed_model_names`
+            # raises against an unreachable Ollama is an httpx transport error,
+            # and its string names the base URL's resolution failure and the
+            # host's proxy. The class is what the dashboard renders ("Ollama did
+            # not answer (ConnectError)"); the message goes to the log.
+            #
+            # Logged as one formatted line, not `exc_info=e` (#3987). The
+            # #3837 constraint is about what reaches the *browser* and is
+            # unchanged -- `error` is still the class name alone -- but the
+            # traceback was ~50 lines of urllib frames on the terminal of
+            # every `nyxgpt ops status`, printed two lines above the graceful
+            # "UNKNOWN (Ollama unreachable)" verdict it duplicated. An
+            # unreachable dependency is a normal outcome of a status probe,
+            # and the stack of a caught, handled exception says nothing an
+            # operator can act on that the class and message do not.
+            logger.warning(
+                "Ollama model lookup failed at %s: %s: %s", base_url, type(e).__name__, e
+            )
+            error = type(e).__name__
 
     missing = (
         []
@@ -11321,10 +11820,32 @@ def required_models_status(
     }
 
 
-def _print_required_models_status() -> None:
-    """Print the required-model readiness block of `nyxgpt ops status`."""
-    info = required_models_status()
-    print(f"\nRequired models (Ollama at {info['base_url']}):")
+def _print_required_models_status(
+    *, kubernetes: bool = False, cluster_unreadable: str = ""
+) -> None:
+    """Print the required-model readiness block of `nyxgpt ops status`.
+
+    `kubernetes=True` reports against the deployment's in-cluster Ollama --
+    see `required_models_status` for why the caller decides that and not this
+    function (#3987).
+
+    `cluster_unreadable` is the third state, and the one this block would
+    otherwise report dishonestly: a cluster is configured but its Pod list did
+    not come back, so nobody can say whether a deployment is there. The block
+    falls back to this host's Ollama -- there is nothing else left to ask --
+    but says so, because "PRESENT" printed under a Deployment mode block that
+    just said `cannot determine` reads as a statement about the deployment,
+    which is the class of false report this whole change exists to end.
+    """
+    info = required_models_status(kubernetes=kubernetes)
+    where = " (in-cluster)" if kubernetes else ""
+    print(f"\nRequired models (Ollama at {info['base_url']}{where}):")
+    if cluster_unreadable and not kubernetes:
+        print(
+            f"  Note: the {K8S_NAMESPACE} namespace could not be read ({cluster_unreadable}), "
+            "so these lines describe this host's Ollama only -- not any Kubernetes "
+            "deployment that may be running."
+        )
     # Reachable, though only one way: `required_models` falls back to the code
     # default when the key is *absent*, so this branch is not the no-config
     # case -- it is a config.ini that sets `default_model =` (and
@@ -11335,15 +11856,30 @@ def _print_required_models_status() -> None:
     if not info["reachable"]:
         for m in info["models"]:
             print(f"  {m['role']}: {m['model']} -- UNKNOWN (Ollama unreachable)")
-        print(
-            f"  Ollama did not answer ({info['error']}) -- run `nyxgpt ops status` again "
-            "once the ollama service is up."
+        # Named for the deployment being reported on: telling an operator to
+        # bring "the ollama service" up when the Ollama in question is a Pod
+        # points at the wrong machine (#3987).
+        next_step = (
+            f"check `kubectl -n {K8S_NAMESPACE} get pods -l app=ollama` -- the Pod that "
+            "serves this deployment is not answering"
+            if kubernetes
+            else "run `nyxgpt ops status` again once the ollama service is up"
         )
+        print(f"  Ollama did not answer ({info['error']}) -- {next_step}.")
         return
     for m in info["models"]:
         print(f"  {m['role']}: {m['model']} -- {'PRESENT' if m['present'] else 'MISSING'}")
     if not info["ready"]:
         print(f"  {info['remediation']}")
+        if kubernetes:
+            # `missing_models_hint` is written for the machine it runs on, and
+            # both commands it names act on this host's Ollama -- neither one
+            # reaches the Pod that is actually short of the model (#3987).
+            print(
+                "  Those commands pull into this host's Ollama, which is not what serves "
+                "this deployment -- re-run `nyxgpt ops install --kubernetes` to pull into "
+                "the cluster."
+            )
 
 
 def status(_args) -> int:
@@ -11356,12 +11892,26 @@ def status(_args) -> int:
     Kubernetes mode, when pods are present) each canary-capable component's
     stable/canary rollout state via `_serving_status` (see #3419).
 
+    Where a Kubernetes deployment is present it is named in the "Deployment
+    mode" block and the required-model check is asked of the *in-cluster*
+    Ollama rather than this host's (#3987) -- see `_k8s_deployment_pods`.
+
     Always returns 0.
     """
     logger.info("ops: status starting", extra={"component": "ops", "action": "status"})
     print("nyxGPT ops status")
 
     mode = detect_deployment_mode()
+    # Read once, up front, and passed to every block below that would
+    # otherwise assume the native machine is the whole story (#3987): the
+    # "Deployment mode" summary and the required-model check both used to be
+    # printed before this command ever looked at the cluster, so a fully
+    # running 14-Pod deployment was reported as "nothing detected" with its
+    # models UNKNOWN. The dedicated Kubernetes section further down reuses
+    # this same probe rather than paying for a second `kubectl get pods`.
+    k8s = _k8s_deployment_probe()
+    k8s_pods = k8s.pods
+    k8s_deployed = k8s.deployed
 
     # Printed before the component states, and per component below, so a
     # dev-mode pass can never be read as an artifact-path pass (#3789).
@@ -11466,6 +12016,16 @@ def status(_args) -> int:
             print(f"  compose {component}: {state}")
     else:
         print("  compose: not detected (no Docker Compose stack running)")
+    # Kubernetes belongs in the block *titled* "Deployment mode" (#3987). The
+    # Pods were already described further down in their own section, but a
+    # block that enumerates native/docker/compose/terraform and stops reads as
+    # "nothing is deployed" printed immediately above a running cluster --
+    # which is what the owner's Kubernetes acceptance run saw. This is the CLI
+    # cousin of #3828's "Detected mode: Nothing detected running" on the
+    # dashboard, on a different code path: `status`'s own structure, not
+    # `self_heal.detect_deployment_mode`, so that fix could not reach here.
+    pointer = " -- see the Kubernetes section below" if k8s_deployed else ""
+    print(f"  kubernetes: {k8s.summary}{pointer}")
     running_terraform = {c: s for c, s in mode.terraform.items() if _container_deployed(s)}
     if running_terraform:
         # Tri-state, matching the deployment line above: dev, artifact, or
@@ -11569,7 +12129,10 @@ def status(_args) -> int:
     if _which("docker") is None:
         print("\nDocker: docker not found")
 
-    _print_required_models_status()
+    _print_required_models_status(
+        kubernetes=k8s_deployed,
+        cluster_unreadable="" if k8s.determined else k8s.reason,
+    )
 
     tf_state = terraform_stack_state()
     if any(_container_deployed(state) for state in tf_state.values()):
@@ -11577,7 +12140,7 @@ def status(_args) -> int:
         for component, state in sorted(tf_state.items()):
             print(f"  terraform {component}: {state}")
 
-    if _which("kubectl") is not None:
+    if k8s_deployed:
         # Classified, not `kubectl get pods --no-headers` echoed verbatim
         # (#3827). That raw table renders a Pod pulling an image and a Pod no
         # node will ever take identically -- both just say `Pending` -- which
@@ -11585,7 +12148,11 @@ def status(_args) -> int:
         # command every failure message here tells the operator to run next.
         # Same classifier, same three labels, same reasons as the install's
         # own report.
-        pod_states, _ = _k8s_pod_states(expected=True)
+        #
+        # The Pods come from the single read taken at the top of this command
+        # (#3987) -- the blocks above report on the same deployment and must
+        # not be able to disagree with this section about whether it exists.
+        pod_states = k8s_pods
         if pod_states:
             context = _kubectl_context()
             if context == KIND_CONTEXT:
@@ -12065,7 +12632,9 @@ def _ollama_env_drift_issue() -> str | None:
     return None
 
 
-def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
+def _missing_required_models_issue(
+    cfg_path: Path | None = None, *, kubernetes: bool = False
+) -> str | None:
     """Report a configured chat/embedding model Ollama does not have (#3824).
 
     `nyxgpt ops install` pulls both, so a machine missing one has either not
@@ -12077,6 +12646,15 @@ def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
     Silent when Ollama is unreachable: that is the ollama service's own
     failure, already reported by `nyxgpt ops status`/self-heal, and guessing
     "model missing" from it would misname the fault.
+
+    `kubernetes=True` asks the deployment's in-cluster Ollama instead of the
+    one this machine's config names, for the same reason `ops status` does
+    (#3987). Doctor's native-machine reading was not a false *report* here --
+    an unreachable host Ollama makes it silent rather than wrong -- but it was
+    a false *silence*: on a Kubernetes deployment the check never ran at all,
+    so the one fault it exists to catch, a Pod short of a model the config
+    requires, could not be found by the command an operator runs to find
+    faults.
     """
     from nyxgpt.config import get_ollama_base_url, load_config
 
@@ -12085,6 +12663,33 @@ def _missing_required_models_issue(cfg_path: Path | None = None) -> str | None:
         return None
     try:
         cfg = load_config(cfg_path)
+        if kubernetes:
+            installed, error, detail = _k8s_installed_model_names()
+            if installed is None:
+                # The same silence as an unreachable native Ollama, and for
+                # the same reason: an Ollama that cannot be asked is a fault
+                # of its own, reported by the Pod lines in `ops status`, and
+                # inferring "model missing" from it would misname it.
+                logger.info(
+                    "ops: skipping the required-model check, the in-cluster Ollama did "
+                    "not answer: %s: %s",
+                    error,
+                    detail,
+                    extra={"component": "ops", "action": "doctor"},
+                )
+                return None
+            missing = [
+                m
+                for m in model_bootstrap.required_models(cfg)
+                if model_bootstrap.normalize_model_name(m.name) not in installed
+            ]
+            if not missing:
+                return None
+            return (
+                f"{model_bootstrap.missing_models_hint(missing)} That Ollama is the one "
+                f"in the {K8S_NAMESPACE} namespace, not this host's -- re-run "
+                "`nyxgpt ops install --kubernetes` to pull into the cluster."
+            )
         missing = model_bootstrap.missing_required_models(
             base_url=get_ollama_base_url(cfg), cfg=cfg
         )
@@ -12367,8 +12972,29 @@ def doctor(_args) -> int:
     install_mode = read_install_mode()
     print(f"Install mode (native api/web): {install_mode.label()}")
     k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
+    # Whether the checks below should be asking the cluster rather than this
+    # host (#3987). Gated on the marker so a machine that has never deployed
+    # to Kubernetes pays nothing for the question: `ops doctor` runs on every
+    # native install, and a `kubectl get pods` against a configured-but-absent
+    # cluster is a probe with a timeout attached. A marker left behind by a
+    # torn-down deployment just yields no Pods, and the native reading stands.
+    k8s = (
+        _k8s_deployment_probe()
+        if k8s_install_mode.recorded
+        else K8sDeploymentProbe([], "no Kubernetes install recorded on this machine")
+    )
+    k8s_deployed = k8s.deployed
     if k8s_install_mode.recorded:
         print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
+        # Said out loud, next to the mode, so the checks below are read
+        # against the right machine (#3987) -- doctor otherwise names a
+        # Kubernetes install mode and then reports exclusively on this host.
+        print(f"Kubernetes deployment: {k8s.summary}")
+        print(
+            "  Model readiness below is reported against the cluster, not this host."
+            if k8s_deployed
+            else "  The checks below report on this host."
+        )
         if k8s_install_mode.is_dev:
             k8s_checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
             if k8s_checkout is None or not k8s_checkout.is_dir():
@@ -12558,7 +13184,7 @@ def doctor(_args) -> int:
     if linux_ollama_conflict_issue:
         issues.append(linux_ollama_conflict_issue)
 
-    missing_models_issue = _missing_required_models_issue()
+    missing_models_issue = _missing_required_models_issue(kubernetes=k8s_deployed)
     if missing_models_issue:
         issues.append(missing_models_issue)
 
@@ -17786,6 +18412,422 @@ def _provision_glitchtip() -> list[OpsResult]:
     return results
 
 
+# --- The Kubernetes half of GlitchTip provisioning (#3990) ---
+#
+# `nyxgpt ops glitchtip-init` provisions GlitchTip for the Compose/native
+# deploys and had no Kubernetes equivalent, so every `--kubernetes` install
+# ran without the two values that provisioning produces:
+#
+#   * Grafana's Infinity datasource authenticated with the PLACEHOLDER token
+#     the manifest ships (deliberately non-empty -- an empty `$__file{}`
+#     target crash-loops Grafana's alerting validator, #3538), so every SRE
+#     Home GlitchTip panel answered `401 Unauthorized`;
+#   * the api had no DSN at all, so nothing was ever reported to the
+#     in-cluster GlitchTip -- those panels would have been empty even with a
+#     valid token.
+#
+# The provisioning ITSELF is shared with the Compose path, deliberately:
+# everything from `_glitchtip_login` down is plain HTTP against GlitchTip's
+# API and knows nothing about how the process was reached. Only the two ends
+# differ, and they are what this section supplies -- how to run
+# `createsuperuser` in a Pod instead of a container, how to reach the API on
+# a ClusterIP-only Service, and where the provisioned values have to land
+# (Kubernetes Secrets, not files on the host).
+
+K8S_GLITCHTIP_DEPLOYMENT = "glitchtip"
+
+# The Secret keys the two provisioned values are stored under, and the
+# manifests that consume them: k8s/secret.example.yaml's `error-tracking-dsn`
+# (read as NYXGPT_ERROR_TRACKING_DSN by the api and web Deployments) and
+# k8s/observability/secret.example.yaml's `glitchtip-grafana-token` (mounted
+# into Grafana at `K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT`).
+#
+# Both are key NAMES, not values -- the values live only in the cluster and in
+# the gitignored secret.yaml files (the allowlist pragmas below say so to
+# detect-secrets, which reads any `*_TOKEN_* = "..."` assignment as a leak).
+K8S_ERROR_TRACKING_DSN_SECRET_KEY = "error-tracking-dsn"  # pragma: allowlist secret
+K8S_GRAFANA_GLITCHTIP_TOKEN_SECRET_KEY = "glitchtip-grafana-token"  # pragma: allowlist secret
+
+# What has to be rolled when the DSN changes. An environment is fixed at
+# process start, so a Pod that started before provisioning keeps the empty
+# DSN it booted with -- which is exactly the "installed, healthy, reporting
+# nothing" state this issue is about. The canary tracks are deliberately not
+# listed: they rest at zero replicas (#3833), and `nyxgpt canary start` mints
+# their Pods later from the Secret as it stands then.
+K8S_DSN_CONSUMER_DEPLOYMENTS = ("nyxgpt-api-stable", "nyxgpt-web-stable")
+
+# How long to wait for a `kubectl port-forward` to start carrying traffic.
+K8S_PORT_FORWARD_READY_TIMEOUT_S = 30
+
+
+def _k8s_glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
+    """`createsuperuser --noinput` in the glitchtip Pod -- the Kubernetes twin
+    of `_glitchtip_ensure_superuser`.
+
+    Same idempotency contract (rc=1 means "already exists", declared to
+    `_run` as expected so a healthy re-run logs at INFO rather than WARNING)
+    and the same rule about the password: it NEVER touches argv. `kubectl
+    exec` has no `-e VAR` forwarding the way `docker compose exec` does, so
+    the password is piped on stdin and read inside the container instead --
+    `_run` logs the command it ran, and an argv-borne password would land in
+    that log on every idempotent re-run (CodeQL #105/#106). The email is an
+    argument because it is not a secret.
+    """
+    script = (
+        'DJANGO_SUPERUSER_EMAIL="$1"; DJANGO_SUPERUSER_USERNAME="$1"; '
+        "read -r DJANGO_SUPERUSER_PASSWORD; "
+        "export DJANGO_SUPERUSER_EMAIL DJANGO_SUPERUSER_USERNAME DJANGO_SUPERUSER_PASSWORD; "
+        "./manage.py createsuperuser --noinput"
+    )
+    try:
+        cp = _run(
+            [
+                "kubectl",
+                "-n",
+                K8S_NAMESPACE,
+                "exec",
+                "-i",
+                f"deploy/{K8S_GLITCHTIP_DEPLOYMENT}",
+                "--",
+                "sh",
+                "-c",
+                script,
+                "sh",
+                email,
+            ],
+            check=False,
+            input=f"{password}\n",
+            expected_returncodes={1},
+            expected_message=(
+                f"GlitchTip superuser {email} already exists -- expected rc=1, "
+                "treated as success"
+            ),
+        )
+    except Exception as e:
+        return OpsResult(
+            False,
+            "Failed to run GlitchTip createsuperuser in the cluster",
+            f"{type(e).__name__}: {e}",
+        )
+
+    if cp.returncode == 0:
+        return OpsResult(True, f"Created GlitchTip admin user {email} in the cluster")
+    combined = ((cp.stdout or "") + (cp.stderr or "")).lower()
+    if "already" in combined or "unique" in combined:
+        return OpsResult(True, f"GlitchTip admin user {email} already exists in the cluster")
+    return OpsResult(
+        False, "Failed to ensure the in-cluster GlitchTip admin user", _output_excerpt(cp).strip()
+    )
+
+
+@contextlib.contextmanager
+def _k8s_port_forward(service: str, remote_port: int) -> Iterator[str | None]:
+    """Forward `service` to an ephemeral local port for the duration of the block.
+
+    Yields the base URL, or None when the tunnel never carried traffic (the
+    caller reports that; a context manager cannot).
+
+    GlitchTip's Service is ClusterIP-only, like every Service in `k8s/`, so
+    there is no way to speak to its REST API from this process without one --
+    and speaking to it from here is what lets the whole provisioning sequence
+    be SHARED with the Compose path instead of reimplemented against `kubectl
+    exec`. The local port is ephemeral rather than GlitchTip's usual 8080 so
+    this never collides with an operator's own `nyxgpt ops port-forward
+    --target glitchtip`, or with a native GlitchTip on the same workstation.
+
+    Readiness is decided by a real HTTP request, not by the socket accepting:
+    `kubectl port-forward` binds its listener immediately and only then dials
+    the Pod, so a bare TCP connect proves nothing about the far end.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        local_port = int(probe.getsockname()[1])
+
+    base_url = f"http://127.0.0.1:{local_port}"
+    proc = subprocess.Popen(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "port-forward",
+            f"svc/{service}",
+            f"{local_port}:{remote_port}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        ready = False
+        deadline = time.monotonic() + K8S_PORT_FORWARD_READY_TIMEOUT_S
+        while time.monotonic() < deadline and proc.poll() is None:
+            try:
+                httpx.get(f"{base_url}/", timeout=5.0)
+            except httpx.HTTPError:
+                time.sleep(1.0)
+                continue
+            ready = True
+            break
+        yield base_url if ready else None
+    finally:
+        proc.terminate()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=10)
+
+
+def _write_k8s_secret_value(secret_path: Path, key: str, value: str) -> tuple[bool, OpsResult]:
+    """Set one `stringData` key in a bootstrapped Secret manifest.
+
+    Returns `(changed, result)` -- `changed` is what drives the rollout
+    restarts, the same way `_write_grafana_glitchtip_token`'s `changed`
+    drives the Compose Grafana restart: a re-run that produced the identical
+    value must not bounce a Pod.
+
+    The FILE is written, not just the live Secret, because the file is what
+    `kubectl apply -k` re-applies: patching only the cluster would leave the
+    next install silently reverting the value to the placeholder. The value
+    is line-rewritten in place (the treatment `_ensure_k8s_secret` gives the
+    API key) so every explanatory comment in the manifest survives.
+    """
+    if not secret_path.exists():
+        return False, OpsResult(
+            False,
+            f"Missing {secret_path} to write {key} into",
+            "Re-run `nyxgpt ops install --kubernetes`, which bootstraps it from "
+            "secret.example.yaml.",
+        )
+    if '"' in value or "\n" in value:
+        # Nothing GlitchTip mints looks like this; refuse rather than write a
+        # manifest that would parse as something else.
+        return False, OpsResult(False, f"Refusing to write an unquotable value into {key}")
+
+    text = secret_path.read_text(encoding="utf-8")
+    patched, count = re.subn(
+        rf'^(\s*{re.escape(key)}:\s*)".*"$',
+        lambda m: f'{m.group(1)}"{value}"',
+        text,
+        flags=re.MULTILINE,
+    )
+    if count == 0:
+        return False, OpsResult(
+            False,
+            f"{secret_path} has no {key} entry to write into",
+            f"Delete {secret_path} and re-run `nyxgpt ops install --kubernetes` to "
+            "re-bootstrap it from the current template.",
+        )
+    if patched == text:
+        return False, OpsResult(True, f"{secret_path} already holds the current {key}")
+
+    secret_path.write_text(patched, encoding="utf-8")
+    os.chmod(secret_path, 0o600)
+    return True, OpsResult(True, f"Wrote {key} into {secret_path}")
+
+
+def _apply_k8s_secret_file(secret_path: Path) -> OpsResult:
+    """`kubectl apply -f` one Secret manifest (never its value on the command line)."""
+    cp = _run(["kubectl", "apply", "-f", str(secret_path)], check=False)
+    if cp.returncode != 0:
+        return OpsResult(False, f"kubectl apply {secret_path.name} failed", _cp_details(cp))
+    return OpsResult(True, f"Applied {secret_path.name} to the cluster", _cp_details(cp))
+
+
+def _restart_k8s_dsn_consumers() -> list[OpsResult]:
+    """Roll the api and web Deployments so they read the newly written DSN.
+
+    Waited on, unlike the Compose path's fire-and-forget restart: this runs
+    at the very end of `install --kubernetes`, and everything that reads the
+    cluster afterwards -- the install's own health snapshot, `nyxgpt ops
+    status`, an operator opening the dashboard -- would otherwise be looking
+    at a stack mid-rollout and reporting a half-replaced Pod set as the
+    install's verdict (the #3827 lesson, applied to the restart this fix
+    introduces rather than to the ones it inherited).
+    """
+    results: list[OpsResult] = []
+    for deployment in K8S_DSN_CONSUMER_DEPLOYMENTS:
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "rollout", "restart", f"deploy/{deployment}"],
+            check=False,
+        )
+        ok = cp.returncode == 0
+        results.append(
+            OpsResult(
+                ok,
+                (
+                    f"Restarted {deployment} to pick up the GlitchTip DSN"
+                    if ok
+                    else f"Could not restart {deployment} for the new GlitchTip DSN"
+                ),
+                _cp_details(cp),
+            )
+        )
+    if all(r.ok for r in results):
+        results += _wait_for_k8s_rollouts(
+            [
+                (f"deploy/{d}", f"{d} (new GlitchTip DSN)", K8S_APP_TIER_ROLLOUT_TIMEOUT_S)
+                for d in K8S_DSN_CONSUMER_DEPLOYMENTS
+            ],
+            remedy=(
+                "The replacement Pods carry the provisioned error-tracking DSN. Check "
+                "`nyxgpt ops status`; the previous Pods keep serving until they roll."
+            ),
+        )
+    return results
+
+
+def _k8s_provision_glitchtip() -> list[OpsResult]:
+    """Provision the in-cluster GlitchTip and wire both halves of it up (#3990).
+
+    The Kubernetes equivalent of `_provision_glitchtip`, and idempotent in
+    the same way: every step reuses what is already there, so re-running it
+    (`nyxgpt ops glitchtip-init --kubernetes`, or any re-install) mints
+    nothing twice and restarts nothing that did not change.
+
+    Produces the two values a Kubernetes deployment was missing entirely: the
+    api/web DSN (into the `nyxgpt-secrets` Secret, rewritten to the
+    in-cluster `glitchtip:8080` because a Pod using GlitchTip's own
+    browser-facing localhost DSN drops every event silently, #3565) and
+    Grafana's bearer token (into `nyxgpt-observability-secrets`, replacing
+    the placeholder that made the SRE Home panels 401).
+
+    Skips -- successfully, with the remedy named -- when there is nothing to
+    provision against: no kubectl, a GlitchTip that is not ready yet, or no
+    native config.ini to persist the admin credentials in. A skip must not
+    fail an install: the app tier works without error tracking, and the
+    operator can run the command again once the missing piece is there.
+    """
+    if _which("kubectl") is None:
+        return [OpsResult(True, "Skipped GlitchTip provisioning (kubectl not found)")]
+
+    state = _k8s_observability_workload_state().get(K8S_GLITCHTIP_DEPLOYMENT, "absent")
+    if (
+        _classify_k8s_observability_workload(K8S_GLITCHTIP_DEPLOYMENT, state).state
+        != K8S_STATE_READY
+    ):
+        return [
+            OpsResult(
+                True,
+                f"Skipped GlitchTip provisioning (in-cluster glitchtip: {state})",
+                "Deploy the observability layer with `nyxgpt ops observability --kubernetes`, "
+                "then re-run `nyxgpt ops glitchtip-init --kubernetes`.",
+            )
+        ]
+
+    # The admin credentials have to SURVIVE this run: `createsuperuser` is a
+    # no-op the second time, so a freshly generated password would simply fail
+    # to log in on the next re-install. The native config.ini is where the
+    # Compose path already keeps them, and reusing it means one machine has
+    # one GlitchTip admin login however its stack is deployed.
+    native_cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if not native_cfg_path.exists():
+        return [
+            OpsResult(
+                True,
+                f"Skipped GlitchTip provisioning (no {native_cfg_path} to store the admin "
+                "credentials in)",
+                "Run `nyxgpt wizard`, then `nyxgpt ops glitchtip-init --kubernetes`.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    email, password, generated = _resolve_admin_credentials(native_cfg_path)
+    if generated:
+        _persist_admin_credentials(native_cfg_path, email, password)
+        results.append(
+            OpsResult(True, f"Generated and saved a GlitchTip admin password to {native_cfg_path}")
+        )
+
+    su_result = _k8s_glitchtip_ensure_superuser(email, password)
+    results.append(su_result)
+    if not su_result.ok:
+        return results
+
+    token: str | None = None
+    dsn: str | None = None
+    with _k8s_port_forward(K8S_GLITCHTIP_DEPLOYMENT, GLITCHTIP_CONTAINER_PORT) as base_url:
+        if base_url is None:
+            results.append(
+                OpsResult(
+                    False,
+                    "Could not reach the in-cluster GlitchTip API",
+                    "The port-forward to svc/glitchtip never carried traffic. Check "
+                    "`nyxgpt ops status` and retry `nyxgpt ops glitchtip-init --kubernetes`.",
+                )
+            )
+            return results
+
+        login_client, login_result = _glitchtip_login(base_url, email, password)
+        results.append(login_result)
+        if login_client is None:
+            return results
+        try:
+            token, token_result = _glitchtip_ensure_api_token(login_client, base_url)
+            results.append(token_result)
+        finally:
+            login_client.close()
+        if token is None:
+            return results
+
+        api_client = _glitchtip_http_client(base_url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            org_slug, org_result = _glitchtip_ensure_organization(api_client)
+            results.append(org_result)
+            if org_slug is None:
+                return results
+
+            team_slug, team_result = _glitchtip_ensure_team(api_client, org_slug)
+            results.append(team_result)
+            if team_slug is None:
+                return results
+
+            results.append(_glitchtip_ensure_team_membership(api_client, org_slug, team_slug))
+
+            project_slug, project_result = _glitchtip_ensure_project(
+                api_client, org_slug, team_slug
+            )
+            results.append(project_result)
+            if project_slug is None:
+                return results
+
+            dsn, key_result = _glitchtip_ensure_project_key(api_client, org_slug, project_slug)
+            results.append(key_result)
+        finally:
+            api_client.close()
+
+    if dsn is None:
+        return results
+
+    # GlitchTip mints the DSN from its own GLITCHTIP_DOMAIN (a browser-facing
+    # localhost URL). Inside a Pod that resolves to the Pod itself, so it is
+    # rewritten to the in-cluster Service -- the same host and port the
+    # Compose path rewrites it to, since the Service and the Compose alias
+    # are deliberately both named `glitchtip`.
+    app_secret = K8S_DIR / "secret.yaml"
+    dsn_changed, dsn_result = _write_k8s_secret_value(
+        app_secret, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
+    )
+    results.append(dsn_result)
+    if dsn_result.ok:
+        applied = _apply_k8s_secret_file(app_secret)
+        results.append(applied)
+        if applied.ok and dsn_changed:
+            results += _restart_k8s_dsn_consumers()
+
+    observability_secret = K8S_OBSERVABILITY_DIR / "secret.yaml"
+    token_changed, token_write_result = _write_k8s_secret_value(
+        observability_secret, K8S_GRAFANA_GLITCHTIP_TOKEN_SECRET_KEY, token
+    )
+    results.append(token_write_result)
+    if token_write_result.ok:
+        applied = _apply_k8s_secret_file(observability_secret)
+        results.append(applied)
+        # Grafana reads `$__file{}` provisioning targets at startup only, so a
+        # rewritten token is invisible until the Pod restarts -- the same
+        # reason `_provision_glitchtip` restarts the Compose container.
+        if applied.ok and token_changed:
+            results.append(_restart_k8s_grafana())
+
+    return results
+
+
 def glitchtip_init(args: Any) -> int:
     """CLI entrypoint for `nyxgpt ops glitchtip-init`.
 
@@ -17794,13 +18836,29 @@ def glitchtip_init(args: Any) -> int:
     -- safe to re-run any time. No-ops with a clear message if the
     `glitchtip` Compose container isn't up/healthy.
 
+    `--kubernetes` provisions the IN-CLUSTER GlitchTip instead (#3990): same
+    sequence, but the DSN and Grafana token land in the deployment's Secrets
+    rather than in config.ini and `~/.nyxGPT/secrets`, since a Pod reads
+    neither. The install runs it automatically; this is the way to re-run it
+    on its own, which is what an operator needs after a GlitchTip whose
+    Postgres was reset out from under the recorded DSN.
+
     Returns 0 on success (including a clean no-op), else 2.
     """
+    kubernetes = bool(getattr(args, "kubernetes", False))
     logger.info(
-        "ops: glitchtip-init starting", extra={"component": "ops", "action": "glitchtip-init"}
+        "ops: glitchtip-init starting",
+        extra={
+            "component": "ops",
+            "action": "glitchtip-init",
+            "substrate": SUBSTRATE_KUBERNETES if kubernetes else "compose",
+        },
     )
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
-        ("provision glitchtip", _provision_glitchtip),
+        (
+            "provision glitchtip",
+            _k8s_provision_glitchtip if kubernetes else _provision_glitchtip,
+        ),
     ]
     quiet = bool(getattr(args, "quiet", False))
     results, slow_steps = _run_steps("glitchtip-init", steps, quiet=quiet)

@@ -90,6 +90,13 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      # See handle_acceptance_failure.yml: a failure here eats an owner
+      # report just as completely, so the same #3695 DM alert is wired
+      # (#3999 -- the two commands stay mirror images of each other).
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_USER_ID: ${{ secrets.SLACK_USER_ID }}
+      SLACK_USER_TOKEN_SCRUM: ${{ secrets.SLACK_USER_TOKEN_SCRUM }}
+      AGENT_ROLE: scrum
 
     steps:
       - name: Checkout
@@ -209,10 +216,24 @@ jobs:
           # write handle_acceptance_failure.yml makes. Nothing is written to
           # the body or to a comment. Best-effort; promote_accepted_features.sh
           # heals a missing link on its next sweep.
+          # Precondition for the reopen below, not a nice-to-have: a reopened
+          # original with no blocked_by edge is classified `work` forever and
+          # dispatched against an issue with nothing to implement. And it does
+          # not heal itself -- the sweep's heal loop only reaches candidates it
+          # can already resolve from a native edge or the retired prose marker,
+          # and this derived issue writes no marker (#3999 review). Same fix as
+          # handle_acceptance_failure.yml: the two commands differ only in label
+          # and copy, and a fix applied to one and not the other is how they
+          # diverge.
+          EDGE_OK=1
           if mark_issue_blocked_by "$FEATURE" "$NEW"; then
             echo "Marked #$NEW as blocking #$FEATURE"
           else
-            echo "[warn] Could not mark #$NEW as blocking #$FEATURE (promotion sweep will retry)"
+            EDGE_OK=0
+            echo "[warn] Could not mark #$NEW as blocking #$FEATURE."
+            echo "[warn] NOT reopening #$FEATURE: without that edge the gate would"
+            echo "[warn] classify it as work and dispatch it. The improvement is"
+            echo "[warn] recorded on #$NEW; re-issue the command when the API is healthy."
           fi
 
           if [[ "$GATED" == "1" ]]; then
@@ -221,9 +242,30 @@ jobs:
                       "it may already be there, or the lane option may be missing. Check its Status."
           fi
 
+          # The ORIGINAL is reopened as the signal that it did not pass
+          # acceptance, assigned to the scrummaster and parked in the
+          # holding lane (owner standard D-042, 2026-08-22) -- the same
+          # write handle_acceptance_failure.yml makes. The two commands
+          # differ only in label and copy, and a fix applied to one but not
+          # the other is exactly how they diverge (#3999).
+          #
+          # Only when the command was issued ON the original. When the owner
+          # comments on a failure/improvement issue, FEATURE resolves to the
+          # issue THAT one blocks -- reopening that would be reopening
+          # something the owner never marked.
+          REOPENED=0
+          if [[ -z "$RELATED" && "$EDGE_OK" == "1" ]]; then
+            acceptance_reopen_original "$FEATURE" "$NEW"
+            echo "Reopened #$FEATURE as the acceptance signal (D-042)"
+            REOPENED=1
+          elif [[ -z "$RELATED" ]]; then
+            echo "Skipped the reopen of #$FEATURE -- see the edge warning above."
+          fi
+
           {
             echo "issue=$NEW"
             echo "feature=$FEATURE"
+            echo "reopened=$REOPENED"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post acknowledgement comment
@@ -232,6 +274,7 @@ jobs:
           ISSUE: ${{ steps.handle.outputs.issue }}
           FEATURE: ${{ steps.handle.outputs.feature }}
           GATED: ${{ steps.handle.outputs.gated }}
+          REOPENED: ${{ steps.handle.outputs.reopened }}
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
@@ -239,7 +282,15 @@ jobs:
             const issue = Number(process.env.ISSUE);
             const feature = process.env.FEATURE;
             const gated = process.env.GATED === '1';
+            const reopened = process.env.REOPENED === '1';
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+
+            const reopenLine = reopened
+              ? `- #${feature} is **reopened** and parked in **Acceptance Failed**, `
+                + `assigned to the scrummaster — the reopen is the record that it `
+                + `did not pass acceptance (owner standard D-042). `
+                + `Nothing is dispatched against it\n`
+              : '';
 
             const startLine = gated
               ? `- Held in **Acceptance Failed** — work starts when **Acceptance Testing** drains (only the release issue left), which moves it to Backlog and kicks the queue once\n`
@@ -252,6 +303,7 @@ jobs:
               `that distinction in the retrospective — but #${feature} now waits on #${issue}, and on anything blocking ` +
               `#${issue}, before it can move to **For Release** (owner decision 2026-08-12, #3731).\n\n` +
               `**Flow (automated):**\n` +
+              reopenLine +
               startLine +
               `- Developer agent implements it via a \`feat/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
               `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your review\n\n` +
@@ -263,3 +315,45 @@ jobs:
               issue_number: commented,
               body
             });
+
+      # FAIL LOUDLY (#3999) -- the mirror of the same step in
+      # handle_acceptance_failure.yml. A failure here files no issue and
+      # writes no blocking edge, so the owner's improvement report reaches
+      # nothing; both channels are used for the same reason given there.
+      - name: Alert the owner if the handler failed
+        if: failure()
+        env:
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMENTED: ${{ github.event.issue.number }}
+        run: |
+          set -uo pipefail
+          source scripts/agents/lib/gh_project.sh
+          load_config
+
+          # Body via a file, not a heredoc inside "$( … )" -- see the same
+          # step in handle_acceptance_failure.yml for why.
+          BODY_FILE="${RUNNER_TEMP:-/tmp}/handler-failure.md"
+          cat > "$BODY_FILE" <<EOF
+          🚨 **\`@improvement\` handler FAILED** — this report was **not** filed.
+
+          No improvement issue was created and no blocking relationship was written,
+          so nothing is pointing at this issue and no agent has been dispatched. The
+          owner's report is the comment above; it is not lost, but nothing is
+          acting on it.
+
+          - Failing run: ${RUN_URL}
+          - Reporting comment: ${COMMENT_URL}
+
+          Re-issuing the command on this issue re-runs the handler once the cause is fixed.
+
+          <!-- nyxgpt-token-mention -->
+          EOF
+
+          issue_comment "$COMMENTED" "$(cat "$BODY_FILE")" \
+            || _warn "could not post the handler-failure comment on #${COMMENTED}"
+
+          notify_human_escalation "$COMMENTED" "improvement handler FAILED" \
+            "The @improvement handler exited non-zero on #${COMMENTED}: nothing filed, no edge written." \
+            "Read ${RUN_URL}, fix the cause, then re-issue @improvement on #${COMMENTED} (${COMMENT_URL})." \
+            "${COMMENTED}:improvement-handler-failed" 60

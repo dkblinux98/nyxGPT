@@ -662,6 +662,15 @@ Reports:
   running in *both* modes, `status` prints a **WARNING** — only one is actually serving
   traffic on the shared port, and config edits to `~/.nyxGPT/config.ini` (native) vs.
   `docker/config.docker.ini` (Compose) reach different, non-interchangeable processes.
+  The block closes with a **`kubernetes:`** line in one of three states (#3987):
+  `nyxgpt namespace: N/M pod(s) ready` when a deployment is there (pointing at
+  the Kubernetes section below), `not detected (…)` when nothing on this
+  machine was ever pointed at a cluster (no `kubectl`, or no current context),
+  and `cannot determine (…)` when a cluster *is* configured but its Pod list
+  did not come back. That third state is the #3468 distinction: a cluster that
+  did not answer is not a cluster with nothing in it, and printing the block
+  without the line at all read as "nothing is deployed" directly above 14
+  running Pods.
 - **Kubernetes deployment**, when Pods are present: the namespace's Pods, the
   cluster context, the in-cluster observability workloads, the per-component
   canary rollout state — and that deployment's **own install mode**, `artifact`
@@ -697,8 +706,24 @@ Reports:
 - **Required models** — the configured chat and embedding models, and whether
   Ollama has each (`PRESENT`/`MISSING`, or `UNKNOWN` when Ollama itself did
   not answer). A missing one is printed with the `nyxgpt` command that fixes
-  it. The same readiness view the SRE/admin dashboard's Required Models panel
-  renders, and the one `/api/v1/models/required` returns (#3824)
+  it (#3824). **Which Ollama** is the one that serves the deployment being
+  reported on (#3987): with Pods present the block is headed
+  `http://ollama.nyxgpt.svc.cluster.local:11434 (in-cluster)` and is read out
+  of the cluster's Ollama with `kubectl exec`, because the host has no Ollama
+  on `127.0.0.1:11434` in that mode and is not supposed to — the install stops
+  it. The remediation is named for the same machine: `nyxgpt ops install
+  --kubernetes` pulls into the cluster, where `nyxgpt models pull` would pull
+  into this host. When the namespace could not be read at all, the block falls
+  back to this host's Ollama and says so, rather than letting a host answer
+  read as a statement about the deployment. This is the readiness view the
+  SRE/admin dashboard's Required Models panel renders and the one
+  `/api/v1/models/required` returns — each reporting the Ollama that serves
+  *its own* process, so the two agree on a native install and, by design,
+  describe different stores when a natively-served dashboard is looking at a
+  machine that also runs a cluster. The two are never merged or fallen back
+  between: a host with both has two model stores that can legitimately differ,
+  and answering "is this deployment ready" out of the other one's store is the
+  same false report the in-cluster read exists to end
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
   stack) for cleanup -- and, when you are removing nyxGPT rather than
@@ -1054,7 +1079,15 @@ Checks include:
   that fixes it (`nyxgpt ops install`, or `nyxgpt models pull <model>`) —
   never a raw `ollama pull`. Silent when Ollama itself is unreachable: that
   is the ollama service's failure, reported by `status`/self-heal, and
-  calling it a missing model would misname the fault (#3824)
+  calling it a missing model would misname the fault (#3824). When this
+  machine has a **Kubernetes install recorded and Pods running**, the check is
+  asked of the *in-cluster* Ollama instead and the fixing command becomes
+  `nyxgpt ops install --kubernetes`, since both of the commands above act on
+  this host and neither reaches the Pod that is short of the model — doctor
+  prints `Kubernetes deployment: …` next to the install mode so the checks
+  below it are read against the right machine (#3987). Only the recorded
+  marker turns the cluster read on, so a machine that has never deployed to
+  Kubernetes pays nothing for the question
 - Log directory writability
 - (when log aggregation is enabled) whether the *running* promtail
   container actually has the native-logs bind mount, via `docker inspect`

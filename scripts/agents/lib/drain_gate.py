@@ -69,6 +69,15 @@ Three pure decisions live here so they can be unit-tested without GitHub:
               The gate is for PRODUCT acceptance work. Agent-process
               issues are worked immediately.
 
+  role        one issue -> "rework" | "original" | "work". THE
+              discriminator of owner standard D-042 (2026-08-22), read
+              from a rework label plus the native blocked-by/blocks edges
+              and from nothing else. `is-rework` is its boolean form. See
+              `acceptance_role` for why each signal was chosen, and why
+              open-vs-closed state -- what the code read before -- is no
+              longer a safe proxy now that an owner reopen means "this did
+              not pass acceptance".
+
 Env vars:
   STATUS_FIELD                 Status field name (default "Status")
   STATUS_ACCEPTANCE_TESTING    lane the gate watches (default
@@ -148,10 +157,12 @@ def _lane(page: dict) -> tuple[list[int], list[int], list[int]]:
             in_failed.append(int(content["number"]))
             # CLOSED in the holding lane == a feature the owner tested,
             # failed and parked there (#3780). Held rework filed this round
-            # is OPEN: the handlers file a fresh issue, and a re-failed fix
-            # is REOPENED. State is the honest discriminator -- a label
+            # is OPEN. State answers only this narrow question -- "did the
+            # owner park an already-merged feature here?" -- and a label
             # check would misread a closed failure issue the owner parked
-            # after re-testing it.
+            # after re-testing it. It does NOT answer "is this open item
+            # work?": since D-042 an owner reopen means the opposite, and
+            # `acceptance_role` is what decides that (see `classify_held`).
             if str(content.get("state") or "").upper() == "CLOSED":
                 parked.append(int(content["number"]))
 
@@ -184,6 +195,86 @@ def _rework_labels() -> set[str]:
     return {part.strip().casefold() for part in raw.split(",") if part.strip()}
 
 
+def related_targets(issue: dict) -> list[int]:
+    """The issues this one was FILED AGAINST, from its native `blocks`
+    edges (#3731) with the retired body marker as the historical fallback.
+
+    Same resolution `related_feature_of` performs in gh_project.sh; kept
+    here so the shell and the gate cannot drift apart.
+    """
+    native = [int(n) for n in issue.get("blocks") or []]
+    if native:
+        return sorted(set(native))
+    return sorted({int(m.group(1)) for m in RELATED_FEATURE_RE.finditer(issue.get("body") or "")})
+
+
+ROLE_REWORK = "rework"
+ROLE_ORIGINAL = "original"
+ROLE_WORK = "work"
+
+
+def acceptance_role(issue: dict) -> str:
+    """THE discriminator of owner standard D-042 (2026-08-22).
+
+    Answers, for one issue sitting OPEN in the `Acceptance Failed` lane,
+    which of three things it is. Every consumer -- the handlers that file,
+    the gate that releases, the sweep that promotes -- asks here, so no two
+    of them can disagree about one issue.
+
+      "rework"    a handler-FILED acceptance failure / improvement: it
+                  carries a rework label AND it natively BLOCKS another
+                  issue, i.e. it was filed *against* something. The gate
+                  releases it to Backlog; the sweep never promotes it,
+                  because its own fix has not shipped.
+                  This is bit-for-bit the test
+                  handle_acceptance_failure.yml already applies to choose
+                  its reopen-for-rework path, which is why #3850 and #3862
+                  keep behaving exactly as they do today.
+
+      "original"  an issue that is BLOCKED BY other issues: its work lives
+                  somewhere else, and the reopen is the owner's signal that
+                  it did not pass acceptance (D-042 (a)). The gate leaves
+                  it parked -- dispatching a developer against it is the
+                  #3999 defect -- and the sweep promotes, reassigns and
+                  closes it once its whole blocked-by closure is accepted.
+
+      "work"      anything else: an issue that carries its own work and is
+                  waiting on nothing. That is D-042 (b) -- a failure
+                  spanning several issues or fitting none, filed with no
+                  relationship and worked like a brand-new issue -- and it
+                  is released with the batch, unchanged from today.
+
+    WHY THESE SIGNALS. Both are *records the process deliberately writes*:
+    the label the handler applies, and the native blocked-by/blocks edges
+    that #3731 made the single storage for issue relationships. Neither is
+    read from the issue's shape or from open/closed state.
+
+    WHY NOT STATE, which is what the code read until 2026-08-22: D-008 took
+    "open in that lane" to mean held rework, and D-042 makes an owner's
+    reopen mean the opposite -- "this did not pass acceptance". On
+    2026-08-22 that released #3835 (blocked by #3984/#3985/#3989) and #3829
+    (blocked by #3991) to a developer with nothing to implement.
+
+    WHY NOT THE LABEL ALONE: #3829 carries "Acceptance Failure" and is an
+    original the owner reopened; #3835 carries none of the rework labels and
+    is one too. WHY NOT THE EDGE ALONE: a plain feature can block a
+    sequenced successor. The two together classify every issue in the
+    2026-08-22 incident correctly, in both directions.
+    """
+    labels = _rework_labels()
+    labelled = bool(labels) and bool(labels & _label_names(issue))
+    if labelled and related_targets(issue):
+        return ROLE_REWORK
+    if issue.get("blocked_by"):
+        return ROLE_ORIGINAL
+    return ROLE_WORK
+
+
+def is_rework_issue(issue: dict) -> bool:
+    """True when `acceptance_role` calls this issue handler-filed rework."""
+    return acceptance_role(issue) == ROLE_REWORK
+
+
 def rework_features(issues: list[dict]) -> list[int]:
     """The issues parked awaiting rework by the currently held issues.
 
@@ -194,25 +285,44 @@ def rework_features(issues: list[dict]) -> list[int]:
     it is what keeps the gate from deadlocking on the work it is itself
     holding, in either lane.
 
-    The link is read from each held issue's **native** `blocks` edges
-    (#3731), falling back to the retired body marker for issues filed before
-    that. Only held issues carrying a rework label count -- the same filter
+    Only issues `is_rework_issue` recognises contribute: the same filter
     promote_accepted_features.sh applies, so the sweep that parks an issue
     and the gate that exempts it always agree. Since both handler commands
-    now write the relationship, that filter covers Improvements too.
+    write the relationship, that covers Improvements too.
     """
-    labels = _rework_labels()
     found: set[int] = set()
     for issue in issues:
-        if labels and not (labels & _label_names(issue)):
-            continue
-        native = [int(n) for n in issue.get("blocks") or []]
-        if native:
-            found.update(native)
-            continue
-        for match in RELATED_FEATURE_RE.finditer(issue.get("body") or ""):
-            found.add(int(match.group(1)))
+        if is_rework_issue(issue):
+            found.update(related_targets(issue))
     return sorted(found)
+
+
+def classify_held(issues: list[dict]) -> dict:
+    """Split the OPEN holding-lane items by `acceptance_role`.
+
+    `rework_issues` plus the "work" ones are what a gate opening releases to
+    Backlog; `parked_open` are the reopened originals (D-042), left exactly
+    where the owner's reopen put them and moved only by
+    promote_accepted_features.sh.
+
+    An entry with no `number` is counted for `rework_features` only --
+    callers that do not supply one get the pre-D-042 output shape.
+    """
+    rework: list[int] = []
+    parked: list[int] = []
+    work: list[int] = []
+    for issue in issues:
+        number = issue.get("number")
+        if number is None:
+            continue
+        role = acceptance_role(issue)
+        {ROLE_REWORK: rework, ROLE_ORIGINAL: parked, ROLE_WORK: work}[role].append(int(number))
+    return {
+        "rework_features": rework_features(issues),
+        "rework_issues": sorted(set(rework)),
+        "parked_open": sorted(set(parked)),
+        "unrelated_work": sorted(set(work)),
+    }
 
 
 def decide(snapshot: dict) -> dict:
@@ -225,8 +335,9 @@ def decide(snapshot: dict) -> dict:
 
     `blockers` is what is still holding the gate closed; `held` is what
     gets released into Backlog when it opens; `parked` is what sits in the
-    holding lane as owner signal and is deliberately left where it is
-    (#3780).
+    holding lane as owner signal and is deliberately left where it is --
+    the CLOSED features of #3780 and, since D-042, the OPEN originals the
+    owner reopened because they failed acceptance.
     """
     release_issue = os.getenv("RELEASE_ISSUE", "").strip()
     release_exempt = {int(release_issue)} if release_issue.isdigit() else set()
@@ -237,6 +348,13 @@ def decide(snapshot: dict) -> dict:
     # gate never moves them (owner decision 2026-08-14, #3780). Absent key
     # -> the whole lane is held, which is the pre-#3780 behavior.
     parked = {int(n) for n in snapshot.get("acceptance_failed_parked", [])} & set(lane)
+    # ... and neither are the OPEN originals an owner reopened because they
+    # failed acceptance (owner standard D-042, 2026-08-22). Those are the
+    # items `is_rework_issue` rejects; the gate leaves them parked and the
+    # promotion sweep is the only thing that moves them. Absent key -> every
+    # open lane item is held, which is the pre-D-042 behavior.
+    parked_open = {int(n) for n in snapshot.get("acceptance_failed_parked_open", [])} & set(lane)
+    parked |= parked_open
     held = [n for n in lane if n not in parked]
     rework = {int(n) for n in snapshot.get("rework_features", [])}
 
@@ -302,7 +420,8 @@ def _merge(snapshots: list[dict]) -> dict:
 def main(argv: list[str]) -> int:
     if not argv:
         print(
-            "usage: drain_gate.py {summarize <page.json>|decide|merge|bypass|rework}",
+            "usage: drain_gate.py "
+            "{summarize <page.json>|decide|merge|bypass|rework|role|is-rework}",
             file=sys.stderr,
         )
         return 2
@@ -327,12 +446,25 @@ def main(argv: list[str]) -> int:
         print("true" if bypass(json.load(sys.stdin)) else "false")
         return 0
     if cmd == "rework":
-        # stdin: JSON array of held issues ({"body": ..., "labels": [...]}
-        # each, extra keys ignored) -> {"rework_features": [...]}. Both
-        # keys matter: the marker lives in the body, and only issues
-        # labeled "Acceptance Failure" park a feature.
+        # stdin: JSON array of held issues ({"number":…, "body":…,
+        # "labels":[…], "blocks":[…]} each, extra keys ignored) ->
+        # {"rework_features":[…], "rework_issues":[…], "parked_open":[…]}.
+        # Every key matters: the relationship (or the retired marker in the
+        # body) says what the issue was filed against, and the label says
+        # whether it is handler-filed rework at all.
         issues = json.load(sys.stdin)
-        print(json.dumps({"rework_features": rework_features(issues)}))
+        print(json.dumps(classify_held(issues)))
+        return 0
+    if cmd == "role":
+        # stdin: ONE issue ({"labels":…, "blocks":…, "blocked_by":…,
+        # "body":…}) -> "rework" | "original" | "work". THE D-042
+        # discriminator; the shell asks here rather than re-implementing it.
+        print(acceptance_role(json.load(sys.stdin)))
+        return 0
+    if cmd == "is-rework":
+        # The boolean form of the same question, for callers that only care
+        # whether an issue is handler-filed rework.
+        print("true" if is_rework_issue(json.load(sys.stdin)) else "false")
         return 0
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)

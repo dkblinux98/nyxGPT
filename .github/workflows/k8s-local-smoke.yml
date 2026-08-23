@@ -54,6 +54,15 @@ name: Kubernetes Local Smoke
 # one (the api Pod's own `/api/v1/infra/status` reporting the cluster it is
 # running in as DEPLOYED, with the Compose/native rows scoped out).
 #
+# Since #3987 it also runs `nyxgpt ops status` and `nyxgpt ops doctor` against
+# the live deployment (step 4) and asserts they report on IT, not on the
+# runner: the required models resolve PRESENT out of the in-cluster Ollama,
+# the "Deployment mode" block names Kubernetes, and neither command prints a
+# traceback. That defect is invisible to unit tests -- it is about which
+# machine the command asks -- and its pre-fix output (`127.0.0.1:11434` in the
+# Required models header, models UNKNOWN) happens naturally here, so no fault
+# injection is needed for the step to fail on a revert.
+#
 # A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
 # asked: does the install tell a Pod that is merely starting apart from one
 # that will never start? See scripts/k8s-pod-state-smoke.py.

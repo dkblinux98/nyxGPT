@@ -37,25 +37,42 @@ The rhythm the loop now respects:
 ### `Acceptance Failed` holds two different things (owner decision 2026-08-14, #3780)
 
 The owner also parks **features they have tested and failed** in that lane —
-"so that I don't get lost as to what I've tested that has failed". So the lane
-carries two populations, and the machinery tells them apart by **issue state**:
+"so that I don't get lost as to what I've tested that has failed" — and since
+owner standard **D-042** (2026-08-22) a **reopened original** sits there too.
+The machinery tells the populations apart with `acceptance_role`
+(`scripts/agents/lib/drain_gate.py`), from a rework label plus the native
+relationship edges:
 
-| In `Acceptance Failed` | State | What it is | What the machinery does |
+| In `Acceptance Failed` | Role | What it is | What the machinery does |
 |---|---|---|---|
-| this round's rework | **OPEN** | a failure/improvement the handlers just filed (or a reopened fix that failed re-test) | **held** — released to `Backlog` when the gate opens |
-| a parked feature | **CLOSED** | already implemented and merged, then failed by the owner; waiting on its blockers | **left alone** — the only move is promotion to `For Release` once its whole blocked-by closure is accepted |
+| this round's rework | **`rework`** | carries `Acceptance Failure`/`Improvement` **and** natively blocks another issue — a failure/improvement the handlers filed against something, or a fix that failed re-test | **held** — released to `Backlog` when the gate opens |
+| a reopened original | **`original`** | is natively **blocked by** other issues: it did not pass acceptance and its work lives in the issues blocking it | **left alone** — the only move is promotion to `For Release` once its whole blocked-by closure is accepted, at which point it is reassigned to the owner and closed |
+| a standalone failure | **`work`** | neither — D-042 (b), filed with no relationship because it spans issues or fits none | **held** — drains with the batch and is worked like a brand-new issue |
+| a parked feature | any, **CLOSED** | already implemented and merged, then failed by the owner; waiting on its blockers | **left alone** — promotion only, exactly as above |
 
-State is the honest discriminator: held rework is always open (the handlers
-file a fresh issue, and a fix that fails re-test is *reopened*), while a parked
-feature is closed because it was merged. A label check would misread a closed
-failure issue the owner parked after re-testing it.
+**Why not issue state, which is what this read until 2026-08-22.** #3780 took
+"open in that lane" to mean held rework. D-042 makes an owner's reopen mean the
+*opposite* — "this issue did not pass acceptance, see its last comment" — so
+the gate was dispatching developers against issues with nothing to implement:
+on 2026-08-22 it released #3835 (blocked by #3984/#3985/#3989) and #3829
+(blocked by #3991) into `Backlog`, and both had to be moved back by hand.
+State still answers the one narrow question it is good for — "did the owner
+park an already-merged feature here?" — and nothing else.
+
+**Why neither signal alone.** The label alone misreads #3829, which carries
+`Acceptance Failure` and is an original, and #3835, which carries neither
+rework label and is one too. A blocking edge alone misreads a plain feature
+that blocks a sequenced successor. Both signals are records the process writes
+deliberately, so this is not inference from issue shape.
 
 Two rules follow, and both are enforced rather than documented:
 
 - `promote_accepted_features.sh` treats a feature parked in `Acceptance Failed`
   **identically to one parked in `Acceptance Testing`** — a promotion candidate
-  whose transitive blocked-by closure gates it. An OPEN item in the lane is
-  held rework and is never promoted; #3730's holding-pen behavior is unchanged.
+  whose transitive blocked-by closure gates it. It applies the same
+  `acceptance_role` rule as the gate, so an item the gate refuses to release
+  is exactly an item this sweep will promote: a `rework` or `work` item is
+  never promoted (its own fix has not shipped), an `original` is.
 - **Nothing moves a feature out of `Acceptance Failed` while any blocker is
   open.** The placement is owner signal: agents read it, they do not rearrange
   it. Only the all-blockers-accepted promotion moves it, and the drain gate
@@ -103,8 +120,9 @@ mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
     `DRAIN_GATE_REWORK_LABEL` remains a back-compatible alias.)
 - On the opening, every held item moves to `Backlog` and the queue is kicked
   **once** for the whole batch (one kick, not one per issue — the dispatcher
-  picks the next item itself). Parked features (closed items in the lane, see
-  above) are not held items: they are named in the run log and left in place.
+  picks the next item itself). Parked items (closed features and reopened
+  originals, see above) are not held items: they are named in the run log and
+  left in place.
 - While `PAUSE_SPRINT` is in force the lane is still released, but no kick is
   posted; the note carries the informational marker so it cannot itself
   dispatch work.
@@ -134,7 +152,7 @@ that as an @improvement on #3731" does not. See
 |---|---|
 | `scripts/agents/lib/drain_gate.py` | pure decisions: lane summary (including the parked/held split), gate state, rework exemption, bypass rule |
 | `scripts/agents/promote_accepted_features.sh` | promotes a parked issue out of either lane once its whole blocked-by closure is accepted |
-| `scripts/agents/lib/gh_project.sh` | `acceptance_lane_snapshot`, `drain_gate_rework_features`, `drain_gate_state`, `drain_gate_hold`, `drain_gate_release`, `issue_bypasses_drain_gate` |
+| `scripts/agents/lib/gh_project.sh` | `acceptance_lane_snapshot`, `drain_gate_classify_held`, `drain_gate_state`, `issue_acceptance_role`, `acceptance_reopen_original`, `drain_gate_hold`, `drain_gate_release`, `issue_bypasses_drain_gate` |
 | `scripts/agents/drain_gate.sh` | `state` (read-only) / `release` (open the gate) |
 | `.github/workflows/acceptance_drain_gate.yml` | the watcher |
 

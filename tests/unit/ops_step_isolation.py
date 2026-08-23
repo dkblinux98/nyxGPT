@@ -89,6 +89,10 @@ K8S_INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_record_k8s_install_mode",
     "_wait_for_k8s_app_tier",
     "_wait_for_k8s_observability",
+    # Provisions the in-cluster GlitchTip (#3990). Very much a step that must
+    # not run for real in a unit test: it execs into a Pod, opens a
+    # port-forward and rewrites both Secret manifests under ~/.nyxGPT/k8s.
+    "_k8s_provision_glitchtip",
     "_k8s_stack_health",
     "_preflight_k8s_capacity",
     "_k8s_observability_health",

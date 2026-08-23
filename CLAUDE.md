@@ -408,13 +408,29 @@ held, not worked immediately:
   `.github/workflows/acceptance_drain_gate.yml`).
 - **`Acceptance Failed` holds two populations (owner decision 2026-08-14,
   #3780).** The owner also parks *features they have tested and failed*
-  there. The machinery splits them by issue state: **open** = this round's
-  held rework (released on the drain, as above); **closed** = a parked
-  feature, which the gate never moves and which
-  `promote_accepted_features.sh` promotes to `For Release` — from either
-  parking lane — once its whole transitive blocked-by closure is accepted.
-  While any blocker is open, nothing moves it: the placement is owner
-  signal. See `docs/acceptance-drain-gate.md`.
+  there — and since D-042 a **reopened original** sits there too. A parked
+  or reopened item is never released to `Backlog`; it leaves the lane only
+  when `promote_accepted_features.sh` promotes it to `For Release` — from
+  either parking lane — once its whole transitive blocked-by closure is
+  accepted. While any blocker is open, nothing moves it: the placement is
+  owner signal. See `docs/acceptance-drain-gate.md`.
+- **The split is no longer open-vs-closed (owner standard D-042,
+  2026-08-22, #3999).** #3780 read "open in that lane" as held rework, and
+  D-042 makes an owner's reopen mean the opposite. The discriminator is now
+  `acceptance_role` in `scripts/agents/lib/drain_gate.py`, read from a
+  rework label plus GitHub's native relationship edges and from nothing
+  else:
+  - **`rework`** — carries `Acceptance Failure`/`Improvement`
+    (`DRAIN_GATE_REWORK_LABELS`) **and** natively blocks another issue.
+    Handler-filed; released on the drain and never promoted.
+  - **`original`** — is natively **blocked by** other issues. Its work
+    lives elsewhere; the gate leaves it parked, and the promotion sweep is
+    the only thing that moves it.
+  - **`work`** — neither. The D-042 (b) standalone failure; drains
+    normally.
+
+  The handlers, the gate and the promotion sweep all call that one
+  function, so no two of them can disagree about one issue.
 - **Agent-process issues bypass the gate** and are worked immediately. The
   rule is encoded in `scripts/agents/lib/drain_gate.py`: an owner-authored
   process exception in the body ("…bypasses the drain gate"), the
@@ -444,6 +460,21 @@ markers.**
   `scripts/agents/lib/gh_project.sh`); transitivity is *not* written as extra
   edges — promote/drain logic walks the chain instead
   (`transitive_blocked_by_issues`, `scripts/agents/lib/issue_relationships.py`).
+- **The marked issue is REOPENED (owner standard D-042, 2026-08-22,
+  #3999).** The reopen *is* the signal that this issue did not pass
+  acceptance, and its last comment says why; the derived issue is what gets
+  worked. Both handlers reopen it, assign the scrummaster and park it in
+  `Acceptance Failed`, and nothing is ever dispatched against it. When its
+  whole transitive blocked-by closure reaches `For Release`,
+  `promote_accepted_features.sh` promotes it, assigns it back to the owner
+  and closes it.
+  - This **reverses** the earlier "the original is never reopened or
+    relabeled; it stays closed" rule, which is still written in comments
+    older than 2026-08-22. Do not restore it on the strength of one.
+  - One exception, unchanged: `@acceptance-failure` on a **handler-filed
+    failure issue** reopens *that* issue for rework and creates no derived
+    issue (#3850, #3862 depend on it). `acceptance_role` is what tells the
+    two apart — see the Acceptance Drain Gate section above.
 - The `Related feature: #N` / `Parent feature: #N` body convention is
   **retired**. Nothing writes it. It is still *read* as a documented fallback
   for issues filed before this decision, and

@@ -285,10 +285,13 @@ out="$(_run_sweep)"
 _assert_contains "the whole closure accepted promotes the parked feature" \
   "$out" "would promote #3508 from 'Acceptance Failed' to 'For Release'"
 
-# --- Scenario 6d: OPEN in the lane is held rework, never promoted ------
-# #3730's holding-pen role is unchanged: an OPEN item in `Acceptance Failed`
-# is this round's rework waiting for the drain gate, not a parked feature.
-# Promoting it would declare unfixed work released.
+# --- Scenario 6d: a REOPENED ORIGINAL is promoted, closed and handed back
+# Owner standard D-042 (2026-08-22, #3999): an owner reopening an issue
+# means "this did not pass acceptance"; the rework is the separate issue
+# that blocks it. Before D-042 the sweep read OPEN-in-that-lane as held
+# rework and skipped it, so a reopened original could never reach
+# For Release at all. #3733 here is the original: no rework label, blocking
+# nothing, blocked by the accepted #3740.
 cat > "$TMP/issues.json" <<'EOF'
 [{"number": 3740, "id": 3740, "labels": ["Acceptance Failure"], "body": ""}]
 EOF
@@ -302,9 +305,59 @@ cat > "$TMP/states.json" <<'EOF'
 {"3733": "open"}
 EOF
 out="$(_run_sweep)"
-_assert_contains "an OPEN item in the holding lane is held rework, not a candidate" \
-  "$out" "#3733 is OPEN in 'Acceptance Failed' -- held rework"
-_assert_not_contains "held rework is never promoted" "$out" "would promote #3733"
+_assert_contains "an OPEN item with no rework role is a reopened original" \
+  "$out" "#3733 is OPEN in 'Acceptance Failed' -- a reopened original awaiting its blockers (D-042)"
+_assert_contains "a reopened original whose closure is accepted is promoted" \
+  "$out" "would promote #3733 from 'Acceptance Failed' to 'For Release'"
+_assert_contains "and it is handed back to the owner and closed" \
+  "$out" "would assign #3733 to @owner and close it (D-042)"
+
+# --- Scenario 6d-ii: a reopened original still waits on an open blocker --
+cat > "$TMP/status.json" <<'EOF'
+{"3733": "Acceptance Failed", "3740": "In Progress"}
+EOF
+out="$(_run_sweep)"
+_assert_contains "a reopened original waits while its rework is unaccepted" \
+  "$out" "#3733 waits in 'Acceptance Failed': blocker #3740 is 'In Progress'"
+_assert_not_contains "and it is not promoted" "$out" "would promote #3733"
+
+# --- Scenario 6d-iii: handler-filed REWORK is still never promoted ------
+# #3730's holding-pen role is unchanged for the population it was written
+# for. #3740 carries a rework label AND blocks #3733, so it is rework: its
+# own fix has not shipped, and promoting it would declare unfixed work
+# released. (#3745 blocks #3740, which is what makes #3740 a candidate the
+# sweep even looks at.)
+cat > "$TMP/issues.json" <<'EOF'
+[{"number": 3740, "id": 3740, "labels": ["Acceptance Failure"], "body": ""},
+ {"number": 3745, "id": 3745, "labels": ["Acceptance Failure"], "body": ""}]
+EOF
+cat > "$TMP/deps.json" <<'EOF'
+{"blocking": {"3740": [3733], "3745": [3740]},
+ "blocked_by": {"3733": [3740], "3740": [3745]}}
+EOF
+cat > "$TMP/status.json" <<'EOF'
+{"3733": "Acceptance Testing", "3740": "Acceptance Failed", "3745": "For Release"}
+EOF
+cat > "$TMP/states.json" <<'EOF'
+{"3740": "open"}
+EOF
+out="$(_run_sweep)"
+_assert_contains "an OPEN handler-filed rework issue is not a promotion candidate" \
+  "$out" "#3740 is OPEN in 'Acceptance Failed' -- held rework ('rework')"
+_assert_not_contains "held rework is never promoted" "$out" "would promote #3740"
+_assert_not_contains "and held rework is never closed" \
+  "$out" "would assign #3740"
+
+# Restore the 6d fixture shape for the scenarios that follow.
+cat > "$TMP/issues.json" <<'EOF'
+[{"number": 3740, "id": 3740, "labels": ["Acceptance Failure"], "body": ""}]
+EOF
+cat > "$TMP/deps.json" <<'EOF'
+{"blocking": {"3740": [3733]}, "blocked_by": {"3733": [3740]}}
+EOF
+cat > "$TMP/states.json" <<'EOF'
+{"3733": "open"}
+EOF
 
 # --- Scenario 6e: any other lane is still not a candidate -------------
 cat > "$TMP/status.json" <<'EOF'

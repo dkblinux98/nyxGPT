@@ -106,9 +106,15 @@ sprint_autopilot_paused() { return 1; }
 # ISSUE_BLOCKS holds the NATIVE relationship (#3731): space-separated issue
 # numbers each held issue blocks. Empty by default so the tests that predate
 # native edges keep exercising the retired-marker fallback.
+#
+# ISSUE_BLOCKED_BY is the other direction, and it is what tells a REOPENED
+# ORIGINAL apart from held work since D-042 (#3999): an original's work
+# lives in the issues blocking it. Empty by default, so every fixture that
+# predates D-042 keeps classifying as held work and keeps draining.
 declare -A ISSUE_BODIES=()
 declare -A ISSUE_LABELS=()
 declare -A ISSUE_BLOCKS=()
+declare -A ISSUE_BLOCKED_BY=()
 gh() {
   local ref="$*" num rest n
   num="${ref##*issues/}"
@@ -117,6 +123,10 @@ gh() {
   num="${num%%/*}"
   if [[ "$rest" == "dependencies/blocking" ]]; then
     for n in ${ISSUE_BLOCKS[$num]:-}; do echo "$n"; done
+    return 0
+  fi
+  if [[ "$rest" == "dependencies/blocked_by" ]]; then
+    for n in ${ISSUE_BLOCKED_BY[$num]:-}; do echo "$n"; done
     return 0
   fi
   jq -cn --arg b "${ISSUE_BODIES[$num]:-}" --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
@@ -316,6 +326,91 @@ _assert_eq "a lane of parked features has nothing to release" "none" "$(jq -r '.
 _assert_eq "and nothing moves" "" "$(cat "$STATUS_FILE")"
 _assert_eq "and no kick is posted" "" "$(cat "$COMMENT_FILE")"
 ISSUE_BLOCKS=()
+
+# --- Test 3d: a REOPENED ORIGINAL is parked, not released (D-042/#3999) ---
+# Owner standard D-042, 2026-08-22: an owner reopening an issue means "this
+# did not pass acceptance, see its last comment", and its rework is the
+# separate issue that blocks it. The pre-D-042 gate read open-in-that-lane
+# as "held rework, dispatch a developer" and released #3835 (blocked by
+# #3984/#3985/#3989) and #3829 (blocked by #3991) into Backlog, where
+# neither could be worked and both had to be moved back by hand.
+#
+# The fixture is that incident: #3835 reopened in the lane alongside its own
+# held failure #3984. The discriminator is NOT state -- both are OPEN --
+# it is drain_gate.py's `acceptance_role`.
+graphql() {
+  _page_response "false" "" \
+    "$(_item 3521 "Acceptance Testing")" \
+    "$(_item 3835 "Acceptance Failed" OPEN)" \
+    "$(_item 3984 "Acceptance Failed" OPEN)"
+}
+# #3984 is the handler-filed rework: a rework label AND it blocks #3835.
+# #3835 is the original: no rework label, and it is BLOCKED BY #3984.
+ISSUE_LABELS=([3835]="Agent" [3984]="Acceptance Failure")
+ISSUE_BLOCKS=([3984]="3835")
+ISSUE_BLOCKED_BY=([3835]="3984")
+
+state="$(drain_gate_state)"
+_assert_eq "a reopened original is NOT held work" "[3984]" "$(jq -c '.held' <<<"$state")"
+_assert_eq "a reopened original is reported as parked" "[3835]" "$(jq -c '.parked' <<<"$state")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "only the rework is released" "[3984]" "$(jq -c '.released' <<<"$result")"
+_assert_contains "the rework issue reaches Backlog" "$(cat "$STATUS_FILE")" "3984 -> Backlog"
+_assert_not_contains "the reopened original is never released to Backlog" \
+  "$(cat "$STATUS_FILE")" "3835 ->"
+_assert_not_contains "and the gate never comments on it" \
+  "$(cat "$COMMENT_FILE")" "3835 ::"
+
+# --- Test 3e: the ORIGINAL may carry a rework label too (#3829) ---
+# #3829 is labeled "Acceptance Failure" and is still an original the owner
+# reopened -- which is why the label alone cannot be the discriminator. It
+# blocks nothing and is blocked by #3991, so it parks.
+graphql() {
+  _page_response "false" "" \
+    "$(_item 3521 "Acceptance Testing")" \
+    "$(_item 3829 "Acceptance Failed" OPEN)" \
+    "$(_item 3991 "Acceptance Failed" OPEN)"
+}
+ISSUE_LABELS=([3829]="Acceptance Failure" [3991]="Acceptance Failure")
+ISSUE_BLOCKS=([3991]="3829")
+ISSUE_BLOCKED_BY=([3829]="3991")
+
+state="$(drain_gate_state)"
+_assert_eq "an Acceptance-Failure-labeled original still parks" "[3829]" "$(jq -c '.parked' <<<"$state")"
+_assert_eq "and only its rework is held" "[3991]" "$(jq -c '.held' <<<"$state")"
+
+# --- Test 3f: D-042 (b) -- a standalone failure still drains ---
+# "A failure spanning issues, or fitting none": filed with NO relationship,
+# parked in the lane only for batching, worked like a brand-new issue. It
+# blocks nothing AND is blocked by nothing, so it is ordinary held work --
+# parking it would strand it in the lane forever.
+graphql() {
+  _page_response "false" "" \
+    "$(_item 3521 "Acceptance Testing")" \
+    "$(_item 3900 "Acceptance Failed" OPEN)"
+}
+ISSUE_LABELS=([3900]="Acceptance Failure")
+ISSUE_BLOCKS=()
+ISSUE_BLOCKED_BY=()
+
+state="$(drain_gate_state)"
+_assert_eq "a relationship-free failure is held work, not a parked original" \
+  "[3900]" "$(jq -c '.held' <<<"$state")"
+_assert_eq "and nothing is parked" "[]" "$(jq -c '.parked' <<<"$state")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
+result="$(drain_gate_release 2>/dev/null)"
+_assert_contains "D-042 (b) work still drains to Backlog" "$(cat "$STATUS_FILE")" "3900 -> Backlog"
+
+ISSUE_LABELS=()
+ISSUE_BLOCKS=()
+ISSUE_BLOCKED_BY=()
 
 # --- Test 4: an open gate with an empty holding lane is a no-op ---
 graphql() {

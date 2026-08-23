@@ -731,6 +731,44 @@ everything else in the namespace.
 
 Notes:
 
+- **The app tier is wired to it, and that wiring is declared in the
+  manifests (#3990).** Deploying the tier is not the same as feeding it. Two
+  of the five container-network rewrites the Compose path makes were missing
+  here, and the result installed clean and observed nothing:
+  - `[tracing] otlp_endpoint = http://otel-collector:4318/v1/traces` in
+    `k8s/configmap.yaml`, plus `NYXGPT_OTLP_ENDPOINT` on both web
+    Deployments (the web tier is a Next.js process and reads env, not that
+    file). Left unset, the config default is
+    `http://localhost:4318/v1/traces`, which inside a Pod is *that Pod* --
+    every span is dropped silently and Jaeger ends up knowing only itself.
+  - `[error_tracking]`, with `dsn` empty in the ConfigMap and filled at
+    runtime from the `error-tracking-dsn` key of the `nyxgpt-secrets` Secret
+    (merged into config.ini by `docker/entrypoint.sh`, the same way the API
+    key is). GlitchTip mints a project key per install, so the value cannot
+    be a constant in a committed manifest.
+- **GlitchTip is provisioned by the install.** `nyxgpt ops install
+  --kubernetes` runs the Kubernetes equivalent of `nyxgpt ops
+  glitchtip-init` at the end of the observability bring-up: it creates the
+  admin user, org, team and project in the in-cluster GlitchTip, writes the
+  DSN into `nyxgpt-secrets` (rewritten to the in-cluster `glitchtip:8080`),
+  writes Grafana's API token into `nyxgpt-observability-secrets` in place of
+  the placeholder, and restarts whatever changed. Re-run it on its own with:
+
+  ```bash
+  nyxgpt ops glitchtip-init --kubernetes
+  ```
+
+  Without it Grafana authenticates with `UNCONFIGURED-glitchtip-token` and
+  the SRE Home GlitchTip panels answer `401 Unauthorized`.
+- **Running is reported separately from receiving.** `nyxgpt ops install
+  --kubernetes` and `nyxgpt ops observability --kubernetes` print four extra
+  lines after the per-workload readiness ones, asking each backend what it
+  has actually received -- Jaeger's service list, Prometheus's scrape
+  targets, Loki's job labels, and whether GlitchTip accepts Grafana's token.
+  A backend that is up but empty prints `[NO DATA]`, not `[OK]`: a stack
+  nobody has chatted with legitimately has no spans, so it is not a failure
+  either. Ten `1/1 ready` workloads receiving nothing is precisely the state
+  that reached acceptance testing in #3990.
 - **Storage is ephemeral.** Prometheus, Loki, Grafana and GlitchTip's
   Postgres use `emptyDir`, not PersistentVolumeClaims: `nyxgpt ops down
   --kubernetes` deletes the local cluster nyxgpt provisioned, so there is
@@ -771,7 +809,11 @@ Notes:
   `.github/workflows/k8s-local-smoke.yml` covers the other half -- that the
   layer comes up *with* the app tier in the **default** install, on one node
   the size of a stock Docker Desktop VM, with no Pod the scheduler could not
-  place (#3826, #3825) -- and its `k8s-pod-state` job
+  place (#3826, #3825), and that it actually receives telemetry: after a real
+  chat it asserts Jaeger holds `nyxgpt-api` and `nyxgpt-web` spans and that an
+  error raised in the cluster arrives in GlitchTip, with the pre-fix Pod-local
+  OTLP endpoint and the placeholder token exercised alongside so the check
+  cannot pass vacuously (#3990) -- and its `k8s-pod-state` job
   (`scripts/k8s-pod-state-smoke.py`) proves on a real cluster that a Pod which
   is merely starting is reported as pending while an unschedulable or
   unpullable one is a named failure (#3827), including that the pre-fix rule
