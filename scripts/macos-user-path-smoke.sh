@@ -320,6 +320,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. The web tier reports its OWN version, not the API's (#3982).
+#
+# The published path is where the incident happened: rc13 kegs from this tap,
+# a 2.1.0 web keg serving :3000 against a 3.0.0-line API on :8000, and a
+# header reading `v3.0.0` because the UI had only ever asked the API. Here
+# both kegs come from the same candidate, so the assertion is that each tier
+# names *itself* -- the web version derived from the Cellar keg the wrapper
+# `cd`s into, and equal to the candidate this run installed.
+#
+# Executed rather than unit-tested for the reason the Linux half states
+# (scripts/systemd-native-smoke.sh): a unit test can replicate the directory
+# shape, it cannot prove that is where the Next server actually runs.
+# ---------------------------------------------------------------------------
+log "GET $WEB_URL/api/info"
+CODE="$(wait_for_http "$WEB_URL/api/info" "$WORK/info.json" 120)"
+cat "$WORK/info.json"; echo
+if [ "$CODE" = "200" ]; then
+  pass "/api/info answers 200"
+else
+  fail "GET $WEB_URL/api/info answered $CODE, not 200 -- the version surface has no data (#3982)"
+fi
+WEB_VERSION="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("web_version") or "")' "$WORK/info.json" 2>/dev/null || echo "")"
+WEB_SOURCE="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("web_version_source") or "")' "$WORK/info.json" 2>/dev/null || echo "")"
+if [ "$WEB_SOURCE" = "homebrew-keg" ]; then
+  pass "the web tier derived its version from the installed keg"
+else
+  fail "web_version_source is '${WEB_SOURCE:-<none>}', not homebrew-keg -- the Next server is not running from the Cellar keg (#3982)"
+fi
+if [ "$WEB_VERSION" = "$VERSION" ]; then
+  pass "the web tier reports its own version ($WEB_VERSION)"
+else
+  fail "the web tier reports '${WEB_VERSION:-<none>}', but this run installed the $VERSION candidate (#3982)"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. What the operator is told is running (#3854).
 #
 # `nyxgpt ops status` is documented to always exit 0, so a non-zero exit here

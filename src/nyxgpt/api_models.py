@@ -38,6 +38,12 @@ class InfoResponse(BaseModel):
     #: Agent tooling's configured release branch (`[github] RELEASE_BRANCH`),
     #: kept distinct from the running version (#3716).
     release_branch: str | None = None
+    #: Which tier `release_version` belongs to -- `stable`, `rc`, `dev` or
+    #: `unknown` (`nyxgpt.version.version_channel`). Sent as its own field
+    #: rather than left for each consumer to re-derive from the string: the
+    #: web header, the settings screen and any future client must all agree
+    #: on whether an acceptance install is a candidate or a release (#3982).
+    release_channel: str | None = None
 
 
 class SessionsListResponse(BaseModel):
@@ -71,10 +77,11 @@ class ClientErrorReportRequest(BaseModel):
 class SupportTicketRequest(BaseModel):
     """One support ticket, as the web UI's in-app intake collects it (#3811).
 
-    The filer answers these three questions in the chat and nyxGPT files the
-    issue for them -- the version and platform are not asked, because the
-    running install already knows both (`support.environment_summary`) and a
-    user should not have to look either up.
+    The filer answers these three questions on nyxGPT's own intake page
+    (`/support/new`) and nyxGPT files the issue for them -- the version and
+    platform are not asked, because the running install already knows both
+    (`support.environment_summary`) and a user should not have to look
+    either up.
 
     The bounds mirror `nyxgpt.support`'s: the edge refuses an oversized body
     before it becomes a request to GitHub, and `submit_ticket` refuses it

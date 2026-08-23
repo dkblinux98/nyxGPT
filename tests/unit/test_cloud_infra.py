@@ -10,6 +10,7 @@ own behaviour is covered by the plan-level suite in
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 
@@ -137,7 +138,13 @@ def test_resolve_settings_reads_public_key_material_from_a_file(tmp_path):
 
 def test_resolve_settings_refuses_a_private_key(tmp_path):
     key = tmp_path / "id_ed25519"
-    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n", encoding="utf-8")
+    # Assembled rather than written out: the literal header is what
+    # pre-commit's detect-private-key hook scans for, and it cannot tell this
+    # fixture from a real key leaking into the repo. Splitting it keeps the
+    # hook meaningful for actual keys while still handing `_read_ssh_public_key`
+    # the exact string it refuses on.
+    header = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+    key.write_text(f"{header}\nsecret\n", encoding="utf-8")
     with pytest.raises(CloudCommandError, match="PRIVATE key"):
         cloud_infra.resolve_settings(_args(ssh_key_name=None, ssh_public_key=str(key)))
 
@@ -155,6 +162,105 @@ def test_resolve_settings_remembers_previous_answers():
     assert later.root_volume_size == 250
     assert later.ssh_key_name == "existing-pair"
     assert later.owner_ip_cidr == "198.51.100.8/32"
+
+
+# --- Instance sizing (#3992) ---------------------------------------------
+#
+# `m5.large` (2 vCPU / 8 GiB) was the original default and could not run the
+# stack: the box sat at 7.2 of 7.6 GiB minutes after boot with no swap and
+# froze interactively under ordinary use. `m5.xlarge` (4 vCPU / 16 GiB) is the
+# shipped size, and these pin both halves of that change -- that the default
+# really is the bigger one, and that raising it cannot resize a substrate
+# someone already provisioned.
+
+
+def test_the_default_instance_type_is_the_size_the_stack_actually_fits_on():
+    """No flag and nothing remembered must land on the decision record's size."""
+    assert cloud_infra.DEFAULT_INSTANCE_TYPE == "m5.xlarge"
+    assert cloud_infra.resolve_settings(_args()).instance_type == "m5.xlarge"
+
+
+def test_a_remembered_instance_type_is_never_overridden_by_a_raised_default():
+    """The resize hazard: an existing deployment keeps the size it is running.
+
+    Every plan/apply persists the resolved settings, so a substrate
+    provisioned before #3992 has `m5.large` in its `infra.json`. If the raised
+    default won here, the operator's next `nyxgpt cloud deploy` would stop,
+    resize and restart a live instance they believed an upgrade had left
+    alone.
+    """
+    cloud_infra.CLOUD_DIR.mkdir(parents=True, exist_ok=True)
+    cloud_infra.SETTINGS_FILE.write_text(
+        json.dumps(
+            {
+                "aws_region": "us-east-1",
+                "owner_ip_cidr": "198.51.100.7/32",
+                "ssh_key_name": "existing-pair",
+                "instance_type": "m5.large",
+                "root_volume_size": 100,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = cloud_infra.resolve_settings(_args(ssh_key_name=None))
+
+    assert settings.instance_type == "m5.large"
+    # …and Terraform is handed that size, not the new default.
+    assert 'instance_type = "m5.large"' in cloud_infra.render_tfvars(settings)
+
+
+def test_teardown_settings_also_keep_the_remembered_instance_type():
+    """`destroy` reads `saved_settings()`, which has its own fallback to patch."""
+    cloud_infra.CLOUD_DIR.mkdir(parents=True, exist_ok=True)
+    cloud_infra.SETTINGS_FILE.write_text(
+        json.dumps(
+            {
+                "aws_region": "us-east-1",
+                "owner_ip_cidr": "198.51.100.7/32",
+                "ssh_key_name": "existing-pair",
+                "instance_type": "m5.large",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cloud_infra.saved_settings().instance_type == "m5.large"
+
+
+def test_an_explicit_flag_still_beats_the_remembered_size():
+    """Resizing stays available -- it just has to be asked for."""
+    cloud_infra.save_settings(cloud_infra.resolve_settings(_args(instance_type="m5.large")))
+
+    later = cloud_infra.resolve_settings(_args(instance_type="m5.xlarge", ssh_key_name=None))
+
+    assert later.instance_type == "m5.xlarge"
+
+
+def test_the_terraform_default_matches_the_python_default():
+    """Two defaults for one value drift; this fails the moment they disagree.
+
+    `render_tfvars` only omits a variable when its value is empty, so the
+    Terraform default is what a hand-run or a partially-pinned tfvars falls
+    back to -- it has to name the same size the wrapper does.
+    """
+    variables = (cloud_infra.packaged_terraform_dir() / "variables.tf").read_text(encoding="utf-8")
+    block = re.search(r'variable "instance_type" \{(.*?)\n\}', variables, re.DOTALL)
+    assert block, "the instance_type variable is gone from the packaged configuration"
+    declared = re.search(r'default\s*=\s*"([^"]+)"', block.group(1))
+    assert declared and declared.group(1) == cloud_infra.DEFAULT_INSTANCE_TYPE
+
+
+def test_the_cli_help_names_the_shipped_default(capsys):
+    """The help text is where an operator reads the default; it must not lie."""
+    from nyxgpt.cli import cli
+
+    with pytest.raises(SystemExit):
+        cli(["cloud", "infra", "apply", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert cloud_infra.DEFAULT_INSTANCE_TYPE in help_text
+    assert "m5.large" not in help_text
 
 
 def test_resolve_settings_falls_back_to_configured_region(monkeypatch):
@@ -274,7 +380,7 @@ def test_apply_writes_the_state_contract_allow_ip_reads(terraform_calls, monkeyp
         "vpc_id": "vpc-123",
         "security_group_id": "sg-456",
         "instance_id": "i-789",
-        "instance_type": "m5.large",
+        "instance_type": "m5.xlarge",
         "public_ip": "198.51.100.200",
         "private_ip": "10.42.1.10",
         "ssh_key_name": "existing-pair",
@@ -429,7 +535,7 @@ def test_status_reads_the_instance_itself_when_running_on_ec2(monkeypatch):
         lambda **_kwargs: {
             "instance_id": "i-0abc123",
             "region": "us-east-1",
-            "instance_type": "m5.large",
+            "instance_type": "m5.xlarge",
             "public_ip": "203.0.113.10",
             "private_ip": "10.0.1.20",
             "vpc_id": "vpc-0def456",

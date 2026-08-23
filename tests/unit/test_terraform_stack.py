@@ -43,7 +43,7 @@ def _block_after(hcl: str, open_brace: int) -> str:
     """Return the body between `hcl[open_brace]` (a `{`) and its balanced `}`.
 
     Brace-counts rather than regex-matching to `}` -- HCL interpolations like
-    `${var.repo_path}` contain their own `{`/`}` pair, which a naive
+    `${var.auth_api_key}` contain their own `{`/`}` pair, which a naive
     `[^}]*` block regex stops at prematurely.
     """
     depth = 0
@@ -60,7 +60,8 @@ def _block_after(hcl: str, open_brace: int) -> str:
 def _without_comments(hcl: str) -> str:
     """Strip `#` comment lines -- a comment explaining why something is NOT
     done must not read as it being done (several of these files carry a
-    comment naming `var.repo_path` precisely to say it is not used there)."""
+    comment naming a retired variable, or the `build {}` block that was
+    removed, precisely to say it is not there)."""
     return "\n".join(line for line in hcl.splitlines() if not line.lstrip().startswith("#"))
 
 
@@ -156,49 +157,60 @@ def test_api_container_still_mounts_docker_socket() -> None:
 # --- dev mode vs the artifact path (#3835) ---
 
 
-def test_images_are_variables_so_published_ones_can_be_deployed() -> None:
-    """The artifact path runs `ghcr.io/dkblinux98/nyxgpt-*`, whose repository
-    is not `nyxgpt-api` -- so the image is a full ref passed in, not a tag
-    appended to a hard-coded name."""
+def test_images_are_variables_so_any_resolvable_ref_can_be_deployed() -> None:
+    """The image an operator deploys is a full ref passed in, not a tag
+    appended to a hard-coded name: dev mode names `nyxgpt-api:local`, the
+    artifact path names `nyxgpt-api:artifact-<version>` (#3985), and an
+    operator may name a registry ref whose repository is neither."""
     main = _read("main.tf")
     for resource, variable in (("api", "var.api_image"), ("web", "var.web_image")):
         block = _resource_block(main, "docker_image", resource)
         assert re.search(rf"name\s*=\s*{re.escape(variable)}\b", block), block
 
 
-def test_the_build_block_is_conditional_on_dev_mode() -> None:
-    """A `build {}` block makes the deploy need a checkout. It must exist only
-    when `build_from_source` says the operator asked for one (`--dev`)."""
-    main = _read("main.tf")
-    for resource in ("api", "web"):
-        block = _resource_block(main, "docker_image", resource)
-        marker = block.find('dynamic "build"')
-        assert marker != -1, f"expected a dynamic build block in docker_image.{resource}"
-        dynamic_body = _block_after(block, block.index("{", marker))
-        assert "var.build_from_source ? [1] : []" in dynamic_body
-        # No unconditional build: `build {` may only appear inside the dynamic
-        # block's content, never at the resource's own level.
-        assert not re.search(r"^\s{2}build\s*\{", block, re.MULTILINE)
+def test_the_provider_builds_no_image_in_any_mode() -> None:
+    """#3984: there must be no `build {}` block, conditional or otherwise.
+
+    The provider's build uses the daemon's legacy (pre-BuildKit) endpoint,
+    streaming a gzipped tar of the build context; on Docker 29.x with the
+    containerd image store that stream is undecodable and the apply fails
+    every time (`archive/tar: invalid tar header`, `unpigz: ... corrupted --
+    invalid deflate data`). It was redundant besides -- `nyxgpt ops install
+    --terraform` has already built both tags with BuildKit before apply.
+
+    Asserted against the whole file rather than per-resource so a build block
+    cannot come back on a resource this test doesn't name.
+    """
+    main = _without_comments(_read("main.tf"))
+    assert 'dynamic "build"' not in main, "the provider-side build is retired (#3984)"
+    assert not re.search(
+        r"(?<![\w.])build\s*\{", main
+    ), "the provider-side build is retired (#3984)"
 
 
-def test_repo_path_is_optional_so_a_machine_with_no_checkout_can_apply() -> None:
-    variables = _read("variables.tf")
-    repo_path = re.search(r'variable\s+"repo_path"\s*\{([^}]*)\}', variables, re.DOTALL)
-    assert repo_path, "expected a repo_path variable block"
-    assert 'default     = ""' in repo_path.group(1)
+def test_the_retired_build_variables_are_gone_so_nothing_can_re_enter_the_build() -> None:
+    """#3984: `build_from_source`/`repo_path` were the only way to turn the
+    provider build on, and `web_api_base_url` fed only its build args. All
+    three are retired -- leaving a declared-but-unused variable is what lets a
+    later change quietly wire the build back up."""
+    variables = _without_comments(_read("variables.tf"))
+    for retired in ("repo_path", "build_from_source", "web_api_base_url"):
+        assert (
+            re.search(rf'variable\s+"{retired}"', variables) is None
+        ), f"variable {retired!r} was retired by #3984"
 
 
-def test_no_container_mount_resolves_through_the_checkout() -> None:
+def test_no_container_mount_resolves_through_a_checkout() -> None:
     """Every host path the core stack mounts must be ops-managed (~/.nyxGPT)
-    or a system path -- a `${var.repo_path}/...` mount would make the artifact
+    or a system path -- a checkout-relative mount would make the artifact
     path require the repository it is defined to work without (#3835)."""
     main = _read("main.tf")
     for resource in ("api", "web", "ollama", "cassandra"):
         block = _resource_block(main, "docker_container", resource)
         for volume in _sub_blocks(block, "volumes"):
-            assert "var.repo_path" not in _without_comments(
-                volume
-            ), f"{resource} mounts through the checkout: {volume}"
+            body = _without_comments(volume)
+            assert "var.repo_path" not in body, f"{resource} mounts through a checkout: {volume}"
+            assert "REPO_ROOT" not in body, f"{resource} mounts through a checkout: {volume}"
 
 
 def test_the_local_stack_config_is_packaged_for_repo_less_installs() -> None:

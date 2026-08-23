@@ -228,9 +228,10 @@ TARGETS: tuple[Target, ...] = (
             "docker-compose.yml's api/web services carry a `build:` context (`.` and "
             "`./web`), so Compose builds them from a checkout instead of pulling the "
             "published ghcr.io images -- see docs/docker-compose.md's container "
-            "images section. The Compose path is the one that still builds: "
-            "`nyxgpt ops install --terraform` deploys the same two registry "
-            "images with no checkout (#3835).",
+            "images section. The Compose path is the one that still needs a "
+            "CHECKOUT to build: `nyxgpt ops install --terraform` builds the same "
+            "two images with no checkout at all, from the published nyxgpt-api/"
+            "nyxgpt-web source tarballs (#3835, #3985).",
         ),
     ),
     Target(
@@ -294,7 +295,10 @@ TARGETS: tuple[Target, ...] = (
             "acceptance run in ACCEPTANCE_SEQUENCE. EC2 Mac targets are "
             "documentation-verified only: GitHub Actions' macOS runners are hosted "
             "(fine for brew installs -- see macos-native -- but not an EC2 "
-            "instance), and a Dedicated Host bills a 24h minimum."
+            "instance). `nyxgpt cloud deploy --os macos` allocates the Dedicated "
+            "Host itself after a priced confirmation (#3995) and `cloud destroy` "
+            "schedules its deferred release, but neither can be executed in CI: a "
+            "host bills a 24h minimum and no job can make that clock pass."
         ),
     ),
 )

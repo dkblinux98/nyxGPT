@@ -1025,6 +1025,7 @@ slack_bot_token =
 slack_user_id =
 slack_huddle_channel =
 slack_conflict_channel =
+slack_channel =
 slack_user_token_dev =
 slack_user_token_review =
 slack_user_token_scrum =
@@ -1041,6 +1042,7 @@ slack_user_token_scrum =
 | `slack_user_id` | Slack member id the agent system DMs when an escalation needs the owner (#3695). Not a credential, but carried as the `SLACK_USER_ID` Actions secret, so it is synced and masked as one. |
 | `slack_huddle_channel` | Channel id the review huddle threads its conversation in (#3910). Pushed to the `SLACK_HUDDLE_CHANNEL` Actions **variable**, not a secret -- a channel id is world-readable in GitHub's settings by design, and masking it here would claim a protection the destination does not provide. Blank degrades the huddle to the PR transcript alone. |
 | `slack_conflict_channel` | Channel id `notify-merge-conflicts.yml` posts merge-conflict notices to (#3911). Pushed to the `SLACK_CONFLICT_CHANNEL` Actions **variable**, on the same reasoning as `slack_huddle_channel`. Deliberately its own key rather than a reuse of that one: conflict notices and huddle deliberation are different audiences and must be able to diverge without a code change. Blank leaves the workflow's built-in fallback channel in place. |
+| `slack_channel` | Channel id **nyxGPT itself** posts runtime notifications to (#3995), read by the product rather than pushed to Actions -- which is what makes it different from the two channel ids above. Today its one consumer is the deferred EC2 Mac Dedicated Host release: `nyxgpt cloud destroy` hands it to a Step Functions state machine that reports, more than 24 hours later, whether the host was released. Blank falls back to `config.DEFAULT_SLACK_CHANNEL` (`C0ABH478QC8`) rather than degrading to no notification -- a message nobody is waiting for is exactly the one that must not be silently dropped. See [cloud.md](cloud.md#teardown-and-the-deferred-host-release). |
 | `slack_user_token_dev` / `slack_user_token_review` / `slack_user_token_scrum` | Per-agent Slack *user* tokens (`chat:write` user scope), one per huddle speaker, so each turn posts under its own identity instead of all three landing under one bot name (#3910). Write-once at Slack, like `slack_bot_token`. All three are optional: a missing token degrades that speaker only. |
 
 Requires the `monitoring` Compose profile (local Prometheus + Grafana),
@@ -1285,6 +1287,7 @@ correlation backbone (#3430) added alongside the `[tracing]`/
 | `NYXGPT_AUTH_API_KEY` | server (runtime env) | unset | `X-API-Key` attached to proxied requests (existing, pre-#3430). |
 | `NYXGPT_OTLP_ENDPOINT` | server (runtime env) | `http://localhost:4318/v1/traces` | Where `instrumentation.ts`'s `@vercel/otel` exports spans -- same collector as `[tracing] otlp_endpoint`. In Compose mode this must be the `otel-collector` service hostname (already set in `docker-compose.yml`), since "localhost" would mean the web container itself. |
 | `NYXGPT_TRACING_ENABLED` | server (runtime env) | `true` | Set to `false` to disable the web tier's OTel setup entirely (matches the API's tracing-on-by-default, #3415/#3427). |
+| `NYXGPT_WEB_VERSION` | server (runtime env) | unset | The web tier's own running version, reported by `/api/info` beside the API's and shown in the header and settings About surface (#3982). Only needed where the version cannot be derived from the install directory: containers, Kubernetes and Compose (Compose sets it from `NYXGPT_WEB_IMAGE_TAG`). The Homebrew keg and the Linux native install both encode the version in the path they serve from, so they need no setting. Left unset the UI reports "unknown" rather than guessing -- notably it never falls back to `web/package.json`'s fixed `0.1.0`. |
 | `NYXGPT_LOG_DIR` | server (runtime env) | unset | Directory `web/src/lib/logger.ts` also appends structured log lines to (in addition to stdout) -- set in Compose mode so promtail can tail a file (native mode needs no equivalent; brew already redirects stdout to a file). |
 | `NEXT_PUBLIC_API_BASE_URL` | build arg | `http://localhost:8000` | Base URL baked into the *browser* bundle (existing, pre-#3430; distinct from the server-side `NYXGPT_API_BASE_URL` above). |
 | `NEXT_PUBLIC_NYXGPT_OTLP_ENDPOINT` | build arg | `http://localhost:4318/v1/traces` | Where `instrumentation-client.ts`'s browser `WebTracerProvider` exports spans. The default already matches the collector's host-published port, so no override is usually needed. |

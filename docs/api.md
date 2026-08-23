@@ -399,15 +399,35 @@ Returns basic runtime configuration details.
   "ollama_base_url": "http://127.0.0.1:11434",
   "default_model": "llama3.1:8b",
   "sessions_dir": "/Users/you/.nyxGPT/sessions",
-  "release_version": "3.0.0",
-  "release_branch": "v3.0.0"
+  "release_version": "3.0.0rc13",
+  "release_branch": "v3.0.0",
+  "release_channel": "rc"
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `release_version` | Version of the installed `nyxgpt` package — the version actually running. Read from package metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. This is what the web UI's header badge displays. |
+| `release_version` | Version of the installed `nyxgpt` package — the version actually running. Read from package metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. Pre-release suffixes are carried verbatim (`3.0.0rc13`): that suffix is the entire difference between the candidate under acceptance and the release. |
 | `release_branch` | The agent tooling's `[github] RELEASE_BRANCH` config setting, or `null` if unset. A git branch name for the agent workflows — **not** the running version, and never used as one. |
+| `release_channel` | Which tier `release_version` belongs to: `stable`, `rc`, `dev` or `unknown` (#3982). Sent as its own field so every client agrees on whether an install is a candidate or a release, rather than each re-deriving it from the string and drifting. |
+
+**Note — the web UI's `/api/info` sees one extra pair of fields.** The Next.js
+proxy route stamps `web_version` and `web_version_source` into this payload as
+it passes through (#3982). They describe the *web tier* — a service installed
+separately from the API — and the API itself neither knows nor reports them. A
+2.1.0 web build serving against a 3.0.0-line API is a legitimate state of a
+machine and used to be an invisible one; the header now names both versions
+and warns when they differ. See
+[configuration.md](configuration.md) for `NYXGPT_WEB_VERSION`.
+
+The "mixed stack" warning is raised only when **both** tiers report a release
+or candidate number (`3.0.0`, `3.0.0rc13`). A tier reporting a build marker
+instead — `local`, which is what Compose defaults the web image tag to, or a
+`.devN` working-tree build — has named its channel, not which build it is, so
+the two cannot be compared and no fault is alleged. Both versions are still
+displayed; only the accusation is withheld. Warning there would put a
+permanent red badge on every default Compose stack, which is the surest way to
+teach an operator to ignore the warning on the day it is real.
 
 ---
 
@@ -847,6 +867,13 @@ An entry clears when the restart actually happens -- through
 `POST /infra/restart-required`, through `nyxgpt ops restart <target>`, or
 because the value was changed back to what the service is already running.
 
+For `api` the clearing is done by the **restarted API process itself**, at the
+end of its startup: a restart of `api` kills the process that would otherwise
+have reported it finished, so nothing inside the dying process can be the
+completion signal (#3806). One consequence worth knowing when polling this
+endpoint: an `api` entry disappears when the new process is *up*, not when the
+restart command returns, so allow for a full cold start.
+
 **Response:**
 
 ```json
@@ -877,7 +904,9 @@ it the matching way -- the same dispatcher backing self-heal's manual "Heal
 Now" button -- so the caller never needs to know or send a raw command.
 Runs off-thread (restarting `api` kills the process handling the request
 once the underlying command lands), so the response reports `"running"`;
-poll `restart-status` to learn when the pending flag clears. Each restart is
+poll `restart-status` to learn when the pending flag clears. `api` is always
+restarted **last** when several components are pending, because the kill ends
+the loop -- restarting it first would strand the others. Each restart is
 recorded as an ops lifecycle action (`nyxgpt_ops_actions_total`, #3390),
 same as any other operator-initiated restart.
 
@@ -1419,6 +1448,11 @@ trying to connect to the Docker daemon socket ... ```), empty when the probe
 is available. A caller reads this as "can't check the observability tier from
 here", never as "the observability tier isn't running" -- see
 [self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
+A socket-access failure is retried once through the `docker` group (`sg
+docker`) before the flag goes `false`, so on the common cause -- a service
+session that predates its group membership -- the survey runs and this stays
+`true`; see [The `docker` group
+hop](self-healing.md#the-docker-group-hop-making-the-probe-run-not-just-report).
 
 When the probe couldn't run, the affected components are reported as a third
 state rather than as absent: `known: false`, `state: "unknown"`, with the
@@ -1606,7 +1640,7 @@ is a rule, not metadata, and an instance cannot see it.
   "provisioned": true,
   "region": "us-east-1",
   "instance_id": "i-0abc123",
-  "instance_type": "m5.large",
+  "instance_type": "m5.xlarge",
   "public_ip": "198.51.100.200",
   "vpc_id": "vpc-0abc",
   "security_group_id": "sg-0abc",
@@ -4684,7 +4718,7 @@ issue in the nyxGPT tracker so the filer never has to visit github.com
 |---|---|---|
 | `/api/v1/support/docs` | GET | Index of the packaged product documentation, grouped |
 | `/api/v1/support/docs/{slug}` | GET | One document rendered to HTML (404 for an unknown slug) |
-| `/api/v1/support/context` | GET | Running version/platform, the prefilled issue-form URL, and `can_submit` |
+| `/api/v1/support/context` | GET | Running version/platform, the ticket types the intake page offers, the fallback issue-form URL, and `can_submit` |
 | `/api/v1/support/tickets` | POST | File a support ticket from this install; returns the created issue |
 
 **`GET /api/v1/support/docs`**

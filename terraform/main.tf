@@ -112,31 +112,43 @@ resource "docker_container" "cassandra" {
   }
 }
 
-# The api image is either the published one (`api_image`, the artifact path
-# and the default -- `nyxgpt ops install --terraform --local` pulls it before
-# apply) or built from a checkout's working tree when `build_from_source` is
-# set (dev mode, `--dev`; #3835). The `dynamic` block is how one resource
-# covers both: with `build_from_source = false` there is no `build {}` at all,
-# so the provider uses the named image as-is and this configuration needs no
-# repository on the machine applying it.
+# The api image is ALWAYS built before `terraform apply` runs, by `nyxgpt ops
+# install --terraform`, and this resource is handed the finished tag in
+# `api_image`: from the checkout's working tree in dev mode (`--dev`), and
+# from the published `nyxgpt-api-<version>.tar.gz` source tarball on the
+# artifact path (#3985). The two modes differ only in *which source* is in
+# the image; neither needs anything from this configuration to build it, so a
+# machine with no repository applies this file unchanged.
+#
+# THERE IS DELIBERATELY NO `build {}` BLOCK, IN ANY MODE (#3984). Do not add
+# one back. The docker provider's build goes through the daemon's legacy
+# (pre-BuildKit) endpoint, streaming a gzipped tar of whatever directory it is
+# pointed at; on Docker 29.x with the containerd image store that stream is
+# not decodable, and the apply fails within seconds every time -- `archive/
+# tar: invalid tar header` on this resource, `unpigz: ... corrupted -- invalid
+# deflate data` on `docker_image.web` (owner acceptance 2026-08-21, four
+# reproductions; reproduced again 2026-08-22 on a clean 20MB context, where a
+# two-file context built fine and the same daemon accepted a hand-run
+# `DOCKER_BUILDKIT=0 docker build`). It was also pure redundancy: ops had
+# already built the identical context with BuildKit, so every apply re-streamed
+# the whole working tree -- secrets and all -- to the daemon for a layer-cache
+# no-op.
+#
+# Rebuild-on-source-change stays ops' job and still reaches the containers:
+# `_docker_build_if_needed` rebuilds the tag when the fingerprint moves, this
+# resource re-reads that tag's id on refresh, and `docker_container.api.image`
+# below references `docker_image.api.image_id` -- so a rebuilt tag replaces
+# the container (verified 2026-08-22: an out-of-band rebuild of an unchanged
+# tag moved `image_id` in the next plan).
 resource "docker_image" "api" {
   name = var.api_image
 
   # Survive `terraform destroy` (what `nyxgpt ops down --terraform` runs).
-  # The default removes the image, which on the artifact path means
-  # re-downloading a published image on every down/up cycle, and in dev mode
-  # means a rebuild `_docker_build_if_needed`'s fingerprint said was
-  # unnecessary. Nothing here depends on the image being gone: a redeploy
-  # pulls or rebuilds by tag either way.
+  # The default removes the image, which means discarding a build
+  # `_docker_build_if_needed`'s fingerprint would otherwise have let the next
+  # deploy skip. Nothing here depends on the image being gone: the next
+  # install rebuilds by tag either way.
   keep_locally = true
-
-  dynamic "build" {
-    for_each = var.build_from_source ? [1] : []
-    content {
-      context    = var.repo_path
-      dockerfile = "Dockerfile"
-    }
-  }
 }
 
 resource "docker_container" "api" {
@@ -176,7 +188,7 @@ resource "docker_container" "api" {
   volumes {
     # `nyxgpt ops install`'s `_generate_compose_config` writes this file to
     # the same fixed, ops-managed location regardless of deployment mode
-    # (#3621) -- not `${var.repo_path}/docker/config.docker.ini`, so this
+    # (#3621) -- not `<checkout>/docker/config.docker.ini`, so this
     # bind mount doesn't depend on the Terraform host having a repo checkout.
     host_path      = pathexpand("~/.nyxGPT/docker/config.docker.ini")
     container_path = "/etc/nyxgpt/config/config.ini"
@@ -185,7 +197,7 @@ resource "docker_container" "api" {
 
   # Paired with NYXGPT_COMPOSE_FILE above -- see that env var's comment. The
   # source is the ops-managed copy `_sync_packaged_resources` writes (#3621),
-  # not `${var.repo_path}/docker-compose.yml`: this mount is needed on every
+  # not `<checkout>/docker-compose.yml`: this mount is needed on every
   # deployment, including an artifact-path one on a machine with no
   # repository at all (#3835).
   volumes {
@@ -221,22 +233,14 @@ resource "docker_container" "api" {
   }
 }
 
-# Same two-mode shape (and the same `keep_locally` reasoning) as
-# `docker_image.api` above -- see its comments.
+# Same shape, and the same reasons for it, as `docker_image.api` above -- see
+# its comments, including why no `build {}` block may be added back here. The
+# `NEXT_PUBLIC_API_BASE_URL` this image's bundle is built against is passed by
+# ops at build time (`TF_WEB_API_BASE_URL_DEFAULT` in `src/nyxgpt/ops.py`),
+# where the build now happens, rather than by a Terraform variable.
 resource "docker_image" "web" {
   name         = var.web_image
   keep_locally = true
-
-  dynamic "build" {
-    for_each = var.build_from_source ? [1] : []
-    content {
-      context    = "${var.repo_path}/web"
-      dockerfile = "Dockerfile"
-      build_args = {
-        NEXT_PUBLIC_API_BASE_URL = var.web_api_base_url
-      }
-    }
-  }
 }
 
 resource "docker_container" "web" {

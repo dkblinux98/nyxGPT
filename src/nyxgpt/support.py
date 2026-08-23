@@ -20,10 +20,13 @@ Two surfaces live here:
   HTML view of one document, with the links *between* docs rewritten to
   in-app routes so the tree browses as a unit offline.
 * **File an Issue** -- an intake nyxGPT files *itself*. The filer answers
-  the questions in the chat, `submit_ticket` creates the issue through the
-  GitHub API with the environment already filled in, and the UI shows them
-  the ticket it created. The compose page on github.com is not part of that
-  path.
+  the questions on a nyxGPT page (`/support/new`, served by this product's
+  own web interface), `submit_ticket` creates the issue through the GitHub
+  API with the environment already filled in, and the next page they see is
+  the ticket that was created. The GitHub compose page is not on that path
+  at any point, and the Support menu entry that reaches the page is a plain
+  link -- it asks nothing and decides nothing, so there is no runtime state
+  that can route it somewhere else (#3811 re-test).
 
 **How the credential question was answered (#3811, ledger D-034, closing
 Q-006's first half).** Creating
@@ -36,11 +39,14 @@ symmetric:
   the surface the product is built around, and the one the acceptance
   criteria describe.
 * **not configured** -- the only case the product genuinely cannot file for.
-  `issue_form_url` still builds GitHub's prefilled form and the UI offers it
-  as an explicitly-labelled fallback, because a support feature that answers
-  "you cannot report this" is worse than one that hands over. A hosted
-  intake that would remove even this case is the owner's call and stays
-  open; nothing here forecloses it.
+  `issue_form_url` still builds GitHub's prefilled form, and the intake page
+  explains the situation and offers that form as a link, because a support
+  feature that answers "you cannot report this" is worse than one that hands
+  over. The filer clicks it or does not: the fallback is never a redirect,
+  which is what made the earlier version fail acceptance -- every degraded
+  path took the filer to github.com without asking. A hosted intake that
+  would remove even this case is the owner's call and stays open; nothing
+  here forecloses it.
 
 Both paths apply the same `Support` label, which is the routing key: the
 Support project auto-adds `is:issue is:open label:Support`, and the agent
@@ -157,17 +163,16 @@ DESCRIPTION_MAX_LENGTH = 8000
 #: leave someone staring at a spinner wondering whether they filed twice.
 SUBMIT_TIMEOUT_SECONDS = 20.0
 
-#: What kind of ticket this is, chosen by the filer in the nyxGPT UI (#3811).
-#: These are the `Ticket Type` options on the Support project, mirrored here
-#: because the filer picks one *before* leaving nyxGPT -- the value travels as
-#: a prefill for the form's `ticket_type` dropdown and lands in the issue
-#: body, where the owner reads it when setting the project field. They are
-#: NOT labels: only `Support` is, and only `Support` routes anything.
+#: What kind of ticket this is, chosen by the filer on nyxGPT's own intake
+#: page (#3811). These are the `Ticket Type` options on the Support project,
+#: mirrored here because the ticket is created from this install: the answer
+#: is rendered into the issue body, where the owner reads it when setting the
+#: project field. They are NOT labels: only `Support` is, and only `Support`
+#: routes anything.
 #:
 #: Must stay in step with the dropdown options in
-#: `.github/ISSUE_TEMPLATE/support.yml` -- GitHub ignores a prefill value
-#: that is not one of the declared options, so a drift here degrades to an
-#: unanswered required field rather than a wrong answer.
+#: `.github/ISSUE_TEMPLATE/support.yml`, which asks the same questions for
+#: the one case nyxGPT cannot file for -- an install with no credential.
 TICKET_TYPES: tuple[str, ...] = ("Bug Found", "Feature Request", "Question")
 
 #: What each type means, in the filer's terms rather than the project's.
@@ -423,11 +428,13 @@ def environment_summary() -> dict[str, str]:
     }
 
 
-def issue_form_url(
-    environment: dict[str, str] | None = None,
-    ticket_type: str | None = None,
-) -> str:
+def issue_form_url(environment: dict[str, str] | None = None) -> str:
     """Return the GitHub issue-form URL with the report's details prefilled.
+
+    This is the **fallback**, not the intake: it exists for an install with
+    no GitHub credential, which cannot file for anyone. The intake page
+    offers it as a link the filer may choose, never as somewhere they are
+    sent (#3811).
 
     Prefill happens through query parameters keyed by the form's field ids
     (`.github/ISSUE_TEMPLATE/support.yml`), which is GitHub's supported
@@ -436,14 +443,14 @@ def issue_form_url(
     label parameter would silently apply nothing for a filer without write
     access, which is exactly the filer this form exists for.
 
-    `ticket_type`, when given, prefills the form's `ticket_type` dropdown so
-    the choice the filer already made in nyxGPT is not asked again (#3811).
-
-    Raises:
-        ValueError: `ticket_type` is not one of `TICKET_TYPES`. Passing an
-            unrecognized value through would be worse than refusing it:
-            GitHub ignores an unmatched dropdown prefill, so the filer would
-            silently be asked to choose again.
+    **No `ticket_type` prefill.** The previous version passed the type the
+    filer had chosen in the Support menu, on the assumption that GitHub
+    preselects the dropdown from it. The owner's acceptance screenshot shows
+    the field arriving as `None` regardless: the choice was thrown away
+    silently and the same question was asked twice. The type is now asked
+    once, on the nyxGPT intake page; on this fallback path it is answered on
+    the GitHub form, which is the only place it can be recorded when nyxGPT
+    is not the one creating the issue.
     """
     env = environment or environment_summary()
     params: dict[str, str] = {
@@ -451,27 +458,25 @@ def issue_form_url(
         "version": env["version"],
         "platform": f"{env['platform']}, Python {env['python']}",
     }
-    if ticket_type is not None:
-        if ticket_type not in TICKET_TYPES:
-            raise ValueError(f"Unknown ticket type: {ticket_type!r}")
-        params["ticket_type"] = ticket_type
     return f"{ISSUE_REPO_URL}/issues/new?{urlencode(params)}"
 
 
-def ticket_type_options(environment: dict[str, str] | None = None) -> list[dict[str, str]]:
-    """Return one prefilled filing link per ticket type, for the Support menu.
+def ticket_type_options() -> list[dict[str, str]]:
+    """Return the ticket types the intake page asks about, with descriptions.
 
     The filer chooses what kind of ticket this is *in nyxGPT* rather than on
     GitHub, which is what gets the type recorded at all: the Support project
-    types tickets with a project field, and nothing maps a form answer onto
-    one automatically (#3811).
+    types tickets with a project field, and nothing maps a GitHub form answer
+    onto one automatically (#3811).
+
+    No per-type GitHub link rides along any more. That link *was* the defect
+    the owner re-tested: choosing a type in the Support menu navigated away
+    to the GitHub compose page, so the product intake was never reached.
     """
-    env = environment or environment_summary()
     return [
         {
             "value": ticket_type,
             "description": TICKET_TYPE_DESCRIPTIONS[ticket_type],
-            "url": issue_form_url(env, ticket_type),
         }
         for ticket_type in TICKET_TYPES
     ]
@@ -677,9 +682,15 @@ def support_context(can_submit: bool = False) -> dict[str, Any]:
 
     `can_submit` says whether this install holds a credential to file with;
     the caller resolves it (`app.py` from `[github] pat`) because this module
-    deliberately knows nothing about configuration. The UI branches on it:
-    true is the in-app intake, false is the labelled GitHub fallback built
-    from the same prefilled links.
+    deliberately knows nothing about configuration.
+
+    What the UI does with it changed in the #3811 re-test, and the change is
+    the point: it is read on the intake page to decide what that page *says*
+    -- the form, or "this install cannot file for you" plus the GitHub form
+    as an offer. It no longer decides where a menu entry goes. A definite
+    `false` is acted on; an absent or unreadable answer is not, so a context
+    call that fails leaves the filer with a working form rather than a trip
+    to github.com.
     """
     env = environment_summary()
     return {
@@ -688,7 +699,7 @@ def support_context(can_submit: bool = False) -> dict[str, Any]:
         # no credential, and for a filer who reaches the form some other way
         # -- version/platform still prefilled, type answered on GitHub.
         "issue_form_url": issue_form_url(env),
-        "ticket_types": ticket_type_options(env),
+        "ticket_types": ticket_type_options(),
         "docs_route": DOCS_ROUTE_PREFIX,
         # Whether nyxGPT can file the ticket itself, and where it posts when
         # it can. The route is reported rather than hardcoded in the UI so

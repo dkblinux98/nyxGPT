@@ -349,9 +349,14 @@ export default function SelfHealPage() {
                 <>
                   {' '}
                   Reason: <code>{status.compose_probe_reason}</code>. Check it yourself with{' '}
-                  <code>nyxgpt ops status</code>; a permission-denied/daemon-unreachable error
-                  usually means the service&apos;s session predates its <code>docker</code> group
-                  membership, which <code>nyxgpt ops restart all</code> re-establishes.
+                  <code>nyxgpt ops status</code>. A permission-denied/daemon-unreachable error
+                  usually means this service&apos;s session predates its <code>docker</code> group
+                  membership — nyxGPT already retries such calls through <code>sg docker</code>,
+                  so seeing this means that did not help either: the user is not in the{' '}
+                  <code>docker</code> group at all, or the daemon is genuinely down. Group
+                  membership is stamped into a session when it is created, so restarting the
+                  services cannot pick it up; only recreating the session does (
+                  <code>sudo loginctl terminate-user &lt;user&gt;</code>, or a reboot).
                 </>
               )}
             </p>

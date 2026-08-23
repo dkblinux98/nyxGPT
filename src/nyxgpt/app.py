@@ -154,7 +154,7 @@ from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
 from nyxgpt.token_counter import count_tokens as _count_usage_tokens
 from nyxgpt.tracing import current_trace_id
-from nyxgpt.version import running_version
+from nyxgpt.version import running_version, version_channel
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -257,13 +257,22 @@ async def lifespan(_app: FastAPI):
     ensures the sessions directory exists, does a warn-only Ollama
     reachability check, initializes the rate limiter and batch processor if
     enabled, starts the resource monitor, and starts the self-heal watchdog
-    (always running so the dashboard toggle takes effect without a restart).
+    (always running so the dashboard toggle takes effect without a restart),
+    and -- last, once the process is committed to serving -- retires any
+    pending-restart notice that was waiting for *this* restart (#3806).
     Beyond the bind-security refusal, initialization failures are logged but
     never prevent the API from starting.
 
     On shutdown: stops the batch processor and self-heal watchdog.
     """
     global _rate_limiter, _batch_processor
+
+    # #3806: what this process is entitled to retire from the pending-restart
+    # notice once it is up. Snapshotted BEFORE the config is read, so a key
+    # written by someone else *after* this read is left standing rather than
+    # cleared by a process that may not have loaded it -- see
+    # `restart_state.clear_started`.
+    pending_at_start = list(restart_state_module.snapshot().get("api", {}).get("keys", []))
 
     cfg = load_config(None)
 
@@ -469,6 +478,21 @@ async def lifespan(_app: FastAPI):
     watchdog.backoff_seconds = get_self_heal_backoff_seconds(cfg)
     watchdog.start()
     log.info("Self-heal watchdog initialized", extra={"component": "startup"})
+
+    # The completion signal for a restart of `api` itself (#3806). A restart
+    # driven from inside this tier kills the thread that would have called
+    # `clear_pending`, so the API process that *comes back* is what retires
+    # the flag: it is running the configuration now on disk, which is exactly
+    # what the notice was waiting for. Deliberately last in startup -- a
+    # process that refused to start (the bind-security gate above) or died
+    # initializing has not applied anything and must clear nothing.
+    cleared = restart_state_module.clear_started("api", pending_at_start)
+    if cleared:
+        log.info(
+            "Pending restart cleared for api: %s",
+            ", ".join(cleared),
+            extra={"component": "startup"},
+        )
 
     yield
 
@@ -1281,14 +1305,22 @@ def info(request: Request) -> InfoResponse:
     is actually running -- not a configuration value. The agent tooling's
     `[github] RELEASE_BRANCH` setting is reported separately as
     `release_branch` so the two can never be confused (#3716).
+
+    `release_channel` says which tier that version is -- `stable`, `rc`,
+    `dev` or `unknown`. The version string alone cannot be read as a tier by
+    every client independently without them drifting apart, and an operator
+    running acceptance kegs needs the answer to "is this a candidate or a
+    release?" from the same place the version came from (#3982).
     """
     cfg = _req_cfg(request)
+    version_running = running_version()
     return InfoResponse(
         ollama_base_url=get_ollama_base_url(cfg),
         default_model=get_default_model(cfg),
         sessions_dir=str(get_sessions_dir(cfg)),
-        release_version=running_version(),
+        release_version=version_running,
         release_branch=cfg.get("github", "RELEASE_BRANCH", fallback=None),
+        release_channel=version_channel(version_running),
     )
 
 
@@ -1869,13 +1901,15 @@ def infra_restart_status() -> dict[str, Any]:
     restart` target to the `section.key` fields whose saved value differs from
     the value that service is still running with, and when that divergence
     started. Empty once every flagged component has actually been restarted --
-    via `POST /infra/restart-required`, via `nyxgpt ops restart`, or because
-    the value was reverted to what the service already had.
+    via `POST /infra/restart-required`, via `nyxgpt ops restart`, because the
+    API process came back up carrying the saved value (`api`, see
+    `restart_state.clear_started`), or because the value was reverted to what
+    the service already had.
 
     The state is read from disk (`restart_state`), so it is the same set the
-    CLI reports and it survives this process restarting -- which matters
-    precisely for the `web` entries, whose restart does not touch this
-    process.
+    CLI reports and it survives this process restarting -- which is what lets
+    a `web` entry, whose restart does not touch this process, outlive an API
+    restart while an `api` entry is retired by one.
 
     `restart_command` is the wrapped command that clears the whole set, so the
     UI can show the user the CLI equivalent of its own button rather than a
@@ -1906,7 +1940,23 @@ def _do_restart_required(targets: list[str]) -> None:
     the underlying `brew services restart`/`docker restart`/`kubectl delete
     pod` command lands -- deferred a moment so the triggering HTTP response
     can be sent first, same as `config_restart` above.
+
+    Two consequences of `api` being *this* process, both #3806:
+
+    * **`api` is restarted last.** The kill ends this loop wherever it is, so
+      restarting `api` first would silently strand every other pending
+      component -- the user would press one button, lose the API, and come
+      back to a `web` entry that never restarted and a notice that never
+      cleared.
+    * **`api` does not clear its own flag here.** `clear_pending` below never
+      runs for it: the process is gone before `heal_now` returns. The
+      completion signal for `api` is `restart_state.clear_started`, called by
+      the API process that comes back up (see `lifespan`). Leaving the call
+      in place for the other components is not redundant with that -- nothing
+      else observes a `web`/`ollama`/`cassandra` restart from inside.
     """
+    # Self last, so a multi-target restart does not end at its first target.
+    targets = sorted(targets, key=lambda c: (c in ("api", "all"), c))
     for component in targets:
         try:
             result = self_heal_module.heal_now(service=component)
@@ -2823,10 +2873,10 @@ def support_context(request: Request) -> dict[str, Any]:
 def support_file_ticket(request: Request, body: api_models.SupportTicketRequest) -> JSONResponse:
     """File a support ticket from this install and return the created issue.
 
-    This is the surface #3811 asked for: the filer answers the questions in
-    the chat, nyxGPT posts the issue, and the response carries the ticket's
-    number and URL so the UI can congratulate them with a link instead of
-    stranding them on github.com.
+    This is the surface #3811 asked for: the filer answers the questions on
+    nyxGPT's own intake page (`/support/new`), nyxGPT posts the issue, and
+    the response carries the ticket's number and URL so the next page they
+    see is their ticket, rather than github.com's compose form.
 
     Three answers, and the difference between them matters to the person
     waiting:

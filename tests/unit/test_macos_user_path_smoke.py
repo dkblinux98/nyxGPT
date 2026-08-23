@@ -90,6 +90,8 @@ PROBES = (
     ("/health", "#3853: the health probe was never issued"),
     ("/api/v1/sessions", "#3851: a stack that starts but cannot reach its datastore"),
     ("http://127.0.0.1:3000", "#3857: the web UI was never requested"),
+    ("/api/info", "#3982: the web tier was never asked which build it is"),
+    ("homebrew-keg", "#3982: the keg-derived web version was never asserted"),
     ("nyxgpt ops status", "#3854: brew's own caveats point elsewhere"),
     ("nyxgpt down", "#3859: the supported stop was never exercised"),
     ("nyxgpt ops uninstall", "#3859: the wrapped teardown was never exercised"),
@@ -923,24 +925,45 @@ def test_the_rc_keg_is_stamped_so_the_channel_it_detects_is_its_own() -> None:
     """The candidate keg has to declare a candidate version, or the step lies.
 
     `ops._native_service_version` reads the installed distribution's metadata
-    to decide which channel's formula an artifact install resolves. The rc
-    tarball vendors `pyproject.toml` verbatim, so an unstamped checkout would
-    put the STABLE version inside the candidate keg -- and the identity step
-    would detect "stable" from inside the candidate's own venv, quietly
-    measuring the same channel twice.
+    to decide which channel's formula an artifact install resolves, and the
+    identity step asks each keg -- from inside its own venv -- which channel it
+    is in. A candidate keg declaring the STABLE version answers "stable" from
+    inside the candidate's own keg, so the step measures one channel twice and
+    reads as two.
+
+    What makes the declaration right is the BUILDER, since #3850:
+    `release_tarball._vendor_pyproject` stamps the version the tarball is named
+    for into the vendored `pyproject.toml`. Before that fix the tarball vendored
+    the checkout's copy as-is, and this job worked around it by mutating
+    `pyproject.toml` under a restore trap for the rc build only -- a workaround
+    this test used to *require*, with that premise in its own docstring. Both
+    are retired: the premise is false now, and pinning the workaround would have
+    failed any future PR that removed it, over a rationale that is no longer
+    true. So what is pinned here is the pair that is: the rc build asks for the
+    candidate version, and the job checks what the built tarball declares.
     """
     run = _job_run_text(_workflow()["jobs"]["stable-over-candidate"])
-    assert 'version = "3.0.0rc0"' in run, (
-        "the rc build no longer stamps a candidate version into pyproject.toml, "
-        "so the candidate keg's venv declares the stable version"
+    assert "build_homebrew_artifacts.py 3.0.0rc0 dist/rc" in run, (
+        "the rc build no longer asks for a candidate version, so the candidate "
+        "keg declares whatever the stable build did and the identity step "
+        "detects the wrong channel from inside it"
     )
-    assert "pyproject.toml.orig" in run, (
-        "the stamp is no longer restored, so every step after it sees a mutated " "checkout"
+    assert "--channel rc" in run, (
+        "the rc build no longer renders the rc channel, so this job's "
+        "'candidate' keg is a second stable one"
     )
-    assert "trap 'cp \"$RUNNER_TEMP/pyproject.toml.orig\" pyproject.toml' EXIT" in run, (
-        "the restore is no longer guarded by a trap: under `set -e` a failed rc "
-        "build skips it, and every later step -- including the failure log dump "
-        "that would explain the build -- reads a mutated version"
+    assert 'test "$DECLARED" = "$VERSION"' in run, (
+        "the built tarballs' declared version is no longer checked, so a "
+        "stamping regression reaches the identity step as a confusing "
+        "channel mismatch instead of being named at the build (#3850)"
+    )
+    assert "pyproject.toml.orig" not in run, (
+        "this job is mutating the checkout's pyproject.toml again. Since #3850 "
+        "`release_tarball._vendor_pyproject` stamps the vendored copy at "
+        "assembly, so the mutation is a no-op whose only effect is to reassert "
+        "a premise this project retired -- if it is back for some new reason, "
+        "say what that reason is here rather than leaving the old one to be "
+        "re-derived"
     )
 
 

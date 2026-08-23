@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from shell_suite import bash4_or_skip
 
 pytestmark = pytest.mark.unit
 
@@ -189,7 +190,7 @@ class TestPromotionSweepBehaviour:
     def test_shell_suite_passes(self):
         suite = REPO_ROOT / "tests" / "test_promote_accepted_features.sh"
         result = subprocess.run(
-            ["bash", str(suite)],
+            [bash4_or_skip(), str(suite)],
             capture_output=True,
             text=True,
             timeout=180,

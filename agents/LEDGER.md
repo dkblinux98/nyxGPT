@@ -987,10 +987,15 @@ rather than mechanism, and nothing can enforce them.
   developer agent — **nyxGPT files a support ticket itself; the GitHub
   compose page is a fallback, not the surface.** The owner failed the
   previous fix in acceptance because Support → File an Issue still handed the
-  user to `github.com/.../issues/new`. The intake is now a form in the chat
-  and `POST /api/v1/support/tickets`, which creates the labeled issue from
-  the running install and answers with its number and URL; the UI shows the
-  filer their own ticket. This answers **Q-006**'s credential question in the
+  user to `github.com/.../issues/new`. The intake is now a nyxGPT page
+  (`/support/new`) and `POST /api/v1/support/tickets`, which creates the
+  labeled issue from the running install and answers with its number and
+  URL; the UI shows the filer their own ticket. *(Surface corrected
+  2026-08-22 on the #3811 re-test: this entry first said "a form in the
+  chat", which the owner's second acceptance failure falsified — the first
+  build put a dialog behind a menu that asked the ticket type and could
+  still fall through to github.com. It is a route, asked once, with no
+  runtime branch in the menu.)* This answers **Q-006**'s credential question in the
   only way that leaves every filer able to report something: file with
   `[github] pat` when it is configured (the owner's install, any operator's),
   and offer the prefilled GitHub form when it is not — the one case the
@@ -1412,6 +1417,85 @@ rather than mechanism, and nothing can enforce them.
   `.github/workflows/notify-merge-conflicts.yml`;
   `.github/workflows/slack-huddle-smoke.yml`.
 
+- **D-042** · 2026-08-22 · owner — **An acceptance failure attributable to one
+  issue reopens that issue as the signal, and the rework is a separate issue
+  that blocks it. The machinery does not implement this yet.**
+
+  Owner statement of the current standard, 2026-08-22. Two cases:
+
+  (a) *Attributable to one issue* (the common case). The original issue is
+  **reopened and assigned to the scrummaster** — the reopen is the signal that
+  *this* issue did not pass acceptance, and its last comment says why. A
+  **new** issue is created from that comment and recorded as **blocking** the
+  original. The new issue is what gets worked. The reopened original sits in
+  `Acceptance Failed` until the derived issue reaches `For Release`, at which
+  point the original goes to `For Release`, is assigned to the owner, and is
+  closed.
+
+  (b) *Spanning several issues, or fitting none.* A new issue is filed with
+  **no** relationship — open, assigned to the scrummaster, parked in
+  `Acceptance Failed`. It goes through the process exactly like a brand-new
+  issue. The lane placement is only batching, so rc rounds stay legible.
+
+  **Why both shapes exist, in the owner's words:** a separate issue can be
+  counted as an acceptance failure rather than riding along as a feature with
+  lots of additional work, and counting acceptance failures is useful — but
+  logging the total effort a feature required to reach acceptance on one issue
+  is *also* useful. The split above gets both: the derived issue carries the
+  statistic, the reopened original accumulates the effort trail.
+
+  **This is not what the code does today, and the divergence is the whole
+  reason this entry exists.** `handle_acceptance_failure.yml` creates the
+  derived issue and writes the native blocked-by edge (both halves of (a)
+  already work), but it deliberately leaves the original **closed** — its own
+  header says "The original is never reopened or relabeled". Meanwhile D-008
+  reads an **open** issue in `Acceptance Failed` as *held rework* and the
+  drain gate releases it to `Backlog` for a developer, and
+  `promote_accepted_features.sh` skips open items there as "held rework, not a
+  promotion candidate". So a reopened original is currently dispatched to a
+  developer that has nothing to implement, and can never be promoted. Observed
+  2026-08-22: the gate released #3835 (three open blockers) and #3829 (one)
+  into `Backlog`.
+
+  **The single point of failure is `handle_acceptance_failure.yml` itself.**
+  If it fails, no derived issue is created and no blocking edge is written, so
+  the reopened original sits forever with nothing pointing at it. That is not
+  hypothetical: its run for the owner's 2026-08-22T02:48Z comment on #3829
+  **failed** (run `32547268563`, exit 1) and the report survived only as
+  comment text. Any implementation of this standard has to make that handler
+  fail loudly rather than silently.
+
+  **Revisit when:** the owner says so. This entry records a standard they have
+  changed before and expect to weigh again — the trade between counting
+  acceptance failures and logging whole-feature effort is genuinely two-sided,
+  and "which shape gets the better fix out of the developer agent" is not yet
+  answered. Do not treat it as settled forever; do not re-derive it from the
+  code either, because the code currently disagrees with it.
+  Source: owner statement 2026-08-22 (this session); `CLAUDE.md` §Issue
+  Relationships; D-008; `.github/workflows/handle_acceptance_failure.yml`;
+  `scripts/agents/lib/drain_gate.py`; `scripts/agents/promote_accepted_features.sh`.
+- **D-043** · 2026-08-22 · owner (#3995) — **nyxGPT allocates the EC2 Mac
+  Dedicated Host.** `nyxgpt cloud deploy --os macos` with no `--host` prices the
+  host live from the AWS Pricing API, discloses the rate, the 24-hour minimum
+  and the moment it becomes releasable, and allocates it after a typed
+  confirmation (`--yes` skips the typing, never the disclosure). `nyxgpt cloud
+  destroy` terminates the Mac immediately and defers **only** the host release
+  — which AWS rejects inside the 24-hour window — to a one-shot EventBridge
+  Scheduler schedule (`ActionAfterCompletion=DELETE`) driving a Step Functions
+  state machine that calls `ReleaseHosts` and reports to Slack over an
+  EventBridge Connection holding the existing bot token. No Lambda, no AWS
+  Chatbot, no new Slack app.
+  Two AWS behaviours make the naive version silently wrong and are handled:
+  Slack answers `invalid_auth`/`channel_not_found` with **HTTP 200 and
+  `"ok": false`**, and `ReleaseHosts` answers a still-scrubbing host with
+  **HTTP 200 and the host in `Unsuccessful`** — so neither can be detected by
+  status code or by a Step Functions `Retry`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed — after the merge with `v3.0.0` gave
+  D-042 to the acceptance-failure standard above. IDs are never reused.
+  Source: #3995; `src/nyxgpt/cloud_mac.py`; `terraform/aws/mac`,
+  `terraform/aws/mac-release`; `docs/cloud.md` §EC2 Mac targets.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1438,27 +1522,6 @@ rather than mechanism, and nothing can enforce them.
   Revisit when: the intelligent watcher is in place and demonstrably fails to
   catch a spend runaway.
   Source: `product_management/AGENTIC_SDLC_DESIGN.md` §9a.
-
-- **P-003** · 2026-08-19 · developer-agent (#3867) — Allocating the EC2
-  Dedicated Host an EC2 Mac requires (an `aws_ec2_host` in
-  `terraform/aws/modules/compute`, mac AMI resolution, host/subnet AZ pinning)
-  is **deliberately not built**. `nyxgpt cloud deploy --os macos` provisions a
-  Mac the operator already has, named with `--host`, and refuses — before
-  applying anything — when there is none.
-  Reason: an allocated host bills a 24-hour minimum whether or not an instance
-  runs on it and cannot be released inside that window, so a `terraform destroy`
-  within the first day fails and leaves the operator paying for a resource this
-  configuration cannot tear down. No CI job can execute any of it (no macOS EC2
-  runner, no macOS in a container), so it would ship unverified and cost real
-  money per attempt to find out. #3867's acceptance criterion offers this
-  branch explicitly: "works end-to-end ... **or** fails fast with a wrapped,
-  documented story".
-  Revisit when: the owner wants nyxGPT to allocate billable Dedicated Hosts,
-  or AWS removes the 24-hour minimum. A wrapped `nyxgpt cloud host
-  allocate/release` (boto3, cost surfaced, explicit `--yes`) is the shape to
-  build then — not Terraform, whose destroy path is where the trap is.
-  Source: #3867; `cloud_deploy.MACOS_NO_TARGET_MESSAGE`; `docs/cloud.md`
-  §EC2 Mac targets.
 
 - **P-004** · 2026-08-20 · owner — `GH_TOKEN_NYXAGENT` and `QA_AGENT_TOKEN`
   (Actions secrets, and `[github]` keys in the owner's `config.ini`) are
@@ -1598,7 +1661,7 @@ rather than mechanism, and nothing can enforce them.
   hosted intake should also cover the tokenless filer, who today gets the
   prefilled GitHub form.
   Blocks: nothing on #3811 — the three criteria this once held back (no
-  compose page, a confirmation in the chat, the product applying the label)
+  compose page, a confirmation in nyxGPT, the product applying the label)
   are met by D-034's intake. A hosted intake, if the owner wants one, is new
   work and needs its own issue.
 
@@ -1674,5 +1737,20 @@ them.
   stall: on 2026-08-19 a shepherding session posted comment kicks across
   several hours, reported them as dispatches, and none of them fired. A
   session reading **D-020** alone would repeat it.
+- **S-007** — ~~"Allocating the EC2 Dedicated Host an EC2 Mac requires is
+  deliberately not built; `--os macos` refuses when there is no `--host`."~~
+  (P-003, 2026-08-19, #3867.) Superseded 2026-08-22 by **D-043** (#3995). Both
+  halves of the reason were retired rather than overridden: the configuration
+  *can* tear the host down (the release is deferred, not skipped), and spending
+  the operator's money without asking is a consent problem that disclosure plus
+  a typed confirmation answers — as it does for every other irreversible spend
+  in this CLI. P-003's parting advice, "boto3, not Terraform, whose destroy path
+  is where the trap is", was **not** followed and the reasoning is worth
+  keeping: the trap is not Terraform, it is `terraform destroy` calling
+  `ReleaseHosts` inside the 24-hour window. Two isolated root modules plus a
+  `terraform state rm` of the host before the destroy removes it, and keeps the
+  idempotent reconcile that a boto3 allocate/release pair would have had to
+  reinvent.
+
   ID from `ledger_ids.py next S` (S-003 is taken: it was relocated to the
   private annex, and IDs are never reused).
