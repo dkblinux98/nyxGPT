@@ -1,0 +1,72 @@
+name: Round State Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "Does round_state.sh still refuse to print a state it has not computed?"
+#
+# The script exists because a hand-composed round report asserted stale
+# conclusions confidently. Its four classification rules are the whole value,
+# and every one of them is a shell branch that no pytest run reaches:
+# `ci-tests.yml` runs pytest only, and `select_tests.py` maps to
+# `tests/unit/*.py`. As first landed, tests/test_round_state.sh ran only when
+# somebody remembered to run it -- a guard nothing executes is unverified by
+# construction (D-040), which is the same defect class the script itself is
+# about.
+#
+# Both halves are proven, per the macos-brew-smoke.yml template: the shipped
+# script passes, and a copy carrying the retired `OPEN` hardcode fails. A
+# green run that would also be green with the bug reintroduced proves nothing.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/round_state.sh"
+      - "tests/test_round_state.sh"
+      - ".github/workflows/round-state-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/round_state.sh"
+      - "tests/test_round_state.sh"
+      - ".github/workflows/round-state-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  round-state-rules-hold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: The shipped script satisfies every classification rule
+        run: bash tests/test_round_state.sh
+
+      - name: Fault injection - deleting the closed-PR rule must fail these assertions
+        shell: bash
+        run: |
+          set -uo pipefail
+          cp scripts/agents/round_state.sh /tmp/round_state.orig
+          # Delete the rule itself, not a line downstream of it. An earlier
+          # version of this step reverted the printf's `$st` back to a literal
+          # `OPEN` and the suite still passed -- the CLOSED branch `continue`s
+          # before that printf is ever reached, so the injection was vacuous.
+          # Verified locally: with the branch removed the suite fails; restored,
+          # it passes.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("scripts/agents/round_state.sh"); s = p.read_text()
+          i = s.index('  if [[ "$st" == "CLOSED" ]]; then')
+          j = s.index("  fi\n", i) + len("  fi\n")
+          p.write_text(s[:i] + s[j:])
+          PY
+          if bash tests/test_round_state.sh >/dev/null 2>&1; then
+            echo "::error::the suite passed with the closed-PR rule deleted -- the rule is unpinned"
+            cp /tmp/round_state.orig scripts/agents/round_state.sh
+            exit 1
+          fi
+          cp /tmp/round_state.orig scripts/agents/round_state.sh
+          bash tests/test_round_state.sh >/dev/null || {
+            echo "::error::restore failed"; exit 1; }
+          echo "fault injection confirmed: the closed-PR rule is genuinely pinned"

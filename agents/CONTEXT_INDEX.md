@@ -12,8 +12,8 @@ fails if it drifts. Do not hand-edit.
 
 | Workflow | Triggered by | Name |
 |---|---|---|
-| `acceptance_drain_gate.yml` | schedule, issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
 | `acceptance-standard-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Standard Smoke |
+| `acceptance_drain_gate.yml` | schedule, issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
 | `acceptance_plan.yml` | issues | Acceptance Plan Actions |
 | `add-to-release-issue-on-milestone.yml` | issues | Add issue to release issue on milestone assignment |
 | `admin_ensure_support_label.yml` | workflow_dispatch, schedule, push | Admin - Ensure Support Label |
@@ -87,6 +87,7 @@ fails if it drifts. Do not hand-edit.
 | `retro_spend_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Spend Telemetry |
 | `review_agent_auto_review.yml` | issue_comment, pull_request_review | Review Agent Execute Decision |
 | `reviewable-head-smoke.yml` | push, pull_request, workflow_dispatch | Reviewable Head Smoke |
+| `round-state-smoke.yml` | push, pull_request, workflow_dispatch | Round State Smoke |
 | `scrummaster_groom_sprint.yml` | workflow_dispatch | Scrummaster Agent - Groom the Sprint |
 | `scrummaster_sprint_reorg_apply.yml` | issue_comment | Scrummaster Agent - Apply Sprint Reorg |
 | `scrummaster_sprint_report.yml` | schedule, workflow_dispatch | Scrummaster Agent - Sprint Report |
@@ -131,6 +132,7 @@ fails if it drifts. Do not hand-edit.
 | `review_accept_and_merge.sh` | Merges the PR into the current release branch (merge commit) and deletes the PR branch, then: |
 | `review_ensure_handoff.sh` | dispatch-mode post-review handoff backstop (#3704) |
 | `review_head_gate_action.sh` | Reports a head the review trigger cannot review, without spending a review invocation on it (#3971) |
+| `round_state.sh` | derive an acceptance round's state from git and GitHub |
 | `scrummaster_dispatch_next.sh` | Runs the #3665 fall-through dispatch loop: select the next eligible |
 | `scrummaster_sprint_reorg_apply.sh` | Applies the most recent unapplied sprint reorganization proposal posted by |
 | `scrummaster_sprint_report.sh` | Computes sprint standing for the active Sprint (done / in-review / |
