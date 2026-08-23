@@ -1937,8 +1937,18 @@ def _restart_brew_service(name: str) -> HealResult:
         return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")
+    # #3861 reaches here too (#4018 review). A bare name is refused outright by
+    # brew on a dual-tap machine ("Formulae found in multiple taps"), so before
+    # this the automated recovery path failed on exactly the machines the manual
+    # path had been repaired for. The barrier above still rejects the *input*;
+    # the qualified form it produces is re-validated segment-wise by
+    # `is_safe_formula_spec`, so admitting `<tap>/<name>` widens nothing that
+    # CodeQL #4 closed.
+    spec = brew_services.formula_spec(name, _which)
+    if not brew_services.is_safe_formula_spec(spec):
+        return HealResult(False, f"Refused to act on invalid formula spec: {spec!r}")
     try:
-        cp = _run(["brew", "services", "restart", name], timeout=60.0)
+        cp = _run(["brew", "services", "restart", spec], timeout=60.0)
     except Exception as e:
         return HealResult(False, f"Failed to restart {name}", f"{type(e).__name__}: {e}")
     if cp.returncode != 0:

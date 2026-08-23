@@ -117,6 +117,37 @@ Only source is vendored: gitignored build output (`node_modules`, `.next`,
 `.pyo`) and `.DS_Store` are excluded from every tarball, so a checkout you
 have been developing in produces the same artifact as a fresh one.
 
+### Both taps on one machine
+
+A machine that has tested the published tap alongside the locally built one
+carries `dkblinux98/nyxgpt` **and** `dkblinux98/nyxgpt-local`, and both define
+`nyxgpt-api`/`nyxgpt-web`. Homebrew refuses a bare name in that state rather
+than picking one:
+
+```
+Error: Formulae found in multiple taps:
+         dkblinux98/nyxgpt-local/nyxgpt-api
+         dkblinux98/nyxgpt/nyxgpt-api
+Please use the fully-qualified name to refer to the formula.
+```
+
+So nothing in nyxGPT names a formula bare (#3861). Install sites always
+passed `<tap>/<formula>`; the lookup and lifecycle calls (`brew list`, `brew
+services start`/`stop`/`restart`) now qualify it too, reading the owning tap
+from the installed keg's own `INSTALL_RECEIPT.json` rather than guessing one.
+
+That includes the **self-heal watchdog**, which is the reason the claim is
+about nyxGPT rather than about `nyxgpt ops` alone. The first version of this
+fix qualified ops' call sites and left `self_heal._restart_brew_service`
+bare, so on a dual-tap machine the automated recovery path still failed
+exactly where the manual commands had just been repaired. Both now resolve
+the spec through one helper, `brew_services.formula_spec` — per D-022, two
+modules that must agree about which tap owns a keg cannot each keep a copy
+of the answer.
+Nothing here asks the operator to run brew directly — the qualification
+matters because the wrapped commands are the recovery path, and a wrapped
+command that cannot resolve its own formula is not one.
+
 ---
 
 ## Remote tap
