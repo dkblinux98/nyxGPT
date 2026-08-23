@@ -1531,6 +1531,31 @@ rather than mechanism, and nothing can enforce them.
   Source: #4015 (issue body + owner amendment); `scripts/agents/inverse_claims_sweep.py`;
   `agents/runbooks/developer-runbook.md` §5.
 
+- **D-048** · 2026-08-23 · owner decision — **The shipped chat model does not
+  reason by default, and every deployment mode ships the same model.**
+  `1ece87b0` moved `default_model` to `qwen3.5:0.8b`, which is a *reasoning*
+  model, and nyxGPT reads only `message.content` — so every chat paid for
+  chain-of-thought that was then discarded. Measured on "Reply with exactly one
+  word: OK": **2 tokens / 0.3s** with `think: false`, **11,553 tokens / 185s**
+  with it on, for the same answer, on Apple Silicon. Reasoning length is
+  nondeterministic (913 on one sample, 11,553 on the next), which is why the
+  failures looked flaky: on a CPU-only runner the long tail exceeds
+  `chat_timeout_seconds` and Ollama answers HTTP 200 with an empty `content`.
+  That single fact reddened `terraform-local-smoke`, `linux-native-smoke` and
+  the k8s smokes across eleven PRs.
+  Consequences: `[nyxgpt] think` (default **false**) is threaded to Ollama's
+  `think` field by both the streaming and non-streaming paths; an empty
+  `content` alongside a non-empty `thinking` is now a named error rather than a
+  blank reply; and the model bump is completed across the layers it never
+  reached — `k8s/configmap.yaml`, `k8s/statefulset-ollama.yaml`, the two k8s
+  smokes and `docker-compose.yml`. `chat.py`'s fourth default (`llama3.1:8b`,
+  a model no install pulls) is retired in favour of `get_default_model`, and
+  `test_k8s_manifests` now compares the manifests against `example.config.ini`
+  rather than a literal — pinning the literal is what let the layers diverge
+  while the test stayed green.
+  Source: owner decision 2026-08-23; #4028 review (sweep remainder); measured
+  locally against a running Ollama.
+
 - **D-044** · 2026-08-22 · developer agent (#4020) — **The test suite gets a
   `$HOME` of its own; it never reads, writes or restores the operator's
   `~/.nyxGPT`.** `tests/home_sandbox.py` moves `$HOME` to a fresh per-process

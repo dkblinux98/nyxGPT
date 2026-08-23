@@ -9,6 +9,7 @@ from home_sandbox import REAL_HOME
 
 from nyxgpt import cloud_secrets
 from nyxgpt.config import (
+    DEFAULT_CHAT_THINK,
     SECRETS_SYNC_MANIFEST,
     _expand_path,
     get_ann_oversample_factor,
@@ -30,6 +31,7 @@ from nyxgpt.config import (
     get_cassandra_health_check_interval,
     get_cassandra_pool_size,
     get_cassandra_reconnect_max_attempts,
+    get_chat_think,
     get_chat_timeout_seconds,
     get_context_warning_threshold,
     get_context_window_size,
@@ -1365,6 +1367,48 @@ default_model = llama3.1:8b
 
     cfg = load_config(str(ini))
     assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
+
+
+# ---------------------------------------------------------------------------
+# get_chat_think
+# ---------------------------------------------------------------------------
+
+
+def test_chat_think_is_off_by_default(tmp_path: Path) -> None:
+    """Owner decision 2026-08-23: the shipped model reasons, and we read only
+    the answer -- so reasoning is off unless asked for."""
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\n")
+    assert get_chat_think(load_config(str(ini))) is False
+    assert DEFAULT_CHAT_THINK is False
+
+
+def test_chat_think_can_be_turned_on(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\nthink = true\n")
+    assert get_chat_think(load_config(str(ini))) is True
+
+
+def test_chat_think_falls_back_to_the_shipped_default_when_malformed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\nthink = maybe\n")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+
+    assert get_chat_think(load_config(str(ini))) is DEFAULT_CHAT_THINK
+    assert "Invalid nyxgpt.think" in caplog.text
+
+
+def test_the_shipped_config_file_states_think(tmp_path: Path) -> None:
+    """example.config.ini is the source of the shipped default; it must say so.
+
+    The k8s ConfigMap is compared against this file, so an unstated key there
+    means the two layers can drift silently -- which is exactly how the model
+    bump reached Python and not Kubernetes."""
+    shipped = load_config(str(Path(__file__).resolve().parents[2] / "example.config.ini"))
+    assert shipped.has_option("nyxgpt", "think")
+    assert get_chat_think(shipped) is DEFAULT_CHAT_THINK
 
 
 # ---------------------------------------------------------------------------

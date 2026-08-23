@@ -142,9 +142,19 @@ def test_k8s_default_models_match_the_shipped_defaults():
     """Every run mode names the same two models (#3824): a deployment that
     quietly picks a different chat model is one the acceptance test for one
     mode cannot speak for."""
+    # Compared against what the product actually ships, not a literal. Pinning
+    # the literal is what let this pass while the layers diverged: 1ece87b0
+    # moved example.config.ini/config.py to qwen3.5:0.8b and left the manifests
+    # on qwen3:0.6b, so a Kubernetes install served a different model than a
+    # native one -- precisely what this test's docstring says it exists to
+    # prevent -- and the assertion certified it because both sides of the drift
+    # were spelled out here.
+    shipped = configparser.ConfigParser()
+    shipped.read(REPO_ROOT / "example.config.ini", encoding="utf-8")
+
     cfg = _api_config()
-    assert cfg.get("nyxgpt", "default_model") == "qwen3:0.6b"
-    assert cfg.get("rag", "embedding_model") == "nomic-embed-text"
+    assert cfg.get("nyxgpt", "default_model") == shipped.get("nyxgpt", "default_model")
+    assert cfg.get("rag", "embedding_model") == shipped.get("rag", "embedding_model")
 
 
 @pytest.mark.unit

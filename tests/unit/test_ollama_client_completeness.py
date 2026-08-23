@@ -126,6 +126,61 @@ def test_ollama_chat_includes_output_format_in_payload() -> None:
     assert sent_payload["format"] == schema
 
 
+def test_ollama_chat_sends_think_when_set_and_omits_it_when_not() -> None:
+    """`think` reaches the wire, and absent means absent -- not `false`.
+
+    Sending `think: false` unconditionally would override a model's own
+    default for callers that never asked; `None` has to stay off the payload.
+    """
+    for value in (False, True):
+        resp = _mock_response(b'{"message": {"content": "ok"}}')
+        with patch("urllib.request.urlopen", return_value=resp) as mock_urlopen:
+            ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}], think=value)
+        sent = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+        assert sent["think"] is value
+
+    resp = _mock_response(b'{"message": {"content": "ok"}}')
+    with patch("urllib.request.urlopen", return_value=resp) as mock_urlopen:
+        ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}])
+    sent = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert "think" not in sent
+
+
+def test_ollama_chat_stream_sends_think() -> None:
+    resp = _streaming_response([b'{"message": {"content": "a"}, "done": true}'])
+    with patch("urllib.request.urlopen", return_value=resp) as mock_urlopen:
+        list(
+            ollama_chat_stream_tokens(
+                "http://x", "m", [{"role": "user", "content": "hi"}], think=False
+            )
+        )
+    sent = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert sent["think"] is False
+
+
+def test_reasoning_with_no_answer_is_an_error_not_an_empty_reply() -> None:
+    """The defect that reddened three smoke families (#4028).
+
+    A reasoning model that spends its whole budget thinking answers HTTP 200
+    with empty `content` and a full `thinking`. Returning "" made that
+    indistinguishable from a model with nothing to say: a blank reply, no
+    error, and every smoke forced to discover it by asserting on emptiness.
+    """
+    resp = _mock_response(b'{"message": {"content": "", "thinking": "step 1... step 2..."}}')
+    with (
+        patch("urllib.request.urlopen", return_value=resp),
+        pytest.raises(RuntimeError, match="reasoning but no answer"),
+    ):
+        ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}])
+
+
+def test_an_ordinary_empty_reply_is_still_returned_not_raised() -> None:
+    """Only reasoning-with-no-answer is an error; an empty answer is an answer."""
+    resp = _mock_response(b'{"message": {"content": ""}}')
+    with patch("urllib.request.urlopen", return_value=resp):
+        assert ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}]) == ""
+
+
 def test_ollama_chat_unexpected_response_raises() -> None:
     resp = _mock_response(b'{"message": {"content": 123}}')
     with (
