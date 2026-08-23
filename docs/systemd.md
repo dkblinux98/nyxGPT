@@ -290,14 +290,30 @@ way.
 **Docker group membership.** Group membership is stamped into a login
 session when it's created, so being added to `docker` does not affect your
 current shell -- or, more subtly, the already-running `systemd --user`
-manager and every service under it, including `nyxgpt-api`. That is how
-`nyxgpt ops status` (fresh shell, has the group) and the web UI's
-Infrastructure page (long-lived API process, doesn't) can disagree about
-whether Cassandra is running. Fix it by recreating the session:
+manager and every service under it, including `nyxgpt-api`. Recreating the
+session is the permanent fix:
 
 ```bash
 sudo loginctl terminate-user "$USER"   # kills this SSH session; reconnect after
 ```
+
+Until you do, nyxGPT reaches the socket the long way round rather than
+reporting nonsense. Every Docker read in the API process -- the Compose
+survey behind the Self-Heal panel and the container reads behind the
+Infrastructure page's Native and Terraform cards alike -- is retried through
+`sg docker`, which reads `/etc/group` live and so applies the membership you
+genuinely already hold (`nyxgpt/docker_access.py`, shared by `ops.py` and
+`self_heal.py`). On a host where even that isn't available -- the group
+change was never made at all -- the read is reported as **unknown**, with
+Docker's own words for why, and never as `absent`.
+
+That last distinction is load-bearing, and it did not always hold. Before
+#4022 a denied read came back as the flat string `absent`, so `nyxgpt ops
+status` (fresh shell, has the group) and the Infrastructure page (long-lived
+API process, doesn't) **disagreed about whether Cassandra was running** --
+this document used to describe that disagreement as expected behaviour. It
+isn't, and it no longer happens: both surfaces retry through the hop, and
+where neither can answer both say so.
 
 Install itself does not stop and wait for that, though. When the group change
 it just made hasn't reached the running session, `nyxgpt ops install` routes
@@ -328,6 +344,14 @@ that fails the probe.
 The group membership is still added — a hop only covers the run that created
 it, and disappears once you reconnect. It is a last resort, attempted only
 after the real group change was made and found not to have taken effect.
+
+**`sudo` is the install path's option only.** The second row above is reached
+from an interactive `nyxgpt ops install`, which is already a privileged
+operation. The retries inside the running API process — the ones behind the
+dashboard's status reads — are `sg docker` and nothing else: `sg` claims a
+group the invoking user already holds, so it grants no authority you did not
+already give that account, while a web-reachable process escalating to `sudo`
+would.
 
 ### Commands (nyxgpt-managed Ollama)
 
