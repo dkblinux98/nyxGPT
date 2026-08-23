@@ -28,10 +28,25 @@ Two properties the #3407 in-memory version did not have, both required by
   restart (`reconcile_saved`). Without this, reverting a mistake would leave a
   permanent, un-clearable "restart required" banner.
 
-Pending entries are cleared when the restart actually happens: `app.py`'s
-`_do_restart_required` (the dashboard/wizard button) and `ops.restart()` (the
-`nyxgpt ops restart <target>` CLI) both call `clear_pending`, so a restart
-clears the flag no matter which surface triggered it.
+Pending entries are cleared when the restart actually happens, and *which
+process* does the clearing depends on whether the restart is survivable by the
+actor that asked for it:
+
+* **A component that is not this process** (`web`, `ollama`, `cassandra`) is
+  cleared by whoever drove the restart and lived through it: `app.py`'s
+  `_do_restart_required` (the dashboard/wizard button) and `ops.restart()`
+  (the `nyxgpt ops restart <target>` CLI) both call `clear_pending` once the
+  restart reports success.
+
+* **A component clearing its own flag cannot work** (#3806, second round).
+  Restarting `api` from inside the API process kills the thread that was going
+  to run `clear_pending`, so the flag survived a *successful* restart and the
+  dashboard sat on "Saved -- but not yet in effect" forever. The completion
+  signal for a self-restart therefore comes from the only actor that can
+  always observe that the restart really happened: **the process that came
+  back**. `app.py`'s lifespan startup calls `clear_started("api", ...)` --
+  see that function for why a newly started process is entitled to retire its
+  own pending keys, and for what it deliberately does not retire.
 """
 
 from __future__ import annotations
@@ -42,6 +57,7 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +195,56 @@ def clear_pending(component: str) -> None:
         state = _read()
         if state.pop(component, None) is not None:
             _write(state)
+
+
+def clear_started(component: str, keys: Iterable[str]) -> list[str]:
+    """Retire `keys` for `component` because a fresh `component` process has just started.
+
+    This is the completion signal for a restart the restarting process cannot
+    report on. `clear_pending` is called by whoever *drove* a restart, which
+    works only while that actor outlives it -- and it does not for `api`,
+    where the restart kills the API process holding the callback (#3806: the
+    flag survived a successful restart and the notice never cleared).
+
+    A process that has just started has, by definition, read the
+    configuration currently on disk: for every key it consumes at startup the
+    saved value and the running value are the same value, so nothing is owed.
+    That is the same reasoning `ops.restart()` uses when it clears after a
+    successful restart -- but asserted by the one actor that cannot be wrong
+    about whether the restart happened, because it *is* the restart having
+    happened. A restart that failed produces no new process, so nothing
+    clears and the notice stands (which is the property #3806 needs kept: the
+    banner must go away on success, not always).
+
+    Args:
+        component: The `nyxgpt ops restart` target that just started.
+        keys: The `section.key` entries this process is entitled to retire --
+            the caller's snapshot of what was pending *before* it read its
+            configuration. Anything marked after that snapshot is left
+            standing: the caller may have loaded the file before that write
+            landed, and a notice that stays up one restart too long is honest
+            where one that clears too early is not.
+
+    Returns:
+        The keys actually retired, for the caller to log.
+    """
+    wanted = set(keys)
+    if not wanted:
+        return []
+    with _lock:
+        state = _read()
+        entry = state.get(component)
+        if not entry:
+            return []
+        cleared = sorted(wanted & set(entry["keys"]))
+        if not cleared:
+            return []
+        for full_key in cleared:
+            entry["keys"].pop(full_key, None)
+        if not entry["keys"]:
+            state.pop(component, None)
+        _write(state)
+    return cleared
 
 
 def snapshot() -> dict[str, dict[str, Any]]:
