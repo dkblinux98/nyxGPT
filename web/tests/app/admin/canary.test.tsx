@@ -438,49 +438,30 @@ describe('CanaryPage', () => {
     expect(screen.queryByText(/stable rests at/)).not.toBeInTheDocument();
   });
 
-  it('deploys the current version to canary only', async () => {
+  it('points at the CLI for deploying instead of offering a control (#3991)', async () => {
+    // The button this replaces ran `docker build` inside the in-cluster api
+    // Pod and failed on a 0.0.0 tag. It was removed, not repaired: a dashboard
+    // cannot act on the substrate it is itself running on (CLAUDE.md's
+    // Definition of Done, as rewritten by #3804). The page names the command
+    // that does the job instead.
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
-    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
-    const user = userEvent.setup();
-
-    render(<CanaryPage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /deploy current version to canary/i })).toBeInTheDocument();
-    });
-
-    server.use(
-      http.post('/api/v1/canary/deploy', () =>
-        HttpResponse.json({ message: 'Deployed nyxgpt-api:1.1.0-def5678 to nyxgpt-api-canary' })
-      )
-    );
-    await user.click(screen.getByRole('button', { name: /deploy current version to canary/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Deployed nyxgpt-api:1.1.0-def5678 to nyxgpt-api-canary')).toBeInTheDocument();
-    });
-  });
-
-  it('does not deploy when the confirmation is declined', async () => {
-    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
-    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
-    global.confirm = vi.fn().mockReturnValue(false);
-    const user = userEvent.setup();
-
-    render(<CanaryPage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /deploy current version to canary/i })).toBeInTheDocument();
-    });
-
     const deploySpy = vi.fn();
     server.use(
+      http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)),
       http.post('/api/v1/canary/deploy', () => {
         deploySpy();
         return HttpResponse.json({});
       })
     );
-    await user.click(screen.getByRole('button', { name: /deploy current version to canary/i }));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/nyxgpt canary deploy --component api/)).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole('button', { name: /deploy current version to canary/i })
+    ).not.toBeInTheDocument();
     expect(deploySpy).not.toHaveBeenCalled();
   });
 
@@ -518,7 +499,6 @@ describe('CanaryPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/Rollout controls are disabled until the stable\/canary pair is up/)).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: /deploy current version to canary/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /^start canary$/i })).toBeDisabled();
   });
 
@@ -590,7 +570,7 @@ describe('CanaryPage', () => {
     render(<CanaryPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Deploy a new version to nyxgpt-api-canary,/)).toBeInTheDocument();
+      expect(screen.getByText(/nyxgpt canary deploy --component api/)).toBeInTheDocument();
     });
     expect(screen.getByText(/then promote it to nyxgpt-api-stable/)).toBeInTheDocument();
 
@@ -614,26 +594,16 @@ describe('CanaryPage', () => {
       expect(screen.getByText(/nyxgpt-web-stable healthy/)).toBeInTheDocument();
     });
     expect(lastStatusUrl).toContain('component=web');
-    expect(screen.getByText(/Deploy a new version to nyxgpt-web-canary,/)).toBeInTheDocument();
     expect(screen.getByText(/then promote it to nyxgpt-web-stable/)).toBeInTheDocument();
-
-    let deployBody: unknown = null;
-    server.use(
-      http.post('/api/v1/canary/deploy', async ({ request }) => {
-        deployBody = await request.json();
-        return HttpResponse.json({ message: 'Deployed nyxgpt-web:2.0.1-web2 to nyxgpt-web-canary' });
-      })
-    );
-    await user.click(screen.getByRole('button', { name: /deploy current version to canary/i }));
-    await waitFor(() => {
-      expect(deployBody).toEqual({ component: 'web' });
-    });
+    // The CLI pointer is component-scoped too (#3991), so the command the page
+    // names is the one that acts on the pair currently on screen.
+    expect(screen.getByText(/nyxgpt canary deploy --component web/)).toBeInTheDocument();
 
     // Switching back to api re-fetches the api-scoped status.
     server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
     await user.click(screen.getByRole('button', { name: /^api$/i }));
     await waitFor(() => {
-      expect(screen.getByText(/Deploy a new version to nyxgpt-api-canary,/)).toBeInTheDocument();
+      expect(screen.getByText(/nyxgpt canary deploy --component api/)).toBeInTheDocument();
     });
   });
 

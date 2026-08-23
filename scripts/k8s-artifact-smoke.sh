@@ -52,7 +52,6 @@ WORKDIR="${NYXGPT_SMOKE_WORKDIR:-/tmp/nyxgpt-artifact-smoke}"
 VENV="${WORKDIR}/venv"
 ARTIFACTS="${WORKDIR}/artifacts"
 NOCHECKOUT="${WORKDIR}/no-checkout"
-PF_PID=""
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK] $*"; }
@@ -60,7 +59,6 @@ step() { echo; echo "=== $* ==="; }
 
 cleanup() {
     local rc=$?
-    if [ -n "$PF_PID" ]; then kill "$PF_PID" 2>/dev/null || true; fi
     if [ "$rc" -ne 0 ]; then
         echo "--- diagnostics ---" >&2
         kubectl -n "$NAMESPACE" get pods -o wide >&2 2>/dev/null || true
@@ -186,14 +184,32 @@ kubectl -n "$NAMESPACE" rollout status deploy/nyxgpt-web-stable --timeout=600s |
     fail "the web Deployment never became Ready"
 ok "the whole app tier rolled out from images built without a checkout"
 
-step "8/9 A user can actually chat"
-kubectl -n "$NAMESPACE" port-forward "svc/nyxgpt-web" "${WEB_PORT}:3000" \
-    >/tmp/k8s-artifact-portforward.log 2>&1 &
-PF_PID=$!
-for _ in $(seq 1 30); do
+step "8/9 A user can actually chat -- with no port-forward of our own (#3986)"
+# This step used to background its own `kubectl port-forward` here, which made
+# it blind to #3986: the smoke reached the UI because IT opened a tunnel,
+# while an operator finishing the same install had nothing listening on the
+# host. The install now establishes the address itself -- a NodePort published
+# by the kind cluster it provisions, or a managed background forward on a
+# cluster whose host ports it cannot map -- so reaching `${BASE}` is an
+# assertion here, not setup.
+# An `if`, not `x && fail`: a compound whose overall status is non-zero exits
+# the script under `set -e`, which would make this guard a hang-up of its own.
+if nyxgpt ops port-forward --status | grep -qi 'running'; then
+    echo "[info] the install established a managed background forward (bring-your-own path)."
+elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
+    pgrep -af "kubectl.*port-forward" >&2 || true
+    fail "a stray port-forward is running -- this step must reach the UI without one"
+fi
+for _ in $(seq 1 45); do
     if curl -fsS -o /dev/null "${BASE}/" 2>/dev/null; then break; fi
     sleep 2
 done
+curl -fsS -o /dev/null "${BASE}/" 2>/dev/null || {
+    kubectl -n "$NAMESPACE" get svc nyxgpt-web -o wide >&2 || true
+    nyxgpt ops port-forward --status >&2 || true
+    fail "the artifact install finished but ${BASE} does not answer -- no reachable UI (#3986)"
+}
+ok "the UI answers on ${BASE} with nothing forwarding to it"
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- the UI would show 'Failed to load sessions'"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
@@ -204,8 +220,17 @@ CHAT=$(curl -sS -N -X POST "${BASE}/api/chat/stream" \
     --max-time "${NYXGPT_SMOKE_CHAT_TIMEOUT:-300}" 2>&1) || fail "the chat request failed"
 echo "$CHAT" | grep -q '"content"' ||
     { echo "$CHAT" >&2; fail "chat produced no answer -- the artifact-built stack cannot chat"; }
-kill "$PF_PID" 2>/dev/null || true; PF_PID=""
 ok "chat answered through web -> api -> in-cluster Ollama, all from published artifacts"
+
+# The other half of #3991's acceptance criterion, on the ARTIFACT path: a
+# fresh install of either kind must leave the canary pair at its declared
+# resting 0, not carrying idle replicas outside any rollout.
+for deployment in nyxgpt-api-canary nyxgpt-web-canary; do
+    replicas=$(kubectl -n "$NAMESPACE" get "deploy/${deployment}" -o jsonpath='{.spec.replicas}')
+    [ "$replicas" = "0" ] ||
+        fail "${deployment} rests at ${replicas} replicas after a fresh artifact install (#3991)"
+done
+ok "both canary Deployments rest at 0 after the artifact install"
 
 step "9/9 The deployment reports its own install mode, honestly"
 STATUS=$(nyx ops status)

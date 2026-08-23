@@ -335,6 +335,10 @@ def _stub_install_steps(monkeypatch, calls):
         "_kubectl_apply_kustomization",
         "_wait_for_k8s_data_tier",
         "_wait_for_k8s_app_tier",
+        # ...and #3991/#3986 added these two after that: the canary resting-state
+        # reconcile and the host-access step both talk to a real cluster.
+        "_reconcile_k8s_canary_resting",
+        "_ensure_k8s_host_access",
         "_k8s_stack_health",
     ):
         monkeypatch.setattr(ops, name, lambda *_a, name=name, **_k: [ops.OpsResult(True, name)])

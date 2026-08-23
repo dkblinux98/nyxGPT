@@ -123,7 +123,6 @@ export default function CanaryPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [startWeight, setStartWeight] = useState(10);
-  const [deploying, setDeploying] = useState(false);
   const [starting, setStarting] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const [promoting, setPromoting] = useState(false);
@@ -221,17 +220,6 @@ export default function CanaryPage() {
     }
   }
 
-  const handleDeploy = () => {
-    if (!confirm('Build the current checkout and deploy it to canary only (stable is untouched)?'))
-      return;
-    return runAction(
-      '/api/v1/canary/deploy',
-      { component },
-      setDeploying,
-      'Deployed current version to canary'
-    );
-  };
-
   // The fallback deliberately does NOT name a weight: replica counts are
   // integers, so the rollout may have to round the requested weight to the
   // closest split its pool can express (#3833). The server's own message says
@@ -296,9 +284,11 @@ export default function CanaryPage() {
             Canary Deployment
           </h1>
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
-            Deploy a new version to nyxgpt-{component}-canary, gate a gradual weighted rollout on
-            live metrics, then promote it to nyxgpt-{component}-stable (or roll back). The sole
-            deployment model since blue/green was retired -- see docs/kubernetes.md.
+            Gate a gradual weighted rollout of nyxgpt-{component}-canary on live metrics, then
+            promote it to nyxgpt-{component}-stable (or roll back). Deploying a version to the
+            canary track is <code>nyxgpt canary deploy</code> (#3991); the traffic controls here
+            act on what it deployed. The sole deployment model since blue/green was retired -- see
+            docs/kubernetes.md.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard
@@ -664,26 +654,34 @@ export default function CanaryPage() {
             ) : null;
           })()}
 
+          {/* Deploying a version to the canary track is a CLI operation, named
+              here rather than offered as a button (#3991, following #3804's
+              pointer pattern). The button that used to sit here could not be
+              made correct: its request is served by the in-cluster api Pod, so
+              `canary.deploy` ran `docker build` inside that Pod -- with no
+              checkout, no Docker daemon and a version that resolved to 0.0.0,
+              it failed with `Failed to build/load nyxgpt-web:0.0.0`. That is
+              the general rule in CLAUDE.md's Definition of Done, not a bug in
+              this one control: a dashboard cannot act on the substrate it is
+              itself running on. */}
+          <p
+            style={{
+              fontSize: '0.85rem',
+              color: 'var(--foreground-muted)',
+              marginBottom: '1rem',
+              padding: '0.75rem',
+              border: '1px solid var(--border-color)',
+              borderRadius: '0.375rem',
+            }}
+          >
+            To build and deploy a new version to the canary track, run{' '}
+            <code>nyxgpt canary deploy --component {component}</code> from a terminal. It builds the
+            image and points <code>nyxgpt-{component}-canary</code> at it, leaving stable untouched;
+            the traffic controls below then gate the rollout. Building an image is a job for the
+            machine holding the source, not for the API Pod serving this page.
+          </p>
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-            <button
-              onClick={handleDeploy}
-              disabled={deploying || status.stable.state !== 'healthy' || status.canary.state === 'error'}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: 'var(--background-secondary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '0.375rem',
-                cursor:
-                  deploying || status.stable.state !== 'healthy' || status.canary.state === 'error'
-                    ? 'not-allowed'
-                    : 'pointer',
-                fontSize: '0.875rem',
-                fontWeight: '600',
-              }}
-              title="Build the current checkout and deploy it to the canary Deployment only; traffic weighting is a separate step"
-            >
-              {deploying ? 'Deploying...' : 'Deploy current version to canary'}
-            </button>
             {!status.active && (
               <>
                 <label style={{ fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>

@@ -121,6 +121,52 @@ const mockStatusKubernetesNotConfigured = {
   },
 };
 
+// The payload the api Pod itself produces (#3988): no kubeconfig context --
+// a Pod has none -- but in-cluster ServiceAccount credentials, Pods found, and
+// the Compose/native rows explicitly scoped out rather than answered against
+// the container's own filesystem.
+const mockStatusInCluster = {
+  mode: 'kubernetes',
+  in_cluster: true,
+  install_mode: {
+    mode: 'artifact',
+    checkout: null,
+    label: 'artifact (published/vendored build)',
+    components: ['api', 'web'],
+    identity: { known: false, manager: '', services: {}, version: '', channel: '', detail: '' },
+    in_scope: false,
+    out_of_scope_reason:
+      'Not in scope from here: this API is running inside a Kubernetes Pod. The Kubernetes card above describes this deployment; a native install is a separate one, on a host this process cannot see.',
+  },
+  native: {},
+  compose: {},
+  compose_probe_available: false,
+  compose_probe_reason:
+    'Not in scope from here: this API is running inside a Kubernetes Pod, which has no host filesystem and no Docker socket. Run `nyxgpt ops status` on the host to survey a Docker Compose deployment there.',
+  conflicts: [],
+  terraform: { probe_available: true, deployed: false, containers: {} },
+  kubernetes: {
+    available: true,
+    configured: true,
+    probe_available: true,
+    deployed: true,
+    namespace: 'nyxgpt',
+    pods: ['nyxgpt-api-stable-1   1/1 Running'],
+    pod_states: [
+      { name: 'nyxgpt-api-stable-1', state: 'ready', summary: '1/1 Running', details: '' },
+    ],
+    context: 'in-cluster (ServiceAccount)',
+    provisioned: false,
+    in_cluster: true,
+    install_mode: { mode: 'artifact', checkout: null, label: 'artifact', recorded: true },
+    observability: observabilityAbsent,
+  },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic.',
+  },
+};
+
 const mockStatusCannotDetermine = {
   mode: 'none',
   native: {},
@@ -313,7 +359,37 @@ describe('InfrastructurePage', () => {
       expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
     });
     expect(screen.queryByText('CANNOT DETERMINE')).not.toBeInTheDocument();
-    expect(screen.getByText(/No kubeconfig current-context configured/)).toBeInTheDocument();
+    // The wording names BOTH credentials since #3988 -- an empty
+    // current-context is no longer the whole question, because a process
+    // running in a Pod has none and full API access.
+    expect(screen.getByText(/No cluster configured from this vantage point/)).toBeInTheDocument();
+  });
+
+  it('reports the cluster it is served from, and scopes out what a Pod cannot answer (#3988)', async () => {
+    // The defect: served BY the api Pod, this page called that Pod's own
+    // cluster NOT DEPLOYED (detection asked `kubectl config current-context`,
+    // which is empty in a Pod), surveyed Compose against the container's
+    // filesystem, and offered native remedies for a host it cannot see.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusInCluster)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+    });
+    // `getByText('DEPLOYED')` above is an exact match, so it cannot be
+    // satisfied by a "NOT DEPLOYED" badge -- the Terraform and observability
+    // cards legitimately carry those, and are a different question.
+    expect(
+      screen.getByText(/this page is being served from inside this cluster/),
+    ).toBeInTheDocument();
+
+    // Compose and Native are scoped out, not guessed at -- and the leaked
+    // container path from the report must not be on screen.
+    expect(screen.getAllByText('NOT IN SCOPE')).toHaveLength(2);
+    expect(screen.queryByText(/\/root\/\.nyxGPT/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No install identity recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText('CANNOT DETERMINE')).not.toBeInTheDocument();
   });
 
   it('renders "cannot determine" instead of a false NOT DEPLOYED when probes fail', async () => {

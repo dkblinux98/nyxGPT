@@ -27,6 +27,14 @@ type DeploymentModeName = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'n
 
 type InfraStatus = {
   mode: DeploymentModeName;
+  // True when this answer was computed by an api process running INSIDE the
+  // Kubernetes deployment it is describing (#3988). The page used to have no
+  // idea: served from the api Pod, it reported the cluster it was running in
+  // as NOT DEPLOYED, surveyed Docker Compose against the container's own
+  // filesystem, and offered native remedies aimed at a host the Pod cannot
+  // see. Optional so the page still renders against an api process from
+  // before #3988.
+  in_cluster?: boolean;
   // Which build the native api/web are running: 'artifact' (published or
   // vendored builds -- the default) or 'dev' (a checkout's working tree,
   // `nyxgpt up --dev`, #3789). Surfaced here for the same reason `nyxgpt ops
@@ -53,6 +61,13 @@ type InfraStatus = {
       channel: string;
       detail: string;
     };
+    // False when the api process cannot honestly answer for a native install
+    // from where it runs -- today, only from inside a Pod (#3988). The card
+    // then states its scope instead of reporting an install identity, and
+    // offers no remedy: `nyxgpt up` / `nyxgpt ops doctor` act on a host this
+    // process has no access to.
+    in_scope?: boolean;
+    out_of_scope_reason?: string;
   };
   native: Record<string, string>;
   // Whether the native card's Docker-backed read (Cassandra, the one native
@@ -77,9 +92,11 @@ type InfraStatus = {
     probe_reason?: string;
     deployed: boolean;
     containers: Record<string, string>;
-    // The Terraform deployment's OWN install mode (#3835): 'artifact' (the
-    // published container images, the repo-less default) or 'dev' (images
-    // built from a checkout's working tree, `--dev`). Reported separately
+    // The Terraform deployment's OWN install mode (#3835): 'artifact' (images
+    // built from the published nyxgpt-api / nyxgpt-web source tarballs -- the
+    // repo-less default; PR #4011 moved this path off GHCR images onto the
+    // same artifact channel every other local install mode uses) or 'dev'
+    // (images built from a checkout's working tree, `--dev`). Reported separately
     // from `install_mode` above because that one describes the native
     // services, which are a different deployment and frequently in the other
     // mode. Optional so the page still renders against an api process from
@@ -524,6 +541,14 @@ export default function InfrastructurePage() {
   // `cloud_infra.infra_status` payload `GET /api/v1/cloud/infra` returns.
   const substrate = cloud?.infra ?? null;
 
+  // Rows this vantage point cannot honestly answer (#3988). `in_scope: false`
+  // is the api saying so explicitly; `in_cluster` is the fallback for the
+  // in-between moment when the api has one field and not the other. Never
+  // inferred from an empty result -- an empty native snapshot on a host is a
+  // real "nothing running", and conflating the two is the defect.
+  const inCluster = status?.in_cluster === true;
+  const nativeOutOfScope = status?.install_mode?.in_scope === false || inCluster;
+
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
@@ -646,15 +671,38 @@ export default function InfrastructurePage() {
           <div style={boxStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Native</h2>
+              {/* Two different "cannot say" conditions, and they are not the
+                  same claim: out-of-scope means there is nothing to determine
+                  here, so it short-circuits; an unavailable probe means the
+                  mode is real but unread, which belongs beside the mode. */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                {!status.native_probe_available && (
-                  <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
+                {nativeOutOfScope ? (
+                  <span style={badgeStyle(false, true)}>NOT IN SCOPE</span>
+                ) : (
+                  <>
+                    {!status.native_probe_available && (
+                      <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
+                    )}
+                    <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
+                      {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
+                    </span>
+                  </>
                 )}
-                <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
-                  {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
-                </span>
               </div>
             </div>
+            {/* An install identity, and the remedies that go with it, describe
+                the MACHINE this api process runs on. From inside a Pod that is
+                not the deployment the operator is looking at, so the card
+                states its scope rather than reporting someone else's install
+                (#3988). */}
+            {nativeOutOfScope ? (
+              <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+                {status.install_mode?.out_of_scope_reason ??
+                  'Not in scope from here: this API is running inside a Kubernetes Pod.'}{' '}
+                Run <code>nyxgpt ops status</code> on the host to survey a native install there.
+              </p>
+            ) : (
+            <>
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
               {status.install_mode?.mode === 'dev' ? (
                 <>
@@ -717,6 +765,8 @@ export default function InfrastructurePage() {
               </p>
             )}
             <ComponentList components={status.native} />
+            </>
+            )}
           </div>
 
           {/* --- Compose --- */}
@@ -724,11 +774,25 @@ export default function InfrastructurePage() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Docker Compose</h2>
               {!status.compose_probe_available && (
-                <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
+                <span style={badgeStyle(false, true)}>
+                  {inCluster ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'}
+                </span>
               )}
             </div>
 
-            {!status.compose_probe_available ? (
+            {/* Two different unknowns, and #3988 is about telling them apart.
+                From a host, "could not run the survey" is a probe failure and
+                its cause belongs on screen. From inside a Pod there is no
+                survey to run at all -- no host filesystem, no Docker socket --
+                and the old rendering leaked the CONTAINER's own
+                `/root/.nyxGPT/docker-compose.yml` to the operator as the
+                reason for a verdict about their machine. */}
+            {inCluster ? (
+              <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+                {status.compose_probe_reason ??
+                  'Not in scope from here: this API is running inside a Kubernetes Pod, which has no host filesystem and no Docker socket.'}
+              </p>
+            ) : !status.compose_probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                 Cannot determine from here — the Compose survey could not be run from wherever
                 this API process is running, so nothing below can be read as &quot;not
@@ -852,7 +916,8 @@ export default function InfrastructurePage() {
               </p>
             ) : !status.kubernetes.configured ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                No kubeconfig current-context configured — no cluster to detect.
+                No cluster configured from this vantage point — no kubeconfig current-context, and
+                no in-cluster ServiceAccount credentials.
               </p>
             ) : !status.kubernetes.probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
@@ -862,9 +927,15 @@ export default function InfrastructurePage() {
               <>
                 <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
                   Context: <code>{status.kubernetes.context}</code>
-                  {status.kubernetes.provisioned
-                    ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
-                    : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
+                  {/* In-cluster is its own case (#3988): there is no kubeconfig
+                      context to name, and this process cannot see whether the
+                      cluster carrying it is one nyxGPT provisioned -- so it
+                      claims neither. */}
+                  {inCluster
+                    ? ' — this page is being served from inside this cluster, and is reporting the deployment it is itself running in.'
+                    : status.kubernetes.provisioned
+                      ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
+                      : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
                 </p>
                 {/* The deployment's own install mode (#3834) -- what the images in
                     THIS cluster were built from. Never the native marker: a host
@@ -1011,8 +1082,9 @@ export default function InfrastructurePage() {
                         <ComponentList components={status.kubernetes.observability.workloads} />
                       )}
                       <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
-                        Services are ClusterIP-only. Publish Grafana, Prometheus, Jaeger and
-                        GlitchTip on the ports this dashboard links to with{' '}
+                        The observability Services are ClusterIP-only. Publish Grafana,
+                        Prometheus, Jaeger and GlitchTip on the ports this dashboard links to
+                        with{' '}
                         <code>{status.kubernetes.observability.port_forward_command}</code>.
                       </p>
                     </>
