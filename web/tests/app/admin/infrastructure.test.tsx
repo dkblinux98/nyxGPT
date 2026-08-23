@@ -1157,6 +1157,111 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/no deploy has been recorded here and this is not the instance/)).toBeInTheDocument();
   });
 
+  it('reports a deploy that did not finish as NOT COMPLETED, never as DEPLOYED or UNKNOWN (#3993)', async () => {
+    // The failure family this issue closes. Keying the badge off `known`
+    // alone would print DEPLOYED for a provision that died partway -- worse
+    // than the UNKNOWN it replaced, because it sends the operator to debug
+    // the wrong thing entirely.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-attempt',
+          known: true,
+          deployed: false,
+          version: '3.0.0',
+          host: '203.0.113.10',
+          instance_id: 'i-0abc123def',
+          attempt: {
+            status: 'failed',
+            phase: 'provision',
+            version: '3.0.0',
+            error: '[FAIL] Could not reconcile Grafana admin credential',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT COMPLETED')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('DEPLOYED')).not.toBeInTheDocument();
+    expect(screen.getByText(/stopped at the `provision` phase/)).toBeInTheDocument();
+    expect(screen.getByText(/Could not reconcile Grafana admin credential/)).toBeInTheDocument();
+    expect(screen.getByText(/An instance exists and is being billed/)).toBeInTheDocument();
+    // Observable, never operable (D-017): a pointer to the command, not a
+    // button. (The commands table lower down names it too, hence getAllByText.)
+    expect(screen.getAllByText('nyxgpt cloud deploy').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /deploy/i })).not.toBeInTheDocument();
+  });
+
+  it('does not claim an instance is billing when the deploy failed before the substrate (#4007)', async () => {
+    // D-018 inside the card written to enforce it. A deploy that dies at
+    // `infra` -- no terraform binary, no credentials -- records no ids, and
+    // the card used to assert billing over it and point at `cloud destroy`,
+    // which raises "nothing to destroy".
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-attempt',
+          known: true,
+          deployed: false,
+          host: '',
+          instance_id: '',
+          instance_type: '',
+          attempt: {
+            status: 'failed',
+            phase: 'infra',
+            error: 'terraform init failed: no such binary',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT COMPLETED')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/An instance exists and is being billed/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Nothing is recorded as provisioned by this attempt/)).toBeInTheDocument();
+    // The commands reference table lower down still lists destroy; what must
+    // not appear is the CARD offering it as the next step for this state.
+    expect(screen.queryByText(/to tear it\s+down/)).not.toBeInTheDocument();
+  });
+
+  it('reports a provisioned substrate with no deploy against it as SUBSTRATE ONLY (#3993)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          host: '203.0.113.10',
+          instance_id: 'i-0abc123def',
+          attempt: {},
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SUBSTRATE ONLY')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('DEPLOYED')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/no deploy has been recorded against it/)
+    ).toBeInTheDocument();
+  });
+
   it('shows IMDS-derived substrate facts when the dashboard is running on the EC2 instance (#3804)', async () => {
     // The owner's rc12 observation: served *from* the provisioned instance,
     // the page used to read "not provisioned" with every field blank because

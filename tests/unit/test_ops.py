@@ -6422,6 +6422,21 @@ _ALL_COMPOSE_SERVICES = (
 )
 
 
+def _settled_stack(monkeypatch):
+    """Stand in for the post-`up -d` settle check with a "stayed up" verdict.
+
+    #3993: `_start_observability_stack` no longer trusts `up -d`'s exit code
+    alone, so every test of the *start* path has to say what the containers did
+    afterwards. These tests are about the compose invocation, not the settling,
+    so they assert the verdict they are not exercising.
+    """
+    monkeypatch.setattr(
+        ops,
+        "_observability_settle_verdict",
+        lambda services: ops._SettleVerdict(ops.SETTLE_STATE_SETTLED, "", tuple(services)),
+    )
+
+
 def _fake_run_resolving_services(calls, *, up_rc=0):
     def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
@@ -6439,6 +6454,7 @@ def test_start_observability_stack_runs_compose_up_with_all_profiles(monkeypatch
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
     monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
+    _settled_stack(monkeypatch)
 
     results = ops._start_observability_stack()
 
@@ -6479,6 +6495,7 @@ def test_start_observability_stack_excludes_core_app_services_even_if_listed(mon
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
     monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
+    _settled_stack(monkeypatch)
 
     ops._start_observability_stack()
 
@@ -6542,6 +6559,229 @@ def test_start_observability_stack_no_services_resolved(monkeypatch):
     assert results[0].ok is False
     assert "No observability services resolved" in results[0].message
     assert enable_calls == []
+
+
+def _probe(available=True, reason="", states=None):
+    """A `self_heal.ComposeProbe` with `states` as {service: compose state}."""
+    return ops.self_heal.ComposeProbe(
+        available=available,
+        reason=reason,
+        statuses=tuple(
+            ops.self_heal.ComponentStatus(
+                service=service,
+                container=f"nyxgpt-{service}-1",
+                state=state,
+                health="",
+                healthy=state == "running",
+            )
+            for service, state in (states or {}).items()
+        ),
+    )
+
+
+@pytest.mark.unit
+def test_settle_verdict_reports_a_crash_loop_with_the_containers_own_last_log_line(monkeypatch):
+    """#3993's headline defect: the step declared the stack up over a Grafana
+    that was crash-looping, and the operator had to find `docker logs`' real
+    reason by hand, three times."""
+    monkeypatch.setattr(
+        ops.self_heal,
+        "compose_probe",
+        lambda: _probe(states={"grafana": "restarting", "jaeger": "running"}),
+    )
+    monkeypatch.setattr(
+        ops.self_heal,
+        "component_logs",
+        lambda service, tail=200: ops.self_heal.HealResult(
+            True,
+            f"docker compose logs {service}",
+            "starting Grafana\nError: failed to load provisioning file: ._datasources.yml\n",
+        ),
+    )
+
+    verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
+
+    assert verdict.state == ops.SETTLE_STATE_CRASHED
+    assert verdict.services == ("grafana",)
+    assert "restarting" in verdict.detail
+    # The container's own reason, not a generic "something is wrong".
+    assert "._datasources.yml" in verdict.detail
+
+
+@pytest.mark.unit
+def test_settle_verdict_is_undetermined_when_the_probe_cannot_run(monkeypatch):
+    """#3812's rule: a probe that could not run is not evidence of an outage.
+    Reporting this as a failure would invent a broken stack; reporting it as a
+    success would be #3993's lie with a different cause."""
+    monkeypatch.setattr(
+        ops.self_heal,
+        "compose_probe",
+        lambda: _probe(
+            available=False,
+            reason="`docker compose ps` exited 125: permission denied ... docker daemon socket",
+        ),
+    )
+
+    verdict = ops._observability_settle_verdict(["grafana"])
+
+    assert verdict.state == ops.SETTLE_STATE_UNDETERMINED
+    assert "permission denied" in verdict.detail
+
+
+@pytest.mark.unit
+def test_settle_verdict_is_undetermined_when_the_probe_reports_none_of_the_services(monkeypatch):
+    monkeypatch.setattr(ops.self_heal, "compose_probe", lambda: _probe(states={}))
+
+    verdict = ops._observability_settle_verdict(["grafana"])
+
+    assert verdict.state == ops.SETTLE_STATE_UNDETERMINED
+    assert "none of the services" in verdict.detail
+
+
+@pytest.mark.unit
+def test_settle_verdict_needs_more_than_one_running_reading(monkeypatch):
+    """A container that dies a second after creation reads `running` on the
+    first look -- which is exactly what `up -d` exiting 0 already told us."""
+    readings = [
+        _probe(states={"grafana": "running"}),
+        _probe(states={"grafana": "restarting"}),
+    ]
+    monkeypatch.setattr(ops.self_heal, "compose_probe", lambda: readings.pop(0))
+    monkeypatch.setattr(
+        ops.self_heal,
+        "component_logs",
+        lambda service, tail=200: ops.self_heal.HealResult(True, "logs", "boom\n"),
+    )
+    monkeypatch.setattr(ops.time, "sleep", lambda _s: None)
+
+    verdict = ops._observability_settle_verdict(["grafana"])
+
+    assert verdict.state == ops.SETTLE_STATE_CRASHED
+    assert not readings, "the second reading was never taken"
+
+
+@pytest.mark.unit
+def test_settle_verdict_settles_after_consecutive_running_readings(monkeypatch):
+    monkeypatch.setattr(
+        ops.self_heal,
+        "compose_probe",
+        lambda: _probe(states={"grafana": "running", "jaeger": "running"}),
+    )
+    monkeypatch.setattr(ops.time, "sleep", lambda _s: None)
+
+    verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
+
+    assert verdict.state == ops.SETTLE_STATE_SETTLED
+
+
+@pytest.mark.unit
+def test_settle_verdict_is_bounded(monkeypatch):
+    """An install step may not hang: a container stuck `created` closes the
+    window as undetermined rather than polling forever."""
+    monkeypatch.setattr(
+        ops.self_heal, "compose_probe", lambda: _probe(states={"grafana": "created"})
+    )
+    clock = iter([0.0] + [float(i) for i in range(1, 200)])
+    monkeypatch.setattr(ops.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(ops.time, "sleep", lambda _s: None)
+
+    verdict = ops._observability_settle_verdict(["grafana"])
+
+    assert verdict.state == ops.SETTLE_STATE_UNDETERMINED
+    assert "created" in verdict.detail
+
+
+@pytest.mark.unit
+def test_start_observability_stack_fails_when_a_container_does_not_stay_up(monkeypatch):
+    """`docker compose up -d` exits 0 for a container that then crash-loops.
+    Before #3993 that alone produced "[OK] Observability stack up"."""
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
+    enable_calls = []
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: enable_calls.append(True))
+    monkeypatch.setattr(
+        ops,
+        "_observability_settle_verdict",
+        lambda services: ops._SettleVerdict(
+            ops.SETTLE_STATE_CRASHED,
+            "grafana (restarting): Error: failed to load provisioning file",
+            ("grafana",),
+        ),
+    )
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "did not stay up" in results[0].message
+    assert "grafana" in results[0].message
+    assert "failed to load provisioning file" in results[0].details
+    assert "nyxgpt ops logs grafana" in results[0].details
+    # The stack is not up, so the config flags that advertise it as live must
+    # not be flipped on -- the same rule the `up -d` failure path follows.
+    assert enable_calls == []
+
+
+@pytest.mark.unit
+def test_start_observability_stack_reports_unknown_when_it_cannot_verify(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
+    monkeypatch.setattr(
+        ops,
+        "_observability_settle_verdict",
+        lambda services: ops._SettleVerdict(
+            ops.SETTLE_STATE_UNDETERMINED,
+            "`docker compose ps` exited 125: permission denied",
+            tuple(services),
+        ),
+    )
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    # Neither a success claim nor a failure: `ok` keeps the install running
+    # (an unqueryable probe is not an outage, #3812) while the label and the
+    # message refuse to assert the stack is up.
+    assert results[0].ok is True
+    assert ops._result_status_label(results[0]) == "UNKNOWN"
+    assert "could not verify" in results[0].message
+    assert "Observability stack up:" not in results[0].message
+    assert "permission denied" in results[0].details
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_stops_before_reconciling_against_a_crashed_stack(
+    tmp_path, monkeypatch
+):
+    """The credential reconcile must never run against a stack that did not
+    settle: authenticating at a restarting Grafana is what turned #3993's crash
+    loop into "Could not reconcile Grafana admin credential"."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    (tmp_path / ".nyxGPT").mkdir(exist_ok=True)
+    (tmp_path / ".nyxGPT" / "config.ini").write_text(
+        "[monitoring]\ngrafana_ui_url = http://localhost:3001\ngrafana_admin_password = secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(
+        ops,
+        "_start_observability_stack",
+        lambda: [ops.OpsResult(False, "Observability stack did not stay up: grafana", "boom")],
+    )
+    credential_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_reconcile_grafana_admin_credential",
+        lambda *a, **k: credential_calls.append(a) or ("pw", ops.OpsResult(True, "reconciled")),
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert credential_calls == []
+    assert any(not r.ok and "did not stay up" in r.message for r in results)
 
 
 @pytest.mark.unit
