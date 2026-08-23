@@ -137,6 +137,24 @@ def test_linux_bootstrap_installs_the_cli_into_a_venv_not_pip_user():
     assert "pip install --user" not in body
 
 
+def test_linux_bootstrap_puts_nyxgpt_on_the_login_users_path():
+    """#3993: `nyxgpt` has to be runnable by an operator who SSHes in.
+
+    `run_as_target` sets PATH for the bootstrap's own invocations only, so
+    without this an operator diagnosing a failed provision got `nyxgpt:
+    command not found` from every wrapped command the docs and the dashboard
+    name -- while the binary sat in $CLI_VENV/bin, which nothing told them
+    about.
+    """
+    body = "\n".join(_linux_executable_lines())
+
+    assert "/etc/profile.d/nyxgpt.sh" in body
+    assert 'PATH="$HOME/.nyxGPT/opt/nyxgpt-cli/bin:$PATH"' in body
+    # Quoted delimiter: $HOME must be expanded by the login shell that sources
+    # the file, not by this bootstrap run.
+    assert "<<'PROFILE_EOF'" in body
+
+
 def test_linux_bootstrap_builds_the_cli_venv_on_a_python_that_meets_the_floor():
     # Amazon Linux 2023's `python3` is 3.9 and nyxGPT's requires-python is
     # ">=3.11", so a venv built from the distro default is one pip refuses to

@@ -417,6 +417,92 @@ def test_apply_preserves_unrelated_keys_in_the_shared_state_file(terraform_calls
     assert written["security_group_id"] == "sg-1"
 
 
+# --- state refresh on re-provision (#3993) --------------------------------
+#
+# The defect: `write_cloud_state` merged, writing only the keys the new
+# outputs carried, so a key the apply did not produce kept the *previous*
+# substrate's value. Observed live -- state.json naming the new instance's id
+# beside a destroyed substrate's security group, which sent
+# `nyxgpt cloud allow-ip`'s auto-discovery at a group that no longer existed,
+# while the operator was locked out and depending on it.
+
+
+def test_apply_drops_a_prior_substrates_ids_it_did_not_reproduce(terraform_calls, monkeypatch):
+    cloud_infra.CLOUD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cloud_infra.CLOUD_STATE_FILE.write_text(
+        json.dumps(
+            {
+                "instance_id": "i-old",
+                # The destroyed substrate's group, which the merge kept.
+                "security_group_id": "sg-0fad-destroyed",
+                "public_ip": "198.51.100.1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cloud_infra,
+        "terraform_outputs",
+        lambda: {"instance_id": "i-new", "region": "us-east-1"},
+    )
+
+    cloud_infra.apply_infra(_args())
+
+    written = json.loads(cloud_infra.CLOUD_STATE_FILE.read_text(encoding="utf-8"))
+    assert written["instance_id"] == "i-new"
+    assert "security_group_id" not in written, "a destroyed substrate's group must not survive"
+    assert "public_ip" not in written
+
+
+def test_apply_drops_ids_whose_output_came_back_null(terraform_calls, monkeypatch):
+    """A null output is "this substrate has no such id", not "keep the old one"."""
+    cloud_infra.CLOUD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cloud_infra.CLOUD_STATE_FILE.write_text(
+        json.dumps({"security_group_id": "sg-stale"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        cloud_infra,
+        "terraform_outputs",
+        lambda: {"instance_id": "i-new", "security_group_id": None},
+    )
+
+    cloud_infra.apply_infra(_args())
+
+    written = json.loads(cloud_infra.CLOUD_STATE_FILE.read_text(encoding="utf-8"))
+    assert "security_group_id" not in written
+
+
+def test_apply_leaves_state_alone_when_outputs_are_unreadable(terraform_calls, monkeypatch, capsys):
+    """"Cannot determine" is its own outcome (#3993).
+
+    `terraform_outputs` returns `{}` when the *read* failed as well as when
+    there is nothing to read. Blanking every recorded id because a read failed
+    would be a worse lie than the stale one: the operator would be told
+    nothing is provisioned by a function that never asked AWS. Left as-is, and
+    said out loud.
+    """
+    cloud_infra.CLOUD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cloud_infra.CLOUD_STATE_FILE.write_text(
+        json.dumps({"instance_id": "i-old", "security_group_id": "sg-old"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(cloud_infra, "terraform_outputs", dict)
+
+    result = cloud_infra.apply_infra(_args())
+
+    written = json.loads(cloud_infra.CLOUD_STATE_FILE.read_text(encoding="utf-8"))
+    assert written == {"instance_id": "i-old", "security_group_id": "sg-old"}
+    assert result["state_refreshed"] is False
+    err = capsys.readouterr().err
+    assert "NOT been refreshed" in err
+    assert "earlier substrate" in err
+
+
+def test_apply_reports_a_refreshed_state_on_the_normal_path(terraform_calls, monkeypatch):
+    monkeypatch.setattr(cloud_infra, "terraform_outputs", lambda: {"instance_id": "i-new"})
+
+    assert cloud_infra.apply_infra(_args())["state_refreshed"] is True
+
+
 def test_destroy_requires_existing_state(terraform_calls):
     with pytest.raises(CloudCommandError, match="nothing to destroy"):
         cloud_infra.destroy_infra(_args())

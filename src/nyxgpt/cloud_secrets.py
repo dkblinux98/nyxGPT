@@ -79,8 +79,17 @@ def _failure_cache_get(cache_key: str) -> str | None:
     return message
 
 
-def _get_boto3_client(service: str, region: str | None) -> Any:
-    """Build a boto3 client for `service`, raising a clean error if boto3 isn't installed."""
+def _get_boto3_client(service: str, region: str | None, profile: str = "") -> Any:
+    """Build a boto3 client for `service`, raising a clean error if boto3 isn't installed.
+
+    `profile` is threaded in from the caller rather than read here (#3993):
+    this module is imported by `nyxgpt.config` at module scope, so reading
+    config.ini from inside it would close an import cycle -- and worse, these
+    functions run *during* config resolution, so a `load_config()` here would
+    recurse. `nyxgpt.config._resolve_cloud_secret` already holds the parsed
+    config and passes the profile down; empty means boto3's default chain,
+    which still honours `AWS_PROFILE`.
+    """
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudSecretsError(
@@ -91,14 +100,20 @@ def _get_boto3_client(service: str, region: str | None) -> Any:
     if region:
         kwargs["region_name"] = region
     try:
+        # The bare `boto3.client` is kept for the no-profile case: it *is*
+        # boto3's default session, and routing it through an explicit Session
+        # would change nothing but the code path.
+        if profile:
+            return boto3.Session(profile_name=profile).client(service, **kwargs)
         return boto3.client(service, **kwargs)
     except Exception as exc:
-        raise CloudSecretsError(f"Failed to create an AWS {service} client: {exc}") from exc
+        suffix = f" for profile {profile!r}" if profile else ""
+        raise CloudSecretsError(f"Failed to create an AWS {service} client{suffix}: {exc}") from exc
 
 
-def fetch_ssm_parameter(name: str, region: str | None = None) -> str:
+def fetch_ssm_parameter(name: str, region: str | None = None, profile: str = "") -> str:
     """Fetch a single SecureString/String parameter from SSM Parameter Store."""
-    client = _get_boto3_client("ssm", region)
+    client = _get_boto3_client("ssm", region, profile)
     try:
         response = client.get_parameter(Name=name, WithDecryption=True)
     except Exception as exc:
@@ -109,7 +124,9 @@ def fetch_ssm_parameter(name: str, region: str | None = None) -> str:
     return str(value)
 
 
-def fetch_secretsmanager_key(secret_id: str, key: str, region: str | None = None) -> str:
+def fetch_secretsmanager_key(
+    secret_id: str, key: str, region: str | None = None, profile: str = ""
+) -> str:
     """Fetch `key` out of a Secrets Manager secret storing a JSON object of key/value pairs.
 
     A single secret holds every cloud-sourced credential (`auth_api_key`,
@@ -117,7 +134,7 @@ def fetch_secretsmanager_key(secret_id: str, key: str, region: str | None = None
     per secret, so one secret with several keys is the natural fit (unlike
     SSM, which is per-parameter and priced for that).
     """
-    client = _get_boto3_client("secretsmanager", region)
+    client = _get_boto3_client("secretsmanager", region, profile)
     try:
         response = client.get_secret_value(SecretId=secret_id)
     except Exception as exc:
@@ -148,13 +165,19 @@ def resolve_secret(
     region: str | None = None,
     ssm_prefix: str = "/nyxgpt",
     secretsmanager_id: str = "nyxgpt",
+    profile: str = "",
 ) -> str:
     """Resolve `key` (e.g. `"auth_api_key"`) via the given AWS provider.
 
     `provider` is `SSM_PROVIDER` (one parameter per key, at
     `f"{ssm_prefix}/{key}"`) or `SECRETS_MANAGER_PROVIDER` (one JSON secret
-    holding every key, at `secretsmanager_id`). Cached for
-    `_CACHE_TTL_SECONDS` per `(provider, region, prefix/id, key)`. Raises
+    holding every key, at `secretsmanager_id`). `profile` selects the AWS
+    profile to authenticate with (#3993); empty means boto3's default chain.
+    Cached for
+    `_CACHE_TTL_SECONDS` per `(provider, region, profile, prefix/id, key)` --
+    the profile is part of the key because the same parameter name in two
+    accounts is two different secrets, and caching them together would serve
+    one account's value for the other. Raises
     `CloudSecretsError` on any failure -- callers decide how to degrade. A
     fetch failure (unlike a success) is remembered for only
     `_NEGATIVE_CACHE_TTL_SECONDS`, so a sustained AWS-side failure still
@@ -166,7 +189,7 @@ def resolve_secret(
             f"{SSM_PROVIDER!r} or {SECRETS_MANAGER_PROVIDER!r}"
         )
 
-    cache_key = f"{provider}:{region}:{ssm_prefix}:{secretsmanager_id}:{key}"
+    cache_key = f"{provider}:{region}:{profile}:{ssm_prefix}:{secretsmanager_id}:{key}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -177,9 +200,13 @@ def resolve_secret(
 
     try:
         if provider == SSM_PROVIDER:
-            value = fetch_ssm_parameter(f"{ssm_prefix.rstrip('/')}/{key}", region=region)
+            value = fetch_ssm_parameter(
+                f"{ssm_prefix.rstrip('/')}/{key}", region=region, profile=profile
+            )
         else:
-            value = fetch_secretsmanager_key(secretsmanager_id, key, region=region)
+            value = fetch_secretsmanager_key(
+                secretsmanager_id, key, region=region, profile=profile
+            )
     except CloudSecretsError as exc:
         _failure_cache[cache_key] = (time.monotonic(), str(exc))
         raise
