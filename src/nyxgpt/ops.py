@@ -955,6 +955,20 @@ _OUTPUT_EXCERPT_SALIENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ...and the other half, which is the half that would actually have saved the
+# 2026-08-21 round. Homebrew's `puts e` prints a *bare* exception message
+# ("Updating load commands would exceed header padding") with no `Error:`
+# prefix, so no pattern short of "keep everything" would rescue it by shape.
+# What separates it from real log spam is length: measured across the owner's
+# `cli.log.2`, every failing `brew install`/`reinstall` stdout was 63-67 lines
+# (elisions of 38, 39, 41, 42), while the genuinely large ones -- `npm ci`, a
+# pip resolver backtrack -- elided 375 and 475. A verbatim floor of 80 lines
+# therefore keeps the whole of a failed brew install, including whatever it
+# printed mid-stream, and still bounds the outputs the original bound was
+# written for. It is the cheapest correct answer: the reason a head+tail
+# window failed here is that the output was never big enough to need one.
+_OUTPUT_EXCERPT_VERBATIM_MAX_LINES = 80
+
 
 def _bounded_output(text: str | None) -> str:
     """Return `text` reduced to a bounded head+tail excerpt, keeping error lines.
@@ -968,13 +982,13 @@ def _bounded_output(text: str | None) -> str:
     pathological line (a minified stack trace, a base64 blob) can't blow the
     bound on its own.
 
-    Up to `_OUTPUT_EXCERPT_SALIENT_LINES` lines from the elided middle that
-    look like an error/warning are carried out with the marker (the *last*
-    such lines, which sit nearest the failure), so a diagnosis printed
-    mid-stream survives the bound -- see `_OUTPUT_EXCERPT_SALIENT_LINES` for
-    the two occasions this cost. The rescued lines are labelled as coming
-    from the omitted region and are still shown in their original order, so
-    nothing here can be misread as the end of the output.
+    Output no longer than `_OUTPUT_EXCERPT_VERBATIM_MAX_LINES` is kept whole,
+    and up to `_OUTPUT_EXCERPT_SALIENT_LINES` lines from the elided middle of
+    anything longer that looks like an error/warning are carried out with the
+    marker (the *last* such lines, which sit nearest the failure). The rescued
+    lines are labelled as coming from the omitted region and are still shown
+    in their original order, so nothing here can be misread as the end of the
+    output.
     """
     if not text or not text.strip():
         return ""
@@ -986,10 +1000,10 @@ def _bounded_output(text: str | None) -> str:
         )
         for line in text.strip().splitlines()
     ]
-    keep = _OUTPUT_EXCERPT_HEAD_LINES + _OUTPUT_EXCERPT_TAIL_LINES
-    if len(lines) <= keep:
+    head_and_tail = _OUTPUT_EXCERPT_HEAD_LINES + _OUTPUT_EXCERPT_TAIL_LINES
+    if len(lines) <= max(head_and_tail, _OUTPUT_EXCERPT_VERBATIM_MAX_LINES):
         return "\n".join(lines)
-    omitted = len(lines) - keep
+    omitted = len(lines) - head_and_tail
     middle = lines[_OUTPUT_EXCERPT_HEAD_LINES : len(lines) - _OUTPUT_EXCERPT_TAIL_LINES]
     salient = [line for line in middle if _OUTPUT_EXCERPT_SALIENT_RE.match(line)]
     salient = salient[-_OUTPUT_EXCERPT_SALIENT_LINES:] if salient else []

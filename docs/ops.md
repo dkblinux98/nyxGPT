@@ -234,10 +234,14 @@ an over-long single line is clipped with `... [line truncated]`. Nothing is
 dropped silently, and no failure is ever reported with zero output.
 
 A head-and-tail window is the wrong shape for a tool that reports progress at
-both ends and failures in between, so up to a dozen error/warning lines from
-the elided middle are carried out with the marker, which says how many
-(#3861). Homebrew is the case that produced this rule: it prints the *cause*
-of a failed post-install step mid-stream and its caveats afterwards, so the
+both ends and failures in between, so two things soften it (#3861). Output of
+80 lines or fewer is not elided at all — every failing `brew
+install`/`reinstall` measured on the machine that produced #3861 was 63-67
+lines, while the outputs this bound was written for (`npm ci`, a pip resolver
+backtrack) ran to hundreds. Above that floor, up to a dozen error/warning
+lines from the elided middle are carried out with the marker, which says how
+many. Homebrew is the case that produced both rules: it prints the *cause* of
+a failed post-install step mid-stream and its caveats afterwards, so the old
 bound kept the headline and dropped the line that said why — and two rounds of
 diagnosis were spent on the difference.
 

@@ -443,3 +443,36 @@ def test_bounded_output_caps_how_many_error_lines_it_rescues():
     assert len(rescued) == ops._OUTPUT_EXCERPT_SALIENT_LINES
     # The ones nearest the failure, not the ones nearest the start.
     assert rescued[-1] == "error: 499"
+
+
+@pytest.mark.unit
+def test_bounded_output_keeps_a_failed_brew_install_whole():
+    """The measurement that sets the verbatim floor (#3861).
+
+    Homebrew prints the cause of a post-install failure with `puts e` -- a
+    bare exception message, no `Error:` prefix -- so no pattern rescues it by
+    shape. What separates it from real log spam is size: across the owner's
+    `cli.log.2` every failing `brew install`/`reinstall` stdout was 63-67
+    lines, while `npm ci` and a pip backtrack elided 375 and 475. Below the
+    floor nothing is elided at all, which is why the excerpt that cost two
+    diagnosis rounds cannot recur at this size.
+    """
+    lines = ["==> Installing nyxgpt-api"] * 5
+    lines += ["==> some build step"] * 40
+    lines += ["Updating load commands would exceed header padding"]
+    lines += ["==> Caveats"] * 21
+    assert len(lines) == 67  # the owner's actual stdout length
+
+    excerpt = ops._bounded_output("\n".join(lines))
+
+    assert "lines omitted" not in excerpt
+    assert "Updating load commands would exceed header padding" in excerpt
+
+
+@pytest.mark.unit
+def test_bounded_output_still_elides_the_outputs_the_bound_was_written_for():
+    """An `npm ci` or a pip backtrack is still bounded -- the floor is a floor."""
+    lines = ["step"] * (ops._OUTPUT_EXCERPT_VERBATIM_MAX_LINES + 400)
+    excerpt = ops._bounded_output("\n".join(lines))
+    assert "lines omitted" in excerpt
+    assert len(excerpt.splitlines()) < ops._OUTPUT_EXCERPT_VERBATIM_MAX_LINES
