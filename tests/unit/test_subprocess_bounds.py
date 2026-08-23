@@ -214,6 +214,7 @@ def test_status_does_not_touch_kubectl_outside_kubernetes_mode(monkeypatch, tmp_
     # dials a cluster that is not there.
     monkeypatch.setattr(canary, "_which", lambda _: "/usr/local/bin/kubectl")
     monkeypatch.setattr(canary, "current_mode", lambda: "native")
+    monkeypatch.setattr(canary, "_current_mode_with_reason", lambda: ("native", ""))
     monkeypatch.setattr(
         canary,
         "deployment_health",

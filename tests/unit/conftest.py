@@ -417,7 +417,7 @@ def _no_real_host_stack_commands(monkeypatch):
     Both halves of that are defects:
 
     - **Reads make the suite's result depend on the machine.** Three
-      `ops doctor` tests stub `_docker_container_state` and
+      `ops doctor` tests stub `_docker_container_probe` and
       `_compose_stack_snapshot` but not `_brew_services_snapshot`, so on a host
       where `ollama` is a running brew service -- i.e. one actually running
       nyxGPT -- `detect_deployment_mode()` reports a native/Terraform conflict
