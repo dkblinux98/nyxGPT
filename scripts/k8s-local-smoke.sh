@@ -417,7 +417,9 @@ assert k8s["pods"], "no Pods reported -- the in-cluster RBAC read failed"
 reason = data.get("compose_probe_reason") or ""
 assert "/root/.nyxGPT" not in reason, f"the container path is still leaked as a reason: {reason}"
 assert data["install_mode"]["in_scope"] is False, "the native card is not scoped out in-cluster"
-print(f"[OK] in-cluster: {len(k8s[\"pods\"])} Pods, context={k8s[\"context\"]!r}")
+pod_count = len(k8s["pods"])
+context = k8s["context"]
+print(f"[OK] in-cluster: {pod_count} Pods, context={context!r}")
 ' || fail "the Infrastructure payload served from inside the cluster is wrong (#3988)"
 ok "the page served by the api Pod reports the deployment it is running in"
 
