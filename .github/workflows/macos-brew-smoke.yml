@@ -1359,6 +1359,92 @@ jobs:
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the injection"; exit 1; }
           nyxgpt --version
 
+      - name: "Stop: prove `nyxgpt ops stop ollama-logs` boots out the ollama log watcher"
+        # Executed evidence for #4033. The owner found `follow-ollama-logs.sh`
+        # and its `tail -F` still running with no `nyxgpt` command able to stop
+        # them: ops had `_stop_native_log_follower("ollama-logs")` wired to the
+        # right label and nothing called it, so `launchctl bootout` was the
+        # supported path. Inspection cannot see an argparse `choices` list
+        # rejecting a target, and it cannot see whether `bootout` actually
+        # unloaded the agent -- only running it can.
+        #
+        # Fault injection, same shape as the #3859 step below, because "it is
+        # stopped afterwards" is worthless without "it was running before":
+        #
+        #   1. inject and bootstrap a `com.nyxgpt.ollama-logs` agent, and
+        #      assert launchd really has it loaded
+        #   2. `nyxgpt ops stop ollama-logs` -- assert it exits 0 (the
+        #      pre-fix binary exits 2 here with an argparse "invalid choice"
+        #      error, which is the defect) and that the job is gone
+        #   3. the cassandra follower, injected alongside, must still be
+        #      loaded: a single named target stops one agent, not both
+        #   4. re-inject and prove `stop all` takes the ollama follower too,
+        #      which is the other half `all` did not cover
+        run: |
+          set -euo pipefail
+          LA="$HOME/Library/LaunchAgents"
+          mkdir -p "$LA"
+
+          inject() {
+            cat > "$LA/$1.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>$1</string>
+            <key>ProgramArguments</key>
+            <array><string>/bin/bash</string><string>-lc</string><string>sleep 3600</string></array>
+            <key>RunAtLoad</key><true/>
+          </dict>
+          </plist>
+          PLIST
+            launchctl bootstrap "gui/$(id -u)" "$LA/$1.plist" 2>/dev/null || true
+          }
+          loaded() { launchctl list 2>/dev/null | grep -q "$1"; }
+
+          echo "=== inject both log followers ==="
+          inject com.nyxgpt.cassandra-logs
+          inject com.nyxgpt.ollama-logs
+
+          # A runner whose launchd session is not a `gui` domain cannot load
+          # an agent at all. Skip rather than pass vacuously -- a green tick
+          # that proved nothing is worse than an honest skip.
+          if ! loaded com.nyxgpt.ollama-logs; then
+            echo "::warning::launchd would not bootstrap into gui/$(id -u); \
+          skipping the runtime half (the argparse half is asserted below)"
+            nyxgpt ops stop ollama-logs --quiet
+            echo "good: 'ops stop ollama-logs' is an accepted target (exit 0)"
+            exit 0
+          fi
+          echo "good: com.nyxgpt.ollama-logs is loaded -- there is something to stop"
+
+          echo "=== the wrapped stop ==="
+          nyxgpt ops stop ollama-logs --quiet
+          if loaded com.nyxgpt.ollama-logs; then
+            launchctl list | grep -i nyxgpt || true
+            echo "::error::com.nyxgpt.ollama-logs survived 'nyxgpt ops stop ollama-logs' (#4033)"
+            exit 1
+          fi
+          echo "good: the ollama log watcher is unloaded"
+
+          if ! loaded com.nyxgpt.cassandra-logs; then
+            echo "::error::stopping ollama-logs also stopped cassandra-logs -- \
+          a named target must stop exactly one agent"
+            exit 1
+          fi
+          echo "good: cassandra-logs untouched by a named ollama-logs stop"
+
+          echo "=== and 'all', which did not cover it either ==="
+          inject com.nyxgpt.ollama-logs
+          loaded com.nyxgpt.ollama-logs \
+            || { echo "::error::re-injection failed -- the check below is vacuous"; exit 1; }
+          nyxgpt ops stop --quiet || true
+          if loaded com.nyxgpt.ollama-logs; then
+            echo "::error::com.nyxgpt.ollama-logs survived 'nyxgpt ops stop all' (#4033)"
+            exit 1
+          fi
+          echo "good: 'stop all' covers every log follower"
+
       - name: "Teardown: prove the wrapped uninstall clears what `brew uninstall` cannot"
         # #3859. The owner ran `brew uninstall` on both candidate formulas and
         # then `brew untap`, and was left with api and web still serving on

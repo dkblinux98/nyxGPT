@@ -1564,6 +1564,43 @@ def test_ops_observability_dispatches_to_ops_module(
     assert "[OK] Observability stack up" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("action", ["stop", "restart"])
+@pytest.mark.parametrize("follower", ["cassandra-logs", "ollama-logs"])
+def test_ops_stop_restart_accept_every_log_follower_target(
+    monkeypatch: pytest.MonkeyPatch, action: str, follower: str
+) -> None:
+    """Every log follower is a nameable `nyxgpt ops stop`/`restart` target (#4033).
+
+    `ollama-logs` used to be rejected by argparse -- ops had
+    `_stop_native_log_follower("ollama-logs")` wired to the right label and no
+    caller, so `launchctl bootout` was the only supported way to stop the
+    ollama log watcher. Parametrized over the follower set rather than
+    asserting the two by hand: a follower added to `NATIVE_LOG_FOLLOWERS`
+    without a CLI target should fail here.
+    """
+    import nyxgpt.cli as cli_mod
+
+    targets = []
+    monkeypatch.setattr(cli_mod.ops_mod, action, lambda args: targets.append(args.target) or 0)
+
+    assert cli(["ops", action, follower]) == 0
+    assert targets == [follower]
+
+
+def test_ops_service_targets_cover_the_follower_set(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`stop`/`restart` reject an unknown target but offer every real follower."""
+    import nyxgpt.cli as cli_mod
+
+    with pytest.raises(SystemExit):
+        cli(["ops", "stop", "not-a-service"])
+
+    err = capsys.readouterr().err
+    for follower in cli_mod.ops_mod.NATIVE_LOG_FOLLOWERS:
+        assert follower in err
+
+
 def test_ops_migrate_volumes_dispatches_to_ops_module(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
