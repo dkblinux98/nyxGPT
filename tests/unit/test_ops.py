@@ -2748,7 +2748,10 @@ def test_status_prints_cannot_determine_instead_of_absent(monkeypatch, capsys, _
     )
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops, "_print_required_models_status", lambda: None)
+    # Keyword-only and keyword-passed by `status()` (`kubernetes=`,
+    # `cluster_unreadable=`); a bare `lambda: None` stub goes stale the moment
+    # that call gains an argument, which is how it broke.
+    monkeypatch.setattr(ops, "_print_required_models_status", lambda **_kwargs: None)
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     ops.status(MagicMock())

@@ -44,7 +44,9 @@ class _FakeSecretsManagerClient:
 
 def test_fetch_ssm_parameter_returns_value(monkeypatch):
     client = _FakeSSMClient({"/nyxgpt/auth_api_key": "sk-ssm-secret"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     value = cloud_secrets.fetch_ssm_parameter("/nyxgpt/auth_api_key")
 
@@ -54,7 +56,9 @@ def test_fetch_ssm_parameter_returns_value(monkeypatch):
 
 def test_fetch_ssm_parameter_wraps_client_errors(monkeypatch):
     client = _FakeSSMClient({})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError, match="ParameterNotFound"):
         cloud_secrets.fetch_ssm_parameter("/nyxgpt/missing")
@@ -78,7 +82,9 @@ def test_fetch_ssm_parameter_raises_when_value_missing(monkeypatch):
 
 def test_fetch_secretsmanager_key_returns_value(monkeypatch):
     client = _FakeSecretsManagerClient({"nyxgpt": json.dumps({"auth_api_key": "sk-sm-secret"})})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     value = cloud_secrets.fetch_secretsmanager_key("nyxgpt", "auth_api_key")
 
@@ -88,7 +94,9 @@ def test_fetch_secretsmanager_key_returns_value(monkeypatch):
 
 def test_fetch_secretsmanager_key_wraps_client_errors(monkeypatch):
     client = _FakeSecretsManagerClient({})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError, match="ResourceNotFoundException"):
         cloud_secrets.fetch_secretsmanager_key("nyxgpt", "auth_api_key")
@@ -109,7 +117,9 @@ def test_fetch_secretsmanager_key_raises_when_no_secret_string(monkeypatch):
 
 def test_fetch_secretsmanager_key_raises_on_invalid_json(monkeypatch):
     client = _FakeSecretsManagerClient({"nyxgpt": "not-json"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError, match="not valid JSON"):
         cloud_secrets.fetch_secretsmanager_key("nyxgpt", "auth_api_key")
@@ -117,7 +127,9 @@ def test_fetch_secretsmanager_key_raises_on_invalid_json(monkeypatch):
 
 def test_fetch_secretsmanager_key_raises_when_key_missing(monkeypatch):
     client = _FakeSecretsManagerClient({"nyxgpt": json.dumps({"openai_api_key": "sk-x"})})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError, match="no key 'auth_api_key'"):
         cloud_secrets.fetch_secretsmanager_key("nyxgpt", "auth_api_key")
@@ -128,7 +140,9 @@ def test_fetch_secretsmanager_key_raises_when_key_missing(monkeypatch):
 
 def test_resolve_secret_dispatches_to_ssm(monkeypatch):
     client = _FakeSSMClient({"/nyxgpt/auth_api_key": "sk-ssm-secret"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     value = cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
 
@@ -137,7 +151,9 @@ def test_resolve_secret_dispatches_to_ssm(monkeypatch):
 
 def test_resolve_secret_dispatches_to_secretsmanager(monkeypatch):
     client = _FakeSecretsManagerClient({"nyxgpt": json.dumps({"github_pat": "ghp-secret"})})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     value = cloud_secrets.resolve_secret(cloud_secrets.SECRETS_MANAGER_PROVIDER, "github_pat")
 
@@ -146,7 +162,9 @@ def test_resolve_secret_dispatches_to_secretsmanager(monkeypatch):
 
 def test_resolve_secret_uses_custom_ssm_prefix(monkeypatch):
     client = _FakeSSMClient({"/custom/openai_api_key": "sk-custom"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     value = cloud_secrets.resolve_secret(
         cloud_secrets.SSM_PROVIDER, "openai_api_key", ssm_prefix="/custom"
@@ -157,7 +175,9 @@ def test_resolve_secret_uses_custom_ssm_prefix(monkeypatch):
 
 def test_resolve_secret_uses_custom_secretsmanager_id(monkeypatch):
     client = _FakeSecretsManagerClient({"my-secret": json.dumps({"github_pat": "ghp-custom"})})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     value = cloud_secrets.resolve_secret(
         cloud_secrets.SECRETS_MANAGER_PROVIDER, "github_pat", secretsmanager_id="my-secret"
@@ -173,7 +193,9 @@ def test_resolve_secret_rejects_unknown_provider():
 
 def test_resolve_secret_caches_and_does_not_refetch(monkeypatch):
     client = _FakeSSMClient({"/nyxgpt/auth_api_key": "sk-ssm-secret"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     first = cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
     second = cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
@@ -184,7 +206,9 @@ def test_resolve_secret_caches_and_does_not_refetch(monkeypatch):
 
 def test_resolve_secret_cache_expires(monkeypatch):
     client = _FakeSSMClient({"/nyxgpt/auth_api_key": "sk-ssm-secret"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     times = iter([100.0, 500.0, 500.0])
     monkeypatch.setattr(cloud_secrets.time, "monotonic", lambda: next(times))
@@ -197,7 +221,9 @@ def test_resolve_secret_cache_expires(monkeypatch):
 
 def test_resolve_secret_caches_failures_and_does_not_retry_immediately(monkeypatch):
     client = _FakeSSMClient({})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError, match="ParameterNotFound"):
         cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
@@ -210,7 +236,9 @@ def test_resolve_secret_caches_failures_and_does_not_retry_immediately(monkeypat
 
 def test_resolve_secret_retries_after_negative_cache_expires(monkeypatch):
     client = _FakeSSMClient({})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     times = iter([100.0, 200.0, 200.0])
     monkeypatch.setattr(cloud_secrets.time, "monotonic", lambda: next(times))
@@ -225,7 +253,9 @@ def test_resolve_secret_retries_after_negative_cache_expires(monkeypatch):
 
 def test_resolve_secret_success_after_failure_clears_negative_cache(monkeypatch):
     client = _FakeSSMClient({})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError):
         cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
@@ -243,7 +273,9 @@ def test_resolve_secret_success_after_failure_clears_negative_cache(monkeypatch)
 
 def test_resolve_secret_rejects_unknown_provider_without_touching_cache(monkeypatch):
     calls = []
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": calls.append(1))
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": calls.append(1)
+    )
 
     with pytest.raises(cloud_secrets.CloudSecretsError, match="Unknown \\[secrets\\] provider"):
         cloud_secrets.resolve_secret("vault", "auth_api_key")
@@ -257,7 +289,9 @@ def test_resolve_secret_rejects_unknown_provider_without_touching_cache(monkeypa
 
 def test_clear_cache_forces_refetch(monkeypatch):
     client = _FakeSSMClient({"/nyxgpt/auth_api_key": "sk-ssm-secret"})
-    monkeypatch.setattr(cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client)
+    monkeypatch.setattr(
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+    )
 
     cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
     cloud_secrets.clear_cache()

@@ -204,9 +204,7 @@ def resolve_secret(
                 f"{ssm_prefix.rstrip('/')}/{key}", region=region, profile=profile
             )
         else:
-            value = fetch_secretsmanager_key(
-                secretsmanager_id, key, region=region, profile=profile
-            )
+            value = fetch_secretsmanager_key(secretsmanager_id, key, region=region, profile=profile)
     except CloudSecretsError as exc:
         _failure_cache[cache_key] = (time.monotonic(), str(exc))
         raise
