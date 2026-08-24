@@ -45,7 +45,28 @@ SESSION="k8s-artifact-smoke-$$"
 # pulls exactly the configured models and its readiness probe gates on them
 # (#3824), so a stale name here asks Ollama for a model nothing pulled and the
 # chat 404s while the stack is healthy.
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen3.5:0.8b}"
+# Read, never restated. These used to be literals with a comment saying "must
+# match k8s/configmap.yaml" -- and they diverged anyway when the shipped model
+# moved and only some sites followed (owner, 2026-08-23). Asking the same
+# `get_default_model` the install itself reads means this smoke cannot assert
+# on a model nothing pulled. The env overrides stay, for driving the smoke at
+# a deliberately different model.
+_shipped_models() {
+    python3 - <<'PYEOF' 2>/dev/null
+from nyxgpt.config import get_default_model, load_config
+cfg = load_config()
+chat = get_default_model(cfg)
+emb = cfg.get("rag", "embedding_model", fallback="").strip() or chat
+print(f"{chat}\t{emb}")
+PYEOF
+}
+IFS=$'\t' read -r _SHIPPED_CHAT _SHIPPED_EMB <<<"$(_shipped_models)"
+[ -n "${_SHIPPED_CHAT:-}" ] || {
+    echo "[FAIL] could not read the shipped chat model from nyxgpt.config -- the smoke" >&2
+    echo "[FAIL] refuses to fall back to a literal, which is the defect it guards." >&2
+    exit 1
+}
+MODEL="${NYXGPT_SMOKE_MODEL:-$_SHIPPED_CHAT}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 # Everything the product may see lives outside the checkout.
 WORKDIR="${NYXGPT_SMOKE_WORKDIR:-/tmp/nyxgpt-artifact-smoke}"

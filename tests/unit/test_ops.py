@@ -2748,7 +2748,7 @@ def test_status_prints_cannot_determine_instead_of_absent(monkeypatch, capsys, _
     )
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops, "_print_required_models_status", lambda: None)
+    monkeypatch.setattr(ops, "_print_required_models_status", lambda **_kw: None)
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     ops.status(MagicMock())
