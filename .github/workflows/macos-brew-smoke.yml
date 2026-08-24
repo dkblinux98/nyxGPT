@@ -1331,10 +1331,22 @@ jobs:
             echo "::error::the injected link conflict did not make brew exit non-zero -- everything below would pass vacuously"
             exit 1
           fi
-          grep -q 'Error: The `brew link` step did not complete successfully' "$RUNNER_TEMP/ofail.log" || {
-            echo "::error::brew exited ${rc} for some reason other than the link ofail -- see the log above"
+          # Homebrew has more than one phrasing for "the keg built, but I could
+          # not put its symlinks on the prefix", and which one you get depends
+          # on the brew version and on whether the block is found during `link`
+          # or during the post-install. Pinning ONE sentence made this gate
+          # assert a string rather than the condition: on 2026-08-24 brew
+          # exited 1 with the keg installed -- exactly the #3861 case -- and
+          # this grep still failed it. Match the class instead.
+          if ! grep -qE 'Could not symlink|already exists\. You may want to remove it|The `brew link` step did not complete successfully|The post-install step did not complete successfully' "$RUNNER_TEMP/ofail.log"; then
+            # `tail -30` above is caveats, so "see the log above" showed the
+            # operator nothing about the failure. Print the whole thing.
+            echo "--- ofail.log in full ---"
+            cat "$RUNNER_TEMP/ofail.log"
+            echo "--- end ofail.log ---"
+            echo "::error::brew exited ${rc}, but not for a blocked link -- see ofail.log in full above"
             exit 1
-          }
+          fi
           brew list --versions "$FORMULA" || {
             echo "::error::the keg is gone, so this is a real install failure and not the ofail case"
             exit 1
