@@ -2119,20 +2119,26 @@ def cli(argv: list[str] | None = None) -> int:
     )
     ops_doctor.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
 
+    # The log-follower targets come from ops' own list rather than being
+    # spelled out here (#4033): typing them out is how `ollama-logs` ended up
+    # stoppable only with a raw `launchctl bootout` while its helper sat
+    # unused in ops.py.
+    ops_service_targets = [
+        "all",
+        "api",
+        "web",
+        "ollama",
+        "cassandra",
+        *ops_mod.NATIVE_LOG_FOLLOWER_NAMES,
+        "observability",
+    ]
+
     ops_restart = ops_sub.add_parser("restart", help="Restart local services")
     ops_restart.add_argument(
         "target",
         nargs="?",
         default="all",
-        choices=[
-            "all",
-            "api",
-            "web",
-            "ollama",
-            "cassandra",
-            "cassandra-logs",
-            "observability",
-        ],
+        choices=list(ops_service_targets),
         help=(
             "Service to restart -- 'all' also restarts every running "
             "observability Compose service (monitoring/logging/tracing/errors)"
@@ -2145,15 +2151,7 @@ def cli(argv: list[str] | None = None) -> int:
         "target",
         nargs="?",
         default="all",
-        choices=[
-            "all",
-            "api",
-            "web",
-            "ollama",
-            "cassandra",
-            "cassandra-logs",
-            "observability",
-        ],
+        choices=list(ops_service_targets),
         help="Service to stop",
     )
     _add_quiet_flag(ops_stop)

@@ -92,6 +92,7 @@ k8s-observability-smoke
 linux-native-smoke
 linux-native-dev-smoke
 ops-subprocess-output
+ops-log-follower-stop
 linux-observability
 service-venv-python
 host-relay-posture

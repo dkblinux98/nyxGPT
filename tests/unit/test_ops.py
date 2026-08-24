@@ -323,11 +323,36 @@ def test_ops_restart_all_ok(capsys):
         # ensure we attempted expected components
         assert rb.call_count == 3  # api, web, ollama
         rd.assert_called_once_with("nyxgpt-cassandra")
-        rl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        # Every log follower, not just cassandra-logs (#4033).
+        assert rl.call_args_list == [
+            call(ops.SUPPORT_LAUNCHD_LABELS[name]) for name in ops.NATIVE_LOG_FOLLOWER_NAMES
+        ]
         ro.assert_called_once()
 
         out = capsys.readouterr().out
         assert "[OK]" in out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("follower", ops.NATIVE_LOG_FOLLOWER_NAMES)
+def test_ops_restart_single_log_follower_target(follower):
+    """`nyxgpt ops restart <follower>` bounces exactly that follower (#4033)."""
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_compose_stack_snapshot", return_value={}),
+        patch.object(ops, "_restart_brew_service", return_value=ok) as rb,
+        patch.object(ops, "_restart_docker_container", return_value=ok) as rd,
+        patch.object(ops, "_restart_launchagent", return_value=ok) as rl,
+        patch.object(ops, "_restart_observability_stack", return_value=ok) as ro,
+    ):
+        args = MagicMock()
+        args.target = follower
+        assert ops.restart(args) == 0
+
+    rl.assert_called_once_with(ops.SUPPORT_LAUNCHD_LABELS[follower])
+    rb.assert_not_called()
+    rd.assert_not_called()
+    ro.assert_not_called()
 
 
 @pytest.mark.unit
@@ -2748,7 +2773,10 @@ def test_status_prints_cannot_determine_instead_of_absent(monkeypatch, capsys, _
     )
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops, "_print_required_models_status", lambda: None)
+    # `**_` because `status()` passes `kubernetes=`/`cluster_unreadable=`; a
+    # zero-arg stub here made this test red on the release branch before this
+    # change ever touched it.
+    monkeypatch.setattr(ops, "_print_required_models_status", lambda **_: None)
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     ops.status(MagicMock())
@@ -8962,9 +8990,41 @@ def test_stop_native_only_target_all(capsys):
 
         assert sb.call_count == 3
         sd.assert_called_once_with("nyxgpt-cassandra")
-        sl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        # Every log follower, not just cassandra-logs (#4033): `stop all`
+        # left `com.nyxgpt.ollama-logs` running with no wrapped command to
+        # bring it down.
+        assert sl.call_args_list == [
+            call(ops.SUPPORT_LAUNCHD_LABELS[name]) for name in ops.NATIVE_LOG_FOLLOWER_NAMES
+        ]
         cs.assert_not_called()
         assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("follower", ops.NATIVE_LOG_FOLLOWER_NAMES)
+def test_stop_single_log_follower_target(follower):
+    """`nyxgpt ops stop <follower>` unloads exactly that follower (#4033).
+
+    Before this, `ollama-logs` was not a target at all: the helper existed
+    (`_stop_native_log_follower("ollama-logs")`) but nothing called it, so
+    `launchctl bootout` was the only supported way to stop the `tail -F` the
+    owner found still running.
+    """
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=_mode()),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]) as sb,
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]) as sd,
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]) as sl,
+        patch.object(ops, "_compose_stop_service") as cs,
+    ):
+        args = MagicMock()
+        args.target = follower
+        assert ops.stop(args) == 0
+
+    sl.assert_called_once_with(ops.SUPPORT_LAUNCHD_LABELS[follower])
+    sb.assert_not_called()
+    sd.assert_not_called()
+    cs.assert_not_called()
 
 
 @pytest.mark.unit
@@ -9216,7 +9276,10 @@ def test_down_all_scope_stops_native_and_composes_down(capsys):
 
         assert sb.call_count == 3
         sd.assert_called_once_with("nyxgpt-cassandra")
-        sl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        # Every log follower, not just cassandra-logs (#4033).
+        assert sl.call_args_list == [
+            call(ops.SUPPORT_LAUNCHD_LABELS[name]) for name in ops.NATIVE_LOG_FOLLOWER_NAMES
+        ]
         ra.assert_called_once()
         ro.assert_called_once()
         cd.assert_called_once()

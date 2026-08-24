@@ -3028,6 +3028,29 @@ def test_ops_restart_observability_target_dispatch(monkeypatch: pytest.MonkeyPat
     assert calls[0].target == "observability"
 
 
+@pytest.mark.parametrize("subcommand", ["restart", "stop"])
+def test_ops_log_follower_targets_are_accepted(
+    subcommand: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every log follower nyxGPT installs is a `restart`/`stop` target (#4033).
+
+    `ollama-logs` was missing from both `choices=` lists while
+    `_stop_native_log_follower("ollama-logs")` sat in ops.py already wired to
+    the right label -- so `launchctl bootout` was the only way to bring the
+    follower down. Driven off `NATIVE_LOG_FOLLOWER_NAMES` rather than a
+    literal so a follower added later cannot go missing here again.
+    """
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, subcommand, lambda args: (calls.append(args), 0)[1])
+
+    for follower in cli_mod.ops_mod.NATIVE_LOG_FOLLOWER_NAMES:
+        assert cli(["ops", subcommand, follower]) == 0
+
+    assert [c.target for c in calls] == list(cli_mod.ops_mod.NATIVE_LOG_FOLLOWER_NAMES)
+
+
 def test_ops_env_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     import nyxgpt.cli as cli_mod
 

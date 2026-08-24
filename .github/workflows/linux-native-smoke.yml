@@ -40,6 +40,18 @@ name: Linux Native Smoke
 #                       dev assertions now failing (the inverse proof that they
 #                       are not vacuously true of any install, #3753's
 #                       fault-injection rule).
+#   ops-log-follower-stop  Can an operator bring the Ollama log follower down
+#                       with a `nyxgpt` command? Drives
+#                       scripts/ops-log-follower-stop-smoke.sh: installs the
+#                       real `nyxgpt-ollama-logs.service`, runs the BASE ref's
+#                       CLI against it first (refused -- `invalid choice:
+#                       'ollama-logs'` -- and the follower survives), then the
+#                       working tree's (`ops stop ollama-logs` and `ops stop
+#                       all` both kill it). #4033: the helper existed and was
+#                       wired to the right unit, but no CLI target called it,
+#                       so `systemctl --user stop` / `launchctl bootout` was
+#                       the only path. Unit tests mock systemctl and cannot
+#                       see whether the process actually dies.
 #   ops-subprocess-output  When an ops subprocess fails, can an operator read
 #                       WHY from the log alone? Runs a real failing `pip
 #                       install` through `ops._run` and asserts pip's own
@@ -132,6 +144,8 @@ on:
       - 'scripts/linux-observability-smoke.py'
       - 'scripts/self-heal-probe-honesty-smoke.py'
       - 'scripts/observability-settle-smoke.py'
+      - 'scripts/ops-log-follower-stop-smoke.sh'
+      - 'src/nyxgpt/cli.py'
       - 'docker-compose.yml'
       - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
@@ -155,6 +169,8 @@ on:
       - 'scripts/linux-observability-smoke.py'
       - 'scripts/self-heal-probe-honesty-smoke.py'
       - 'scripts/observability-settle-smoke.py'
+      - 'scripts/ops-log-follower-stop-smoke.sh'
+      - 'src/nyxgpt/cli.py'
       - 'docker-compose.yml'
       - 'docker/prometheus.yml'
       - '.github/workflows/linux-native-smoke.yml'
@@ -255,6 +271,46 @@ jobs:
             echo "--- nyxgpt ops logs $svc ---"
             nyxgpt ops logs "$svc" --tail 100 || true
           done
+
+  # Executed evidence for #4033: `nyxgpt ops stop ollama-logs` actually
+  # brings the Ollama log follower down. Cheap -- it installs the one systemd
+  # unit under test and no application services, no Ollama download -- so it
+  # runs on every PR touching the path rather than only on the release
+  # branch.
+  #
+  # `fetch-depth: 0` is load-bearing: the script checks the base ref out into
+  # a worktree and runs THAT CLI against the live follower first, so the run
+  # proves the command was refused before the fix and works after it, rather
+  # than passing on a runner that never reproduced the defect (#3753's
+  # lesson).
+  ops-log-follower-stop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      - name: 'ops stop ollama-logs must stop the follower (and be refused before the fix)'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || format('{0}~1', github.sha) }}
+        run: ./scripts/ops-log-follower-stop-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          systemctl --user list-units 'nyxgpt-*' --all --no-pager || true
+          systemctl --user status nyxgpt-ollama-logs.service --no-pager || true
+          pgrep -af 'follow-ollama-logs' || true
 
   # Cheap (no install, no services), so it is not gated on the release branch
   # like the smoke above: every PR touching ops.py should see it.

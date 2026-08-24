@@ -988,6 +988,63 @@ def test_stop_ollama_calls_systemd_stop_on_linux(monkeypatch):
     assert calls == ["nyxgpt-ollama"]
 
 
+@pytest.mark.parametrize("follower", ops.NATIVE_LOG_FOLLOWER_NAMES)
+def test_stop_log_follower_calls_systemd_stop_on_linux(monkeypatch, follower):
+    """`nyxgpt ops stop <follower>` stops the right unit on Linux too (#4033).
+
+    `ollama-logs` reached neither OS as a CLI target, so the Linux twin of
+    the owner's stray `tail -F` was equally unreachable by a wrapped command.
+    """
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "none", "web": "none", "ollama": "none", "cassandra": "absent"},
+            compose={},
+            conflicts=[],
+        ),
+    )
+    monkeypatch.setattr(ops.self_heal, "mark_intentionally_stopped", lambda component: None)
+    monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))
+    monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_stop_systemd_service",
+        lambda unit: calls.append(unit) or [ops.OpsResult(True, "ok")],
+    )
+
+    rc = ops.stop(SimpleNamespaceLike(target=follower))
+    assert rc == 0
+    assert calls == [ops.SUPPORT_SYSTEMD_UNITS[follower]]
+
+
+def test_stop_all_stops_every_log_follower_on_linux(monkeypatch):
+    """`stop all` covers every follower, not just cassandra-logs (#4033)."""
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(
+            native={"api": "none", "web": "none", "ollama": "none", "cassandra": "absent"},
+            compose={},
+            conflicts=[],
+        ),
+    )
+    monkeypatch.setattr(ops.self_heal, "mark_intentionally_stopped", lambda component: None)
+    monkeypatch.setattr(ops, "_ops_action_outcome", lambda results: ("success", ""))
+    monkeypatch.setattr(ops, "_record_ops_action", lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_stop_systemd_service",
+        lambda unit: calls.append(unit) or [ops.OpsResult(True, "ok")],
+    )
+
+    assert ops.stop(SimpleNamespaceLike(target="all")) == 0
+    for follower in ops.NATIVE_LOG_FOLLOWER_NAMES:
+        assert ops.SUPPORT_SYSTEMD_UNITS[follower] in calls
+
+
 def test_status_prints_systemd_section_on_linux(monkeypatch, capsys):
     monkeypatch.setattr(
         ops,
