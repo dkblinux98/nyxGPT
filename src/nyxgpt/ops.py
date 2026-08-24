@@ -9767,7 +9767,16 @@ def _reconcile_k8s_canary_resting() -> list[OpsResult]:
     from nyxgpt import canary as canary_module
 
     results: list[OpsResult] = []
-    for component in canary_module.COMPONENTS:
+    for component, spec in canary_module.COMPONENTS.items():
+        # A component with no canary track cannot be off-contract, so there is
+        # nothing here to reconcile. `ollama` is the one today (see
+        # `canary.OLLAMA_UNSUPPORTED_REASON`), and asking it to reset returns
+        # that documented refusal -- which this loop then reported as an
+        # install failure, reddening every k8s smoke. Keyed on the capability
+        # the spec already declares rather than on the component's name, so a
+        # future unsupported component is covered without editing this loop.
+        if not spec.supported:
+            continue
         result = canary_module.reset(K8S_NAMESPACE, component=component)
         # A refusal because a rollout is genuinely in progress is not an
         # install failure: the operator started it deliberately, and an

@@ -648,7 +648,15 @@ def test_canary_reset_refuses_to_end_a_live_rollout(monkeypatch, tmp_path):
 
 
 def test_install_reconciles_both_components_to_their_resting_state(monkeypatch):
-    """The install asserts the contract it applied, rather than assuming it (#3991)."""
+    """The install asserts the contract it applied, rather than assuming it (#3991).
+
+    "Both" is the claim, and it is the right one: only components that HAVE a
+    canary track can be off-contract. This used to assert
+    `calls == list(canary.COMPONENTS)` -- all three, `ollama` included -- so
+    the test's own name and its assertion disagreed, and the assertion won.
+    That is what let the loop ask `ollama` to reset, collect its documented
+    refusal, and redden every Kubernetes smoke.
+    """
     calls: list[str] = []
 
     def fake_reset(namespace, *, component):
@@ -659,8 +667,39 @@ def test_install_reconciles_both_components_to_their_resting_state(monkeypatch):
 
     results = ops._reconcile_k8s_canary_resting()
 
-    assert calls == list(canary.COMPONENTS)
+    assert calls == [k for k, v in canary.COMPONENTS.items() if v.supported]
     assert all(r.ok for r in results)
+
+
+def test_install_never_asks_an_unsupported_component_to_reset(monkeypatch):
+    """A component with no canary track cannot be off-contract (#4016 regression).
+
+    `ollama` declares `supported=False` because a stable/canary split has no
+    sound implementation for it (canary.OLLAMA_UNSUPPORTED_REASON). Asking it
+    to reset returns that refusal, which the loop scored as an install
+    failure -- so `nyxgpt ops install --kubernetes` exited non-zero on a
+    perfectly healthy stack and k8s-local-smoke, k8s-artifact-smoke and
+    k8s-observability-smoke all went red on v3.0.0.
+
+    Keyed on the `supported` flag rather than the name `ollama`, so this holds
+    for any future component that declares itself unsupported.
+    """
+    unsupported = [k for k, v in canary.COMPONENTS.items() if not v.supported]
+    assert unsupported, "this test is vacuous unless some component is unsupported"
+
+    def fake_reset(namespace, *, component):
+        spec = canary.COMPONENTS[component]
+        if not spec.supported:
+            return ops.OpsResult(False, spec.unsupported_reason)
+        return ops.OpsResult(True, f"Reset {component} to its resting 0")
+
+    monkeypatch.setattr(canary, "reset", fake_reset)
+
+    results = ops._reconcile_k8s_canary_resting()
+
+    assert all(r.ok for r in results), [r.message for r in results if not r.ok]
+    for name in unsupported:
+        assert not any(name in r.message for r in results)
 
 
 def test_install_does_not_end_a_rollout_an_operator_started(monkeypatch):
