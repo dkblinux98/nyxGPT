@@ -140,11 +140,28 @@ if [[ -n "$(git status --porcelain)" ]]; then
   fi
 fi
 
+# Positioning the workspace on the target must not itself destroy anything.
+# `git checkout -B TARGET origin/TARGET` looks like the obvious move and is a
+# hard reset in disguise: a LOCAL target branch holding commits that never
+# reached origin -- an attempt whose push was rejected, a race with another
+# actor -- is silently discarded by it. The workflow's snapshot step normally
+# pushes before we get here, so this is the unlikely path; it is also the path
+# where the lost commits would be the only copy, which is precisely when a
+# guess is not allowed to be wrong (D-031 fails closed for the same reason).
 _checkout_target() {
-  if git rev-parse --verify --quiet "origin/${TARGET}" >/dev/null; then
-    git checkout -q -B "$TARGET" "origin/${TARGET}"
+  if git show-ref --verify --quiet "refs/heads/${TARGET}"; then
+    git checkout -q "$TARGET" || return 1
+    if git rev-parse --verify --quiet "origin/${TARGET}" >/dev/null; then
+      git merge --no-edit "origin/${TARGET}" >&2 || {
+        git merge --abort >/dev/null 2>&1 || true
+        _warn "The local ${TARGET} and origin/${TARGET} conflict; not resetting either."
+        return 1
+      }
+    fi
+  elif git rev-parse --verify --quiet "origin/${TARGET}" >/dev/null; then
+    git checkout -q -B "$TARGET" "origin/${TARGET}" || return 1
   else
-    git checkout -q -B "$TARGET"
+    git checkout -q -B "$TARGET" || return 1
   fi
 }
 

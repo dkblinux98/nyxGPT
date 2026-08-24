@@ -118,7 +118,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Reproduce run #4033 and prove the retry continues rather than restarts
+      - name: "Reproduce run #4033 and prove the retry continues rather than restarts"
         # #4038. The question this answers by RUNNING: attempt 1 pushes its
         # work, verification fails, and attempt 2 starts on a fresh
         # `claude/issue-N-<timestamp>` branch cut from the release branch --

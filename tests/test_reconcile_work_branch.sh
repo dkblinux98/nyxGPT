@@ -104,7 +104,7 @@ _plant() {
 
   git init -q -b "$RELEASE" "$dir/work"
   (
-    cd "$dir/work"
+    cd "$dir/work" || exit 1
     git config user.email "dev@example.test"
     git config user.name "Developer Agent"
     git config commit.gpgsign false
@@ -138,7 +138,7 @@ _plant() {
 _attempt2_commits() {
   local dir="$1" file="${2:-fix.py}" push="${3:-push}"
   (
-    cd "$dir/work"
+    cd "$dir/work" || exit 1
     echo "# attempt 2 fix" > "$file"
     git add "$file"
     git commit -q -m "fix: address verification failures (attempt 2) (#4038)"
@@ -197,7 +197,7 @@ D="$TMP_ROOT/case1b"
 _plant "$D"
 _attempt2_commits "$D"
 (
-  cd "$D/work"
+  cd "$D/work" || exit 1
   git fetch -q origin --prune
   CURRENT="$(git branch --show-current)"
   # The retired safety check passes: the stray DOES have a commit of its own.
@@ -235,7 +235,7 @@ echo "=== Case 3: a stray that descends from the work branch fast-forwards"
 D="$TMP_ROOT/case3"
 _plant "$D"
 (
-  cd "$D/work"
+  cd "$D/work" || exit 1
   # The agent checked the work branch out, then something moved it onto a
   # differently-named branch that still contains attempt 1's commit.
   git checkout -q -B "$STRAY" "origin/$WORK"
@@ -323,6 +323,35 @@ _assert_contains "case 7: the late fix reached origin/$WORK" \
   "$(_origin_files "$D" "$WORK")" "src/late_fix.py"
 _assert_contains "case 7: alongside attempt 1's work" \
   "$(_origin_files "$D" "$WORK")" "implementation.py"
+
+# ==========================================================================
+# Case 8 -- positioning the workspace is not allowed to be a hard reset.
+#
+# `git checkout -B TARGET origin/TARGET` is the obvious way to stand on the
+# target and it discards a LOCAL target branch's unpushed commits. That is the
+# unlikely path (the workflow's snapshot step normally pushes first) and it is
+# the path where the discarded commits are the only copy.
+# ==========================================================================
+echo "=== Case 8: an unpushed commit on the work branch is not reset away"
+D="$TMP_ROOT/case8"
+_plant "$D"
+(
+  cd "$D/work" || exit 1
+  git checkout -q "$WORK"
+  echo "# never pushed" > unpushed.py
+  git add unpushed.py
+  git commit -q -m "feat: a commit whose push never happened (#4038)"
+  git checkout -q -B "$STRAY" "origin/$RELEASE"
+)
+_attempt2_commits "$D"
+OUT="$( cd "$D/work" && "$RECONCILE" --target "$WORK" --release "$RELEASE" --label "attempt 2" 2>&1 )"
+
+_assert_contains "case 8: the unpushed commit survived and reached origin" \
+  "$(_origin_files "$D" "$WORK")" "unpushed.py"
+_assert_contains "case 8: alongside attempt 1's pushed work" \
+  "$(_origin_files "$D" "$WORK")" "implementation.py"
+_assert_contains "case 8: and attempt 2's fix" \
+  "$(_origin_files "$D" "$WORK")" "fix.py"
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
