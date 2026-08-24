@@ -138,7 +138,10 @@ Use LLM to:
 **Option 3: LLM Progress Analyzer**
 ```yaml
 - name: Analyze if real work happened
-  uses: anthropics/claude-code-action@v1
+  # Pinned to a commit, never the floating @v1 tag -- see #4038, where the
+  # action's branch handling changed underneath this repo and six weeks of
+  # runs stranded their work before anyone noticed.
+  uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
   with:
     prompt: |
       Compare these two review results:

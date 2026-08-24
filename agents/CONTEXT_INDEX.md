@@ -128,6 +128,7 @@ fails if it drifts. Do not hand-edit.
 | `reconcile_closed_status.sh` | project-hygiene sweep |
 | `reconcile_dead_branches.sh` | On-demand REPORT of claude/*, feat/*, fix/*, and chore/* branches (#3392, |
 | `reconcile_pr_lane.sh` | sweep merged/closed PR cards into the terminal PR lane (STATUS_CLOSED) |
+| `reconcile_work_branch.sh` | Put this run's work back onto ONE branch after a `claude-code-action` invocation moved the workspace off it (#4038) |
 | `release_ceremony_watch.sh` | automated release ceremony trigger (#3730) |
 | `review_accept_and_merge.sh` | Merges the PR into the current release branch (merge commit) and deletes the PR branch, then: |
 | `review_ensure_handoff.sh` | dispatch-mode post-review handoff backstop (#3704) |
