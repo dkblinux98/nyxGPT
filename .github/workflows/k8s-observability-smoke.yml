@@ -107,6 +107,21 @@ jobs:
           # zero rather than delete, so the manifests stay applied.
           kubectl -n nyxgpt scale statefulset/cassandra statefulset/ollama --replicas=0
 
+          # Same reasoning, and now load-bearing rather than merely tidy.
+          # #3990 made `ops observability` re-mint the GlitchTip DSN and then
+          # `rollout restart` + WAIT FOR the two DSN consumers
+          # (ops.K8S_DSN_CONSUMER_DEPLOYMENTS) so nothing downstream reads a
+          # half-rolled stack. Correct in a real cluster, where the install
+          # built those images -- but this job deliberately never builds them
+          # (see the header), so their Pods sit in ErrImagePull and the wait
+          # could only ever time out. The app tier is a prop here, not a
+          # subject: no step below asserts anything about api/web. At 0
+          # replicas the restart still happens and its rollout completes
+          # immediately, so the observability claim is tested unchanged.
+          kubectl -n nyxgpt scale \
+            deploy/nyxgpt-api-stable deploy/nyxgpt-web-stable \
+            deploy/nyxgpt-api-canary deploy/nyxgpt-web-canary --replicas=0
+
       - name: nyxgpt ops observability --kubernetes --local
         run: nyxgpt ops observability --kubernetes --local
 
