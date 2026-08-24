@@ -14,6 +14,18 @@ name: Developer Agent Auto-Implement
 # to In Progress itself. Retries, review rework, conflict rounds and the
 # autopilot's auto-resume all take that same path; a comment carries findings
 # and nothing else.
+#
+# `anthropics/claude-code-action` is pinned to an exact COMMIT SHA here and in
+# every other agent workflow (#4038), never to the floating `@v1` tag. The tag
+# is what let the action's branch handling change underneath this repo: from
+# 2026-07-07 it began minting and checking out its own
+# `claude/issue-<n>-<timestamp>` branch on every invocation, overriding the
+# branch developer_create_branch.sh had already created, with no commit here to
+# explain it and six weeks before anyone noticed work was being stranded. The
+# trailing `# vX.Y.Z` comment names the release the SHA is; bumping it is a
+# deliberate edit that reads the action's changelog first.
+# `tests/unit/test_developer_retry_continuity.py` fails if any of them drifts
+# back to a tag.
 on:
   issues:
     types: [assigned]
@@ -506,7 +518,7 @@ jobs:
       - name: Run Claude Code to fix acceptance failure
         if: steps.acceptance_failure.conclusion == 'success'
         id: claude_acceptance_fix
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -543,7 +555,11 @@ jobs:
             **Instructions:**
 
             ### Step 1: Create a fix branch
-            Run this command to create the branch using the standard naming convention:
+
+            `claude-code-action` has just minted and checked out a fresh
+            `claude/issue-<n>-<timestamp>` branch for its own use; do not work on it. Run
+            this command to create (or reuse) the fix branch under the standard naming
+            convention, and work there:
             ```bash
             ./scripts/agents/developer_create_branch.sh ${{ github.event.issue.number }} fix auto
             ```
@@ -704,7 +720,7 @@ jobs:
       - name: Run Claude Code to fix review issues (Review Fix)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
         id: claude_review_fix
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -740,16 +756,26 @@ jobs:
 
             **Instructions:**
 
-            ### Step 1: Ensure you're on the correct branch
-            First, determine which branch this PR is from:
+            ### Step 1: Get onto the PR branch (you are NOT on it)
+
+            This step is a `claude-code-action` invocation, and the action mints and checks
+            out a fresh `claude/issue-<n>-<timestamp>` branch cut from
+            `${{ vars.RELEASE_BRANCH }}` every time it starts. The working tree in front of
+            you is a clean cut of the release branch and does not contain this PR's commits.
+
+            PR #${{ steps.check_pr.outputs.existing_pr }}'s head branch is
+            **`${{ steps.check_pr.outputs.pr_branch }}`**. Check it out first:
+
             ```bash
-            gh api repos/${{ github.repository }}/pulls/${{ steps.check_pr.outputs.existing_pr }} --jq .head.ref
+            git fetch origin ${{ steps.check_pr.outputs.pr_branch }}
+            git checkout -B ${{ steps.check_pr.outputs.pr_branch }} origin/${{ steps.check_pr.outputs.pr_branch }}
             ```
 
-            Then check it out. If checkout fails (branch doesn't exist locally, ref issues, etc.):
-            - Diagnose the problem (read error message)
-            - Fix it yourself (fetch, clean stale refs, recreate if needed)
-            - Do NOT wait for human intervention
+            Work on that branch and no other — fixing review findings on a fresh branch
+            strands the PR (this wedged PR #3145: three identical reviews of an unchanged PR
+            while correct fixes sat on stray branches). If checkout fails (stale refs, ref
+            issues), diagnose and fix it yourself (`git remote prune origin`, re-fetch) — do
+            NOT wait for human intervention, and do NOT proceed on the action's branch.
 
             ### Step 1.5: Check for a huddle decision (#3687)
             Check whether a comment containing `HUDDLE_DECISION:` exists on this PR
@@ -865,51 +891,33 @@ jobs:
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true' && steps.claude_review_fix.conclusion == 'success'
         shell: bash
         env:
-          PR_BRANCH: ${{ steps.check_pr.outputs.pr_branch }}
+          # #3837: step outputs reach the shell as data, never as source.
+          TARGET_BRANCH: ${{ steps.check_pr.outputs.pr_branch }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
         run: |
           set -euo pipefail
-          # claude-code-action in issue context can create its own
-          # claude/issue-N-<timestamp> branch instead of committing to the PR head
-          # branch (this wedged PR #3145: three identical reviews of an unchanged
-          # PR while correct fixes landed on stray branches). Deterministically
-          # sync whatever branch Claude pushed onto the PR branch so the review
-          # loop converges.
-          git fetch origin --prune
-          CURRENT="$(git branch --show-current || true)"
-          if [ -z "$CURRENT" ]; then
-            echo "::warning::Detached HEAD after review fix; cannot determine work branch. Manual check needed."
-            exit 0
-          fi
-          if [ "$CURRENT" = "$PR_BRANCH" ]; then
-            echo "Fixes are on the PR branch ($PR_BRANCH); nothing to sync."
-            exit 0
-          fi
-          # Safety: only sync when Claude actually committed new work. A
-          # fresh action branch with no commits beyond the release branch
-          # must never be force-pushed over the PR branch (it would destroy
-          # the PR's commits).
-          if [ -z "$(git rev-list "origin/${{ vars.RELEASE_BRANCH }}..HEAD" 2>/dev/null)" ]; then
-            echo "No new commits beyond ${{ vars.RELEASE_BRANCH }} on $CURRENT; nothing to sync."
-            exit 0
-          fi
-          if git diff --quiet "origin/$PR_BRANCH" "$CURRENT" 2>/dev/null; then
-            echo "Stray branch $CURRENT matches PR branch content; cleaning up stray branch only."
-          else
-            echo "Syncing $CURRENT -> $PR_BRANCH (force: review fix supersedes stale PR tip)"
-            git push --force origin "HEAD:refs/heads/$PR_BRANCH"
-          fi
-          # #3862: the delete is the supersession event, so it goes through the
-          # same blob-level guard as every other one. Previously the push above
-          # failing (protected ref, race, rejected force) still fell through to
-          # an unconditional delete, destroying the stray branch's only copy of
-          # the fix. Re-read the remote and prove the content is there first.
-          git fetch origin "$PR_BRANCH" --quiet
-          if python3 scripts/agents/lib/branch_content.py landed \
-               --base "origin/$PR_BRANCH" --branch "$CURRENT"; then
-            git push origin --delete "$CURRENT" || echo "Could not delete stray branch $CURRENT (non-fatal)"
-          else
-            echo "::warning::Keeping stray branch $CURRENT — its content is not provably on $PR_BRANCH."
-          fi
+          # claude-code-action mints and checks out its own
+          # claude/issue-N-<timestamp> branch on every invocation instead of
+          # committing to the PR head branch (this wedged PR #3145: three
+          # identical reviews of an unchanged PR while correct fixes landed on
+          # stray branches).
+          #
+          # The reconciliation this step used to do inline now lives in
+          # scripts/agents/reconcile_work_branch.sh, because the implement path
+          # needs the identical thing and had none of it (#4038): #3145 was
+          # patched where it was found rather than where it originates, and the
+          # retries kept re-implementing issues from scratch for six weeks.
+          #
+          # One behaviour changed with the move, deliberately: the sync is a
+          # FORWARD MERGE, never a force-push. An action branch cut from the
+          # release branch does not contain the PR's commits, so forcing it over
+          # the PR branch destroys them; merging keeps both and still
+          # fast-forwards in the case the force-push was reaching for. D-011 is
+          # the standing rule this now obeys.
+          ./scripts/agents/reconcile_work_branch.sh \
+            --target "$TARGET_BRANCH" \
+            --release "$RELEASE_BRANCH" \
+            --label "review fix"
 
       - name: Post implementation start comment
         if: steps.check_pr.outputs.pr_exists == 'false'
@@ -938,7 +946,7 @@ jobs:
       - name: Run Claude Code to implement issue (Initial)
         if: steps.check_pr.outputs.pr_exists == 'false'
         id: claude_initial
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1318,6 +1326,57 @@ jobs:
           git checkout -B "$PR_BRANCH" "origin/$PR_BRANCH"
           echo "::notice::Verifying PR #$PR head $PR_BRANCH at $(git rev-parse --short HEAD), not $RELEASE_BRANCH"
 
+      # #4038: freeze the branch that carries this run's work into RUN STATE,
+      # here, at the one point in the job where reading it off the working tree
+      # is correct.
+      #
+      # Every path that produces work has just finished positioning the
+      # workspace on its branch -- the implement step ran
+      # developer_create_branch.sh, the acceptance step did the same, the review
+      # path was reconciled onto the PR head, and the no-Claude-step path was
+      # checked out above. Nothing has crossed a `claude-code-action` boundary
+      # since. After this point everything has: each retry step is a NEW
+      # invocation, and the action mints and checks out a fresh
+      # `claude/issue-<n>-<timestamp>` branch every time, so from here on the
+      # working tree names a decoy created seconds ago and the branch holding
+      # the work is checked out nowhere (D-031 records the same trap costing
+      # #3956 its rescue). Read it once, while it is true; pass the recorded
+      # value to the retries.
+      - name: Record the work branch
+        id: work_branch
+        shell: bash
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          BRANCH="$(git branch --show-current 2>/dev/null || true)"
+
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "$RELEASE_BRANCH" ]; then
+            # Fall back to the remote before giving up -- the same authority,
+            # and the same issue-scoped naming conventions, the rescue backstop
+            # uses (developer_ensure_pr_exists.sh).
+            BRANCH="$(git ls-remote --heads origin 2>/dev/null | awk '{print $2}' \
+              | sed 's#^refs/heads/##' \
+              | grep -E "^(feat|fix|chore)/${ISSUE}-|^claude/issue-${ISSUE}-" \
+              | sort | tail -1 || true)"
+          fi
+
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "$RELEASE_BRANCH" ]; then
+            # Not fatal here: this is also the shape of a run that legitimately
+            # implemented nothing (an already-closed PR, a deliberate no-op).
+            # It IS fatal to the retries, which is why they are gated on this
+            # output being non-empty -- a retry that does not know where the
+            # work is can only re-implement the issue, which is the whole
+            # defect. Spend nothing instead.
+            echo "name=" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not identify a work branch for #${ISSUE}; verification retries will not run."
+            exit 0
+          fi
+
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "::notice::Work branch for #${ISSUE} recorded as '$BRANCH' at $(git rev-parse --short HEAD)"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -1417,9 +1476,18 @@ jobs:
           fi
 
       - name: Claude Fix Issues (Attempt 2)
-        if: steps.verify1.outputs.verification_passed == 'false'
+        # Gated on a KNOWN work branch as well as a failed verification (#4038).
+        # A retry that cannot be told where the previous attempt's commits are
+        # has exactly one thing it can do -- re-implement the issue on the
+        # branch the action just minted -- and that is the defect, not a
+        # fallback. When the branch is unknown, spend nothing: the run falls
+        # through to Final Verification, fails honestly, and
+        # developer_ensure_pr_exists.sh rescues whatever reached origin.
+        if: |
+          steps.verify1.outputs.verification_passed == 'false' &&
+          steps.work_branch.outputs.name != ''
         id: claude_fix2
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1451,8 +1519,35 @@ jobs:
 
             The previous implementation for issue #${{ github.event.issue.number }} failed verification checks.
 
-            **Important:** You should already be on the feature branch from the previous step.
-            If for some reason you're not, check out the branch yourself using git commands.
+            ## STEP 0 (BEFORE ANYTHING ELSE): get onto the work branch
+
+            **You are not on it, and the code you are about to read is not the code that failed.**
+            This step is a *new* `claude-code-action` invocation, and the action mints and
+            checks out a fresh `claude/issue-<n>-<timestamp>` branch cut from
+            `${{ vars.RELEASE_BRANCH }}` every time it starts. The working tree in front of
+            you is a clean cut of the release branch. It does not contain the previous
+            attempt's commits, and the failure logs below describe code that is not in it.
+
+            The previous attempt's work is on **`${{ steps.work_branch.outputs.name }}`**, on `origin`.
+            Your first two commands are:
+
+            ```bash
+            git fetch origin ${{ steps.work_branch.outputs.name }}
+            git checkout -B ${{ steps.work_branch.outputs.name }} origin/${{ steps.work_branch.outputs.name }}
+            ```
+
+            Then **continue that work**: read what is already committed there and fix the
+            verification failures on top of it.
+
+            - Do **NOT** re-implement the issue from scratch. The previous attempt's code is
+              on that branch; your job is to make it pass, not to rebuild it.
+            - Do **NOT** create another branch, and do not stay on the branch the action
+              minted. A second branch strands the first: on #4033 that cost sixteen minutes
+              of re-implementation, produced two divergent branches, and left a rescue draft
+              PR the owner had to close by hand.
+            - If the checkout fails, diagnose and fix it yourself (`git remote prune origin`,
+              re-fetch, check the exact branch name above). Do not proceed on the action's
+              branch.
 
             Failure logs have been saved to:
             - /tmp/pytest_attempt1.log (if pytest failed)
@@ -1484,6 +1579,26 @@ jobs:
             Do NOT use any `gh` CLI commands - no `gh issue`, `gh pr`, `gh api`, etc.
             Do NOT close issues, create PRs, or edit issues/PRs in any way.
             The workflow manages all GitHub state - just fix the code and commit.
+
+      # The prompt above asks; this makes it true regardless of the answer
+      # (#4038). The review path has had a deterministic reconciliation since
+      # #3145 and the implement path had none, which is why a prompt that
+      # merely *asserted* branch continuity went six weeks without anyone
+      # noticing it was false. An instruction the agent may decline, or decline
+      # to finish, is not a mechanism.
+      - name: Ensure attempt 2's fixes landed on the work branch
+        if: always() && steps.claude_fix2.conclusion == 'success'
+        shell: bash
+        env:
+          # #3837: step outputs reach the shell as data, never as source.
+          TARGET_BRANCH: ${{ steps.work_branch.outputs.name }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          ./scripts/agents/reconcile_work_branch.sh \
+            --target "$TARGET_BRANCH" \
+            --release "$RELEASE_BRANCH" \
+            --label "attempt 2"
 
       - name: Run Verification (Attempt 2)
         if: steps.claude_fix2.conclusion == 'success'
@@ -1553,9 +1668,13 @@ jobs:
           fi
 
       - name: Claude Fix Issues (Attempt 3)
-        if: steps.verify2.outputs.verification_passed == 'false'
+        # Same gate, same reason, as Attempt 2 (#4038): no known work branch,
+        # no retry.
+        if: |
+          steps.verify2.outputs.verification_passed == 'false' &&
+          steps.work_branch.outputs.name != ''
         id: claude_fix3
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1586,6 +1705,25 @@ jobs:
             VERIFICATION STILL FAILING - FINAL ATTEMPT TO FIX
 
             Issue #${{ github.event.issue.number }} verification failed AGAIN after your previous fix attempt.
+
+            ## STEP 0 (BEFORE ANYTHING ELSE): get onto the work branch
+
+            **You are not on it.** This is a *new* `claude-code-action` invocation and the
+            action has just minted and checked out a fresh
+            `claude/issue-<n>-<timestamp>` branch cut from `${{ vars.RELEASE_BRANCH }}`. The
+            working tree in front of you contains neither the original implementation nor
+            attempt 2's fixes, and the logs below describe code that is not in it.
+
+            All of the work so far is on **`${{ steps.work_branch.outputs.name }}`**, on `origin`:
+
+            ```bash
+            git fetch origin ${{ steps.work_branch.outputs.name }}
+            git checkout -B ${{ steps.work_branch.outputs.name }} origin/${{ steps.work_branch.outputs.name }}
+            ```
+
+            Continue on that branch. Do **NOT** re-implement the issue, and do **NOT** create
+            or stay on any other branch — a second branch strands the work and ends the run
+            with two divergent branches and an orphan rescue PR (#4033).
 
             Latest failure logs:
             - /tmp/black_attempt2.log (if black formatting failed)
@@ -1618,6 +1756,24 @@ jobs:
                Do NOT close issues, create PRs, or edit issues/PRs in any way.
             7. Commit with message:
                "fix: address remaining verification failures (attempt 3) (#${{ github.event.issue.number }})"
+
+      # Same mechanism as attempt 2's (#4038). Final Verification has no `if:`
+      # and no `continue-on-error`, so if this were missing the last attempt's
+      # fixes could sit on the action's branch while the gate judged -- and
+      # failed -- the tree they were never applied to.
+      - name: Ensure attempt 3's fixes landed on the work branch
+        if: always() && steps.claude_fix3.conclusion == 'success'
+        shell: bash
+        env:
+          # #3837: step outputs reach the shell as data, never as source.
+          TARGET_BRANCH: ${{ steps.work_branch.outputs.name }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          ./scripts/agents/reconcile_work_branch.sh \
+            --target "$TARGET_BRANCH" \
+            --release "$RELEASE_BRANCH" \
+            --label "attempt 3"
 
       - name: Final Verification (Must Pass)
         id: verify_final
@@ -2303,7 +2459,7 @@ jobs:
             steps.classify_error.outputs.error_class == 'unknown'
           )
         id: claude_analysis
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}

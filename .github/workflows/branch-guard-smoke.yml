@@ -29,9 +29,13 @@ on:
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/developer_submit_for_review.sh"
       - "scripts/branch-guard-smoke.sh"
+      - "scripts/agents/reconcile_work_branch.sh"
+      - "scripts/agents/snapshot_safe_add.sh"
       - "tests/test_branch_hygiene.sh"
       - "tests/test_ensure_pr_exists.sh"
+      - "tests/test_reconcile_work_branch.sh"
       - "tests/unit/test_branch_content.py"
+      - "tests/unit/test_developer_retry_continuity.py"
       - ".github/workflows/branch-guard-smoke.yml"
       - ".github/workflows/developer_auto_implement.yml"
   push:
@@ -44,9 +48,13 @@ on:
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/developer_submit_for_review.sh"
       - "scripts/branch-guard-smoke.sh"
+      - "scripts/agents/reconcile_work_branch.sh"
+      - "scripts/agents/snapshot_safe_add.sh"
       - "tests/test_branch_hygiene.sh"
       - "tests/test_ensure_pr_exists.sh"
+      - "tests/test_reconcile_work_branch.sh"
       - "tests/unit/test_branch_content.py"
+      - "tests/unit/test_developer_retry_continuity.py"
       - ".github/workflows/branch-guard-smoke.yml"
       - ".github/workflows/developer_auto_implement.yml"
   workflow_dispatch:
@@ -99,6 +107,42 @@ jobs:
           pip install -e .
           pip install pytest
           python -m pytest tests/unit/test_branch_content.py -v
+
+  retry-continuity:
+    name: A failed verification continues the work, it does not restart it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reproduce run #4033 and prove the retry continues rather than restarts
+        # #4038. The question this answers by RUNNING: attempt 1 pushes its
+        # work, verification fails, and attempt 2 starts on a fresh
+        # `claude/issue-N-<timestamp>` branch cut from the release branch --
+        # because that is what claude-code-action does on every invocation.
+        # Does the run end with ONE branch carrying both attempts, or with two
+        # divergent branches and a rescue draft PR?
+        #
+        # Fault-injection job (#3753's template), not just a run of the fix:
+        # case 1b runs the RETIRED force-push form -- the one the review path
+        # used at developer_auto_implement.yml:864 until this change -- against
+        # the identical fixture and shows it erasing attempt 1's commit. A
+        # check that cannot fail proves nothing.
+        run: bash tests/test_reconcile_work_branch.sh
+
+      - name: The wiring the shell test cannot see
+        # Whether the reconciliation runs at all, whether the retry prompts
+        # name the branch instead of asserting continuity, and whether the
+        # action is still pinned to a commit rather than the floating `@v1`
+        # tag that let its branch handling change underneath this repo.
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+          pip install pytest
+          python -m pytest tests/unit/test_developer_retry_continuity.py -v
 
   closure-gate:
     name: A merge that cannot be verified does not close its issue
