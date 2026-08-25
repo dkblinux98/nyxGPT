@@ -93,7 +93,7 @@ class TestOneReviewRunPerPullRequest:
             assert wf["jobs"][job]["concurrency"]["cancel-in-progress"] is True, (
                 f"{job}: without cancel-in-progress a run over a stale head "
                 "survives to submit the verdict that started #3815 round 2"
-        )
+            )
 
 
 @pytest.fixture(name="parse_step")
