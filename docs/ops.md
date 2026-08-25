@@ -778,8 +778,9 @@ nyxgpt ops restart
 ```
 
 Equivalent to `nyxgpt ops restart all` -- restarts the native core services
-(`api`, `web`, `ollama`), the Cassandra container, the Cassandra logs
-LaunchAgent, **and** every currently running observability Compose service
+(`api`, `web`, `ollama`), the Cassandra container, both log-follower agents
+(`cassandra-logs`, `ollama-logs`), **and** every currently running
+observability Compose service
 (the `monitoring`/`logging`/`tracing`/`errors` profiles: Prometheus, Grafana,
 Loki/promtail, Jaeger, GlitchTip). Unlike `stop`/`down`, `restart all` covers
 the whole local stack in one wrapped command -- observability services that
@@ -793,6 +794,7 @@ nyxgpt ops restart web
 nyxgpt ops restart ollama
 nyxgpt ops restart cassandra
 nyxgpt ops restart cassandra-logs
+nyxgpt ops restart ollama-logs
 nyxgpt ops restart observability
 ```
 
@@ -846,7 +848,8 @@ nyxgpt ops stop
 ```
 
 Equivalent to `nyxgpt ops stop all` -- stops `api`, `web`, `ollama`,
-`cassandra`, and `cassandra-logs`. Unlike `restart all`, `stop all` does
+`cassandra`, and both log-follower agents (`cassandra-logs`, `ollama-logs`).
+Unlike `restart all`, `stop all` does
 **not** include `observability` -- that's opt-in via its own target (below),
 since it has no native/Homebrew equivalent and stopping it isn't implied by
 stopping the core app tier.
@@ -859,6 +862,7 @@ nyxgpt ops stop web
 nyxgpt ops stop ollama
 nyxgpt ops stop cassandra
 nyxgpt ops stop cassandra-logs
+nyxgpt ops stop ollama-logs
 nyxgpt ops stop observability
 ```
 
@@ -873,10 +877,13 @@ nyxgpt ops stop observability
   than silently leaving the other one live.
 - If a component isn't running in either mode, `stop` reports
   `already stopped` and does nothing.
-- `cassandra-logs` unloads the log-follower agent (`launchctl bootout` on
-  macOS, `systemctl --user stop` on Linux) so it doesn't immediately
-  relaunch; an already-unloaded/stopped agent is reported as already stopped
-  rather than a failure.
+- `cassandra-logs` and `ollama-logs` unload the corresponding log-follower
+  agent (`launchctl bootout` on macOS, `systemctl --user stop` on Linux) so it
+  doesn't immediately relaunch; an already-unloaded/stopped agent is reported
+  as already stopped rather than a failure. These are the wrapped equivalent
+  of `launchctl bootout gui/$UID/com.nyxgpt.<name>` -- which, for
+  `ollama-logs`, used to be the only way to stop the watcher at all
+  (issue #4033).
 - `observability` stops the running `monitoring`/`logging`/`tracing`/`errors`
   Compose containers (via `docker compose stop`) -- their data (Grafana
   dashboards, Loki logs, GlitchTip issues) is preserved.
@@ -901,8 +908,9 @@ raw `docker compose down`/`brew services stop`/`launchctl` invocation.
 nyxgpt ops down
 ```
 
-Stops the native `api`/`web`/`ollama`/`cassandra`/`cassandra-logs`
-components (same as `nyxgpt ops stop`), then runs `docker compose down` for
+Stops the native `api`/`web`/`ollama`/`cassandra` components and both
+log-follower agents (`cassandra-logs`, `ollama-logs`) -- same as
+`nyxgpt ops stop` -- then runs `docker compose down` for
 every Compose service in the core app tier and the observability profiles.
 Container data (Cassandra data, pulled Ollama models, Grafana/Loki state --
 all bind-mounted under `~/.nyxGPT/volumes/`, see

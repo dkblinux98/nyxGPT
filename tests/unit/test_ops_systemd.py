@@ -1010,7 +1010,11 @@ def test_status_prints_systemd_section_on_linux(monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "systemd --user services" in out
-    assert "systemd unit nyxgpt-cassandra-logs.service" in out
+    # Every support unit, not just cassandra-logs: `status` is the command an
+    # operator checks a teardown with, and the Linux branch used to name one
+    # follower while the macOS branch named all of them (#4033).
+    for unit_base in ops.SUPPORT_SYSTEMD_UNITS.values():
+        assert f"systemd unit {unit_base}.service" in out
 
 
 def test_doctor_requires_systemctl_not_brew_on_linux(monkeypatch, tmp_path):

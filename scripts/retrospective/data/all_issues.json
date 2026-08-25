@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-23T10:12:58+00:00",
+ "generated_at": "2026-08-24T10:14:28+00:00",
  "issues": [
   {
    "n": 2587,
@@ -4830,17 +4830,6 @@
    "closed": "2026-08-11T04:39:29Z"
   },
   {
-   "n": 3634,
-   "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-   "created": "2026-08-05T03:02:46Z",
-   "state": "CLOSED",
-   "closed": "2026-08-09T03:59:01Z"
-  },
-  {
    "n": 3633,
    "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
    "labels": [
@@ -4850,6 +4839,17 @@
    "created": "2026-08-05T03:02:46Z",
    "state": "CLOSED",
    "closed": "2026-08-09T03:51:26Z"
+  },
+  {
+   "n": 3634,
+   "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-05T03:02:46Z",
+   "state": "CLOSED",
+   "closed": "2026-08-09T03:59:01Z"
   },
   {
    "n": 3635,
@@ -6010,8 +6010,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-18T02:39:42Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T21:23:03Z"
   },
   {
    "n": 3862,
@@ -6371,8 +6371,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:00:07Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T21:20:14Z"
   },
   {
    "n": 3987,
@@ -6382,8 +6382,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:00:37Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T20:38:32Z"
   },
   {
    "n": 3988,
@@ -6393,8 +6393,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:01:17Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T21:20:14Z"
   },
   {
    "n": 3989,
@@ -6415,8 +6415,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:40:37Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T21:09:59Z"
   },
   {
    "n": 3991,
@@ -6426,8 +6426,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T03:00:43Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T21:20:15Z"
   },
   {
    "n": 3992,
@@ -6448,8 +6448,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T04:42:21Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T11:56:14Z"
   },
   {
    "n": 3995,
@@ -6470,8 +6470,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T18:11:12Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-23T21:02:52Z"
   },
   {
    "n": 4008,
@@ -6514,6 +6514,39 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-23T00:16:25Z",
+   "state": "CLOSED",
+   "closed": "2026-08-23T19:33:49Z"
+  },
+  {
+   "n": 4033,
+   "title": "There is no nyxgpt ops command that brings down the ollama logs watcher",
+   "labels": [
+    "Release Management"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-24T01:46:34Z",
+   "state": "OPEN",
+   "closed": null
+  },
+  {
+   "n": 4038,
+   "title": "fix: the developer restarts instead of continuing after a failed verification",
+   "labels": [
+    "Agent"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-24T03:30:57Z",
+   "state": "OPEN",
+   "closed": null
+  },
+  {
+   "n": 4040,
+   "title": "support: This is a test support ticket filed from nyxGPT running cloud linux native latest dev v3.0.0 code",
+   "labels": [
+    "Support"
+   ],
+   "milestone": null,
+   "created": "2026-08-24T04:49:14Z",
    "state": "OPEN",
    "closed": null
   }

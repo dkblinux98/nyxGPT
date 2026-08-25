@@ -1,11 +1,11 @@
 {
- "generated_at": "2026-08-23T10:32:07.088614+00:00",
+ "generated_at": "2026-08-24T10:39:44.066338+00:00",
  "modules": {
   "api": {
    "C": 17,
-   "M": 106,
-   "m": 122,
-   "rounds": 55,
+   "M": 110,
+   "m": 121,
+   "rounds": 56,
    "issues": 24
   },
   "web-ui": {
@@ -24,9 +24,9 @@
   },
   "cli": {
    "C": 3,
-   "M": 42,
-   "m": 58,
-   "rounds": 29,
+   "M": 46,
+   "m": 66,
+   "rounds": 33,
    "issues": 15
   },
   "observability": {
@@ -52,12 +52,6 @@
   }
  },
  "days": {
-  "2026-08-16": {
-   "C": 0,
-   "M": 4,
-   "m": 8,
-   "rounds": 3
-  },
   "2026-08-18": {
    "C": 0,
    "M": 71,
@@ -90,9 +84,9 @@
   },
   "2026-08-23": {
    "C": 4,
-   "M": 25,
-   "m": 25,
-   "rounds": 14
+   "M": 37,
+   "m": 40,
+   "rounds": 22
   }
  },
  "issues": [
@@ -396,6 +390,79 @@
     [
      "Medium",
      "Inverse-claims (\u00a71a): actor-gate table cells still falsified \u2014 carried from three prior rounds, unaddressed"
+    ]
+   ]
+  },
+  {
+   "issue": 4022,
+   "pr": 4026,
+   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
+   "module": "cli",
+   "rounds": 5,
+   "C": 0,
+   "M": 5,
+   "m": 10,
+   "last": "2026-08-23T13:44:49Z",
+   "findings": [
+    [
+     "Medium",
+     "`canary.current_mode()` now asserts \"terraform\" from reads that never happened (`src/nyxgpt/canary.py:668`)"
+    ],
+    [
+     "Minor",
+     "`ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in the same API process, so a denied session can pay the probe pair twice (once per module) and the two can transiently disagree during the recheck window. The smoke resets both, so it is understood; a comment aside, nothing to do now \u2014 noted so a future \"why did it probe twice\" reader finds it. Does not block merge."
+    ],
+    [
+     "Minor",
+     "`_terraform_stack_health` reports an unknown read as `ok=False` with `status=\"UNKNOWN\"` \u2014 consistent with the #3827 pattern; just confirming this was read and judged deliberate. Does not block merge."
+    ],
+    [
+     "Medium",
+     "The new `unknown` mode ships with the timeout explanation \u2014 a confident wrong diagnosis on this issue's own scenario (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice; understood, noted for future readers."
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+    ],
+    [
+     "Medium",
+     "(carried, unaddressed) The new `unknown` mode ships with the timeout explanation (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice."
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+    ],
+    [
+     "Medium",
+     "(carried, unaddressed) The new `unknown` mode ships with the timeout explanation (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice."
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+    ],
+    [
+     "Medium",
+     "Falsified claims left unfixed (\u00a71a): three sentences, three text edits"
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice."
+    ],
+    [
+     "Minor",
+     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
     ]
    ]
   },
@@ -1428,39 +1495,55 @@
    ]
   },
   {
-   "issue": 3815,
-   "pr": 3817,
-   "title": "[dkblinux98/nyxGPT] Feature: bug: retrospective dump workflows cannot push \u2014 v3.0.0 ruleset requires pull requests (#3815) (PR #3817)",
+   "issue": null,
+   "pr": 4029,
+   "title": "[dkblinux98/nyxGPT] feat: reasoning off by default, and every mode ships the same model (D-048) (PR #4029)",
    "module": "api",
-   "rounds": 2,
+   "rounds": 3,
    "C": 0,
-   "M": 2,
-   "m": 4,
-   "last": "2026-08-16T16:47:23Z",
+   "M": 5,
+   "m": 5,
+   "last": "2026-08-23T13:25:43Z",
    "findings": [
     [
      "Medium",
-     "Missing executed verification on the real GitHub ruleset (\u00a71c; #3815 acceptance criterion 4)"
-    ],
-    [
-     "Minor",
-     "Concurrent-dump publish race"
-    ],
-    [
-     "Minor",
-     "`usage()` truncates the merge script's header"
+     "The discarded-reasoning class has two unswept live instances"
     ],
     [
      "Medium",
-     "Guard is bypassable in the check-to-merge window: merge does not pin the verified head (`scripts/retrospective/merge_data_branch.sh:250` approx, the `gh pr merge \"$pr\" --repo \"$REPO\" --merge` call)"
+     "The reasoning-with-no-answer error covers only the non-streaming path, and the ledger entry claims it unqualified"
+    ],
+    [
+     "Medium",
+     "`k8s/configmap.yaml`'s `think` is asserted to match `example.config.ini` by comment, not by test"
     ],
     [
      "Minor",
-     "Runbook still offers the guard-free manual push"
+     "`docs/api.md` still uses `llama3.1:8b` as the `default_model` value in several sample responses (e.g. lines 400, 614, 676) \u2014 sample state, not a default claim, so not blocking; worth converging on the shipped model next time those examples are touched."
     ],
     [
      "Minor",
-     "`APPROVAL_GRACE` is read mid-script rather than declared with the other tunables"
+     "The CLI wizard (`src/nyxgpt/wizard.py::_generate_config_ini`) writes `default_model` and `chat_timeout_seconds` but not `think`; behaviorally fine (code default is false) and consistent with other keys, noted only for completeness."
+    ],
+    [
+     "Medium",
+     "The discarded-reasoning class has one last member, and it bypasses the wrapper the fix lives in"
+    ],
+    [
+     "Minor",
+     "Whitespace-only streamed content evades the new guard"
+    ],
+    [
+     "Minor",
+     "`ollama_chat_stream_tokens`'s docstring Args/Raises don't mention `think` or the new raise condition"
+    ],
+    [
+     "Medium",
+     "[Carried] Reranker still lets the shipped reasoning model reason into a 50-token budget"
+    ],
+    [
+     "Minor",
+     "Carried from last round, still non-blocking: whitespace-only streamed content evades the stream guard (`ollama_client.py`, `yielded_content` set on any non-empty part vs `strip()` on the non-streaming path); `ollama_chat_stream_tokens`'s docstring omits `think` and the new raise condition."
     ]
    ]
   },
@@ -1911,43 +1994,6 @@
     [
      "Minor",
      "Issue #4008's AC5 (a CI guard so yamllint debt cannot silently return) remains unimplemented as written; under the owner-approved config approach the forced-bypass mechanism is removed for the one rule with debt, and a new error-level violation fails loudly at the introducing commit, so the criterion's motivation is substantially dissolved. Noted for the owner's acceptance pass; consistent with the previous round, not blocking."
-    ]
-   ]
-  },
-  {
-   "issue": 3801,
-   "pr": 3802,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: merge conflicts escalate to owner instead of dev-agent resolution (#3801) (PR #3802)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 4,
-   "last": "2026-08-16T00:42:14Z",
-   "findings": [
-    [
-     "Medium",
-     "Ungated trust of conflict-control comments in the polling path (public repo)"
-    ],
-    [
-     "Medium",
-     "\u00a73c actor-gate audit table falsified and not extended"
-    ],
-    [
-     "Minor",
-     "Repeated escalation on every subsequent event"
-    ],
-    [
-     "Minor",
-     "Slack channel message fires on `noop` decisions too"
-    ],
-    [
-     "Minor",
-     "Empty routing decision in Slack on dispatcher failure"
-    ],
-    [
-     "Minor",
-     "Unlinked-PR escalation edge"
     ]
    ]
   },
@@ -2830,31 +2876,6 @@
    ]
   },
   {
-   "issue": 4022,
-   "pr": 4026,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-23T07:40:13Z",
-   "findings": [
-    [
-     "Medium",
-     "`canary.current_mode()` now asserts \"terraform\" from reads that never happened (`src/nyxgpt/canary.py:668`)"
-    ],
-    [
-     "Minor",
-     "`ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in the same API process, so a denied session can pay the probe pair twice (once per module) and the two can transiently disagree during the recheck window. The smoke resets both, so it is understood; a comment aside, nothing to do now \u2014 noted so a future \"why did it probe twice\" reader finds it. Does not block merge."
-    ],
-    [
-     "Minor",
-     "`_terraform_stack_health` reports an unknown read as `ok=False` with `status=\"UNKNOWN\"` \u2014 consistent with the #3827 pattern; just confirming this was read and judged deliberate. Does not block merge."
-    ]
-   ]
-  },
-  {
    "issue": 3989,
    "pr": 4018,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: terraform install-mode line describes containers that do not exist (#3989) (PR #4018)",
@@ -2923,30 +2944,45 @@
      "`scripts/first-chat-smoke.py:216` \u2014 the comment pins the server default (\"300\") with nothing enforcing client(420) > server default if the default moves again; acceptable as-is since the comment cites its source, just noting the coupling. Does not block."
     ]
    ]
+  },
+  {
+   "issue": 3999,
+   "pr": 4025,
+   "title": "[dkblinux98/nyxGPT] Agent: fix: implement the owner's acceptance-failure standard - reopen, park, promote (D-042) (#3999) (PR #4025)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 3,
+   "m": 2,
+   "last": "2026-08-23T11:49:05Z",
+   "findings": [
+    [
+     "Medium",
+     "Falsified claims left in the tree (\u00a71a, blocking)"
+    ],
+    [
+     "Medium",
+     "The discriminator fails open on a missing or unreadable `blocked_by` edge (blocking)"
+    ],
+    [
+     "Medium",
+     "The failure-path alert is only statically tested (blocking)"
+    ],
+    [
+     "Minor",
+     "`scripts/agents/lib/gh_project.sh:2229` (`_escalation_exempt_lane`): the comment \"Open items here are held by the drain gate (#3730, D-001/D-008)\" is now an incomplete reason (open items may be reopened originals) \u2014 the exemption conclusion is unchanged and even stronger, so this is wording only."
+    ],
+    [
+     "Minor",
+     "`acceptance_reopen_original`'s issue comment renders \"assigned to @the scrummaster agent\" when `SCRUM_AGENT` is unset \u2014 cosmetic fallback text."
+    ]
+   ]
   }
  ],
  "cleanPRs": [
   {
-   "pr": 3823,
-   "merged": "2026-08-16",
-   "title": "Feature: feat: make the agentic first principles binding at runtime \u2014 one source, enforced at review (#3821)",
-   "module": "api"
-  },
-  {
-   "pr": 3822,
-   "merged": "2026-08-16",
-   "title": "Acceptance Failure: bug: dev agent fatal-error escalation crashes on quotes \u2014 script injection into github-script (#3820)",
-   "module": "api"
-  },
-  {
-   "pr": 3819,
-   "merged": "2026-08-16",
-   "title": "Acceptance Failure: bug: project hygiene overwrites already-populated fields \u2014 must never clobber on first run (#3816)",
-   "module": "api"
-  },
-  {
-   "pr": 3818,
-   "merged": "2026-08-16",
+   "pr": 3840,
+   "merged": "2026-08-17",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
   },
@@ -3011,12 +3047,6 @@
    "module": "api"
   },
   {
-   "pr": 3840,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
    "pr": 3839,
    "merged": "2026-08-17",
    "title": "chore(retro): refresh retrospective data",
@@ -3035,10 +3065,10 @@
    "module": "api"
   },
   {
-   "pr": 3900,
+   "pr": 3897,
    "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
-   "module": "cli"
+   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
+   "module": "web-ui"
   },
   {
    "pr": 3899,
@@ -3047,10 +3077,10 @@
    "module": "observability"
   },
   {
-   "pr": 3897,
+   "pr": 3900,
    "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
-   "module": "web-ui"
+   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
+   "module": "cli"
   },
   {
    "pr": 3893,
@@ -3251,16 +3281,16 @@
    "module": "web-ui"
   },
   {
-   "pr": 4003,
-   "merged": "2026-08-22",
-   "title": "Improvement: improvement: default cloud instance type to m5.xlarge - m5.large cannot run the stack (#3992)",
-   "module": "api"
-  },
-  {
    "pr": 3998,
    "merged": "2026-08-22",
    "title": "docs(ledger): record the owner's acceptance-failure standard as D-042",
    "module": "documentation"
+  },
+  {
+   "pr": 4003,
+   "merged": "2026-08-22",
+   "title": "Improvement: improvement: default cloud instance type to m5.xlarge - m5.large cannot run the stack (#3992)",
+   "module": "api"
   },
   {
    "pr": 3997,
@@ -3271,6 +3301,24 @@
   {
    "pr": 3994,
    "merged": "2026-08-22",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4032,
+   "merged": "2026-08-23",
+   "title": "fix: the stamps smoke assumed a corpus shape instead of guaranteeing it",
+   "module": "observability"
+  },
+  {
+   "pr": 4031,
+   "merged": "2026-08-23",
+   "title": "fix: the review workflow cancelled itself by commenting",
+   "module": "api"
+  },
+  {
+   "pr": 4030,
+   "merged": "2026-08-23",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
   },
@@ -3291,27 +3339,33 @@
    "merged": "2026-08-23",
    "title": "Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806)",
    "module": "api"
+  },
+  {
+   "pr": 4035,
+   "merged": "2026-08-24",
+   "title": "fix: unred v3.0.0 -- three defects in the Kubernetes smokes, each masking the next",
+   "module": "observability"
   }
  ],
  "cleanByModule": {
-  "api": 35,
-  "cli": 6,
-  "observability": 5,
+  "api": 33,
   "web-ui": 6,
+  "observability": 7,
+  "cli": 6,
   "documentation": 4,
   "testing": 3,
   "rag": 1,
   "security": 1
  },
  "totals": {
-  "rounds": 133,
+  "rounds": 138,
   "C": 24,
-  "M": 212,
-  "m": 263,
+  "M": 220,
+  "m": 270,
   "items": 64,
   "clean": 61,
-  "reviewed": 121,
-  "merged": 130,
-  "unreviewed": 9
+  "reviewed": 124,
+  "merged": 136,
+  "unreviewed": 12
  }
 }
