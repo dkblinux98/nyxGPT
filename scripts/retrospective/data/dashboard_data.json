@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-24T10:39:44.066338+00:00",
+ "generated_at": "2026-08-25T10:23:38.904147+00:00",
  "modules": {
   "api": {
    "C": 17,
@@ -2981,84 +2981,6 @@
  ],
  "cleanPRs": [
   {
-   "pr": 3840,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3852,
-   "merged": "2026-08-17",
-   "title": "Improvement: fix: remove create_issue.sh --blocks, the retired prose relationship path (#3836)",
-   "module": "api"
-  },
-  {
-   "pr": 3849,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3848,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3847,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3846,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3845,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3844,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3843,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3842,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3841,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3839,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3838,
-   "merged": "2026-08-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
    "pr": 3905,
    "merged": "2026-08-18",
    "title": "fix: unblock the v3.0.0 unit gate \u2014 duplicate ledger ID and rglob workspace scan",
@@ -3341,14 +3263,26 @@
    "module": "api"
   },
   {
+   "pr": 4042,
+   "merged": "2026-08-24",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 4035,
    "merged": "2026-08-24",
    "title": "fix: unred v3.0.0 -- three defects in the Kubernetes smokes, each masking the next",
    "module": "observability"
+  },
+  {
+   "pr": 4041,
+   "merged": "2026-08-25",
+   "title": "Agent: fix: the developer restarts instead of continuing after a failed verification (#4038)",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "api": 33,
+  "api": 22,
   "web-ui": 6,
   "observability": 7,
   "cli": 6,
@@ -3363,9 +3297,9 @@
   "M": 220,
   "m": 270,
   "items": 64,
-  "clean": 61,
-  "reviewed": 124,
-  "merged": 136,
-  "unreviewed": 12
+  "clean": 50,
+  "reviewed": 113,
+  "merged": 126,
+  "unreviewed": 13
  }
 }

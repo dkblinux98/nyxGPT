@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-24T10:14:28+00:00",
+ "generated_at": "2026-08-25T10:12:10+00:00",
  "issues": [
   {
    "n": 2587,
@@ -5618,8 +5618,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-16T03:53:51Z",
-   "state": "CLOSED",
-   "closed": "2026-08-23T00:11:05Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3807,
@@ -6525,8 +6525,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-24T01:46:34Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-25T01:24:49Z"
   },
   {
    "n": 4038,
@@ -6536,8 +6536,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-24T03:30:57Z",
-   "state": "OPEN",
-   "closed": null
+   "state": "CLOSED",
+   "closed": "2026-08-25T01:52:57Z"
   },
   {
    "n": 4040,
@@ -6547,6 +6547,17 @@
    ],
    "milestone": null,
    "created": "2026-08-24T04:49:14Z",
+   "state": "OPEN",
+   "closed": null
+  },
+  {
+   "n": 4043,
+   "title": "bug: acceptance failure 1 for #3806 - restart-required config changes apply sile",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-25T05:23:57Z",
    "state": "OPEN",
    "closed": null
   }
