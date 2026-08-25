@@ -93,6 +93,36 @@ one but a human/EA can perform, with no signal that it's stuck.
   - `feat/<issue-id>-<slug>` or `fix/<issue-id>-<slug>`
 - Base off the current active release branch.
 
+### You are not on the branch you think you are (#4038)
+
+**Every `claude-code-action` invocation mints and checks out a fresh
+`claude/issue-<n>-<timestamp>` branch cut from the release branch, and
+`developer_auto_implement.yml` invokes it six times.** So a step that follows
+another step's work — a verification retry, a review-fix round, a Phase 3
+escalation — is handed a clean cut of the release branch, not the branch
+carrying the work. The tree in front of you does not contain the commits the
+logs you are reading describe.
+
+The prompt for each of those steps names the branch explicitly. Check it out
+before you read or change anything:
+
+```
+git fetch origin <the branch the prompt names>
+git checkout -B <the branch the prompt names> origin/<the branch the prompt names>
+```
+
+Then **continue** that work. Do not re-implement the issue, and do not work on
+the branch the action minted: a second branch strands the first, and the run
+ends with two divergent branches, a PR for one of them and a rescue draft PR
+for the other. That is what happened on #4033 — sixteen minutes of an attempt
+rebuilding what it already had, and an orphan the owner closed by hand.
+
+`scripts/agents/reconcile_work_branch.sh` runs after each of those steps and
+reconciles whatever branch you left commits on onto the recorded work branch,
+by forward merge. It is a backstop, not a licence: it cannot know which of two
+divergent implementations was meant to survive, and when they conflict it
+refuses both rather than choosing (see below).
+
 ### Never rebase (owner rule 2026-08-08, into the runbook 2026-08-15, #3801)
 
 **Branches in this repository are never rebased.** Not `git rebase`, not

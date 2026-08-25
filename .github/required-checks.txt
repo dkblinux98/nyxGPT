@@ -58,6 +58,7 @@ validate-web
 claim-decision
 The guard refuses the branch that holds the only copy
 A merge that cannot be verified does not close its issue
+A failed verification continues the work, it does not restart it
 terraform-local-smoke
 canary-pod-reason-smoke
 canary-rollout-smoke
