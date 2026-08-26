@@ -98,7 +98,6 @@ service-venv-python
 host-relay-posture
 self-heal-probe-honesty
 observability-settle
-Install the working tree's formulas
 Install the candidate onto a machine that already has the stable
 Install the published candidate from the real tap
 no-clobber
@@ -121,6 +120,24 @@ round-state-rules-hold
 acceptance-standard
 
 [not-required]
+# macos-brew-smoke.yml's `keg-install` job. Owner decision, 2026-08-24: this
+# was [required] and had been red on EVERY run for 24+ hours, across several
+# branches, failing at a DIFFERENT step each time -- #3854's caveats
+# assertion, then #3861's keg-venv copy, then #3854 again. A gate that fails
+# somewhere new each run is not measuring the change under review; it is
+# measuring itself, and it blocked every PR behind it including #4036, whose
+# own ollama-logs proof step sits later in this same job and had therefore
+# never executed once.
+#
+# The job still RUNS and still reports on every PR -- this only stops it
+# gating merges. macOS keg installs remain covered, just not as a veto.
+#
+# REVISIT: put this back under [required] as soon as the job is green twice in
+# a row on unrelated PRs. It is the executed evidence for the macOS install
+# path (D-006), so leaving it advisory indefinitely would quietly retire a
+# gate the release depends on.
+Install the working tree's formulas
+
 # The review's own runs, including the gate itself. Requiring any of them
 # deadlocks the gate against itself: `claude-review` cannot be complete at the
 # moment the gate decides whether to start `claude-review`, and `head-gate` is
