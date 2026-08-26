@@ -19,8 +19,10 @@ set -euo pipefail
 # they are reported as `parked` and never moved by this script.
 #
 # Idempotent: with the lane already empty it releases nothing and posts
-# nothing, so it is safe to poll (acceptance_drain_gate.yml runs it on a
-# schedule and after every promotion sweep).
+# nothing, so it is safe to run at any time (acceptance_drain_gate.yml runs it
+# after every promotion sweep, on a closing issue, and on owner dispatch --
+# the 15-minute schedule was removed 2026-08-25, so the end-of-round opening
+# is an owner action).
 #
 # Usage:
 #   scripts/agents/drain_gate.sh state     # print gate state JSON, no writes

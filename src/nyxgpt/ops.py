@@ -38,6 +38,7 @@ import tomllib
 from collections.abc import Callable, Container, Iterator, Mapping, Sequence
 from configparser import ConfigParser
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -5536,16 +5537,27 @@ SUPPORT_SYSTEMD_UNITS: dict[str, str] = {
     "ollama-logs": "nyxgpt-ollama-logs",
 }
 
-# Log-follower agent identifiers ("cassandra-logs"/"ollama-logs", matching
-# `nyxgpt ops restart`/`stop`'s `cassandra-logs` target) mapped to each OS's
-# native name for that agent. A view of the two maps above rather than a
-# third list: restart/stop drive the followers only, since the env agent has
-# no log to follow.
+# The log-follower agents `restart`/`stop`/`down` drive, and the single source
+# of that *set*. The env agent is deliberately absent: it has no log to follow.
+#
+# Every command that drives a follower iterates this tuple instead of naming a
+# member, and the CLI builds its `restart`/`stop` target choices from it, so
+# the commands and the targets they accept cannot drift apart. #3859 unified
+# the label maps below for teardown and `status`, but left each caller
+# hand-enumerating `cassandra-logs` alone -- so `ollama-logs` had a helper
+# wired to the right label and nothing calling it, and `launchctl bootout` was
+# the only way to stop the ollama watcher (#4033). Adding a fourth follower
+# now reaches every command that stops one, rather than three that must each
+# be remembered.
+NATIVE_LOG_FOLLOWERS: tuple[str, ...] = ("cassandra-logs", "ollama-logs")
+
+# Follower identifiers mapped to each OS's native name for that agent -- a
+# view of the two maps above rather than a third list.
 _NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS: dict[str, str] = {
-    name: SUPPORT_LAUNCHD_LABELS[name] for name in ("cassandra-logs", "ollama-logs")
+    name: SUPPORT_LAUNCHD_LABELS[name] for name in NATIVE_LOG_FOLLOWERS
 }
 _NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS: dict[str, str] = {
-    name: SUPPORT_SYSTEMD_UNITS[name] for name in ("cassandra-logs", "ollama-logs")
+    name: SUPPORT_SYSTEMD_UNITS[name] for name in NATIVE_LOG_FOLLOWERS
 }
 
 
@@ -12685,13 +12697,20 @@ def status(_args) -> int:
         else:
             print("\nsystemd --user services: systemctl not found")
 
-        unit = "nyxgpt-cassandra-logs.service"
-        try:
-            cp = _run(["systemctl", "--user", "is-active", unit], check=False, expected=True)
-            state = (cp.stdout or "").strip() or "inactive"
-            print(f"\nsystemd unit {unit}: {state.upper()}")
-        except Exception as e:
-            print(f"\nsystemd unit {unit}: ERROR ({e})")
+        # Every support unit nyxGPT installs, from the same map the removal
+        # path uses -- the Linux twin of the LaunchAgent block below, which
+        # #3859 widened past `cassandra-logs` while this branch kept reporting
+        # that one alone (#4033). `nyxgpt ops status` is the command an
+        # operator checks a teardown with, so a follower it cannot name is a
+        # follower that survives one unnoticed.
+        for unit_base in SUPPORT_SYSTEMD_UNITS.values():
+            unit = f"{unit_base}.service"
+            try:
+                cp = _run(["systemctl", "--user", "is-active", unit], check=False, expected=True)
+                state = (cp.stdout or "").strip() or "inactive"
+                print(f"\nsystemd unit {unit}: {state.upper()}")
+            except Exception as e:
+                print(f"\nsystemd unit {unit}: ERROR ({e})")
     else:
         if _which("brew"):
             cp = _run(["brew", "services", "list"], check=False, expected=True)
@@ -13909,7 +13928,7 @@ def _restart_cassandra_component(compose: dict[str, str]) -> list[OpsResult]:
 def restart(args) -> int:
     """Restart operational components.
 
-    target: all|api|web|ollama|cassandra|cassandra-logs|observability
+    target: all|api|web|ollama|cassandra|cassandra-logs|ollama-logs|observability
 
     Before touching a native component, checks whether a Docker Compose deployment
     of that same component is already live and, if so, refuses rather than starting
@@ -13940,13 +13959,14 @@ def restart(args) -> int:
         steps.append(("restart ollama", lambda: _restart_component("ollama", compose)))
     if target in ("all", "cassandra"):
         steps.append(("restart cassandra", lambda: _restart_cassandra_component(compose)))
-    if target in ("all", "cassandra-logs"):
-        steps.append(
-            (
-                "restart cassandra-logs agent",
-                lambda: _restart_native_log_follower("cassandra-logs"),
+    for follower in NATIVE_LOG_FOLLOWERS:
+        if target in ("all", follower):
+            steps.append(
+                (
+                    f"restart {follower} agent",
+                    partial(_restart_native_log_follower, follower),
+                )
             )
-        )
     if target in ("all", "observability"):
         steps.append(("restart observability stack", _restart_observability_stack))
 
@@ -14393,13 +14413,18 @@ def _stop_dual_mode(
 def stop(args) -> int:
     """Stop operational components.
 
-    target: all|api|web|ollama|cassandra|cassandra-logs|observability
+    target: all|api|web|ollama|cassandra|cassandra-logs|ollama-logs|observability
 
     For components that can run either natively or under Docker Compose
     (api/web/ollama/cassandra), detects which mode is actually running and
     stops the right one -- if both are live (mixed mode), stops both and
     reports it clearly. Does not delete data volumes or remove containers
     (Compose services are stopped, not brought down).
+
+    The log followers (`NATIVE_LOG_FOLLOWERS`) are native-only and are all
+    included in `all`; `ollama-logs` is selectable in its own right, so
+    stopping the ollama watcher no longer means reaching for `launchctl
+    bootout` (#4033).
 
     `observability` has no native equivalent, so -- like `restart` -- it is
     not included in `all`; select it explicitly to stop the Grafana/Loki/
@@ -14455,17 +14480,19 @@ def stop(args) -> int:
                 ),
             )
         )
-    if target in ("all", "cassandra-logs"):
-        steps.append(
-            (
-                "stop cassandra-logs agent",
-                lambda: _stop_native_log_follower("cassandra-logs"),
+    for follower in NATIVE_LOG_FOLLOWERS:
+        if target in ("all", follower):
+            steps.append(
+                (
+                    f"stop {follower} agent",
+                    partial(_stop_native_log_follower, follower),
+                )
             )
-        )
     if target == "observability":
         # Not part of "all" -- like `restart`, "all" only covers the core
-        # api/web/ollama/cassandra/cassandra-logs components; observability
-        # has no native equivalent and is opt-in via its own target/command.
+        # api/web/ollama/cassandra components plus the log followers;
+        # observability has no native equivalent and is opt-in via its own
+        # target/command.
         steps.append(("stop observability stack", _stop_observability_stack))
 
     quiet = bool(getattr(args, "quiet", False))
@@ -14570,7 +14597,8 @@ def _down_compose_teardown(scope: str, volumes: bool) -> list[OpsResult]:
 def down(args) -> int:
     """Tear down the local stack: native services plus the Compose app/observability tiers.
 
-    Native services (api/web/ollama/cassandra/cassandra-logs) are stopped;
+    Native services (api/web/ollama/cassandra plus every log follower in
+    `NATIVE_LOG_FOLLOWERS`) are stopped;
     Compose containers for the selected scope are removed via `docker
     compose down` (networks too, volumes preserved unless `--volumes` is
     also given). `--app-only`/`--observability-only` scope the teardown to
@@ -14629,12 +14657,13 @@ def down(args) -> int:
         steps.append(
             ("stop cassandra container", lambda: _stop_docker_container("nyxgpt-cassandra"))
         )
-        steps.append(
-            (
-                "stop cassandra-logs agent",
-                lambda: _stop_native_log_follower("cassandra-logs"),
+        for follower in NATIVE_LOG_FOLLOWERS:
+            steps.append(
+                (
+                    f"stop {follower} agent",
+                    partial(_stop_native_log_follower, follower),
+                )
             )
-        )
     steps.append(("compose teardown", lambda: _down_compose_teardown(scope, volumes)))
 
     quiet = bool(getattr(args, "quiet", False))

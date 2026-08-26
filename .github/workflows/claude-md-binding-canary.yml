@@ -101,7 +101,7 @@ jobs:
       # spend data (scripts/retrospective/dump_churn.py).
       - name: Run Claude with the default setting sources (must return the token)
         id: default_run
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -126,7 +126,7 @@ jobs:
 
       - name: Run Claude with --setting-sources user (control, must NOT return it)
         id: control_run
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

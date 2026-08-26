@@ -6598,5 +6598,128 @@
    "`docs/troubleshooting.md:778` \u2014 the sample error text \"no response within 180s\" shows the old default in example output (the real message interpolates the configured value). Cosmetic; does not block.",
    "`scripts/first-chat-smoke.py:216` \u2014 the comment pins the server default (\"300\") with nothing enforcing client(420) > server default if the default moves again; acceptable as-is since the comment cites its source, just noting the coupling. Does not block."
   ]
+ },
+ {
+  "issue": null,
+  "pr": 4029,
+  "title": "[dkblinux98/nyxGPT] feat: reasoning off by default, and every mode ships the same model (D-048) (PR #4029)",
+  "module": "api",
+  "date": "2026-08-23T10:49:21Z",
+  "critical": [],
+  "medium": [
+   "The discarded-reasoning class has two unswept live instances",
+   "The reasoning-with-no-answer error covers only the non-streaming path, and the ledger entry claims it unqualified",
+   "`k8s/configmap.yaml`'s `think` is asserted to match `example.config.ini` by comment, not by test"
+  ],
+  "minor": [
+   "`docs/api.md` still uses `llama3.1:8b` as the `default_model` value in several sample responses (e.g. lines 400, 614, 676) \u2014 sample state, not a default claim, so not blocking; worth converging on the shipped model next time those examples are touched.",
+   "The CLI wizard (`src/nyxgpt/wizard.py::_generate_config_ini`) writes `default_model` and `chat_timeout_seconds` but not `think`; behaviorally fine (code default is false) and consistent with other keys, noted only for completeness."
+  ]
+ },
+ {
+  "issue": null,
+  "pr": 4029,
+  "title": "[dkblinux98/nyxGPT] feat: reasoning off by default, and every mode ships the same model (D-048) (PR #4029)",
+  "module": "api",
+  "date": "2026-08-23T11:22:20Z",
+  "critical": [],
+  "medium": [
+   "The discarded-reasoning class has one last member, and it bypasses the wrapper the fix lives in"
+  ],
+  "minor": [
+   "Whitespace-only streamed content evades the new guard",
+   "`ollama_chat_stream_tokens`'s docstring Args/Raises don't mention `think` or the new raise condition"
+  ]
+ },
+ {
+  "issue": 3999,
+  "pr": 4025,
+  "title": "[dkblinux98/nyxGPT] Agent: fix: implement the owner's acceptance-failure standard - reopen, park, promote (D-042) (#3999) (PR #4025)",
+  "module": "api",
+  "date": "2026-08-23T11:49:05Z",
+  "critical": [],
+  "medium": [
+   "Falsified claims left in the tree (\u00a71a, blocking)",
+   "The discriminator fails open on a missing or unreadable `blocked_by` edge (blocking)",
+   "The failure-path alert is only statically tested (blocking)"
+  ],
+  "minor": [
+   "`scripts/agents/lib/gh_project.sh:2229` (`_escalation_exempt_lane`): the comment \"Open items here are held by the drain gate (#3730, D-001/D-008)\" is now an incomplete reason (open items may be reopened originals) \u2014 the exemption conclusion is unchanged and even stronger, so this is wording only.",
+   "`acceptance_reopen_original`'s issue comment renders \"assigned to @the scrummaster agent\" when `SCRUM_AGENT` is unset \u2014 cosmetic fallback text."
+  ]
+ },
+ {
+  "issue": 4022,
+  "pr": 4026,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
+  "module": "cli",
+  "date": "2026-08-23T13:05:51Z",
+  "critical": [],
+  "medium": [
+   "The new `unknown` mode ships with the timeout explanation \u2014 a confident wrong diagnosis on this issue's own scenario (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
+  ],
+  "minor": [
+   "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice; understood, noted for future readers.",
+   "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+  ]
+ },
+ {
+  "issue": 4022,
+  "pr": 4026,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
+  "module": "cli",
+  "date": "2026-08-23T13:19:16Z",
+  "critical": [],
+  "medium": [
+   "(carried, unaddressed) The new `unknown` mode ships with the timeout explanation (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
+  ],
+  "minor": [
+   "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice.",
+   "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+  ]
+ },
+ {
+  "issue": 4022,
+  "pr": 4026,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
+  "module": "cli",
+  "date": "2026-08-23T13:23:52Z",
+  "critical": [],
+  "medium": [
+   "(carried, unaddressed) The new `unknown` mode ships with the timeout explanation (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
+  ],
+  "minor": [
+   "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice.",
+   "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+  ]
+ },
+ {
+  "issue": null,
+  "pr": 4029,
+  "title": "[dkblinux98/nyxGPT] feat: reasoning off by default, and every mode ships the same model (D-048) (PR #4029)",
+  "module": "api",
+  "date": "2026-08-23T13:25:43Z",
+  "critical": [],
+  "medium": [
+   "[Carried] Reranker still lets the shipped reasoning model reason into a 50-token budget"
+  ],
+  "minor": [
+   "Carried from last round, still non-blocking: whitespace-only streamed content evades the stream guard (`ollama_client.py`, `yielded_content` set on any non-empty part vs `strip()` on the non-streaming path); `ollama_chat_stream_tokens`'s docstring omits `think` and the new raise condition."
+  ]
+ },
+ {
+  "issue": 4022,
+  "pr": 4026,
+  "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
+  "module": "cli",
+  "date": "2026-08-23T13:44:49Z",
+  "critical": [],
+  "medium": [
+   "Falsified claims left unfixed (\u00a71a): three sentences, three text edits"
+  ],
+  "minor": [
+   "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice.",
+   "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
+  ]
  }
 ]

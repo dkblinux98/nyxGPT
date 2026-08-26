@@ -48,6 +48,17 @@ if [[ -z "$ISSUE" ]]; then
   echo "[review] PR #${PR} closes no issue -- merging without issue-side bookkeeping." >&2
 fi
 
+# Initialised HERE, not at the park gate that sets it, because the closing
+# exit ladder reads it on EVERY path while the park gate only runs when there
+# is an issue. `19de6a82` wrapped the issue-side work in `if HAS_ISSUE` and
+# left this assignment inside; under `set -u` that made the ladder's first
+# rung abort an issue-less merge that had already fully succeeded -- PR #4039
+# merged, verified onto v3.0.0, and reported as a failed run
+# (`line 491: PARKED: unbound variable`, run 32913806285). The ladder's own
+# `HAS_ISSUE == 0` success branch sits two rungs below and had never once
+# been reached. Any future rung added there is now safe by construction.
+PARKED=0
+
 load_config
 require_gh_auth
 require_cmd gh
@@ -375,7 +386,6 @@ fi
 # skip the owner handoff; sweep_parked_blocked_issues.sh moves the whole
 # dependency set to Acceptance Testing together once every blocker
 # completes (merged and itself Acceptance Testing or beyond).
-PARKED=0
 echo "[review] Checking issue #${ISSUE} for open blocking dependencies..." >&2
 mapfile -t open_blockers < <(open_blocked_by_issues "$ISSUE")
 

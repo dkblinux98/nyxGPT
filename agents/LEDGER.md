@@ -1687,6 +1687,78 @@ rather than mechanism, and nothing can enforce them.
   `scripts/self-heal-probe-honesty-smoke.py` (`_assert_ops_container_reads`);
   `docs/systemd.md`, `docs/self-healing.md`.
 
+- **D-049** · 2026-08-24 · developer agent (#4038) — **A step that follows
+  another step's work reconciles onto the branch carrying it; it never assumes
+  it is standing on it. And `anthropics/claude-code-action` is pinned to a
+  commit, never a floating tag.**
+
+  `claude-code-action` mints and checks out a fresh
+  `claude/issue-<n>-<timestamp>` branch cut from the release branch on **every**
+  invocation, and `developer_auto_implement.yml` invokes it six times. D-031's
+  amendment already recorded this for the rescue backstop; what was not
+  recorded is that the *retry prompts* asserted the opposite ("you should
+  already be on the feature branch from the previous step"), named no branch to
+  recover, and had no reconciliation behind them. So every failed verification
+  re-implemented its issue on a clean cut of the release branch while the
+  previous attempt sat stranded on origin: #4033 spent sixteen minutes of
+  attempt 2 rebuilding what it already had and ended with two divergent
+  branches, PR #4036 and a rescue draft PR #4037 the owner closed by hand.
+
+  Four things a future session would otherwise re-derive wrongly:
+
+  (a) *The onset was the action's, not this repo's, and the tag is why.* PR
+  head-branch naming shows two action-named branches in the whole history
+  before 2026-07-07 and 136 in July alone; `@v1` was already the pinned ref
+  well before that, and no commit here explains the change. `v1` is a **major**
+  tag and it moves. All 18 invocations across the six agent workflows are now
+  pinned to a commit SHA with the release named in a trailing comment. Do not
+  "tidy" one back to a tag, and do not write a fix that depends on the action's
+  current branch naming — it is outside this repo's control and has already
+  moved once.
+
+  (b) *The target branch comes from run state; the source comes from the tree.*
+  `Record the work branch` freezes `git branch --show-current` into a step
+  output at the one point in the job where reading the tree is correct — every
+  path has just positioned the workspace on its branch and nothing has crossed
+  an action boundary yet. After that point every read of the tree names a decoy
+  minted seconds earlier (D-031's trap, which cost #3956 its rescue). The
+  *source* is still read from the tree in the reconciliation, and that is
+  right: it names the branch the invocation that just finished was standing on,
+  which is the only place its commits can be.
+
+  (c) *The sync is a forward merge, never a force-push — and this reverses what
+  the review path did.* `:864`'s force-push was safe only against the case its
+  guard checked (a stray with no commits of its own). Against the case that
+  actually matters it is destructive: an action branch cut from the release
+  branch does **not** contain the target's commits, so forcing it over the
+  target erases them. Merging keeps both sides and still fast-forwards in the
+  case the force-push was reaching for, so nothing was traded for the safety.
+  On a conflict the script chooses neither side (D-011 — that is a developer
+  decision), leaves both branches intact, pushes the stray to origin for the
+  rescue backstop, and exits 0.
+
+  (d) *An instruction is not a mechanism, and one path's fix is not the fix.*
+  #3145 produced the review path's reconciliation in 2026-03 and the implement
+  path got neither half of it; the prompt there merely *asserted* continuity,
+  which is why six weeks of stranding went unnoticed until #3862's backstop
+  started opening rescue drafts. The logic now lives once, in
+  `scripts/agents/reconcile_work_branch.sh`, and all three Claude steps that
+  can strand work call it. A retry that cannot be told where the previous
+  attempt's commits are does not run at all — re-implementing is the only thing
+  it could do, and that is the defect, not a fallback.
+
+  The behaviour itself is not recorded here — it is enforced by
+  `tests/test_reconcile_work_branch.sh` (real git repos and a real bare
+  `origin`; case 1 reproduces #4033's shape and case 1b runs the retired
+  force-push form against the identical fixture and shows it erasing attempt 1)
+  and `tests/unit/test_developer_retry_continuity.py`, both run by
+  `.github/workflows/branch-guard-smoke.yml`, per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4038; #4033; extends **D-031**; obeys **D-011**;
+  `agents/runbooks/developer-runbook.md` §2 "You are not on the branch you
+  think you are".
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

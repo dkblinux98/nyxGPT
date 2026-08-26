@@ -1273,8 +1273,47 @@ jobs:
           # location, and this one lives outside the Cellar -- so the reinstall
           # below cannot pull site-packages out from under the process that is
           # driving it.
-          cp -R "$KEG/libexec/venv" "$RUNNER_TEMP/opsvenv"
+          # This copy failed SILENTLY on 2026-08-24 and the step died three
+          # lines later on `line 35: .../opsvenv/bin/python3: No such file or
+          # directory` -- a message that names the symptom and hides the
+          # cause. `cp -R` is quiet in both of the ways it can go wrong here:
+          # copying into a target that already exists nests the tree one level
+          # down, and copying a dangling symlink reproduces the dangle. Bash
+          # reports a dangling interpreter symlink with the same "No such
+          # file" as a missing one, so the two are indistinguishable from the
+          # log. Every branch below therefore names what it found.
+          SRC_VENV="$KEG/libexec/venv"
+          [ -n "$KEG" ] || { echo "::error::brew --prefix ${FORMULA} returned nothing"; exit 1; }
+          [ -x "$SRC_VENV/bin/python3" ] || {
+            echo "--- ${SRC_VENV}/bin ---"; ls -l "$SRC_VENV/bin" 2>&1 | head -20
+            echo "::error::the keg has no runnable interpreter at ${SRC_VENV}/bin/python3"
+            exit 1; }
+
+          # Never copy into an existing directory: that is the nesting trap.
+          rm -rf "$RUNNER_TEMP/opsvenv"
+          cp -R "$SRC_VENV" "$RUNNER_TEMP/opsvenv" || {
+            echo "::error::could not copy the keg venv out of ${SRC_VENV}"; exit 1; }
           OPS_PY="$RUNNER_TEMP/opsvenv/bin/python3"
+
+          # A venv's bin/python3 is a symlink chain. Homebrew's resolves
+          # absolutely, so `cp -R` normally carries it intact -- but if the
+          # chain ever lands on a relative hop it dangles once copied out of
+          # the Cellar. Re-copy dereferenced in that case (what
+          # `python -m venv --copies` produces: a real interpreter beside a
+          # pyvenv.cfg, which still finds its stdlib through `home =`).
+          if ! "$OPS_PY" -c 'import sys' 2>/dev/null; then
+            echo "--- the copied interpreter does not run; source chain ---"
+            ls -l "$SRC_VENV/bin" | grep -i python || true
+            echo "--- copied chain ---"
+            ls -l "$RUNNER_TEMP/opsvenv/bin" | grep -i python || true
+            echo "retrying the copy with symlinks dereferenced"
+            rm -rf "$RUNNER_TEMP/opsvenv"
+            cp -RL "$SRC_VENV" "$RUNNER_TEMP/opsvenv" || {
+              echo "::error::dereferenced copy of ${SRC_VENV} failed too"; exit 1; }
+          fi
+          "$OPS_PY" -c 'import sys' 2>/dev/null || {
+            echo "::error::no working interpreter at ${OPS_PY} after both copy strategies"
+            exit 1; }
           "$OPS_PY" -c 'from nyxgpt import ops; print("ops loaded from", ops.__file__)'
 
           # --- inject: a non-keg file on the link target ------------------
@@ -1292,10 +1331,22 @@ jobs:
             echo "::error::the injected link conflict did not make brew exit non-zero -- everything below would pass vacuously"
             exit 1
           fi
-          grep -q 'Error: The `brew link` step did not complete successfully' "$RUNNER_TEMP/ofail.log" || {
-            echo "::error::brew exited ${rc} for some reason other than the link ofail -- see the log above"
+          # Homebrew has more than one phrasing for "the keg built, but I could
+          # not put its symlinks on the prefix", and which one you get depends
+          # on the brew version and on whether the block is found during `link`
+          # or during the post-install. Pinning ONE sentence made this gate
+          # assert a string rather than the condition: on 2026-08-24 brew
+          # exited 1 with the keg installed -- exactly the #3861 case -- and
+          # this grep still failed it. Match the class instead.
+          if ! grep -qE 'Could not symlink|already exists\. You may want to remove it|The `brew link` step did not complete successfully|The post-install step did not complete successfully' "$RUNNER_TEMP/ofail.log"; then
+            # `tail -30` above is caveats, so "see the log above" showed the
+            # operator nothing about the failure. Print the whole thing.
+            echo "--- ofail.log in full ---"
+            cat "$RUNNER_TEMP/ofail.log"
+            echo "--- end ofail.log ---"
+            echo "::error::brew exited ${rc}, but not for a blocked link -- see ofail.log in full above"
             exit 1
-          }
+          fi
           brew list --versions "$FORMULA" || {
             echo "::error::the keg is gone, so this is a real install failure and not the ofail case"
             exit 1
@@ -1358,6 +1409,92 @@ jobs:
           test -L "$LINK" || { echo "::error::${LINK} was not restored"; exit 1; }
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the injection"; exit 1; }
           nyxgpt --version
+
+      - name: "Stop: prove `nyxgpt ops stop ollama-logs` boots out the ollama log watcher"
+        # Executed evidence for #4033. The owner found `follow-ollama-logs.sh`
+        # and its `tail -F` still running with no `nyxgpt` command able to stop
+        # them: ops had `_stop_native_log_follower("ollama-logs")` wired to the
+        # right label and nothing called it, so `launchctl bootout` was the
+        # supported path. Inspection cannot see an argparse `choices` list
+        # rejecting a target, and it cannot see whether `bootout` actually
+        # unloaded the agent -- only running it can.
+        #
+        # Fault injection, same shape as the #3859 step below, because "it is
+        # stopped afterwards" is worthless without "it was running before":
+        #
+        #   1. inject and bootstrap a `com.nyxgpt.ollama-logs` agent, and
+        #      assert launchd really has it loaded
+        #   2. `nyxgpt ops stop ollama-logs` -- assert it exits 0 (the
+        #      pre-fix binary exits 2 here with an argparse "invalid choice"
+        #      error, which is the defect) and that the job is gone
+        #   3. the cassandra follower, injected alongside, must still be
+        #      loaded: a single named target stops one agent, not both
+        #   4. re-inject and prove `stop all` takes the ollama follower too,
+        #      which is the other half `all` did not cover
+        run: |
+          set -euo pipefail
+          LA="$HOME/Library/LaunchAgents"
+          mkdir -p "$LA"
+
+          inject() {
+            cat > "$LA/$1.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>$1</string>
+            <key>ProgramArguments</key>
+            <array><string>/bin/bash</string><string>-lc</string><string>sleep 3600</string></array>
+            <key>RunAtLoad</key><true/>
+          </dict>
+          </plist>
+          PLIST
+            launchctl bootstrap "gui/$(id -u)" "$LA/$1.plist" 2>/dev/null || true
+          }
+          loaded() { launchctl list 2>/dev/null | grep -q "$1"; }
+
+          echo "=== inject both log followers ==="
+          inject com.nyxgpt.cassandra-logs
+          inject com.nyxgpt.ollama-logs
+
+          # A runner whose launchd session is not a `gui` domain cannot load
+          # an agent at all. Skip rather than pass vacuously -- a green tick
+          # that proved nothing is worse than an honest skip.
+          if ! loaded com.nyxgpt.ollama-logs; then
+            echo "::warning::launchd would not bootstrap into gui/$(id -u); \
+          skipping the runtime half (the argparse half is asserted below)"
+            nyxgpt ops stop ollama-logs --quiet
+            echo "good: 'ops stop ollama-logs' is an accepted target (exit 0)"
+            exit 0
+          fi
+          echo "good: com.nyxgpt.ollama-logs is loaded -- there is something to stop"
+
+          echo "=== the wrapped stop ==="
+          nyxgpt ops stop ollama-logs --quiet
+          if loaded com.nyxgpt.ollama-logs; then
+            launchctl list | grep -i nyxgpt || true
+            echo "::error::com.nyxgpt.ollama-logs survived 'nyxgpt ops stop ollama-logs' (#4033)"
+            exit 1
+          fi
+          echo "good: the ollama log watcher is unloaded"
+
+          if ! loaded com.nyxgpt.cassandra-logs; then
+            echo "::error::stopping ollama-logs also stopped cassandra-logs -- \
+          a named target must stop exactly one agent"
+            exit 1
+          fi
+          echo "good: cassandra-logs untouched by a named ollama-logs stop"
+
+          echo "=== and 'all', which did not cover it either ==="
+          inject com.nyxgpt.ollama-logs
+          loaded com.nyxgpt.ollama-logs \
+            || { echo "::error::re-injection failed -- the check below is vacuous"; exit 1; }
+          nyxgpt ops stop --quiet || true
+          if loaded com.nyxgpt.ollama-logs; then
+            echo "::error::com.nyxgpt.ollama-logs survived 'nyxgpt ops stop all' (#4033)"
+            exit 1
+          fi
+          echo "good: 'stop all' covers every log follower"
 
       - name: "Teardown: prove the wrapped uninstall clears what `brew uninstall` cannot"
         # #3859. The owner ran `brew uninstall` on both candidate formulas and

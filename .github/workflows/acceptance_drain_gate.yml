@@ -18,25 +18,39 @@ name: Acceptance Drain Gate
 # alone -- only `promote_accepted_features.sh` moves them, and only once
 # their whole blocked-by closure has reached `For Release`.
 #
-# Detection is event-driven where GitHub gives us an event, and cheaply
-# polled where it does not:
+# Detection is event-driven, plus an explicit manual dispatch:
 #   * `workflow_run` on the promotion sweep and the parked-blocked sweep --
 #     those are what MOVE items out of (and into) Acceptance Testing, so a
 #     drain is usually detected seconds after it happens;
 #   * `issues: [closed]` -- a closing acceptance item is the other way the
 #     lane changes shape;
-#   * a 15-minute schedule as the backstop, because the owner moving the
-#     last item by hand on the project board raises no event this workflow
-#     can subscribe to (`projects_v2_item` is organization-projects only;
-#     this project belongs to a user).
+#   * `workflow_dispatch` -- the owner opens the gate by hand at the end of a
+#     round.
 #
-# Polling is free of side effects by construction: with the lane already
-# empty the run releases nothing and posts nothing (drain_gate_release in
-# scripts/agents/lib/gh_project.sh).
+# THE SCHEDULE WAS REMOVED (owner decision, 2026-08-25). It was a 15-minute
+# cron backstop for the one case no event covers: the owner moving the last
+# item by hand on the project board raises nothing this workflow can
+# subscribe to (`projects_v2_item` is organization-projects only; this
+# project belongs to a user). That case is real and has NOT gone away -- it
+# is now covered by the owner dispatching this workflow, deliberately,
+# instead of by polling for it 96 times a day. First principle 1: do not
+# keep a watch armed over a process that is idle by design; the same
+# reasoning D-013 applied to branch cleanup.
+#
+# The consequence, stated so a future session does not "restore" the cron on
+# discovering it: **accepting the last issue of a round no longer wakes this
+# workflow.** Nothing is broken and nothing is stranded permanently -- the
+# next `issues: [closed]` or sweep completion evaluates the gate normally --
+# but the end-of-round opening is now an owner action:
+#
+#   gh workflow run acceptance_drain_gate.yml --ref <release branch> -f dry_run=true
+#   gh workflow run acceptance_drain_gate.yml --ref <release branch>
+#
+# Evaluation remains free of side effects by construction: with the lane
+# already empty the run releases nothing and posts nothing (drain_gate_release
+# in scripts/agents/lib/gh_project.sh).
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   issues:
     types: [closed]
   workflow_run:

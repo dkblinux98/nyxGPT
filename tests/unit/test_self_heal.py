@@ -17,9 +17,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nyxgpt import docker_access
+from nyxgpt import docker_access, self_heal
 from nyxgpt import metrics as prom_metrics
-from nyxgpt import self_heal
 
 # The real project docker-compose.yml -- #3621 retired self_heal.COMPOSE_FILE's
 # REPO_ROOT-relative default (a dev-checkout-only fallback), so tests that

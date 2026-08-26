@@ -323,7 +323,10 @@ def test_ops_restart_all_ok(capsys):
         # ensure we attempted expected components
         assert rb.call_count == 3  # api, web, ollama
         rd.assert_called_once_with("nyxgpt-cassandra")
-        rl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        # Every log follower, not just cassandra-logs (#4033).
+        assert [c.args[0] for c in rl.call_args_list] == [
+            ops.SUPPORT_LAUNCHD_LABELS[n] for n in ops.NATIVE_LOG_FOLLOWERS
+        ]
         ro.assert_called_once()
 
         out = capsys.readouterr().out
@@ -2748,7 +2751,12 @@ def test_status_prints_cannot_determine_instead_of_absent(monkeypatch, capsys, _
     )
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops, "_print_required_models_status", lambda **_kw: None)
+    # `**_kwargs`, not `lambda: None`: #3987 gave this function keyword-only
+    # `kubernetes`/`cluster_unreadable` arguments and the stub kept the old
+    # zero-arg shape, so this test raised TypeError instead of asserting.
+    # Absorbing the kwargs keeps the stub from pinning a signature it does not
+    # care about.
+    monkeypatch.setattr(ops, "_print_required_models_status", lambda **_kwargs: None)
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     ops.status(MagicMock())
@@ -8962,9 +8970,79 @@ def test_stop_native_only_target_all(capsys):
 
         assert sb.call_count == 3
         sd.assert_called_once_with("nyxgpt-cassandra")
-        sl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        # Every log follower, not just cassandra-logs (#4033).
+        assert [c.args[0] for c in sl.call_args_list] == [
+            ops.SUPPORT_LAUNCHD_LABELS[n] for n in ops.NATIVE_LOG_FOLLOWERS
+        ]
         cs.assert_not_called()
         assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("follower", ["cassandra-logs", "ollama-logs"])
+def test_stop_single_log_follower_target_stops_only_that_agent(follower, capsys):
+    """`ops stop <follower>` boots out exactly that agent and nothing else (#4033).
+
+    The ollama half is the issue: the owner found `com.nyxgpt.ollama-logs`
+    still tailing `ollama.log` with no `nyxgpt` command able to stop it. It
+    must also not drag the cassandra follower (or any service) down with it --
+    a single named target is a single agent.
+    """
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=_mode()),
+        patch.object(ops, "_stop_brew_service") as sb,
+        patch.object(ops, "_stop_docker_container") as sd,
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]) as sl,
+        patch.object(ops, "_is_macos", return_value=True),
+        patch.object(ops, "_compose_stop_service") as cs,
+    ):
+        args = MagicMock()
+        args.target = follower
+        assert ops.stop(args) == 0
+
+        sl.assert_called_once_with(ops.SUPPORT_LAUNCHD_LABELS[follower])
+        sb.assert_not_called()
+        sd.assert_not_called()
+        cs.assert_not_called()
+    assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("follower", ["cassandra-logs", "ollama-logs"])
+def test_restart_single_log_follower_target_restarts_only_that_agent(follower, capsys):
+    """`ops restart <follower>` kickstarts exactly that agent (#4033)."""
+    with (
+        patch.object(ops, "_compose_stack_snapshot", return_value={}),
+        patch.object(ops, "_restart_brew_service") as rb,
+        patch.object(ops, "_restart_launchagent", return_value=[ops.OpsResult(True, "ok")]) as rl,
+        patch.object(ops, "_is_macos", return_value=True),
+        patch.object(ops, "_restart_observability_stack") as ro,
+    ):
+        args = MagicMock()
+        args.target = follower
+        assert ops.restart(args) == 0
+
+        rl.assert_called_once_with(ops.SUPPORT_LAUNCHD_LABELS[follower])
+        rb.assert_not_called()
+        ro.assert_not_called()
+    assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_native_log_followers_is_the_source_of_the_follower_set():
+    """The follower maps are views of `NATIVE_LOG_FOLLOWERS`, not parallel lists.
+
+    #3859 unified the label maps and left `restart`/`stop`/`down`/the CLI each
+    hand-enumerating one member, which is how `ollama-logs` ended up with a
+    helper and no caller (#4033). Every follower must be resolvable to a
+    native name on both platforms, and the env agent must stay out of the set
+    -- it has no log to follow, so restarting or stopping it is not this
+    command's business.
+    """
+    assert set(ops._NATIVE_LOG_FOLLOWER_LAUNCHD_LABELS) == set(ops.NATIVE_LOG_FOLLOWERS)
+    assert set(ops._NATIVE_LOG_FOLLOWER_SYSTEMD_UNITS) == set(ops.NATIVE_LOG_FOLLOWERS)
+    assert "ollama-env" not in ops.NATIVE_LOG_FOLLOWERS
+    assert set(ops.NATIVE_LOG_FOLLOWERS) <= set(ops.SUPPORT_LAUNCHD_LABELS)
 
 
 @pytest.mark.unit
@@ -9216,7 +9294,10 @@ def test_down_all_scope_stops_native_and_composes_down(capsys):
 
         assert sb.call_count == 3
         sd.assert_called_once_with("nyxgpt-cassandra")
-        sl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        # Every log follower, not just cassandra-logs (#4033).
+        assert [c.args[0] for c in sl.call_args_list] == [
+            ops.SUPPORT_LAUNCHD_LABELS[n] for n in ops.NATIVE_LOG_FOLLOWERS
+        ]
         ra.assert_called_once()
         ro.assert_called_once()
         cd.assert_called_once()

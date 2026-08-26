@@ -473,7 +473,7 @@ def test_apply_drops_ids_whose_output_came_back_null(terraform_calls, monkeypatc
 
 
 def test_apply_leaves_state_alone_when_outputs_are_unreadable(terraform_calls, monkeypatch, capsys):
-    """"Cannot determine" is its own outcome (#3993).
+    """ "Cannot determine" is its own outcome (#3993).
 
     `terraform_outputs` returns `{}` when the *read* failed as well as when
     there is nothing to read. Blanking every recorded id because a read failed
