@@ -118,7 +118,14 @@ resource "aws_security_group" "this" {
   vpc_id      = aws_vpc.this.id
 
   ingress {
-    description = "SSH from the operator's address (the only access path)."
+    # No apostrophe, and that is not a style choice: EC2 validates
+    # security-group RULE descriptions against
+    # ^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$ , which excludes `'`. The
+    # apostrophe in "operator's" here made every `nyxgpt cloud deploy --os
+    # macos` fail at apply -- after the operator had read the cost disclosure
+    # and typed `allocate` to consent to a non-refundable 24-hour charge.
+    # Guarded by tests/unit/test_terraform_aws_descriptions.py.
+    description = "SSH from the operator workstation address (the only access path)."
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
