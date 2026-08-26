@@ -6721,5 +6721,22 @@
    "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice.",
    "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
   ]
+ },
+ {
+  "issue": null,
+  "pr": 4034,
+  "title": "[dkblinux98/nyxGPT] fix: state the shipped chat model once, and read it everywhere else (PR #4034)",
+  "module": "api",
+  "date": "2026-08-26T09:33:05Z",
+  "critical": [],
+  "medium": [
+   "Rendering the ConfigMap without the StatefulSet breaks the applied manifests' own invariant \u2014 custom-model k8s installs go from \"wrong model, works\" to \"configured model, chat 404s while everything is Ready\"",
+   "`test_rendering_never_fails_an_install` never executes the path it claims to pin"
+  ],
+  "minor": [
+   "Both smokes discard the model-read's stderr (`2>/dev/null` in `_shipped_models` / `_resolve_models`), so a failed read prints only \"could not read the shipped chat model\" with no cause. `load_config` raises `FileNotFoundError` when `~/.nyxGPT/config.ini` is absent \u2014 a new parse-time prerequisite for `scripts/k8s-local-smoke.sh` that its \"Prerequisites\" header does not mention (CI seeds the config first, so the jobs are ordered correctly; a developer on a fresh machine gets the blind failure). Capture stderr into the failure message.",
+   "Naming inconsistency between the two new override knobs: `NYXGPT_SMOKE_EMBED_MODEL` (artifact smoke) vs `NYXGPT_SMOKE_EMBEDDING_MODEL` (local smoke).",
+   "\u00a71e sweep result, for the record \u2014 remaining literal sites of the class after this PR: `k8s/configmap.yaml:9` + `k8s/statefulset-ollama.yaml:52` (deliberately kept readable, guarded by `test_k8s_manifests.py`, and the subject of Medium 1 / change 4); `docker-compose.yml:63` (`${NYXGPT_DEFAULT_MODEL:-qwen3.5:0.8b}` fallback \u2014 internally consistent since env-sync writes the var from config and both Compose consumers read the same var); stale `qwen2.5:0.5b` example values in `docs/configuration.md:357` and `docs/troubleshooting.md:439` (pre-existing doc drift, not falsified by this PR)."
+  ]
  }
 ]

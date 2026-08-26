@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-25T10:15:04Z",
+ "generated_at": "2026-08-26T10:16:58Z",
  "repo": "dkblinux98/nyxGPT",
  "issues": {
   "2587": {
@@ -1539,6 +1539,18 @@
     3806
    ],
    "blocked_by": []
+  },
+  "4045": {
+   "blocks": [
+    3993
+   ],
+   "blocked_by": []
+  },
+  "3993": {
+   "blocks": [],
+   "blocked_by": [
+    4045
+   ]
   }
  }
 }

@@ -1,40 +1,26 @@
 {
- "generated_at": "2026-08-25T10:23:38.904147+00:00",
+ "generated_at": "2026-08-26T10:27:08.742552+00:00",
  "modules": {
   "api": {
    "C": 17,
-   "M": 110,
-   "m": 121,
-   "rounds": 56,
-   "issues": 24
-  },
-  "web-ui": {
-   "C": 0,
-   "M": 8,
-   "m": 13,
-   "rounds": 7,
-   "issues": 6
-  },
-  "security": {
-   "C": 0,
-   "M": 13,
-   "m": 20,
-   "rounds": 11,
-   "issues": 5
+   "M": 78,
+   "m": 93,
+   "rounds": 42,
+   "issues": 19
   },
   "cli": {
    "C": 3,
-   "M": 46,
-   "m": 66,
-   "rounds": 33,
-   "issues": 15
+   "M": 33,
+   "m": 48,
+   "rounds": 24,
+   "issues": 10
   },
   "observability": {
    "C": 4,
-   "M": 41,
-   "m": 45,
-   "rounds": 29,
-   "issues": 12
+   "M": 26,
+   "m": 28,
+   "rounds": 18,
+   "issues": 7
   },
   "testing": {
    "C": 0,
@@ -42,6 +28,20 @@
    "m": 3,
    "rounds": 1,
    "issues": 1
+  },
+  "web-ui": {
+   "C": 0,
+   "M": 5,
+   "m": 8,
+   "rounds": 4,
+   "issues": 3
+  },
+  "security": {
+   "C": 0,
+   "M": 7,
+   "m": 16,
+   "rounds": 6,
+   "issues": 4
   },
   "documentation": {
    "C": 0,
@@ -52,12 +52,6 @@
   }
  },
  "days": {
-  "2026-08-18": {
-   "C": 0,
-   "M": 71,
-   "m": 75,
-   "rounds": 43
-  },
   "2026-08-19": {
    "C": 20,
    "M": 88,
@@ -87,158 +81,15 @@
    "M": 37,
    "m": 40,
    "rounds": 22
+  },
+  "2026-08-26": {
+   "C": 0,
+   "M": 2,
+   "m": 3,
+   "rounds": 1
   }
  },
  "issues": [
-  {
-   "issue": 3824,
-   "pr": 3889,
-   "title": "[dkblinux98/nyxGPT] Feature: feat: first chat works on every run mode without a manual model pull (#3824) (PR #3889)",
-   "module": "api",
-   "rounds": 8,
-   "C": 3,
-   "M": 13,
-   "m": 18,
-   "last": "2026-08-19T01:00:57Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: new route and panel branches untested"
-    ],
-    [
-     "Medium",
-     "Ledger ID collision: V-041 is already taken on the live base"
-    ],
-    [
-     "Medium",
-     "Branch conflicts with the current release branch"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): docs/self-healing.md:808 falsified"
-    ],
-    [
-     "Minor",
-     "`sync_env_from_config`'s \"No secrets found in config.ini to sync\" failure branch (src/nyxgpt/ops.py) now still writes the model vars but its message doesn't say so, unlike the auth-disabled branch. Cosmetic; does not block."
-    ],
-    [
-     "Minor",
-     "The PR body's checklist is a truncated template (criteria cut mid-sentence) and cites no run URLs in prose \u2014 the evidence lives in the PR's checks; cite the runs in the body on resubmit so acceptance can find them."
-    ],
-    [
-     "Medium",
-     "Web coverage gate fails: `models/required` route untested, panel failure path uncovered"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): docs/self-healing.md:808 falsified"
-    ],
-    [
-     "Minor",
-     "(carried) `sync_env_from_config`'s \"No secrets found in config.ini to sync\" branch in `src/nyxgpt/ops.py` still writes the model vars without saying so. Does not block."
-    ],
-    [
-     "Minor",
-     "(carried) The PR body is a truncated checklist template and cites no smoke-run URLs in prose; the evidence lives in the PR checks. Cite the run URLs in the body on resubmit so owner acceptance can find them. Does not block."
-    ],
-    [
-     "Medium",
-     "Web coverage gate fails: `models/required` route untested, panel failure path uncovered"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): docs/self-healing.md:808 falsified"
-    ],
-    [
-     "Minor",
-     "(carried) `sync_env_from_config`'s \"No secrets found in config.ini to sync\" branch in `src/nyxgpt/ops.py` writes the model vars without saying so. Does not block."
-    ],
-    [
-     "Minor",
-     "(carried) The PR body is a truncated checklist template and cites no smoke-run URLs in prose. Cite them on resubmit so owner acceptance can find them. Does not block."
-    ],
-    [
-     "Medium",
-     "Duplicate ledger entry ID `V-046` \u2014 unit gate fails deterministically"
-    ],
-    [
-     "Minor",
-     "(carried) PR body is a truncated checklist template with no smoke-run URLs in prose. Does not block; the current-head runs are cited above."
-    ],
-    [
-     "Critical",
-     "`k8s-local-smoke` fails on this head: the readiness gate does not actually gate on the embedding model"
-    ],
-    [
-     "Medium",
-     "17 CI checks pending on this head"
-    ],
-    [
-     "Minor",
-     "(carried) PR body is a truncated checklist template with no smoke-run URLs in prose. Does not block."
-    ],
-    [
-     "Medium",
-     "`k8s-artifact-smoke` fails deterministically: the smoke still chats with the retired default model"
-    ],
-    [
-     "Medium",
-     "`k8s-local-smoke` fails on its own assertion: `kubectl exec | grep -q` under `pipefail` races SIGPIPE \u2014 the model WAS present"
-    ],
-    [
-     "Medium",
-     "`gate-behavior` (Comment Token Gate Smoke) fails on this head \u2014 inherited base breakage, not this PR's to fix"
-    ],
-    [
-     "Minor",
-     "k8s smoke failure diagnostics are unreachable"
-    ],
-    [
-     "Minor",
-     "Dead `[ollama] default_model = qwen2.5:latest` ships uncommented in `example.config.ini:192`"
-    ],
-    [
-     "Minor",
-     "(carried) PR body is still the truncated checklist template with no run URLs in prose."
-    ],
-    [
-     "Minor",
-     "Merge heads-up: the base tip (`be3575ce`, the #3922 merge) now carries *duplicated* groom entries in `scripts/retrospective/dump_churn.py` (`scrummaster_groom_sprint.yml` twice in `CHURN_WORKFLOWS`, `(\"groom\", \u2026)` twice in `ROUND_KIND_RULES`) while this PR's copy is clean and equivalent; expect a textual conflict on the next base merge and preserve the deduplicated form."
-    ],
-    [
-     "Critical",
-     "`nyxgpt ops status` crashes with a traceback on any machine without `~/.nyxGPT/config.ini` \u2014 `k8s-pod-state` fails on the merge"
-    ],
-    [
-     "Minor",
-     "The \"none configured\" branch of `_print_required_models_status` (ops.py:9178-9180) is unreachable: `required_models` falls back to the shipped chat model, so `info[\"models\"]` is never empty. Harmless; worth a comment or removal whenever this code is next touched."
-    ],
-    [
-     "Minor",
-     "(carried) PR body is still the truncated checklist template with no run URLs in prose."
-    ],
-    [
-     "Critical",
-     "`nyxgpt ops status` crashes with a traceback on a machine without `~/.nyxGPT/config.ini` \u2014 `k8s-pod-state` fails on the merge ref"
-    ],
-    [
-     "Minor",
-     "`gate-behavior` fixed in-PR against the huddle plan's item 3"
-    ],
-    [
-     "Minor",
-     "The deferred `grep -q` class-sweep note never made it into the PR body"
-    ],
-    [
-     "Minor",
-     "(carried) PR body is still the truncated checklist template with no prose or run URLs."
-    ],
-    [
-     "Minor",
-     "Base/process, from the live-verification run"
-    ]
-   ]
-  },
   {
    "issue": 4015,
    "pr": 4019,
@@ -341,59 +192,6 @@
    ]
   },
   {
-   "issue": 3870,
-   "pr": 3880,
-   "title": "[dkblinux98/nyxGPT] fix: allow claude[bot] as author of sanctioned comment triggers (PR #3880)",
-   "module": "security",
-   "rounds": 5,
-   "C": 0,
-   "M": 6,
-   "m": 4,
-   "last": "2026-08-18T12:20:03Z",
-   "findings": [
-    [
-     "Medium",
-     "CI red: duplicate ledger entry IDs V-034/V-035 (pre-existing on base, fix must ride here)"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): developer-runbook #3600 verification bullets falsified"
-    ],
-    [
-     "Minor",
-     "Anchored-gate claim slightly over-broad for `@review`"
-    ],
-    [
-     "Minor",
-     "Optional"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): developer-runbook #3600 gate documentation falsified \u2014 carried from loop 2, unaddressed"
-    ],
-    [
-     "Minor",
-     "Anchored-gate claim slightly over-broad for `@review`"
-    ],
-    [
-     "Minor",
-     "Optional"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): actor-gate table cells still falsified \u2014 remaining half of the carried Medium"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): actor-gate table cells still falsified \u2014 carried from loops 3 and 4, unaddressed"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): actor-gate table cells still falsified \u2014 carried from three prior rounds, unaddressed"
-    ]
-   ]
-  },
-  {
    "issue": 4022,
    "pr": 4026,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
@@ -467,161 +265,87 @@
    ]
   },
   {
-   "issue": 3806,
-   "pr": 3876,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806) (PR #3876)",
+   "issue": 3824,
+   "pr": 3889,
+   "title": "[dkblinux98/nyxGPT] Feature: feat: first chat works on every run mode without a manual model pull (#3824) (PR #3889)",
    "module": "api",
    "rounds": 4,
-   "C": 0,
-   "M": 7,
-   "m": 4,
-   "last": "2026-08-18T11:25:13Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails (blocks merge mechanically)"
-    ],
-    [
-     "Medium",
-     "Third writer of `[auth]` left silent \u2014 the #3806 defect is still reachable from the Admin Dashboard's Access Management panel"
-    ],
-    [
-     "Medium",
-     "Falsified claim left in tree (\u00a71a)"
-    ],
-    [
-     "Medium",
-     "CodeQL check red on the PR \u2014 1 new high-severity alert"
-    ],
-    [
-     "Minor",
-     "`web/tests/mocks/handlers.ts:8`: the file-header comment still says \"secret/restart_component/\" \u2014 the field is now `restart_components`. Doesn't block."
-    ],
-    [
-     "Minor",
-     "`tests/unit/test_restart_activation.py::test_no_key_is_annotated_both_hot_and_restart_required` is nearly vacuous: its inner assertion checks `blocks[i - 1]` (the line before the prose) and can't fail against realistic drift. The exact-match test above it is the real guard, so this doesn't block \u2014 consider deleting or tightening it in passing."
-    ],
-    [
-     "Medium",
-     "Falsified \"hot-reloadable\" lists remain in two docs (\u00a71a + \u00a71e)"
-    ],
-    [
-     "Medium",
-     "Duplicate ledger entry IDs V-034/V-035 on `v3.0.0` \u2014 unit suite now red on the release branch"
-    ],
-    [
-     "Minor",
-     "Review harness self-collision: `.claude-pr/CLAUDE.md` trips `test_the_source_stays_single`"
-    ],
-    [
-     "Medium",
-     "Duplicate ledger entry IDs V-034/V-035 still on `v3.0.0` \u2014 unit suite red on the release branch, no fix issue filed"
-    ],
-    [
-     "Minor",
-     "Review harness self-collision"
-    ]
-   ]
-  },
-  {
-   "issue": 3825,
-   "pr": 3888,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s local install oversubscribes the kind node - prometheus cannot schedule (#3825) (PR #3888)",
-   "module": "observability",
-   "rounds": 4,
-   "C": 0,
+   "C": 3,
    "M": 4,
-   "m": 2,
-   "last": "2026-08-18T16:43:39Z",
+   "m": 11,
+   "last": "2026-08-19T01:00:57Z",
    "findings": [
     [
-     "Medium",
-     "Web coverage gate fails on the new unschedulable-Pods block (missing tests for code changes)"
-    ],
-    [
-     "Minor",
-     "Ineffective `tail` in the step-2 diagnostics"
+     "Critical",
+     "`k8s-local-smoke` fails on this head: the readiness gate does not actually gate on the embedding model"
     ],
     [
      "Medium",
-     "Duplicate ledger entry ID V-042 (pytest gate failure)"
+     "17 CI checks pending on this head"
+    ],
+    [
+     "Minor",
+     "(carried) PR body is a truncated checklist template with no smoke-run URLs in prose. Does not block."
     ],
     [
      "Medium",
-     "Duplicate ledger entry ID V-042 (pytest gate failure) \u2014 carried over, unfixed"
+     "`k8s-artifact-smoke` fails deterministically: the smoke still chats with the retired default model"
     ],
     [
      "Medium",
-     "`agents/CONTEXT_INDEX.md` missing this PR's workflow \u2014 pytest gate red, now live on `v3.0.0`"
-    ],
-    [
-     "Minor",
-     "`test_first_principles_contract.py::test_the_source_stays_single` fails on untracked runner artifacts"
-    ]
-   ]
-  },
-  {
-   "issue": 3835,
-   "pr": 3903,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: dev mode and artifact path for the Terraform install mode (#3835) (PR #3903)",
-   "module": "cli",
-   "rounds": 4,
-   "C": 0,
-   "M": 4,
-   "m": 9,
-   "last": "2026-08-18T19:32:36Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: new install-mode UI branches are untested"
+     "`k8s-local-smoke` fails on its own assertion: `kubectl exec | grep -q` under `pipefail` races SIGPIPE \u2014 the model WAS present"
     ],
     [
      "Medium",
-     "A deployed-but-unrecorded Terraform stack is asserted as \"artifact\" \u2014 mislabeling every pre-#3835 deployment as the mode the issue exists to distinguish"
+     "`gate-behavior` (Comment Token Gate Smoke) fails on this head \u2014 inherited base breakage, not this PR's to fix"
     ],
     [
      "Minor",
-     "`docs/ui.md:173` documents the Infrastructure page's Native-card install-mode badge but not the new Terraform-card `DEV IMAGES`/`ARTIFACT IMAGES` badge and mode paragraph \u2014 worth a sentence while fixing the above; does not block on its own."
+     "k8s smoke failure diagnostics are unreachable"
     ],
     [
      "Minor",
-     "`code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`, so a bare dispatch reports a dead branch's (empty) alert list \u2014 pre-existing, out of this PR's scope; noting it so the next session doesn't read TOTAL_OPEN=0 as clean."
+     "Dead `[ollama] default_model = qwen2.5:latest` ships uncommented in `example.config.ini:192`"
     ],
     [
      "Minor",
-     "(Carried from previous round, still open, non-blocking) `docs/ui.md:173` documents the Native-card install-mode badge but not the new Terraform-card badge/paragraph."
+     "(carried) PR body is still the truncated checklist template with no run URLs in prose."
     ],
     [
      "Minor",
-     "(Pre-existing, out of scope) `code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`; pass `ref` explicitly when dispatching."
+     "Merge heads-up: the base tip (`be3575ce`, the #3922 merge) now carries *duplicated* groom entries in `scripts/retrospective/dump_churn.py` (`scrummaster_groom_sprint.yml` twice in `CHURN_WORKFLOWS`, `(\"groom\", \u2026)` twice in `ROUND_KIND_RULES`) while this PR's copy is clean and equivalent; expect a textual conflict on the next base merge and preserve the deduplicated form."
     ],
     [
-     "Medium",
-     "`linux-native-dev-smoke` fails on every push of this branch: the PR breaks `ops status`'s install-mode output contract without updating its consumer"
-    ],
-    [
-     "Minor",
-     "Stale ledger cross-reference from the merge's renumbering"
+     "Critical",
+     "`nyxgpt ops status` crashes with a traceback on any machine without `~/.nyxGPT/config.ini` \u2014 `k8s-pod-state` fails on the merge"
     ],
     [
      "Minor",
-     "(Carried from previous rounds, still open, non-blocking) `docs/ui.md:173` documents the Native-card install-mode badge but not the new Terraform-card badge/paragraph."
+     "The \"none configured\" branch of `_print_required_models_status` (ops.py:9178-9180) is unreachable: `required_models` falls back to the shipped chat model, so `info[\"models\"]` is never empty. Harmless; worth a comment or removal whenever this code is next touched."
     ],
     [
      "Minor",
-     "(Pre-existing, out of scope) `code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`; pass `ref` explicitly when dispatching."
+     "(carried) PR body is still the truncated checklist template with no run URLs in prose."
     ],
     [
-     "Medium",
-     "`linux-native-dev-smoke` fails on the current head: `scripts/systemd-native-smoke.sh` still asserts the old `Install mode:` status format"
-    ],
-    [
-     "Minor",
-     "(Pre-existing, out of scope) `code_scan_report.yml`'s `ref` input default is still `refs/heads/v2.1.0`; pass `ref` explicitly when dispatching."
+     "Critical",
+     "`nyxgpt ops status` crashes with a traceback on a machine without `~/.nyxGPT/config.ini` \u2014 `k8s-pod-state` fails on the merge ref"
     ],
     [
      "Minor",
-     "Both carried Minors from the previous round are fixed (`docs/ui.md` Terraform-card documentation; the ledger `V-051`\u2192`V-053` cross-reference and renumber history)."
+     "`gate-behavior` fixed in-PR against the huddle plan's item 3"
+    ],
+    [
+     "Minor",
+     "The deferred `grep -q` class-sweep note never made it into the PR body"
+    ],
+    [
+     "Minor",
+     "(carried) PR body is still the truncated checklist template with no prose or run URLs."
+    ],
+    [
+     "Minor",
+     "Base/process, from the live-verification run"
     ]
    ]
   },
@@ -1149,116 +873,6 @@
    ]
   },
   {
-   "issue": 3832,
-   "pr": 3901,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal infinitely deletes unschedulable Pods (#3832) (PR #3901)",
-   "module": "observability",
-   "rounds": 3,
-   "C": 0,
-   "M": 4,
-   "m": 5,
-   "last": "2026-08-18T19:04:29Z",
-   "findings": [
-    [
-     "Medium",
-     "Vitest coverage gate fails: new `healable` UI branches are untested"
-    ],
-    [
-     "Medium",
-     "The PR ships a false \"one shared classifier\" claim \u2014 `ops.py` never uses `k8s_pod_state`"
-    ],
-    [
-     "Minor",
-     "`src/nyxgpt/k8s_pod_state.py` (unschedulable derivation): the comment says \"Only an explicit `False` means unschedulable\" but the code treats any string \u2260 `\"True\"` as unschedulable \u2014 align the comment (or the code) so the next reader isn't misled; harmless today since the API sets True/False."
-    ],
-    [
-     "Minor",
-     "`heal_now`'s `healable=False` branch logs at WARNING on every pass \u2014 for a watchdog running every ~15s that is a warning every 15 seconds per Pending Pod. Consider logging the transition once and demoting repeats."
-    ],
-    [
-     "Minor",
-     "`docs/kubernetes.md:345`/`:420` still say the watchdog \"heals via `kubectl delete pod`\" without qualification; both link to `self-healing.md` so they are not falsified, but a \"(Running-but-not-ready only \u2014 see Pending Pods are reported, not deleted)\" pointer would close the loop."
-    ],
-    [
-     "Medium",
-     "Duplicate ledger entry ID V-051 fails the pytest gate"
-    ],
-    [
-     "Minor",
-     "`unhealable_reported` entries in the self-heal state file are pruned when a component becomes healthy or healable again, but not when a component disappears from the monitored set entirely \u2014 stale keys linger in the JSON indefinitely. Bounded and harmless (keys are ReplicaSet-scoped), noted for a future tidy alongside `restart_counts`, which behaves the same way."
-    ],
-    [
-     "Medium",
-     "Duplicate ledger entry ID V-051 fails the pytest gate (un-actioned from previous round)"
-    ],
-    [
-     "Minor",
-     "(Carried from last round, unchanged) `unhealable_reported` entries in the self-heal state file are pruned when a component becomes healthy or healable again, but not when a component disappears from the monitored set entirely \u2014 stale keys linger in the JSON. Bounded and harmless; noted for a future tidy alongside `restart_counts`."
-    ]
-   ]
-  },
-  {
-   "issue": 3871,
-   "pr": 3920,
-   "title": "[dkblinux98/nyxGPT] feat: project hygiene applies the non-completed closure rule (#3871) (PR #3920)",
-   "module": "api",
-   "rounds": 3,
-   "C": 0,
-   "M": 4,
-   "m": 8,
-   "last": "2026-08-19T00:53:46Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified guard claim left in `project-hygiene-smoke.yml` (\u00a71a inverse-claims; \u00a71e generality)"
-    ],
-    [
-     "Medium",
-     "The `closure-hygiene` job fires and no-ops on every routine merge closure (first principle 1 \u2014 cost)"
-    ],
-    [
-     "Minor",
-     "No actor gate on `closure-hygiene` (\u00a73b noted, judged non-blocking)"
-    ],
-    [
-     "Minor",
-     "`agents/CONTEXT_INDEX.md` still describes `ensure_issue_hygiene.sh` as \"fill-if-missing project hygiene for one issue\" \u2014 under-inclusive now, not false (the line is generated from the script header's title line, which the PR left unchanged). Consider extending the header title so the index names both rules (regenerate via `scripts/build_context_index.py`; `test_context_index` pins it)."
-    ],
-    [
-     "Minor",
-     "`grep -qx \"$agent\"` treats logins as regex patterns; current logins are regex-inert, but `grep -qxF` is the exact-match intent."
-    ],
-    [
-     "Minor",
-     "`rc` in `apply_closure_rule` is assigned without `local` and leaks to the script's global scope; harmless today."
-    ],
-    [
-     "Medium",
-     "Stale workflow actor-gate audit row falsified by this PR (\u00a71a inverse-claims)"
-    ],
-    [
-     "Minor",
-     "`docs/testing.md:270` describes `project-hygiene-smoke.yml` purely in clobber/fill terms; under-inclusive now that the suite also carries the closure cases, not false. Worth a clause when next touched."
-    ],
-    [
-     "Minor",
-     "`read -r state reason < <(gh api \u2026)` in `apply_closure_rule`: if the `gh api` inside the process substitution fails, `read` gets empty input and the script dies under `set -e` with an unhelpful error rather than the `::error::` pattern used everywhere else in the function. Workflow context guarantees the issue exists, so this is cosmetic."
-    ],
-    [
-     "Medium",
-     "Stale workflow actor-gate audit row falsified by this PR (\u00a71a inverse-claims \u2014 carried from previous review, no fix attempted yet)"
-    ],
-    [
-     "Minor",
-     "`docs/testing.md:270` describes `project-hygiene-smoke.yml` purely in clobber/fill terms; under-inclusive now that the suite also carries the closure cases, not false. Worth a clause when next touched."
-    ],
-    [
-     "Minor",
-     "`read -r state reason < <(gh api \u2026)` in `apply_closure_rule`: a failed `gh api` inside the process substitution dies under `set -e` with an unhelpful error rather than the function's `::error::` pattern. Cosmetic \u2014 workflow context guarantees the issue exists."
-    ]
-   ]
-  },
-  {
    "issue": null,
    "pr": 3935,
    "title": "[dkblinux98/nyxGPT] fix: a PR's issue is a link, not a sentence (PR #3935)",
@@ -1548,129 +1162,39 @@
    ]
   },
   {
-   "issue": 3829,
-   "pr": 3894,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: canary evaluate gates on the serving pod's metrics, not canary track (#3829) (PR #3894)",
-   "module": "observability",
-   "rounds": 2,
-   "C": 0,
-   "M": 3,
-   "m": 4,
-   "last": "2026-08-18T23:58:10Z",
-   "findings": [
-    [
-     "Medium",
-     "Web test gate fails: 19 failures in `web/tests/app/admin/canary.test.tsx`; the changed page ships untested and its tests broken."
-    ],
-    [
-     "Minor",
-     "Mixed-version blank page:"
-    ],
-    [
-     "Minor",
-     "`MAX_SCRAPED_PODS` under-reporting is handled but only visible in the payload:"
-    ],
-    [
-     "Medium",
-     "`canary-rollout-smoke` fails on this head: the new no-traffic promote gate refuses the smoke's traffic-less promote."
-    ],
-    [
-     "Medium",
-     "`gate-behavior` (comment-token-gate-smoke) is failing on this head \u2014 inherited, reported, not this PR's fix to carry."
-    ],
-    [
-     "Minor",
-     "Sticky `forcePromote` state"
-    ],
-    [
-     "Minor",
-     "Hand edit inside the merge commit"
-    ]
-   ]
-  },
-  {
-   "issue": 3850,
-   "pr": 3898,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: brew install exposes no `nyxgpt` command - the documented install flow cannot work (#3850) (PR #3898)",
-   "module": "cli",
-   "rounds": 2,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-18T18:53:21Z",
-   "findings": [
-    [
-     "Medium",
-     "Ledger ID collision: the new entry's V-051 is already taken on live `v3.0.0`"
-    ],
-    [
-     "Minor",
-     "PR body checklist and evidence citation"
-    ],
-    [
-     "Minor",
-     "The `command -v nyxgpt` / `nyxgpt ops status` assertions added to the `published-tap` job will (correctly) fail if that job is dispatched against the currently published rc, which lacks the CLI \u2014 expected and truthful; they go green on the first candidate cut after this merge. No action needed."
-    ],
-    [
-     "Medium",
-     "Ledger ID collision (carried from previous review, still present)"
-    ],
-    [
-     "Minor",
-     "(Carried, non-blocking) PR body checklist boxes remain unchecked and the smoke-run URL (32171315664) is still cited only in the ledger entry, not the PR body \u2014 tick and paste while fixing the Medium."
-    ]
-   ]
-  },
-  {
-   "issue": 3908,
-   "pr": 3919,
-   "title": "[dkblinux98/nyxGPT] feat: the scrummaster grooms a sprint plan and developers pull from it (#3908, #3883) (PR #3919)",
+   "issue": 3871,
+   "pr": 3920,
+   "title": "[dkblinux98/nyxGPT] feat: project hygiene applies the non-completed closure rule (#3871) (PR #3920)",
    "module": "api",
    "rounds": 2,
    "C": 0,
-   "M": 5,
-   "m": 5,
-   "last": "2026-08-18T23:27:10Z",
+   "M": 2,
+   "m": 4,
+   "last": "2026-08-19T00:53:46Z",
    "findings": [
     [
      "Medium",
-     "Retired selection procedure left as live instructions in the scrummaster prompt and runbook"
+     "Stale workflow actor-gate audit row falsified by this PR (\u00a71a inverse-claims)"
+    ],
+    [
+     "Minor",
+     "`docs/testing.md:270` describes `project-hygiene-smoke.yml` purely in clobber/fill terms; under-inclusive now that the suite also carries the closure cases, not false. Worth a clause when next touched."
+    ],
+    [
+     "Minor",
+     "`read -r state reason < <(gh api \u2026)` in `apply_closure_rule`: if the `gh api` inside the process substitution fails, `read` gets empty input and the script dies under `set -e` with an unhelpful error rather than the `::error::` pattern used everywhere else in the function. Workflow context guarantees the issue exists, so this is cosmetic."
     ],
     [
      "Medium",
-     "Falsified references across docs/"
-    ],
-    [
-     "Medium",
-     "Plan-doc fallback picks the wrong \"latest\" plan from sprint 10 onward"
+     "Stale workflow actor-gate audit row falsified by this PR (\u00a71a inverse-claims \u2014 carried from previous review, no fix attempted yet)"
     ],
     [
      "Minor",
-     "`tests/test_sprint_autopilot_lib.sh`: the pre-existing second `trap \u2026 EXIT` (the one adding `$RESUME_FILE`) overwrites the first and drops the new `$KICK_FILE`, leaking one temp file per run."
+     "`docs/testing.md:270` describes `project-hygiene-smoke.yml` purely in clobber/fill terms; under-inclusive now that the suite also carries the closure cases, not false. Worth a clause when next touched."
     ],
     [
      "Minor",
-     "`scripts/agents/groom_sprint.sh` pipes `blocked_by_issues`/`blocking_issues` output straight into hand-built JSON without the `grep -E '^[0-9]+$'` guard `developer_pull_next.sh` deliberately applies for exactly this reason \u2014 a helper degrading to an error string fails the groom with a JSON parse error instead of a clear message. Same guard, same reason; apply it here too."
-    ],
-    [
-     "Minor",
-     "In-flight footprint attribution (`developer_pull_next.sh` in-flight heredoc) maps `(?:#|issue[-_/])(\\d{3,6})` over PR title/body/branch, so a PR that merely *mentions* an in-flight issue (\"related to #NNNN\") donates its whole diff to that issue's footprint. Fails conservative (defers candidates it needn't), but costs throughput; matching only `Closes #N` would be tighter."
-    ],
-    [
-     "Minor",
-     "`lib/pull_next_issue.py` `_ordered_candidates` docstring says a candidate with no expected-files \"is exactly the case the overlap check already handles conservatively\" \u2014 the actual behavior is *permissive* (pulled, overlap unchecked, honestly stated in the reason string). The behavior is a defensible design choice; the comment misdescribes it."
-    ],
-    [
-     "Medium",
-     "Verified fixes stranded off the release branch"
-    ],
-    [
-     "Medium",
-     "`execute-review-decision` failing on every round of this PR"
-    ],
-    [
-     "Minor",
-     "The `_sprint_key` fix has no test fixture exercising a `sprint_10` directory (the reproduction lives in the docstring). Worth adding when the fixes land through the follow-up PR; does not block."
+     "`read -r state reason < <(gh api \u2026)` in `apply_closure_rule`: a failed `gh api` inside the process substitution dies under `set -e` with an unhelpful error rather than the function's `::error::` pattern. Cosmetic \u2014 workflow context guarantees the issue exists."
     ]
    ]
   },
@@ -1994,374 +1518,6 @@
     [
      "Minor",
      "Issue #4008's AC5 (a CI guard so yamllint debt cannot silently return) remains unimplemented as written; under the owner-approved config approach the forced-bypass mechanism is removed for the one rule with debt, and a new error-level violation fails loudly at the introducing commit, so the criterion's motivation is substantially dissolved. Noted for the owner's acceptance pass; consistent with the previous round, not blocking."
-    ]
-   ]
-  },
-  {
-   "issue": 3868,
-   "pr": 3869,
-   "title": "[dkblinux98/nyxGPT] fix: exclude the release tracking issue from the escalation pause count (PR #3869)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 2,
-   "last": "2026-08-18T05:53:17Z",
-   "findings": [
-    [
-     "Medium",
-     "Ruff gate failure (pre-existing B033) \u2014 `tests/unit/test_dump_churn.py:787,795`"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): `docs/github-tokens.md` falsified by the D-014 commit"
-    ],
-    [
-     "Medium",
-     "Inverse-claims (\u00a71a): runbook definition of \"unresolved escalation\" falsified"
-    ],
-    [
-     "Minor",
-     "Pause-message wording"
-    ],
-    [
-     "Minor",
-     "The new test block restores `RELEASE_ISSUE_NUMBER=\"3521\"` after the unset-fallback fixture (`tests/test_gh_project_lib.sh:660`) \u2014 correct and consistent with the suite's existing convention at lines 719/944; noting only that I verified it."
-    ]
-   ]
-  },
-  {
-   "issue": 3803,
-   "pr": 3872,
-   "title": "[dkblinux98/nyxGPT] Improvement: improvement: remove the Portability and Acceptance dashboard screen (#3803) (PR #3872)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 1,
-   "last": "2026-08-18T07:02:50Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified claim left in docs/portability-matrix.md (inverse-claims check \u00a71a)"
-    ],
-    [
-     "Minor",
-     "`docs/ui.md:310` says the `ADMIN_NAV` list is exported from `web/src/app/admin/dashboard/page.tsx`; it lives in `web/src/app/admin/dashboard/nav.ts`. Pre-existing inaccuracy, not falsified by this PR \u2014 does not block, fine to fix opportunistically while editing docs for the Medium above."
-    ]
-   ]
-  },
-  {
-   "issue": 3805,
-   "pr": 3873,
-   "title": "[dkblinux98/nyxGPT] Improvement: improvement: secrets and AWS credential setup screens move out of the web UI to CLI only (#3805) (PR #3873)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-18T08:21:23Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified claim left in `example.config.ini` (\u00a71a inverse-claims, #3744)"
-    ],
-    [
-     "Minor",
-     "`docs/cloud.md:858` \u2014 \"\\`GET /api/v1/config/aws-credentials\\` remains as the read-only status **the dashboard** and tooling can query\": with this PR the dashboard has no proxy route to that path and displays nothing from it (the Next.js proxy GETs were deleted along with their only consumers \u2014 correct as dead-code removal). \"tooling can query\" alone would be accurate. Doesn't block."
-    ],
-    [
-     "Minor",
-     "`product_management/PHASE_6_PLAN.md:135` \u2014 the P6-6 heading still reads \"CLI + admin wizard\". It is the historical issue title and the superseded note sits directly under it in the ACs, so this is acceptable as a record; a strike-through on the heading's \"+ admin wizard\" would be tidier. Doesn't block."
-    ]
-   ]
-  },
-  {
-   "issue": 3807,
-   "pr": 3875,
-   "title": "[dkblinux98/nyxGPT] Improvement: improvement: retro dashboard has no build timestamp or per-source as-of times (#3807) (PR #3875)",
-   "module": "web-ui",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-18T09:32:23Z",
-   "findings": [
-    [
-     "Medium",
-     "CodeQL check failing: new high-severity alert in `tests/retro_render_check.mjs:28`"
-    ],
-    [
-     "Minor",
-     "Greedy script extraction"
-    ],
-    [
-     "Minor",
-     "Committed `scripts/retrospective/retro.html` predates this template change"
-    ]
-   ]
-  },
-  {
-   "issue": 3813,
-   "pr": 3885,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: nyxgpt cloud status \u2014 operator-readable deployment info incl. SSH target (#3813) (PR #3885)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-18T12:12:57Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: uncovered branch at `web/src/app/admin/infrastructure/page.tsx:758`"
-    ],
-    [
-     "Minor",
-     "`cloud_smoke.py:382` still resolves access from flags alone"
-    ],
-    [
-     "Minor",
-     "`connection_status` reads `load_deploy_state()` twice"
-    ],
-    [
-     "Minor",
-     "Stale-payload rendering"
-    ]
-   ]
-  },
-  {
-   "issue": 3812,
-   "pr": 3884,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: self-heal reports observability absent when the docker probe cannot run (#3812) (PR #3884)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-18T12:53:07Z",
-   "findings": [
-    [
-     "Medium",
-     "Pytest gate fails: duplicate ledger ID `V-038` (pre-existing on base \u2014 heal it in this PR)"
-    ],
-    [
-     "Medium",
-     "Generality (\u00a71e): the Health page still renders a definite verdict from the unqueryable probe"
-    ],
-    [
-     "Minor",
-     "`docs/api.md:1350-1354` \u2014 the `POST /api/v1/self-heal/heal` response example omits the new `undetermined` key, and `heal_now`'s docstring \"Returns {\"checked\": [...], \"healed\": [...]}\" line was not extended. Additive, nothing falsified; worth updating while in the file."
-    ],
-    [
-     "Minor",
-     "`ops.infra_status()` now runs the compose probe twice per call \u2014 once directly (`src/nyxgpt/ops.py:6752`) and once via `detect_deployment_mode()` \u2192 `_compose_stack_snapshot()` \u2192 `list_component_status()`. Two subprocess round-trips on a polled endpoint, and a small window for the flag and the map to disagree. Consider threading one `ComponentSurvey` through both consumers in a follow-up."
-    ],
-    [
-     "Minor",
-     "PR body checklist boxes are all unchecked despite each item being done; the CI evidence run URL is not cited in the body (the checks tab carries it)."
-    ]
-   ]
-  },
-  {
-   "issue": 3811,
-   "pr": 3881,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: Support tickets file unlabeled and leak into the agent loop (#3811) (PR #3881)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 4,
-   "m": 4,
-   "last": "2026-08-18T12:56:59Z",
-   "findings": [
-    [
-     "Medium",
-     "Pytest gate red: duplicate ledger ID `V-038`"
-    ],
-    [
-     "Medium",
-     "Vitest coverage gate red on lines this PR added"
-    ],
-    [
-     "Medium",
-     "\u00a71e generality: the piped-`graphql` failure class is fixed at one of three call sites, with no sweep reported"
-    ],
-    [
-     "Medium",
-     "Owner-required intake-UX criteria silently unmet \u2014 make the descope explicit"
-    ],
-    [
-     "Minor",
-     "Pre-existing red `stamps` check"
-    ],
-    [
-     "Minor",
-     "`/support/docs` page still files untyped"
-    ],
-    [
-     "Minor",
-     "Fixed 45s settle in `support_intake_guard.yml`"
-    ],
-    [
-     "Minor",
-     "Actor-gate note (reviewed, not a finding)"
-    ]
-   ]
-  },
-  {
-   "issue": 3827,
-   "pr": 3890,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: k8s install reports FAIL for pods that are merely Pending (#3827) (PR #3890)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 2,
-   "last": "2026-08-18T17:28:28Z",
-   "findings": [
-    [
-     "Medium",
-     "`nyxgpt ops status` does not use the classification the PR's docs say it does"
-    ],
-    [
-     "Medium",
-     "Same fault class, unswept, in self-heal (\u00a71e)"
-    ],
-    [
-     "Medium",
-     "Data-tier wait budgets silently changed from per-workload to shared-start"
-    ],
-    [
-     "Minor",
-     "App-tier wait can fast-fail on a recovering CrashLoopBackOff"
-    ],
-    [
-     "Minor",
-     "`_classify_k8s_observability_workload` would classify a hypothetical `0/0 ready` workload PENDING forever; no current workload ships at zero replicas, so noting only. Does not block merge."
-    ]
-   ]
-  },
-  {
-   "issue": 3833,
-   "pr": 3902,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: canary must not require a standing inflated replica pool (#3833) (PR #3902)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-18T17:29:41Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: uncovered branch this PR added"
-    ],
-    [
-     "Medium",
-     "`k8s-capacity-smoke` fails on this PR's head \u2014 its fault injections no longer reproduce the defect they gate on"
-    ],
-    [
-     "Minor",
-     "`scripts/canary-rollout-smoke.sh` deletes the real `~/.nyxGPT/canary_state.json` (`rm -f \"$STATE_FILE\"`, steps 3 and 6) and may seed `~/.nyxGPT/config.ini` \u2014 on a developer machine with a real rollout in flight this destroys live state (the V-015/V-037 pattern, softened here because the script is explicitly invoked, not a unit test). Consider honoring an env override for the state file or warning before deleting outside CI."
-    ],
-    [
-     "Minor",
-     "`get_canary_total_replicas`'s docstring (`src/nyxgpt/config.py:456`) still reads \"Return the total replica count for canary rollouts\" \u2014 it is now the borrowing ceiling."
-    ],
-    [
-     "Minor",
-     "The PR body's Summary is empty and its checklist entirely unchecked, despite every listed criterion being met and evidenced; the next push should tick what the CI runs demonstrate."
-    ]
-   ]
-  },
-  {
-   "issue": 3834,
-   "pr": 3907,
-   "title": "[dkblinux98/nyxGPT] Improvement: feat: dev mode and artifact path for the Kubernetes install mode (#3834) (PR #3907)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 1,
-   "last": "2026-08-18T19:02:30Z",
-   "findings": [
-    [
-     "Medium",
-     "Web coverage gate fails: the new install-mode UI branches are untested."
-    ],
-    [
-     "Medium",
-     "Three standing CI guards are red on this PR's head SHA \u2014 consumers of the moved/renamed interfaces were not swept (\u00a71e)."
-    ],
-    [
-     "Medium",
-     "Secret-bearing `k8s/observability/secret.yaml` can ship in the wheel."
-    ],
-    [
-     "Minor",
-     "The PR body's acceptance-criteria and Testing checklists are entirely unchecked despite the work being done and evidenced \u2014 worth ticking on the fix push so the record matches reality. Does not block."
-    ]
-   ]
-  },
-  {
-   "issue": null,
-   "pr": 3918,
-   "title": "[dkblinux98/nyxGPT] fix: the developer workflow accepts a claude[bot] assignment (#3882) (PR #3918)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-18T23:13:25Z",
-   "findings": [
-    [
-     "Medium",
-     "Missing tests for code changes"
-    ],
-    [
-     "Minor",
-     "`claude.yml` also triggers on `issues: [opened, assigned]` with no `allowed_bots`: a `claude[bot]` assignment of an owner-authored issue whose body/title mentions `@claude` would still be refused. Pre-existing, and the failure is inert (that entry point flips no state before the refusal), so it is outside this PR's fault class \u2014 noting it so the sweep result is on record."
-    ],
-    [
-     "Minor",
-     "`agents/runbooks/developer-runbook.md:304` (the workflow-gate table row for `developer_auto_implement.yml`) could note the `allowed_bots` pass the way row 302 does for the review workflow \u2014 omission, not falsification."
-    ],
-    [
-     "Minor",
-     "No `Closes #N` in the PR body \u2014 deliberate and consistent with #3917: #3882 is the open umbrella feature issue and must not be closed by this fix. Noting so pr-hygiene's pass here is understood as intentional."
-    ]
-   ]
-  },
-  {
-   "issue": null,
-   "pr": 3921,
-   "title": "[dkblinux98/nyxGPT] fix: #3919 follow-ups \u2014 review findings, the allowed_bots guard, churn accounting (PR #3921)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 2,
-   "last": "2026-08-18T23:40:34Z",
-   "findings": [
-    [
-     "Medium",
-     "PR body has no `Closes #N` \u2014 the approve automation errors out"
-    ],
-    [
-     "Medium",
-     "The new reading note in `docs/sprint-autopilot.md` is false on arrival (\u00a71a)"
-    ],
-    [
-     "Medium",
-     "Generality (\u00a71e): the retired-doctrine class is patched at the named instances only, with no sweep reported"
-    ],
-    [
-     "Minor",
-     "`scripts/agents/developer_pull_next.sh:234`: the closing-keyword regex accepts only `closes|fixes|resolves`, not GitHub's other recognized variants (`close/closed/fix/fixed/resolve/resolved`). Inside this pipeline every PR carries literal `Closes #N`, so the miss is theoretical \u2014 noting for the record; does not block."
-    ],
-    [
-     "Minor",
-     "`tests/unit/test_comment_token_triggers.py`: the pairing test hardcodes two workflow filenames, but `scrummaster_groom_sprint.yml` is a third workflow that names `claude[bot]` and calls `claude-code-action` (it does pass `allowed_bots: \"claude\"` today, line 114, so nothing is wrong now). Deriving the file list from \"any workflow whose text names `claude[bot]`\" would make the guard cover the next such workflow for free. Does not block."
     ]
    ]
   },
@@ -2977,87 +2133,42 @@
      "`acceptance_reopen_original`'s issue comment renders \"assigned to @the scrummaster agent\" when `SCRUM_AGENT` is unset \u2014 cosmetic fallback text."
     ]
    ]
+  },
+  {
+   "issue": null,
+   "pr": 4034,
+   "title": "[dkblinux98/nyxGPT] fix: state the shipped chat model once, and read it everywhere else (PR #4034)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 3,
+   "last": "2026-08-26T09:33:05Z",
+   "findings": [
+    [
+     "Medium",
+     "Rendering the ConfigMap without the StatefulSet breaks the applied manifests' own invariant \u2014 custom-model k8s installs go from \"wrong model, works\" to \"configured model, chat 404s while everything is Ready\""
+    ],
+    [
+     "Medium",
+     "`test_rendering_never_fails_an_install` never executes the path it claims to pin"
+    ],
+    [
+     "Minor",
+     "Both smokes discard the model-read's stderr (`2>/dev/null` in `_shipped_models` / `_resolve_models`), so a failed read prints only \"could not read the shipped chat model\" with no cause. `load_config` raises `FileNotFoundError` when `~/.nyxGPT/config.ini` is absent \u2014 a new parse-time prerequisite for `scripts/k8s-local-smoke.sh` that its \"Prerequisites\" header does not mention (CI seeds the config first, so the jobs are ordered correctly; a developer on a fresh machine gets the blind failure). Capture stderr into the failure message."
+    ],
+    [
+     "Minor",
+     "Naming inconsistency between the two new override knobs: `NYXGPT_SMOKE_EMBED_MODEL` (artifact smoke) vs `NYXGPT_SMOKE_EMBEDDING_MODEL` (local smoke)."
+    ],
+    [
+     "Minor",
+     "\u00a71e sweep result, for the record \u2014 remaining literal sites of the class after this PR: `k8s/configmap.yaml:9` + `k8s/statefulset-ollama.yaml:52` (deliberately kept readable, guarded by `test_k8s_manifests.py`, and the subject of Medium 1 / change 4); `docker-compose.yml:63` (`${NYXGPT_DEFAULT_MODEL:-qwen3.5:0.8b}` fallback \u2014 internally consistent since env-sync writes the var from config and both Compose consumers read the same var); stale `qwen2.5:0.5b` example values in `docs/configuration.md:357` and `docs/troubleshooting.md:439` (pre-existing doc drift, not falsified by this PR)."
+    ]
+   ]
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 3905,
-   "merged": "2026-08-18",
-   "title": "fix: unblock the v3.0.0 unit gate \u2014 duplicate ledger ID and rglob workspace scan",
-   "module": "api"
-  },
-  {
-   "pr": 3897,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: canary dashboard renders errors as [object Object] (#3831)",
-   "module": "web-ui"
-  },
-  {
-   "pr": 3899,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: fix: close 8 open CodeQL alerts and gate code scanning in review (#3837)",
-   "module": "observability"
-  },
-  {
-   "pr": 3900,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: a shut-down Cassandra cluster is never rebuilt, so restarting Cassandra cannot recover the API (#3851)",
-   "module": "cli"
-  },
-  {
-   "pr": 3893,
-   "merged": "2026-08-18",
-   "title": "perf(agents): scope context loading to the task, not the repository",
-   "module": "api"
-  },
-  {
-   "pr": 3891,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: self-heal reports nothing running in k8s mode, watches api tier only (#3828)",
-   "module": "observability"
-  },
-  {
-   "pr": 3887,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: k8s local smoke skips observability, leaving the default path untested (#3826)",
-   "module": "observability"
-  },
-  {
-   "pr": 3886,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806)",
-   "module": "api"
-  },
-  {
-   "pr": 3879,
-   "merged": "2026-08-18",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3878,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: Support Docs viewer ships agent and CI process docs to end users (#3809)",
-   "module": "documentation"
-  },
-  {
-   "pr": 3877,
-   "merged": "2026-08-18",
-   "title": "Acceptance Failure: bug: churn dump crashes on paginated JSON - churn section never rendered (#3808)",
-   "module": "api"
-  },
-  {
-   "pr": 3874,
-   "merged": "2026-08-18",
-   "title": "Improvement: improvement: AWS cloud infrastructure becomes information-only on the Infrastructure page (#3804)",
-   "module": "web-ui"
-  },
-  {
-   "pr": 3866,
-   "merged": "2026-08-18",
-   "title": "docs(ledger): V-033 - session backend wired only in k8s; fresh-Cassandra collections failure",
-   "module": "documentation"
-  },
   {
    "pr": 3969,
    "merged": "2026-08-19",
@@ -3203,16 +2314,16 @@
    "module": "web-ui"
   },
   {
-   "pr": 3998,
-   "merged": "2026-08-22",
-   "title": "docs(ledger): record the owner's acceptance-failure standard as D-042",
-   "module": "documentation"
-  },
-  {
    "pr": 4003,
    "merged": "2026-08-22",
    "title": "Improvement: improvement: default cloud instance type to m5.xlarge - m5.large cannot run the stack (#3992)",
    "module": "api"
+  },
+  {
+   "pr": 3998,
+   "merged": "2026-08-22",
+   "title": "docs(ledger): record the owner's acceptance-failure standard as D-042",
+   "module": "documentation"
   },
   {
    "pr": 3997,
@@ -3275,31 +2386,43 @@
    "module": "observability"
   },
   {
+   "pr": 4044,
+   "merged": "2026-08-25",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 4041,
    "merged": "2026-08-25",
    "title": "Agent: fix: the developer restarts instead of continuing after a failed verification (#4038)",
    "module": "api"
+  },
+  {
+   "pr": 4039,
+   "merged": "2026-08-26",
+   "title": "fix: the macOS brew gate blocks every PR and measures only itself",
+   "module": "cli"
   }
  ],
  "cleanByModule": {
-  "api": 22,
-  "web-ui": 6,
-  "observability": 7,
   "cli": 6,
-  "documentation": 4,
   "testing": 3,
+  "api": 18,
+  "documentation": 2,
+  "observability": 4,
+  "web-ui": 4,
   "rag": 1,
   "security": 1
  },
  "totals": {
-  "rounds": 138,
+  "rounds": 96,
   "C": 24,
-  "M": 220,
-  "m": 270,
-  "items": 64,
-  "clean": 50,
-  "reviewed": 113,
-  "merged": 126,
-  "unreviewed": 13
+  "M": 151,
+  "m": 198,
+  "items": 45,
+  "clean": 39,
+  "reviewed": 83,
+  "merged": 90,
+  "unreviewed": 7
  }
 }

@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-25T10:12:10+00:00",
+ "generated_at": "2026-08-26T10:10:39+00:00",
  "issues": [
   {
    "n": 2587,
@@ -4830,17 +4830,6 @@
    "closed": "2026-08-11T04:39:29Z"
   },
   {
-   "n": 3633,
-   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-   "created": "2026-08-05T03:02:46Z",
-   "state": "CLOSED",
-   "closed": "2026-08-09T03:51:26Z"
-  },
-  {
    "n": 3634,
    "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
    "labels": [
@@ -4850,6 +4839,17 @@
    "created": "2026-08-05T03:02:46Z",
    "state": "CLOSED",
    "closed": "2026-08-09T03:59:01Z"
+  },
+  {
+   "n": 3633,
+   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-05T03:02:46Z",
+   "state": "CLOSED",
+   "closed": "2026-08-09T03:51:26Z"
   },
   {
    "n": 3635,
@@ -6283,8 +6283,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-19T15:53:37Z",
-   "state": "CLOSED",
-   "closed": "2026-08-22T20:07:27Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3971,
@@ -6371,8 +6371,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:00:07Z",
-   "state": "CLOSED",
-   "closed": "2026-08-23T21:20:14Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3987,
@@ -6382,8 +6382,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:00:37Z",
-   "state": "CLOSED",
-   "closed": "2026-08-23T20:38:32Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3988,
@@ -6393,8 +6393,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:01:17Z",
-   "state": "CLOSED",
-   "closed": "2026-08-23T21:20:14Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3989,
@@ -6415,8 +6415,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T02:40:37Z",
-   "state": "CLOSED",
-   "closed": "2026-08-23T21:09:59Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3991,
@@ -6448,8 +6448,8 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-22T04:42:21Z",
-   "state": "CLOSED",
-   "closed": "2026-08-23T11:56:14Z"
+   "state": "OPEN",
+   "closed": null
   },
   {
    "n": 3995,
@@ -6558,6 +6558,17 @@
    ],
    "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
    "created": "2026-08-25T05:23:57Z",
+   "state": "OPEN",
+   "closed": null
+  },
+  {
+   "n": 4045,
+   "title": "bug: acceptance failure 1 for #3993 - cloud deploy failure paths lie or go blind",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-26T07:30:15Z",
    "state": "OPEN",
    "closed": null
   }
