@@ -261,6 +261,43 @@ def test_artifact_wrapper_still_runs_the_built_bundle(tmp_path):
     assert "self-contained build" in wrapper
 
 
+def test_both_web_start_commands_bind_the_configured_host(tmp_path):
+    """Every mode's start command must carry `--hostname`/`--port` explicitly.
+
+    Neither `next dev` nor `next start` reads the `HOST` env var the wrapper
+    exports (Next reads `HOSTNAME`; `next start`'s documented control is
+    `-H/--hostname`), so a command without the flag falls back to Next's own
+    default of `0.0.0.0`.
+
+    This is parametrised over BOTH modes on purpose. The flags were originally
+    passed only on the dev command -- and the comment beside it named the
+    hazard while fixing one caller -- so the artifact path, which is the
+    repo-less default and therefore every real install, read `[web] host` from
+    config, exported it, and then bound every interface anyway. That
+    contradicted `DECISION_PRIVATE_ACCESS_MECHANISM.md` ("Nothing is ever
+    listening on a non-loopback address on the deployments") and left the
+    security group as the only thing in front of an auth-disabled-by-default
+    web UI on cloud, and nothing at all in front of it on a local install.
+
+    A per-mode assertion here is what stops the next mode added to this
+    function from inheriting the same gap silently.
+    """
+    for dev, expected_runner in ((True, "npm run dev"), (False, "npm run start")):
+        root = tmp_path / ("dev" if dev else "artifact")
+        ops._write_native_web_wrapper(root, root / "web", dev=dev)
+        wrapper = (root / "bin" / "nyxgpt-web").read_text(encoding="utf-8")
+        mode = "dev" if dev else "artifact"
+
+        assert expected_runner in wrapper, f"{mode} mode should run {expected_runner}"
+        assert '--hostname "$HOST"' in wrapper, (
+            f"{mode} mode's start command does not pass --hostname, so Next binds "
+            f"0.0.0.0 and [web] host is silently ignored"
+        )
+        assert '--port "$PORT"' in wrapper, (
+            f"{mode} mode's start command does not pass --port, so [web] port is silently ignored"
+        )
+
+
 @pytest.mark.parametrize(
     "system_value,expected",
     [("Darwin", "_install_homebrew_api"), ("Linux", "_install_native_api_systemd")],

@@ -3882,10 +3882,33 @@ exec __NYXGPT_WEB_START_CMD__
 # `npm run dev` rather than `npm run start`: dev mode's whole point is that
 # the running web UI is the working tree, so it serves through Next's dev
 # server (which compiles from `<checkout>/web` on demand) instead of a
-# production bundle that would have to be rebuilt to see an edit. Host/port
-# are passed explicitly so the wrapper's config.ini-derived values win --
-# `next dev` doesn't read the HOST env var the artifact wrapper exports.
-_DEV_WEB_START_CMD = 'npm run dev -- --hostname "$HOST" --port "$PORT"'
+# production bundle that would have to be rebuilt to see an edit.
+#
+# BOTH commands pass host/port explicitly, and that is load-bearing rather
+# than tidy: *neither* `next dev` nor `next start` reads the `HOST` env var
+# this wrapper exports (Next reads `HOSTNAME`, and for `next start` the
+# documented control is `-H/--hostname`). An earlier version passed them only
+# on the dev command, and the comment here named the hazard while fixing one
+# caller of it. The consequence was not cosmetic: on the artifact path -- the
+# repo-less default, i.e. every real install -- `next start` fell back to its
+# own default and bound `0.0.0.0`, so `[web] host = 127.0.0.1` was read from
+# config, exported, and silently discarded.
+#
+# That contradicted `DECISION_PRIVATE_ACCESS_MECHANISM.md` in its own words
+# ("Nothing is ever listening on a non-loopback address on the deployments"),
+# and it removed a defence-in-depth layer the decision deliberately chose over
+# the network-restricted-public-bind alternative it compared against. On a
+# cloud instance the security group still fronted it (TCP 22 only); on a local
+# native install nothing did, and `[auth] enabled` defaults to false. Found by
+# owner acceptance testing on 2026-08-26 (`ss -lntp` on the EC2 instance showed
+# `*:3000` against the deploy's own claim of a loopback bind).
+#
+# The guard is
+# `tests/unit/test_ops_dev_mode.py::test_both_web_start_commands_bind_the_configured_host`,
+# which asserts the flags per mode rather than on dev alone.
+_WEB_START_HOST_ARGS = '-- --hostname "$HOST" --port "$PORT"'
+_DEV_WEB_START_CMD = f"npm run dev {_WEB_START_HOST_ARGS}"
+_ARTIFACT_WEB_START_CMD = f"npm run start {_WEB_START_HOST_ARGS}"
 
 
 def _write_native_api_wrapper(root: Path, venv_dir: Path, *, dev: bool) -> Path:
@@ -3911,8 +3934,10 @@ def _write_native_web_wrapper(root: Path, web_root: Path, *, dev: bool) -> Path:
     """Write the `nyxgpt-web` wrapper script the systemd unit / launchd agent execs.
 
     `web_root` is the built bundle in artifact mode (`npm run start`) and the
-    checkout's `web/` directory in dev mode (`npm run dev`, see
-    `_DEV_WEB_START_CMD`). Returns the wrapper path.
+    checkout's `web/` directory in dev mode (`npm run dev`). Both commands
+    carry `--hostname`/`--port` from config.ini -- see `_WEB_START_HOST_ARGS`
+    for why that is required on each and not just on dev. Returns the wrapper
+    path.
     """
     wrapper = root / "bin" / "nyxgpt-web"
     content = (
@@ -3921,7 +3946,10 @@ def _write_native_web_wrapper(root: Path, web_root: Path, *, dev: bool) -> Path:
             "__NYXGPT_WEB_MODE__",
             "dev mode: Next dev server on the checkout" if dev else "self-contained build",
         )
-        .replace("__NYXGPT_WEB_START_CMD__", _DEV_WEB_START_CMD if dev else "npm run start")
+        .replace(
+            "__NYXGPT_WEB_START_CMD__",
+            _DEV_WEB_START_CMD if dev else _ARTIFACT_WEB_START_CMD,
+        )
     )
     _write_executable(wrapper, content)
     return wrapper
