@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-08-25T10:36:45.811039+00:00",
- "window_start": "2026-07-26",
+ "generated_at": "2026-08-27T10:45:15.417504+00:00",
+ "window_start": "2026-07-28",
  "window_days": 30,
  "degraded": {
   "timing": 0,
@@ -8,7 +8,7 @@
  },
  "minutes_source": {
   "billable": 0,
-  "duration": 2328
+  "duration": 2401
  },
  "issues": {
   "3507": {
@@ -213,15 +213,6 @@
    "retry_cycles": 0,
    "workflows": {
     "linux-native-smoke.yml": 2
-   }
-  },
-  "3780": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 9.23,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2
    }
   },
   "3782": {
@@ -774,12 +765,11 @@
    }
   },
   "3944": {
-   "claude_steps": 1,
-   "runs": 12,
-   "runner_minutes": 88.33,
+   "claude_steps": 0,
+   "runs": 11,
+   "runner_minutes": 64.27,
    "retry_cycles": 0,
    "workflows": {
-    "claude-code-review.yml": 1,
     "linux-native-smoke.yml": 5,
     "review_agent_auto_review.yml": 3,
     "security-scan.yml": 3
@@ -809,12 +799,11 @@
    }
   },
   "3950": {
-   "claude_steps": 1,
-   "runs": 9,
-   "runner_minutes": 76.07,
+   "claude_steps": 0,
+   "runs": 8,
+   "runner_minutes": 70.43,
    "retry_cycles": 0,
    "workflows": {
-    "claude-code-review.yml": 1,
     "linux-native-smoke.yml": 4,
     "review_agent_auto_review.yml": 1,
     "security-scan.yml": 3
@@ -1070,21 +1059,21 @@
  },
  "unattributed": {
   "claude_steps": 428,
-  "runs": 1397,
-  "runner_minutes": 8465.67,
+  "runs": 1474,
+  "runner_minutes": 8625.92,
   "retry_cycles": 256,
   "workflows": {
-   "ci-tests.yml": 217,
-   "claude-code-review.yml": 26,
+   "ci-tests.yml": 222,
+   "claude-code-review.yml": 32,
    "claude.yml": 1,
    "developer_auto_implement.yml": 147,
-   "handle_acceptance_failure.yml": 10,
-   "huddle_session.yml": 6,
-   "linux-native-smoke.yml": 115,
-   "review_agent_auto_review.yml": 131,
-   "security-scan.yml": 226,
-   "terraform-local-smoke.yml": 42,
-   "usage_limit_retry.yml": 476
+   "handle_acceptance_failure.yml": 18,
+   "huddle_session.yml": 4,
+   "linux-native-smoke.yml": 120,
+   "review_agent_auto_review.yml": 134,
+   "security-scan.yml": 234,
+   "terraform-local-smoke.yml": 46,
+   "usage_limit_retry.yml": 516
   }
  }
 }
