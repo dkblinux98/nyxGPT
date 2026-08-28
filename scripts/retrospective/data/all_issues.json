@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-27T10:16:10.702601+00:00",
+ "generated_at": "2026-08-28T10:15:57+00:00",
  "issues": [
   {
    "n": 2587,
@@ -4830,17 +4830,6 @@
    "closed": "2026-08-11T04:39:29Z"
   },
   {
-   "n": 3633,
-   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
-   "labels": [
-    "Acceptance Failure"
-   ],
-   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
-   "created": "2026-08-05T03:02:46Z",
-   "state": "closed",
-   "closed": "2026-08-09T03:51:26Z"
-  },
-  {
    "n": 3634,
    "title": "bug: ingest_document bootstrap ordering breaks first ingest on fresh Cassandra",
    "labels": [
@@ -4850,6 +4839,17 @@
    "created": "2026-08-05T03:02:46Z",
    "state": "closed",
    "closed": "2026-08-09T03:59:01Z"
+  },
+  {
+   "n": 3633,
+   "title": "bug: api_base_url fixture skip fix stranded on unmerged branch; 110 CI fails",
+   "labels": [
+    "Acceptance Failure"
+   ],
+   "milestone": "Phase 6 \u2014 Enterprise Deployment Hardening (v3.0.0)",
+   "created": "2026-08-05T03:02:46Z",
+   "state": "closed",
+   "closed": "2026-08-09T03:51:26Z"
   },
   {
    "n": 3635,
