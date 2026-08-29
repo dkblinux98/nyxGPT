@@ -1,25 +1,11 @@
 {
- "generated_at": "2026-08-28T10:32:05.643513+00:00",
+ "generated_at": "2026-08-29T10:35:56.007989+00:00",
  "modules": {
   "observability": {
    "C": 0,
-   "M": 6,
-   "m": 7,
-   "rounds": 5,
-   "issues": 3
-  },
-  "api": {
-   "C": 4,
-   "M": 36,
-   "m": 37,
-   "rounds": 19,
-   "issues": 9
-  },
-  "security": {
-   "C": 0,
-   "M": 4,
-   "m": 11,
-   "rounds": 3,
+   "M": 5,
+   "m": 4,
+   "rounds": 4,
    "issues": 2
   },
   "cli": {
@@ -28,15 +14,23 @@
    "m": 28,
    "rounds": 13,
    "issues": 5
+  },
+  "api": {
+   "C": 4,
+   "M": 35,
+   "m": 35,
+   "rounds": 18,
+   "issues": 8
+  },
+  "security": {
+   "C": 0,
+   "M": 3,
+   "m": 6,
+   "rounds": 2,
+   "issues": 1
   }
  },
  "days": {
-  "2026-08-21": {
-   "C": 0,
-   "M": 3,
-   "m": 10,
-   "rounds": 3
-  },
   "2026-08-22": {
    "C": 0,
    "M": 20,
@@ -562,97 +556,6 @@
    ]
   },
   {
-   "issue": null,
-   "pr": 3975,
-   "title": "[dkblinux98/nyxGPT] feat: a smoke job that proves the huddle channel by using it (#3910) (PR #3975)",
-   "module": "observability",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-08-21T00:27:12Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified claims left standing: \"live three-identity Slack delivery is owner-acceptance only\" (\u00a71a, #3744)"
-    ],
-    [
-     "Minor",
-     "`scripts/slack-huddle-smoke.py:76`"
-    ],
-    [
-     "Minor",
-     "Read-after-write timing"
-    ],
-    [
-     "Minor",
-     "Observed in passing, unrelated to this PR"
-    ]
-   ]
-  },
-  {
-   "issue": 3911,
-   "pr": 3977,
-   "title": "[dkblinux98/nyxGPT] Agent: refactor: consolidate the review huddle into one session workflow (#3911) (PR #3977)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 2,
-   "last": "2026-08-21T01:02:53Z",
-   "findings": [
-    [
-     "Medium",
-     "Owner-directed scope addition on #3911 not covered \u2014 the PR closes the issue with two acceptance criteria unmet."
-    ],
-    [
-     "Minor",
-     "The \"No `set -e` here on purpose\" comment in the `Record a failed session` step is slightly inaccurate \u2014 GitHub's default shell for `run:` is `bash -e {0}`, so errexit is active regardless. Behaviour is still correct because both commands are `|| true`-guarded (and the new test pins both guards); consider rewording the comment so a future reader doesn't rely on \"no set -e\" being literally true. Does not block merge."
-    ],
-    [
-     "Minor",
-     "`prove_the_live_fix_was_needed` uses `check()` failures as its positive signal, so a *passing* run prints the two failure lines into the log before declaring success. Cosmetic log noise only; the final verdict lines are unambiguous. Does not block merge."
-    ]
-   ]
-  },
-  {
-   "issue": 3976,
-   "pr": 3978,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: improvement: config.ini must populate every GitHub secret AND variable, and prove it has (#3976) (PR #3978)",
-   "module": "security",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 5,
-   "last": "2026-08-21T02:02:57Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified claim left unfixed: `docs/sprint-autopilot.md:231-241` (\u00a71a, #3744)"
-    ],
-    [
-     "Minor",
-     "Cite the smoke run in the PR body"
-    ],
-    [
-     "Minor",
-     "`agents/runbooks/review-runbook.md:1000-1004`"
-    ],
-    [
-     "Minor",
-     "`docs/github-tokens.md:82`"
-    ],
-    [
-     "Minor",
-     "`scripts/config-sync-smoke.py:792,825`"
-    ],
-    [
-     "Minor",
-     "`config_wizard.find_config_drift`"
-    ]
-   ]
-  },
-  {
    "issue": 3850,
    "pr": 4001,
    "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: brew install exposes no `nyxgpt` command - the documented install flow cannot work (#3850) (PR #4001)",
@@ -903,24 +806,6 @@
  ],
  "cleanPRs": [
   {
-   "pr": 3981,
-   "merged": "2026-08-21",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 3980,
-   "merged": "2026-08-21",
-   "title": "Acceptance Failure: bug: v3.0.0 red - SLACK_CONFLICT_CHANNEL manifest gap, admin coverage (#3979)",
-   "module": "web-ui"
-  },
-  {
-   "pr": 3972,
-   "merged": "2026-08-21",
-   "title": "wip: feat: a red or pending head is not reviewable - api (#3971)",
-   "module": "api"
-  },
-  {
    "pr": 4012,
    "merged": "2026-08-22",
    "title": "fix: stop .secrets.baseline conflicting on its own clock",
@@ -1045,25 +930,31 @@
    "merged": "2026-08-27",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4048,
+   "merged": "2026-08-28",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "api": 15,
-  "web-ui": 2,
   "security": 1,
   "cli": 3,
+  "web-ui": 1,
+  "api": 14,
   "documentation": 1,
   "observability": 2
  },
  "totals": {
-  "rounds": 40,
+  "rounds": 37,
   "C": 4,
-  "M": 62,
-  "m": 83,
-  "items": 19,
-  "clean": 24,
-  "reviewed": 42,
-  "merged": 46,
+  "M": 59,
+  "m": 73,
+  "items": 16,
+  "clean": 22,
+  "reviewed": 37,
+  "merged": 41,
   "unreviewed": 4
  }
 }
