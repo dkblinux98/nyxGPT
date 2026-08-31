@@ -169,6 +169,18 @@ def build_dashboard_snapshot(
 
     modules = defaultdict(lambda: {"C": 0, "M": 0, "m": 0, "rounds": 0, "_items": set()})
     days = defaultdict(lambda: {"C": 0, "M": 0, "m": 0, "rounds": 0})
+    # Seed every day of the window, not just the ones that had a rejected
+    # round. The dashboard derives both the day chart and the "Last N days in
+    # review - <from> - <to>" divider from these keys, so a quiet stretch used
+    # to shrink the window itself: on 2026-08-31 one round on Aug 26 was the
+    # only key left and the page would have announced a 1-day window over the
+    # 7-day totals printed directly beneath it. A day with no rejected round is
+    # a zero bar, which is a fact about the window, not an absence of one.
+    cursor = datetime.fromisoformat(window_start.replace("Z", "+00:00"))
+    window_end_dt = datetime.fromisoformat(window_end.replace("Z", "+00:00"))
+    while cursor < window_end_dt:
+        days[cursor.date().isoformat()]  # noqa: B018  (defaultdict seed)
+        cursor += timedelta(days=1)
     items = {}
     for r in rounds_in_window:
         key = (r["issue"], r["pr"])

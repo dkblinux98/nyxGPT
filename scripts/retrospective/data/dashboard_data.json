@@ -1,464 +1,65 @@
 {
- "generated_at": "2026-08-30T10:23:25.610070+00:00",
+ "generated_at": "2026-08-31T10:36:00.989682+00:00",
  "modules": {
   "api": {
-   "C": 4,
-   "M": 30,
-   "m": 26,
-   "rounds": 15,
-   "issues": 6
-  },
-  "cli": {
    "C": 0,
-   "M": 9,
-   "m": 17,
-   "rounds": 8,
-   "issues": 3
+   "M": 2,
+   "m": 3,
+   "rounds": 1,
+   "issues": 1
   }
  },
  "days": {
-  "2026-08-23": {
-   "C": 4,
-   "M": 37,
-   "m": 40,
-   "rounds": 22
+  "2026-08-24": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
+  },
+  "2026-08-25": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   },
   "2026-08-26": {
    "C": 0,
    "M": 2,
    "m": 3,
    "rounds": 1
+  },
+  "2026-08-27": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
+  },
+  "2026-08-28": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
+  },
+  "2026-08-29": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
+  },
+  "2026-08-30": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
+  },
+  "2026-08-31": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
  "issues": [
-  {
-   "issue": 4015,
-   "pr": 4019,
-   "title": "[dkblinux98/nyxGPT] Agent: fix: mechanize the inverse-claims sweep - stale prose is 80% of review rework (#4015) (PR #4019)",
-   "module": "api",
-   "rounds": 5,
-   "C": 0,
-   "M": 10,
-   "m": 7,
-   "last": "2026-08-23T05:33:34Z",
-   "findings": [
-    [
-     "Medium",
-     "[STILL PRESENT \u2014 round 1, Medium 1] Silent reverse-diff fallback"
-    ],
-    [
-     "Medium",
-     "[STILL PRESENT \u2014 round 1, Medium 2] Submit-time sweep failure is invisible"
-    ],
-    [
-     "Minor",
-     "Unchanged from round 1; none block: the count-prefilter skips multi-word terms wrapped across lines (`inverse_claims_sweep.py:1193-1196`), `default_base()` hardcodes `origin/v3.0.0` (line 488), and `.github/workflows/developer_auto_implement.yml:1089` still describes only the manual grep."
-    ],
-    [
-     "Medium",
-     "[STILL PRESENT \u2014 round 1, Medium 1] Silent reverse-diff fallback"
-    ],
-    [
-     "Medium",
-     "[STILL PRESENT \u2014 round 1, Medium 2] Submit-time sweep failure is invisible"
-    ],
-    [
-     "Minor",
-     "Unchanged from round 1; none block: the count-prefilter skips multi-word terms wrapped across lines (`inverse_claims_sweep.py:1193-1196`), `default_base()` hardcodes `origin/v3.0.0`, and `.github/workflows/developer_auto_implement.yml:1089` still describes only the manual grep without naming the new tool (verified this session)."
-    ],
-    [
-     "Medium",
-     "[Residual of round-1 Medium 2] Sweep hard-failure is still invisible: `$sweep_err` is captured and never shown, and no trace reaches the PR body"
-    ],
-    [
-     "Medium",
-     "[Residual of round-1 Medium 1] D-046's measurement is still unauditable, and this PR's own fix now makes its stated method non-reproducible"
-    ],
-    [
-     "Minor",
-     "`sweep_err` temp file leaks (not removed at `developer_submit_for_review.sh:303`) \u2014 fold into Medium 1's fix."
-    ],
-    [
-     "Minor",
-     "Unchanged from round 1, none block: the count-prefilter skips multi-word terms wrapped across lines (`inverse_claims_sweep.py`), `default_base()` hardcodes `origin/v3.0.0`, and `developer_auto_implement.yml:1089` still describes only the manual grep without naming the new tool."
-    ],
-    [
-     "Medium",
-     "The failure-path fix is unpinned, and the fix itself made the existing pin vacuous for that path"
-    ],
-    [
-     "Medium",
-     "The runbook's copy of the D-046 numbers is uncaveated while the ledger's copy is now marked provisional"
-    ],
-    [
-     "Minor",
-     "No PR-body marker on a hard sweep failure. Downgraded from the previous round's demand, deliberately: the AC marks PR posting optional and the success-path receipt makes absence detectable. A one-line `_Inverse-claims sweep did not run: <first line>_` marker would still be an improvement; does not block."
-    ],
-    [
-     "Minor",
-     "`agents/LEDGER.md` Q-008 opens with \"The #4015 measurement answers the question the owner posed\" using the same provisional numbers; D-046's caveat explicitly cross-references Q-008, so a reader is covered \u2014 a softening clause would be tidier; does not block."
-    ],
-    [
-     "Minor",
-     "Carried over unchanged from earlier rounds, none block: the count-prefilter can skip multi-word terms wrapped across lines; `default_base()` hardcodes `origin/v3.0.0`; `developer_auto_implement.yml:1089` still describes the manual grep without naming the tool."
-    ],
-    [
-     "Medium",
-     "The failure-path fix is unpinned, and the fix itself made the existing pin vacuous for that path"
-    ],
-    [
-     "Medium",
-     "The runbook's copy of the D-046 numbers is uncaveated while the ledger's copy is now marked provisional"
-    ]
-   ]
-  },
-  {
-   "issue": 4022,
-   "pr": 4026,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: ops.py Docker reads still report absent from a group-denied session (#4022) (PR #4026)",
-   "module": "cli",
-   "rounds": 5,
-   "C": 0,
-   "M": 5,
-   "m": 10,
-   "last": "2026-08-23T13:44:49Z",
-   "findings": [
-    [
-     "Medium",
-     "`canary.current_mode()` now asserts \"terraform\" from reads that never happened (`src/nyxgpt/canary.py:668`)"
-    ],
-    [
-     "Minor",
-     "`ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in the same API process, so a denied session can pay the probe pair twice (once per module) and the two can transiently disagree during the recheck window. The smoke resets both, so it is understood; a comment aside, nothing to do now \u2014 noted so a future \"why did it probe twice\" reader finds it. Does not block merge."
-    ],
-    [
-     "Minor",
-     "`_terraform_stack_health` reports an unknown read as `ok=False` with `status=\"UNKNOWN\"` \u2014 consistent with the #3827 pattern; just confirming this was read and judged deliberate. Does not block merge."
-    ],
-    [
-     "Medium",
-     "The new `unknown` mode ships with the timeout explanation \u2014 a confident wrong diagnosis on this issue's own scenario (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice; understood, noted for future readers."
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
-    ],
-    [
-     "Medium",
-     "(carried, unaddressed) The new `unknown` mode ships with the timeout explanation (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice."
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
-    ],
-    [
-     "Medium",
-     "(carried, unaddressed) The new `unknown` mode ships with the timeout explanation (`src/nyxgpt/canary.py:719-727`, `docs/api.md:1236-1239`)"
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice."
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
-    ],
-    [
-     "Medium",
-     "Falsified claims left unfixed (\u00a71a): three sentences, three text edits"
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `ops._DOCKER_HOP` and `self_heal._DOCKER_HOP` are two independent holders in one API process \u2014 a denied session can pay the probe pair twice."
-    ],
-    [
-     "Minor",
-     "(carried, non-blocking) `_terraform_stack_health` reports an unknown read as `ok=False`/`status=\"UNKNOWN\"` \u2014 consistent with #3827, judged deliberate."
-    ]
-   ]
-  },
-  {
-   "issue": null,
-   "pr": 4017,
-   "title": "[dkblinux98/nyxGPT] feat: derive acceptance-round state instead of composing it by hand (PR #4017)",
-   "module": "api",
-   "rounds": 4,
-   "C": 4,
-   "M": 7,
-   "m": 6,
-   "last": "2026-08-23T07:14:07Z",
-   "findings": [
-    [
-     "Critical",
-     "Stale `agents/CONTEXT_INDEX.md` turns the release branch red on merge"
-    ],
-    [
-     "Medium",
-     "A closed-unmerged PR is reported as `OPEN PR#N`"
-    ],
-    [
-     "Medium",
-     "The snapshot can be silently empty or truncated, producing false \"not started\" rows"
-    ],
-    [
-     "Medium",
-     "New hardcoded release-branch literal"
-    ],
-    [
-     "Medium",
-     "Nothing in CI ever executes `tests/test_round_state.sh`"
-    ],
-    [
-     "Minor",
-     "Branch discovery is a substring-match proxy"
-    ],
-    [
-     "Minor",
-     "`--lane` mode can feed PR card numbers to `gh issue view`"
-    ],
-    [
-     "Minor",
-     "`code_scan_report.yml:15`'s dispatch default is still `refs/heads/v2.1.0` \u2014 pre-existing, noted while running \u00a71f; it is also one of the guard's 14 base hits."
-    ],
-    [
-     "Critical",
-     "Unclassified `pull_request` job turns the release branch red on merge"
-    ],
-    [
-     "Medium",
-     "None new."
-    ],
-    [
-     "Minor",
-     "Carried from the previous round, still present, still non-blocking: (1) branch discovery is a substring grep (`refs/heads/[^ ]*${n}[^ ]*`), so a short issue number can match an unrelated branch name, and on the OPEN-PR row `headRefName` from the snapshot would be exact; (2) `--lane` mode can feed PR card numbers to `gh issue view`, printing `ISSUE_ST=?` rows for non-issues."
-    ],
-    [
-     "Critical",
-     "Unclassified `pull_request` job turns the release branch red on merge (carried, unaddressed)"
-    ],
-    [
-     "Medium",
-     "None new."
-    ],
-    [
-     "Minor",
-     "Carried, still present, still non-blocking: (1) branch discovery is a substring grep (`refs/heads/[^ ]*${n}[^ ]*`), so a short issue number can match an unrelated branch; (2) `--lane` mode can feed PR card numbers to `gh issue view`, printing `ISSUE_ST=?` rows for non-issues."
-    ],
-    [
-     "Critical",
-     "Unclassified `pull_request` job turns the release branch red on merge (carried, unaddressed)"
-    ],
-    [
-     "Medium",
-     "None new."
-    ],
-    [
-     "Minor",
-     "Carried, still present, still non-blocking: (1) branch discovery is a substring grep (`refs/heads/[^ ]*${n}[^ ]*`), so a short issue number can match an unrelated branch; (2) `--lane` mode can feed PR card numbers to `gh issue view`, printing `ISSUE_ST=?` rows for non-issues."
-    ]
-   ]
-  },
-  {
-   "issue": null,
-   "pr": 4029,
-   "title": "[dkblinux98/nyxGPT] feat: reasoning off by default, and every mode ships the same model (D-048) (PR #4029)",
-   "module": "api",
-   "rounds": 3,
-   "C": 0,
-   "M": 5,
-   "m": 5,
-   "last": "2026-08-23T13:25:43Z",
-   "findings": [
-    [
-     "Medium",
-     "The discarded-reasoning class has two unswept live instances"
-    ],
-    [
-     "Medium",
-     "The reasoning-with-no-answer error covers only the non-streaming path, and the ledger entry claims it unqualified"
-    ],
-    [
-     "Medium",
-     "`k8s/configmap.yaml`'s `think` is asserted to match `example.config.ini` by comment, not by test"
-    ],
-    [
-     "Minor",
-     "`docs/api.md` still uses `llama3.1:8b` as the `default_model` value in several sample responses (e.g. lines 400, 614, 676) \u2014 sample state, not a default claim, so not blocking; worth converging on the shipped model next time those examples are touched."
-    ],
-    [
-     "Minor",
-     "The CLI wizard (`src/nyxgpt/wizard.py::_generate_config_ini`) writes `default_model` and `chat_timeout_seconds` but not `think`; behaviorally fine (code default is false) and consistent with other keys, noted only for completeness."
-    ],
-    [
-     "Medium",
-     "The discarded-reasoning class has one last member, and it bypasses the wrapper the fix lives in"
-    ],
-    [
-     "Minor",
-     "Whitespace-only streamed content evades the new guard"
-    ],
-    [
-     "Minor",
-     "`ollama_chat_stream_tokens`'s docstring Args/Raises don't mention `think` or the new raise condition"
-    ],
-    [
-     "Medium",
-     "[Carried] Reranker still lets the shipped reasoning model reason into a 50-token budget"
-    ],
-    [
-     "Minor",
-     "Carried from last round, still non-blocking: whitespace-only streamed content evades the stream guard (`ollama_client.py`, `yielded_content` set on any non-empty part vs `strip()` on the non-streaming path); `ollama_chat_stream_tokens`'s docstring omits `think` and the new raise condition."
-    ]
-   ]
-  },
-  {
-   "issue": 3993,
-   "pr": 4007,
-   "title": "[dkblinux98/nyxGPT] Agent: improvement: cloud deploy failure paths lie or go blind - misreported steps, blind status, stale state (#3993) (PR #4007)",
-   "module": "cli",
-   "rounds": 2,
-   "C": 0,
-   "M": 2,
-   "m": 4,
-   "last": "2026-08-23T08:18:01Z",
-   "findings": [
-    [
-     "Medium",
-     "docs/cloud.md still asserts the exact behaviour this PR's own third commit removed."
-    ],
-    [
-     "Minor",
-     "A deploy against an operator-supplied `--host` box that fails mid-provision records `host`, so the summary asserts \"an instance exists and is being billed\" about a machine nyxGPT never provisioned and cannot know is billed. The operator named the box themselves, so the harm is low \u2014 consider \"an instance exists (the `--host` target)\" phrasing in a follow-up."
-    ],
-    [
-     "Minor",
-     "In the narrow `state_stale` case where the apply succeeded, `terraform output` was unreadable *and* `state.json` held no prior ids, the pre-substrate branch would print \"nothing from it is being billed\" while the substrate is in fact up; the unconditional state-stale WARNING and the attempt's own error row both still print the truth alongside, so the operator is not actually misled. Follow-up material."
-    ],
-    [
-     "Minor",
-     "Round 1's minors stand: a SIGKILL'd deploy leaves the attempt at `status=running` forever (\"still running\" label should age off `updated_at` in a follow-up); `.secrets.baseline` churn re-verified \u2014 this round's edits only *remove* stale entries and shift line numbers, no real secrets."
-    ],
-    [
-     "Medium",
-     "docs/cloud.md:359-363 asserts the removed unconditional billing behaviour (carried from the previous review, unfixed)."
-    ],
-    [
-     "Minor",
-     "Unchanged from the previous reviews (same head): the `--host` phrasing nuance; the narrow `state_stale` pre-substrate wording overlap; the SIGKILL'd attempt aging; `.secrets.baseline` churn (verified removals only)."
-    ]
-   ]
-  },
-  {
-   "issue": 3989,
-   "pr": 4018,
-   "title": "[dkblinux98/nyxGPT] Acceptance Failure: bug: terraform install-mode line describes containers that do not exist (#3989) (PR #4018)",
-   "module": "cli",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-23T07:40:52Z",
-   "findings": [
-    [
-     "Medium",
-     "Missing executed verification on macOS Homebrew (\u00a71c, #3775)"
-    ],
-    [
-     "Medium",
-     "The bare-name fault class survives in self-heal, and the PR's own docs claim is falsified by it (\u00a71e + \u00a71a)"
-    ],
-    [
-     "Minor",
-     "`_brew_cellar` misses the Intel-macOS/Linuxbrew layout"
-    ],
-    [
-     "Minor",
-     "`.secrets.baseline` new entry at ops.py:13277"
-    ],
-    [
-     "Minor",
-     "Pre-existing bare-name `brew services` examples in `docs/homebrew.md`"
-    ]
-   ]
-  },
-  {
-   "issue": null,
-   "pr": 4028,
-   "title": "[dkblinux98/nyxGPT] fix: raise the chat timeout for the larger shipped model (PR #4028)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 3,
-   "last": "2026-08-23T08:36:59Z",
-   "findings": [
-    [
-     "Medium",
-     "Invalid-config fallback still returns 180 while logging \"using 300\""
-    ],
-    [
-     "Medium",
-     "Two falsified default claims left in the tree (\u00a71a)"
-    ],
-    [
-     "Medium",
-     "Outcome claim contradicted by executed evidence; remaining defect and sweep-remainder unnamed (\u00a71c/\u00a71d/\u00a71e)"
-    ],
-    [
-     "Minor",
-     "`docs/performance.md:673` \u2014 the \"Recommended adjustments\" entry \"CPU-only, large model: `chat_timeout_seconds = 300`\" now recommends the default; reword (e.g. suggest 600) while touching this file. Does not block."
-    ],
-    [
-     "Minor",
-     "`docs/troubleshooting.md:778` \u2014 the sample error text \"no response within 180s\" shows the old default in example output (the real message interpolates the configured value). Cosmetic; does not block."
-    ],
-    [
-     "Minor",
-     "`scripts/first-chat-smoke.py:216` \u2014 the comment pins the server default (\"300\") with nothing enforcing client(420) > server default if the default moves again; acceptable as-is since the comment cites its source, just noting the coupling. Does not block."
-    ]
-   ]
-  },
-  {
-   "issue": 3999,
-   "pr": 4025,
-   "title": "[dkblinux98/nyxGPT] Agent: fix: implement the owner's acceptance-failure standard - reopen, park, promote (D-042) (#3999) (PR #4025)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 3,
-   "m": 2,
-   "last": "2026-08-23T11:49:05Z",
-   "findings": [
-    [
-     "Medium",
-     "Falsified claims left in the tree (\u00a71a, blocking)"
-    ],
-    [
-     "Medium",
-     "The discriminator fails open on a missing or unreadable `blocked_by` edge (blocking)"
-    ],
-    [
-     "Medium",
-     "The failure-path alert is only statically tested (blocking)"
-    ],
-    [
-     "Minor",
-     "`scripts/agents/lib/gh_project.sh:2229` (`_escalation_exempt_lane`): the comment \"Open items here are held by the drain gate (#3730, D-001/D-008)\" is now an incomplete reason (open items may be reopened originals) \u2014 the exemption conclusion is unchanged and even stronger, so this is wording only."
-    ],
-    [
-     "Minor",
-     "`acceptance_reopen_original`'s issue comment renders \"assigned to @the scrummaster agent\" when `SCRUM_AGENT` is unset \u2014 cosmetic fallback text."
-    ]
-   ]
-  },
   {
    "issue": null,
    "pr": 4034,
@@ -494,42 +95,6 @@
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 4032,
-   "merged": "2026-08-23",
-   "title": "fix: the stamps smoke assumed a corpus shape instead of guaranteeing it",
-   "module": "observability"
-  },
-  {
-   "pr": 4031,
-   "merged": "2026-08-23",
-   "title": "fix: the review workflow cancelled itself by commenting",
-   "module": "api"
-  },
-  {
-   "pr": 4030,
-   "merged": "2026-08-23",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4024,
-   "merged": "2026-08-23",
-   "title": "style: black the merge driver - it broke the formatting gate on v3.0.0",
-   "module": "api"
-  },
-  {
-   "pr": 4023,
-   "merged": "2026-08-23",
-   "title": "Acceptance Failure: bug: unit suite is non-deterministic - 5 to 67 failures for identical code (#4020)",
-   "module": "api"
-  },
-  {
-   "pr": 4021,
-   "merged": "2026-08-23",
-   "title": "Acceptance Failure: bug: restart-required config changes apply silently or not at all - need pending-restart notice and restart control (#3806)",
-   "module": "api"
-  },
   {
    "pr": 4042,
    "merged": "2026-08-24",
@@ -583,22 +148,28 @@
    "merged": "2026-08-29",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4050,
+   "merged": "2026-08-30",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "observability": 2,
-  "api": 12,
+  "api": 8,
+  "observability": 1,
   "cli": 1
  },
  "totals": {
-  "rounds": 23,
-  "C": 4,
-  "M": 39,
-  "m": 43,
-  "items": 9,
-  "clean": 15,
-  "reviewed": 25,
-  "merged": 29,
-  "unreviewed": 4
+  "rounds": 1,
+  "C": 0,
+  "M": 2,
+  "m": 3,
+  "items": 1,
+  "clean": 10,
+  "reviewed": 10,
+  "merged": 11,
+  "unreviewed": 1
  }
 }
