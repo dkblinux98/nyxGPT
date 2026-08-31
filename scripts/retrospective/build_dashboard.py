@@ -172,6 +172,10 @@ AF_CAUSES = ("defect", "spec", "workflow")
 # merged/medianHrs are recomputed from data/pr_times.json when present; the
 # current month's "rejected" is recomputed from reviews_final.json in
 # gate_series() — older months predate that dump and keep their seeded value.
+MONTH_ABBR = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]  # fmt: skip
 GATE = [
     {"m": "Jan", "merged": 153, "rejected": 62},
     {"m": "Feb", "merged": 15, "rejected": 26},
@@ -386,17 +390,30 @@ def gate_series(issues, pr_times, reviews, now=None):
     gate = [dict(g) for g in GATE]
     now = now or datetime.now(UTC)
     current_month = now.month
-    if 1 <= current_month <= len(gate):
-        gate[current_month - 1]["rejected"] = sum(
-            1 for r in reviews if month_of(r["date"]) == current_month
-        )
+
+    def month(m):
+        """The row for month `m`, appending months past the seeded list.
+
+        GATE is hand-seeded and stops at the month it was last edited, so on
+        the first day of a new month every `gate[month_of(...) - 1]` below
+        indexed off the end and the whole build died -- an unattended refresh
+        losing a day to a calendar roll. Rows added here carry no seeded
+        history (there is none yet); merged/rejected/af/pm are all derived
+        from the data further down, which is what a current month uses anyway.
+        """
+        while len(gate) < m:
+            gate.append({"m": MONTH_ABBR[len(gate)], "merged": 0, "rejected": 0})
+        return gate[m - 1]
+
+    month(current_month)["rejected"] = sum(
+        1 for r in reviews if month_of(r["date"]) == current_month
+    )
     for i in issues:
+        row = month(month_of(i["created"]))
         if i.get("cause") in AF_CAUSES:
-            gate[month_of(i["created"]) - 1].setdefault("af", 0)
-            gate[month_of(i["created"]) - 1]["af"] += 1
+            row["af"] = row.get("af", 0) + 1
         elif i.get("cause") == "pm":
-            gate[month_of(i["created"]) - 1].setdefault("pm", 0)
-            gate[month_of(i["created"]) - 1]["pm"] += 1
+            row["pm"] = row.get("pm", 0) + 1
     for g in gate:
         g.setdefault("af", 0)
         g.setdefault("pm", 0)
@@ -406,6 +423,7 @@ def gate_series(issues, pr_times, reviews, now=None):
         for created, merged in pr_times.values():
             m = month_of(merged)
             merged_count[m] += 1
+            month(m)
             dt = datetime.fromisoformat(merged.replace("Z", "+00:00")) - datetime.fromisoformat(
                 created.replace("Z", "+00:00")
             )
@@ -429,7 +447,11 @@ def aging_flow(issues, now):
             if lo <= (now - datetime.fromisoformat(i["created"].replace("Z", "+00:00"))).days < hi
         )
         aging.append({"bucket": name, "n": n})
-    flow = [{"m": g["m"], "opened": 0, "closed": 0} for g in GATE]
+    # Same calendar-roll trap as gate_series(): seeded off GATE, this list used
+    # to stop at the month GATE was last hand-edited and index off the end on
+    # the first issue of a new month. Cover through the current month instead.
+    months = max(len(GATE), now.month)
+    flow = [{"m": MONTH_ABBR[i], "opened": 0, "closed": 0} for i in range(months)]
     for i in issues:
         if i.get("cause") not in AF_CAUSES:
             continue
