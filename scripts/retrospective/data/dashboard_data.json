@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-08-31T10:36:00.989682+00:00",
+ "generated_at": "2026-09-01T10:22:03.937200+00:00",
  "modules": {
   "api": {
    "C": 0,
@@ -10,12 +10,6 @@
   }
  },
  "days": {
-  "2026-08-24": {
-   "C": 0,
-   "M": 0,
-   "m": 0,
-   "rounds": 0
-  },
   "2026-08-25": {
    "C": 0,
    "M": 0,
@@ -53,6 +47,12 @@
    "rounds": 0
   },
   "2026-08-31": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
+  },
+  "2026-09-01": {
    "C": 0,
    "M": 0,
    "m": 0,
@@ -95,18 +95,6 @@
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 4042,
-   "merged": "2026-08-24",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4035,
-   "merged": "2026-08-24",
-   "title": "fix: unred v3.0.0 -- three defects in the Kubernetes smokes, each masking the next",
-   "module": "observability"
-  },
   {
    "pr": 4044,
    "merged": "2026-08-25",
@@ -154,11 +142,16 @@
    "merged": "2026-08-30",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4051,
+   "merged": "2026-08-31",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
   "api": 8,
-  "observability": 1,
   "cli": 1
  },
  "totals": {
@@ -167,9 +160,9 @@
   "M": 2,
   "m": 3,
   "items": 1,
-  "clean": 10,
-  "reviewed": 10,
-  "merged": 11,
+  "clean": 9,
+  "reviewed": 9,
+  "merged": 10,
   "unreviewed": 1
  }
 }
