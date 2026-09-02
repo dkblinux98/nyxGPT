@@ -1,8 +1,8 @@
 {
- "generated_at": "2026-09-02T22:52:07.308914+00:00",
+ "generated_at": "2026-08-29T12:37:51.034102+00:00",
  "logFetch": {
-  "ok": 0,
-  "expired": 439,
+  "ok": 2,
+  "expired": 0,
   "failed": 0
  },
  "methodology": {
@@ -12524,16 +12524,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T10:49:02Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 599970,
+    "output": 82780,
+    "cache_creation": 599310,
+    "cache_read": 47472379,
+    "total": 48754439
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 13.749762500000001,
+   "turns": 198,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 38,
+    "production_turns": 160,
+    "context_tokens": 9356913,
+    "production_tokens": 39397526,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12570,16 +12576,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T10:55:56Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 607303,
+    "output": 88880,
+    "cache_creation": 606581,
+    "cache_read": 50826734,
+    "total": 52129498
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 14.494284000000002,
+   "turns": 217,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 31,
+    "production_turns": 186,
+    "context_tokens": 7447071,
+    "production_tokens": 44682427,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12593,16 +12605,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T11:05:30Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 568261,
+    "output": 67794,
+    "cache_creation": 567651,
+    "cache_read": 41548319,
+    "total": 42752025
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 11.693965499999997,
+   "turns": 188,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 45,
+    "production_turns": 143,
+    "context_tokens": 10233197,
+    "production_tokens": 32518828,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12662,16 +12680,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-18T11:19:07Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 404795,
+    "output": 49747,
+    "cache_creation": 404349,
+    "cache_read": 21876234,
+    "total": 22735125
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.721526000000002,
+   "turns": 138,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 66,
+    "production_turns": 72,
+    "context_tokens": 10873321,
+    "production_tokens": 11861804,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12685,16 +12709,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-18T11:40:42Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 214054,
+    "output": 14418,
+    "cache_creation": 213876,
+    "cache_read": 5348903,
+    "total": 5791251
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.9465274999999997,
+   "turns": 57,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 24,
+    "production_turns": 33,
+    "context_tokens": 2438421,
+    "production_tokens": 3352830,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12732,8 +12762,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T11:45:48Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 5.162196,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -12754,16 +12784,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-18T11:53:05Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 214497,
+    "output": 14098,
+    "cache_creation": 214373,
+    "cache_read": 3604322,
+    "total": 4047290
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5238140000000002,
+   "turns": 41,
    "split": {
-    "context_turns": 0,
+    "context_turns": 41,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 4047290,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -12777,16 +12813,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T11:53:33Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 230184,
+    "output": 13648,
+    "cache_creation": 230044,
+    "cache_read": 3925898,
+    "total": 4399774
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5157790000000002,
+   "turns": 47,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 26,
+    "production_turns": 21,
+    "context_tokens": 2433918,
+    "production_tokens": 1965856,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12892,16 +12934,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T12:11:15Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 177147,
+    "output": 8633,
+    "cache_creation": 177049,
+    "cache_read": 2556412,
+    "total": 2919241
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.1068625,
+   "turns": 31,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 13,
+    "production_turns": 18,
+    "context_tokens": 1224198,
+    "production_tokens": 1695043,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12915,16 +12963,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T12:13:46Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 204869,
+    "output": 11409,
+    "cache_creation": 204723,
+    "cache_read": 4423967,
+    "total": 4844968
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5615890000000001,
+   "turns": 48,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 29,
+    "production_turns": 19,
+    "context_tokens": 2927168,
+    "production_tokens": 1917800,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -12984,16 +13038,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T12:25:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 190500,
+    "output": 13554,
+    "cache_creation": 190312,
+    "cache_read": 5582264,
+    "total": 5976630
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.8803239999999997,
+   "turns": 59,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 20,
+    "production_turns": 39,
+    "context_tokens": 2025976,
+    "production_tokens": 3950654,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13007,16 +13067,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T12:25:51Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 248945,
+    "output": 17464,
+    "cache_creation": 248675,
+    "cache_read": 9308627,
+    "total": 9823711
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.5905290000000005,
+   "turns": 91,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 21,
+    "production_turns": 70,
+    "context_tokens": 2267010,
+    "production_tokens": 7556701,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13168,16 +13234,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T12:54:00Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 300030,
+    "output": 21367,
+    "cache_creation": 299772,
+    "cache_read": 10058076,
+    "total": 10679245
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.2576014999999994,
+   "turns": 81,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 58,
+    "context_tokens": 3032378,
+    "production_tokens": 7646867,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13191,16 +13263,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T12:55:04Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 977691,
+    "output": 144858,
+    "cache_creation": 976297,
+    "cache_read": 167924830,
+    "total": 170023676
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 43.04173449999999,
+   "turns": 404,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 43,
+    "production_turns": 361,
+    "context_tokens": 18096579,
+    "production_tokens": 151927097,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13214,16 +13292,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T12:56:05Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 736416,
+    "output": 137541,
+    "cache_creation": 735514,
+    "cache_read": 77417413,
+    "total": 79026884
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 21.84079099999999,
+   "turns": 271,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 35,
+    "production_turns": 236,
+    "context_tokens": 10206424,
+    "production_tokens": 68820460,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13237,16 +13321,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T12:57:50Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 471335,
+    "output": 60148,
+    "cache_creation": 470667,
+    "cache_read": 39446882,
+    "total": 40449032
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 10.808725500000001,
+   "turns": 204,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 22,
+    "production_turns": 182,
+    "context_tokens": 4362151,
+    "production_tokens": 36086881,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13283,16 +13373,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T13:25:49Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 393274,
+    "output": 45127,
+    "cache_creation": 392896,
+    "cache_read": 19021161,
+    "total": 19852458
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.110231999999998,
+   "turns": 116,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 33,
+    "production_turns": 83,
+    "context_tokens": 5647682,
+    "production_tokens": 14204776,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13381,16 +13477,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T14:13:46Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 174280,
+    "output": 10077,
+    "cache_creation": 174150,
+    "cache_read": 3587499,
+    "total": 3946006
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.3884050000000003,
+   "turns": 40,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 21,
+    "production_turns": 19,
+    "context_tokens": 2071653,
+    "production_tokens": 1874353,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13404,16 +13506,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T14:14:10Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 287219,
+    "output": 27920,
+    "cache_creation": 286959,
+    "cache_read": 10516319,
+    "total": 11118417
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.6004310000000004,
+   "turns": 80,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 61,
+    "context_tokens": 2640624,
+    "production_tokens": 8477793,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13427,16 +13535,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T14:14:30Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 286178,
+    "output": 21573,
+    "cache_creation": 285970,
+    "cache_read": 8538898,
+    "total": 9132619
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.888233000000001,
+   "turns": 66,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 43,
+    "context_tokens": 3182579,
+    "production_tokens": 5950040,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13450,16 +13564,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T14:14:45Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 688895,
+    "output": 98622,
+    "cache_creation": 688043,
+    "cache_read": 70464211,
+    "total": 71939771
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 19.673367500000015,
+   "turns": 250,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 36,
+    "production_turns": 214,
+    "context_tokens": 10359327,
+    "production_tokens": 61580444,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13589,16 +13709,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T14:43:10Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 393560,
+    "output": 30764,
+    "cache_creation": 393168,
+    "cache_read": 17949028,
+    "total": 18766520
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.194322000000001,
+   "turns": 123,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 100,
+    "context_tokens": 3509187,
+    "production_tokens": 15257333,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13641,16 +13767,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T14:46:32Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 187629,
+    "output": 10996,
+    "cache_creation": 187493,
+    "cache_read": 4012446,
+    "total": 4398564
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5407849999999998,
+   "turns": 42,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 23,
+    "context_tokens": 1989827,
+    "production_tokens": 2408737,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13664,16 +13796,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T14:48:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 633807,
+    "output": 76270,
+    "cache_creation": 633147,
+    "cache_read": 48622672,
+    "total": 49965896
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 13.554071,
+   "turns": 203,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 59,
+    "production_turns": 144,
+    "context_tokens": 14522108,
+    "production_tokens": 35443788,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13716,16 +13854,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T14:57:06Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 756429,
+    "output": 125610,
+    "cache_creation": 755545,
+    "cache_read": 74682925,
+    "total": 76320509
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 21.285266000000007,
+   "turns": 260,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 44,
+    "production_turns": 216,
+    "context_tokens": 12915778,
+    "production_tokens": 63404731,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13797,16 +13941,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T15:22:59Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 200666,
+    "output": 9428,
+    "cache_creation": 200526,
+    "cache_read": 4278118,
+    "total": 4688738
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5204374999999999,
+   "turns": 45,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 22,
+    "context_tokens": 2396466,
+    "production_tokens": 2292272,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13820,16 +13970,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:27:30Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 494528,
+    "output": 62594,
+    "cache_creation": 493850,
+    "cache_read": 41683234,
+    "total": 42734206
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 11.793631000000001,
+   "turns": 202,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 55,
+    "production_turns": 147,
+    "context_tokens": 11635551,
+    "production_tokens": 31098655,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13843,16 +13999,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:28:33Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 666576,
+    "output": 108819,
+    "cache_creation": 665852,
+    "cache_read": 59568757,
+    "total": 61010004
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 17.3133015,
+   "turns": 215,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 42,
+    "production_turns": 173,
+    "context_tokens": 11918233,
+    "production_tokens": 49091771,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13866,16 +14028,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:29:25Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 735282,
+    "output": 105178,
+    "cache_creation": 734500,
+    "cache_read": 67901013,
+    "total": 69475973
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 18.966857000000008,
+   "turns": 234,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 33,
+    "production_turns": 201,
+    "context_tokens": 9797894,
+    "production_tokens": 59678079,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13889,16 +14057,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:30:34Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 1041923,
+    "output": 157004,
+    "cache_creation": 1040769,
+    "cache_read": 140737095,
+    "total": 142976791
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 35.3573495,
+   "turns": 352,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 72,
+    "production_turns": 280,
+    "context_tokens": 29245253,
+    "production_tokens": 113731538,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13912,16 +14086,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:32:53Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 892515,
+    "output": 127764,
+    "cache_creation": 891235,
+    "cache_read": 134893338,
+    "total": 136804852
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 34.083112,
+   "turns": 382,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 62,
+    "production_turns": 320,
+    "context_tokens": 22203929,
+    "production_tokens": 114600923,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13935,16 +14115,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:33:59Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 682729,
+    "output": 88856,
+    "cache_creation": 681925,
+    "cache_read": 63914260,
+    "total": 65367770
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 17.689055500000016,
+   "turns": 239,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 36,
+    "production_turns": 203,
+    "context_tokens": 9846191,
+    "production_tokens": 55521579,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -13958,16 +14144,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:39:02Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 491365,
+    "output": 66787,
+    "cache_creation": 490729,
+    "cache_read": 39247325,
+    "total": 40296206
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 11.0588905,
+   "turns": 194,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 41,
+    "production_turns": 153,
+    "context_tokens": 8516208,
+    "production_tokens": 31779998,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14068,16 +14260,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T15:55:28Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 290484,
+    "output": 14059,
+    "cache_creation": 290292,
+    "cache_read": 6785555,
+    "total": 7380390
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.2215855,
+   "turns": 62,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 26,
+    "production_turns": 36,
+    "context_tokens": 3095002,
+    "production_tokens": 4285388,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14091,16 +14289,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T15:55:38Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 188794,
+    "output": 13848,
+    "cache_creation": 188624,
+    "cache_read": 4811343,
+    "total": 5202609
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.7030194999999997,
+   "turns": 55,
    "split": {
-    "context_turns": 0,
+    "context_turns": 55,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5202609,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14114,16 +14318,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T15:56:43Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 331657,
+    "output": 29562,
+    "cache_creation": 331363,
+    "cache_read": 12362091,
+    "total": 13054673
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.045790499999998,
+   "turns": 93,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 41,
+    "production_turns": 52,
+    "context_tokens": 5755286,
+    "production_tokens": 7299387,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14137,16 +14347,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:00:36Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 298196,
+    "output": 20308,
+    "cache_creation": 297986,
+    "cache_read": 7401819,
+    "total": 8018309
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.4493925,
+   "turns": 70,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 54,
+    "context_tokens": 1832756,
+    "production_tokens": 6185553,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14277,8 +14493,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T16:32:04Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.4992079999999999,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -14328,16 +14544,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:32:09Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14351,16 +14573,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:34:39Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 268182,
+    "output": 23658,
+    "cache_creation": 267966,
+    "cache_read": 6487153,
+    "total": 7046959
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.1427704999999997,
+   "turns": 66,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 43,
+    "context_tokens": 2455758,
+    "production_tokens": 4591201,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14375,8 +14603,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T16:35:57Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 2.657037,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -14397,16 +14625,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:36:21Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14420,16 +14654,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:37:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14443,16 +14683,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:37:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 227814,
+    "output": 21005,
+    "cache_creation": 227574,
+    "cache_read": 7785223,
+    "total": 8261616
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.616311,
+   "turns": 74,
    "split": {
-    "context_turns": 0,
+    "context_turns": 74,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 8261616,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14466,16 +14712,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T16:37:22Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 407420,
+    "output": 38408,
+    "cache_creation": 406952,
+    "cache_read": 23248767,
+    "total": 24101547
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.7906895,
+   "turns": 144,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 25,
+    "production_turns": 119,
+    "context_tokens": 4184296,
+    "production_tokens": 19917251,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14489,16 +14741,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:37:49Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 363657,
+    "output": 37078,
+    "cache_creation": 363301,
+    "cache_read": 14477103,
+    "total": 15241139
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.5581225000000005,
+   "turns": 106,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 34,
+    "production_turns": 72,
+    "context_tokens": 4888667,
+    "production_tokens": 10352472,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14512,16 +14770,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:38:18Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 302039,
+    "output": 16097,
+    "cache_creation": 301837,
+    "cache_read": 7388371,
+    "total": 8008344
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.4617695000000004,
+   "turns": 64,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 25,
+    "production_turns": 39,
+    "context_tokens": 3128259,
+    "production_tokens": 4880085,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14535,16 +14799,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:39:01Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14558,16 +14828,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:39:35Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 283141,
+    "output": 54582,
+    "cache_creation": 282621,
+    "cache_read": 27294417,
+    "total": 27914761
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 7.935055500000003,
+   "turns": 153,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 31,
+    "production_turns": 122,
+    "context_tokens": 5655932,
+    "production_tokens": 22258829,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14582,8 +14858,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T16:40:25Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.6879229999999998,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -14633,16 +14909,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-18T16:44:24Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 368606,
+    "output": 32065,
+    "cache_creation": 368320,
+    "cache_read": 13684716,
+    "total": 14453707
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.4052215,
+   "turns": 91,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 57,
+    "production_turns": 34,
+    "context_tokens": 9053421,
+    "production_tokens": 5400286,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -14656,16 +14938,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:46:26Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14679,16 +14967,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:49:01Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14702,16 +14996,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T16:50:33Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14726,8 +15026,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T16:54:19Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 9.270247000000001,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -14830,8 +15130,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T17:07:24Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 3.6402780000000003,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -14968,16 +15268,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:28:40Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 244131,
+    "output": 31296,
+    "cache_creation": 243889,
+    "cache_read": 8006953,
+    "total": 8526269
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.6506179999999997,
+   "turns": 73,
    "split": {
-    "context_turns": 0,
+    "context_turns": 73,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 8526269,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -14991,16 +15297,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-18T17:29:58Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 602007,
+    "output": 85926,
+    "cache_creation": 601213,
+    "cache_read": 58159234,
+    "total": 59448380
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 16.172547999999995,
+   "turns": 237,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 47,
+    "production_turns": 190,
+    "context_tokens": 11789341,
+    "production_tokens": 47659039,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15014,16 +15326,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:31:43Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 297117,
+    "output": 31690,
+    "cache_creation": 296765,
+    "cache_read": 13384010,
+    "total": 14009582
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.9041805,
+   "turns": 115,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 15,
+    "production_turns": 100,
+    "context_tokens": 1827337,
+    "production_tokens": 12182245,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15037,16 +15355,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:32:03Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 487499,
+    "output": 60330,
+    "cache_creation": 486997,
+    "cache_read": 26746681,
+    "total": 27781507
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 7.7486714999999995,
+   "turns": 156,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 140,
+    "context_tokens": 2849385,
+    "production_tokens": 24932122,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15060,16 +15384,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:32:43Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -15083,16 +15413,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:33:08Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 194161,
+    "output": 11861,
+    "cache_creation": 194017,
+    "cache_read": 3787987,
+    "total": 4188026
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.454906,
+   "turns": 45,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 21,
+    "production_turns": 24,
+    "context_tokens": 1954412,
+    "production_tokens": 2233614,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15106,16 +15442,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:34:19Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -15129,16 +15471,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:34:39Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 219040,
+    "output": 16075,
+    "cache_creation": 218856,
+    "cache_read": 5881219,
+    "total": 6335190
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0800375,
+   "turns": 58,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 24,
+    "production_turns": 34,
+    "context_tokens": 2621458,
+    "production_tokens": 3713732,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15152,16 +15500,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T17:38:19Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 0
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 0.0,
+   "turns": 1,
    "split": {
-    "context_turns": 0,
+    "context_turns": 1,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 0,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -15176,8 +15530,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T17:42:04Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 18.376177000000006,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -15314,16 +15668,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-18T18:03:16Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 273506,
+    "output": 23456,
+    "cache_creation": 273264,
+    "cache_read": 9052968,
+    "total": 9623194
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.062792,
+   "turns": 76,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 29,
+    "production_turns": 47,
+    "context_tokens": 3672008,
+    "production_tokens": 5951186,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15337,16 +15697,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-18T18:11:01Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 229050,
+    "output": 14277,
+    "cache_creation": 228912,
+    "cache_read": 4326938,
+    "total": 4799177
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5881560000000003,
+   "turns": 48,
    "split": {
-    "context_turns": 0,
+    "context_turns": 48,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 4799177,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -15418,16 +15784,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:16:07Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 251416,
+    "output": 15198,
+    "cache_creation": 251238,
+    "cache_read": 5720145,
+    "total": 6237997
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0245714999999995,
+   "turns": 56,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 20,
+    "production_turns": 36,
+    "context_tokens": 2227856,
+    "production_tokens": 4010141,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15441,16 +15813,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:16:31Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 360260,
+    "output": 29643,
+    "cache_creation": 359978,
+    "cache_read": 14429627,
+    "total": 15179508
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.665405000000001,
+   "turns": 86,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 34,
+    "production_turns": 52,
+    "context_tokens": 6001201,
+    "production_tokens": 9178307,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15464,16 +15842,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:20:46Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 447719,
+    "output": 50113,
+    "cache_creation": 447121,
+    "cache_read": 34190505,
+    "total": 35135458
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.536509499999994,
+   "turns": 180,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 24,
+    "production_turns": 156,
+    "context_tokens": 4684728,
+    "production_tokens": 30450730,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15487,16 +15871,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:21:05Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 194788,
+    "output": 9975,
+    "cache_creation": 194654,
+    "cache_read": 4069366,
+    "total": 4468783
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.536798,
+   "turns": 41,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 25,
+    "context_tokens": 1743915,
+    "production_tokens": 2724868,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15539,16 +15929,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:34:32Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 310967,
+    "output": 18939,
+    "cache_creation": 310721,
+    "cache_read": 8945931,
+    "total": 9586558
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.9362069999999987,
+   "turns": 77,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 56,
+    "production_turns": 21,
+    "context_tokens": 6972042,
+    "production_tokens": 2614516,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15649,16 +16045,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:44:55Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 207273,
+    "output": 9158,
+    "cache_creation": 207171,
+    "cache_read": 3133779,
+    "total": 3557381
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.3243805,
+   "turns": 32,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 15,
+    "production_turns": 17,
+    "context_tokens": 1667522,
+    "production_tokens": 1889859,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15701,16 +16103,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T18:51:25Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 493107,
+    "output": 59520,
+    "cache_creation": 492557,
+    "cache_read": 32117081,
+    "total": 33162265
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.434374,
+   "turns": 166,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 25,
+    "production_turns": 141,
+    "context_tokens": 4994317,
+    "production_tokens": 28167948,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15869,16 +16277,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T19:07:44Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 524836,
+    "output": 61563,
+    "cache_creation": 524206,
+    "cache_read": 38693209,
+    "total": 39803814
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 10.532093000000003,
+   "turns": 197,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 18,
+    "production_turns": 179,
+    "context_tokens": 3636897,
+    "production_tokens": 36166917,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -15950,16 +16364,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T19:23:45Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 249429,
+    "output": 12459,
+    "cache_creation": 249261,
+    "cache_read": 6060264,
+    "total": 6571413
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0733055,
+   "turns": 53,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 26,
+    "production_turns": 27,
+    "context_tokens": 3223712,
+    "production_tokens": 3347701,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16089,16 +16509,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T19:43:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 617242,
+    "output": 77299,
+    "cache_creation": 616398,
+    "cache_read": 66026979,
+    "total": 67337918
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 17.639925500000004,
+   "turns": 250,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 20,
+    "production_turns": 230,
+    "context_tokens": 5387033,
+    "production_tokens": 61950885,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16430,16 +16856,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T23:15:04Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 316781,
+    "output": 30732,
+    "cache_creation": 316425,
+    "cache_read": 14657951,
+    "total": 15321889
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.432683000000001,
+   "turns": 112,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 29,
+    "production_turns": 83,
+    "context_tokens": 3967275,
+    "production_tokens": 11354614,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16453,16 +16885,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T23:15:05Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 569501,
+    "output": 79243,
+    "cache_creation": 568709,
+    "cache_read": 57345415,
+    "total": 58562868
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 15.725288500000005,
+   "turns": 235,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 63,
+    "production_turns": 172,
+    "context_tokens": 15699833,
+    "production_tokens": 42863035,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16476,16 +16914,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T23:15:06Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 507229,
+    "output": 51902,
+    "cache_creation": 506779,
+    "cache_read": 28016357,
+    "total": 29082267
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 8.186288,
+   "turns": 140,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 36,
+    "production_turns": 104,
+    "context_tokens": 7478297,
+    "production_tokens": 21603970,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16499,16 +16943,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-18T23:15:10Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 721694,
+    "output": 82828,
+    "cache_creation": 721158,
+    "cache_read": 46834245,
+    "total": 48359925
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 13.662821999999997,
+   "turns": 164,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 62,
+    "production_turns": 102,
+    "context_tokens": 18282411,
+    "production_tokens": 30077514,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16551,16 +17001,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T23:22:10Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 392529,
+    "output": 27017,
+    "cache_creation": 392179,
+    "cache_read": 17902828,
+    "total": 18714553
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.087368499999999,
+   "turns": 111,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 92,
+    "context_tokens": 3203392,
+    "production_tokens": 15511161,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16574,16 +17030,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T23:22:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 335959,
+    "output": 27795,
+    "cache_creation": 335587,
+    "cache_read": 16888548,
+    "total": 17587889
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.9117049999999995,
+   "turns": 115,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 96,
+    "context_tokens": 2905825,
+    "production_tokens": 14682064,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16597,16 +17059,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-18T23:30:15Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 476565,
+    "output": 61599,
+    "cache_creation": 475971,
+    "cache_read": 34469170,
+    "total": 35483305
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.910226500000002,
+   "turns": 181,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 43,
+    "production_turns": 138,
+    "context_tokens": 8429735,
+    "production_tokens": 27053570,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16678,16 +17146,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-18T23:35:23Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 6,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 6
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.7689380000000003,
+   "turns": 79,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 39,
+    "production_turns": 40,
+    "context_tokens": 3,
+    "production_tokens": 3,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16701,16 +17175,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-18T23:36:46Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 411095,
+    "output": 43976,
+    "cache_creation": 410715,
+    "cache_read": 18472717,
+    "total": 19338503
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.614202999999999,
+   "turns": 123,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 83,
+    "context_tokens": 6288944,
+    "production_tokens": 13049559,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16782,16 +17262,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-18T23:43:37Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 6,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 6
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 11.492901500000004,
+   "turns": 177,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 13,
+    "production_turns": 164,
+    "context_tokens": 0,
+    "production_tokens": 6,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16834,16 +17320,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-18T23:52:46Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 514280,
+    "output": 73110,
+    "cache_creation": 513588,
+    "cache_read": 45465339,
+    "total": 46566317
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 12.512211500000005,
+   "turns": 212,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 62,
+    "production_turns": 150,
+    "context_tokens": 13618451,
+    "production_tokens": 32947866,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16857,16 +17349,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-18T23:54:23Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 342163,
+    "output": 26175,
+    "cache_creation": 341907,
+    "cache_read": 10694812,
+    "total": 11405057
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.4435555,
+   "turns": 84,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 20,
+    "production_turns": 64,
+    "context_tokens": 2715490,
+    "production_tokens": 8689567,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -16881,8 +17379,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-18T23:56:26Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.1477319999999998,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -16990,16 +17488,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-19T00:06:56Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 315428,
+    "output": 26291,
+    "cache_creation": 315194,
+    "cache_read": 8855194,
+    "total": 9512107
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.0526384999999996,
+   "turns": 78,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 46,
+    "production_turns": 32,
+    "context_tokens": 5609704,
+    "production_tokens": 3902403,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17042,16 +17546,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T00:14:13Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 388662,
+    "output": 30161,
+    "cache_creation": 388292,
+    "cache_read": 17977163,
+    "total": 18784278
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.314385999999998,
+   "turns": 115,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 25,
+    "production_turns": 90,
+    "context_tokens": 4083539,
+    "production_tokens": 14700739,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17123,16 +17633,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T00:19:25Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 352421,
+    "output": 24771,
+    "cache_creation": 352151,
+    "cache_read": 12633947,
+    "total": 13363290
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.7615000000000003,
+   "turns": 88,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 29,
+    "production_turns": 59,
+    "context_tokens": 4403811,
+    "production_tokens": 8959479,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17146,16 +17662,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T00:19:41Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 0,
+    "output": 6,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "total": 6
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.4369195,
+   "turns": 85,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 45,
+    "production_turns": 40,
+    "context_tokens": 3,
+    "production_tokens": 3,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17169,16 +17691,22 @@
    "step_number": 33,
    "kind": "self-heal",
    "started_at": "2026-08-19T00:20:34Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 290745,
+    "output": 33250,
+    "cache_creation": 290475,
+    "cache_read": 10079264,
+    "total": 10693734
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.3388500000000003,
+   "turns": 90,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 50,
+    "context_tokens": 4752771,
+    "production_tokens": 5940963,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17279,16 +17807,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T00:31:00Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 576380,
+    "output": 83140,
+    "cache_creation": 575554,
+    "cache_read": 55775108,
+    "total": 57010182
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 14.719057999999997,
+   "turns": 254,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 18,
+    "production_turns": 236,
+    "context_tokens": 4040092,
+    "production_tokens": 52970090,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17302,16 +17836,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T00:37:23Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 268329,
+    "output": 23486,
+    "cache_creation": 268075,
+    "cache_read": 9561144,
+    "total": 10121034
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.1664614999999996,
+   "turns": 79,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 22,
+    "production_turns": 57,
+    "context_tokens": 2818516,
+    "production_tokens": 7302518,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17615,16 +18155,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T00:59:24Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 353330,
+    "output": 21807,
+    "cache_creation": 353060,
+    "cache_read": 12924836,
+    "total": 13653033
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.0749414999999996,
+   "turns": 82,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 59,
+    "context_tokens": 3829509,
+    "production_tokens": 9823524,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17638,16 +18184,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T01:01:34Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 224812,
+    "output": 14979,
+    "cache_creation": 224642,
+    "cache_read": 5618090,
+    "total": 6082523
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0784415,
+   "turns": 52,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 22,
+    "production_turns": 30,
+    "context_tokens": 2573375,
+    "production_tokens": 3509148,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17719,16 +18271,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-19T01:16:48Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 825752,
+    "output": 107717,
+    "cache_creation": 824904,
+    "cache_read": 87167551,
+    "total": 88925924
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 23.62235349999999,
+   "turns": 252,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 52,
+    "production_turns": 200,
+    "context_tokens": 18349794,
+    "production_tokens": 70576130,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17742,16 +18300,22 @@
    "step_number": 15,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T01:19:08Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 556695,
+    "output": 62802,
+    "cache_creation": 556147,
+    "cache_read": 36283323,
+    "total": 37458967
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 10.124756499999997,
+   "turns": 173,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 87,
+    "production_turns": 86,
+    "context_tokens": 18837746,
+    "production_tokens": 18621221,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17794,16 +18358,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T01:20:07Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 379835,
+    "output": 36133,
+    "cache_creation": 379357,
+    "cache_read": 22695142,
+    "total": 23490467
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.192324000000002,
+   "turns": 151,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 30,
+    "production_turns": 121,
+    "context_tokens": 4666980,
+    "production_tokens": 18823487,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17904,16 +18474,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-19T01:30:31Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 544645,
+    "output": 75682,
+    "cache_creation": 544141,
+    "cache_read": 30400110,
+    "total": 31564578
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.261127999999998,
+   "turns": 160,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 37,
+    "production_turns": 123,
+    "context_tokens": 7299309,
+    "production_tokens": 24265269,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -17927,16 +18503,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T01:31:54Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 373289,
+    "output": 28807,
+    "cache_creation": 373007,
+    "cache_read": 12622945,
+    "total": 13398048
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.098469,
+   "turns": 88,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 27,
+    "production_turns": 61,
+    "context_tokens": 4110765,
+    "production_tokens": 9287283,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18067,8 +18649,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-19T01:58:22Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 3.3398990000000004,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -18089,16 +18671,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T02:02:41Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 447438,
+    "output": 33453,
+    "cache_creation": 447082,
+    "cache_read": 18439299,
+    "total": 19367272
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.5310395,
+   "turns": 111,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 32,
+    "production_turns": 79,
+    "context_tokens": 5583358,
+    "production_tokens": 13783914,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18141,16 +18729,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T02:12:49Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 189563,
+    "output": 12588,
+    "cache_creation": 189409,
+    "cache_read": 4387554,
+    "total": 4779114
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.5954800000000005,
+   "turns": 49,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 17,
+    "production_turns": 32,
+    "context_tokens": 1658060,
+    "production_tokens": 3121054,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18367,16 +18961,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-19T02:29:16Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 1126654,
+    "output": 87916,
+    "cache_creation": 1125938,
+    "cache_read": 59179067,
+    "total": 61519575
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 18.374622249999998,
+   "turns": 217,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 62,
+    "production_turns": 155,
+    "context_tokens": 17577021,
+    "production_tokens": 43942554,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18390,16 +18990,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T02:29:38Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 259941,
+    "output": 13931,
+    "cache_creation": 259811,
+    "cache_read": 4643691,
+    "total": 5177374
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.8435055,
+   "turns": 42,
    "split": {
-    "context_turns": 0,
+    "context_turns": 42,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5177374,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -18413,16 +19019,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-19T02:30:28Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 293804,
+    "output": 21550,
+    "cache_creation": 293576,
+    "cache_read": 8310999,
+    "total": 8919929
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.7682644999999995,
+   "turns": 75,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 62,
+    "production_turns": 13,
+    "context_tokens": 7373808,
+    "production_tokens": 1546121,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18436,16 +19048,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T02:40:28Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 1125386,
+    "output": 92865,
+    "cache_creation": 1124760,
+    "cache_read": 49400766,
+    "total": 51743777
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 14.622549,
+   "turns": 200,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 160,
+    "context_tokens": 10348755,
+    "production_tokens": 41395022,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18459,16 +19077,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T02:43:36Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 338292,
+    "output": 11296,
+    "cache_creation": 338154,
+    "cache_read": 3937474,
+    "total": 4625216
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.955505,
+   "turns": 43,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 14,
+    "production_turns": 29,
+    "context_tokens": 1505884,
+    "production_tokens": 3119332,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18569,16 +19193,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T02:57:58Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 382235,
+    "output": 41742,
+    "cache_creation": 381919,
+    "cache_read": 15253550,
+    "total": 16059446
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.989992,
+   "turns": 100,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 27,
+    "production_turns": 73,
+    "context_tokens": 4336050,
+    "production_tokens": 11723396,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18737,16 +19367,22 @@
    "step_number": 19,
    "kind": "review-fix",
    "started_at": "2026-08-19T03:14:04Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 416438,
+    "output": 36370,
+    "cache_creation": 416014,
+    "cache_read": 22150359,
+    "total": 23019181
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.381922499999996,
+   "turns": 132,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 31,
+    "production_turns": 101,
+    "context_tokens": 5406020,
+    "production_tokens": 17613161,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18934,16 +19570,22 @@
    "step_number": 22,
    "kind": "implement",
    "started_at": "2026-08-19T03:32:29Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 710516,
+    "output": 91957,
+    "cache_creation": 709602,
+    "cache_read": 74435048,
+    "total": 75947123
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 19.58401449999999,
+   "turns": 278,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 61,
+    "production_turns": 217,
+    "context_tokens": 16664656,
+    "production_tokens": 59282467,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -18986,16 +19628,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T03:40:13Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 374406,
+    "output": 13931,
+    "cache_creation": 374252,
+    "cache_read": 6460342,
+    "total": 7222931
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.443698,
+   "turns": 48,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 32,
+    "context_tokens": 2407644,
+    "production_tokens": 4815287,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19009,16 +19657,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T03:44:13Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 238388,
+    "output": 16723,
+    "cache_creation": 238168,
+    "cache_read": 7334637,
+    "total": 7827916
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.3347279999999997,
+   "turns": 72,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 32,
+    "production_turns": 40,
+    "context_tokens": 3479074,
+    "production_tokens": 4348842,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19119,16 +19773,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T03:58:19Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 355127,
+    "output": 13387,
+    "cache_creation": 354997,
+    "cache_read": 5290868,
+    "total": 6014379
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0822304999999997,
+   "turns": 41,
    "split": {
-    "context_turns": 0,
+    "context_turns": 41,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 6014379,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -19229,16 +19889,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T04:27:40Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 227796,
+    "output": 16157,
+    "cache_creation": 227582,
+    "cache_read": 7337983,
+    "total": 7809518
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.4791930000000004,
+   "turns": 65,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 27,
+    "production_turns": 38,
+    "context_tokens": 3243954,
+    "production_tokens": 4565564,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19252,16 +19918,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T04:34:09Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 464509,
+    "output": 47906,
+    "cache_creation": 464089,
+    "cache_read": 22004665,
+    "total": 22981169
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.632411000000001,
+   "turns": 133,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 57,
+    "production_turns": 76,
+    "context_tokens": 9849072,
+    "production_tokens": 13132097,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19333,16 +20005,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T04:39:23Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 454788,
+    "output": 57779,
+    "cache_creation": 454386,
+    "cache_read": 20882526,
+    "total": 21849479
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.633928499999999,
+   "turns": 130,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 45,
+    "production_turns": 85,
+    "context_tokens": 7563281,
+    "production_tokens": 14286198,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19408,16 +20086,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T04:42:40Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 793111,
+    "output": 108575,
+    "cache_creation": 792263,
+    "cache_read": 80114286,
+    "total": 81808235
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 21.443514499999992,
+   "turns": 255,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 44,
+    "production_turns": 211,
+    "context_tokens": 14115931,
+    "production_tokens": 67692304,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19541,16 +20225,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T04:57:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 749874,
+    "output": 105065,
+    "cache_creation": 749234,
+    "cache_read": 55008987,
+    "total": 56613160
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 15.512495999999999,
+   "turns": 201,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 53,
+    "production_turns": 148,
+    "context_tokens": 14927848,
+    "production_tokens": 41685312,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19732,16 +20422,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T05:19:47Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 416913,
+    "output": 30265,
+    "cache_creation": 416675,
+    "cache_read": 12287659,
+    "total": 13151512
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.8729440000000013,
+   "turns": 80,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 38,
+    "production_turns": 42,
+    "context_tokens": 6246968,
+    "production_tokens": 6904544,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19784,16 +20480,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T05:26:27Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 892608,
+    "output": 108272,
+    "cache_creation": 891670,
+    "cache_read": 101020611,
+    "total": 102913161
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 27.014578000000004,
+   "turns": 275,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 57,
+    "production_turns": 218,
+    "context_tokens": 21331092,
+    "production_tokens": 81582069,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19830,16 +20532,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T05:28:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 315911,
+    "output": 32209,
+    "cache_creation": 315527,
+    "cache_read": 15037051,
+    "total": 15700698
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.3732999999999995,
+   "turns": 125,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 17,
+    "production_turns": 108,
+    "context_tokens": 2135295,
+    "production_tokens": 13565403,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19940,16 +20648,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T05:42:11Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 395551,
+    "output": 21433,
+    "cache_creation": 395317,
+    "cache_read": 11603841,
+    "total": 12416142
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.4365840000000016,
+   "turns": 79,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 65,
+    "production_turns": 14,
+    "context_tokens": 10215813,
+    "production_tokens": 2200329,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -19992,16 +20706,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T05:47:42Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 469003,
+    "output": 55945,
+    "cache_creation": 468545,
+    "cache_read": 26197153,
+    "total": 27190646
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 7.732934499999997,
+   "turns": 145,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 105,
+    "context_tokens": 7500868,
+    "production_tokens": 19689778,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20015,16 +20735,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T05:54:17Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 267831,
+    "output": 23828,
+    "cache_creation": 267529,
+    "cache_read": 11315495,
+    "total": 11874683
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.498038999999999,
+   "turns": 94,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 21,
+    "production_turns": 73,
+    "context_tokens": 2652855,
+    "production_tokens": 9221828,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20125,16 +20851,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:16:47Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 383718,
+    "output": 8663,
+    "cache_creation": 383614,
+    "cache_read": 4482879,
+    "total": 5258874
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.8790744999999998,
+   "turns": 32,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 14,
+    "production_turns": 18,
+    "context_tokens": 2300757,
+    "production_tokens": 2958117,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20177,16 +20909,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:18:39Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 499960,
+    "output": 51018,
+    "cache_creation": 499580,
+    "cache_read": 22575229,
+    "total": 23625787
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.943370000000001,
+   "turns": 119,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 32,
+    "production_turns": 87,
+    "context_tokens": 6353153,
+    "production_tokens": 17272634,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20229,16 +20967,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:20:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 239857,
+    "output": 13439,
+    "cache_creation": 239727,
+    "cache_read": 4370927,
+    "total": 4863950
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.6861930000000003,
+   "turns": 43,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 27,
+    "context_tokens": 1809842,
+    "production_tokens": 3054108,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20252,16 +20996,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T06:21:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 281612,
+    "output": 8938,
+    "cache_creation": 281528,
+    "cache_read": 2253734,
+    "total": 2825812
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.8619825,
+   "turns": 30,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 24,
+    "production_turns": 6,
+    "context_tokens": 2260650,
+    "production_tokens": 565162,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20275,16 +21025,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T06:23:33Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 235507,
+    "output": 147,
+    "cache_creation": 235411,
+    "cache_read": 2597682,
+    "total": 3068747
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 48,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 47,
+    "production_turns": 1,
+    "context_tokens": 3004815,
+    "production_tokens": 63932,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20356,16 +21112,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T06:26:45Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 266433,
+    "output": 9737,
+    "cache_creation": 266369,
+    "cache_read": 1518975,
+    "total": 2061514
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.5288755,
+   "turns": 24,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 21,
+    "production_turns": 3,
+    "context_tokens": 1803825,
+    "production_tokens": 257689,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20379,16 +21141,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T06:26:55Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 240379,
+    "output": 20817,
+    "cache_creation": 240207,
+    "cache_read": 4550357,
+    "total": 5051760
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 2.128893,
+   "turns": 47,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 45,
+    "production_turns": 2,
+    "context_tokens": 4836791,
+    "production_tokens": 214969,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20431,16 +21199,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T06:29:13Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 195238,
+    "output": 5896,
+    "cache_creation": 195194,
+    "cache_read": 880443,
+    "total": 1276771
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.073205,
+   "turns": 16,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 14,
+    "production_turns": 2,
+    "context_tokens": 1117175,
+    "production_tokens": 159596,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20454,16 +21228,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T06:30:41Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 155179,
+    "output": 5565,
+    "cache_creation": 155117,
+    "cache_read": 1293195,
+    "total": 1609056
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.1300904999999999,
+   "turns": 22,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 3,
+    "context_tokens": 1389639,
+    "production_tokens": 219417,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20477,16 +21257,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:33:06Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 250140,
+    "output": 16524,
+    "cache_creation": 249962,
+    "cache_read": 6581339,
+    "total": 7097965
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.3937519999999997,
+   "turns": 54,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 35,
+    "context_tokens": 2497432,
+    "production_tokens": 4600533,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20500,16 +21286,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T06:33:26Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 259284,
+    "output": 131,
+    "cache_creation": 259242,
+    "cache_read": 1055101,
+    "total": 1573758
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 21,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 20,
+    "production_turns": 1,
+    "context_tokens": 1498817,
+    "production_tokens": 74941,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20523,16 +21315,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T06:35:17Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 222904,
+    "output": 6029,
+    "cache_creation": 222858,
+    "cache_read": 1103059,
+    "total": 1554850
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.8330425000000001,
+   "turns": 14,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 13,
+    "production_turns": 1,
+    "context_tokens": 1443789,
+    "production_tokens": 111061,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20575,16 +21373,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T06:36:18Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 138183,
+    "output": 3882,
+    "cache_creation": 138143,
+    "cache_read": 717346,
+    "total": 997554
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 0.8382265,
+   "turns": 15,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 14,
+    "production_turns": 1,
+    "context_tokens": 931050,
+    "production_tokens": 66504,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20598,16 +21402,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:38:00Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 348302,
+    "output": 6962,
+    "cache_creation": 348240,
+    "cache_read": 2667700,
+    "total": 3371204
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.439266,
+   "turns": 21,
    "split": {
-    "context_turns": 0,
+    "context_turns": 21,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 3371204,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -20650,16 +21460,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:54:41Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 305538,
+    "output": 19785,
+    "cache_creation": 305300,
+    "cache_read": 9911525,
+    "total": 10542148
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.086932000000001,
+   "turns": 77,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 42,
+    "production_turns": 35,
+    "context_tokens": 5750263,
+    "production_tokens": 4791885,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20673,16 +21489,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T06:55:55Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 720218,
+    "output": 117404,
+    "cache_creation": 719294,
+    "cache_read": 75389052,
+    "total": 76945968
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 20.7584705,
+   "turns": 278,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 45,
+    "production_turns": 233,
+    "context_tokens": 12455283,
+    "production_tokens": 64490685,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20841,16 +21663,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T07:51:05Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 368281,
+    "output": 13451,
+    "cache_creation": 368147,
+    "cache_read": 6519342,
+    "total": 7269221
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.440763000000001,
+   "turns": 43,
    "split": {
-    "context_turns": 0,
+    "context_turns": 43,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 7269221,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -20893,16 +21721,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T08:11:34Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 315226,
+    "output": 13986,
+    "cache_creation": 315118,
+    "cache_read": 3613812,
+    "total": 4258142
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 2.747583,
+   "turns": 38,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 35,
+    "production_turns": 3,
+    "context_tokens": 3921973,
+    "production_tokens": 336169,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20916,16 +21750,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T08:16:19Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 166557,
+    "output": 60,
+    "cache_creation": 166527,
+    "cache_read": 483618,
+    "total": 816762
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 15,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 14,
+    "production_turns": 1,
+    "context_tokens": 762311,
+    "production_tokens": 54451,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20939,16 +21779,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T08:17:32Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 208778,
+    "output": 9879,
+    "cache_creation": 208716,
+    "cache_read": 1264490,
+    "total": 1691863
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.022005,
+   "turns": 18,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 2,
+    "context_tokens": 1503878,
+    "production_tokens": 187985,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -20991,16 +21837,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T08:19:11Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 384604,
+    "output": 41146,
+    "cache_creation": 384230,
+    "cache_read": 19045517,
+    "total": 19855497
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.948069000000001,
+   "turns": 114,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 33,
+    "production_turns": 81,
+    "context_tokens": 5747644,
+    "production_tokens": 14107853,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21014,16 +21866,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T08:27:02Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 368105,
+    "output": 11602,
+    "cache_creation": 367979,
+    "cache_read": 6218979,
+    "total": 6966665
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.408613,
+   "turns": 39,
    "split": {
-    "context_turns": 0,
+    "context_turns": 39,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 6966665,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -21118,16 +21976,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T08:44:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 396058,
+    "output": 34388,
+    "cache_creation": 395740,
+    "cache_read": 16682563,
+    "total": 17508749
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.338549,
+   "turns": 97,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 34,
+    "production_turns": 63,
+    "context_tokens": 6137087,
+    "production_tokens": 11371662,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21257,16 +22121,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T09:26:35Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 579219,
+    "output": 53147,
+    "cache_creation": 578707,
+    "cache_read": 35307444,
+    "total": 36518517
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.545797000000002,
+   "turns": 162,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 105,
+    "production_turns": 57,
+    "context_tokens": 23669409,
+    "production_tokens": 12849108,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21332,16 +22202,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T10:13:15Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 435590,
+    "output": 18415,
+    "cache_creation": 435436,
+    "cache_read": 8447584,
+    "total": 9337025
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.9215319999999996,
+   "turns": 52,
    "split": {
-    "context_turns": 0,
+    "context_turns": 52,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 9337025,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -21355,16 +22231,22 @@
    "step_number": 30,
    "kind": "self-heal",
    "started_at": "2026-08-19T10:24:13Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 374659,
+    "output": 10839,
+    "cache_creation": 374571,
+    "cache_read": 4320213,
+    "total": 5080282
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.9294345000000004,
+   "turns": 29,
    "split": {
-    "context_turns": 0,
+    "context_turns": 29,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5080282,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -21407,16 +22289,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T10:40:25Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 427787,
+    "output": 20005,
+    "cache_creation": 427541,
+    "cache_read": 13974443,
+    "total": 14849776
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.314204499999999,
+   "turns": 76,
    "split": {
-    "context_turns": 0,
+    "context_turns": 76,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 14849776,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -21430,16 +22318,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T11:25:13Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 405516,
+    "output": 16833,
+    "cache_creation": 405368,
+    "cache_read": 7698628,
+    "total": 8526345
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.6762789999999996,
+   "turns": 50,
    "split": {
-    "context_turns": 0,
+    "context_turns": 50,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 8526345,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -21505,16 +22399,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T16:24:01Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 747896,
+    "output": 103048,
+    "cache_creation": 747020,
+    "cache_read": 79906447,
+    "total": 81504411
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 21.136868999999994,
+   "turns": 265,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 51,
+    "production_turns": 214,
+    "context_tokens": 15685755,
+    "production_tokens": 65818656,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21528,16 +22428,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T16:24:53Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 490211,
+    "output": 71961,
+    "cache_creation": 489535,
+    "cache_read": 39416668,
+    "total": 40468375
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 11.210512499999998,
+   "turns": 207,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 27,
+    "production_turns": 180,
+    "context_tokens": 5278484,
+    "production_tokens": 35189891,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21551,16 +22457,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T16:26:11Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 554206,
+    "output": 39556,
+    "cache_creation": 553782,
+    "cache_read": 29335454,
+    "total": 30482998
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 8.392901000000002,
+   "turns": 130,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 53,
+    "production_turns": 77,
+    "context_tokens": 12427684,
+    "production_tokens": 18055314,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21574,16 +22486,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T16:26:54Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 477034,
+    "output": 59282,
+    "cache_creation": 476508,
+    "cache_read": 30052034,
+    "total": 31064858
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.1420015,
+   "turns": 159,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 37,
+    "production_turns": 122,
+    "context_tokens": 7228929,
+    "production_tokens": 23835929,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21597,16 +22515,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T16:27:31Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 848704,
+    "output": 103078,
+    "cache_creation": 847878,
+    "cache_read": 84809505,
+    "total": 86609165
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 22.3983725,
+   "turns": 250,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 47,
+    "production_turns": 203,
+    "context_tokens": 16282523,
+    "production_tokens": 70326642,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21620,16 +22544,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T16:28:08Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 1082502,
+    "output": 152623,
+    "cache_creation": 1081358,
+    "cache_read": 160632701,
+    "total": 162949184
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 41.778987499999985,
+   "turns": 333,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 58,
+    "production_turns": 275,
+    "context_tokens": 28381540,
+    "production_tokens": 134567644,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21672,16 +22602,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T16:40:07Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 738520,
+    "output": 101953,
+    "cache_creation": 737722,
+    "cache_read": 70519382,
+    "total": 72097577
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 19.472476999999998,
+   "turns": 238,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 45,
+    "production_turns": 193,
+    "context_tokens": 13631895,
+    "production_tokens": 58465682,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21695,16 +22631,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T16:41:28Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 259086,
+    "output": 23344,
+    "cache_creation": 258858,
+    "cache_read": 7783137,
+    "total": 8324425
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.5765985,
+   "turns": 76,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 46,
+    "production_turns": 30,
+    "context_tokens": 5038468,
+    "production_tokens": 3285957,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21718,16 +22660,22 @@
    "step_number": 30,
    "kind": "self-heal",
    "started_at": "2026-08-19T16:57:12Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 354584,
+    "output": 29431,
+    "cache_creation": 354320,
+    "cache_read": 10261594,
+    "total": 10999929
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.2207460000000006,
+   "turns": 92,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 48,
+    "production_turns": 44,
+    "context_tokens": 5739093,
+    "production_tokens": 5260836,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21938,16 +22886,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T17:25:03Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 376754,
+    "output": 34262,
+    "cache_creation": 376502,
+    "cache_read": 11308802,
+    "total": 12096320
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.1062520000000005,
+   "turns": 79,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 22,
+    "production_turns": 57,
+    "context_tokens": 3368595,
+    "production_tokens": 8727725,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -21991,8 +22945,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-19T17:27:40Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 4.1425815,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -22071,16 +23025,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T17:33:22Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 388705,
+    "output": 40273,
+    "cache_creation": 388203,
+    "cache_read": 25531917,
+    "total": 26349098
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 7.456060999999999,
+   "turns": 150,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 13,
+    "production_turns": 137,
+    "context_tokens": 2283588,
+    "production_tokens": 24065510,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22094,16 +23054,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T17:35:00Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 258008,
+    "output": 11268,
+    "cache_creation": 257842,
+    "cache_read": 6313717,
+    "total": 6840835
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.164390000000001,
+   "turns": 51,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 35,
+    "context_tokens": 2146144,
+    "production_tokens": 4694691,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22117,16 +23083,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T17:37:37Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 378187,
+    "output": 47761,
+    "cache_creation": 377617,
+    "cache_read": 26769294,
+    "total": 27572859
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 7.474357,
+   "turns": 178,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 25,
+    "production_turns": 153,
+    "context_tokens": 3872593,
+    "production_tokens": 23700266,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22169,16 +23141,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T17:44:02Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 334370,
+    "output": 30913,
+    "cache_creation": 333998,
+    "cache_read": 15632214,
+    "total": 16331495
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.676782,
+   "turns": 117,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 74,
+    "production_turns": 43,
+    "context_tokens": 10329322,
+    "production_tokens": 6002173,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22192,16 +23170,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T17:45:22Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 399719,
+    "output": 45088,
+    "cache_creation": 399295,
+    "cache_read": 20260788,
+    "total": 21104890
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.086238999999998,
+   "turns": 133,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 44,
+    "production_turns": 89,
+    "context_tokens": 6982069,
+    "production_tokens": 14122821,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22244,16 +23228,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T17:48:15Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 201096,
+    "output": 75,
+    "cache_creation": 201066,
+    "cache_read": 553479,
+    "total": 955716
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 15,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 14,
+    "production_turns": 1,
+    "context_tokens": 892002,
+    "production_tokens": 63714,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22267,16 +23257,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T17:50:37Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 199125,
+    "output": 54,
+    "cache_creation": 199101,
+    "cache_read": 373542,
+    "total": 771822
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 12,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 11,
+    "production_turns": 1,
+    "context_tokens": 707504,
+    "production_tokens": 64318,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22319,16 +23315,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T17:51:43Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 112982,
+    "output": 146,
+    "cache_creation": 112948,
+    "cache_read": 635980,
+    "total": 862056
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 17,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 1,
+    "context_tokens": 811347,
+    "production_tokens": 50709,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22371,16 +23373,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T17:57:03Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 321208,
+    "output": 23843,
+    "cache_creation": 320940,
+    "cache_read": 11203236,
+    "total": 11869227
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.5759625000000006,
+   "turns": 84,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 26,
+    "production_turns": 58,
+    "context_tokens": 3673808,
+    "production_tokens": 8195419,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22394,16 +23402,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T18:03:31Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 218869,
+    "output": 13024,
+    "cache_creation": 218697,
+    "cache_read": 5656390,
+    "total": 6106980
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0246144999999998,
+   "turns": 52,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 22,
+    "production_turns": 30,
+    "context_tokens": 2583722,
+    "production_tokens": 3523258,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22504,16 +23518,22 @@
    "step_number": 30,
    "kind": "self-heal",
    "started_at": "2026-08-19T18:20:06Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 413547,
+    "output": 29626,
+    "cache_creation": 413263,
+    "cache_read": 12808445,
+    "total": 13664881
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.8791785,
+   "turns": 96,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 60,
+    "production_turns": 36,
+    "context_tokens": 8540551,
+    "production_tokens": 5124330,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22527,16 +23547,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T18:22:16Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 253443,
+    "output": 17367,
+    "cache_creation": 253243,
+    "cache_read": 7018410,
+    "total": 7542463
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.4208035000000003,
+   "turns": 63,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 20,
+    "production_turns": 43,
+    "context_tokens": 2394433,
+    "production_tokens": 5148030,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22579,16 +23605,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T18:30:25Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 493636,
+    "output": 68592,
+    "cache_creation": 493028,
+    "cache_read": 36993390,
+    "total": 38048646
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 10.452849000000004,
+   "turns": 187,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 60,
+    "production_turns": 127,
+    "context_tokens": 12208122,
+    "production_tokens": 25840524,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22683,16 +23715,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T18:46:25Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 143851,
+    "output": 103,
+    "cache_creation": 143819,
+    "cache_read": 542239,
+    "total": 830012
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 16,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 15,
+    "production_turns": 1,
+    "context_tokens": 778136,
+    "production_tokens": 51876,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22706,16 +23744,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T18:49:04Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 245171,
+    "output": 14832,
+    "cache_creation": 245049,
+    "cache_read": 2758441,
+    "total": 3263493
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.8271760000000001,
+   "turns": 36,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 34,
+    "production_turns": 2,
+    "context_tokens": 3082188,
+    "production_tokens": 181305,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22729,16 +23773,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T18:52:47Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 146184,
+    "output": 5028,
+    "cache_creation": 146116,
+    "cache_read": 1466373,
+    "total": 1763701
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.197633,
+   "turns": 23,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 21,
+    "production_turns": 2,
+    "context_tokens": 1610336,
+    "production_tokens": 153365,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22804,16 +23854,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T19:06:48Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 220068,
+    "output": 375,
+    "cache_creation": 219972,
+    "cache_read": 2833964,
+    "total": 3274379
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 48,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 19,
+    "production_turns": 29,
+    "context_tokens": 1296108,
+    "production_tokens": 1978271,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22827,16 +23883,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T19:09:59Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 191823,
+    "output": 5984,
+    "cache_creation": 191763,
+    "cache_read": 1352856,
+    "total": 1742426
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.297401,
+   "turns": 20,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 18,
+    "production_turns": 2,
+    "context_tokens": 1568183,
+    "production_tokens": 174243,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22879,16 +23941,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T19:10:28Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 561948,
+    "output": 56860,
+    "cache_creation": 561448,
+    "cache_read": 28802099,
+    "total": 29982355
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 7.949002500000001,
+   "turns": 165,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 142,
+    "context_tokens": 4179359,
+    "production_tokens": 25802996,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -22902,16 +23970,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T19:11:31Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 140696,
+    "output": 6144,
+    "cache_creation": 140606,
+    "cache_read": 2192947,
+    "total": 2480393
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.6721835,
+   "turns": 28,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 26,
+    "production_turns": 2,
+    "context_tokens": 2303222,
+    "production_tokens": 177171,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23012,16 +24086,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T19:43:22Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 340326,
+    "output": 31565,
+    "cache_creation": 340064,
+    "cache_read": 11712138,
+    "total": 12424093
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.991215499999999,
+   "turns": 82,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 49,
+    "production_turns": 33,
+    "context_tokens": 7424153,
+    "production_tokens": 4999940,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23065,8 +24145,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-19T20:04:53Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.8236830000000002,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -23087,16 +24167,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T20:25:27Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 486413,
+    "output": 47706,
+    "cache_creation": 485921,
+    "cache_read": 28535395,
+    "total": 29555435
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 8.118130500000003,
+   "turns": 153,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 35,
+    "production_turns": 118,
+    "context_tokens": 6761047,
+    "production_tokens": 22794388,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23162,16 +24248,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-19T21:03:28Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 538043,
+    "output": 47388,
+    "cache_creation": 537643,
+    "cache_read": 27170920,
+    "total": 28293994
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 8.085647000000002,
+   "turns": 123,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 51,
+    "production_turns": 72,
+    "context_tokens": 11731656,
+    "production_tokens": 16562338,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23243,16 +24335,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-19T21:29:21Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 303324,
+    "output": 16523,
+    "cache_creation": 303178,
+    "cache_read": 6094881,
+    "total": 6717906
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.2728099999999993,
+   "turns": 47,
    "split": {
-    "context_turns": 0,
+    "context_turns": 47,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 6717906,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -23266,16 +24364,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-19T22:45:00Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 874299,
+    "output": 99268,
+    "cache_creation": 873759,
+    "cache_read": 57944367,
+    "total": 59791693
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 16.618725,
+   "turns": 165,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 125,
+    "context_tokens": 14494956,
+    "production_tokens": 45296737,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23318,16 +24422,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-20T21:24:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 969364,
+    "output": 130012,
+    "cache_creation": 968724,
+    "cache_read": 77752620,
+    "total": 79820720
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 21.690401,
+   "turns": 197,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 56,
+    "production_turns": 141,
+    "context_tokens": 22690154,
+    "production_tokens": 57130566,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23342,8 +24452,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-20T22:11:40Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 4.4661835000000005,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -23393,16 +24503,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-20T23:36:46Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 344675,
+    "output": 32574,
+    "cache_creation": 344291,
+    "cache_read": 17490028,
+    "total": 18211568
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 5.1251,
+   "turns": 121,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 64,
+    "production_turns": 57,
+    "context_tokens": 9632565,
+    "production_tokens": 8579003,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23445,16 +24561,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-21T00:16:57Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 496286,
+    "output": 70640,
+    "cache_creation": 495768,
+    "cache_read": 33225524,
+    "total": 34288218
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 9.941868499999998,
+   "turns": 158,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 30,
+    "production_turns": 128,
+    "context_tokens": 6510421,
+    "production_tokens": 27777797,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23526,16 +24648,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-21T00:56:44Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 648482,
+    "output": 111857,
+    "cache_creation": 647632,
+    "cache_read": 69519324,
+    "total": 70927295
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 19.510880500000006,
+   "turns": 252,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 52,
+    "production_turns": 200,
+    "context_tokens": 14635791,
+    "production_tokens": 56291504,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23549,16 +24677,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-21T01:03:38Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 592547,
+    "output": 73881,
+    "cache_creation": 591991,
+    "cache_read": 35570582,
+    "total": 36829001
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 10.000382500000002,
+   "turns": 181,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 141,
+    "context_tokens": 8139006,
+    "production_tokens": 28689995,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23659,16 +24793,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-21T02:03:39Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 265893,
+    "output": 19974,
+    "cache_creation": 265681,
+    "cache_read": 7670032,
+    "total": 8221580
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.5665240000000002,
+   "turns": 69,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 29,
+    "production_turns": 40,
+    "context_tokens": 3455447,
+    "production_tokens": 4766133,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23740,16 +24880,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-21T03:06:31Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 330122,
+    "output": 26304,
+    "cache_creation": 329812,
+    "cache_read": 13048513,
+    "total": 13734751
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.9493765000000005,
+   "turns": 100,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 41,
+    "production_turns": 59,
+    "context_tokens": 5631248,
+    "production_tokens": 8103503,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23786,16 +24932,22 @@
    "step_number": 30,
    "kind": "self-heal",
    "started_at": "2026-08-21T03:43:59Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 326627,
+    "output": 36483,
+    "cache_creation": 326317,
+    "cache_read": 12684664,
+    "total": 13374091
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.972052500000001,
+   "turns": 104,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 52,
+    "production_turns": 52,
+    "context_tokens": 6687046,
+    "production_tokens": 6687045,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -23838,16 +24990,22 @@
    "step_number": 30,
    "kind": "self-heal",
    "started_at": "2026-08-21T04:14:25Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 242229,
+    "output": 11643,
+    "cache_creation": 242079,
+    "cache_read": 4702914,
+    "total": 5198865
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.731431,
+   "turns": 50,
    "split": {
-    "context_turns": 0,
+    "context_turns": 50,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5198865,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -23890,16 +25048,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-22T17:08:14Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 956309,
+    "output": 146804,
+    "cache_creation": 955393,
+    "cache_read": 104879012,
+    "total": 106937518
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 28.609692999999996,
+   "turns": 273,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 46,
+    "production_turns": 227,
+    "context_tokens": 18018776,
+    "production_tokens": 88918742,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24029,16 +25193,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T18:32:30Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 302651,
+    "output": 27920,
+    "cache_creation": 302333,
+    "cache_read": 13082819,
+    "total": 13715723
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 4.170985000000002,
+   "turns": 97,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 38,
+    "production_turns": 59,
+    "context_tokens": 5373170,
+    "production_tokens": 8342553,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24081,16 +25251,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-22T18:36:47Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 278759,
+    "output": 16825,
+    "cache_creation": 278613,
+    "cache_read": 5330334,
+    "total": 5904531
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.0100919999999998,
+   "turns": 49,
    "split": {
-    "context_turns": 0,
+    "context_turns": 49,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5904531,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -24104,16 +25280,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T18:40:50Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 374364,
+    "output": 44239,
+    "cache_creation": 373958,
+    "cache_read": 19628431,
+    "total": 20420992
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.083502000000003,
+   "turns": 126,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 51,
+    "production_turns": 75,
+    "context_tokens": 8265640,
+    "production_tokens": 12155352,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24127,16 +25309,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-22T18:52:15Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 447236,
+    "output": 42089,
+    "cache_creation": 446888,
+    "cache_read": 19176127,
+    "total": 20112340
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 6.169440499999999,
+   "turns": 108,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 50,
+    "production_turns": 58,
+    "context_tokens": 9311269,
+    "production_tokens": 10801071,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24150,16 +25338,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T19:00:04Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 216172,
+    "output": 11975,
+    "cache_creation": 215966,
+    "cache_read": 5894697,
+    "total": 6338810
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.8896175,
+   "turns": 65,
    "split": {
-    "context_turns": 0,
+    "context_turns": 65,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 6338810,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -24260,16 +25454,22 @@
    "step_number": 14,
    "kind": "acceptance-fix",
    "started_at": "2026-08-22T19:16:20Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 315088,
+    "output": 17366,
+    "cache_creation": 314874,
+    "cache_read": 9137211,
+    "total": 9784539
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.9447240000000003,
+   "turns": 68,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 31,
+    "production_turns": 37,
+    "context_tokens": 4460599,
+    "production_tokens": 5323940,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24312,16 +25512,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T19:17:03Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 253752,
+    "output": 11814,
+    "cache_creation": 253586,
+    "cache_read": 4897733,
+    "total": 5416885
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.508895,
+   "turns": 60,
    "split": {
-    "context_turns": 0,
+    "context_turns": 60,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5416885,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -24393,16 +25599,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T19:20:53Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 177264,
+    "output": 13883,
+    "cache_creation": 177064,
+    "cache_read": 5540138,
+    "total": 5908349
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.8739839999999999,
+   "turns": 62,
    "split": {
-    "context_turns": 0,
+    "context_turns": 62,
     "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_tokens": 5908349,
+    "production_tokens": 0,
+    "source": "no-change"
    },
    "round": null,
    "kind_round": null
@@ -24416,16 +25628,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T19:21:02Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 226063,
+    "output": 16789,
+    "cache_creation": 225825,
+    "cache_read": 6642724,
+    "total": 7111401
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.9447540000000005,
+   "turns": 82,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 18,
+    "production_turns": 64,
+    "context_tokens": 1561039,
+    "production_tokens": 5550362,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24469,8 +25687,8 @@
    "kind": "self-heal",
    "started_at": "2026-08-22T19:24:22Z",
    "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
+   "model": "claude-fable-5",
+   "cost_usd_reported": 3.5637115000000006,
    "turns": 0,
    "split": {
     "context_turns": 0,
@@ -24491,16 +25709,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-22T19:25:04Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 446841,
+    "output": 59079,
+    "cache_creation": 446137,
+    "cache_read": 37751299,
+    "total": 38703356
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 10.479320999999995,
+   "turns": 213,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 190,
+    "context_tokens": 4179236,
+    "production_tokens": 34524120,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24514,16 +25738,22 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-22T19:26:56Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 247956,
+    "output": 9463,
+    "cache_creation": 247834,
+    "cache_read": 3213551,
+    "total": 3718804
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 2.3275629999999996,
+   "turns": 40,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 38,
+    "production_turns": 2,
+    "context_tokens": 3532864,
+    "production_tokens": 185940,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24537,16 +25767,22 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-22T19:29:32Z",
-   "tokens": null,
-   "model": null,
+   "tokens": {
+    "input": 169600,
+    "output": 225,
+    "cache_creation": 169520,
+    "cache_read": 1889141,
+    "total": 2228486
+   },
+   "model": "claude-fable-5",
    "cost_usd_reported": null,
-   "turns": 0,
+   "turns": 40,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 39,
+    "production_turns": 1,
+    "context_tokens": 2172774,
+    "production_tokens": 55712,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -24560,16 +25796,22 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-22T19:31:44Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 192207,
+    "output": 3919,
+    "cache_creation": 192159,
+    "cache_read": 1028988,
+    "total": 1417273
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 1.060566,
+   "turns": 17,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 15,
+    "production_turns": 2,
+    "context_tokens": 1250535,
+    "production_tokens": 166738,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -26265,16 +27507,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-24T01:49:43Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 449111,
+    "output": 52133,
+    "cache_creation": 448535,
+    "cache_read": 31278144,
+    "total": 32227923
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 8.254022,
+   "turns": 179,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 23,
+    "production_turns": 156,
+    "context_tokens": 4141018,
+    "production_tokens": 28086905,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -26288,16 +27536,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-24T02:13:53Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 344822,
+    "output": 35514,
+    "cache_creation": 344452,
+    "cache_read": 14831269,
+    "total": 15556057
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 3.9908147499999997,
+   "turns": 126,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 46,
+    "production_turns": 80,
+    "context_tokens": 5679195,
+    "production_tokens": 9876862,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -26340,16 +27594,22 @@
    "step_number": 21,
    "kind": "implement",
    "started_at": "2026-08-24T04:08:50Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 773192,
+    "output": 77247,
+    "cache_creation": 772652,
+    "cache_read": 53610948,
+    "total": 55234039
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 14.466853749999997,
+   "turns": 162,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 40,
+    "production_turns": 122,
+    "context_tokens": 13638034,
+    "production_tokens": 41596005,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -26363,16 +27623,22 @@
    "step_number": 31,
    "kind": "self-heal",
    "started_at": "2026-08-24T04:35:45Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 297855,
+    "output": 21443,
+    "cache_creation": 297615,
+    "cache_read": 8342339,
+    "total": 8959252
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 2.174919,
+   "turns": 88,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 60,
+    "production_turns": 28,
+    "context_tokens": 6108581,
+    "production_tokens": 2850671,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -26415,16 +27681,22 @@
    "step_number": 18,
    "kind": "review-fix",
    "started_at": "2026-08-25T01:27:41Z",
-   "tokens": null,
-   "model": null,
-   "cost_usd_reported": null,
-   "turns": 0,
+   "tokens": {
+    "input": 245970,
+    "output": 13064,
+    "cache_creation": 245832,
+    "cache_read": 4207502,
+    "total": 4712368
+   },
+   "model": "claude-opus-5",
+   "cost_usd_reported": 1.6265375000000002,
+   "turns": 44,
    "split": {
-    "context_turns": 0,
-    "production_turns": 0,
-    "context_tokens": null,
-    "production_tokens": null,
-    "source": "unknown"
+    "context_turns": 16,
+    "production_turns": 28,
+    "context_tokens": 1713588,
+    "production_tokens": 2998780,
+    "source": "turns"
    },
    "round": null,
    "kind_round": null
@@ -29896,19 +31168,19 @@
   "rounds": 1079,
   "issues": 152,
   "unattributed_rounds": 623,
-  "unattributed_tokens": 736955719,
+  "unattributed_tokens": 5689710061,
   "tokens": {
-   "input": 163684536,
-   "output": 3405368,
-   "cache_creation": 163640065,
-   "cache_read": 2416451539,
-   "total": 2747181508
+   "input": 244313935,
+   "output": 11465299,
+   "cache_creation": 244196044,
+   "cache_read": 7199960572,
+   "total": 7699935850
   },
   "context_tokens": 1992685189,
   "production_tokens": 17540600,
   "repeat_context_tokens": 1365525957,
-  "unknown_split_rounds": 793,
-  "unknown_token_rounds": 793,
+  "unknown_split_rounds": 581,
+  "unknown_token_rounds": 581,
   "multi_round_issues": 99,
   "context_pct": 99.1,
   "cost_usd": null,
