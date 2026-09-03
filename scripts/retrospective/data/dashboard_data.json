@@ -1,21 +1,7 @@
 {
- "generated_at": "2026-09-02T10:27:26.846583+00:00",
- "modules": {
-  "api": {
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "rounds": 1,
-   "issues": 1
-  }
- },
+ "generated_at": "2026-09-03T10:29:20.845714+00:00",
+ "modules": {},
  "days": {
-  "2026-08-26": {
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "rounds": 1
-  },
   "2026-08-27": {
    "C": 0,
    "M": 0,
@@ -57,56 +43,16 @@
    "M": 0,
    "m": 0,
    "rounds": 0
+  },
+  "2026-09-03": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
- "issues": [
-  {
-   "issue": null,
-   "pr": 4034,
-   "title": "[dkblinux98/nyxGPT] fix: state the shipped chat model once, and read it everywhere else (PR #4034)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 2,
-   "m": 3,
-   "last": "2026-08-26T09:33:05Z",
-   "findings": [
-    [
-     "Medium",
-     "Rendering the ConfigMap without the StatefulSet breaks the applied manifests' own invariant \u2014 custom-model k8s installs go from \"wrong model, works\" to \"configured model, chat 404s while everything is Ready\""
-    ],
-    [
-     "Medium",
-     "`test_rendering_never_fails_an_install` never executes the path it claims to pin"
-    ],
-    [
-     "Minor",
-     "Both smokes discard the model-read's stderr (`2>/dev/null` in `_shipped_models` / `_resolve_models`), so a failed read prints only \"could not read the shipped chat model\" with no cause. `load_config` raises `FileNotFoundError` when `~/.nyxGPT/config.ini` is absent \u2014 a new parse-time prerequisite for `scripts/k8s-local-smoke.sh` that its \"Prerequisites\" header does not mention (CI seeds the config first, so the jobs are ordered correctly; a developer on a fresh machine gets the blind failure). Capture stderr into the failure message."
-    ],
-    [
-     "Minor",
-     "Naming inconsistency between the two new override knobs: `NYXGPT_SMOKE_EMBED_MODEL` (artifact smoke) vs `NYXGPT_SMOKE_EMBEDDING_MODEL` (local smoke)."
-    ],
-    [
-     "Minor",
-     "\u00a71e sweep result, for the record \u2014 remaining literal sites of the class after this PR: `k8s/configmap.yaml:9` + `k8s/statefulset-ollama.yaml:52` (deliberately kept readable, guarded by `test_k8s_manifests.py`, and the subject of Medium 1 / change 4); `docker-compose.yml:63` (`${NYXGPT_DEFAULT_MODEL:-qwen3.5:0.8b}` fallback \u2014 internally consistent since env-sync writes the var from config and both Compose consumers read the same var); stale `qwen2.5:0.5b` example values in `docs/configuration.md:357` and `docs/troubleshooting.md:439` (pre-existing doc drift, not falsified by this PR)."
-    ]
-   ]
-  }
- ],
+ "issues": [],
  "cleanPRs": [
-  {
-   "pr": 4046,
-   "merged": "2026-08-26",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4039,
-   "merged": "2026-08-26",
-   "title": "fix: the macOS brew gate blocks every PR and measures only itself",
-   "module": "cli"
-  },
   {
    "pr": 4047,
    "merged": "2026-08-27",
@@ -142,21 +88,44 @@
    "merged": "2026-09-01",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4056,
+   "merged": "2026-09-02",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4055,
+   "merged": "2026-09-02",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4054,
+   "merged": "2026-09-02",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4053,
+   "merged": "2026-09-02",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "api": 7,
-  "cli": 1
+  "api": 10
  },
  "totals": {
-  "rounds": 1,
+  "rounds": 0,
   "C": 0,
-  "M": 2,
-  "m": 3,
-  "items": 1,
-  "clean": 8,
-  "reviewed": 8,
-  "merged": 8,
+  "M": 0,
+  "m": 0,
+  "items": 0,
+  "clean": 10,
+  "reviewed": 10,
+  "merged": 10,
   "unreviewed": 0
  }
 }

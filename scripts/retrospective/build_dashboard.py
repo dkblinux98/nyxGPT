@@ -184,7 +184,13 @@ GATE = [
     {"m": "May", "merged": 0, "rejected": 0},
     {"m": "Jun", "merged": 0, "rejected": 0},
     {"m": "Jul", "merged": 168, "rejected": 80},
-    {"m": "Aug", "merged": 0, "rejected": 8},
+    # August closed on 2026-09-01. `gate_series()` only recomputes the CURRENT
+    # month's `rejected`, so a month keeps whatever seed it holds once it rolls
+    # over -- and August's was still the placeholder 8 it was given early in the
+    # month. Frozen here to the value the chart's own legend promises ("PRs
+    # rejected >=1x"): distinct PRs with at least one REQUEST_CHANGES round in
+    # August, counted from the now-complete reviews_final.json (135 of them).
+    {"m": "Aug", "merged": 0, "rejected": 135},
 ]
 
 # Release annotations on the sprint axis.
