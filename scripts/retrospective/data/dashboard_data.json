@@ -1,13 +1,7 @@
 {
- "generated_at": "2026-09-03T10:29:20.845714+00:00",
+ "generated_at": "2026-09-04T10:25:17.425673+00:00",
  "modules": {},
  "days": {
-  "2026-08-27": {
-   "C": 0,
-   "M": 0,
-   "m": 0,
-   "rounds": 0
-  },
   "2026-08-28": {
    "C": 0,
    "M": 0,
@@ -49,16 +43,16 @@
    "M": 0,
    "m": 0,
    "rounds": 0
+  },
+  "2026-09-04": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
  "issues": [],
  "cleanPRs": [
-  {
-   "pr": 4047,
-   "merged": "2026-08-27",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
   {
    "pr": 4048,
    "merged": "2026-08-28",
@@ -112,6 +106,12 @@
    "merged": "2026-09-02",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4058,
+   "merged": "2026-09-03",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
@@ -125,7 +125,7 @@
   "items": 0,
   "clean": 10,
   "reviewed": 10,
-  "merged": 10,
-  "unreviewed": 0
+  "merged": 11,
+  "unreviewed": 1
  }
 }
