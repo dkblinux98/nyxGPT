@@ -1,14 +1,14 @@
 {
- "generated_at": "2026-09-05T12:32:51.772999+00:00",
- "window_start": "2026-08-06",
+ "generated_at": "2026-09-06T11:18:11.479953+00:00",
+ "window_start": "2026-08-07",
  "window_days": 30,
  "degraded": {
-  "timing": 0,
+  "timing": 7,
   "claude_steps": 0
  },
  "minutes_source": {
   "billable": 0,
-  "duration": 2475
+  "duration": 2472
  },
  "issues": {
   "3507": {
@@ -454,13 +454,13 @@
   },
   "3824": {
    "claude_steps": 0,
-   "runs": 41,
-   "runner_minutes": 427.13,
+   "runs": 40,
+   "runner_minutes": 424.5,
    "retry_cycles": 0,
    "workflows": {
     "ci-tests.yml": 6,
     "linux-native-smoke.yml": 18,
-    "security-scan.yml": 8,
+    "security-scan.yml": 7,
     "terraform-local-smoke.yml": 9
    }
   },
@@ -1054,8 +1054,8 @@
  },
  "unattributed": {
   "claude_steps": 428,
-  "runs": 1564,
-  "runner_minutes": 8755.53,
+  "runs": 1569,
+  "runner_minutes": 8715.0,
   "retry_cycles": 256,
   "workflows": {
    "ci-tests.yml": 233,
@@ -1065,10 +1065,10 @@
    "handle_acceptance_failure.yml": 18,
    "huddle_session.yml": 4,
    "linux-native-smoke.yml": 120,
-   "review_agent_auto_review.yml": 143,
-   "security-scan.yml": 253,
+   "review_agent_auto_review.yml": 144,
+   "security-scan.yml": 255,
    "terraform-local-smoke.yml": 46,
-   "usage_limit_retry.yml": 567
+   "usage_limit_retry.yml": 569
   }
  }
 }
