@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-09-10T01:28:11.440263+00:00",
- "window_start": "2026-08-11",
+ "generated_at": "2026-09-11T10:39:34.235481+00:00",
+ "window_start": "2026-08-12",
  "window_days": 30,
  "degraded": {
   "timing": 0,
@@ -8,7 +8,7 @@
  },
  "minutes_source": {
   "billable": 0,
-  "duration": 2400
+  "duration": 2390
  },
  "issues": {
   "3508": {
@@ -30,41 +30,14 @@
     "linux-native-smoke.yml": 2
    }
   },
-  "3632": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 6.4,
-   "retry_cycles": 0,
-   "workflows": {
-    "linux-native-smoke.yml": 2
-   }
-  },
-  "3718": {
-   "claude_steps": 0,
-   "runs": 1,
-   "runner_minutes": 3.42,
-   "retry_cycles": 0,
-   "workflows": {
-    "linux-native-smoke.yml": 1
-   }
-  },
   "3721": {
    "claude_steps": 0,
-   "runs": 8,
-   "runner_minutes": 32.73,
+   "runs": 7,
+   "runner_minutes": 29.72,
    "retry_cycles": 0,
    "workflows": {
     "ci-tests.yml": 2,
-    "linux-native-smoke.yml": 6
-   }
-  },
-  "3724": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 6.93,
-   "retry_cycles": 0,
-   "workflows": {
-    "linux-native-smoke.yml": 2
+    "linux-native-smoke.yml": 5
    }
   },
   "3737": {
@@ -181,11 +154,11 @@
   },
   "3788": {
    "claude_steps": 0,
-   "runs": 6,
-   "runner_minutes": 17.42,
+   "runs": 5,
+   "runner_minutes": 12.42,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 3,
+    "ci-tests.yml": 2,
     "linux-native-smoke.yml": 3
    }
   },
@@ -967,21 +940,21 @@
  },
  "unattributed": {
   "claude_steps": 428,
-  "runs": 1520,
-  "runner_minutes": 8687.65,
+  "runs": 1517,
+  "runner_minutes": 8716.42,
   "retry_cycles": 256,
   "workflows": {
-   "ci-tests.yml": 238,
+   "ci-tests.yml": 243,
    "claude-code-review.yml": 32,
    "claude.yml": 1,
    "developer_auto_implement.yml": 147,
    "handle_acceptance_failure.yml": 18,
    "huddle_session.yml": 4,
-   "linux-native-smoke.yml": 110,
-   "review_agent_auto_review.yml": 151,
-   "security-scan.yml": 272,
+   "linux-native-smoke.yml": 106,
+   "review_agent_auto_review.yml": 154,
+   "security-scan.yml": 277,
    "terraform-local-smoke.yml": 41,
-   "usage_limit_retry.yml": 506
+   "usage_limit_retry.yml": 494
   }
  }
 }
