@@ -14,7 +14,7 @@ from configparser import ConfigParser
 from pathlib import Path
 from typing import Any
 
-from nyxgpt.config import DEFAULT_CONFIG_PATH
+from nyxgpt.config import DEFAULT_CONFIG_PATH, shipped_default_model
 from nyxgpt.models import list_models
 
 
@@ -75,9 +75,12 @@ def _validate_ollama_connection(
 
 
 # The chat model a fresh install ends up with when Ollama has nothing to pick
-# from -- `nyxgpt ops install` pulls it (#3824). Keep identical to
-# `[nyxgpt] default_model` in example.config.ini.
-SHIPPED_DEFAULT_MODEL = "qwen3.5:0.8b"
+# from -- `nyxgpt ops install` pulls it (#3824). READ from the packaged
+# example.config.ini, never restated: this used to be a second literal that had
+# to be "kept identical" to the first by hand, and the comment saying so was
+# still there while the two had already diverged (owner, 2026-08-23). The name
+# is kept because callers and tests use it; only its source changed.
+SHIPPED_DEFAULT_MODEL = shipped_default_model()
 
 
 def _select_model(models: list[dict[str, Any]], default: str = SHIPPED_DEFAULT_MODEL) -> str:

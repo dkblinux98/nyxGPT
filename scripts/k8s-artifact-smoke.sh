@@ -41,11 +41,10 @@ NAMESPACE="nyxgpt"
 API_KEY="${NYXGPT_SMOKE_API_KEY:-k8s-artifact-smoke-key}"
 WEB_PORT="${NYXGPT_SMOKE_WEB_PORT:-3000}"
 SESSION="k8s-artifact-smoke-$$"
-# Must match k8s/configmap.yaml's `[nyxgpt] default_model` -- the StatefulSet
-# pulls exactly the configured models and its readiness probe gates on them
-# (#3824), so a stale name here asks Ollama for a model nothing pulled and the
-# chat 404s while the stack is healthy.
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen3.5:0.8b}"
+# MODEL is resolved in step 4, once the wheel is installed and the config is
+# seeded -- NOT here. This smoke's whole premise is that nothing nyxgpt is
+# importable until the artifact installs it, so a read at parse time can only
+# fail. See `_resolve_models` below.
 BASE="http://127.0.0.1:${WEB_PORT}"
 # Everything the product may see lives outside the checkout.
 WORKDIR="${NYXGPT_SMOKE_WORKDIR:-/tmp/nyxgpt-artifact-smoke}"
@@ -150,6 +149,35 @@ shutil.copy(_packaged_resources_root() / "example.config.ini", home / "config.in
 print(f"seeded {home / 'config.ini'} from the packaged example config")
 PY
 ok "config seeded from package data"
+
+# The model this smoke asserts on is READ from the install under test, never
+# restated. It used to be a literal with a comment saying "must match
+# k8s/configmap.yaml" -- and the two diverged anyway when the shipped model
+# moved and only some sites followed (owner, 2026-08-23). Asking the same
+# `get_default_model` the install itself reads means this smoke cannot assert
+# on a model nothing pulled.
+#
+# It runs on the VENV's python against the config just seeded, so it reads
+# what this artifact ships rather than whatever python happens to be on PATH.
+# The env overrides stay, for driving the smoke at a deliberately different
+# model.
+_resolve_models() {
+    "${VENV}/bin/python" - <<'PYEOF' 2>/dev/null
+from nyxgpt.config import get_default_model, load_config
+
+cfg = load_config()
+chat = get_default_model(cfg)
+emb = cfg.get("rag", "embedding_model", fallback="").strip() or chat
+print(f"{chat}\t{emb}")
+PYEOF
+}
+IFS=$'\t' read -r _SHIPPED_CHAT _SHIPPED_EMB <<<"$(_resolve_models)"
+[ -n "${_SHIPPED_CHAT:-}" ] || fail "could not read the shipped chat model from the \
+installed nyxgpt.config -- the smoke refuses to fall back to a literal, which is \
+the defect it guards"
+MODEL="${NYXGPT_SMOKE_MODEL:-$_SHIPPED_CHAT}"
+EMBED_MODEL="${NYXGPT_SMOKE_EMBED_MODEL:-$_SHIPPED_EMB}"
+ok "models read from the installed package: chat=${MODEL} embed=${EMBED_MODEL}"
 
 step "5/9 --dev is refused on a machine with no checkout"
 if nyx ops install --kubernetes --local --dev --api-key "$API_KEY" >/tmp/k8s-artifact-dev.log 2>&1; then
