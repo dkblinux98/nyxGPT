@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-10T00:59:11Z",
+  "generated_at": "2026-09-11T23:07:24Z",
   "sprints": [
     {
       "duration": 25,
@@ -39597,6 +39597,83 @@
     {
       "type": "PULL_REQUEST",
       "number": 4067,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4068,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4069,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4070,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4071,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4072,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4073,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4074,
       "fields": [
         {
           "field": "Status",
