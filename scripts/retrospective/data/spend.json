@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-09-15T10:34:30.745761+00:00",
- "window_start": "2026-08-16",
+ "generated_at": "2026-09-16T10:35:55.702779+00:00",
+ "window_start": "2026-08-17",
  "window_days": 30,
  "degraded": {
   "timing": 0,
@@ -8,19 +8,9 @@
  },
  "minutes_source": {
   "billable": 0,
-  "duration": 2222
+  "duration": 2170
  },
  "issues": {
-  "3801": {
-   "claude_steps": 0,
-   "runs": 3,
-   "runner_minutes": 15.52,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2,
-    "linux-native-smoke.yml": 1
-   }
-  },
   "3803": {
    "claude_steps": 0,
    "runs": 2,
@@ -133,42 +123,6 @@
     "security-scan.yml": 1
    }
   },
-  "3815": {
-   "claude_steps": 0,
-   "runs": 5,
-   "runner_minutes": 27.1,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 5
-   }
-  },
-  "3816": {
-   "claude_steps": 0,
-   "runs": 1,
-   "runner_minutes": 5.03,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1
-   }
-  },
-  "3820": {
-   "claude_steps": 0,
-   "runs": 1,
-   "runner_minutes": 5.82,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1
-   }
-  },
-  "3821": {
-   "claude_steps": 0,
-   "runs": 1,
-   "runner_minutes": 5.68,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1
-   }
-  },
   "3824": {
    "claude_steps": 0,
    "runs": 40,
@@ -204,13 +158,13 @@
   },
   "3827": {
    "claude_steps": 0,
-   "runs": 17,
-   "runner_minutes": 174.28,
+   "runs": 16,
+   "runner_minutes": 173.1,
    "retry_cycles": 0,
    "workflows": {
     "ci-tests.yml": 2,
     "linux-native-smoke.yml": 12,
-    "security-scan.yml": 3
+    "security-scan.yml": 2
    }
   },
   "3828": {
@@ -447,11 +401,10 @@
   },
   "3867": {
    "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 2.03,
+   "runs": 1,
+   "runner_minutes": 1.42,
    "retry_cycles": 0,
    "workflows": {
-    "review_agent_auto_review.yml": 1,
     "security-scan.yml": 1
    }
   },
@@ -769,21 +722,21 @@
  },
  "unattributed": {
   "claude_steps": 428,
-  "runs": 1434,
-  "runner_minutes": 8637.38,
+  "runs": 1395,
+  "runner_minutes": 8585.67,
   "retry_cycles": 256,
   "workflows": {
-   "ci-tests.yml": 236,
+   "ci-tests.yml": 228,
    "claude-code-review.yml": 32,
    "claude.yml": 1,
    "developer_auto_implement.yml": 147,
    "handle_acceptance_failure.yml": 18,
    "huddle_session.yml": 4,
-   "linux-native-smoke.yml": 90,
-   "review_agent_auto_review.yml": 159,
-   "security-scan.yml": 288,
+   "linux-native-smoke.yml": 88,
+   "review_agent_auto_review.yml": 160,
+   "security-scan.yml": 290,
    "terraform-local-smoke.yml": 40,
-   "usage_limit_retry.yml": 419
+   "usage_limit_retry.yml": 387
   }
  }
 }
