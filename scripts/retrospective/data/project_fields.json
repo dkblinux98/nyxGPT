@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-17T14:25:29Z",
+  "generated_at": "2026-09-17T14:43:52Z",
   "sprints": [
     {
       "duration": 25,
@@ -39806,6 +39806,49 @@
     {
       "type": "PULL_REQUEST",
       "number": 4086,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4087,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4088,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4089,
       "fields": [
         {
           "field": "Status",
