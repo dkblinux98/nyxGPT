@@ -11,7 +11,8 @@ mistakes). `dump_spend.py` already records what a run *cost to run*
 (runner minutes, Claude step counts); this script records what the agent
 *spent thinking*, split into context re-establishment vs change production.
 
-Invoked only by `.github/workflows/retro_churn_dump.yml`, which runs this
+Invoked by `.github/workflows/retro_data_refresh.yml` (every input, one run)
+and by `retro_churn_dump.yml` (this file alone, for a re-run); both run this
 with `gh` authenticated (GH_TOKEN) and REPO set to "owner/repo". It walks
 the recent run history of the Claude-invoking workflows, attributes each run
 to an issue via its head branch (the same convention `dump_spend.py` uses —

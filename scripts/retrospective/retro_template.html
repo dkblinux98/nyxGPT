@@ -425,8 +425,8 @@
     dumps under <span class="mono">scripts/retrospective/data/</span> — so the stamp in the header is what the
     refresh session checks to confirm its rebuild actually landed, and nothing here is live. Each dump's own
     as-of time is below and repeated under the sections it feeds: a source at least
-    <span id="staleafter">a day</span> older than the build is called out as stale, because every dump in a
-    refresh pass is dispatched in the same session — and a file that carries no
+    <span id="staleafter">a day</span> older than the build is called out as stale, because every input in a
+    refresh pass comes from one dispatched refresh run — and a file that carries no
     <span class="mono">generated_at</span> is reported as unknown rather than left off, so an unstamped dump
     cannot pass for a fresh one.</p>
     <div class="tablewrap provtable">

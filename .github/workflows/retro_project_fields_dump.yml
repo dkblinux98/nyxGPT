@@ -5,6 +5,11 @@ name: Retro Dashboard - Dump Project Fields
 # publishes the file to the retro data branch. Read-only against the Project;
 # writes only the JSON snapshot. Used by the owner's retrospective dashboard.
 #
+# A refresh pass dispatches retro_data_refresh.yml, which produces this file
+# along with every other input; dispatch this one only to re-run a single
+# named failure. It is the one input with no local fallback: the Project
+# GraphQL needs the project-scoped token, so a session cannot generate it.
+#
 # The snapshot does NOT get pushed at the dispatching branch: the default
 # branch's ruleset requires a pull request, and the direct push was rejected
 # with GH013 (#3815). publish_data_branch.sh puts it on claude/retro-data and
@@ -35,70 +40,20 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
+      # Waits for the token's hourly REST budget first: this is the re-run
+      # path after a refresh dump failed, which is exactly when the budget is
+      # most likely spent (the 2026-09-17 review-rounds re-dispatch died on
+      # its first call). Same wait as every step of retro_data_refresh.yml.
       - name: Dump project fields
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+        # The GraphQL lives in the script so retro_data_refresh.yml runs the
+        # same code; this workflow is the single-file re-run for one failure.
         run: |
-          set -euo pipefail
-          mkdir -p scripts/retrospective/data
-
-          FIELDS_Q='query($login:String!,$number:Int!){
-            user(login:$login){ projectV2(number:$number){
-              fields(first:30){ nodes{
-                ... on ProjectV2IterationField { name configuration {
-                  iterations { title startDate duration }
-                  completedIterations { title startDate duration } } }
-              } }
-            } } }'
-          gh api graphql -f query="$FIELDS_Q" \
-            -F login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" \
-            --jq '{sprints: [.data.user.projectV2.fields.nodes[]
-                    | select(.name == "Sprint")
-                    | (.configuration.completedIterations + .configuration.iterations)[]
-                    | {title, startDate, duration}]}' > /tmp/sprints.json
-
-          ITEMS_Q='query($login:String!,$number:Int!,$after:String){
-            user(login:$login){ projectV2(number:$number){
-              items(first:100, after:$after){
-                pageInfo{ hasNextPage endCursor }
-                nodes{
-                  type
-                  content{ ... on Issue { number } ... on PullRequest { number } }
-                  fieldValues(first:20){ nodes{
-                    ... on ProjectV2ItemFieldSingleSelectValue {
-                      name field { ... on ProjectV2SingleSelectField { name } } }
-                    ... on ProjectV2ItemFieldIterationValue {
-                      title startDate field { ... on ProjectV2IterationField { name } } }
-                  } }
-                }
-              }
-            } } }'
-          after=""
-          : > /tmp/items.ndjson
-          while :; do
-            if [ -n "$after" ]; then
-              resp="$(gh api graphql -f query="$ITEMS_Q" -F login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" -F after="$after")"
-            else
-              resp="$(gh api graphql -f query="$ITEMS_Q" -F login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER")"
-            fi
-            echo "$resp" | jq -c '.data.user.projectV2.items.nodes[]
-              | select(.content.number != null)
-              | {type, number: .content.number,
-                 fields: [.fieldValues.nodes[] | select(.field.name != null)
-                          | {field: .field.name, value: (.name // .title), start: (.startDate // null)}]}' \
-              >> /tmp/items.ndjson
-            has_next="$(echo "$resp" | jq -r '.data.user.projectV2.items.pageInfo.hasNextPage')"
-            after="$(echo "$resp" | jq -r '.data.user.projectV2.items.pageInfo.endCursor')"
-            [ "$has_next" = "true" ] || break
-          done
-
-          jq -s --slurpfile cal /tmp/sprints.json \
-            '{generated_at: (now | todate), sprints: $cal[0].sprints, items: .}' \
-            /tmp/items.ndjson > scripts/retrospective/data/project_fields.json
-          jq '{items: (.items | length), sprints: (.sprints | length)}' \
-            scripts/retrospective/data/project_fields.json
+          scripts/retrospective/await_rate_limit.sh
+          scripts/retrospective/dump_project_fields.sh
 
       - name: Publish snapshot to the retro data branch
         env:

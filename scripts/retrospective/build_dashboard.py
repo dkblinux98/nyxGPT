@@ -83,9 +83,10 @@ EXCLUDED_MILESTONES = {"Phase X: Rejected"}
 # Data-source provenance (#3807). This dashboard is a static artifact rebuilt
 # on demand, so "how old is what I am reading?" has to be answerable from the
 # page itself: the build stamp says when the HTML was produced, and each dump's
-# own `generated_at` says how old the data behind a section is. Every dump in a
-# refresh pass is dispatched in the same session, so a source a day or more
-# behind the build did not get refreshed in that pass and is called out.
+# own `generated_at` says how old the data behind a section is. Every input is
+# produced by one retro_data_refresh.yml run dispatched in the refresh pass, so
+# a source a day or more behind the build did not get refreshed in that pass
+# and is called out (and refused: STALE_SOURCE_EXIT below).
 STALE_SOURCE_DAYS = 1.0
 
 # Exit status when an input dump did not land (#3808). The page is still
@@ -93,6 +94,17 @@ STALE_SOURCE_DAYS = 1.0
 # but the build refuses to report success, so a refresh cannot publish a
 # quietly-incomplete dashboard the way it did for spend and churn.
 MISSING_SOURCE_EXIT = 2
+
+# Exit status when an input is present but STALE_SOURCE_DAYS or more behind
+# the build. The #3808 gate above only saw a dump that *failed*; a dump that
+# was simply never run left yesterday's file in place, the build exited 0, and
+# the page reported "2 sources stale" in a header nobody was obliged to read.
+# That is how project_fields.json sat five days old (2026-08-17 → 08-22) while
+# refreshes kept publishing: the session had drifted to generating inputs
+# locally and could not produce that one at all. A stale input is now the same
+# class of failure as a missing one -- the page is written, the exit status
+# refuses to call it a refresh.
+STALE_SOURCE_EXIT = 3
 
 
 def load_issues(path):
@@ -107,6 +119,20 @@ def load_issues(path):
     raw = json.loads(Path(path).read_text())
     if isinstance(raw, dict):
         return raw.get("issues") or [], raw.get("generated_at")
+    return raw, None
+
+
+def load_pr_times(path):
+    """Read pr_times.json in either shape, returning (prs, generated_at).
+
+    Historically a bare {"<number>": [created_at, merged_at]} map written by
+    the refresh session, which carried no stamp. retro_data_refresh.yml writes
+    {"generated_at": ..., "prs": {...}} so the merged-PR series can say how old
+    it is like every other input; both shapes are read.
+    """
+    raw = json.loads(Path(path).read_text())
+    if isinstance(raw, dict) and "prs" in raw:
+        return raw.get("prs") or {}, raw.get("generated_at")
     return raw, None
 
 
@@ -132,8 +158,8 @@ def source_stamps(now, sources):
     materially older than the build, so a week-old dump cannot hide behind a
     build that ran a minute ago.
 
-    `workflow` names the dump that owes the file (None for the hand-written
-    corpus). It is what turns an absent source from a blank space into an
+    `workflow` names the dump that owes the file (None only for a source no
+    workflow produces; since 2026-09 every input has one). It is what turns an absent source from a blank space into an
     actionable line on the page: which run to go and read (#3808).
     """
     out = {}
@@ -761,6 +787,16 @@ def main():
             f"from exiting {MISSING_SOURCE_EXIT} (#3808)."
         ),
     )
+    ap.add_argument(
+        "--allow-stale-sources",
+        action="store_true",
+        help=(
+            "build and exit 0 even when an input is a day or more behind the "
+            "build. The page still flags every stale source; this only stops "
+            f"the build from exiting {STALE_SOURCE_EXIT}. Publishing with it is "
+            "deliberate: report which dump did not land and why."
+        ),
+    )
     args = ap.parse_args()
     data = Path(args.data_dir)
 
@@ -769,7 +805,7 @@ def main():
     pf_path = data / "project_fields.json"
     project_fields = json.loads(pf_path.read_text()) if pf_path.exists() else None
     pt_path = data / "pr_times.json"
-    pr_times = json.loads(pt_path.read_text()) if pt_path.exists() else None
+    pr_times, pr_times_generated_at = load_pr_times(pt_path) if pt_path.exists() else (None, None)
     rv_path = data / "reviews_final.json"
     reviews = json.loads(rv_path.read_text()) if rv_path.exists() else []
     sp_path = data / "spend.json"
@@ -801,7 +837,15 @@ def main():
                     "all_issues.json",
                     True,
                     issues_generated_at,
-                    None,  # hand-written by the refresh session, not a dump
+                    "retro_data_refresh.yml",
+                ),
+                (
+                    "prTimes",
+                    "Merged PR times",
+                    "pr_times.json",
+                    pr_times is not None,
+                    pr_times_generated_at,
+                    "retro_data_refresh.yml",
                 ),
                 (
                     "relationships",
@@ -884,6 +928,7 @@ def main():
         "  missing sources: "
         + (", ".join(f"{s['file']} ({s['workflow'] or 'hand-written'})" for s in missing) or "none")
     )
+    status = 0
     if missing and not args.allow_missing_sources:
         # Non-zero, after writing the page: the dashboard is publishable (each
         # missing section says so on its face), but publishing it is now a
@@ -903,8 +948,27 @@ def main():
             "section as unavailable).",
             flush=True,
         )
-        return MISSING_SOURCE_EXIT
-    return 0
+        status = MISSING_SOURCE_EXIT
+    stale_sources = [s for s in qdata["build"]["sources"].values() if s["present"] and s["stale"]]
+    if stale_sources and not args.allow_stale_sources:
+        # Same rule as above for the input that was never refreshed rather
+        # than the one that failed: the file is there, so nothing else in the
+        # pipeline notices, and the page's stale count is a line nobody has to
+        # act on. Exiting non-zero makes it one.
+        print(
+            "ERROR: "
+            + "; ".join(
+                f"{s['label']} is stale — {s['file']} is {s['ageDays']} days behind "
+                f"this build (refreshed by {s['workflow'] or 'the refresh session'})"
+                for s in stale_sources
+            )
+            + ". Dispatch retro_data_refresh.yml (or the named dump, one at a time) "
+            "and rebuild, or rebuild with --allow-stale-sources to publish "
+            "deliberately and report the dump that did not land.",
+            flush=True,
+        )
+        status = status or STALE_SOURCE_EXIT
+    return status
 
 
 if __name__ == "__main__":

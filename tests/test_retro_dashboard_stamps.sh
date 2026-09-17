@@ -71,6 +71,12 @@ stamp("churn.json", now - timedelta(days=30))
 stamp("relationships.json", now)
 stamp("project_fields.json", now)
 stamp("dashboard_data.json", now)
+# pr_times.json is stamped in its envelope shape ({"generated_at", "prs"}); the
+# checked-in file may still be the historical bare map.
+_pt = data / "pr_times.json"
+_ptraw = json.loads(_pt.read_text())
+_pt.write_text(json.dumps({"generated_at": now.isoformat(),
+                           "prs": _ptraw.get("prs", _ptraw) if isinstance(_ptraw, dict) else _ptraw}))
 # all_issues.json must be UNSTAMPED for this phase -- that is the whole point
 # of it. The old code *assumed* it (the corpus used to ship as a bare list),
 # and that assumption silently stopped holding when the dump began writing
@@ -83,14 +89,21 @@ _ai.write_text(json.dumps(_raw.get("issues", []) if isinstance(_raw, dict) else 
 PY
 
 echo "== build with an unstamped corpus, a fresh dump and a 30-day-old dump"
+status=0
 python3 "$RETRO/build_dashboard.py" \
   --data-dir "$WORK/data" --template "$RETRO/retro_template.html" --out "$WORK/a.html" \
-  | tee "$WORK/a.log"
+  >"$WORK/a.log" 2>&1 || status=$?
+cat "$WORK/a.log"
 rendered_a="$(node "$REPO_ROOT/tests/retro_render_check.mjs" "$WORK/a.html")"
 
 check "builder reports the unstamped corpus" "$(cat "$WORK/a.log")" \
   "unstamped sources: all_issues.json"
 check "builder reports the stale dump" "$(cat "$WORK/a.log")" "stale sources: churn.json"
+# A dump that was never run is the same failure as one that failed: the page
+# is written, the exit status refuses to call the pass a refresh.
+check "a stale dump refuses to report success (exit 3)" "exit=$status" "exit=3"
+check "the refusal names the stale file and how far behind it is" "$(cat "$WORK/a.log")" \
+  "churn.json is 30.0 days behind"
 check "header carries a build time" "$rendered_a" "built "
 check "header build time has time granularity, not date only" "$rendered_a" ":"
 check "header flags the sources behind it" "$rendered_a" "stale or unstamped"
@@ -127,7 +140,9 @@ issues = raw.get("issues", []) if isinstance(raw, dict) else raw
 path.write_text(json.dumps({"generated_at": datetime.now(UTC).isoformat(), "issues": issues}))
 PY
 
-python3 "$RETRO/build_dashboard.py" \
+# --allow-stale-sources: churn is still a month behind, and this phase is
+# about the corpus stamp, not the stale gate (asserted above).
+python3 "$RETRO/build_dashboard.py" --allow-stale-sources \
   --data-dir "$WORK/data" --template "$RETRO/retro_template.html" --out "$WORK/b.html" \
   | tee "$WORK/b.log"
 rendered_b="$(node "$REPO_ROOT/tests/retro_render_check.mjs" "$WORK/b.html")"

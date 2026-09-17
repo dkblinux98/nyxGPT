@@ -20,8 +20,9 @@ call per such issue rather than one per issue in the repo. Everything they
 block is recorded in the same file (inverted into `blocked_by`), which is all
 `build_dashboard.py` needs.
 
-Run via .github/workflows/retro_relationships_dump.yml (workflow_dispatch),
-mirroring the other retro dumps. Needs `gh` authenticated.
+Run via .github/workflows/retro_data_refresh.yml (every input, one run) and
+retro_relationships_dump.yml (this file alone, for a re-run), mirroring the
+other retro dumps. Needs `gh` authenticated.
 
 ENV:
   REPO  owner/name (default: dkblinux98/nyxGPT)
