@@ -78,6 +78,18 @@ grep -q 'Report every dump that did not land' "$REFRESH" \
 grep -q 'await_rate_limit.sh' "$REFRESH" \
   && ok "each dump waits for the REST budget" || bad "no rate-limit wait"
 
+echo "== the single-file re-run path waits for the REST budget too"
+# The re-run of one failed dump is the moment the budget is most likely spent
+# (the dump may have failed because of it), so the fix lives in every dump
+# workflow, not only in the refresh.
+for wf in "$REPO_ROOT"/.github/workflows/retro_*_dump.yml; do
+  if grep -v '^[[:space:]]*#' "$wf" | grep -q 'await_rate_limit.sh'; then
+    ok "$(basename "$wf") waits for the REST budget before its dump"
+  else
+    bad "$(basename "$wf") dumps without waiting for the REST budget"
+  fi
+done
+
 echo
 echo "passed: $pass  failed: $fail"
 [[ $fail -eq 0 ]]

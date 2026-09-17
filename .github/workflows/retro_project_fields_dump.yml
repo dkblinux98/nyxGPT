@@ -40,6 +40,10 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
+      # Waits for the token's hourly REST budget first: this is the re-run
+      # path after a refresh dump failed, which is exactly when the budget is
+      # most likely spent (the 2026-09-17 review-rounds re-dispatch died on
+      # its first call). Same wait as every step of retro_data_refresh.yml.
       - name: Dump project fields
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
@@ -47,7 +51,9 @@ jobs:
           PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
         # The GraphQL lives in the script so retro_data_refresh.yml runs the
         # same code; this workflow is the single-file re-run for one failure.
-        run: scripts/retrospective/dump_project_fields.sh
+        run: |
+          scripts/retrospective/await_rate_limit.sh
+          scripts/retrospective/dump_project_fields.sh
 
       - name: Publish snapshot to the retro data branch
         env:

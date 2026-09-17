@@ -3,8 +3,8 @@
 The corpus and the merged-PR map were the last dashboard inputs produced
 outside a workflow, which is what let the refresh drift into producing the
 others locally too (2026-08-17 → 09-17). These pin the filters and the shapes
-build_dashboard.py reads, with `gh` stubbed -- the walk itself is exercised
-by the live retro_data_refresh.yml run cited in the PR.
+build_dashboard.py reads, with `gh` stubbed -- the live walk is exercised by
+every retro_data_refresh.yml run (its run history is the executed evidence).
 """
 
 from __future__ import annotations
