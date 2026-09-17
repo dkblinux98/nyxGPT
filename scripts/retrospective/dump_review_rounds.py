@@ -6,8 +6,9 @@ Replaces the Gmail notification-email parse (owner decision 2026-08-08,
 round as a pull-request review, so rounds and their Critical/Medium/Minor
 findings are queryable via the GitHub API instead of a personal mailbox.
 
-Invoked only by `.github/workflows/retro_review_rounds_dump.yml`, which runs
-this with `gh` authenticated (GH_TOKEN) and REPO set to "owner/repo". Not a
+Invoked by `.github/workflows/retro_data_refresh.yml` (every input, one run)
+and by `retro_review_rounds_dump.yml` (these files alone, for a re-run); both
+run this with `gh` authenticated (GH_TOKEN) and REPO set to "owner/repo". Not a
 library for build_dashboard.py — that script must stay free of live API
 calls and only reads the two files this writes:
 
@@ -19,7 +20,6 @@ calls and only reads the two files this writes:
 import json
 import os
 import re
-import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
@@ -28,7 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 from build_dashboard import detect_module  # noqa: E402
-from dump_spend import iter_json_objects  # noqa: E402  (one implementation, #3808)
+from dump_spend import gh, iter_json_objects  # noqa: E402  (one implementation, #3808)
 
 WINDOW_DAYS = 7
 DATA_DIR = HERE / "data"
@@ -36,10 +36,6 @@ DATA_DIR = HERE / "data"
 SECTION_RE = re.compile(r"^#{3,4}\s*(Critical|Medium|Minor)\s+Issues\b", re.I)
 TOP_BULLET_RE = re.compile(r"^-\s+(.*)$")
 BOLD_RE = re.compile(r"^\*\*(.+?)\*\*")
-
-
-def gh(*args):
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
 def search_issues(query):
