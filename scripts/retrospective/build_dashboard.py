@@ -858,6 +858,14 @@ def main():
         f'The {qdata["qtotals"]["pm"]} issues labeled <span class="mono">Improvement</span>',
         html,
     )
+    # The corpus-coverage range ("Jan 1 - <date>") appears twice in the
+    # template -- the header strip and the "Issues total" tile note -- and was
+    # hand-edited on each refresh, so it drifted: it still read "Sep 14" on a
+    # build two days later. Derive it from the build date here, the same way
+    # the counts above are derived, so a refresh cannot leave it stale.
+    _covered = f"Jan 1 – {MONTH_ABBR[now.month - 1]} {now.day}"
+    html = re.sub(r"Jan 1 – [A-Z][a-z]{2} \d{1,2}, \d{4}", f"{_covered}, {now.year}", html)
+    html = re.sub(r"Jan 1 – [A-Z][a-z]{2} \d{1,2}(?![,\d])", _covered, html)
     html = html.replace("__QDATA__", json.dumps(qdata, separators=(",", ":")))
     html = html.replace("__DATA__", json.dumps(dashboard, separators=(",", ":")))
     Path(args.out).write_text(html)
