@@ -1,8 +1,8 @@
 {
- "generated_at": "2026-09-15T13:17:51.281153+00:00",
+ "generated_at": "2026-09-17T11:44:47.064611+00:00",
  "logFetch": {
   "ok": 0,
-  "expired": 191,
+  "expired": 487,
   "failed": 0
  },
  "methodology": {
@@ -19364,22 +19364,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T06:21:14Z",
-   "tokens": {
-    "input": 281612,
-    "output": 8938,
-    "cache_creation": 281528,
-    "cache_read": 2253734,
-    "total": 2825812
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.8619825,
-   "turns": 30,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 24,
-    "production_turns": 6,
-    "context_tokens": 2260650,
-    "production_tokens": 565162,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19393,22 +19387,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T06:23:33Z",
-   "tokens": {
-    "input": 235507,
-    "output": 147,
-    "cache_creation": 235411,
-    "cache_read": 2597682,
-    "total": 3068747
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 48,
+   "turns": 0,
    "split": {
-    "context_turns": 47,
-    "production_turns": 1,
-    "context_tokens": 3004815,
-    "production_tokens": 63932,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19468,22 +19456,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T06:26:45Z",
-   "tokens": {
-    "input": 266433,
-    "output": 9737,
-    "cache_creation": 266369,
-    "cache_read": 1518975,
-    "total": 2061514
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.5288755,
-   "turns": 24,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 21,
-    "production_turns": 3,
-    "context_tokens": 1803825,
-    "production_tokens": 257689,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19497,22 +19479,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T06:26:55Z",
-   "tokens": {
-    "input": 240379,
-    "output": 20817,
-    "cache_creation": 240207,
-    "cache_read": 4550357,
-    "total": 5051760
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 2.128893,
-   "turns": 47,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 45,
-    "production_turns": 2,
-    "context_tokens": 4836791,
-    "production_tokens": 214969,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19549,22 +19525,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T06:29:13Z",
-   "tokens": {
-    "input": 195238,
-    "output": 5896,
-    "cache_creation": 195194,
-    "cache_read": 880443,
-    "total": 1276771
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.073205,
-   "turns": 16,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 14,
-    "production_turns": 2,
-    "context_tokens": 1117175,
-    "production_tokens": 159596,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19578,22 +19548,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T06:30:41Z",
-   "tokens": {
-    "input": 155179,
-    "output": 5565,
-    "cache_creation": 155117,
-    "cache_read": 1293195,
-    "total": 1609056
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.1300904999999999,
-   "turns": 22,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 19,
-    "production_turns": 3,
-    "context_tokens": 1389639,
-    "production_tokens": 219417,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19630,22 +19594,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T06:33:26Z",
-   "tokens": {
-    "input": 259284,
-    "output": 131,
-    "cache_creation": 259242,
-    "cache_read": 1055101,
-    "total": 1573758
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 21,
+   "turns": 0,
    "split": {
-    "context_turns": 20,
-    "production_turns": 1,
-    "context_tokens": 1498817,
-    "production_tokens": 74941,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19659,22 +19617,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T06:35:17Z",
-   "tokens": {
-    "input": 222904,
-    "output": 6029,
-    "cache_creation": 222858,
-    "cache_read": 1103059,
-    "total": 1554850
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.8330425000000001,
-   "turns": 14,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 13,
-    "production_turns": 1,
-    "context_tokens": 1443789,
-    "production_tokens": 111061,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19711,22 +19663,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T06:36:18Z",
-   "tokens": {
-    "input": 138183,
-    "output": 3882,
-    "cache_creation": 138143,
-    "cache_read": 717346,
-    "total": 997554
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 0.8382265,
-   "turns": 15,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 14,
-    "production_turns": 1,
-    "context_tokens": 931050,
-    "production_tokens": 66504,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -19993,22 +19939,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T08:11:34Z",
-   "tokens": {
-    "input": 315226,
-    "output": 13986,
-    "cache_creation": 315118,
-    "cache_read": 3613812,
-    "total": 4258142
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 2.747583,
-   "turns": 38,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 35,
-    "production_turns": 3,
-    "context_tokens": 3921973,
-    "production_tokens": 336169,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -20022,22 +19962,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T08:16:19Z",
-   "tokens": {
-    "input": 166557,
-    "output": 60,
-    "cache_creation": 166527,
-    "cache_read": 483618,
-    "total": 816762
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 15,
+   "turns": 0,
    "split": {
-    "context_turns": 14,
-    "production_turns": 1,
-    "context_tokens": 762311,
-    "production_tokens": 54451,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -20051,22 +19985,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T08:17:32Z",
-   "tokens": {
-    "input": 208778,
-    "output": 9879,
-    "cache_creation": 208716,
-    "cache_read": 1264490,
-    "total": 1691863
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.022005,
-   "turns": 18,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 16,
-    "production_turns": 2,
-    "context_tokens": 1503878,
-    "production_tokens": 187985,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21230,22 +21158,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T17:48:15Z",
-   "tokens": {
-    "input": 201096,
-    "output": 75,
-    "cache_creation": 201066,
-    "cache_read": 553479,
-    "total": 955716
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 15,
+   "turns": 0,
    "split": {
-    "context_turns": 14,
-    "production_turns": 1,
-    "context_tokens": 892002,
-    "production_tokens": 63714,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21259,22 +21181,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T17:50:37Z",
-   "tokens": {
-    "input": 199125,
-    "output": 54,
-    "cache_creation": 199101,
-    "cache_read": 373542,
-    "total": 771822
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 12,
+   "turns": 0,
    "split": {
-    "context_turns": 11,
-    "production_turns": 1,
-    "context_tokens": 707504,
-    "production_tokens": 64318,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21311,22 +21227,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T17:51:43Z",
-   "tokens": {
-    "input": 112982,
-    "output": 146,
-    "cache_creation": 112948,
-    "cache_read": 635980,
-    "total": 862056
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 17,
+   "turns": 0,
    "split": {
-    "context_turns": 16,
-    "production_turns": 1,
-    "context_tokens": 811347,
-    "production_tokens": 50709,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21639,22 +21549,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T18:46:25Z",
-   "tokens": {
-    "input": 143851,
-    "output": 103,
-    "cache_creation": 143819,
-    "cache_read": 542239,
-    "total": 830012
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 16,
+   "turns": 0,
    "split": {
-    "context_turns": 15,
-    "production_turns": 1,
-    "context_tokens": 778136,
-    "production_tokens": 51876,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21668,22 +21572,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T18:49:04Z",
-   "tokens": {
-    "input": 245171,
-    "output": 14832,
-    "cache_creation": 245049,
-    "cache_read": 2758441,
-    "total": 3263493
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.8271760000000001,
-   "turns": 36,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 34,
-    "production_turns": 2,
-    "context_tokens": 3082188,
-    "production_tokens": 181305,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21697,22 +21595,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T18:52:47Z",
-   "tokens": {
-    "input": 146184,
-    "output": 5028,
-    "cache_creation": 146116,
-    "cache_read": 1466373,
-    "total": 1763701
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.197633,
-   "turns": 23,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 21,
-    "production_turns": 2,
-    "context_tokens": 1610336,
-    "production_tokens": 153365,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21772,22 +21664,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-19T19:06:48Z",
-   "tokens": {
-    "input": 220068,
-    "output": 375,
-    "cache_creation": 219972,
-    "cache_read": 2833964,
-    "total": 3274379
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 48,
+   "turns": 0,
    "split": {
-    "context_turns": 19,
-    "production_turns": 29,
-    "context_tokens": 1296108,
-    "production_tokens": 1978271,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21801,22 +21687,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-19T19:09:59Z",
-   "tokens": {
-    "input": 191823,
-    "output": 5984,
-    "cache_creation": 191763,
-    "cache_read": 1352856,
-    "total": 1742426
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.297401,
-   "turns": 20,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 18,
-    "production_turns": 2,
-    "context_tokens": 1568183,
-    "production_tokens": 174243,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -21876,22 +21756,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-19T19:11:31Z",
-   "tokens": {
-    "input": 140696,
-    "output": 6144,
-    "cache_creation": 140606,
-    "cache_read": 2192947,
-    "total": 2480393
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.6721835,
-   "turns": 28,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 26,
-    "production_turns": 2,
-    "context_tokens": 2303222,
-    "production_tokens": 177171,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -23308,22 +23182,16 @@
    "step_number": 8,
    "kind": "huddle",
    "started_at": "2026-08-22T19:26:56Z",
-   "tokens": {
-    "input": 247956,
-    "output": 9463,
-    "cache_creation": 247834,
-    "cache_read": 3213551,
-    "total": 3718804
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 2.3275629999999996,
-   "turns": 40,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 38,
-    "production_turns": 2,
-    "context_tokens": 3532864,
-    "production_tokens": 185940,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -23337,22 +23205,16 @@
    "step_number": 10,
    "kind": "huddle",
    "started_at": "2026-08-22T19:29:32Z",
-   "tokens": {
-    "input": 169600,
-    "output": 225,
-    "cache_creation": 169520,
-    "cache_read": 1889141,
-    "total": 2228486
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 40,
+   "turns": 0,
    "split": {
-    "context_turns": 39,
-    "production_turns": 1,
-    "context_tokens": 2172774,
-    "production_tokens": 55712,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -23366,22 +23228,16 @@
    "step_number": 23,
    "kind": "huddle",
    "started_at": "2026-08-22T19:31:44Z",
-   "tokens": {
-    "input": 192207,
-    "output": 3919,
-    "cache_creation": 192159,
-    "cache_read": 1028988,
-    "total": 1417273
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 1.060566,
-   "turns": 17,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 15,
-    "production_turns": 2,
-    "context_tokens": 1250535,
-    "production_tokens": 166738,
-    "source": "turns"
+    "context_turns": 0,
+    "production_turns": 0,
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -28324,19 +28180,19 @@
   "rounds": 1079,
   "issues": 152,
   "unattributed_rounds": 623,
-  "unattributed_tokens": 50095150,
+  "unattributed_tokens": 0,
   "tokens": {
-   "input": 4896039,
-   "output": 131415,
-   "cache_creation": 4894383,
-   "cache_read": 40173313,
-   "total": 50095150
+   "input": 0,
+   "output": 0,
+   "cache_creation": 0,
+   "cache_read": 0,
+   "total": 0
   },
   "context_tokens": 0,
   "production_tokens": 0,
   "repeat_context_tokens": 0,
-  "unknown_split_rounds": 1055,
-  "unknown_token_rounds": 1055,
+  "unknown_split_rounds": 1079,
+  "unknown_token_rounds": 1079,
   "multi_round_issues": 99,
   "context_pct": null,
   "cost_usd": null,
