@@ -1,8 +1,8 @@
 {
- "generated_at": "2026-09-17T11:44:47.064611+00:00",
+ "generated_at": "2026-09-17T16:06:32.086144+00:00",
  "logFetch": {
-  "ok": 0,
-  "expired": 487,
+  "ok": 2,
+  "expired": 294,
   "failed": 0
  },
  "methodology": {
@@ -24828,6 +24828,64 @@
    },
    "round": null,
    "kind_round": null
+  },
+  {
+   "issue": null,
+   "run_id": 35233524502,
+   "job_id": 105244115899,
+   "workflow": "claude-code-review.yml",
+   "step": "Run Claude Code Review",
+   "step_number": 11,
+   "kind": "review",
+   "started_at": "2026-09-17T14:27:56Z",
+   "tokens": {
+    "input": 592257,
+    "output": 372,
+    "cache_creation": 592115,
+    "cache_read": 9210986,
+    "total": 10395730
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": null,
+   "turns": 71,
+   "split": {
+    "context_turns": 71,
+    "production_turns": 0,
+    "context_tokens": 10395730,
+    "production_tokens": 0,
+    "source": "no-change"
+   },
+   "round": null,
+   "kind_round": null
+  },
+  {
+   "issue": null,
+   "run_id": 35234995104,
+   "job_id": 105248986806,
+   "workflow": "claude-code-review.yml",
+   "step": "Run Claude Code Review",
+   "step_number": 11,
+   "kind": "review",
+   "started_at": "2026-09-17T14:40:36Z",
+   "tokens": {
+    "input": 309994,
+    "output": 16330,
+    "cache_creation": 309850,
+    "cache_read": 4739660,
+    "total": 5375834
+   },
+   "model": "claude-fable-5",
+   "cost_usd_reported": 3.295179,
+   "turns": 53,
+   "split": {
+    "context_turns": 53,
+    "production_turns": 0,
+    "context_tokens": 5375834,
+    "production_tokens": 0,
+    "source": "no-change"
+   },
+   "round": null,
+   "kind_round": null
   }
  ],
  "issues": {
@@ -28177,16 +28235,16 @@
   }
  },
  "totals": {
-  "rounds": 1079,
+  "rounds": 1081,
   "issues": 152,
-  "unattributed_rounds": 623,
-  "unattributed_tokens": 0,
+  "unattributed_rounds": 625,
+  "unattributed_tokens": 15771564,
   "tokens": {
-   "input": 0,
-   "output": 0,
-   "cache_creation": 0,
-   "cache_read": 0,
-   "total": 0
+   "input": 902251,
+   "output": 16702,
+   "cache_creation": 901965,
+   "cache_read": 13950646,
+   "total": 15771564
   },
   "context_tokens": 0,
   "production_tokens": 0,

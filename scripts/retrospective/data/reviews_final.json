@@ -6738,5 +6738,21 @@
    "Naming inconsistency between the two new override knobs: `NYXGPT_SMOKE_EMBED_MODEL` (artifact smoke) vs `NYXGPT_SMOKE_EMBEDDING_MODEL` (local smoke).",
    "\u00a71e sweep result, for the record \u2014 remaining literal sites of the class after this PR: `k8s/configmap.yaml:9` + `k8s/statefulset-ollama.yaml:52` (deliberately kept readable, guarded by `test_k8s_manifests.py`, and the subject of Medium 1 / change 4); `docker-compose.yml:63` (`${NYXGPT_DEFAULT_MODEL:-qwen3.5:0.8b}` fallback \u2014 internally consistent since env-sync writes the var from config and both Compose consumers read the same var); stale `qwen2.5:0.5b` example values in `docs/configuration.md:357` and `docs/troubleshooting.md:439` (pre-existing doc drift, not falsified by this PR)."
   ]
+ },
+ {
+  "issue": null,
+  "pr": 4088,
+  "title": "[dkblinux98/nyxGPT] fix: one workflow refreshes every retrospective input; a stale input fails the build (PR #4088)",
+  "module": "api",
+  "date": "2026-09-17T14:37:33Z",
+  "critical": [],
+  "medium": [
+   "Rate-limit wait fixed in the refresh only; the five single-file dump workflows \u2014 this PR's own recovery path \u2014 keep the exact fault the PR diagnoses (\u00a71e)"
+  ],
+  "minor": [
+   "Forward-dated evidence pointer",
+   "Present-but-unstamped input passes the stale gate",
+   "Unposted run report"
+  ]
  }
 ]
