@@ -1,13 +1,7 @@
 {
- "generated_at": "2026-09-16T10:37:42.666397+00:00",
+ "generated_at": "2026-09-17T12:20:57.719447+00:00",
  "modules": {},
  "days": {
-  "2026-09-09": {
-   "C": 0,
-   "M": 0,
-   "m": 0,
-   "rounds": 0
-  },
   "2026-09-10": {
    "C": 0,
    "M": 0,
@@ -49,22 +43,16 @@
    "M": 0,
    "m": 0,
    "rounds": 0
+  },
+  "2026-09-17": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
  "issues": [],
  "cleanPRs": [
-  {
-   "pr": 4066,
-   "merged": "2026-09-09",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4065,
-   "merged": "2026-09-09",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
   {
    "pr": 4073,
    "merged": "2026-09-10",
@@ -148,10 +136,40 @@
    "merged": "2026-09-15",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4081,
+   "merged": "2026-09-16",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4085,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4084,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4083,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4082,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "api": 16
+  "api": 19
  },
  "totals": {
   "rounds": 0,
@@ -159,9 +177,9 @@
   "M": 0,
   "m": 0,
   "items": 0,
-  "clean": 16,
-  "reviewed": 16,
-  "merged": 16,
+  "clean": 19,
+  "reviewed": 19,
+  "merged": 19,
   "unreviewed": 0
  }
 }
