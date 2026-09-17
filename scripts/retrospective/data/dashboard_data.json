@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-17T12:20:57.719447+00:00",
+ "generated_at": "2026-09-17T14:33:02.375364+00:00",
  "modules": {},
  "days": {
   "2026-09-10": {
@@ -144,6 +144,18 @@
    "module": "api"
   },
   {
+   "pr": 4087,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4086,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 4085,
    "merged": "2026-09-17",
    "title": "chore(retro): refresh retrospective data",
@@ -169,7 +181,7 @@
   }
  ],
  "cleanByModule": {
-  "api": 19
+  "api": 21
  },
  "totals": {
   "rounds": 0,
@@ -177,9 +189,9 @@
   "M": 0,
   "m": 0,
   "items": 0,
-  "clean": 19,
-  "reviewed": 19,
-  "merged": 19,
+  "clean": 21,
+  "reviewed": 21,
+  "merged": 21,
   "unreviewed": 0
  }
 }
