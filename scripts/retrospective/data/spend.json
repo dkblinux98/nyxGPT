@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-09-17T15:10:30.487732+00:00",
- "window_start": "2026-08-18",
+ "generated_at": "2026-09-18T10:32:34.574198+00:00",
+ "window_start": "2026-08-19",
  "window_days": 30,
  "degraded": {
   "timing": 0,
@@ -8,109 +8,49 @@
  },
  "minutes_source": {
   "billable": 0,
-  "duration": 2145
+  "duration": 1825
  },
  "issues": {
-  "3803": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 11.95,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2
-   }
-  },
-  "3804": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 11.63,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2
-   }
-  },
-  "3805": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 12.12,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2
-   }
-  },
   "3806": {
    "claude_steps": 1,
-   "runs": 11,
-   "runner_minutes": 52.87,
+   "runs": 3,
+   "runner_minutes": 13.3,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 4,
     "claude-code-review.yml": 1,
-    "linux-native-smoke.yml": 4,
     "review_agent_auto_review.yml": 1,
     "security-scan.yml": 1
    }
   },
-  "3807": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 11.8,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2
-   }
-  },
-  "3808": {
-   "claude_steps": 0,
-   "runs": 1,
-   "runner_minutes": 5.98,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1
-   }
-  },
   "3809": {
    "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 6.87,
+   "runs": 1,
+   "runner_minutes": 1.3,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 1,
     "security-scan.yml": 1
    }
   },
   "3811": {
    "claude_steps": 0,
-   "runs": 12,
-   "runner_minutes": 47.65,
+   "runs": 7,
+   "runner_minutes": 18.27,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 3,
-    "linux-native-smoke.yml": 2,
     "review_agent_auto_review.yml": 3,
     "security-scan.yml": 4
    }
   },
   "3812": {
    "claude_steps": 1,
-   "runs": 20,
-   "runner_minutes": 184.55,
+   "runs": 11,
+   "runner_minutes": 141.73,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 2,
     "claude-code-review.yml": 1,
-    "linux-native-smoke.yml": 13,
+    "linux-native-smoke.yml": 6,
     "review_agent_auto_review.yml": 2,
     "security-scan.yml": 2
-   }
-  },
-  "3813": {
-   "claude_steps": 0,
-   "runs": 2,
-   "runner_minutes": 11.88,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2
    }
   },
   "3814": {
@@ -125,155 +65,64 @@
   },
   "3824": {
    "claude_steps": 0,
-   "runs": 38,
-   "runner_minutes": 412.78,
+   "runs": 8,
+   "runner_minutes": 92.45,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 6,
-    "linux-native-smoke.yml": 18,
-    "security-scan.yml": 5,
-    "terraform-local-smoke.yml": 9
+    "linux-native-smoke.yml": 4,
+    "security-scan.yml": 2,
+    "terraform-local-smoke.yml": 2
    }
   },
   "3825": {
    "claude_steps": 0,
-   "runs": 28,
-   "runner_minutes": 189.83,
+   "runs": 15,
+   "runner_minutes": 70.55,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 4,
-    "linux-native-smoke.yml": 18,
+    "linux-native-smoke.yml": 9,
     "security-scan.yml": 6
-   }
-  },
-  "3826": {
-   "claude_steps": 0,
-   "runs": 3,
-   "runner_minutes": 13.68,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1,
-    "linux-native-smoke.yml": 2
    }
   },
   "3827": {
    "claude_steps": 0,
-   "runs": 15,
-   "runner_minutes": 163.93,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2,
-    "linux-native-smoke.yml": 12,
-    "security-scan.yml": 1
-   }
-  },
-  "3828": {
-   "claude_steps": 0,
    "runs": 3,
-   "runner_minutes": 14.77,
+   "runner_minutes": 33.45,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 1,
-    "linux-native-smoke.yml": 2
+    "linux-native-smoke.yml": 2,
+    "security-scan.yml": 1
    }
   },
   "3829": {
    "claude_steps": 0,
-   "runs": 7,
-   "runner_minutes": 102.07,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1,
-    "linux-native-smoke.yml": 3,
-    "security-scan.yml": 3
-   }
-  },
-  "3831": {
-   "claude_steps": 0,
    "runs": 2,
-   "runner_minutes": 41.48,
+   "runner_minutes": 37.42,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 1,
-    "linux-native-smoke.yml": 1
-   }
-  },
-  "3832": {
-   "claude_steps": 0,
-   "runs": 13,
-   "runner_minutes": 86.93,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 3,
-    "linux-native-smoke.yml": 7,
-    "security-scan.yml": 3
-   }
-  },
-  "3833": {
-   "claude_steps": 0,
-   "runs": 10,
-   "runner_minutes": 137.02,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 3,
-    "linux-native-smoke.yml": 5,
-    "security-scan.yml": 2
-   }
-  },
-  "3834": {
-   "claude_steps": 0,
-   "runs": 10,
-   "runner_minutes": 61.6,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 2,
-    "linux-native-smoke.yml": 6,
-    "security-scan.yml": 2
-   }
-  },
-  "3835": {
-   "claude_steps": 0,
-   "runs": 27,
-   "runner_minutes": 220.03,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 5,
-    "linux-native-smoke.yml": 12,
-    "security-scan.yml": 5,
-    "terraform-local-smoke.yml": 5
+    "linux-native-smoke.yml": 1,
+    "security-scan.yml": 1
    }
   },
   "3837": {
    "claude_steps": 0,
-   "runs": 7,
-   "runner_minutes": 78.5,
+   "runs": 3,
+   "runner_minutes": 9.82,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 1,
-    "linux-native-smoke.yml": 5,
+    "linux-native-smoke.yml": 2,
     "security-scan.yml": 1
    }
   },
   "3850": {
    "claude_steps": 0,
-   "runs": 13,
-   "runner_minutes": 49.62,
+   "runs": 5,
+   "runner_minutes": 14.38,
    "retry_cycles": 0,
    "workflows": {
-    "ci-tests.yml": 3,
-    "linux-native-smoke.yml": 3,
+    "linux-native-smoke.yml": 1,
     "review_agent_auto_review.yml": 2,
-    "security-scan.yml": 5
-   }
-  },
-  "3851": {
-   "claude_steps": 0,
-   "runs": 3,
-   "runner_minutes": 46.42,
-   "retry_cycles": 0,
-   "workflows": {
-    "ci-tests.yml": 1,
-    "linux-native-smoke.yml": 2
+    "security-scan.yml": 2
    }
   },
   "3853": {
@@ -296,16 +145,6 @@
     "security-scan.yml": 2
    }
   },
-  "3855": {
-   "claude_steps": 0,
-   "runs": 3,
-   "runner_minutes": 26.87,
-   "retry_cycles": 0,
-   "workflows": {
-    "linux-native-smoke.yml": 2,
-    "security-scan.yml": 1
-   }
-  },
   "3857": {
    "claude_steps": 0,
    "runs": 3,
@@ -318,11 +157,11 @@
   },
   "3858": {
    "claude_steps": 0,
-   "runs": 17,
-   "runner_minutes": 206.5,
+   "runs": 15,
+   "runner_minutes": 154.07,
    "retry_cycles": 0,
    "workflows": {
-    "linux-native-smoke.yml": 11,
+    "linux-native-smoke.yml": 9,
     "security-scan.yml": 6
    }
   },
@@ -367,15 +206,6 @@
     "linux-native-smoke.yml": 1,
     "review_agent_auto_review.yml": 1,
     "security-scan.yml": 6
-   }
-  },
-  "3864": {
-   "claude_steps": 0,
-   "runs": 1,
-   "runner_minutes": 1.98,
-   "retry_cycles": 0,
-   "workflows": {
-    "security-scan.yml": 1
    }
   },
   "3865": {
@@ -710,21 +540,21 @@
   }
  },
  "unattributed": {
-  "claude_steps": 429,
-  "runs": 1380,
-  "runner_minutes": 8514.52,
-  "retry_cycles": 256,
+  "claude_steps": 381,
+  "runs": 1243,
+  "runner_minutes": 7686.38,
+  "retry_cycles": 221,
   "workflows": {
-   "ci-tests.yml": 210,
+   "ci-tests.yml": 160,
    "claude-code-review.yml": 34,
-   "developer_auto_implement.yml": 147,
+   "developer_auto_implement.yml": 130,
    "handle_acceptance_failure.yml": 18,
    "huddle_session.yml": 4,
-   "linux-native-smoke.yml": 88,
-   "review_agent_auto_review.yml": 170,
-   "security-scan.yml": 308,
-   "terraform-local-smoke.yml": 40,
-   "usage_limit_retry.yml": 361
+   "linux-native-smoke.yml": 72,
+   "review_agent_auto_review.yml": 172,
+   "security-scan.yml": 280,
+   "terraform-local-smoke.yml": 39,
+   "usage_limit_retry.yml": 334
   }
  }
 }
