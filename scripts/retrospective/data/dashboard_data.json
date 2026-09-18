@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-17T14:54:23.039055+00:00",
+ "generated_at": "2026-09-18T10:19:02.466551+00:00",
  "modules": {
   "api": {
    "C": 0,
@@ -10,12 +10,6 @@
   }
  },
  "days": {
-  "2026-09-10": {
-   "C": 0,
-   "M": 0,
-   "m": 0,
-   "rounds": 0
-  },
   "2026-09-11": {
    "C": 0,
    "M": 0,
@@ -57,6 +51,12 @@
    "M": 1,
    "m": 3,
    "rounds": 1
+  },
+  "2026-09-18": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
  "issues": [
@@ -91,48 +91,6 @@
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 4073,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4072,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4071,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4070,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4069,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4068,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4067,
-   "merged": "2026-09-10",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
   {
    "pr": 4076,
    "merged": "2026-09-11",
@@ -178,6 +136,18 @@
   {
    "pr": 4081,
    "merged": "2026-09-16",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4092,
+   "merged": "2026-09-17",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4091,
+   "merged": "2026-09-17",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
   },
@@ -231,7 +201,7 @@
   }
  ],
  "cleanByModule": {
-  "api": 23
+  "api": 18
  },
  "totals": {
   "rounds": 1,
@@ -239,9 +209,9 @@
   "M": 1,
   "m": 3,
   "items": 1,
-  "clean": 23,
-  "reviewed": 24,
-  "merged": 24,
+  "clean": 18,
+  "reviewed": 19,
+  "merged": 19,
   "unreviewed": 0
  }
 }

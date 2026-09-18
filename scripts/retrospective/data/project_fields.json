@@ -1,6 +1,11 @@
 {
-  "generated_at": "2026-09-17T14:47:09Z",
+  "generated_at": "2026-09-18T10:11:40Z",
   "sprints": [
+    {
+      "duration": 18,
+      "startDate": "2026-08-31",
+      "title": "Sprint 9"
+    },
     {
       "duration": 25,
       "startDate": "2026-08-06",
@@ -40,11 +45,6 @@
       "duration": 14,
       "startDate": "2026-01-01",
       "title": "Sprint 1"
-    },
-    {
-      "duration": 18,
-      "startDate": "2026-08-31",
-      "title": "Sprint 9"
     },
     {
       "duration": 18,
@@ -39860,6 +39860,28 @@
     {
       "type": "PULL_REQUEST",
       "number": 4090,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4091,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4092,
       "fields": [
         {
           "field": "Status",
