@@ -21,6 +21,7 @@ load). Section names are case-sensitive.
 from __future__ import annotations
 
 import configparser
+import importlib.resources
 import ipaddress
 import logging
 import os
@@ -29,6 +30,7 @@ import secrets
 import sys
 import tempfile
 from configparser import ConfigParser
+from functools import lru_cache
 from pathlib import Path
 
 from nyxgpt import cloud_secrets
@@ -422,17 +424,60 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     return parser
 
 
+@lru_cache(maxsize=1)
+def shipped_default_model() -> str:
+    """The chat model `example.config.ini` ships, read from the packaged copy.
+
+    THE one place the shipped model is stated. It used to be a literal here and
+    in eight other files, and `1ece87b0` changed three of them: a Kubernetes
+    install then served a different model than a native one, `ops status`
+    reported a third, and it took an eleven-PR pile-up to notice. Copies that
+    must agree will not (owner, 2026-08-23).
+
+    Read through `importlib.resources`, never a repo-relative path: the file
+    ships inside the package (`src/nyxgpt/resources/example.config.ini`), and a
+    path resolved relative to a checkout is exactly the class of defect that
+    reached acceptance in #3759 -- fine in a working tree, broken on a machine
+    that installed the artifact.
+
+    Cached: this is read on every `get_default_model` miss, and the packaged
+    file cannot change under a running process.
+    """
+    try:
+        text = (
+            importlib.resources.files("nyxgpt.resources")
+            .joinpath("example.config.ini")
+            .read_text(encoding="utf-8")
+        )
+    except (OSError, ModuleNotFoundError, FileNotFoundError) as e:  # pragma: no cover
+        raise RuntimeError(
+            "the packaged example.config.ini is unreadable, so the shipped default "
+            f"model cannot be determined: {e}"
+        ) from e
+    shipped = ConfigParser()
+    shipped.read_string(text)
+    value = shipped.get("nyxgpt", "default_model", fallback="").strip()
+    if not value:  # pragma: no cover - would mean the shipped file lost the key
+        raise RuntimeError("the packaged example.config.ini declares no [nyxgpt] default_model")
+    return value
+
+
 def get_default_model(cfg: ConfigParser) -> str:
     """Return the configured default chat model.
 
     Single source of truth:
-    - [nyxgpt] default_model
-
-    Falls back to a sane default if missing.
+    - [nyxgpt] default_model, else what `example.config.ini` ships
 
     This setting is hot-reloadable via config.ini changes.
     """
-    return cfg.get("nyxgpt", "default_model", fallback="qwen3.5:0.8b").strip()
+    # ABSENT falls back to the shipped model; PRESENT-BUT-EMPTY stays empty.
+    # `configparser`'s `fallback=` already drew that line, and collapsing the
+    # two lost a documented behaviour: an explicitly empty `default_model` is
+    # how an operator says "nothing configured", and `required_models_status`
+    # reports that rather than a model nobody chose.
+    if cfg.has_option("nyxgpt", "default_model"):
+        return cfg.get("nyxgpt", "default_model").strip()
+    return shipped_default_model()
 
 
 def get_ollama_base_url(cfg: ConfigParser) -> str:

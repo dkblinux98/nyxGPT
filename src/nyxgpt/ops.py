@@ -59,6 +59,7 @@ from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
     describe_config_parse_error,
+    get_default_model,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_enabled,
@@ -68,6 +69,7 @@ from nyxgpt.config import (
     get_tracing_config,
     get_tracing_enabled,
     grafana_admin_password_path,
+    load_config,
     read_grafana_admin_password,
     resolve_grafana_admin_password,
 )
@@ -1280,6 +1282,50 @@ def _packaged_resources_root() -> Path:
     return Path(str(importlib.resources.files("nyxgpt.resources")))
 
 
+def _render_k8s_config_models() -> None:
+    """Rewrite the synced ConfigMap's model lines from the operator's config.
+
+    The ConfigMap is the cluster's `config.ini`, and it shipped its own copy of
+    the chat and embedding model names. That copy is what made a Kubernetes
+    install serve a different model than a native one when `1ece87b0` changed
+    three of the nine sites and not the rest (owner, 2026-08-23): copies that
+    must agree do not.
+
+    So the packaged manifest is a template now, not an authority. It is
+    rendered here -- after `_sync_packaged_resources` has overwritten the
+    synced copy, and before anything applies it -- from the same
+    `get_default_model` / `[rag] embedding_model` the native path reads. The
+    manifest in git still carries readable values so the file is legible and
+    `kubectl apply -k k8s/` from a checkout still works; they are simply not
+    the source any install uses.
+
+    Best-effort by design: a config that cannot be read leaves the synced
+    manifest as shipped, which is the pre-existing behaviour rather than a new
+    failure mode. `install` must not die because a model line could not be
+    rewritten.
+    """
+    target = NYXGPT_HOME / "k8s" / "configmap.yaml"
+    if not target.exists():
+        return
+    try:
+        cfg = load_config()
+        chat = get_default_model(cfg)
+        embedding = cfg.get("rag", "embedding_model", fallback="").strip() or chat
+        text = target.read_text(encoding="utf-8")
+        text = re.sub(
+            r"(?m)^(\s*default_model\s*=\s*)\S+", lambda m: m.group(1) + chat, text, count=1
+        )
+        text = re.sub(
+            r"(?m)^(\s*embedding_model\s*=\s*)\S+",
+            lambda m: m.group(1) + embedding,
+            text,
+            count=1,
+        )
+        target.write_text(text, encoding="utf-8")
+    except Exception as e:  # pragma: no cover - never fail an install over this
+        logger.warning("could not render model names into the synced ConfigMap: %s", e)
+
+
 def _sync_packaged_resources() -> list[OpsResult]:
     """Copy the packaged Compose/config/provisioning/unit-template/script
     tree into `NYXGPT_HOME` so every other ops step reads from one fixed,
@@ -1314,6 +1360,7 @@ def _sync_packaged_resources() -> list[OpsResult]:
                 f"{type(e).__name__}: {e}",
             )
         ]
+    _render_k8s_config_models()
     return [OpsResult(True, f"Synced packaged ops resources to {NYXGPT_HOME}")]
 
 
