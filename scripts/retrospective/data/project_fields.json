@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-18T10:11:40Z",
+  "generated_at": "2026-09-19T10:11:03Z",
   "sprints": [
     {
       "duration": 18,
@@ -39882,6 +39882,28 @@
     {
       "type": "PULL_REQUEST",
       "number": 4092,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4093,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Closed",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 4094,
       "fields": [
         {
           "field": "Status",
