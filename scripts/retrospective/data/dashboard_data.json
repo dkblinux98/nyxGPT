@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-09-20T10:17:44.705995+00:00",
+ "generated_at": "2026-09-21T10:18:48.920701+00:00",
  "modules": {
   "api": {
    "C": 0,
@@ -10,12 +10,6 @@
   }
  },
  "days": {
-  "2026-09-13": {
-   "C": 0,
-   "M": 0,
-   "m": 0,
-   "rounds": 0
-  },
   "2026-09-14": {
    "C": 0,
    "M": 0,
@@ -57,6 +51,12 @@
    "M": 0,
    "m": 0,
    "rounds": 0
+  },
+  "2026-09-21": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
  "issues": [
@@ -91,12 +91,6 @@
   }
  ],
  "cleanPRs": [
-  {
-   "pr": 4078,
-   "merged": "2026-09-13",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
   {
    "pr": 4079,
    "merged": "2026-09-14",
@@ -198,10 +192,22 @@
    "merged": "2026-09-19",
    "title": "chore(retro): refresh retrospective data",
    "module": "api"
+  },
+  {
+   "pr": 4098,
+   "merged": "2026-09-20",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4097,
+   "merged": "2026-09-20",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
   }
  ],
  "cleanByModule": {
-  "api": 18
+  "api": 19
  },
  "totals": {
   "rounds": 1,
@@ -209,9 +215,9 @@
   "M": 1,
   "m": 3,
   "items": 1,
-  "clean": 18,
-  "reviewed": 19,
-  "merged": 19,
+  "clean": 19,
+  "reviewed": 20,
+  "merged": 20,
   "unreviewed": 0
  }
 }
