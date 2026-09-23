@@ -1,8 +1,8 @@
 {
- "generated_at": "2026-09-22T10:47:30.458648+00:00",
+ "generated_at": "2026-09-23T10:28:19.876916+00:00",
  "logFetch": {
-  "ok": 2,
-  "expired": 25,
+  "ok": 0,
+  "expired": 8,
   "failed": 0
  },
  "methodology": {
@@ -24838,22 +24838,16 @@
    "step_number": 11,
    "kind": "review",
    "started_at": "2026-09-17T14:27:56Z",
-   "tokens": {
-    "input": 592257,
-    "output": 372,
-    "cache_creation": 592115,
-    "cache_read": 9210986,
-    "total": 10395730
-   },
-   "model": "claude-fable-5",
+   "tokens": null,
+   "model": null,
    "cost_usd_reported": null,
-   "turns": 71,
+   "turns": 0,
    "split": {
-    "context_turns": 71,
+    "context_turns": 0,
     "production_turns": 0,
-    "context_tokens": 10395730,
-    "production_tokens": 0,
-    "source": "no-change"
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -24867,22 +24861,16 @@
    "step_number": 11,
    "kind": "review",
    "started_at": "2026-09-17T14:40:36Z",
-   "tokens": {
-    "input": 309994,
-    "output": 16330,
-    "cache_creation": 309850,
-    "cache_read": 4739660,
-    "total": 5375834
-   },
-   "model": "claude-fable-5",
-   "cost_usd_reported": 3.295179,
-   "turns": 53,
+   "tokens": null,
+   "model": null,
+   "cost_usd_reported": null,
+   "turns": 0,
    "split": {
-    "context_turns": 53,
+    "context_turns": 0,
     "production_turns": 0,
-    "context_tokens": 5375834,
-    "production_tokens": 0,
-    "source": "no-change"
+    "context_tokens": null,
+    "production_tokens": null,
+    "source": "unknown"
    },
    "round": null,
    "kind_round": null
@@ -28238,19 +28226,19 @@
   "rounds": 1081,
   "issues": 152,
   "unattributed_rounds": 625,
-  "unattributed_tokens": 15771564,
+  "unattributed_tokens": 0,
   "tokens": {
-   "input": 902251,
-   "output": 16702,
-   "cache_creation": 901965,
-   "cache_read": 13950646,
-   "total": 15771564
+   "input": 0,
+   "output": 0,
+   "cache_creation": 0,
+   "cache_read": 0,
+   "total": 0
   },
   "context_tokens": 0,
   "production_tokens": 0,
   "repeat_context_tokens": 0,
-  "unknown_split_rounds": 1079,
-  "unknown_token_rounds": 1079,
+  "unknown_split_rounds": 1081,
+  "unknown_token_rounds": 1081,
   "multi_round_issues": 99,
   "context_pct": null,
   "cost_usd": null,
