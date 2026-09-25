@@ -1,21 +1,7 @@
 {
- "generated_at": "2026-09-24T10:39:20.605999+00:00",
- "modules": {
-  "api": {
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "rounds": 1,
-   "issues": 1
-  }
- },
+ "generated_at": "2026-09-25T10:17:24.537742+00:00",
+ "modules": {},
  "days": {
-  "2026-09-17": {
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "rounds": 1
-  },
   "2026-09-18": {
    "C": 0,
    "M": 0,
@@ -57,100 +43,16 @@
    "M": 0,
    "m": 0,
    "rounds": 0
+  },
+  "2026-09-25": {
+   "C": 0,
+   "M": 0,
+   "m": 0,
+   "rounds": 0
   }
  },
- "issues": [
-  {
-   "issue": null,
-   "pr": 4088,
-   "title": "[dkblinux98/nyxGPT] fix: one workflow refreshes every retrospective input; a stale input fails the build (PR #4088)",
-   "module": "api",
-   "rounds": 1,
-   "C": 0,
-   "M": 1,
-   "m": 3,
-   "last": "2026-09-17T14:37:33Z",
-   "findings": [
-    [
-     "Medium",
-     "Rate-limit wait fixed in the refresh only; the five single-file dump workflows \u2014 this PR's own recovery path \u2014 keep the exact fault the PR diagnoses (\u00a71e)"
-    ],
-    [
-     "Minor",
-     "Forward-dated evidence pointer"
-    ],
-    [
-     "Minor",
-     "Present-but-unstamped input passes the stale gate"
-    ],
-    [
-     "Minor",
-     "Unposted run report"
-    ]
-   ]
-  }
- ],
+ "issues": [],
  "cleanPRs": [
-  {
-   "pr": 4092,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4091,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4090,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4089,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4087,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4086,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4085,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4084,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4083,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
-  {
-   "pr": 4082,
-   "merged": "2026-09-17",
-   "title": "chore(retro): refresh retrospective data",
-   "module": "api"
-  },
   {
    "pr": 4094,
    "merged": "2026-09-18",
@@ -224,6 +126,18 @@
    "module": "api"
   },
   {
+   "pr": 4107,
+   "merged": "2026-09-24",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
+   "pr": 4106,
+   "merged": "2026-09-24",
+   "title": "chore(retro): refresh retrospective data",
+   "module": "api"
+  },
+  {
    "pr": 4105,
    "merged": "2026-09-24",
    "title": "chore(retro): refresh retrospective data",
@@ -231,17 +145,17 @@
   }
  ],
  "cleanByModule": {
-  "api": 23
+  "api": 15
  },
  "totals": {
-  "rounds": 1,
+  "rounds": 0,
   "C": 0,
-  "M": 1,
-  "m": 3,
-  "items": 1,
-  "clean": 23,
-  "reviewed": 24,
-  "merged": 24,
+  "M": 0,
+  "m": 0,
+  "items": 0,
+  "clean": 15,
+  "reviewed": 15,
+  "merged": 15,
   "unreviewed": 0
  }
 }
