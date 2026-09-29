@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-09-28T10:22:28.896044+00:00",
- "window_start": "2026-08-29",
+ "generated_at": "2026-09-29T10:18:11.070429+00:00",
+ "window_start": "2026-08-30",
  "window_days": 30,
  "degraded": {
   "timing": 0,
@@ -8,21 +8,21 @@
  },
  "minutes_source": {
   "billable": 0,
-  "duration": 461
+  "duration": 463
  },
  "issues": {},
  "unattributed": {
   "claude_steps": 2,
-  "runs": 461,
-  "runner_minutes": 728.83,
+  "runs": 463,
+  "runner_minutes": 740.92,
   "retry_cycles": 0,
   "workflows": {
-   "ci-tests.yml": 65,
+   "ci-tests.yml": 66,
    "claude-code-review.yml": 2,
    "linux-native-smoke.yml": 1,
-   "review_agent_auto_review.yml": 67,
-   "security-scan.yml": 132,
-   "usage_limit_retry.yml": 194
+   "review_agent_auto_review.yml": 68,
+   "security-scan.yml": 134,
+   "usage_limit_retry.yml": 192
   }
  }
 }
