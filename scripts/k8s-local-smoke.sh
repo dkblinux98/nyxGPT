@@ -62,11 +62,29 @@ NAMESPACE="nyxgpt"
 API_KEY="${NYXGPT_SMOKE_API_KEY:-k8s-smoke-key}"
 WEB_PORT="${NYXGPT_SMOKE_WEB_PORT:-3000}"
 SESSION="k8s-smoke-$$"
-# Must match k8s/configmap.yaml's `[nyxgpt] default_model` / `[rag]
-# embedding_model` -- the StatefulSet pulls both and its readiness probe gates
-# on both (#3824), so a mismatch here would assert on a model nothing pulls.
-MODEL="${NYXGPT_SMOKE_MODEL:-qwen3.5:0.8b}"
-EMBEDDING_MODEL="${NYXGPT_SMOKE_EMBEDDING_MODEL:-nomic-embed-text}"
+# Read, never restated. These used to be literals with a comment saying "must
+# match k8s/configmap.yaml" -- and they diverged anyway when the shipped model
+# moved and only some sites followed (owner, 2026-08-23). Asking the same
+# `get_default_model` the install itself reads means this smoke cannot assert
+# on a model nothing pulled. The env overrides stay, for driving the smoke at
+# a deliberately different model.
+_shipped_models() {
+    python3 - <<'PYEOF' 2>/dev/null
+from nyxgpt.config import get_default_model, load_config
+cfg = load_config()
+chat = get_default_model(cfg)
+emb = cfg.get("rag", "embedding_model", fallback="").strip() or chat
+print(f"{chat}\t{emb}")
+PYEOF
+}
+IFS=$'\t' read -r _SHIPPED_CHAT _SHIPPED_EMB <<<"$(_shipped_models)"
+[ -n "${_SHIPPED_CHAT:-}" ] || {
+    echo "[FAIL] could not read the shipped chat model from nyxgpt.config -- the smoke" >&2
+    echo "[FAIL] refuses to fall back to a literal, which is the defect it guards." >&2
+    exit 1
+}
+MODEL="${NYXGPT_SMOKE_MODEL:-$_SHIPPED_CHAT}"
+EMBEDDING_MODEL="${NYXGPT_SMOKE_EMBEDDING_MODEL:-$_SHIPPED_EMB}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
