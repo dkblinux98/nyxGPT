@@ -16951,7 +16951,7 @@ INSTALLABLE_EXTRAS: dict[str, str] = {
         "Dedicated Host pricing and placement, Terraform remote state, the OS keychain "
         "secret store)"
     ),
-    "rag": "document parsing and embedding dependencies for the RAG pipeline",
+    "verify": ("playwright -- required by `nyxgpt ops verify`'s browser checks of the web UI"),
 }
 
 

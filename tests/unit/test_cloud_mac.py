@@ -807,3 +807,197 @@ def test_an_unusable_recorded_volume_size_falls_back_rather_than_shrinking_the_d
 
 def _never_priced(*_args, **_kwargs):
     raise AssertionError("a reconcile must not re-price or re-resolve the allocation")
+
+
+# --- #4122: a host Terraform holds is never re-disclosed -----------------
+
+
+def _mac_state(host_id: str = "h-06c438d25077be888") -> None:
+    """Write a Mac-root Terraform state file holding an allocated host.
+
+    The shape Terraform's local backend actually writes, because that is what
+    `allocated_host_from_state` parses -- a hand-rolled shape would let the
+    parser pass a test and fail on a real state file.
+    """
+    cloud_mac.MAC_TFSTATE_FILE.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "terraform_version": "1.9.5",
+                "resources": [
+                    {
+                        "mode": "managed",
+                        "type": "aws_ec2_host",
+                        "name": "this",
+                        "provider": 'provider["registry.terraform.io/hashicorp/aws"]',
+                        "instances": [
+                            {
+                                "schema_version": 0,
+                                "attributes": {
+                                    "id": host_id,
+                                    "availability_zone": "us-east-1a",
+                                    "instance_type": "mac2.metal",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_an_allocated_host_is_read_out_of_terraform_state():
+    _mac_state()
+    assert cloud_mac.allocated_host_from_state() == "h-06c438d25077be888"
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ["", "not json", "[]", json.dumps({"resources": []}), json.dumps({"resources": [{}]})],
+)
+def test_unreadable_or_hostless_state_answers_empty(contents):
+    """Fails closed to "no host recorded", which is the pre-#4122 behaviour --
+    never to a crash on a state file this parser did not expect."""
+    cloud_mac.MAC_TFSTATE_FILE.write_text(contents, encoding="utf-8")
+    assert cloud_mac.allocated_host_from_state() == ""
+
+
+def test_no_state_file_at_all_answers_empty():
+    assert cloud_mac.allocated_host_from_state() == ""
+
+
+def test_a_host_terraform_already_holds_is_adopted_not_re_disclosed(monkeypatch):
+    """#4122. `allocate` recorded the host id only after the WHOLE apply
+    succeeded, so an apply that allocated the host and then failed -- the owner's
+    2026-09-30 run failed on an apostrophe in a security-group rule description,
+    after the host existed -- left a billed host with no record. The next run then
+    printed a fresh non-refundable-charge disclosure for a charge already made,
+    and only Terraform's `0 added, 0 changed` stopped it being a second real one.
+    """
+    _mac_state()
+    disclosed: list[str] = []
+    monkeypatch.setattr(
+        cloud_mac,
+        "confirm_allocation",
+        lambda text, assume_yes=False: disclosed.append(text),
+    )
+    monkeypatch.setattr(cloud_mac, "resolve_allocation_plan", _never_priced)
+    monkeypatch.setattr(cloud_mac, "reconcile_released_host", lambda args: False)
+    monkeypatch.setattr(
+        cloud_mac,
+        "apply_mac_host",
+        lambda plan: {"public_ip": "98.93.96.217", "instance_id": "i-05289782c39bdc827"},
+    )
+    monkeypatch.setattr(
+        cloud_mac,
+        "lookup_host_pricing",
+        lambda *a, **k: cloud_mac.MacHostPricing(
+            instance_type="mac2.metal", host_family="mac2", region="us-east-1", hourly_rate=0.65
+        ),
+    )
+    monkeypatch.setattr(
+        cloud_mac.cloud_infra,
+        "resolve_settings",
+        lambda _args: SimpleNamespace(
+            aws_region="us-east-1",
+            aws_profile="",
+            owner_ip_cidr="198.51.100.5/32",
+            ssh_key_name="",
+            ssh_public_key="",
+            name_prefix="nyxgpt-tf",
+        ),
+    )
+
+    result = cloud_mac.allocate(_args(mac_instance_type=None, instance_type=None), assume_yes=True)
+
+    assert disclosed == [], "a host already allocated from this machine was re-disclosed"
+    assert result["allocated"] is False
+    assert result["reconciled"] is True
+    assert result["host_id"] == "h-06c438d25077be888"
+    # And the record is healed, so `cloud status` can name the host from now on.
+    assert cloud_mac.load_mac_record()["mac_host_id"] == "h-06c438d25077be888"
+
+
+def test_a_host_allocated_by_an_apply_that_then_failed_is_recorded_before_raising(monkeypatch):
+    """A host whose id is lost is a charge nothing can stop. So the id Terraform
+    state knows is written down on the way out of the failure, not after it."""
+    monkeypatch.setattr(cloud_mac, "confirm_allocation", lambda text, assume_yes=False: None)
+    monkeypatch.setattr(cloud_mac, "reconcile_released_host", lambda args: False)
+    monkeypatch.setattr(
+        cloud_mac,
+        "resolve_allocation_plan",
+        lambda args: cloud_mac.MacAllocationPlan(
+            instance_type="mac2.metal",
+            region="us-east-1",
+            availability_zone="us-east-1a",
+            pricing=cloud_mac.MacHostPricing(
+                instance_type="mac2.metal",
+                host_family="mac2",
+                region="us-east-1",
+                hourly_rate=0.65,
+            ),
+        ),
+    )
+
+    def _apply_that_allocates_then_fails(plan):
+        # Exactly the owner's failure: the host is created, then a later
+        # resource is rejected by EC2.
+        _mac_state()
+        raise CloudCommandError("InvalidParameterValue: description contains an invalid character")
+
+    monkeypatch.setattr(cloud_mac, "apply_mac_host", _apply_that_allocates_then_fails)
+
+    with pytest.raises(CloudCommandError, match="invalid character"):
+        cloud_mac.allocate(_args(), assume_yes=True)
+
+    record = cloud_mac.load_mac_record()
+    assert record["mac_host_id"] == "h-06c438d25077be888"
+    assert record["mac_instance_type"] == "mac2.metal"
+    assert record["mac_hourly_rate"] == 0.65
+    # The whole point: `cloud status` can now see it and `destroy` can schedule
+    # its release.
+    assert cloud_mac.pending_release()["host_id"] == "h-06c438d25077be888"
+
+
+def test_an_apply_that_failed_before_allocating_records_nothing(monkeypatch):
+    """Symmetric, and the half that must not over-report: a failure with no host
+    in state must not invent a record that would make `cloud status` claim a
+    charge nothing made."""
+    monkeypatch.setattr(cloud_mac, "confirm_allocation", lambda text, assume_yes=False: None)
+    monkeypatch.setattr(cloud_mac, "reconcile_released_host", lambda args: False)
+    monkeypatch.setattr(
+        cloud_mac,
+        "resolve_allocation_plan",
+        lambda args: cloud_mac.MacAllocationPlan(
+            instance_type="mac2.metal", region="us-east-1", availability_zone="us-east-1a"
+        ),
+    )
+
+    def _apply_that_never_allocates(plan):
+        raise CloudCommandError("InsufficientHostCapacity")
+
+    monkeypatch.setattr(cloud_mac, "apply_mac_host", _apply_that_never_allocates)
+
+    with pytest.raises(CloudCommandError, match="InsufficientHostCapacity"):
+        cloud_mac.allocate(_args(), assume_yes=True)
+
+    assert cloud_mac.load_mac_record() == {}
+    assert cloud_mac.pending_release() == {}
+
+
+def test_pending_release_reports_the_security_group_and_address_it_records(monkeypatch):
+    """Recorded since #3995 and reported by nothing, so `cloud status` read the
+    LINUX substrate's fields for a Mac: "Security group: not recorded" over a
+    security group state.json was holding, and `m5.xlarge` for a `mac2.metal`."""
+    _record_host(
+        mac_security_group_id="sg-0e3cde668e9c66292",
+        mac_public_ip="98.93.96.217",
+    )
+
+    pending = cloud_mac.pending_release()
+
+    assert pending["security_group_id"] == "sg-0e3cde668e9c66292"
+    assert pending["public_ip"] == "98.93.96.217"
+    assert pending["instance_type"] == "mac2.metal"

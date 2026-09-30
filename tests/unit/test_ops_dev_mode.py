@@ -293,9 +293,9 @@ def test_both_web_start_commands_bind_the_configured_host(tmp_path):
             f"{mode} mode's start command does not pass --hostname, so Next binds "
             f"0.0.0.0 and [web] host is silently ignored"
         )
-        assert '--port "$PORT"' in wrapper, (
-            f"{mode} mode's start command does not pass --port, so [web] port is silently ignored"
-        )
+        assert (
+            '--port "$PORT"' in wrapper
+        ), f"{mode} mode's start command does not pass --port, so [web] port is silently ignored"
 
 
 @pytest.mark.parametrize(
