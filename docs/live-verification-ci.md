@@ -283,6 +283,26 @@ and screenshots make verifiable in the review loop:
   the same formulas from the same remote tap on a real `macos-15` runner. What
   remains owner acceptance is only that a Mac *instance* runs them -- notably
   whether `brew services start` finds a launchd session for the login user.
+
+  **A correction to the paragraph above, from #4122.** "The same formulas" was
+  doing more work than it could carry. `macos-brew-smoke.yml` installs *a* pair
+  of formulas on a real Mac; it does not install the pair a `--os macos` deploy
+  would choose, because until #4122 the bootstrap chose them from a literal and
+  the deploy's `--version` never reached them at all. So a candidate deploy
+  installed the latest *stable* release, and the owner's first run on real
+  hardware tested 2.1.0 while believing it was testing 3.0.0rc14. Worse, the
+  assertion covering it -- `contains "$CAPTURE_DIR/script.sh" "install
+  nyxgpt-api nyxgpt-web"` in `cloud-target-os-smoke.sh` -- *certified* the
+  defect: executed verification existed for that path, passed, and was asserting
+  the wrong thing. That job now asserts the stable names for a release version
+  **and** the `@<line>rc` names for a candidate, so a bootstrap with a hardcoded
+  channel fails one of the pair; and the bootstrap itself reads `nyxgpt
+  --version` off the keg and refuses to start a stack that is not the release
+  requested, which is the only check that can be made on the machine that
+  matters. The general lesson is not about Macs: **a hardware exception on this
+  list is not a licence for the job that surrounds it to assert a command
+  string.** Where the claim is "the right thing is installed", assert the
+  installed *artifact*, not the instruction that was meant to install it.
 - **Anything gated behind a real (non-stubbed) LLM** -- CI runs the chat
   round-trip against whatever Ollama model is configured for the runner
   (small/stubbed per the acceptance criteria); response *quality* is not

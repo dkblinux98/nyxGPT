@@ -279,9 +279,13 @@ if run_assertion 2.1.0 >"$OUT" 2>&1; then
     cat "$OUT"
     fail "the bootstrap accepted 2.1.0 when 3.0.0rc14 was asked for -- the version assertion does not work"
 fi
+cat "$OUT"
 contains "$OUT" "but this machine has 2.1.0"
+echo "  -> the wrong version is refused, non-zero, naming both versions"
 run_assertion 3.0.0rc14 >"$OUT" 2>&1 || { cat "$OUT"; fail "the bootstrap rejected the version it asked for"; }
+cat "$OUT"
 contains "$OUT" "verified nyxGPT 3.0.0rc14"
+echo "  -> the right version is accepted"
 
 rm -f "$CAPTURE_DIR/cmd.txt" "$CAPTURE_DIR/script.sh"
 

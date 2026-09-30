@@ -118,6 +118,12 @@ jobs:
       # whole assertion is *where* it stops. Installing the extra is what the
       # CLI tells the operator to do in that message, so this is the state a
       # real operator on this path is in, not a convenience for the test.
+      #
+      # Installed from the wheel with the extra rather than through
+      # `nyxgpt ops install-extra cloud` (#4122): this venv has no nyxgpt yet,
+      # so there is no `nyxgpt` to run the wrapped command with. The wrapped
+      # command is for an install that already exists, which is the case its
+      # own unit tests cover.
       - name: Build and install the wheel into a clean venv
         run: |
           python -m pip install --upgrade pip build

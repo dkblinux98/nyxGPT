@@ -2587,8 +2587,9 @@ def cli(argv: list[str] | None = None) -> int:
         "--version",
         help=(
             "Pin the installed nyxGPT version (Linux: pip install nyxgpt==<version>; "
-            "macOS: recorded for reference only -- the Homebrew tap always tracks its "
-            "current formula). Default: latest."
+            "macOS: selects the tap formulas that carry it -- nyxgpt-api/nyxgpt-web for a "
+            "release, nyxgpt-api@<line>rc/nyxgpt-web@<line>rc for a candidate -- and the "
+            "rendered script verifies it on the instance). Default: the tap's current stable."
         ),
     )
     # #3865. Per-OS default (cloud_provision.DEFAULT_SESSION_BACKEND_BY_OS):
