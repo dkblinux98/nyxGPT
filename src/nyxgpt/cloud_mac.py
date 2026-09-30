@@ -49,7 +49,7 @@ from typing import Any
 
 from nyxgpt import cloud_infra
 from nyxgpt.cloud import CloudCommandError
-from nyxgpt.optional_imports import try_import
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 # The two extra root modules inside the synced Terraform tree. Root modules,
 # not child modules of the substrate: see terraform/aws/mac/versions.tf for
@@ -203,8 +203,7 @@ def _client(service: str, region: str, profile: str = "") -> Any:
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudCommandError(
-            "boto3 is required to price and place an EC2 Mac Dedicated Host. "
-            "Install with `pip install nyxgpt[cloud]`."
+            "boto3 is required to price and place an EC2 Mac Dedicated Host. " + CLOUD_EXTRA_REMEDY
         )
     try:
         session = boto3.Session(profile_name=profile) if profile else boto3.Session()

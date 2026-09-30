@@ -2215,6 +2215,28 @@ def cli(argv: list[str] | None = None) -> int:
         "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
     )
 
+    # `ops install-extra` (#4122): the wrapped way to add an optional extra to
+    # an already-installed nyxGPT. Before this, every `nyxgpt cloud` path that
+    # needed boto3 pointed the operator at `pip install nyxgpt[cloud]` -- which
+    # on a Homebrew keg reaches no pip that the running `nyxgpt` imports from,
+    # so the only working form was a raw path into the Cellar. That is both an
+    # unwrapped instruction (CLAUDE.md's Operational Command Wrapping
+    # requirement) and layout-specific. This installs into the interpreter
+    # running the command, which is the one that will do the importing.
+    ops_install_extra = ops_sub.add_parser(
+        "install-extra",
+        help=(
+            "Install an optional dependency group (cloud, rag) into this nyxGPT install; "
+            "omit the name to list them"
+        ),
+    )
+    ops_install_extra.add_argument(
+        "extra",
+        nargs="?",
+        choices=sorted(ops_mod.INSTALLABLE_EXTRAS),
+        help="Extra to install; omit to list the available extras and the target environment",
+    )
+
     ops_secrets_sync = ops_sub.add_parser(
         "secrets-sync",
         help=(
@@ -3647,6 +3669,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.env_sync(args)
         if args.ops_cmd == "session-backend":
             return ops_mod.session_backend(args)
+        if args.ops_cmd == "install-extra":
+            return ops_mod.install_extra_command(args)
         if args.ops_cmd == "secrets-sync":
             return ops_mod.secrets_sync(args)
         if args.ops_cmd == "config-sync":
