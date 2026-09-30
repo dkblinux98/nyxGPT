@@ -21,7 +21,7 @@ import logging
 import time
 from typing import Any
 
-from nyxgpt.optional_imports import try_import
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 _logger = logging.getLogger(__name__)
 
@@ -93,8 +93,7 @@ def _get_boto3_client(service: str, region: str | None, profile: str = "") -> An
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudSecretsError(
-            f"boto3 is required to resolve secrets from AWS {service}. "
-            "Install with `pip install nyxgpt[cloud]`."
+            f"boto3 is required to resolve secrets from AWS {service}. " + CLOUD_EXTRA_REMEDY
         )
     kwargs: dict[str, Any] = {}
     if region:

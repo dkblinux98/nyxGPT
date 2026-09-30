@@ -158,6 +158,13 @@ TARGETS: tuple[Target, ...] = (
             # `brew install` stops instead of installing (#3752). One-time
             # per tap, per machine -- docs/homebrew.md#trusting-the-tap.
             "brew tap-trust dkblinux98/nyxgpt",
+            # The STABLE channel's formulas, which is what this row documents.
+            # A release candidate is a separately named formula
+            # (`nyxgpt-api@<line>rc`) precisely so that this command keeps
+            # resolving to the latest stable -- see the note below, and
+            # `cloud_provision.homebrew_formulas_for_version`, which is what
+            # derives the right pair for a given version rather than any caller
+            # composing the names itself (#4122).
             "brew install nyxgpt-api nyxgpt-web",
         ),
         operate=("nyxgpt up", "nyxgpt ops status", "nyxgpt ops doctor"),
@@ -182,7 +189,13 @@ TARGETS: tuple[Target, ...] = (
             "published on a companion <version>-homebrew release (a published "
             "release is immutable and can never gain an asset), or served from "
             "the version's own release when it already carries them -- "
-            "docs/homebrew.md#where-the-tarballs-are-published."
+            "docs/homebrew.md#where-the-tarballs-are-published. The install "
+            "commands above are the stable channel's; a release candidate ships "
+            "as `nyxgpt-api@<line>rc` / `nyxgpt-web@<line>rc` so that `brew "
+            "install nyxgpt-api` can never resolve to a pre-release, and "
+            "anything installing a *declared* version resolves the pair through "
+            "`nyxgpt.cloud_provision.homebrew_formulas_for_version` rather than "
+            "naming formulas itself (#4122)."
         ),
     ),
     Target(

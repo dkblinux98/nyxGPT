@@ -2215,6 +2215,35 @@ def cli(argv: list[str] | None = None) -> int:
         "--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)"
     )
 
+    # `ops install-extra` (#4122): the wrapped way to add an optional extra to
+    # an already-installed nyxGPT. Before this, every `nyxgpt cloud` path that
+    # needed boto3 pointed the operator at `pip install nyxgpt[cloud]` -- which
+    # on a Homebrew keg reaches no pip that the running `nyxgpt` imports from,
+    # so the only working form was a raw path into the Cellar. That is both an
+    # unwrapped instruction (CLAUDE.md's Operational Command Wrapping
+    # requirement) and layout-specific. This installs into the interpreter
+    # running the command, which is the one that will do the importing.
+    ops_install_extra = ops_sub.add_parser(
+        "install-extra",
+        # Named from `INSTALLABLE_EXTRAS`, the same source `choices` below
+        # uses (#4122): the hand-written list advertised `rag`, which is not
+        # an extra and which argparse rejects outright, while `verify` -- real
+        # and documented -- went unmentioned. Offering an operator an
+        # invocation that cannot work is the defect class this command exists
+        # to fix, so the help is derived instead of copied.
+        help=(
+            f"Install an optional dependency group "
+            f"({', '.join(sorted(ops_mod.INSTALLABLE_EXTRAS))}) into this nyxGPT install; "
+            f"omit the name to list them"
+        ),
+    )
+    ops_install_extra.add_argument(
+        "extra",
+        nargs="?",
+        choices=sorted(ops_mod.INSTALLABLE_EXTRAS),
+        help="Extra to install; omit to list the available extras and the target environment",
+    )
+
     ops_secrets_sync = ops_sub.add_parser(
         "secrets-sync",
         help=(
@@ -2565,8 +2594,9 @@ def cli(argv: list[str] | None = None) -> int:
         "--version",
         help=(
             "Pin the installed nyxGPT version (Linux: pip install nyxgpt==<version>; "
-            "macOS: recorded for reference only -- the Homebrew tap always tracks its "
-            "current formula). Default: latest."
+            "macOS: selects the tap formulas that carry it -- nyxgpt-api/nyxgpt-web for a "
+            "release, nyxgpt-api@<line>rc/nyxgpt-web@<line>rc for a candidate -- and the "
+            "rendered script verifies it on the instance). Default: the tap's current stable."
         ),
     )
     # #3865. Per-OS default (cloud_provision.DEFAULT_SESSION_BACKEND_BY_OS):
@@ -2994,7 +3024,21 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_deploy_p.add_argument(
         "--ssh-timeout",
         type=float,
-        help="Seconds to wait for the instance to accept SSH after apply (default: 300)",
+        # Built from `SSH_TIMEOUT_BY_OS` rather than restated (#4122): this
+        # flag's help was the last place still asserting the single 300s
+        # default that this issue replaced with a per-OS wait, and it is the
+        # surface an operator on the Mac path reads first. Deriving the text
+        # means it cannot go stale the next time a target OS is added or a
+        # wait is re-measured. Keyed by the same names `--os` takes.
+        help=(
+            "Seconds to wait for the instance to accept SSH after apply "
+            "(default: derived from the target OS -- "
+            + ", ".join(
+                f"{seconds:g} for {family}"
+                for family, seconds in cloud_deploy_mod.SSH_TIMEOUT_BY_OS.items()
+            )
+            + ")"
+        ),
     )
     cloud_deploy_p.add_argument(
         "--status",
@@ -3647,6 +3691,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.env_sync(args)
         if args.ops_cmd == "session-backend":
             return ops_mod.session_backend(args)
+        if args.ops_cmd == "install-extra":
+            return ops_mod.install_extra_command(args)
         if args.ops_cmd == "secrets-sync":
             return ops_mod.secrets_sync(args)
         if args.ops_cmd == "config-sync":

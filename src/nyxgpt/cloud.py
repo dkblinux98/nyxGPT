@@ -46,7 +46,7 @@ from typing import Any
 
 import httpx
 
-from nyxgpt.optional_imports import try_import
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 NYXGPT_HOME = Path.home() / ".nyxGPT"
 
@@ -223,7 +223,7 @@ def _get_ec2_client(region: str | None, profile: str = "") -> Any:
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudCommandError(
-            "boto3 is required for `nyxgpt cloud` commands. Install with `pip install nyxgpt[cloud]`."
+            "boto3 is required for `nyxgpt cloud` commands. " + CLOUD_EXTRA_REMEDY
         )
     kwargs: dict[str, Any] = {}
     if region:

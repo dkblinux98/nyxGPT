@@ -19,7 +19,7 @@
 # run (running the EC2 Mac script on a Linux runner would only prove that
 # `dscl` is missing).
 #
-# Four phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
+# Phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
 #
 #   1. `--os macos` with no Mac  -> reaches the allocation path (#3995) and
 #                                   stops on AWS, not on the policy refusal it
@@ -27,12 +27,23 @@
 #                                   `--host` workaround are gone, and nothing
 #                                   was billed or recorded
 #   2. `--os macos --host ...`   -> the CLI delivers the EC2 Mac bootstrap
-#                                   itself, elevated, and records the family
+#                                   itself, elevated, and records the family.
+#                                   `--version 3.0.0` is a release, so the
+#                                   STABLE formulas are what must arrive
+#   2b. the same with an rc      -> `--version 3.0.0rc14` must deliver the
+#                                   `@3.0.0rc` formulas instead (#4122). Phase 2
+#                                   and phase 2b are the pair that makes either
+#                                   one mean something: a bootstrap with a
+#                                   hardcoded channel fails exactly one
+#   2c. the assertion, injected  -> the delivered bootstrap's own version check,
+#                                   run here against a CLI reporting the wrong
+#                                   version, must exit non-zero -- and zero
+#                                   against the right one
 #   3. os_family=linux, same box -> the Linux bootstrap arrives instead, over
 #                                   the same path. This is what makes phase 2
-#                                   non-vacuous: a deploy that shipped one
-#                                   hard-coded script regardless of --os would
-#                                   fail exactly one of these two
+#                                   non-vacuous for the --os dispatch: a deploy
+#                                   that shipped one hard-coded script
+#                                   regardless of --os would fail one of them
 #   4. `cloud status`            -> an operator who lost the scrollback can
 #                                   still see which OS is on that box
 #
@@ -169,8 +180,17 @@ cat "$OUT"
 
 # The CLI, not a human, put the bootstrap on the box.
 contains "$CAPTURE_DIR/script.sh" "tap dkblinux98/nyxgpt"
-contains "$CAPTURE_DIR/script.sh" "install nyxgpt-api nyxgpt-web"
-contains "$CAPTURE_DIR/script.sh" "services start nyxgpt-api"
+# The formulas are the ones that carry the version this deploy declared, and
+# the bootstrap verifies the version it got rather than trusting the command
+# (#4122). `--version 3.0.0` is a release, so these are the stable names --
+# phase 2b below is the half that proves the selection is derived and not
+# hardcoded, which is what this assertion USED to get wrong: it asserted the
+# literal string `install nyxgpt-api nyxgpt-web`, so executed verification
+# existed for this path and certified the defect.
+contains "$CAPTURE_DIR/script.sh" 'NYXGPT_BREW_FORMULAS="nyxgpt-api nyxgpt-web"'
+contains "$CAPTURE_DIR/script.sh" 'NYXGPT_VERSION="3.0.0"'
+contains "$CAPTURE_DIR/script.sh" 'if [ "$INSTALLED_VERSION" != "$NYXGPT_VERSION" ]; then'
+contains "$CAPTURE_DIR/script.sh" 'services start "$NYXGPT_BREW_API_FORMULA"'
 # Repo-less (CLAUDE.md, 2026-08-01): the remote tap is the only source.
 not_contains "$CAPTURE_DIR/script.sh" "git clone http"
 # And it asked for it to be run the way ec2-macos-init would have: as root,
@@ -185,6 +205,87 @@ fi
 contains "$CLOUD_DIR/deploy.json" '"os_family": "macos"'
 # Nothing on the Mac provisions a Cassandra, so its sessions default to file.
 contains "$CLOUD_DIR/deploy.json" '"session_backend": "file"'
+
+rm -f "$CAPTURE_DIR/cmd.txt" "$CAPTURE_DIR/script.sh"
+
+echo
+echo "== Phase 2b: a release CANDIDATE deploys the candidate's own formulas =="
+# The defect this phase exists for (#4122). A candidate is published as a
+# separately named formula so that `brew install nyxgpt-api` keeps resolving to
+# the latest *stable* -- which means the unversioned install the old bootstrap
+# ran could not deploy a candidate at all. The owner's 2026-09-30 acceptance run
+# declared 3.0.0rc14 and got stable 2.1.0 on the box.
+#
+# Non-vacuous by construction: phase 2 above asserts the STABLE names for
+# `--version 3.0.0` and this one asserts the `@3.0.0rc` names for
+# `--version 3.0.0rc14`, so a bootstrap that hardcoded either set would fail
+# exactly one of the two. That is the property the retired assertion lacked.
+nyxgpt cloud deploy \
+    --os macos \
+    --host 127.0.0.1 \
+    --ssh-user "$SSH_USER" \
+    --identity-file "$KEY" \
+    --version 3.0.0rc14 \
+    --no-tunnel >"$OUT" 2>&1 || { cat "$OUT"; fail "deploy --os macos rc exited non-zero"; }
+cat "$OUT"
+
+contains "$CAPTURE_DIR/script.sh" 'NYXGPT_VERSION="3.0.0rc14"'
+contains "$CAPTURE_DIR/script.sh" 'NYXGPT_BREW_FORMULAS="nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc"'
+contains "$CAPTURE_DIR/script.sh" 'NYXGPT_BREW_API_FORMULA="nyxgpt-api@3.0.0rc"'
+# The unversioned names must not survive anywhere in a candidate bootstrap: a
+# single leftover `opt/nyxgpt-api` path would read a keg that is not there.
+not_contains "$CAPTURE_DIR/script.sh" "install nyxgpt-api nyxgpt-web"
+not_contains "$CAPTURE_DIR/script.sh" "opt/nyxgpt-api/libexec"
+not_contains "$CAPTURE_DIR/script.sh" "services start nyxgpt-api"
+
+echo
+echo "== Phase 2c: the version assertion actually fails on the wrong version =="
+# Fault injection (#3753's rule): a verification step that is never made to fail
+# is indistinguishable from no verification step. Run the rendered bootstrap's
+# own assertion against a CLI that reports a different version, on this runner,
+# and require a non-zero exit -- then against the right one, and require zero.
+ASSERT_DIR="$WORK/assert"
+mkdir -p "$ASSERT_DIR"
+# The four lines under test, lifted from the rendered script rather than
+# retyped, so this cannot drift from what is delivered.
+sed -n '/^if \[ -n "\$NYXGPT_VERSION" \]; then$/,/^fi$/p' "$CAPTURE_DIR/script.sh" \
+    >"$ASSERT_DIR/assert.sh"
+if [ ! -s "$ASSERT_DIR/assert.sh" ]; then
+    fail "could not lift the version assertion out of the delivered bootstrap"
+fi
+# The version is read from a file, not an environment variable: the lifted
+# lines invoke the CLI through `sudo -u`, and sudo resets the environment.
+cat >"$ASSERT_DIR/fake-nyxgpt" <<FAKE
+#!/usr/bin/env bash
+echo "nyxgpt \$(cat "$ASSERT_DIR/version.txt")"
+FAKE
+chmod 0755 "$ASSERT_DIR/fake-nyxgpt"
+chmod 0755 "$ASSERT_DIR"
+run_assertion() {
+    printf '%s\n' "$1" >"$ASSERT_DIR/version.txt"
+    # `sudo -u <me>` is a no-op elevation on the runner, which keeps the lifted
+    # lines byte-identical to the delivered ones.
+    bash -c '
+        set -euo pipefail
+        NYXGPT_VERSION="3.0.0rc14"
+        NYXGPT_BREW_FORMULAS="nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc"
+        NYXGPT_TARGET_USER="'"$SSH_USER"'"
+        NYXGPT_CLI="'"$ASSERT_DIR/fake-nyxgpt"'"
+        # shellcheck disable=SC1091
+        source "'"$ASSERT_DIR/assert.sh"'"
+    '
+}
+if run_assertion 2.1.0 >"$OUT" 2>&1; then
+    cat "$OUT"
+    fail "the bootstrap accepted 2.1.0 when 3.0.0rc14 was asked for -- the version assertion does not work"
+fi
+cat "$OUT"
+contains "$OUT" "but this machine has 2.1.0"
+echo "  -> the wrong version is refused, non-zero, naming both versions"
+run_assertion 3.0.0rc14 >"$OUT" 2>&1 || { cat "$OUT"; fail "the bootstrap rejected the version it asked for"; }
+cat "$OUT"
+contains "$OUT" "verified nyxGPT 3.0.0rc14"
+echo "  -> the right version is accepted"
 
 rm -f "$CAPTURE_DIR/cmd.txt" "$CAPTURE_DIR/script.sh"
 

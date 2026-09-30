@@ -83,9 +83,9 @@ def test_the_scan_actually_finds_security_group_descriptions():
         "anything"
     )
     files = {path.relative_to(REPO_ROOT).as_posix() for path, _, _ in found}
-    assert any("mac" in f for f in files), (
-        f"the EC2 Mac module's security group is not being scanned; found only {sorted(files)}"
-    )
+    assert any(
+        "mac" in f for f in files
+    ), f"the EC2 Mac module's security group is not being scanned; found only {sorted(files)}"
 
 
 @pytest.mark.parametrize(

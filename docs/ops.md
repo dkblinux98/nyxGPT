@@ -124,6 +124,7 @@ nyxgpt ops down
 nyxgpt ops uninstall
 nyxgpt ops doctor
 nyxgpt ops env-sync
+nyxgpt ops install-extra
 nyxgpt ops session-backend
 nyxgpt ops secrets-sync
 nyxgpt ops logs
@@ -1215,6 +1216,33 @@ Run this after `nyxgpt wizard` and again any time you rotate a secret in
 config.ini, before `docker compose up`.
 
 ---
+
+## `nyxgpt ops install-extra`
+
+Installs one of nyxGPT's optional dependency groups into **the environment
+this `nyxgpt` runs from** (#4122).
+
+```bash
+nyxgpt ops install-extra              # list the extras, and name the target environment
+nyxgpt ops install-extra cloud        # boto3 + keyring, for every `nyxgpt cloud` command
+nyxgpt ops install-extra verify       # playwright, for `nyxgpt ops verify`'s browser checks
+```
+
+`pip install "nyxgpt[cloud]"` is the equivalent, and it works on a fresh
+install. It does not work on an install you already have unless `pip` and
+`nyxgpt` happen to share an environment — and on a Homebrew keg they do not:
+`pip` is not on `PATH`, `pip3` resolves to a different interpreter whose
+packages `nyxgpt` never reads, and the only pip that reaches the right
+virtualenv is a raw path into the Cellar, which is both layout-specific and
+the kind of raw command nyxGPT does not ask anyone to type. This command
+installs into the interpreter running it — by construction the one that will
+import the dependency — so it is correct on a keg, a wheel, a virtualenv and a
+checkout alike, and it says which one it used.
+
+The install is pinned to the running nyxGPT version, so adding an extra can
+never drag a keg onto a different release. An extra the package does not
+declare is refused and the available ones are named; a failed `pip` run is
+reported as a failure with pip's own last lines, never swallowed.
 
 ## `nyxgpt ops session-backend`
 

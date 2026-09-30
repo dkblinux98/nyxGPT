@@ -49,7 +49,7 @@ from typing import Any
 
 from nyxgpt import cloud_infra
 from nyxgpt.cloud import CloudCommandError
-from nyxgpt.optional_imports import try_import
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 # The two extra root modules inside the synced Terraform tree. Root modules,
 # not child modules of the substrate: see terraform/aws/mac/versions.tf for
@@ -203,8 +203,7 @@ def _client(service: str, region: str, profile: str = "") -> Any:
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudCommandError(
-            "boto3 is required to price and place an EC2 Mac Dedicated Host. "
-            "Install with `pip install nyxgpt[cloud]`."
+            "boto3 is required to price and place an EC2 Mac Dedicated Host. " + CLOUD_EXTRA_REMEDY
         )
     try:
         session = boto3.Session(profile_name=profile) if profile else boto3.Session()
@@ -548,6 +547,13 @@ def pending_release() -> dict[str, Any]:
         "instance_type": str(record.get("mac_instance_type") or ""),
         "region": str(record.get("mac_region") or ""),
         "availability_zone": str(record.get("mac_availability_zone") or ""),
+        # #4122. Recorded since #3995 and reported by nothing, so `cloud status`
+        # read the *Linux* substrate's fields for a Mac and printed
+        # "Security group: not recorded" over a security group this file names,
+        # and `m5.xlarge` for a `mac2.metal`. Surfaced here rather than fixed at
+        # each reader: one source, so no two surfaces can disagree.
+        "security_group_id": str(record.get("mac_security_group_id") or ""),
+        "public_ip": str(record.get("mac_public_ip") or ""),
         "allocated_at": str(record.get("mac_allocated_at") or ""),
         "release_at": str(record.get("mac_release_at") or ""),
         "release_scheduled": bool(record.get("mac_release_scheduled")),
@@ -645,6 +651,57 @@ def apply_mac_host(plan: MacAllocationPlan) -> dict[str, Any]:
 def mac_state_exists() -> bool:
     """True when a Mac root state file is present (a host was applied from here)."""
     return MAC_TFSTATE_FILE.exists()
+
+
+#: The Mac root's Dedicated Host resource address, as `terraform/aws/mac` names
+#: it. Also the address `forget_host` removes.
+HOST_RESOURCE_TYPE = "aws_ec2_host"
+HOST_RESOURCE_NAME = "this"
+
+
+def allocated_host_from_state() -> str:
+    """The Dedicated Host id in the Mac root's Terraform state, or `""`.
+
+    Read straight out of the local state file rather than through
+    `terraform output` (#4122). Two reasons, and the second is the whole point:
+
+    * it costs nothing -- no `terraform init`, no process, no AWS call; and
+    * **it still answers after an apply that failed.** That is the case this
+      function exists for. `allocate` records the host id only once the whole
+      apply succeeds, so an apply that allocated the host and then failed on a
+      later resource left a billed Dedicated Host with *no* record of it:
+      `load_mac_record()` answered `{}`, the next run took the fresh-allocation
+      path, and the operator was shown a non-refundable-charge disclosure for a
+      charge they had already made. Only Terraform's own state (`0 added, 0
+      changed`) stopped it being a second real one. State is what knows; so
+      state is what is asked.
+
+    Unreadable or malformed state answers `""` -- the caller then treats the
+    host as not-yet-allocated, which is the pre-existing behaviour.
+    """
+    if not MAC_TFSTATE_FILE.exists():
+        return ""
+    try:
+        state = json.loads(MAC_TFSTATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(state, dict):
+        return ""
+    for resource in state.get("resources") or []:
+        if not isinstance(resource, dict):
+            continue
+        if resource.get("type") != HOST_RESOURCE_TYPE or resource.get("name") != HOST_RESOURCE_NAME:
+            continue
+        for instance in resource.get("instances") or []:
+            if not isinstance(instance, dict):
+                continue
+            attributes = instance.get("attributes")
+            host_id = (
+                str((attributes or {}).get("id") or "") if isinstance(attributes, dict) else ""
+            )
+            if host_id:
+                return host_id
+    return ""
 
 
 def forget_host() -> bool:
@@ -900,15 +957,32 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     host id, the instance, the address to SSH to, and the release timestamp
     the teardown will schedule against.
 
-    Re-entrant: an existing recorded host with live Terraform state is
-    reconciled (a re-deploy of the same Mac) rather than re-priced and
-    re-confirmed. Asking an operator to re-consent to a charge they already
-    made would train them to type the word without reading it.
+    Re-entrant: a host this machine has already allocated is reconciled (a
+    re-deploy of the same Mac) rather than re-priced and re-confirmed. Asking an
+    operator to re-consent to a charge they already made would train them to
+    type the word without reading it.
+
+    **What "already allocated" means (#4122).** It used to mean "the record in
+    `state.json` names a host, and a Terraform state file exists". Both halves
+    of that are written *after* a successful apply, so an apply that allocated
+    the host and then failed -- the owner's 2026-09-30 run failed on an
+    apostrophe in a security-group rule description, after the host existed --
+    satisfied neither, and the next run disclosed a fresh non-refundable charge
+    for a host that was already billing. It now also means "Terraform's state
+    holds the host", which is true from the moment the allocation succeeds,
+    whatever fails afterwards. `allocated_host_from_state` is the read, and the
+    record is healed from it on the way through.
     """
     reconcile_released_host(args)
     existing = load_mac_record()
     if existing and mac_state_exists():
         return _reconcile_existing(args, existing)
+    # No usable record, but Terraform already holds a host: a previous run
+    # allocated it and then failed before recording it. Heal the record and
+    # reconcile -- never re-disclose (#4122).
+    orphaned_host = allocated_host_from_state()
+    if orphaned_host:
+        return _reconcile_existing(args, _heal_orphaned_record(args, orphaned_host, existing))
 
     plan = resolve_allocation_plan(args)
     allocated_at = utc_now().replace(microsecond=0)
@@ -920,7 +994,38 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
         f"{plan.availability_zone} (region resolved from your nyxGPT cloud configuration, "
         "not from the AWS CLI default)."
     )
-    outputs = apply_mac_host(plan)
+    try:
+        outputs = apply_mac_host(plan)
+    except BaseException:
+        # The apply may have allocated the host before failing, and a host whose
+        # id is lost is a charge nothing can stop (#4122). Record what Terraform
+        # state knows *before* the exception leaves this function, so
+        # `nyxgpt cloud status` names the host and `nyxgpt cloud destroy --yes`
+        # can schedule its release even though this deploy never finished.
+        stranded = allocated_host_from_state()
+        if stranded:
+            record_mac_host(
+                {
+                    "mac_host_id": stranded,
+                    "mac_instance_type": plan.instance_type,
+                    "mac_region": plan.region,
+                    "mac_availability_zone": plan.availability_zone,
+                    "mac_ami_id": plan.ami_id,
+                    "mac_root_volume_size": plan.root_volume_size,
+                    "mac_allocated_at": allocated_at.isoformat(),
+                    "mac_release_at": releasable_at.isoformat(),
+                    "mac_hourly_rate": (plan.pricing.hourly_rate if plan.pricing else None),
+                    "mac_release_scheduled": False,
+                }
+            )
+            print(
+                f"\nWARNING: Dedicated Host {stranded} WAS allocated before this failure and is "
+                "billing. It has been recorded, so `nyxgpt cloud status` names it, its release "
+                "time and its accrued cost, and re-running the deploy reconciles it rather than "
+                "allocating a second one.",
+                file=sys.stderr,
+            )
+        raise
     host_id = str(outputs.get("host_id") or "")
     if not host_id:
         raise CloudCommandError(
@@ -962,6 +1067,53 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
         "pricing": plan.pricing.to_dict() if plan.pricing else {},
         "record": record,
     }
+
+
+def _heal_orphaned_record(
+    args: argparse.Namespace, host_id: str, existing: dict[str, Any]
+) -> dict[str, Any]:
+    """Write a record for a host Terraform holds but `state.json` never captured (#4122).
+
+    The allocation timestamp is the one field that cannot be recovered from
+    Terraform state -- `aws_ec2_host` has no allocation-time attribute -- so
+    this records *now*, which is deliberately conservative in the only
+    direction that is safe: a release time later than the true one never asks
+    AWS to release a host inside its 24-hour minimum, whereas an earlier one
+    burns the one-shot schedule on a rejection. The accrued cost printed from
+    it is a lower bound for the same reason, and the disclosure that follows
+    says so.
+
+    The instance type and zone come from the plan this machine would allocate,
+    which is where the tfvars that created the host came from, so a reconcile
+    re-applies the same values rather than resolving new ones.
+    """
+    instance_type = str(existing.get("mac_instance_type") or resolve_mac_instance_type(args))
+    settings = cloud_infra.resolve_settings(args)
+    allocated_at = utc_now().replace(microsecond=0)
+    pricing = lookup_host_pricing(instance_type, settings.aws_region, settings.aws_profile)
+    print(
+        f"Dedicated Host {host_id} is already allocated from this machine -- Terraform's state "
+        "holds it, but an earlier run failed before recording it. Adopting it: no new host, no "
+        "new 24-hour minimum, and no second charge.\n"
+        "Its allocation time could not be recovered, so the release time and accrued cost "
+        f"reported from here are measured from now ({allocated_at.isoformat()}) and are a lower "
+        "bound on the age of the host.",
+        file=sys.stderr,
+    )
+    return record_mac_host(
+        {
+            "mac_host_id": host_id,
+            "mac_instance_type": instance_type,
+            "mac_region": str(existing.get("mac_region") or settings.aws_region),
+            "mac_availability_zone": str(existing.get("mac_availability_zone") or ""),
+            "mac_allocated_at": str(existing.get("mac_allocated_at") or allocated_at.isoformat()),
+            "mac_release_at": str(
+                existing.get("mac_release_at") or release_time(allocated_at).isoformat()
+            ),
+            "mac_hourly_rate": existing.get("mac_hourly_rate") or pricing.hourly_rate,
+            "mac_release_scheduled": False,
+        }
+    )
 
 
 def _recorded_root_volume_size(existing: dict[str, Any]) -> int:

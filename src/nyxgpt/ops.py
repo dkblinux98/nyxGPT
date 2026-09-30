@@ -16921,6 +16921,111 @@ def session_backend(args: Any) -> int:
     return 0 if _emit_results("session-backend", results) else 2
 
 
+# --- Optional extras on a packaged install (#4122) ---------------------
+#
+# The defect this closes. Several `nyxgpt cloud` paths need boto3, which lives
+# in the `[cloud]` extra, and every one of them said so with the same remedy:
+# "Install with `pip install nyxgpt[cloud]`". On a Homebrew keg that remedy
+# cannot be followed. `pip` is not on PATH at all; `pip3` resolves to some
+# other interpreter and installs into a venv `nyxgpt` never reads; and the only
+# pip that reaches the right environment is a raw path into the Cellar
+# (`/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/<ver>/libexec/venv/bin/pip`) --
+# layout-specific, unwrapped, and exactly the kind of instruction CLAUDE.md's
+# Operational Command Wrapping requirement forbids. So the operator was handed
+# a command that does not work and no command that does.
+#
+# `nyxgpt ops install-extra <extra>` is the wrapped answer. It installs into
+# `sys.executable`'s environment -- the interpreter running this process, which
+# is by construction the one that will import boto3 next time -- so it is
+# correct on a keg, a wheel, a venv and an editable checkout without knowing
+# which it is on.
+
+#: Extras `nyxgpt ops install-extra` will install, and what each is for. Not
+#: read from package metadata: an operator asking for `dev` on a keg would be
+#: installing this project's test tooling into a service venv, which is not a
+#: thing to offer. Keep in step with pyproject.toml's
+#: `[project.optional-dependencies]`.
+INSTALLABLE_EXTRAS: dict[str, str] = {
+    "cloud": (
+        "boto3 and keyring -- required by `nyxgpt cloud` (AWS substrate, EC2 Mac "
+        "Dedicated Host pricing and placement, Terraform remote state, the OS keychain "
+        "secret store)"
+    ),
+    "verify": ("playwright -- required by `nyxgpt ops verify`'s browser checks of the web UI"),
+}
+
+
+def install_extra(extra: str) -> list[OpsResult]:
+    """Install nyxGPT's `extra` into the environment this process is running in.
+
+    The target is `sys.executable`, never a `pip` found on PATH: on a Homebrew
+    keg those are different Pythons, and installing into the wrong one produces
+    the worst possible outcome -- a command that reports success while the
+    import it was run to fix still fails.
+
+    Pinned to the running version so a keg cannot be dragged onto a different
+    release by an extras install. `--no-deps` is deliberately *not* passed: the
+    extra's whole content is dependencies.
+    """
+    name = extra.strip().lower()
+    if name not in INSTALLABLE_EXTRAS:
+        offered = ", ".join(sorted(INSTALLABLE_EXTRAS))
+        return [
+            OpsResult(
+                False,
+                f"install-extra {extra}",
+                f"{extra!r} is not an installable extra. Available: {offered}.",
+            )
+        ]
+    from nyxgpt.version import running_version
+
+    version = running_version()
+    # An unresolvable version (a tree with no installed metadata) is pinned to
+    # nothing rather than to a guess: `nyxgpt[cloud]` still installs the extra's
+    # dependencies against whatever nyxgpt is already present.
+    requirement = (
+        f"nyxgpt[{name}]=={version}" if version and version[0].isdigit() else f"nyxgpt[{name}]"
+    )
+    argv = [sys.executable, "-m", "pip", "install", "--upgrade", requirement]
+    logger.info(
+        "ops: install-extra installing %s into %s",
+        requirement,
+        sys.executable,
+        extra={"component": "ops", "action": "install-extra", "extra": name},
+    )
+    completed = _run(argv, check=False)
+    if completed.returncode == 0:
+        return [
+            OpsResult(
+                True,
+                f"install-extra {name}",
+                f"installed {requirement} into {sys.executable}",
+            )
+        ]
+    detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+    tail = " | ".join(detail[-5:]) if detail else "no output"
+    return [
+        OpsResult(
+            False,
+            f"install-extra {name}",
+            f"`pip install {requirement}` failed (exit {completed.returncode}): {tail}",
+        )
+    ]
+
+
+def install_extra_command(args: Any) -> int:
+    """`nyxgpt ops install-extra <extra>` entry point. 0 on success, else 2."""
+    requested = str(getattr(args, "extra", None) or "").strip()
+    if not requested:
+        print("Installable extras:")
+        for name, purpose in sorted(INSTALLABLE_EXTRAS.items()):
+            print(f"  {name:<8}{purpose}")
+        print(f"\nInstalling into: {sys.executable}")
+        return 0
+    results = install_extra(requested)
+    return 0 if _emit_results("install-extra", results) else 2
+
+
 # --- Secrets sync: config.ini -> GitHub Actions secrets (#3505) ---
 #
 # The canonical-store pattern this codifies: several external tokens

@@ -83,13 +83,28 @@ def test_current_month_with_no_rounds_is_zero_not_the_seed(build_dashboard):
     assert _month(gate, "Aug")["rejected"] == 0
 
 
-def test_month_outside_the_seeded_series_leaves_every_month_untouched(build_dashboard):
-    """GATE runs Jan–Aug; a `now` past its end must not index out of range."""
+def test_month_outside_the_seeded_series_extends_it_without_touching_the_seed(build_dashboard):
+    """GATE stops at the month it was last hand-edited; a `now` past its end extends it.
+
+    This used to assert the output equalled GATE exactly, because gate_series()
+    indexed `gate[month - 1]` straight into the seeded list and simply had no
+    row to write for a later month. That was the bug: the first review, issue
+    or merge dated in a month past the end raised IndexError and took the whole
+    unattended retrospective build down on the calendar roll (fixed 2026-08-31
+    by `month()`, which appends derived rows). Both halves of the contract are
+    pinned here — the seeded months keep their hand-written history, and the
+    appended ones are derived from the data rather than left at the seed.
+    """
     reviews = [_review("2026-12-01T10:00:00Z")]
 
     gate = build_dashboard.gate_series([], {}, reviews, now=datetime(2026, 12, 1, tzinfo=UTC))
 
-    assert [g["rejected"] for g in gate] == [g["rejected"] for g in build_dashboard.GATE]
+    seeded = len(build_dashboard.GATE)
+    assert [g["m"] for g in gate] == build_dashboard.MONTH_ABBR[:12]
+    assert [g["rejected"] for g in gate[:seeded]] == [g["rejected"] for g in build_dashboard.GATE]
+    # Appended months carry no seeded history: only December's own round counts.
+    assert [g["rejected"] for g in gate[seeded:]] == [0] * (11 - seeded) + [1]
+    assert _month(gate, "Dec")["rejected"] == 1
 
 
 def test_gate_series_does_not_mutate_the_seeded_constant(build_dashboard):

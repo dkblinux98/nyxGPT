@@ -14,11 +14,21 @@ lower-level machinery it drives.
 Install the AWS SDK dependency with:
 
 ```bash
-pip install "nyxgpt[cloud]"
+pip install "nyxgpt[cloud]"          # a fresh install
+nyxgpt ops install-extra cloud       # an install you already have
 ```
 
 `boto3` is kept out of the base install -- it's only needed for AWS
 deployments, not the local stack every other `nyxgpt` command drives.
+
+The second form exists because the first one only works when `pip` and
+`nyxgpt` share an environment. On a Homebrew keg they do not: `pip` is not on
+`PATH`, `pip3` is a different interpreter whose packages `nyxgpt` never reads,
+and the only pip that reaches the right virtualenv is a raw path into the
+Cellar. `nyxgpt ops install-extra` installs into the interpreter running the
+command -- the one that will do the importing -- so it is correct on a keg, a
+wheel, a virtualenv and a checkout alike. Run it with no argument to list the
+extras and see which environment it would install into.
 
 A cloud instance provisions from published artifacts and never clones this
 repository (the one exception, [`--dev`](#dev-mode-on-a-cloud-target), copies
@@ -112,7 +122,7 @@ works here too and is remembered for later runs, plus:
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
 | `--identity-file` | Private key to authenticate with (default: whatever the last deploy used, then whatever `ssh` would pick from `~/.ssh` and your agent) |
 | `--host` | Target an existing box instead of the provisioned instance |
-| `--health-timeout` / `--ssh-timeout` | Seconds to wait for `/health` (default 900) and for SSH (default 300) |
+| `--health-timeout` / `--ssh-timeout` | Seconds to wait for `/health` (default 900) and for SSH. The SSH default is **derived from the target OS**: 300 for Linux, which boots in about a minute, and 2700 for an EC2 Mac, whose first boot on a freshly allocated Dedicated Host runs Apple's own setup and has measured 18 minutes. You should not need to pass `--ssh-timeout` on either |
 | `--status` | Superseded by [`nyxgpt cloud status`](#nyxgpt-cloud-status--where-is-my-instance-3813); still prints the same JSON for anything already scripted against it |
 
 ### EC2 Mac targets
@@ -191,9 +201,30 @@ Type `allocate` to allocate the Dedicated Host, or anything else to stop:
 What the deploy does once the Mac is up — the same for a host it allocated and
 for one you named with `--host`:
 
+- Waits for the Mac to accept SSH, for up to **45 minutes** by default and
+  saying so while it waits. An EC2 Mac's first boot on a freshly allocated
+  Dedicated Host runs Apple's own setup before sshd listens, and has measured
+  18 minutes on a `mac2.metal`; the Linux default of 300s cannot succeed there.
+  Raise it with `--ssh-timeout <seconds>` if your family or AMI is slower — and
+  note that a re-run **reconciles** the Mac you already have, so a timeout
+  costs you no second host and no second 24-hour minimum.
 - Runs the [EC2 Mac bootstrap](#what-the-rendered-scripts-do): Homebrew,
-  the remote tap, `nyxgpt-api`/`nyxgpt-web`, `brew services start`. Repo-less,
-  like every other install path.
+  the remote tap, **the formulas that carry the version you asked for**, and
+  `brew services start`. Repo-less, like every other install path.
+- **Installs the version `--version` names, and proves it.** A release
+  candidate is published as a separately named Homebrew formula
+  (`nyxgpt-api@3.0.0rc`) so that `brew install nyxgpt-api` can never resolve to
+  a pre-release, so the formula names are derived from the version rather than
+  fixed: `--version 3.0.0` installs `nyxgpt-api`/`nyxgpt-web`, and
+  `--version 3.0.0rc14` installs `nyxgpt-api@3.0.0rc`/`nyxgpt-web@3.0.0rc`. The
+  bootstrap then reads `nyxgpt --version` off the keg and **refuses to start
+  the stack** if it is not the version requested, rather than bringing up a
+  release you were not testing.
+- **Exits non-zero if any of that fails.** `nyxgpt cloud deploy` exits 0 only
+  when the deploy it recorded actually finished, so a script or CI job can read
+  `$?`; an interrupted deploy exits 130. When it fails, the error quotes the
+  lines around the **first** error in the bootstrap's output — not the tail,
+  which on Homebrew is routinely the output of a later step that worked.
 - Elevates with `sudo -n` in `ec2-macos-init`'s place, and tells the script
   which login user to install Homebrew for (your `--ssh-user`). A Mac whose
   login user needs a sudo password fails immediately with sudo's own message
@@ -850,7 +881,8 @@ place: nothing has proved the deployment is gone.
 
 | Symptom | What it means |
 | --- | --- |
-| `did not accept SSH within 300s` | Usually a stale security-group rule — run `nyxgpt cloud allow-ip` (see [Lockout recovery](#lockout-recovery)). Also possible on a very slow first boot: retry with `--ssh-timeout 600`. |
+| `did not accept SSH within 300s` (a Linux target) | Usually a stale security-group rule — run `nyxgpt cloud allow-ip` (see [Lockout recovery](#lockout-recovery)). Also possible on a very slow first boot: retry with `--ssh-timeout 600`. |
+| `did not accept SSH within 2700s` (an EC2 Mac) | Almost always a first boot that is still running — that is what the 45-minute wait is for, and the message says so before it names the IP remedy. Raise it with `--ssh-timeout` and re-run: the deploy reconciles the Mac you already have, so there is no second host and no second 24-hour minimum. `nyxgpt cloud status` names the Dedicated Host, its release time and what it has cost so far. |
 | `Provisioning the instance failed` | Every failed step of the remote install is listed under it, in full and untruncated (the provisioning run's stdout and stderr are streamed together as they happen, so what you watched is what the summary quotes). When the run failed before any step reported — a package-manager or shell error — the last lines of its output are quoted instead, always on whole-line boundaries. Re-running `nyxgpt cloud deploy` is safe — provisioning is idempotent. |
 | `node/npm could not be installed` | Neither NodeSource nor the distro's own packages produced a Node toolchain, so `ops install` could not build the web bundle. Usually a blocked egress to `nodesource.com`; the instance needs outbound HTTPS. |
 | `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud status` and `nyxgpt cloud ops doctor` (the instance's own doctor, over the wrapped SSH path) say more. |
@@ -1334,7 +1366,7 @@ nyxgpt cloud user-data --os macos
 | Flag | Description |
 | --- | --- |
 | `--os {linux,macos}` | Required. Target instance OS family. |
-| `--version <version>` | Pin the installed nyxGPT version. Linux: `pip install nyxgpt==<version>`. macOS: recorded in the script for reference only -- the Homebrew tap always tracks its current formula (see [Remote tap](homebrew.md#remote-tap)), not an arbitrary pinned release. Default: latest. |
+| `--version <version>` | Pin the installed nyxGPT version. Linux: `pip install nyxgpt==<version>`. macOS: selects the tap formulas that carry it — `nyxgpt-api`/`nyxgpt-web` for a release, `nyxgpt-api@<line>rc`/`nyxgpt-web@<line>rc` for a candidate (see [Remote tap](homebrew.md#remote-tap)) — and the rendered script asserts on the instance that the version it installed is the one asked for. Omit it to install whatever the tap currently serves as stable, in which case there is no declared version to assert against. |
 | `--session-backend {file,cassandra}` | Where the instance stores chat sessions (#3865). Default: `cassandra` on Linux, `file` on macOS -- see below. |
 | `--output <path>` | Write the rendered script to `path` instead of stdout. |
 
@@ -1497,7 +1529,7 @@ instead to one of:
 | Destination | Where the key pair goes |
 | --- | --- |
 | `profile` (default) | `~/.aws/credentials`, under the chosen profile name -- exactly what `aws configure --profile <name>` would produce |
-| `keychain` | The OS keychain, via the optional `keyring` package (`pip install nyxgpt[cloud]`) |
+| `keychain` | The OS keychain, via the optional `keyring` package — `nyxgpt ops install-extra cloud` adds it to an install that does not already have it |
 | `ambient` | Nowhere -- credentials are already available some other way (an existing profile, an EC2 instance role, an SSO session, environment variables) and nothing is written |
 
 Only the non-secret *reference* -- profile name, region, and which
@@ -1669,8 +1701,11 @@ fixed.
 
 ### Testing
 
-`nyxgpt[cloud]` (`pip install "nyxgpt[cloud]"`) is required at runtime for
-either provider -- see `src/nyxgpt/cloud_secrets.py`. Tests exercise both
+`nyxgpt[cloud]` is required at runtime for either provider -- see
+`src/nyxgpt/cloud_secrets.py`. On a fresh install, `pip install
+"nyxgpt[cloud]"`; on an install that already exists, `nyxgpt ops install-extra
+cloud`, which installs into the environment `nyxgpt` itself runs from (on a
+Homebrew keg that is not the environment a bare `pip` reaches). Tests exercise both
 providers against a mocked boto3 client (no live AWS dependency); see
 `tests/unit/test_cloud_secrets.py`.
 

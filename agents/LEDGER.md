@@ -1820,6 +1820,73 @@ rather than mechanism, and nothing can enforce them.
   fails, skip" wording of `scripts/retrospective/REFRESH_RUNBOOK.md` steps
   2b–3 (2026-08-18) — see Superseded.
 
+- **D-051** · 2026-09-30 · developer agent (#4122) — **An installer names the
+  artifact it must produce, and then reads it back; naming the command is not
+  the same claim.** Three corrections a future session would re-derive
+  wrongly, all from one acceptance failure on real `mac2.metal` hardware.
+
+  (a) *A release candidate cannot be installed by the stable formula names,
+  and the project already knew it.* `release_candidate._guardrails` states in
+  so many words that "the stable nyxgpt-api/nyxgpt-web formulas are never
+  written by an rc publish, so `brew install nyxgpt-api` still resolves to the
+  latest stable release" — and the EC2 Mac bootstrap ran exactly that command
+  while its header declared `--version` "informational only ... this script
+  always installs whatever the tap currently serves". So `--os macos` could
+  install *any* version except a candidate, which is the only channel
+  acceptance testing uses: the owner's run declared `3.0.0rc14` and tested
+  stable `2.1.0`. Formula names are now derived from the declared version
+  through the publisher's own `rc_formula_name`, every keg path in the
+  bootstrap is built from the formula name rather than from `opt/nyxgpt-api`,
+  and the bootstrap reads `nyxgpt --version` off the keg and refuses to start
+  a stack that is not the release requested. **Two claims that look like one:
+  "the install command mentions the right formula" and "the right version is
+  on the box."** Only the second is worth asserting, and
+  `cloud-target-os-smoke.sh` was asserting the first — `contains
+  "$CAPTURE_DIR/script.sh" "install nyxgpt-api nyxgpt-web"`. Executed
+  verification existed for this path, passed, and **certified the defect**. A
+  D-006 hardware exception (EC2 Mac, `docs/live-verification-ci.md`) is not a
+  licence for the job around it to assert a command string.
+
+  (b) *A wait whose length depends on the target must be derived from the
+  target.* `ssh_timeout` defaulted to 300s with `os_family=os_family` two
+  lines below it; an EC2 Mac's first boot on a freshly allocated Dedicated
+  Host measured **18.1 minutes** (launch 15:49:57Z, SSH 16:08:01Z), so the
+  Linux default could not succeed — and because the host is allocated
+  *before* the wait, every expiry committed a non-refundable $15.60 and then
+  died. The failure message compounded it by leading with `nyxgpt cloud
+  allow-ip`, a cause nothing had checked, on the platform where the cause is
+  almost always "not booted yet" (the shape #3993's AC1 already found).
+
+  (c) *A tail is the wrong diagnostic window for anything that continues past
+  its first failure.* `brew install a b` finishes the keg it can and carries
+  on (D-047's `ofail`), so the last 25 lines of a failed run were the
+  *successful* `nyxgpt-web` install while the real error — pip unable to
+  reach pypi.org through macOS Secure Transport — sat ~200 lines earlier. The
+  window is now around the **first** recognized error, with the tail kept only
+  as a last resort.
+
+  Two smaller rules settled with it, both general:
+  **an exit code is derived from the recorded outcome, not from reaching the
+  end of a function** (`deploy_command` returned 0 unconditionally, and its
+  `except KeyboardInterrupt: return 0` — written for the foreground tunnel —
+  covered every subcommand, so an interrupted deploy over a billing Mac
+  printed "Tunnel closed." and exited 0); and **a resource is recorded the
+  moment it exists, not when the operation around it succeeds** (the host id
+  was written only after the whole Terraform apply, so an apply that
+  allocated the host and then failed left a billed host with no record, and
+  the next run re-disclosed a charge already made — only `0 added, 0 changed`
+  prevented a second real one). Reconciliation now reads the host out of
+  Terraform state, which is what knows.
+
+  The behaviours are not recorded here — they are pinned by
+  `tests/unit/test_cloud_provision.py`, `tests/unit/test_cloud_deploy.py`,
+  `tests/unit/test_cloud_mac.py`, `tests/unit/test_ops_install_extra.py` and
+  `cloud-target-os-smoke.yml`'s stable/rc pair plus its injected version
+  check, per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4122; extends **D-043**; cites **D-047**, **D-030**, **D-006**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
