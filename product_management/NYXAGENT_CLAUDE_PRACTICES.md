@@ -419,7 +419,20 @@ The question is **not** "adopt or don't." It is **which layer nyxAgent is**:
   discarded: it means building twelve subsystems that are not where nyxAgent's
   differentiation lives, to arrive beside an MIT-licensed incumbent.
 
-**Recommendation: (b), with one deliberate borrowing from (a).** The doctrine —
+**Owner direction, 2026-09-30 — a fourth option, chosen:** *"instantiate
+nyxAgent in GitHub with a fork of Paperclip… I don't want Paperclip to be an
+add-on to nyxAgent but rather a starting point for nyxAgent."* That is **(d) a
+hard fork as the foundation** — (a)'s codebase with (b)'s ownership, which the
+three options above did not name. MIT permits it outright and the compliance
+work is small; the cost is maintenance ownership of ~2.76M lines. The mechanics,
+the licence findings and the procedure are in `NYXAGENT_BOOTSTRAP.md`, including
+why GitHub's Fork button is the wrong mechanism for that intent. The
+recommendation below is superseded as a decision and kept as the reasoning it
+was weighed against; the owner's rationale for (d) belongs in a ledger `D-`
+entry.
+
+**Recommendation as drafted (superseded by the owner's (d) above): (b), with one
+deliberate borrowing from (a).** The doctrine —
 the gates, the ledger, executed verification, judgment over scripts — is the
 part nobody else has and the part worth owning. The control plane is commodity,
 and Paperclip is the proof. But the **adapter boundary** should be taken from
@@ -438,9 +451,11 @@ already establishes for work tracking.
    how that maps onto GitHub-side authorship, which is the half that matters.
 2. **Whether "own the whole stack" reaches the control plane**, or only the
    agents. That is the owner's call and it decides (a) versus (b) on its own.
-3. **Maturity.** Paperclip launched March 2026. **Not assessed:** release
-   cadence, issue backlog, production readiness. A six-month-old project at the
-   center of the pipeline is a dependency risk to measure before taking.
+3. **Maturity.** Paperclip launched March 2026. **Assessed 2026-09-30:**
+   upstream is at PR #14727 with HEAD committed that same day — alive and moving
+   fast. That cuts both ways: maintained, but a fork or a dependency diverges
+   immediately, and the codebase is ~2.76M lines of TypeScript excluding tests
+   across 5,861 files.
 
 ### 3b.5 Relationship to §3
 
@@ -580,8 +595,9 @@ notes that became `D-` entries — not the count of notes.
 2. **§3b — which layer is nyxAgent?** (a) a Paperclip company definition,
    (b) purpose-built borrowing Paperclip's design, or (c) a competitor. This
    re-opens the decision `PHASE_7_PLAN.md` settled against OpenClaw, on better
-   terms. Recommendation is (b) plus Paperclip's adapter boundary; the
-   identity/attribution mapping is the unchecked fact most likely to decide it.
+   terms. **Answered 2026-09-30** by the owner's direction to hard-fork —
+   option (d) — which none of the three named. The residual choices (visibility,
+   upstream posture, repository owner) moved to `NYXAGENT_BOOTSTRAP.md` §8.
 3. **§2.2 and §2.4 ordering.** Evals (§2.4) are the precondition for safely
    changing the reviewer (§2.2). Recommend §2.4 first even though §2.2 is the
    more visible win — the alternative is changing the reviewer and having no way
