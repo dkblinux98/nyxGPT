@@ -205,9 +205,33 @@ jobs:
 
           case "$STATE" in
             failed)
-              DECISION="failed"
+              # TEMPORARY (owner decision, 2026-08-26) -- REVERT AFTER #4034.
+              #
+              # A red required check is NOTED, not blocking. #3971 shipped two
+              # halves: the prompt instruction "CI state is not your job"
+              # (04676daf), which is where the token saving lives, and this
+              # gate (6607bd88), which refuses the review outright. The owner
+              # asked for the first, not the second: note the failure, review
+              # the code anyway, and return every finding in ONE round.
+              #
+              # Measured over the 6 days since 6607bd88 landed: of 106 review
+              # runs that actually engaged, the gate REFUSED 23 and only 15
+              # reviews completed. A refusal is still a developer round-trip,
+              # so the gate did not remove a cycle -- it removed the findings
+              # from that cycle and added a second one.
+              #
+              # #4034 is the live case: `k3s-cloud-smoke` failed on the
+              # pull_request run and PASSED on the push run four seconds
+              # earlier, on the same SHA. required_check_state unions every
+              # attempt, so one flaky attempt pins the head unreviewable
+              # forever.
+              #
+              # `pending` below is deliberately UNCHANGED: waiting on a
+              # half-built head blocks nobody and wastes nothing.
+              DECISION="proceed"
               echo "::warning::PR #$PR head $HEAD_SHA has failing required" \
-                "checks ($FAILED) -- no review invocation will be spent"
+                "checks ($FAILED) -- NOTED, not blocking; the review proceeds" \
+                "and reports them as an observation (temporary, revert after #4034)"
               ;;
             timeout)
               DECISION="timeout"
@@ -487,11 +511,7 @@ jobs:
 
             ## CI state is not your job (#3971)
 
-            **The required checks on this head are green.** A gate ran before
-            you: a head with a failing required check is refused at submit and
-            handed back to the developer, and a head whose checks are still
-            pending is waited on, not reviewed. You are only ever invoked on a
-            head that passed that gate.
+            ${{ needs.head-gate.outputs.failed == '' && '**The required checks on this head are green.** A gate ran before you: a head whose checks are still pending is waited on, not reviewed.' || format('**These required checks are RED on this head: {0}.** You are being told deliberately (owner decision, 2026-08-26, temporary). A red check NO LONGER stops the review: report it as an OBSERVATION in the `### CI State` section, review the code fully, and return every finding in ONE round so the developer fixes the checks and the findings together. The red check is NOT itself a blocking finding, and you must NOT re-run or re-read the checks -- the list above is the answer.', needs.head-gate.outputs.failed) }}
 
             So do NOT run the gates, do NOT read the check list, and do NOT
             report check state. "CI is red", "N checks pending", "the web
@@ -735,8 +755,7 @@ jobs:
                '[For re-reviews: State whether fixes resolved previous issues]' || '' }}
 
             ### CI State
-            - Required checks on this head: GREEN (the gate would not have
-              invoked you otherwise -- do not re-check, do not report)
+            - Required checks on this head: ${{ needs.head-gate.outputs.failed == '' && 'GREEN (stated by the gate -- do not re-check, do not report)' || format('RED: {0} -- state this as an OBSERVATION only. It does NOT block your decision and is NOT a finding. Do not re-check it.', needs.head-gate.outputs.failed) }}
             - Developer CI override present: [NO / YES + whether the stated
               reason held, and what you checked to decide]
 
@@ -1033,6 +1052,11 @@ jobs:
           exit 0
 
   # The head is not reviewable, and saying so costs no review invocation.
+  #
+  # TEMPORARY (owner decision, 2026-08-26) -- REVERT AFTER #4034: the `failed`
+  # branch below is currently UNREACHABLE. The gate now decides `proceed` on a
+  # red head and passes the failing check names into the review prompt instead,
+  # so only `timeout` reaches this job. See the case statement in head-gate.
   #
   # `failed`  -> a red head is the developer's problem (#3971): hand it back by
   #              assignment, which is the workflow lever (D-028). This is NOT a

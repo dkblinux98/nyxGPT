@@ -136,15 +136,14 @@ def _seed_data_dir(tmp_path, *, issues_stamped=False):
     data = tmp_path / "data"
     data.mkdir()
     corpus = (
-        {"generated_at": NOW.isoformat(), "issues": ISSUES}
-        if issues_stamped
-        else list(ISSUES)  # type: ignore[assignment]
+        {"generated_at": NOW.isoformat(), "issues": ISSUES} if issues_stamped else list(ISSUES)  # type: ignore[assignment]
     )
     (data / "all_issues.json").write_text(json.dumps(corpus))
     (data / "dashboard_data.json").write_text(
         json.dumps({"generated_at": NOW.isoformat(), "modules": {}, "issues": [], "days": {}})
     )
     (data / "relationships.json").write_text(json.dumps({"generated_at": "2026-07-01T00:00:00Z"}))
+    (data / "pr_times.json").write_text(json.dumps({"generated_at": NOW.isoformat(), "prs": {}}))
     return data
 
 
@@ -169,6 +168,7 @@ def test_build_emits_a_stamp_for_every_source(build_dashboard, tmp_path, monkeyp
     assert build["at"] and datetime.fromisoformat(build["at"]).tzinfo is not None
     assert set(build["sources"]) == {
         "issues",
+        "prTimes",
         "relationships",
         "reviews",
         "projectFields",
@@ -203,8 +203,9 @@ def test_unstamped_corpus_survives_the_build(build_dashboard, tmp_path, monkeypa
         "ageDays": None,
         "stale": False,
         "present": True,
-        # Written by the refresh session by hand, so no dump owes it.
-        "workflow": None,
+        # Produced by the all-in-one refresh since 2026-09; before that it was
+        # hand-written by the session, which is how the drift began.
+        "workflow": "retro_data_refresh.yml",
     }
 
 
@@ -231,21 +232,107 @@ def test_build_fails_when_a_dump_did_not_land(build_dashboard, tmp_path, monkeyp
 def test_missing_sources_can_be_published_deliberately(build_dashboard, tmp_path, monkeypatch):
     """--allow-missing-sources is the conscious override, not the default."""
     data = _seed_data_dir(tmp_path, issues_stamped=True)
+    _restamp_fresh(data)  # only absence is under test here, not age
     out = tmp_path / "retro.html"
     assert _build(build_dashboard, monkeypatch, data, out, "--allow-missing-sources") == 0
 
 
-def test_build_succeeds_when_every_source_landed(build_dashboard, tmp_path, monkeypatch):
-    data = _seed_data_dir(tmp_path, issues_stamped=True)
-    stamp = {"generated_at": NOW.isoformat()}
+def _restamp_fresh(data):
+    """Stamp every seeded input at the real clock: the build dates itself with
+    datetime.now(), so a NOW-stamped seed is weeks stale by the time this runs
+    and would trip the stale gate in a test that is about something else."""
+    fresh = datetime.now(UTC).isoformat()
+    for name in ("all_issues.json", "dashboard_data.json", "relationships.json", "pr_times.json"):
+        path = data / name
+        if not path.exists():
+            continue
+        raw = json.loads(path.read_text())
+        if isinstance(raw, dict):
+            raw["generated_at"] = fresh
+            path.write_text(json.dumps(raw))
+
+
+def _land_optional_dumps(data):
+    """spend/churn/project_fields present, and every input stamped fresh."""
+    _restamp_fresh(data)
+    stamp = {"generated_at": datetime.now(UTC).isoformat()}
     (data / "project_fields.json").write_text(json.dumps({**stamp, "issues": {}}))
     empty_bucket = {"claude_steps": 0, "runs": 0, "runner_minutes": 0.0, "retry_cycles": 0}
     (data / "spend.json").write_text(
         json.dumps({**stamp, "issues": {}, "unattributed": empty_bucket})
     )
     (data / "churn.json").write_text(json.dumps({**stamp, "issues": {}, "rounds": []}))
+
+
+def test_build_succeeds_when_every_source_landed(build_dashboard, tmp_path, monkeypatch):
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    _land_optional_dumps(data)
     out = tmp_path / "retro.html"
     assert _build(build_dashboard, monkeypatch, data, out) == 0
+
+
+# --- a dump that was never RUN is the same failure as one that failed ---
+
+
+def test_build_fails_when_a_source_is_stale(build_dashboard, tmp_path, monkeypatch, capsys):
+    """project_fields.json sat five days old across a week of green refreshes
+    (2026-08-17 → 08-22): the file was there, so nothing refused it, and the
+    header's stale count was a line nobody had to act on."""
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    _land_optional_dumps(data)
+    (data / "project_fields.json").write_text(
+        json.dumps(
+            {"generated_at": (datetime.now(UTC) - timedelta(days=5)).isoformat(), "issues": {}}
+        )
+    )
+    out = tmp_path / "retro.html"
+
+    assert _build(build_dashboard, monkeypatch, data, out) == build_dashboard.STALE_SOURCE_EXIT
+    assert build_dashboard.STALE_SOURCE_EXIT not in (0, build_dashboard.MISSING_SOURCE_EXIT)
+
+    printed = capsys.readouterr().out
+    assert "stale sources: project_fields.json" in printed
+    # Named and actionable: the file, how far behind, and what refreshes it.
+    assert "project_fields.json is 5.0 days behind" in printed
+    assert "retro_data_refresh.yml" in printed
+    assert out.exists()  # still written: publishable deliberately, never silently
+
+
+def test_stale_sources_can_be_published_deliberately(build_dashboard, tmp_path, monkeypatch):
+    data = _seed_data_dir(tmp_path, issues_stamped=True)
+    _land_optional_dumps(data)
+    (data / "churn.json").write_text(
+        json.dumps(
+            {
+                "generated_at": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+                "issues": {},
+                "rounds": [],
+            }
+        )
+    )
+    out = tmp_path / "retro.html"
+    assert _build(build_dashboard, monkeypatch, data, out, "--allow-stale-sources") == 0
+
+
+def test_missing_outranks_stale_in_the_exit_status(build_dashboard, tmp_path, monkeypatch):
+    """Both are reported; the exit status names the worse one."""
+    data = _seed_data_dir(tmp_path, issues_stamped=True)  # spend/churn absent, relationships stale
+    out = tmp_path / "retro.html"
+    assert _build(build_dashboard, monkeypatch, data, out) == build_dashboard.MISSING_SOURCE_EXIT
+    assert (
+        _build(build_dashboard, monkeypatch, data, out, "--allow-missing-sources")
+        == build_dashboard.STALE_SOURCE_EXIT
+    )
+
+
+def test_load_pr_times_reads_both_shapes(build_dashboard, tmp_path):
+    path = tmp_path / "pr_times.json"
+    path.write_text(json.dumps({"2610": ["a", "b"]}))
+    assert build_dashboard.load_pr_times(path) == ({"2610": ["a", "b"]}, None)
+    path.write_text(
+        json.dumps({"generated_at": "2026-09-17T10:00:00Z", "prs": {"2610": ["a", "b"]}})
+    )
+    assert build_dashboard.load_pr_times(path) == ({"2610": ["a", "b"]}, "2026-09-17T10:00:00Z")
 
 
 def test_absent_section_is_rendered_unavailable_not_hidden(build_dashboard, tmp_path, monkeypatch):

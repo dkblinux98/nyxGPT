@@ -34,6 +34,8 @@ on:
       - "scripts/retrospective/publish_data_branch.sh"
       - "scripts/retrospective/merge_data_branch.sh"
       - "tests/test_retro_data_pipeline.sh"
+      - "tests/test_retro_refresh_covers_sources.sh"
+      - "scripts/retrospective/build_dashboard.py"
       - ".github/workflows/retro_*.yml"
       - ".github/workflows/retro-data-pipeline-smoke.yml"
   pull_request:
@@ -41,6 +43,8 @@ on:
       - "scripts/retrospective/publish_data_branch.sh"
       - "scripts/retrospective/merge_data_branch.sh"
       - "tests/test_retro_data_pipeline.sh"
+      - "tests/test_retro_refresh_covers_sources.sh"
+      - "scripts/retrospective/build_dashboard.py"
       - ".github/workflows/retro_*.yml"
       - ".github/workflows/retro-data-pipeline-smoke.yml"
   workflow_dispatch:
@@ -66,7 +70,7 @@ jobs:
           # Comment lines are allowed to mention the old command; executable
           # lines are not.
           _code() { grep -v '^[[:space:]]*#' "$1"; }
-          for wf in .github/workflows/retro_*_dump.yml; do
+          for wf in .github/workflows/retro_*_dump.yml .github/workflows/retro_data_refresh.yml; do
             if _code "$wf" | grep -q 'git push'; then
               echo "::error file=$wf::still pushes directly at a branch (#3815)"
               rc=1
@@ -92,6 +96,10 @@ jobs:
           fi
           exit "$rc"
 
+      - name: The all-in-one refresh produces every input the dashboard reads
+        shell: bash
+        run: bash tests/test_retro_refresh_covers_sources.sh
+
       - name: Every lander can satisfy the ruleset's approving review
         shell: bash
         run: |
@@ -100,7 +108,7 @@ jobs:
           # bypass actors, and GitHub refuses self-approval — so a lander needs
           # two DIFFERENT agent tokens or its pull request never merges (#3815).
           rc=0
-          for wf in .github/workflows/retro_*_dump.yml .github/workflows/retro_data_merge.yml; do
+          for wf in .github/workflows/retro_*_dump.yml .github/workflows/retro_data_refresh.yml .github/workflows/retro_data_merge.yml; do
             if ! grep -q 'APPROVE_TOKEN:' "$wf"; then
               echo "::error file=$wf::sets no APPROVE_TOKEN; its data PR cannot clear the required review (#3815)"
               rc=1

@@ -559,10 +559,30 @@ _run_gate_step() {
   sed -n 's/^decision=//p' "$TMP/gh-output"
 }
 
+# The `failed=` half of the same step's output. It is what the review prompt
+# interpolates, so a red head that proceeds must still name its check here --
+# otherwise the review is invoked knowing nothing about the failure.
+_run_gate_step_failed() {
+  _run_gate_step "$1" >/dev/null
+  sed -n 's/^failed=//p' "$TMP/gh-output"
+}
+
 _assert_eq "the workflow step reviews a green head" "proceed" \
   "$(_run_gate_step 'security-scan=success')"
-_assert_eq "the workflow step refuses to review a red head" "failed" \
+
+# TEMPORARY (owner decision, 2026-08-26) -- REVERT AFTER #4034, together with
+# the `failed)` branch in claude-code-review.yml.
+#
+# A red required check is NOTED, not refused. The owner asked for the failure
+# to be reported inside the review so ONE round returns the CI problem and the
+# code findings together; #3971 shipped the refusal instead. The two
+# assertions below are the whole contract: the review still runs, and the
+# failing check's name still reaches it.
+_assert_eq "the workflow step reviews a red head, noting the failure" "proceed" \
   "$(_run_gate_step 'security-scan=failure')"
+_assert_eq "and the red check's name still reaches the review prompt" "security-scan" \
+  "$(_run_gate_step_failed 'security-scan=failure')"
+
 _assert_eq "the workflow step reports a wait that expired" "timeout" \
   "$(_run_gate_step 'security-scan=pending')"
 

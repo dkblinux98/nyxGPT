@@ -39,12 +39,17 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
+      # Waits for the token's hourly REST budget first: this is the re-run
+      # path after a refresh dump failed, which is exactly when the budget is
+      # most likely spent (the 2026-09-17 review-rounds re-dispatch died on
+      # its first call). Same wait as every step of retro_data_refresh.yml.
       - name: Dump native relationships
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           REPO: ${{ vars.REPO_OWNER }}/${{ vars.REPO_NAME }}
         run: |
           set -euo pipefail
+          scripts/retrospective/await_rate_limit.sh
           python3 scripts/retrospective/dump_relationships.py
           jq '{generated_at, issues: (.issues | length)}' \
             scripts/retrospective/data/relationships.json

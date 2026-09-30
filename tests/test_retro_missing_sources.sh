@@ -64,6 +64,30 @@ field() { # field <json> <python expression over `d`>
 
 cp -R "$RETRO/data" "$WORK/data"
 
+# Every input is restamped to now: the checked-in data is however old the last
+# refresh left it, and a stale input is its own build failure (exit 3, covered
+# by test_retro_dashboard_stamps.sh). This test is about absent inputs only.
+python3 - "$WORK/data" <<'PY'
+import json, sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+data = Path(sys.argv[1])
+now = datetime.now(UTC).isoformat()
+for name in ("spend.json", "churn.json", "relationships.json", "project_fields.json",
+             "dashboard_data.json", "all_issues.json"):
+    path = data / name
+    raw = json.loads(path.read_text())
+    if name == "all_issues.json" and not isinstance(raw, dict):
+        raw = {"issues": raw}
+    raw["generated_at"] = now
+    path.write_text(json.dumps(raw))
+pt = data / "pr_times.json"
+raw = json.loads(pt.read_text())
+prs = raw.get("prs", raw) if isinstance(raw, dict) and "prs" in raw else raw
+pt.write_text(json.dumps({"generated_at": now, "prs": prs}))
+PY
+
 echo "== the failing case: neither dump has ever landed"
 rm -f "$WORK/data/spend.json" "$WORK/data/churn.json"
 status=0

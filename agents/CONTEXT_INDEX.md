@@ -81,6 +81,7 @@ fails if it drifts. Do not hand-edit.
 | `retro-data-pipeline-smoke.yml` | push, pull_request, workflow_dispatch | Retro Data Pipeline Smoke |
 | `retro_churn_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Churn Cost |
 | `retro_data_merge.yml` | push | Retro Dashboard - Merge Data Branch |
+| `retro_data_refresh.yml` | workflow_dispatch | Retro Dashboard - Refresh All Data |
 | `retro_project_fields_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Project Fields |
 | `retro_relationships_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Relationships |
 | `retro_review_rounds_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Review Rounds |
