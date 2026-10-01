@@ -422,16 +422,68 @@ def test_provision_failure_lists_every_failed_step_untruncated():
 
 
 def test_provision_failure_falls_back_to_whole_tail_lines():
-    """A failure before `ops install` starts has no `[FAIL]` line to name, so the
-    fallback quotes the tail -- cut on line boundaries, never mid-line."""
+    """The last resort: no `[FAIL]` line and nothing that looks like an error
+    either, so the tail is quoted -- cut on line boundaries, never mid-line."""
     output = [f"line {i}" for i in range(60)]
 
     detail = cloud_deploy._provision_failure_detail(output)
 
     lines = detail.splitlines()
-    assert lines[0].startswith("Provisioning the instance failed with no step-level diagnostic.")
+    assert lines[0].startswith(
+        "Provisioning the instance failed with no step-level diagnostic and no recognizable "
+        "error line."
+    )
     quoted = [line.strip() for line in lines[1:]]
     assert quoted == [f"line {i}" for i in range(60 - cloud_deploy._PROVISION_TAIL_LINES, 60)]
+
+
+def test_provision_failure_quotes_the_first_error_not_the_tail():
+    """#4122. A run that continues past its first failure ends on the output of
+    whatever it did afterwards, so the tail quotes a SUCCESS and calls it the
+    diagnostic.
+
+    This is the owner's 2026-09-30 acceptance failure exactly: `brew install
+    nyxgpt-api nyxgpt-web` failed on the first formula (pip could not reach
+    pypi.org through macOS Secure Transport), then installed the second one
+    cleanly, because Homebrew's post-build phase uses `ofail` rather than `odie`
+    (D-047). `cloud status` said "Last 25 line(s) of its output" and printed 25
+    lines of a working `nyxgpt-web` install while the real error sat ~200 lines
+    earlier.
+    """
+    output = [
+        *[f"==> preamble {i}" for i in range(50)],
+        "+ pip install --upgrade pip",
+        "SSLError(SSLCertVerificationError('OSStatus -26276'))",
+        "ERROR: No matching distribution found for pip",
+        "Error: dkblinux98/nyxgpt/nyxgpt-api: Failure while executing; `sandbox-exec ...`",
+        *[f"==> Installing nyxgpt-web step {i}" for i in range(200)],
+        "🍺  /opt/homebrew/Cellar/nyxgpt-web/2.1.0: 42 files, 1.2MB",
+    ]
+
+    detail = cloud_deploy._provision_failure_detail(output)
+
+    assert "The FIRST error in" in detail
+    # The cause chain is quoted...
+    assert "No matching distribution found for pip" in detail
+    assert "SSLCertVerificationError" in detail
+    # ...and the benign later success that the blind tail used to show is not.
+    assert "Cellar/nyxgpt-web/2.1.0" not in detail
+    assert "Installing nyxgpt-web step 199" not in detail
+    # The lines immediately before the error are context an operator needs to
+    # know what was being attempted.
+    assert "pip install --upgrade pip" in detail
+
+
+def test_provision_failure_prefers_ops_fail_lines_over_the_first_error():
+    """`[FAIL]` lines are still the best window when the run named its own
+    failures: they are every failure, not one error plus a guess at context."""
+    detail = cloud_deploy._provision_failure_detail(
+        ["Error: something early", "[FAIL] cassandra: container not running"]
+    )
+
+    assert "Failed steps:" in detail
+    assert "[FAIL] cassandra: container not running" in detail
+    assert "The FIRST error in" not in detail
 
 
 def test_provision_failure_says_so_when_nothing_was_returned():
@@ -2005,8 +2057,12 @@ def test_the_macos_bootstrap_installs_from_the_remote_tap_and_never_clones():
     )
 
     assert "tap dkblinux98/nyxgpt" in script
-    assert "install nyxgpt-api nyxgpt-web" in script
-    assert "services start nyxgpt-api" in script
+    # The formula names come from the declared version, not from a literal in
+    # the template (#4122) -- `_args()` declares a release, so these are the
+    # stable names. `test_cloud_provision.py` owns the per-channel selection.
+    assert 'NYXGPT_BREW_FORMULAS="nyxgpt-api nyxgpt-web"' in script
+    assert "install $NYXGPT_BREW_FORMULAS" in script
+    assert 'services start "$NYXGPT_BREW_API_FORMULA"' in script
     # Only executable lines: the header comments *mention* `git clone` to
     # document that the script deliberately never runs one.
     executable = [
@@ -2356,3 +2412,246 @@ def test_destroying_after_a_linux_deploy_has_nothing_left_over_to_report(
     )
 
     assert cloud_deploy.destroy(_args(yes=True))["unmanaged_target"] == ""
+
+
+# --- #4122: a failed deploy must not exit 0 ------------------------------
+
+
+def test_a_deploy_that_did_not_finish_exits_non_zero(monkeypatch, capsys):
+    """#4122's first finding, from the outside: the exit code is derived from the
+    record `cloud status` reads, not from having reached the end of a function.
+
+    The owner's acceptance run had `cloud status` reporting NOT COMPLETED
+    honestly while `$?` was 0 -- which every script, CI job and wrapper reads as
+    success. A guard that only covers the paths known to raise cannot fix that,
+    because "every path raises" was the claim that was wrong.
+    """
+    monkeypatch.setattr(cloud_deploy, "deploy", lambda args: {"steps": [], "plan": {}})
+    monkeypatch.setattr(cloud_deploy, "_print_deploy_summary", lambda result: None)
+    # Nothing wrote an attempt record, so nothing says the deploy finished.
+    assert cloud_deploy.deploy_command(_args(cloud_cmd="deploy")) == 1
+    assert "did not complete" in capsys.readouterr().err
+
+
+def test_a_deploy_that_finished_exits_zero(monkeypatch):
+    def _fake_deploy(args):
+        cloud_deploy._write_json(
+            cloud_deploy.DEPLOY_ATTEMPT_FILE, {"status": cloud_deploy.ATTEMPT_SUCCEEDED}
+        )
+        return {"steps": [], "plan": {}}
+
+    monkeypatch.setattr(cloud_deploy, "deploy", _fake_deploy)
+    monkeypatch.setattr(cloud_deploy, "_print_deploy_summary", lambda result: None)
+
+    assert cloud_deploy.deploy_command(_args(cloud_cmd="deploy")) == 0
+
+
+def test_a_failed_attempt_record_exits_non_zero_even_when_deploy_returned(monkeypatch):
+    """The specific hole: `deploy` recorded FAILED and somehow still returned."""
+
+    def _fake_deploy(args):
+        cloud_deploy._write_json(
+            cloud_deploy.DEPLOY_ATTEMPT_FILE,
+            {"status": cloud_deploy.ATTEMPT_FAILED, "error": "brew install failed"},
+        )
+        return {"steps": [], "plan": {}}
+
+    monkeypatch.setattr(cloud_deploy, "deploy", _fake_deploy)
+    monkeypatch.setattr(cloud_deploy, "_print_deploy_summary", lambda result: None)
+
+    assert cloud_deploy.deploy_command(_args(cloud_cmd="deploy")) == 1
+
+
+def test_interrupting_a_deploy_is_not_success(monkeypatch, capsys):
+    """Ctrl-C used to print "Tunnel closed." and exit 0 for EVERY subcommand.
+
+    On a `--os macos` deploy that means a half-provisioned Mac and an allocated
+    Dedicated Host already inside its non-refundable 24-hour minimum, reported as
+    a clean success with a message about a tunnel (#4122).
+    """
+
+    def _interrupt(args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cloud_deploy, "deploy", _interrupt)
+
+    assert cloud_deploy.deploy_command(_args(cloud_cmd="deploy")) == cloud_deploy.EXIT_INTERRUPTED
+    err = capsys.readouterr().err
+    assert "interrupted" in err
+    assert "Tunnel closed" not in err
+
+
+def test_interrupting_the_tunnel_is_still_success(monkeypatch, capsys):
+    """The one subcommand Ctrl-C is the designed ending for."""
+
+    def _interrupt(args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cloud_deploy, "_tunnel_command", _interrupt)
+
+    assert cloud_deploy.deploy_command(_args(cloud_cmd="tunnel")) == 0
+    assert "Tunnel closed" in capsys.readouterr().out
+
+
+# --- #4122: the SSH wait is derived from the target OS -------------------
+
+
+def test_the_ssh_wait_is_derived_from_the_target_os():
+    """A Mac's first boot measured 18.1 minutes on the owner's 2026-09-30 run
+    (launch 15:49:57Z, SSH 16:08:01Z), so the 300s Linux wait could not succeed
+    -- and because the Dedicated Host is allocated *before* the wait, every
+    expiry burned a non-refundable 24-hour minimum. `--ssh-timeout 1800` was the
+    workaround; needing it was the defect."""
+    linux = cloud_deploy.resolve_plan(_args(os_family="linux"))
+    macos = cloud_deploy.resolve_plan(_args(os_family="macos"))
+
+    assert linux.ssh_timeout == 300.0
+    assert macos.ssh_timeout > 18.1 * 60
+    assert macos.ssh_timeout == cloud_deploy.SSH_TIMEOUT_BY_OS[cloud_deploy.OS_FAMILY_MACOS]
+
+
+def test_an_explicit_ssh_timeout_still_wins_on_both_families():
+    assert cloud_deploy.resolve_plan(_args(os_family="macos", ssh_timeout=60)).ssh_timeout == 60.0
+    assert cloud_deploy.resolve_plan(_args(os_family="linux", ssh_timeout=60)).ssh_timeout == 60.0
+
+
+def test_the_macos_ssh_failure_does_not_lead_with_the_wrong_cause(monkeypatch):
+    """Same shape as #3993's AC1: the old message led with "if your public IP
+    changed ... run `nyxgpt cloud allow-ip`" on a machine whose IP had not
+    changed and which simply had not booted."""
+    monkeypatch.setattr(cloud_deploy, "time", _NoWaitClock())
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda target, cmd, **kw: subprocess.CompletedProcess([], 255, "", "timed out"),
+    )
+    target = cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user")
+
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.wait_for_ssh(target, 1.0, interval=0, os_family="macos")
+
+    message = str(excinfo.value)
+    assert "not finished its first boot" in message
+    # The IP remedy survives, but not as the headline.
+    ip_remedy = message.index("nyxgpt cloud allow-ip")
+    assert message.index("not finished its first boot") < ip_remedy
+    # And it names what the operator can do that does NOT spend money again.
+    assert "no second host" in message
+    assert "nyxgpt cloud status" in message
+
+
+def test_the_linux_ssh_failure_message_is_unchanged(monkeypatch):
+    """The IP remedy *is* the usual cause on Linux, and this change must not
+    cost that."""
+    monkeypatch.setattr(cloud_deploy, "time", _NoWaitClock())
+    monkeypatch.setattr(
+        cloud_deploy,
+        "run_remote",
+        lambda target, cmd, **kw: subprocess.CompletedProcess([], 255, "", "refused"),
+    )
+
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.wait_for_ssh(
+            cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user"),
+            1.0,
+            interval=0,
+            os_family="linux",
+        )
+
+    message = str(excinfo.value)
+    assert "nyxgpt cloud allow-ip" in message
+    assert "first boot" not in message
+
+
+class _NoWaitClock:
+    """A `time` stand-in whose monotonic clock jumps a second per read.
+
+    So a `wait_for_ssh` deadline expires after one probe instead of spending the
+    real timeout -- and `sleep` is a no-op, since nothing here is racing.
+    """
+
+    def __init__(self):
+        self._now = 0.0
+
+    def monotonic(self) -> float:
+        self._now += 1.0
+        return self._now
+
+    def sleep(self, _seconds: float) -> None:
+        return None
+
+
+# --- #4122: the billing resource is observed after a FAILED deploy -------
+
+
+def test_a_failed_macos_deploy_still_names_the_dedicated_host(monkeypatch, capsys):
+    """AC6, and the verdict it was missing from. `_print_pending_mac_host` was
+    already called on DEPLOYED and UNKNOWN; NOT COMPLETED -- the verdict a failed
+    `--os macos` deploy lands on -- was the gap, which is the one state where the
+    host is allocated and nothing else on the machine can see it."""
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_ATTEMPT_FILE,
+        {
+            "status": cloud_deploy.ATTEMPT_FAILED,
+            "phase": "provision",
+            "version": "3.0.0rc14",
+            "error": "Provisioning the instance failed",
+            "host": "98.93.96.217",
+            "instance_id": "i-05289782c39bdc827",
+            "region": "us-east-1",
+        },
+    )
+    monkeypatch.setattr(
+        cloud_mac,
+        "pending_release",
+        lambda: {
+            "host_id": "h-06c438d25077be888",
+            "instance_id": "i-05289782c39bdc827",
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "availability_zone": "us-east-1a",
+            "security_group_id": "sg-0e3cde668e9c66292",
+            "public_ip": "98.93.96.217",
+            "allocated_at": "2026-09-30T15:49:55+00:00",
+            "release_at": "2026-10-01T16:19:55+00:00",
+            "release_scheduled": False,
+            "hourly_rate": 0.65,
+            "accrued_cost": 1.3,
+            "releasable_now": False,
+            "billing": True,
+        },
+    )
+
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status(probe_health=False))
+
+    out = capsys.readouterr().out
+    assert "NOT COMPLETED" in out
+    # The three things the owner found missing.
+    assert "h-06c438d25077be888" in out
+    assert "2026-10-01T16:19:55+00:00" in out
+    assert "$1.30" in out
+    # And the two it reported wrongly: the Linux substrate's default instance
+    # type, and "not recorded" over a security group state.json was holding.
+    assert "mac2.metal" in out
+    assert "m5.xlarge" not in out
+    assert "sg-0e3cde668e9c66292" in out
+    assert "not recorded" not in out
+
+
+def test_a_failed_linux_deploy_still_reads_the_substrate_fields(
+    monkeypatch, capsys, _isolated_cloud_home
+):
+    """The Mac record wins only where it HAS a value: a Linux failure must still
+    report the substrate's instance type and security group."""
+    _write_cloud_state(_isolated_cloud_home)
+    cloud_deploy._write_json(
+        cloud_deploy.DEPLOY_ATTEMPT_FILE,
+        {"status": cloud_deploy.ATTEMPT_FAILED, "phase": "provision", "version": "3.0.0"},
+    )
+    monkeypatch.setattr(cloud_mac, "pending_release", lambda: {})
+
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status(probe_health=False))
+
+    out = capsys.readouterr().out
+    assert "NOT COMPLETED" in out
+    assert "sg-0abc" in out

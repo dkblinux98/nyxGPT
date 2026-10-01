@@ -13,7 +13,7 @@ fails if it drifts. Do not hand-edit.
 | Workflow | Triggered by | Name |
 |---|---|---|
 | `acceptance-standard-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Standard Smoke |
-| `acceptance_drain_gate.yml` | schedule, issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
+| `acceptance_drain_gate.yml` | issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
 | `acceptance_plan.yml` | issues | Acceptance Plan Actions |
 | `add-to-release-issue-on-milestone.yml` | issues | Add issue to release issue on milestone assignment |
 | `admin_ensure_support_label.yml` | workflow_dispatch, schedule, push | Admin - Ensure Support Label |
@@ -81,6 +81,7 @@ fails if it drifts. Do not hand-edit.
 | `retro-data-pipeline-smoke.yml` | push, pull_request, workflow_dispatch | Retro Data Pipeline Smoke |
 | `retro_churn_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Churn Cost |
 | `retro_data_merge.yml` | push | Retro Dashboard - Merge Data Branch |
+| `retro_data_refresh.yml` | workflow_dispatch | Retro Dashboard - Refresh All Data |
 | `retro_project_fields_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Project Fields |
 | `retro_relationships_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Relationships |
 | `retro_review_rounds_dump.yml` | workflow_dispatch | Retro Dashboard - Dump Review Rounds |

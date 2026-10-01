@@ -160,17 +160,26 @@ that as an @improvement on #3731" does not. See
 
 The project is a **user** project, so its item changes raise no
 `projects_v2_item` event a workflow can subscribe to. The watcher therefore
-combines events with a cheap poll:
+combines events with an explicit manual dispatch:
 
 - `workflow_run` after **Promote Accepted Features** and **Sweep Parked
   Blocked Issues** — the two automations that move items out of Acceptance
   Testing, so a drain is normally detected within seconds;
 - `issues: [closed]`;
-- a 15-minute schedule as the backstop, for the owner moving the last item by
-  hand on the board.
+- `workflow_dispatch` — the owner opens the gate by hand at the end of a round.
 
-Polling is safe: with the holding lane empty the run releases nothing and
-posts nothing.
+**There is no schedule** (owner decision, 2026-08-25). A 15-minute cron used to
+back-stop the one case no event covers — the owner moving the last item by hand
+on the board. That case is unchanged and still real; it is now answered by the
+owner dispatching the workflow rather than by polling for it 96 times a day
+(first principle 1: do not keep a watch armed over a process that is idle by
+design). **So accepting the last issue of a round does not wake the gate** —
+see [Operating it by hand](#operating-it-by-hand) below. Nothing is stranded
+permanently: the next `issues: [closed]` or sweep completion evaluates it
+normally.
+
+Evaluation is safe whenever it happens: with the holding lane empty the run
+releases nothing and posts nothing.
 
 ### Operating it by hand
 

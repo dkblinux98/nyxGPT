@@ -48,7 +48,7 @@ from typing import Any
 
 from nyxgpt import cloud_infra
 from nyxgpt.cloud import CloudCommandError
-from nyxgpt.optional_imports import try_import
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 # Records which backend the substrate is configured for. Read by `status` and
 # by `cloud_infra.terraform_init`, which must not pass a local `-backend-config`
@@ -145,8 +145,7 @@ def _client(service: str, region: str, profile: str = "") -> Any:
     boto3 = try_import("boto3")
     if boto3 is None:
         raise CloudCommandError(
-            "boto3 is required to provision the Terraform state backend. "
-            "Install with `pip install nyxgpt[cloud]`."
+            "boto3 is required to provision the Terraform state backend. " + CLOUD_EXTRA_REMEDY
         )
     try:
         session = boto3.Session(profile_name=profile) if profile else boto3.Session()

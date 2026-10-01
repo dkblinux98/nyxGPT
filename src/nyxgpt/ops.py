@@ -59,6 +59,7 @@ from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
     describe_config_parse_error,
+    get_default_model,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_enabled,
@@ -68,6 +69,7 @@ from nyxgpt.config import (
     get_tracing_config,
     get_tracing_enabled,
     grafana_admin_password_path,
+    load_config,
     read_grafana_admin_password,
     resolve_grafana_admin_password,
 )
@@ -1280,6 +1282,50 @@ def _packaged_resources_root() -> Path:
     return Path(str(importlib.resources.files("nyxgpt.resources")))
 
 
+def _render_k8s_config_models() -> None:
+    """Rewrite the synced ConfigMap's model lines from the operator's config.
+
+    The ConfigMap is the cluster's `config.ini`, and it shipped its own copy of
+    the chat and embedding model names. That copy is what made a Kubernetes
+    install serve a different model than a native one when `1ece87b0` changed
+    three of the nine sites and not the rest (owner, 2026-08-23): copies that
+    must agree do not.
+
+    So the packaged manifest is a template now, not an authority. It is
+    rendered here -- after `_sync_packaged_resources` has overwritten the
+    synced copy, and before anything applies it -- from the same
+    `get_default_model` / `[rag] embedding_model` the native path reads. The
+    manifest in git still carries readable values so the file is legible and
+    `kubectl apply -k k8s/` from a checkout still works; they are simply not
+    the source any install uses.
+
+    Best-effort by design: a config that cannot be read leaves the synced
+    manifest as shipped, which is the pre-existing behaviour rather than a new
+    failure mode. `install` must not die because a model line could not be
+    rewritten.
+    """
+    target = NYXGPT_HOME / "k8s" / "configmap.yaml"
+    if not target.exists():
+        return
+    try:
+        cfg = load_config()
+        chat = get_default_model(cfg)
+        embedding = cfg.get("rag", "embedding_model", fallback="").strip() or chat
+        text = target.read_text(encoding="utf-8")
+        text = re.sub(
+            r"(?m)^(\s*default_model\s*=\s*)\S+", lambda m: m.group(1) + chat, text, count=1
+        )
+        text = re.sub(
+            r"(?m)^(\s*embedding_model\s*=\s*)\S+",
+            lambda m: m.group(1) + embedding,
+            text,
+            count=1,
+        )
+        target.write_text(text, encoding="utf-8")
+    except Exception as e:  # pragma: no cover - never fail an install over this
+        logger.warning("could not render model names into the synced ConfigMap: %s", e)
+
+
 def _sync_packaged_resources() -> list[OpsResult]:
     """Copy the packaged Compose/config/provisioning/unit-template/script
     tree into `NYXGPT_HOME` so every other ops step reads from one fixed,
@@ -1314,6 +1360,7 @@ def _sync_packaged_resources() -> list[OpsResult]:
                 f"{type(e).__name__}: {e}",
             )
         ]
+    _render_k8s_config_models()
     return [OpsResult(True, f"Synced packaged ops resources to {NYXGPT_HOME}")]
 
 
@@ -3882,10 +3929,33 @@ exec __NYXGPT_WEB_START_CMD__
 # `npm run dev` rather than `npm run start`: dev mode's whole point is that
 # the running web UI is the working tree, so it serves through Next's dev
 # server (which compiles from `<checkout>/web` on demand) instead of a
-# production bundle that would have to be rebuilt to see an edit. Host/port
-# are passed explicitly so the wrapper's config.ini-derived values win --
-# `next dev` doesn't read the HOST env var the artifact wrapper exports.
-_DEV_WEB_START_CMD = 'npm run dev -- --hostname "$HOST" --port "$PORT"'
+# production bundle that would have to be rebuilt to see an edit.
+#
+# BOTH commands pass host/port explicitly, and that is load-bearing rather
+# than tidy: *neither* `next dev` nor `next start` reads the `HOST` env var
+# this wrapper exports (Next reads `HOSTNAME`, and for `next start` the
+# documented control is `-H/--hostname`). An earlier version passed them only
+# on the dev command, and the comment here named the hazard while fixing one
+# caller of it. The consequence was not cosmetic: on the artifact path -- the
+# repo-less default, i.e. every real install -- `next start` fell back to its
+# own default and bound `0.0.0.0`, so `[web] host = 127.0.0.1` was read from
+# config, exported, and silently discarded.
+#
+# That contradicted `DECISION_PRIVATE_ACCESS_MECHANISM.md` in its own words
+# ("Nothing is ever listening on a non-loopback address on the deployments"),
+# and it removed a defence-in-depth layer the decision deliberately chose over
+# the network-restricted-public-bind alternative it compared against. On a
+# cloud instance the security group still fronted it (TCP 22 only); on a local
+# native install nothing did, and `[auth] enabled` defaults to false. Found by
+# owner acceptance testing on 2026-08-26 (`ss -lntp` on the EC2 instance showed
+# `*:3000` against the deploy's own claim of a loopback bind).
+#
+# The guard is
+# `tests/unit/test_ops_dev_mode.py::test_both_web_start_commands_bind_the_configured_host`,
+# which asserts the flags per mode rather than on dev alone.
+_WEB_START_HOST_ARGS = '-- --hostname "$HOST" --port "$PORT"'
+_DEV_WEB_START_CMD = f"npm run dev {_WEB_START_HOST_ARGS}"
+_ARTIFACT_WEB_START_CMD = f"npm run start {_WEB_START_HOST_ARGS}"
 
 
 def _write_native_api_wrapper(root: Path, venv_dir: Path, *, dev: bool) -> Path:
@@ -3911,8 +3981,10 @@ def _write_native_web_wrapper(root: Path, web_root: Path, *, dev: bool) -> Path:
     """Write the `nyxgpt-web` wrapper script the systemd unit / launchd agent execs.
 
     `web_root` is the built bundle in artifact mode (`npm run start`) and the
-    checkout's `web/` directory in dev mode (`npm run dev`, see
-    `_DEV_WEB_START_CMD`). Returns the wrapper path.
+    checkout's `web/` directory in dev mode (`npm run dev`). Both commands
+    carry `--hostname`/`--port` from config.ini -- see `_WEB_START_HOST_ARGS`
+    for why that is required on each and not just on dev. Returns the wrapper
+    path.
     """
     wrapper = root / "bin" / "nyxgpt-web"
     content = (
@@ -3921,7 +3993,10 @@ def _write_native_web_wrapper(root: Path, web_root: Path, *, dev: bool) -> Path:
             "__NYXGPT_WEB_MODE__",
             "dev mode: Next dev server on the checkout" if dev else "self-contained build",
         )
-        .replace("__NYXGPT_WEB_START_CMD__", _DEV_WEB_START_CMD if dev else "npm run start")
+        .replace(
+            "__NYXGPT_WEB_START_CMD__",
+            _DEV_WEB_START_CMD if dev else _ARTIFACT_WEB_START_CMD,
+        )
     )
     _write_executable(wrapper, content)
     return wrapper
@@ -16891,6 +16966,111 @@ def session_backend(args: Any) -> int:
     )
     results = set_session_backend(requested, cfg_path=cfg_path)
     return 0 if _emit_results("session-backend", results) else 2
+
+
+# --- Optional extras on a packaged install (#4122) ---------------------
+#
+# The defect this closes. Several `nyxgpt cloud` paths need boto3, which lives
+# in the `[cloud]` extra, and every one of them said so with the same remedy:
+# "Install with `pip install nyxgpt[cloud]`". On a Homebrew keg that remedy
+# cannot be followed. `pip` is not on PATH at all; `pip3` resolves to some
+# other interpreter and installs into a venv `nyxgpt` never reads; and the only
+# pip that reaches the right environment is a raw path into the Cellar
+# (`/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/<ver>/libexec/venv/bin/pip`) --
+# layout-specific, unwrapped, and exactly the kind of instruction CLAUDE.md's
+# Operational Command Wrapping requirement forbids. So the operator was handed
+# a command that does not work and no command that does.
+#
+# `nyxgpt ops install-extra <extra>` is the wrapped answer. It installs into
+# `sys.executable`'s environment -- the interpreter running this process, which
+# is by construction the one that will import boto3 next time -- so it is
+# correct on a keg, a wheel, a venv and an editable checkout without knowing
+# which it is on.
+
+#: Extras `nyxgpt ops install-extra` will install, and what each is for. Not
+#: read from package metadata: an operator asking for `dev` on a keg would be
+#: installing this project's test tooling into a service venv, which is not a
+#: thing to offer. Keep in step with pyproject.toml's
+#: `[project.optional-dependencies]`.
+INSTALLABLE_EXTRAS: dict[str, str] = {
+    "cloud": (
+        "boto3 and keyring -- required by `nyxgpt cloud` (AWS substrate, EC2 Mac "
+        "Dedicated Host pricing and placement, Terraform remote state, the OS keychain "
+        "secret store)"
+    ),
+    "verify": ("playwright -- required by `nyxgpt ops verify`'s browser checks of the web UI"),
+}
+
+
+def install_extra(extra: str) -> list[OpsResult]:
+    """Install nyxGPT's `extra` into the environment this process is running in.
+
+    The target is `sys.executable`, never a `pip` found on PATH: on a Homebrew
+    keg those are different Pythons, and installing into the wrong one produces
+    the worst possible outcome -- a command that reports success while the
+    import it was run to fix still fails.
+
+    Pinned to the running version so a keg cannot be dragged onto a different
+    release by an extras install. `--no-deps` is deliberately *not* passed: the
+    extra's whole content is dependencies.
+    """
+    name = extra.strip().lower()
+    if name not in INSTALLABLE_EXTRAS:
+        offered = ", ".join(sorted(INSTALLABLE_EXTRAS))
+        return [
+            OpsResult(
+                False,
+                f"install-extra {extra}",
+                f"{extra!r} is not an installable extra. Available: {offered}.",
+            )
+        ]
+    from nyxgpt.version import running_version
+
+    version = running_version()
+    # An unresolvable version (a tree with no installed metadata) is pinned to
+    # nothing rather than to a guess: `nyxgpt[cloud]` still installs the extra's
+    # dependencies against whatever nyxgpt is already present.
+    requirement = (
+        f"nyxgpt[{name}]=={version}" if version and version[0].isdigit() else f"nyxgpt[{name}]"
+    )
+    argv = [sys.executable, "-m", "pip", "install", "--upgrade", requirement]
+    logger.info(
+        "ops: install-extra installing %s into %s",
+        requirement,
+        sys.executable,
+        extra={"component": "ops", "action": "install-extra", "extra": name},
+    )
+    completed = _run(argv, check=False)
+    if completed.returncode == 0:
+        return [
+            OpsResult(
+                True,
+                f"install-extra {name}",
+                f"installed {requirement} into {sys.executable}",
+            )
+        ]
+    detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+    tail = " | ".join(detail[-5:]) if detail else "no output"
+    return [
+        OpsResult(
+            False,
+            f"install-extra {name}",
+            f"`pip install {requirement}` failed (exit {completed.returncode}): {tail}",
+        )
+    ]
+
+
+def install_extra_command(args: Any) -> int:
+    """`nyxgpt ops install-extra <extra>` entry point. 0 on success, else 2."""
+    requested = str(getattr(args, "extra", None) or "").strip()
+    if not requested:
+        print("Installable extras:")
+        for name, purpose in sorted(INSTALLABLE_EXTRAS.items()):
+            print(f"  {name:<8}{purpose}")
+        print(f"\nInstalling into: {sys.executable}")
+        return 0
+    results = install_extra(requested)
+    return 0 if _emit_results("install-extra", results) else 2
 
 
 # --- Secrets sync: config.ini -> GitHub Actions secrets (#3505) ---

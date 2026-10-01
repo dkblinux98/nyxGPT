@@ -48,6 +48,12 @@ from nyxgpt.config import VALID_SESSION_BACKENDS
 VERSION_PLACEHOLDER = "__NYXGPT_VERSION__"
 SESSION_BACKEND_PLACEHOLDER = "__NYXGPT_SESSION_BACKEND__"
 
+# The macOS bootstrap's Homebrew formula names, resolved from the version the
+# deploy declares (#4122). See `homebrew_formulas_for_version`.
+BREW_FORMULAS_PLACEHOLDER = "__NYXGPT_BREW_FORMULAS__"
+BREW_API_FORMULA_PLACEHOLDER = "__NYXGPT_BREW_API_FORMULA__"
+BREW_WEB_FORMULA_PLACEHOLDER = "__NYXGPT_BREW_WEB_FORMULA__"
+
 # One entry per supported target OS family: the `--os` value, the packaged
 # template filename (see scripts/cloud/, symlinked into
 # src/nyxgpt/resources/cloud/ the same way docker/ and ops/ are), and the
@@ -148,16 +154,57 @@ def packaged_cloud_file(filename: str) -> Path:
     return _template_root() / filename
 
 
+def homebrew_formulas_for_version(version: str | None) -> tuple[str, str]:
+    """The `(api, web)` tap formulas that install `version`, by name.
+
+    The defect this closes (#4122). The macOS bootstrap hardcoded `brew install
+    nyxgpt-api nyxgpt-web` and its own header comment declared the version
+    "informational only ... this script always installs whatever the tap
+    currently serves". Both are wrong for the case that matters, and the project
+    already documented why: `release_candidate._guardrails` states in so many
+    words that "the stable nyxgpt-api/nyxgpt-web formulas are never written by
+    an rc publish, so `brew install nyxgpt-api` still resolves to the latest
+    stable release". A candidate is a **separately named formula** by design
+    (D-030, #3735), so the unversioned names cannot install one. The owner's
+    2026-09-30 run set `NYXGPT_VERSION=3.0.0rc14`, ran the unversioned install,
+    and got 2.1.0 -- i.e. the acceptance-testing channel was the one channel
+    this path structurally could not deploy.
+
+    So the names are derived here, from the version the deploy declares:
+
+    * a candidate (`3.0.0rc14`) -> `nyxgpt-api@3.0.0rc`, `nyxgpt-web@3.0.0rc`
+    * a release (`3.0.0`) or no version at all -> `nyxgpt-api`, `nyxgpt-web`
+
+    Delegated to `release_candidate.rc_formula_name` rather than composed from
+    an f-string here, because that function is what the *publisher* uses to
+    stamp the formulas -- one definition of the name, so the installer cannot
+    ask for a formula the publisher never wrote.
+    """
+    from nyxgpt import release_candidate
+
+    declared = (version or "").strip()
+    if declared and release_candidate.parse_rc_version(declared):
+        line = release_candidate.release_line(declared)
+        return (
+            release_candidate.rc_formula_name("nyxgpt-api", line),
+            release_candidate.rc_formula_name("nyxgpt-web", line),
+        )
+    return ("nyxgpt-api", "nyxgpt-web")
+
+
 def render_user_data(
     os_family: str, version: str | None = None, session_backend: str | None = None
 ) -> str:
     """Render the EC2 user-data bootstrap script for `os_family`.
 
     `version`, when given, pins the Linux template's `pip install
-    nyxgpt==<version>`; the macOS template accepts it only for interface
-    parity (Homebrew tracks the tap's current formula, not a pinned
-    release -- see that template's header comment). Omit `version` (or pass
-    `None`) to install whatever's latest.
+    nyxgpt==<version>` **and** selects the macOS template's Homebrew formulas
+    (#4122): a candidate version installs the `@<line>rc` formulas, which are
+    the only ones that carry it, and the bootstrap then asserts on the instance
+    that the version it got is the version asked for. Omit `version` (or pass
+    `None`) to install whatever the tap currently serves as stable, in which
+    case there is no declared version to assert against and the bootstrap says
+    so instead of checking.
 
     `session_backend` selects `[nyxgpt] session_backend` on the instance
     (#3865); omitted, it takes the target OS's default from
@@ -185,8 +232,13 @@ def render_user_data(
     if not template_path.is_file():
         raise CloudCommandError(f"Missing packaged user-data template: {template_path}")
     rendered = template_path.read_text(encoding="utf-8")
-    return rendered.replace(VERSION_PLACEHOLDER, version or "").replace(
-        SESSION_BACKEND_PLACEHOLDER, backend
+    api_formula, web_formula = homebrew_formulas_for_version(version)
+    return (
+        rendered.replace(VERSION_PLACEHOLDER, version or "")
+        .replace(SESSION_BACKEND_PLACEHOLDER, backend)
+        .replace(BREW_FORMULAS_PLACEHOLDER, f"{api_formula} {web_formula}")
+        .replace(BREW_API_FORMULA_PLACEHOLDER, api_formula)
+        .replace(BREW_WEB_FORMULA_PLACEHOLDER, web_formula)
     )
 
 

@@ -7,7 +7,8 @@ spend on an issue is unusual -- deliberately not a fixed cap. Agent work has
 a real dollar cost (Claude invocations + GitHub Actions runner minutes) and
 nothing recorded it before this.
 
-Invoked only by `.github/workflows/retro_spend_dump.yml`, which runs this
+Invoked by `.github/workflows/retro_data_refresh.yml` (every input, one run)
+and by `retro_spend_dump.yml` (this file alone, for a re-run); both run this
 with `gh` authenticated (GH_TOKEN) and REPO set to "owner/repo". Walks the
 run history of the workflows that either invoke Claude directly or are
 commonly triggered on an issue's feature/fix branch, attributes each run to
@@ -26,6 +27,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -104,7 +106,28 @@ BRANCH_ISSUE_RE = re.compile(r"^(?:feat|fix|chore|test|docs|refactor)/(\d+)-|^cl
 
 
 def gh(*args):
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+    """`gh` stdout, raising CalledProcessError -- with its stderr on the run log.
+
+    `check=True` alone raised an exception whose message was only the command
+    and its exit status: the 2026-09-17 review-rounds dumps died with
+    "returned non-zero exit status 1" and nothing else, because gh writes the
+    reason (a rate-limit notice, an auth failure) to stderr and the
+    exception dropped it. The reason is printed before re-raising so a failed
+    dump is diagnosable from its run log alone.
+    """
+    proc = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip()
+        print(
+            f"gh {' '.join(args)} failed (exit {proc.returncode})"
+            + (f":\n{detail}" if detail else " with nothing on stderr"),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise subprocess.CalledProcessError(
+            proc.returncode, ["gh", *args], output=proc.stdout, stderr=proc.stderr
+        )
+    return proc.stdout
 
 
 class PaginatedJSONError(ValueError):

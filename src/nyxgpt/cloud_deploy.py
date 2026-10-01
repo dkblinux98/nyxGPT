@@ -168,6 +168,36 @@ OS_FAMILY_AUTO = "auto"
 
 DEPLOY_OS_CHOICES: tuple[str, ...] = (OS_FAMILY_AUTO, OS_FAMILY_LINUX, OS_FAMILY_MACOS)
 
+# How long to wait for sshd, per target OS family (#4122). Derived from the
+# family rather than being one number, because the two families are an order
+# of magnitude apart and the deploy already knows which one it is provisioning:
+#
+#  * Linux: an Amazon Linux 2023 instance accepts SSH in roughly 60s, so 300s
+#    is generous.
+#  * macOS: an EC2 Mac's *first* boot on a freshly allocated Dedicated Host
+#    runs Apple's own setup before sshd listens. The owner's 2026-09-30
+#    acceptance run measured **18.1 minutes** (launch 15:49:57Z, SSH
+#    16:08:01Z) on a `mac2.metal`, so the Linux number is not merely tight
+#    here, it cannot succeed -- and because the host is allocated *before* this
+#    wait, every expiry burned a non-refundable 24-hour minimum. 45 minutes
+#    leaves headroom above the measurement without waiting forever on a machine
+#    that is genuinely not coming up.
+#
+# `--ssh-timeout` still overrides both. What it must no longer be is *required*
+# to deploy the one platform `--os macos` exists for.
+SSH_TIMEOUT_BY_OS: dict[str, float] = {
+    OS_FAMILY_LINUX: 300.0,
+    OS_FAMILY_MACOS: 2700.0,
+}
+
+#: Fallback for a family not in `SSH_TIMEOUT_BY_OS` (there is none today).
+DEFAULT_SSH_TIMEOUT = 300.0
+
+# How often `wait_for_ssh` says it is still waiting. A 45-minute silent wait is
+# indistinguishable from a hang (#4122): the owner's run went quiet for 15+
+# minutes after Terraform's outputs with nothing saying what it was waiting on.
+SSH_WAIT_PROGRESS_INTERVAL = 60.0
+
 # EC2's Mac instance types, the only ones that boot macOS: `mac1.metal`
 # (Intel) and the `mac2*`. Apple Silicon family (`mac2.metal`,
 # `mac2-m2.metal`, `mac2-m2pro.metal`, `mac2-m1ultra.metal`, ...). Every one
@@ -782,7 +812,13 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         ),
         open_tunnel=not getattr(args, "no_tunnel", False),
         health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
-        ssh_timeout=float(getattr(args, "ssh_timeout", None) or 300.0),
+        # Per target OS (#4122), not one number: see `SSH_TIMEOUT_BY_OS`. An
+        # explicit `--ssh-timeout` still wins -- what it no longer has to do is
+        # make a Mac deploy possible at all.
+        ssh_timeout=float(
+            getattr(args, "ssh_timeout", None)
+            or SSH_TIMEOUT_BY_OS.get(os_family, DEFAULT_SSH_TIMEOUT)
+        ),
         session_backend=backend,
         kubernetes=kubernetes,
         dev=dev,
@@ -1029,25 +1065,80 @@ def run_remote(
     )
 
 
-def wait_for_ssh(target: DeployTarget, timeout: float, *, interval: float = 5.0) -> float:
+def wait_for_ssh(
+    target: DeployTarget,
+    timeout: float,
+    *,
+    interval: float = 5.0,
+    os_family: str = OS_FAMILY_LINUX,
+) -> float:
     """Block until the instance answers SSH, returning how long it took.
 
     A freshly applied instance is reachable in the API long before sshd is
     listening, so every remote step would otherwise fail on the first deploy.
+
+    `os_family` is not decoration (#4122). It decides two things this function
+    used to get wrong on a Mac:
+
+    * **What it says while it waits.** An EC2 Mac's first boot takes ~18
+      minutes, and the run went silent for all of it. Saying so, with the
+      elapsed time and the expected shape of the wait, is the difference
+      between "provisioning" and "hung".
+    * **What it says when it gives up.** The old message led with "if your
+      public IP changed ... run `nyxgpt cloud allow-ip`" -- the wrong cause,
+      offered first, on the platform where the overwhelmingly likely cause is
+      that the machine has not finished booting. Same shape as #3993's AC1: a
+      remedy that names a cause nothing checked sends the operator to the wrong
+      place. The IP remedy is still named, second, because it *is* the usual
+      cause on Linux.
     """
     deadline = time.monotonic() + timeout
     started = time.monotonic()
     last_error = ""
+    next_progress = started + SSH_WAIT_PROGRESS_INTERVAL
+    is_macos = os_family == OS_FAMILY_MACOS
+    if is_macos:
+        print(
+            f"Waiting for {target.user}@{target.host} to accept SSH (up to "
+            f"{timeout / 60:.0f} minutes). An EC2 Mac's first boot on a freshly allocated "
+            "Dedicated Host runs Apple's own setup before sshd listens, which measured 18 "
+            "minutes on a mac2.metal -- this is the expected shape of the wait, not a hang.",
+            file=sys.stderr,
+        )
     while time.monotonic() < deadline:
         completed = run_remote(target, "true")
         if completed.returncode == 0:
             return time.monotonic() - started
         last_error = (completed.stderr or "").strip()
+        now = time.monotonic()
+        if now >= next_progress:
+            print(
+                f"  ... still waiting for sshd: {now - started:.0f}s of {timeout:.0f}s elapsed.",
+                file=sys.stderr,
+            )
+            next_progress = now + SSH_WAIT_PROGRESS_INTERVAL
         time.sleep(interval)
     detail = f" Last error: {last_error}" if last_error else ""
+    if is_macos:
+        cause = (
+            "\nThe likeliest cause on an EC2 Mac is that the instance has not finished its "
+            "first boot -- that is what this wait is for, and it is already the longest one "
+            "nyxGPT makes. Raise it with `--ssh-timeout <seconds>` and re-run: the deploy "
+            "reconciles the Mac you already have, so it allocates no second host and starts "
+            "no second 24-hour minimum.\n"
+            "`nyxgpt cloud status` names the Dedicated Host, its release time and what it has "
+            "cost so far; `nyxgpt cloud destroy --yes` terminates the Mac and schedules the "
+            "host release.\n"
+            "If your public IP has changed since the Mac was launched, `nyxgpt cloud allow-ip` "
+            "re-points its security group."
+        )
+    else:
+        cause = (
+            "\nIf your public IP changed since the substrate was applied, run "
+            "`nyxgpt cloud allow-ip`."
+        )
     raise CloudCommandError(
-        f"{target.user}@{target.host} did not accept SSH within {timeout:.0f}s.{detail}\n"
-        "If your public IP changed since the substrate was applied, run `nyxgpt cloud allow-ip`."
+        f"{target.user}@{target.host} did not accept SSH within {timeout:.0f}s.{detail}{cause}"
     )
 
 
@@ -1850,10 +1941,63 @@ def provision_remote_command(plan: DeployPlan) -> str:
 
 
 # How many trailing lines of the provisioning output a failure summary quotes
-# when the run produced no `[FAIL]` line to name (an OS-package or shell
-# error before `ops install` ever started, say). Whole lines, never a
-# character slice -- see `_provision_failure_detail`.
+# when the run produced no `[FAIL]` line to name AND no recognizable first
+# error either. Whole lines, never a character slice -- see
+# `_provision_failure_detail`.
 _PROVISION_TAIL_LINES = 25
+
+# The window quoted around the *first* error line, when one is found: a little
+# context before it (what was being attempted) and rather more after it (the
+# error's own cause chain, which tools print below the headline).
+_PROVISION_ERROR_LEAD_LINES = 4
+_PROVISION_ERROR_TRAIL_LINES = 20
+
+# Markers that identify the first line of a real failure in a bootstrap's
+# output. Deliberately a list of the *tools this bootstrap actually runs*
+# rather than a generic "error" substring: the macOS bootstrap runs under
+# `set -x`, so every traced command containing the word is a false positive,
+# and matching one of those would move the diagnostic window to the wrong
+# place just as surely as the blind tail did.
+#
+# Why this exists (#4122): on the owner's 2026-09-30 run `brew install
+# nyxgpt-api nyxgpt-web` failed on the *first* formula (pip could not reach
+# pypi.org through macOS Secure Transport) and then went on to install the
+# second one successfully, because Homebrew's post-build phase uses `ofail`
+# rather than `odie` (D-047). So the last 25 lines of a 200+ line failure were
+# the *successful* `nyxgpt-web` install, and the one diagnostic the operator
+# was handed pointed away from the cause. A tail is the wrong window whenever
+# a run continues past its first failure -- which, on Homebrew, is the normal
+# shape.
+_PROVISION_ERROR_MARKERS: tuple[str, ...] = (
+    "error:",
+    "fatal:",
+    "fatal error",
+    "failure while executing",
+    "builderror:",
+    "traceback (most recent call last)",
+    "no matching distribution found",
+    "could not install",
+    "command not found",
+    "permission denied",
+    "sslcertverificationerror",
+)
+
+
+def _first_error_index(output: list[str]) -> int:
+    """Index of the first line in `output` that looks like the failure, or -1.
+
+    Scans forwards, so the answer is the *first* error rather than the last --
+    the whole point (#4122). Case-insensitive, and matched against the stripped
+    line so an indented sub-error still counts.
+    """
+    for index, line in enumerate(output):
+        lowered = line.strip().lower()
+        if not lowered:
+            continue
+        if any(marker in lowered for marker in _PROVISION_ERROR_MARKERS):
+            return index
+    return -1
+
 
 # The prefix `nyxgpt ops` puts on every failed check, including the per-step
 # verdict line `_emit_step_verdict` adds (#3762).
@@ -1902,20 +2046,53 @@ def _provision_failure_detail(output: list[str]) -> str:
     characters off the end of the log: the owner's 2026-08-14 acceptance run
     ended on `Provisioning the instance failed: 2-user/.nyxGPT/volumes/...`,
     where `2-user` is the tail of `ec2-user` left by a mid-word slice of the
-    captured stderr (#3762). Failed steps are quoted untruncated; the tail is
-    only a fallback, and is cut on line boundaries.
+    captured stderr (#3762). Failed steps are quoted untruncated.
+
+    Three windows, tried in order (#4122):
+
+    1. every `[FAIL]` line `nyxgpt ops` emitted -- the run named its own
+       failures, so nothing has to be guessed;
+    2. a window around the **first** error line, when one can be recognized;
+    3. the tail, and only then.
+
+    The tail used to be step 2, and that is the defect. A bootstrap that
+    continues past its first failure -- which is what `brew install a b` does,
+    by design (D-047) -- ends on the output of whatever it did *after* the
+    thing that broke, so the tail quotes a success and says it is the
+    diagnostic. The full log is still streamed live either way; this is about
+    which lines the raised error carries into `deploy-attempt.json` and into
+    `nyxgpt cloud status`, where they are the only lines an operator who lost
+    the scrollback ever sees.
     """
     failures = [line.strip() for line in output if line.strip().startswith(_OPS_FAIL_PREFIX)]
     if failures:
         listed = "\n".join(f"  {line}" for line in failures)
         return f"Provisioning the instance failed. Failed steps:\n{listed}"
-    tail = [line for line in output if line.strip()][-_PROVISION_TAIL_LINES:]
-    if not tail:
+    non_empty = [line for line in output if line.strip()]
+    if not non_empty:
         return "Provisioning the instance failed (no diagnostic returned)."
+    first = _first_error_index(non_empty)
+    if first >= 0:
+        start = max(0, first - _PROVISION_ERROR_LEAD_LINES)
+        window = non_empty[start : first + 1 + _PROVISION_ERROR_TRAIL_LINES]
+        quoted = "\n".join(f"  {line}" for line in window)
+        omitted = len(non_empty) - (first + 1 + _PROVISION_ERROR_TRAIL_LINES)
+        more = (
+            f"\n  ... and {omitted} further line(s) after this window -- the full output was "
+            "streamed above."
+            if omitted > 0
+            else ""
+        )
+        return (
+            "Provisioning the instance failed with no step-level diagnostic. The FIRST error in "
+            f"its output was on line {first + 1} of {len(non_empty)}, with context:\n"
+            f"{quoted}{more}"
+        )
+    tail = non_empty[-_PROVISION_TAIL_LINES:]
     quoted = "\n".join(f"  {line}" for line in tail)
     return (
-        "Provisioning the instance failed with no step-level diagnostic. "
-        f"Last {len(tail)} line(s) of its output:\n{quoted}"
+        "Provisioning the instance failed with no step-level diagnostic and no recognizable "
+        f"error line. Last {len(tail)} line(s) of its output:\n{quoted}"
     )
 
 
@@ -2329,7 +2506,7 @@ def _deploy(
     update_deploy_attempt(
         "ssh", host=target.host, instance_id=target.instance_id, region=target.region
     )
-    waited = wait_for_ssh(target, plan.ssh_timeout)
+    waited = wait_for_ssh(target, plan.ssh_timeout, os_family=plan.os_family)
     steps.append({"step": "ssh", "host": target.host, "waited_seconds": round(waited, 1)})
 
     # Before provisioning, not during: the provisioning script installs from
@@ -3114,6 +3291,7 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
     """
     infra = status.get("infra") or {}
     attempt = status.get("attempt") or {}
+    mac_host = status.get("mac_host") or {}
     substrate_only = status["source"] == SOURCE_SUBSTRATE_RECORD
 
     if substrate_only:
@@ -3131,11 +3309,35 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
         print(f"  (from the deploy attempt this machine recorded, {DEPLOY_ATTEMPT_FILE})\n")
         _print_row("Attempt", _attempt_label(attempt))
 
-    _print_row("Instance", status.get("instance_id") or "not recorded")
-    _print_row("Instance type", infra.get("instance_type") or "not recorded")
-    _print_row("Public IP", status.get("host") or "not recorded")
-    _print_row("Region", status.get("region") or "not recorded")
-    _print_row("Security group", infra.get("security_group_id") or "not recorded")
+    # The Mac's own record wins every field it has (#4122). `infra` describes
+    # the *Linux* substrate, and a Mac deploy deliberately never applies it
+    # (see `_deploy`) -- so reading the instance type out of `infra` on a failed
+    # Mac deploy printed the substrate's default, `m5.xlarge`, for a
+    # `mac2.metal`, and read "not recorded" for a security group
+    # `~/.nyxGPT/cloud/state.json` was holding all along. Two false statements
+    # about a machine that is billing, in the one report written for the case
+    # where the operator cannot see the machine any other way.
+    _print_row(
+        "Instance",
+        status.get("instance_id") or mac_host.get("instance_id") or "not recorded",
+    )
+    _print_row(
+        "Instance type",
+        mac_host.get("instance_type") or infra.get("instance_type") or "not recorded",
+    )
+    _print_row("Public IP", status.get("host") or mac_host.get("public_ip") or "not recorded")
+    _print_row("Region", status.get("region") or mac_host.get("region") or "not recorded")
+    _print_row(
+        "Security group",
+        mac_host.get("security_group_id") or infra.get("security_group_id") or "not recorded",
+    )
+
+    # The billing resource must not be the one thing nothing observes -- and
+    # a deploy that *failed* is precisely when a Dedicated Host has been
+    # allocated and nothing else on the machine can see it (#4122). This block
+    # was already printed on the DEPLOYED and UNKNOWN verdicts; NOT COMPLETED
+    # was the gap, which is the verdict a failed `--os macos` deploy lands on.
+    _print_pending_mac_host(mac_host)
 
     # D-018 -- never imply an answer nothing checked. This sentence used to
     # print unconditionally, and two ordinary flows reach here with nothing
@@ -3152,6 +3354,10 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
         or status.get("host")
         or infra.get("instance_type")
         or infra.get("security_group_id")
+        # An allocated Dedicated Host is the strongest form of "something is
+        # being billed" this command can report: it survives the instance and
+        # the substrate, and AWS refuses to release it for 24 hours (#4122).
+        or mac_host.get("host_id")
     )
     if provisioned:
         print(
@@ -3678,6 +3884,34 @@ def _print_mac_teardown(mac: dict[str, Any]) -> None:
         )
 
 
+# Exit status for a run the operator interrupted. 128 + SIGINT, the shell
+# convention -- and specifically not 0 (#4122).
+EXIT_INTERRUPTED = 130
+
+
+def _deploy_outcome_exit_code() -> int:
+    """0 only when the attempt this machine just recorded says the deploy finished.
+
+    The backstop for #4122's first finding: a `nyxgpt cloud deploy` that did
+    not finish must not exit 0, whatever path it took out of `deploy`. Every
+    known path already raises, and `deploy` records the failure before
+    re-raising -- but "every known path" is exactly the claim that was wrong,
+    and a script, CI job or wrapper reading `$?` has no other signal. So the
+    exit code is derived from the record rather than from having reached the
+    end of a function: if `deploy-attempt.json` does not say `succeeded`, this
+    command failed, and `nyxgpt cloud status` is already able to say how far it
+    got.
+
+    Deliberately reads the file rather than the in-memory result: that is the
+    same artifact `cloud status` reports from, so the two cannot disagree about
+    whether the deploy worked. An unreadable or absent record fails closed.
+    """
+    attempt = load_deploy_attempt()
+    if str(attempt.get("status") or "") == ATTEMPT_SUCCEEDED:
+        return 0
+    return 1
+
+
 def deploy_command(args: argparse.Namespace) -> int:
     """`nyxgpt cloud {deploy,destroy,tunnel,credentials,status,ops}` entry point."""
     subcommand = getattr(args, "cloud_cmd", "")
@@ -3703,6 +3937,15 @@ def deploy_command(args: argparse.Namespace) -> int:
                 print(json.dumps(deploy_status(), indent=2))
                 return 0
             _print_deploy_summary(deploy(args))
+            # Never an unconditional 0 (#4122) -- see `_deploy_outcome_exit_code`.
+            outcome = _deploy_outcome_exit_code()
+            if outcome != 0:
+                print(
+                    "nyxgpt cloud deploy: the deploy did not complete -- exiting non-zero. "
+                    "`nyxgpt cloud status` reports how far it got and what exists.",
+                    file=sys.stderr,
+                )
+            return outcome
         elif subcommand == "destroy":
             if not getattr(args, "yes", False):
                 print(
@@ -3729,9 +3972,26 @@ def deploy_command(args: argparse.Namespace) -> int:
     except CloudCommandError as exc:
         print(f"nyxgpt cloud {subcommand}: {exc}", file=sys.stderr)
         return 1
-    except KeyboardInterrupt:  # pragma: no cover - foreground tunnel
-        print("\nTunnel closed.")
-        return 0
+    except KeyboardInterrupt:
+        # Ctrl-C is a *success* for exactly one subcommand: `nyxgpt cloud
+        # tunnel` runs in the foreground until the operator closes it, so
+        # interrupting it is how it is meant to end. This handler used to cover
+        # every subcommand and print "Tunnel closed." for all of them, which
+        # made an interrupted `deploy` -- a half-provisioned instance, and on a
+        # Mac an allocated Dedicated Host already inside its non-refundable
+        # 24-hour minimum -- exit 0 with a message about a tunnel (#4122). That
+        # is the shape of the finding: something no script, CI job or wrapper
+        # could tell from a working deploy.
+        if subcommand == "tunnel":
+            print("\nTunnel closed.")
+            return 0
+        print(
+            f"\nnyxgpt cloud {subcommand}: interrupted. Nothing was rolled back -- "
+            "`nyxgpt cloud status` reports what exists on AWS right now, including a "
+            "Dedicated Host if one was allocated.",
+            file=sys.stderr,
+        )
+        return EXIT_INTERRUPTED
     return 0
 
 

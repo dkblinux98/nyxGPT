@@ -10,7 +10,7 @@ Artifact URL (republish to this URL, do not mint a new one):
 
 ## How a dump reaches the default branch (#3815)
 
-Every dump workflow below publishes its JSON to the **`claude/retro-data`**
+Every retro workflow publishes its JSON to the **`claude/retro-data`**
 branch (`scripts/retrospective/publish_data_branch.sh`), never straight at the
 branch it was dispatched on: a repository ruleset requires changes to the
 default branch to arrive through a pull request, and a direct push is rejected
@@ -29,7 +29,7 @@ self-approval. That approval is bookkeeping to satisfy the rule — what
 actually bounds this path is the guard, which runs before the pull request is
 ever opened.
 
-So each "dispatch then `git pull`" step below is really: dispatch → dump →
+So the "dispatch then `git pull`" in step 2 below is really: dispatch → dumps →
 `claude/retro-data` → approve → auto-merged pull request → default branch →
 `git pull`.
 **A green dump run therefore means the data landed** — the whole failure of
@@ -37,9 +37,20 @@ So each "dispatch then `git pull`" step below is really: dispatch → dump →
 run's "Land it on the default branch" step rather than re-dispatching.
 
 `retro_data_merge.yml` does the same landing for a branch pushed by hand
-(step 8), so the manual path needs no extra step either.
+(step 5), so the manual path needs no extra step either.
 
 ## Steps
+
+**Every input is produced by one workflow run, never by this session.** Until
+2026-09-17 the session dispatched five single-file dumps and wrote two more
+inputs by hand from MCP queries, and it had drifted: each pass dispatched
+whichever dumps it chose and generated the rest locally, so each day refreshed
+a different subset — churn (the slowest) was dropped most often, and
+`project_fields.json`, which nothing but a workflow can produce (it needs the
+project-scoped token and the Project GraphQL), sat five days stale while every
+pass reported success. There is no local path any more: do not run a
+`dump_*.py` here, do not write `all_issues.json` or `pr_times.json` by hand,
+and do not dispatch the single-file dumps for a normal pass.
 
 1. **Check out the repository default branch** — resolve it dynamically via
    `git ls-remote --symref origin HEAD`, never hardcode a version (v3.0.0 as of
@@ -47,69 +58,57 @@ run's "Land it on the default branch" step rather than re-dispatching.
    differ from the `RELEASE_BRANCH` Actions variable during a cutover). The
    template, builder, and data seeds live under `scripts/retrospective/` there.
 
-2. **Refresh the issue corpus** → `data/all_issues.json`.
-   Via the GitHub MCP server: `search_issues` with query
-   `repo:dkblinux98/nyxGPT is:issue`, `sort:created`, `order:asc`, 100/page, all
-   pages. Keep per issue: `n` (number), `title`, `labels` (names), `milestone`
-   (title), `created` (created_at), `state`, `closed` (closed_at or null).
-   Overwrite the file.
+2. **Refresh every input** → dispatch the workflow **`retro_data_refresh.yml`**
+   on the default branch (`actions_run_trigger`, method `run_workflow`; optional
+   `window_days` input, default 30), **once**. It runs all seven dumps in
+   sequence, publishes whatever was produced to `claude/retro-data` and lands
+   it on the default branch through one auto-merged pull request:
 
-   **Write it stamped** (#3807):
-   `{"generated_at": "<UTC ISO-8601, e.g. 2026-08-18T09:04:10+00:00>", "issues": [...]}`.
-   Unlike every other input, this file is written by hand from a session rather
-   than by a dump workflow, so nothing stamps it for you — and the dashboard
-   reports an unstamped corpus as **"as of unknown"** on every panel it feeds.
-   The historical bare-list shape is still read, so an old file does not break
-   the build; it just cannot say how old it is.
+   | Step | Files | Single-file re-run |
+   |---|---|---|
+   | issue corpus + merged-PR times (`dump_issue_corpus.py`) | `all_issues.json`, `pr_times.json` | none — only the refresh produces these |
+   | project fields (`dump_project_fields.sh`) | `project_fields.json` | `retro_project_fields_dump.yml` |
+   | native relationships (`dump_relationships.py`, #3731) | `relationships.json` | `retro_relationships_dump.yml` |
+   | review rounds (`dump_review_rounds.py`, #3667) | `reviews_final.json`, `dashboard_data.json` | `retro_review_rounds_dump.yml` |
+   | spend telemetry (`dump_spend.py`, #3696) | `spend.json` | `retro_spend_dump.yml` |
+   | churn cost (`dump_churn.py`, #3776) | `churn.json` | `retro_churn_dump.yml` |
 
-   Do **not** parse `Related feature: #N` out of bodies any more — that
-   convention is retired (owner decision 2026-08-12, #3731) and attribution now
-   comes from native relationships in step 2b. The `related` field is still
-   *read* if present on historical entries (see step 2b), so leave whatever is
-   already in the file for issues created before that date rather than
-   stripping it.
+   **Wait for it to complete** — expect tens of minutes, not one: the review
+   rounds walk every PR's reviews, spend makes a `timing` call per run, and
+   churn downloads one job log per Claude round in the window (76 minutes on
+   2026-09-17). Poll the run every few minutes; do not start other steps on
+   yesterday's files. Each dump first waits for the token's hourly REST budget
+   (`await_rate_limit.sh`), so a run may legitimately pause for up to an hour
+   between dumps — the log says so.
 
-2b. **Refresh native issue relationships** → `data/relationships.json` (#3731).
-   Dispatch the workflow `retro_relationships_dump.yml` on the default branch
-   (`actions_run_trigger`, method `run_workflow`), wait for completion (~1 min —
-   it walks the dependency API for every `Acceptance Failure` / `Improvement`
-   issue), then `git pull` once the merge workflow has landed it (see "How a
-   dump reaches the default branch" above). If dispatch fails, skip; the builder
-   falls back to the prose-derived `related` values already in
-   `all_issues.json`.
+   **Read the result before pulling:**
+   - **Green** — every file landed. `git pull` and go to step 3.
+   - **Red** — the last step, *Report every dump that did not land*, names
+     each dump that failed (and the single-file workflow that re-runs it); the
+     others were published and landed anyway. Open the named dump step and
+     read the actual failure (the `gh` stderr is on the log now — a rate-limit
+     notice, an auth failure, a schema change). Then see "When a dump does
+     not land" below. `git pull` regardless: the files that landed are real.
 
-   `build_dashboard.py` resolves each issue's related feature **native first**:
-   the `blocks` edge from `relationships.json` wins, and the corpus's `related`
-   field is used only when there is no native edge (historical issues). The
-   split is reported as `qtotals.attribution` (`native` / `prose` / `none`) —
-   when `prose` reaches 0, the fallback and any leftover `related` fields can be
-   deleted outright.
+   A `git pull` that shows nothing after a green run means the landing failed
+   silently — read that run's "Land it on the default branch" step rather
+   than re-dispatching (#3815).
 
-3. **Refresh real sprint assignments** → `data/project_fields.json`.
-   Dispatch the workflow `retro_project_fields_dump.yml` on the default branch
-   (`actions_run_trigger`, method `run_workflow`), wait for completion (~1 min),
-   then `git pull` once the merge workflow has landed it. If dispatch fails,
-   skip; the builder falls back to calendar weeks automatically.
+2b. **What the review-rounds and churn dumps mean** (unchanged semantics):
 
-4. **Refresh per-issue spend telemetry** → `data/spend.json` (#3696).
-   Dispatch the workflow `retro_spend_dump.yml` on the default branch
-   (`actions_run_trigger`, method `run_workflow`), wait for completion (this
-   one walks GitHub Actions run history across several workflows, including a
-   per-run `jobs`/`timing` API call for each `developer_auto_implement.yml`
-   and cost-tracked run — expect several minutes, not the ~1 min of the other
-   dumps), then `git pull` once the merge workflow has landed it.
-
-   **A failed dump is not a step you skip** (#3808). If the dispatch fails or
-   `data/spend.json` still isn't there afterwards, read that run and say so —
-   see "When a dump does not land" below.
-
-4b. **Refresh churn-cost telemetry** → `data/churn.json` (#3776).
-   Dispatch the workflow `retro_churn_dump.yml` on the default branch
-   (`actions_run_trigger`, method `run_workflow`; optional `window_days`
-   input, default 30), wait for completion (it downloads one job log per
-   Claude round in the window — minutes, not seconds), then `git pull` once the
-   merge workflow has landed it. As with spend, a failed dump is reported, not
-   skipped — see "When a dump does not land" below.
+   The dump derives review rounds directly from PR reviews (the review
+   agent posts every `## Code Review - REQUEST_CHANGES` round as a formal
+   PR review, so this is GitHub-native, not a Gmail parse — owner decision
+   2026-08-08, #3667): `### Critical|Medium|Minor Issues` headings
+   (`(if any)` suffix and `####` variants included) hold `- **title**`
+   bullets (or a bare bullet line when there's no bold lead-in); `None.`
+   with no bullet means empty. One round per pull-request-review id.
+   `reviews_final.json` keeps every round ever seen (used for `GATE`'s
+   monthly rejected count and the finding-theme lens); `dashboard_data.json`
+   is the trailing-7-day rollup (`modules`, `days`, `issues`, `cleanPRs`,
+   `cleanByModule`, `totals`) — clean passes are merged PRs that were
+   reviewed (not `review:none`) and never appear in `reviews_final.json`'s
+   full history, not just the 7-day window.
 
    Where spend telemetry says what a run *cost to run*, churn cost says what
    the agent *spent thinking* and how much of that was re-onboarding. One
@@ -136,11 +135,11 @@ run's "Land it on the default branch" step rather than re-dispatching.
    **`CHURN_PRICE_SHEET_JSON` repo variable** (config.ini is the canonical
    store for every Actions secret and variable — #3976); the workflow
    passes it to the dump, so nothing lands in the checkout. Do **not** commit
-   a `price_sheet.json` — that path is gitignored. For a local run of
-   `dump_churn.py`, saving the sheet as `data/price_sheet.json` works too.
-   Re-check the rates whenever you refresh, and **re-dispatch this workflow
-   after changing them**: dollars are computed at dump time, so a changed
-   sheet changes nothing until the dump re-runs. With no sheet configured,
+   a `price_sheet.json` — that path is gitignored (a developer testing
+   `dump_churn.py` on a checkout can save the sheet there; a refresh pass
+   never runs the dump locally). Re-check the rates whenever you refresh,
+   and **re-dispatch the refresh after changing them**: dollars are computed
+   at dump time, so a changed sheet changes nothing until the dump re-runs. With no sheet configured,
    the view reports tokens only.
 
    **Recording a stale-context incident** (the third part of churn cost —
@@ -155,38 +154,7 @@ run's "Land it on the default branch" step rather than re-dispatching.
    is seeded with the three incidents documented in #3776 (the Acceptance
    Failed lane sweep, the stale rc4-wheel claims, the rc7 dispatch race).
 
-5. **Refresh review-round detail** → `data/reviews_final.json` and
-   `data/dashboard_data.json`.
-   a. Dispatch the workflow `retro_review_rounds_dump.yml` on the default
-      branch (`actions_run_trigger`, method `run_workflow`), wait for
-      completion (~5 min — it walks every PR's reviews via the GitHub API),
-      then `git pull` once the merge workflow has landed both JSON files (same
-      shape as `retro_project_fields_dump.yml`).
-      The dump derives review rounds directly from PR reviews (the review
-      agent posts every `## Code Review - REQUEST_CHANGES` round as a formal
-      PR review, so this is GitHub-native, not a Gmail parse — owner decision
-      2026-08-08, #3667): `### Critical|Medium|Minor Issues` headings
-      (`(if any)` suffix and `####` variants included) hold `- **title**`
-      bullets (or a bare bullet line when there's no bold lead-in); `None.`
-      with no bullet means empty. One round per pull-request-review id.
-      `reviews_final.json` keeps every round ever seen (used for `GATE`'s
-      monthly rejected count and the finding-theme lens); `dashboard_data.json`
-      is the trailing-7-day rollup (`modules`, `days`, `issues`, `cleanPRs`,
-      `cleanByModule`, `totals`) — clean passes are merged PRs that were
-      reviewed (not `review:none`) and never appear in `reviews_final.json`'s
-      full history, not just the 7-day window.
-   b. Refresh `data/pr_times.json` (all merged PRs Jan 1→now: number →
-      [created_at, merged_at], via `search_pull_requests`). Merged counts and
-      median time-to-merge in `GATE` are derived from it automatically; the
-      current month's rejected count is derived from `reviews_final.json`
-      automatically too (`gate_series()` in `build_dashboard.py`) — no manual
-      Gmail month-window search. Older months in `GATE` predate the
-      PR-review dump and stay as seeded historical constants.
-   c. Update the hard-coded window copy in `retro_template.html` (the
-      "Last 7 days in review · <dates>" divider and the totals sentences in
-      the first-pass panel and footer) to the new window.
-
-6. **Build**: `python3 scripts/retrospective/build_dashboard.py`
+3. **Build**: `python3 scripts/retrospective/build_dashboard.py`
    → `scripts/retrospective/retro.html`.
 
    The builder prints the build time and, under it, which inputs are **stale**
@@ -196,10 +164,17 @@ run's "Land it on the default branch" step rather than re-dispatching.
    to the reader.
 
    **Exit status is part of the output.** A build with every input present
-   exits 0; a build missing any input writes the page and exits **2**, naming
-   each missing file and the dump that owes it. That is the gate — see below.
+   and fresh exits 0. A build missing any input writes the page and exits
+   **2**, naming each missing file and the dump that owes it. A build whose
+   every input is present but any is **stale** writes the page and exits
+   **3**, naming the file, how far behind it is, and what refreshes it. Both
+   are the gate — see "When a dump does not land" below. The corpus-coverage
+   copy ("Jan 1 – <date>") and the 7-day window copy are derived by the
+   builder and the page script; nothing in `retro_template.html` or
+   `build_dashboard.py` is hand-edited on a refresh (the `GATE` seeds for
+   closed months are the one exception, and only when a month rolls over).
 
-7. **Publish** the built file with the Artifact tool to the URL above
+4. **Publish** the built file with the Artifact tool to the URL above
    (`url` parameter — same URL, do not create a new artifact). Favicon stays 🔍.
 
    **The build stamp in the page header is the check that a refresh landed**
@@ -212,16 +187,16 @@ run's "Land it on the default branch" step rather than re-dispatching.
    as-of time of the data behind it. Those are the lines to sanity-check
    before telling the owner the dashboard is current.
 
-8. **Commit** refreshed `data/*.json` (and GATE/template edits) via the
-   `claude/retro-data` branch: force-reset `claude/retro-data` to the current
-   default-branch tip (`git checkout -B claude/retro-data`), commit there, and
-   `git push --force origin claude/retro-data`. Equivalently, from a checkout
-   with the files already generated:
+5. **Commit the built page** (`scripts/retrospective/retro.html`, plus a
+   `GATE` seed edit if a month rolled over) via the `claude/retro-data`
+   branch. The data files are already on the default branch — the refresh
+   workflow landed them — so this commit carries the page only. From the
+   checkout:
 
    ```bash
    BASE_REF="$(git ls-remote --symref origin HEAD | awk '$1=="ref:"{sub("refs/heads/","",$2);print $2;exit}')" \
      scripts/retrospective/publish_data_branch.sh \
-     "chore(retro): refresh retrospective data" scripts/retrospective/data/*.json
+     "chore(retro): rebuild retrospective page" scripts/retrospective/retro.html
    ```
 
    Pushing the branch with your own credentials triggers the
@@ -235,7 +210,9 @@ run's "Land it on the default branch" step rather than re-dispatching.
    and report a failed merge in the run summary. Touch only files under
    `scripts/retrospective/` — both the publish script and the merge workflow
    refuse anything else — and never push to any other branch. Opening the
-   pull request is the merge workflow's job, not yours.
+   pull request is the merge workflow's job, not yours. **Never commit a data
+   file from this session**: a `data/*.json` in this commit means a dump was
+   run locally, which is the drift step 2 exists to end.
 
 ## When a dump does not land (#3808)
 
@@ -247,31 +224,45 @@ ever had* — produced a normal-looking dashboard with the churn section simply
 absent, for a day, with nothing anywhere reporting it. A missing panel is
 indistinguishable from a feature that was never built.
 
+The same rule now covers the dump that was never *run* (2026-09-17). A dump
+that fails leaves no file; a dump that is skipped leaves yesterday's file, the
+build used to exit 0, and the page's "2 sources stale" header was a line
+nobody was obliged to act on. A stale input is now refused exactly like a
+missing one.
+
 What happens now, and what you owe the owner:
 
-1. **The build tells you.** `missing sources: churn.json (retro_churn_dump.yml)`
-   in the output, and exit status **2**. The page is still written.
-2. **The page tells the reader.** That section renders a "Section unavailable —
-   this is missing data, not zero" notice naming the data file and linking the
-   dump's runs, instead of disappearing. The header counts the unavailable
-   sections next to the build stamp, and the provenance table marks the file
-   absent.
-3. **Read the run before re-dispatching.** Open the named workflow's most
-   recent run and find the actual failure. Guessing and re-dispatching is how
-   one defect gets patched three times.
-4. **Re-dispatch and rebuild** if the failure was transient. The dumps share
-   the `retro-data-branch` concurrency group, so dispatch them **one at a
-   time** — GitHub keeps only the newest *pending* run in a group and cancels
-   earlier ones, `cancel-in-progress: false` notwithstanding.
-5. **If you publish anyway**, do it deliberately: rebuild with
-   `--allow-missing-sources` (exit 0, the unavailable notices stay on the
-   page), and **report the failed dump with its run URL** in what you tell the
-   owner. "Refreshed" without that sentence is the failure this rule exists to
-   stop.
+1. **The run tells you.** A red `retro_data_refresh.yml` run ends with *Report
+   every dump that did not land*, naming each failed dump; the job summary
+   repeats it. The other files landed.
+2. **The build tells you.** `missing sources: churn.json (retro_churn_dump.yml)`
+   and exit **2** when the file is absent; `stale sources: churn.json` and
+   exit **3** when it is present but a day or more behind the build. The
+   page is still written either way.
+3. **The page tells the reader.** A missing section renders a "Section
+   unavailable — this is missing data, not zero" notice naming the data file
+   and linking the dump's runs, instead of disappearing; a stale source is
+   called out on every panel it feeds and in the provenance table. The header
+   counts both next to the build stamp.
+4. **Read the run before re-dispatching.** Open the named dump's step in the
+   refresh run and find the actual failure — `gh`'s stderr is printed there.
+   Guessing and re-dispatching is how one defect gets patched three times.
+5. **Re-dispatch and rebuild** if the failure was transient: the **single-file
+   workflow named in the report** (`retro_<name>_dump.yml`), not the whole
+   refresh. Every retro workflow shares the `retro-data-branch` concurrency
+   group, so dispatch **one at a time** — GitHub keeps only the newest
+   *pending* run in a group and cancels earlier ones, `cancel-in-progress:
+   false` notwithstanding. The corpus and PR times have no single-file dump;
+   re-dispatch the refresh for those.
+6. **If you publish anyway**, do it deliberately: rebuild with
+   `--allow-missing-sources` and/or `--allow-stale-sources` (exit 0, the
+   notices and stale callouts stay on the page), and **report the failed dump
+   with its run URL** in what you tell the owner. "Refreshed" without that
+   sentence is the failure this rule exists to stop.
 
 The same applies to `project_fields.json` and `relationships.json`: their
 fallbacks (calendar weeks, prose attribution) keep the build usable, but a
-missing file still means a dump failed and is still reported.
+missing or stale file still means a dump did not land and is still reported.
 
 ## Module attribution and classification
 

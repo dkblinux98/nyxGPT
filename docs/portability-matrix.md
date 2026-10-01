@@ -91,6 +91,15 @@ A row is **acceptance-ready** when its checks pass *and* it has no open gap.
   half — brew services / launchd reconciliation and a real `nyxgpt up` —
   stays owner-verified on the owner's workstation.
 
+  The install commands in the table are the **stable** channel's. A release
+  candidate is published as a separately named formula
+  (`nyxgpt-api@<line>rc`/`nyxgpt-web@<line>rc`) precisely so that `brew install
+  nyxgpt-api` can never resolve to a pre-release, and anything that installs a
+  *declared* version resolves the pair from that version rather than naming
+  formulas itself — see
+  [`cloud.md`](cloud.md#ec2-mac-targets) for the EC2 Mac path, which was
+  installing the stable pair for a candidate deploy until #4122.
+
   **One environment constraint, and it is not nyxGPT's to fix.** Homebrew
   tags bottles by macOS *major* version, so a Mac running an older **minor**
   release than the bottle was built against can be served a `python@3.12`

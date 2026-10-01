@@ -9,7 +9,23 @@
   "high": true,
   // The next/postcss/sharp/serialize-javascript allowlist entries accepted
   // 2026-08-03 (#3501) as "needs its own upgrade issue" were resolved by
-  // the next@16.3.0 bump and serialize-javascript override in #3644 --
-  // `npm audit` now reports 0 vulnerabilities, so no allowlist is needed.
+  // the next@16.3.0 bump and serialize-javascript override in #3644, and the
+  // allowlist has been empty since.
+  //
+  // It stays empty, but do not read that as "npm audit reports nothing" --
+  // the earlier version of this comment said so, and by 2026-09-30 it was
+  // false without a line of code changing. Advisories are published against
+  // versions that are already pinned, so this gate rots in place: `next`
+  // 16.3.0 picked up a CRITICAL and undici/sharp/js-yaml/browserslist/
+  // brace-expansion each picked up a HIGH, and `security-scan` went red on
+  // the release branch itself, which blocks every PR in the repo rather than
+  // any one change. Cleared by `npm audit fix` plus moving the `next` pin
+  // from an exact `16.3.0` to `^16.3.8` (patch-range, so the lock fix can
+  // reach it next time without a package.json edit).
+  //
+  // Expect this to recur. A red `security-scan` with no relevant diff is the
+  // signature: check `npm audit` before looking for a culprit in the branch.
+  // 4 moderate findings remain and are deliberately non-blocking per "high"
+  // above.
   "allowlist": []
 }

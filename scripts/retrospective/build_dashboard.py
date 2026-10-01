@@ -83,9 +83,10 @@ EXCLUDED_MILESTONES = {"Phase X: Rejected"}
 # Data-source provenance (#3807). This dashboard is a static artifact rebuilt
 # on demand, so "how old is what I am reading?" has to be answerable from the
 # page itself: the build stamp says when the HTML was produced, and each dump's
-# own `generated_at` says how old the data behind a section is. Every dump in a
-# refresh pass is dispatched in the same session, so a source a day or more
-# behind the build did not get refreshed in that pass and is called out.
+# own `generated_at` says how old the data behind a section is. Every input is
+# produced by one retro_data_refresh.yml run dispatched in the refresh pass, so
+# a source a day or more behind the build did not get refreshed in that pass
+# and is called out (and refused: STALE_SOURCE_EXIT below).
 STALE_SOURCE_DAYS = 1.0
 
 # Exit status when an input dump did not land (#3808). The page is still
@@ -93,6 +94,17 @@ STALE_SOURCE_DAYS = 1.0
 # but the build refuses to report success, so a refresh cannot publish a
 # quietly-incomplete dashboard the way it did for spend and churn.
 MISSING_SOURCE_EXIT = 2
+
+# Exit status when an input is present but STALE_SOURCE_DAYS or more behind
+# the build. The #3808 gate above only saw a dump that *failed*; a dump that
+# was simply never run left yesterday's file in place, the build exited 0, and
+# the page reported "2 sources stale" in a header nobody was obliged to read.
+# That is how project_fields.json sat five days old (2026-08-17 → 08-22) while
+# refreshes kept publishing: the session had drifted to generating inputs
+# locally and could not produce that one at all. A stale input is now the same
+# class of failure as a missing one -- the page is written, the exit status
+# refuses to call it a refresh.
+STALE_SOURCE_EXIT = 3
 
 
 def load_issues(path):
@@ -107,6 +119,20 @@ def load_issues(path):
     raw = json.loads(Path(path).read_text())
     if isinstance(raw, dict):
         return raw.get("issues") or [], raw.get("generated_at")
+    return raw, None
+
+
+def load_pr_times(path):
+    """Read pr_times.json in either shape, returning (prs, generated_at).
+
+    Historically a bare {"<number>": [created_at, merged_at]} map written by
+    the refresh session, which carried no stamp. retro_data_refresh.yml writes
+    {"generated_at": ..., "prs": {...}} so the merged-PR series can say how old
+    it is like every other input; both shapes are read.
+    """
+    raw = json.loads(Path(path).read_text())
+    if isinstance(raw, dict) and "prs" in raw:
+        return raw.get("prs") or {}, raw.get("generated_at")
     return raw, None
 
 
@@ -132,8 +158,8 @@ def source_stamps(now, sources):
     materially older than the build, so a week-old dump cannot hide behind a
     build that ran a minute ago.
 
-    `workflow` names the dump that owes the file (None for the hand-written
-    corpus). It is what turns an absent source from a blank space into an
+    `workflow` names the dump that owes the file (None only for a source no
+    workflow produces; since 2026-09 every input has one). It is what turns an absent source from a blank space into an
     actionable line on the page: which run to go and read (#3808).
     """
     out = {}
@@ -172,6 +198,10 @@ AF_CAUSES = ("defect", "spec", "workflow")
 # merged/medianHrs are recomputed from data/pr_times.json when present; the
 # current month's "rejected" is recomputed from reviews_final.json in
 # gate_series() — older months predate that dump and keep their seeded value.
+MONTH_ABBR = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]  # fmt: skip
 GATE = [
     {"m": "Jan", "merged": 153, "rejected": 62},
     {"m": "Feb", "merged": 15, "rejected": 26},
@@ -180,7 +210,13 @@ GATE = [
     {"m": "May", "merged": 0, "rejected": 0},
     {"m": "Jun", "merged": 0, "rejected": 0},
     {"m": "Jul", "merged": 168, "rejected": 80},
-    {"m": "Aug", "merged": 0, "rejected": 8},
+    # August closed on 2026-09-01. `gate_series()` only recomputes the CURRENT
+    # month's `rejected`, so a month keeps whatever seed it holds once it rolls
+    # over -- and August's was still the placeholder 8 it was given early in the
+    # month. Frozen here to the value the chart's own legend promises ("PRs
+    # rejected >=1x"): distinct PRs with at least one REQUEST_CHANGES round in
+    # August, counted from the now-complete reviews_final.json (135 of them).
+    {"m": "Aug", "merged": 0, "rejected": 135},
 ]
 
 # Release annotations on the sprint axis.
@@ -386,17 +422,30 @@ def gate_series(issues, pr_times, reviews, now=None):
     gate = [dict(g) for g in GATE]
     now = now or datetime.now(UTC)
     current_month = now.month
-    if 1 <= current_month <= len(gate):
-        gate[current_month - 1]["rejected"] = sum(
-            1 for r in reviews if month_of(r["date"]) == current_month
-        )
+
+    def month(m):
+        """The row for month `m`, appending months past the seeded list.
+
+        GATE is hand-seeded and stops at the month it was last edited, so on
+        the first day of a new month every `gate[month_of(...) - 1]` below
+        indexed off the end and the whole build died -- an unattended refresh
+        losing a day to a calendar roll. Rows added here carry no seeded
+        history (there is none yet); merged/rejected/af/pm are all derived
+        from the data further down, which is what a current month uses anyway.
+        """
+        while len(gate) < m:
+            gate.append({"m": MONTH_ABBR[len(gate)], "merged": 0, "rejected": 0})
+        return gate[m - 1]
+
+    month(current_month)["rejected"] = sum(
+        1 for r in reviews if month_of(r["date"]) == current_month
+    )
     for i in issues:
+        row = month(month_of(i["created"]))
         if i.get("cause") in AF_CAUSES:
-            gate[month_of(i["created"]) - 1].setdefault("af", 0)
-            gate[month_of(i["created"]) - 1]["af"] += 1
+            row["af"] = row.get("af", 0) + 1
         elif i.get("cause") == "pm":
-            gate[month_of(i["created"]) - 1].setdefault("pm", 0)
-            gate[month_of(i["created"]) - 1]["pm"] += 1
+            row["pm"] = row.get("pm", 0) + 1
     for g in gate:
         g.setdefault("af", 0)
         g.setdefault("pm", 0)
@@ -406,6 +455,7 @@ def gate_series(issues, pr_times, reviews, now=None):
         for created, merged in pr_times.values():
             m = month_of(merged)
             merged_count[m] += 1
+            month(m)
             dt = datetime.fromisoformat(merged.replace("Z", "+00:00")) - datetime.fromisoformat(
                 created.replace("Z", "+00:00")
             )
@@ -429,7 +479,11 @@ def aging_flow(issues, now):
             if lo <= (now - datetime.fromisoformat(i["created"].replace("Z", "+00:00"))).days < hi
         )
         aging.append({"bucket": name, "n": n})
-    flow = [{"m": g["m"], "opened": 0, "closed": 0} for g in GATE]
+    # Same calendar-roll trap as gate_series(): seeded off GATE, this list used
+    # to stop at the month GATE was last hand-edited and index off the end on
+    # the first issue of a new month. Cover through the current month instead.
+    months = max(len(GATE), now.month)
+    flow = [{"m": MONTH_ABBR[i], "opened": 0, "closed": 0} for i in range(months)]
     for i in issues:
         if i.get("cause") not in AF_CAUSES:
             continue
@@ -733,6 +787,16 @@ def main():
             f"from exiting {MISSING_SOURCE_EXIT} (#3808)."
         ),
     )
+    ap.add_argument(
+        "--allow-stale-sources",
+        action="store_true",
+        help=(
+            "build and exit 0 even when an input is a day or more behind the "
+            "build. The page still flags every stale source; this only stops "
+            f"the build from exiting {STALE_SOURCE_EXIT}. Publishing with it is "
+            "deliberate: report which dump did not land and why."
+        ),
+    )
     args = ap.parse_args()
     data = Path(args.data_dir)
 
@@ -741,7 +805,7 @@ def main():
     pf_path = data / "project_fields.json"
     project_fields = json.loads(pf_path.read_text()) if pf_path.exists() else None
     pt_path = data / "pr_times.json"
-    pr_times = json.loads(pt_path.read_text()) if pt_path.exists() else None
+    pr_times, pr_times_generated_at = load_pr_times(pt_path) if pt_path.exists() else (None, None)
     rv_path = data / "reviews_final.json"
     reviews = json.loads(rv_path.read_text()) if rv_path.exists() else []
     sp_path = data / "spend.json"
@@ -773,7 +837,15 @@ def main():
                     "all_issues.json",
                     True,
                     issues_generated_at,
-                    None,  # hand-written by the refresh session, not a dump
+                    "retro_data_refresh.yml",
+                ),
+                (
+                    "prTimes",
+                    "Merged PR times",
+                    "pr_times.json",
+                    pr_times is not None,
+                    pr_times_generated_at,
+                    "retro_data_refresh.yml",
                 ),
                 (
                     "relationships",
@@ -830,6 +902,14 @@ def main():
         f'The {qdata["qtotals"]["pm"]} issues labeled <span class="mono">Improvement</span>',
         html,
     )
+    # The corpus-coverage range ("Jan 1 - <date>") appears twice in the
+    # template -- the header strip and the "Issues total" tile note -- and was
+    # hand-edited on each refresh, so it drifted: it still read "Sep 14" on a
+    # build two days later. Derive it from the build date here, the same way
+    # the counts above are derived, so a refresh cannot leave it stale.
+    _covered = f"Jan 1 – {MONTH_ABBR[now.month - 1]} {now.day}"
+    html = re.sub(r"Jan 1 – [A-Z][a-z]{2} \d{1,2}, \d{4}", f"{_covered}, {now.year}", html)
+    html = re.sub(r"Jan 1 – [A-Z][a-z]{2} \d{1,2}(?![,\d])", _covered, html)
     html = html.replace("__QDATA__", json.dumps(qdata, separators=(",", ":")))
     html = html.replace("__DATA__", json.dumps(dashboard, separators=(",", ":")))
     Path(args.out).write_text(html)
@@ -848,6 +928,7 @@ def main():
         "  missing sources: "
         + (", ".join(f"{s['file']} ({s['workflow'] or 'hand-written'})" for s in missing) or "none")
     )
+    status = 0
     if missing and not args.allow_missing_sources:
         # Non-zero, after writing the page: the dashboard is publishable (each
         # missing section says so on its face), but publishing it is now a
@@ -867,8 +948,27 @@ def main():
             "section as unavailable).",
             flush=True,
         )
-        return MISSING_SOURCE_EXIT
-    return 0
+        status = MISSING_SOURCE_EXIT
+    stale_sources = [s for s in qdata["build"]["sources"].values() if s["present"] and s["stale"]]
+    if stale_sources and not args.allow_stale_sources:
+        # Same rule as above for the input that was never refreshed rather
+        # than the one that failed: the file is there, so nothing else in the
+        # pipeline notices, and the page's stale count is a line nobody has to
+        # act on. Exiting non-zero makes it one.
+        print(
+            "ERROR: "
+            + "; ".join(
+                f"{s['label']} is stale — {s['file']} is {s['ageDays']} days behind "
+                f"this build (refreshed by {s['workflow'] or 'the refresh session'})"
+                for s in stale_sources
+            )
+            + ". Dispatch retro_data_refresh.yml (or the named dump, one at a time) "
+            "and rebuild, or rebuild with --allow-stale-sources to publish "
+            "deliberately and report the dump that did not land.",
+            flush=True,
+        )
+        status = status or STALE_SOURCE_EXIT
+    return status
 
 
 if __name__ == "__main__":

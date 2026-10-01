@@ -1868,7 +1868,9 @@ reconciles rather than creating a second deployment. Accepts every
 provisioning input `POST /api/v1/cloud/infra/apply` does, plus `version`,
 `skip_observability`, `no_tunnel`, `ssh_user`, `identity_file`, `host`,
 `health_timeout`, and `ssh_timeout`. Omitted fields fall back to the settings
-the last run saved.
+the last run saved — except `ssh_timeout`, whose default is derived from the
+target OS (300s for Linux, 2700s for an EC2 Mac, whose first boot on a freshly
+allocated Dedicated Host has measured 18 minutes).
 
 Returns the resolved `plan` and `target`, a step-by-step `steps` record, the
 `tunnel` and `health` results, and the `urls`.

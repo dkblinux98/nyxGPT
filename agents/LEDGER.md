@@ -1759,6 +1759,134 @@ rather than mechanism, and nothing can enforce them.
   `agents/runbooks/developer-runbook.md` §2 "You are not on the branch you
   think you are".
 
+- **D-050** · 2026-09-17 · owner ("fix this; no issue, a PR through the SDLC")
+  — **Every retrospective dashboard input is produced by one workflow run,
+  `retro_data_refresh.yml`, and a build with a stale input is not a
+  refresh (exit 3).** The refresh session dispatches that workflow once,
+  pulls, builds and publishes; it never runs a `dump_*.py`, never writes
+  `all_issues.json` or `pr_times.json` by hand, and never dispatches the five
+  single-file dumps for a normal pass (they remain for re-running one named
+  failure, one at a time).
+
+  What happened: from 2026-08-18 the daily refresh dispatched no dumps at all
+  for two weeks (Actions history: five green `retro_data_merge.yml` landings
+  a day, zero dump runs), then sporadically some of them, generating the rest
+  locally in the session. Each pass refreshed a different subset — churn, the
+  slowest, was dropped most often — and `project_fields.json`, which nothing
+  but a workflow can produce (project-scoped token, Project GraphQL, and until
+  now no script at all), sat five days stale across a week of green refreshes.
+  Nothing refused it: the #3808 gate saw only a dump that *failed*, and a dump
+  that was never *run* leaves yesterday's file, an exit 0, and a header line
+  nobody was obliged to read. The runbook licensed the skip ("if dispatch
+  fails, skip; the builder falls back") and the Routine's own prompt licensed
+  it twice more (Gmail parse, "skip gracefully if the project-fields dispatch
+  404s") — both older than #3667/#3808 and never re-read.
+
+  Three things a future session would otherwise re-derive wrongly:
+
+  (a) *The single-file dumps cancel each other when dispatched together.*
+  Every retro workflow shares the `retro-data-branch` concurrency group, and
+  GitHub keeps one **pending** run per group regardless of
+  `cancel-in-progress: false` — the 2026-08-17 10:15 re-dispatch of three
+  dumps at once left one alive. That is why the refresh is one job of
+  sequential steps and not an orchestrator dispatching five.
+
+  (b) *A red refresh run still landed data.* Each dump is
+  `continue-on-error`; whatever was produced is published and landed, and
+  the last step turns the run red naming each dump that did not land. Green
+  means every file landed; red means read the summary, the rest is real. Do
+  not "fix" this by making the first failure abort the job — that discards
+  six good files to report one bad one.
+
+  (c) *The heavy dumps share one hourly REST budget.* The 2026-09-17
+  review-rounds dump died mid-walk right after a 76-minute churn dump and
+  then failed on its first call when re-dispatched, with `gh`'s stderr —
+  the only place the reason is written — dropped by `check=True`. The
+  shared `gh()` now prints stderr before raising, and every dump waits for
+  the budget (`await_rate_limit.sh`) instead of dying against it. That the
+  cause was the rate limit is the diagnosis the evidence supports, not a
+  verified fact: the stderr of the failed runs was never captured.
+
+  The behaviour itself is not recorded here — it is enforced by
+  `tests/test_retro_refresh_covers_sources.sh` (every tracked source and
+  every dump script is wired into the refresh; run by
+  `retro-data-pipeline-smoke.yml`), `tests/test_retro_dashboard_stamps.sh`
+  and `tests/unit/test_build_dashboard_stamps.py` (the stale gate's exit 3
+  and its `--allow-stale-sources` override), per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed.
+  Source: owner instruction in session 2026-09-17; extends **#3808**'s
+  missing-source gate to the never-run case; supersedes the "if dispatch
+  fails, skip" wording of `scripts/retrospective/REFRESH_RUNBOOK.md` steps
+  2b–3 (2026-08-18) — see Superseded.
+
+- **D-051** · 2026-09-30 · developer agent (#4122) — **An installer names the
+  artifact it must produce, and then reads it back; naming the command is not
+  the same claim.** Three corrections a future session would re-derive
+  wrongly, all from one acceptance failure on real `mac2.metal` hardware.
+
+  (a) *A release candidate cannot be installed by the stable formula names,
+  and the project already knew it.* `release_candidate._guardrails` states in
+  so many words that "the stable nyxgpt-api/nyxgpt-web formulas are never
+  written by an rc publish, so `brew install nyxgpt-api` still resolves to the
+  latest stable release" — and the EC2 Mac bootstrap ran exactly that command
+  while its header declared `--version` "informational only ... this script
+  always installs whatever the tap currently serves". So `--os macos` could
+  install *any* version except a candidate, which is the only channel
+  acceptance testing uses: the owner's run declared `3.0.0rc14` and tested
+  stable `2.1.0`. Formula names are now derived from the declared version
+  through the publisher's own `rc_formula_name`, every keg path in the
+  bootstrap is built from the formula name rather than from `opt/nyxgpt-api`,
+  and the bootstrap reads `nyxgpt --version` off the keg and refuses to start
+  a stack that is not the release requested. **Two claims that look like one:
+  "the install command mentions the right formula" and "the right version is
+  on the box."** Only the second is worth asserting, and
+  `cloud-target-os-smoke.sh` was asserting the first — `contains
+  "$CAPTURE_DIR/script.sh" "install nyxgpt-api nyxgpt-web"`. Executed
+  verification existed for this path, passed, and **certified the defect**. A
+  D-006 hardware exception (EC2 Mac, `docs/live-verification-ci.md`) is not a
+  licence for the job around it to assert a command string.
+
+  (b) *A wait whose length depends on the target must be derived from the
+  target.* `ssh_timeout` defaulted to 300s with `os_family=os_family` two
+  lines below it; an EC2 Mac's first boot on a freshly allocated Dedicated
+  Host measured **18.1 minutes** (launch 15:49:57Z, SSH 16:08:01Z), so the
+  Linux default could not succeed — and because the host is allocated
+  *before* the wait, every expiry committed a non-refundable $15.60 and then
+  died. The failure message compounded it by leading with `nyxgpt cloud
+  allow-ip`, a cause nothing had checked, on the platform where the cause is
+  almost always "not booted yet" (the shape #3993's AC1 already found).
+
+  (c) *A tail is the wrong diagnostic window for anything that continues past
+  its first failure.* `brew install a b` finishes the keg it can and carries
+  on (D-047's `ofail`), so the last 25 lines of a failed run were the
+  *successful* `nyxgpt-web` install while the real error — pip unable to
+  reach pypi.org through macOS Secure Transport — sat ~200 lines earlier. The
+  window is now around the **first** recognized error, with the tail kept only
+  as a last resort.
+
+  Two smaller rules settled with it, both general:
+  **an exit code is derived from the recorded outcome, not from reaching the
+  end of a function** (`deploy_command` returned 0 unconditionally, and its
+  `except KeyboardInterrupt: return 0` — written for the foreground tunnel —
+  covered every subcommand, so an interrupted deploy over a billing Mac
+  printed "Tunnel closed." and exited 0); and **a resource is recorded the
+  moment it exists, not when the operation around it succeeds** (the host id
+  was written only after the whole Terraform apply, so an apply that
+  allocated the host and then failed left a billed host with no record, and
+  the next run re-disclosed a charge already made — only `0 added, 0 changed`
+  prevented a second real one). Reconciliation now reads the host out of
+  Terraform state, which is what knows.
+
+  The behaviours are not recorded here — they are pinned by
+  `tests/unit/test_cloud_provision.py`, `tests/unit/test_cloud_deploy.py`,
+  `tests/unit/test_cloud_mac.py`, `tests/unit/test_ops_install_extra.py` and
+  `cloud-target-os-smoke.yml`'s stable/rc pair plus its injected version
+  check, per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4122; extends **D-043**; cites **D-047**, **D-030**, **D-006**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -2034,3 +2162,10 @@ them.
 
   ID from `ledger_ids.py next S` (S-003 is taken: it was relocated to the
   private annex, and IDs are never reused).
+
+- **S-008** — ~~"If a retro dump's dispatch fails, skip it; the builder falls
+  back to calendar weeks / prose attribution"~~ (`REFRESH_RUNBOOK.md` steps
+  2b and 3, 2026-08-18) and the refresh Routine's inline "skip gracefully if
+  the project-fields dispatch 404s" — superseded by **D-050** (2026-09-17): a
+  stale input is refused by the build exactly like a missing one, and every
+  input is produced by `retro_data_refresh.yml`, never by the session.

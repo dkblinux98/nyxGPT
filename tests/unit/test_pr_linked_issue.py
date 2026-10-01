@@ -320,3 +320,47 @@ class TestAFailedReadIsNotAnAnswer:
             # tolerated (`|| true`). A bare assignment under `set -e` would
             # abort mid-run with no explanation.
             assert ("if ! " in call) or ("|| true" in call), call
+
+
+class TestTheIssuelessExitLadderIsReachable:
+    """An issue-less merge must reach its own success branch (#4039).
+
+    `19de6a82` gave `review_accept_and_merge.sh` an issue-less path -- the
+    owner rule that such a PR "merges and skips the issue-side bookkeeping,
+    rather than jamming the pipeline" -- and wrote it a SUCCESS message. That
+    message had never once been printed. The closing exit ladder reads
+    `PARKED` on every path, but the same commit moved the issue-side work
+    (including `PARKED=0`) inside `if [[ "$HAS_ISSUE" == "1" ]]`, so under
+    `set -u` the ladder's FIRST rung aborted a merge that had already fully
+    succeeded: PR #4039 merged, its content verified onto v3.0.0, its project
+    item closed -- and the run reported failure with
+    `line 491: PARKED: unbound variable` (run 32913806285).
+
+    The property is not "PARKED is initialised". It is that **every variable
+    the ladder reads is bound on every path that reaches it**, which is what
+    makes a future rung safe to add. Assignments in this file are unindented
+    at top level and indented inside a conditional, so requiring an unindented
+    assignment is what distinguishes the two.
+    """
+
+    MERGE = SCRIPTS / "review_accept_and_merge.sh"
+
+    def _ladder_reads(self) -> set[str]:
+        """Variables tested by the `if [[ "$VAR" == ... ]]` rungs after the merge."""
+        body = self.MERGE.read_text(encoding="utf-8")
+        tail = body.split("Merge process complete", 1)
+        assert len(tail) == 2, "the closing ladder's marker moved -- update this test"
+        return set(re.findall(r'if \[\[ "\$([A-Z_]+)" ==', tail[1]))
+
+    def test_the_ladder_still_has_rungs(self):
+        assert self._ladder_reads(), "no exit-ladder conditionals found -- update this test"
+
+    def test_every_variable_the_ladder_reads_is_bound_on_every_path(self):
+        body = self.MERGE.read_text(encoding="utf-8")
+        for var in sorted(self._ladder_reads()):
+            assert re.search(rf"^{var}=", body, re.MULTILINE), (
+                f"{var} is read by the post-merge exit ladder but never assigned at "
+                f"top level, so it is unbound on any path that skips the block "
+                f"assigning it. Under `set -u` that aborts a merge that already "
+                f"succeeded -- see #4039."
+            )

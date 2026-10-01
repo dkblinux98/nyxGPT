@@ -4,7 +4,7 @@
 # Installs nyxGPT from the published remote Homebrew tap (P6-5, #3622) and
 # brings up the native (Homebrew services + launchd) stack -- exactly the
 # flow docs/homebrew.md documents for local macOS installs
-# (`brew tap`/`brew tap-trust`/`brew install nyxgpt-api nyxgpt-web`/
+# (`brew tap`/`brew tap-trust`/`brew install <the version's formulas>`/
 # `brew services start`).
 # Two ways in, and it must run as root either way:
 #   * `nyxgpt cloud deploy --os macos --host <mac>` pipes it over SSH and
@@ -25,11 +25,21 @@
 # Rendered by `nyxgpt cloud user-data --os macos` and by `nyxgpt cloud deploy
 # --os macos` (src/nyxgpt/cloud_provision.py's render_user_data, called by
 # cloud_deploy.render_provision_script -- one renderer, not two copies).
-# --version is accepted for interface parity with the Linux template's
-# --version flag and recorded in NYXGPT_VERSION below, but only for
-# reference: Homebrew formulas track the tap's current formula, not an
-# arbitrary pinned release, so this script always installs whatever
-# `dkblinux98/homebrew-nyxgpt` currently serves.
+#
+# --version SELECTS THE FORMULAS and is then VERIFIED ON THIS MACHINE (#4122).
+# It used to be "informational only", on the reasoning that Homebrew tracks a
+# tap's current formula rather than a pinned release. That reasoning is wrong
+# for the version that matters: a release *candidate* is published as a
+# separately named formula (`nyxgpt-api@3.0.0rc`), precisely so that
+# `brew install nyxgpt-api` keeps resolving to the latest stable -- which is
+# documented in src/nyxgpt/release_candidate.py's own guardrail text. So the
+# unversioned install this script used to run could never deploy a candidate:
+# the owner's 2026-09-30 acceptance run declared 3.0.0rc14 and installed
+# stable 2.1.0. The renderer now derives the formula names from the version
+# (cloud_provision.homebrew_formulas_for_version) and this script asserts,
+# from the keg, that what landed is what was asked for -- because "the
+# install command mentioned the right formula" is not the same claim as "the
+# right version is on the box", and only the second one is worth anything.
 #
 # Supported instance types and macOS versions: see docs/cloud.md's
 # target-OS support matrix. EC2 Mac requires a Dedicated Host, allocated for
@@ -40,8 +50,19 @@
 # The earlier refusal this comment used to describe (#3867) is retired.
 set -euxo pipefail
 
-# nyxgpt version requested at render time (informational only -- see above).
+# nyxgpt version requested at render time. Empty means "whatever the tap
+# currently serves as stable"; anything else is asserted below after the
+# install (#4122).
 NYXGPT_VERSION="__NYXGPT_VERSION__"
+
+# The tap formulas that carry NYXGPT_VERSION, resolved by the renderer:
+# `nyxgpt-api nyxgpt-web` for a release (or for no version at all) and
+# `nyxgpt-api@<line>rc nyxgpt-web@<line>rc` for a candidate. Never composed
+# here -- one definition of a formula's name, shared with the publisher that
+# stamps it (src/nyxgpt/release_candidate.py's rc_formula_name).
+NYXGPT_BREW_FORMULAS="__NYXGPT_BREW_FORMULAS__"
+NYXGPT_BREW_API_FORMULA="__NYXGPT_BREW_API_FORMULA__"
+NYXGPT_BREW_WEB_FORMULA="__NYXGPT_BREW_WEB_FORMULA__"
 
 # Chat session storage backend for this instance (#3865), filled in by
 # `nyxgpt cloud user-data --session-backend`. Defaults to `file` for this
@@ -78,19 +99,64 @@ sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/nyxgpt
 # the prompt and provisioning dead-ends (#3752). Trust is per tap, which is
 # what the install below needs -- a per-formula grant does not cover the
 # counterpart formula `conflicts_with` makes brew load (#3770). That applies
-# to the STABLE install this script runs since #3853, not only to a candidate
-# one: the stable formula now declares the conflict too, so `brew install
-# nyxgpt-api` loads `nyxgpt-api@<line>rc` on its way in. The
+# whichever channel this run installs: both formulas declare the conflict since
+# #3853, so `brew install nyxgpt-api` loads `nyxgpt-api@<line>rc` on its way in
+# and vice versa. The
 # subcommand is spelled `tap-trust` on some Homebrews and `trust` on others,
 # so try both; failing both is tolerated -- a Homebrew old enough not to
 # gate has neither subcommand and nothing to trust.
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap-trust dkblinux98/nyxgpt \
   || sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" trust dkblinux98/nyxgpt || true
-sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install nyxgpt-api nyxgpt-web
+# shellcheck disable=SC2086  # deliberately word-split: two formula names.
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install $NYXGPT_BREW_FORMULAS
+
+# The keg of the api formula that was actually requested. For a candidate this
+# is `opt/nyxgpt-api@3.0.0rc`, not `opt/nyxgpt-api` -- which is why the paths
+# below are built from the formula name rather than hardcoding the stable one
+# (#4122): with the versioned install in place, a hardcoded `opt/nyxgpt-api`
+# would not exist and the config seeding and `ops session-backend` step would
+# both fail on a candidate deploy.
+BREW_PREFIX="$($BREW_BIN --prefix)"
+NYXGPT_API_OPT="$BREW_PREFIX/opt/$NYXGPT_BREW_API_FORMULA"
+
+# --- The install is verified, not assumed ------------------------------
+#
+# `brew install a b` does NOT stop at the first failure: Homebrew's post-build
+# phase uses `ofail`, so it finishes the keg it can, carries on to the next
+# formula, and only turns the flag into a status at the very end (D-047). So
+# "brew exited 0" and "both formulas are installed" are different claims, and
+# on the owner's 2026-09-30 run they diverged: nyxgpt-api failed to build while
+# nyxgpt-web installed cleanly. Ask the keg.
+if [ ! -x "$NYXGPT_API_OPT/libexec/venv/bin/nyxgpt" ]; then
+  echo "ec2-user-data-macos: $NYXGPT_BREW_API_FORMULA did not install -- there is no nyxgpt CLI at $NYXGPT_API_OPT/libexec/venv/bin/nyxgpt. The nyxGPT API is not on this machine; scroll up for the FIRST error in the brew output, not the last." >&2
+  exit 1
+fi
+if [ ! -d "$BREW_PREFIX/opt/$NYXGPT_BREW_WEB_FORMULA" ]; then
+  echo "ec2-user-data-macos: $NYXGPT_BREW_WEB_FORMULA did not install -- there is no keg at $BREW_PREFIX/opt/$NYXGPT_BREW_WEB_FORMULA." >&2
+  exit 1
+fi
+
+NYXGPT_CLI="$NYXGPT_API_OPT/libexec/venv/bin/nyxgpt"
+
+# And it is the version that was ASKED FOR, read off the machine rather than
+# inferred from the command line. This is the assertion the owner's acceptance
+# report asks for in place of the old "the install command mentions the right
+# formula" check: a deploy that silently installs a different release than the
+# one under test makes every result of that test meaningless.
+if [ -n "$NYXGPT_VERSION" ]; then
+  INSTALLED_VERSION="$(sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_CLI" --version | awk '{print $NF}')"
+  if [ "$INSTALLED_VERSION" != "$NYXGPT_VERSION" ]; then
+    echo "ec2-user-data-macos: asked for nyxGPT $NYXGPT_VERSION (formulas: $NYXGPT_BREW_FORMULAS) but this machine has $INSTALLED_VERSION. Refusing to start a stack that is not the release under test." >&2
+    exit 1
+  fi
+  echo "ec2-user-data-macos: verified nyxGPT $INSTALLED_VERSION from $NYXGPT_BREW_FORMULAS"
+else
+  echo "ec2-user-data-macos: no version was requested, so $NYXGPT_BREW_FORMULAS installed the tap's current stable -- nothing to verify against"
+fi
 
 sudo -u "$NYXGPT_TARGET_USER" -H mkdir -p "$TARGET_HOME/.nyxGPT"
 if [ ! -f "$TARGET_HOME/.nyxGPT/config.ini" ]; then
-  EXAMPLE_CONFIG="$($BREW_BIN --prefix)/opt/nyxgpt-api/libexec/venv/lib/python3.12/site-packages/nyxgpt/example.config.ini"
+  EXAMPLE_CONFIG="$NYXGPT_API_OPT/libexec/venv/lib/python3.12/site-packages/nyxgpt/example.config.ini"
   sudo -u "$NYXGPT_TARGET_USER" -H cp "$EXAMPLE_CONFIG" "$TARGET_HOME/.nyxGPT/config.ini"
 fi
 
@@ -101,10 +167,12 @@ fi
 # addressed through the keg rather than the PATH so this does not depend on
 # `brew link` having run for this shell. Idempotent -- it writes only when the
 # value actually changes.
-NYXGPT_CLI="$($BREW_BIN --prefix)/opt/nyxgpt-api/libexec/venv/bin/nyxgpt"
 sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_CLI" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
 
-sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start nyxgpt-api
-sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start nyxgpt-web
+# The service names are the formula names: a candidate keg's brew service is
+# `nyxgpt-api@3.0.0rc`, and asking for `nyxgpt-api` would report nothing
+# running while the stack was in fact up (D-030).
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start "$NYXGPT_BREW_API_FORMULA"
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start "$NYXGPT_BREW_WEB_FORMULA"
 
-echo "ec2-user-data-macos: nyxGPT installed and started for user '$NYXGPT_TARGET_USER'"
+echo "ec2-user-data-macos: nyxGPT ${NYXGPT_VERSION:-(tap stable)} installed and started for user '$NYXGPT_TARGET_USER' from $NYXGPT_BREW_FORMULAS"

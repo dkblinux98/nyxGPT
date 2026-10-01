@@ -27,13 +27,86 @@ def test_render_user_data_linux_defaults_to_latest():
     assert 'PIP_SPEC="nyxgpt"' in rendered
 
 
-def test_render_user_data_macos_records_version_for_reference_only():
+def test_render_user_data_macos_installs_the_release_version_formulas():
+    """A *release* version installs the stable formulas, which are the ones that
+    carry it."""
     rendered = cloud_provision.render_user_data("macos", "3.0.0")
 
     assert 'NYXGPT_VERSION="3.0.0"' in rendered
     assert cloud_provision.VERSION_PLACEHOLDER not in rendered
-    # The macOS path never pins a Homebrew formula to a specific version.
-    assert "brew install nyxgpt-api nyxgpt-web" in rendered
+    assert 'NYXGPT_BREW_FORMULAS="nyxgpt-api nyxgpt-web"' in rendered
+    assert 'NYXGPT_BREW_API_FORMULA="nyxgpt-api"' in rendered
+    assert 'NYXGPT_BREW_WEB_FORMULA="nyxgpt-web"' in rendered
+
+
+def test_render_user_data_macos_installs_the_candidate_formulas_for_an_rc():
+    """#4122, and the whole of it.
+
+    An rc is published as a *separately named* formula so that `brew install
+    nyxgpt-api` keeps resolving to the latest stable -- which is exactly what
+    `release_candidate._guardrails` documents. So the unversioned install this
+    template used to hardcode could never deploy a candidate: the owner's
+    2026-09-30 acceptance run declared 3.0.0rc14 and got stable 2.1.0 on the box,
+    meaning the acceptance-testing channel was the one channel `--os macos`
+    structurally could not deploy.
+    """
+    rendered = cloud_provision.render_user_data("macos", "3.0.0rc14")
+
+    assert 'NYXGPT_VERSION="3.0.0rc14"' in rendered
+    assert 'NYXGPT_BREW_FORMULAS="nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc"' in rendered
+    assert 'NYXGPT_BREW_API_FORMULA="nyxgpt-api@3.0.0rc"' in rendered
+    assert 'NYXGPT_BREW_WEB_FORMULA="nyxgpt-web@3.0.0rc"' in rendered
+    # Nothing may still name the stable keg: a leftover `opt/nyxgpt-api` path
+    # would read a keg that is not there on a candidate install, which is how
+    # the config seeding and `ops session-backend` would fail.
+    executable = [
+        line for line in rendered.splitlines() if line.strip() and not line.strip().startswith("#")
+    ]
+    assert not any("install nyxgpt-api nyxgpt-web" in line for line in executable)
+    assert not any("opt/nyxgpt-api/libexec" in line for line in executable)
+    assert not any("services start nyxgpt-api" in line for line in executable)
+
+
+def test_render_user_data_macos_asserts_the_version_it_installed():
+    """The owner's stated acceptance bar: assert the *version on the box*, not
+    the command string. A bootstrap that installs a different release than the
+    one under test makes every result of that test meaningless."""
+    rendered = cloud_provision.render_user_data("macos", "3.0.0rc14")
+
+    assert 'if [ "$INSTALLED_VERSION" != "$NYXGPT_VERSION" ]; then' in rendered
+    assert "Refusing to start a stack that is not the release under test" in rendered
+    # And the keg is checked for existence at all, because `brew install a b`
+    # carries on past a failed first formula and only reports at the end (D-047).
+    assert "did not install" in rendered
+
+
+def test_homebrew_formulas_for_version_shares_the_publisher_s_naming():
+    """The installer must never compose a formula name the publisher would not
+    have written -- so it delegates to the same function that stamps them."""
+    from nyxgpt import release_candidate
+
+    assert cloud_provision.homebrew_formulas_for_version("3.0.0rc7") == (
+        release_candidate.rc_formula_name("nyxgpt-api", "3.0.0"),
+        release_candidate.rc_formula_name("nyxgpt-web", "3.0.0"),
+    )
+    # A release, and no version at all, both take the stable names: an rc
+    # publish never writes the stable formulas, so nothing else could work.
+    assert cloud_provision.homebrew_formulas_for_version("3.0.0") == (
+        "nyxgpt-api",
+        "nyxgpt-web",
+    )
+    assert cloud_provision.homebrew_formulas_for_version(None) == ("nyxgpt-api", "nyxgpt-web")
+    assert cloud_provision.homebrew_formulas_for_version("") == ("nyxgpt-api", "nyxgpt-web")
+
+
+def test_render_user_data_macos_without_a_version_has_nothing_to_verify():
+    """No declared version means the tap's current stable, and the bootstrap says
+    so rather than asserting against an empty string."""
+    rendered = cloud_provision.render_user_data("macos")
+
+    assert 'NYXGPT_VERSION=""' in rendered
+    assert 'NYXGPT_BREW_FORMULAS="nyxgpt-api nyxgpt-web"' in rendered
+    assert "nothing to verify against" in rendered
 
 
 def test_render_user_data_rejects_unsupported_os():

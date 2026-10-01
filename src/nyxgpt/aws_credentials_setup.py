@@ -60,7 +60,7 @@ from typing import Any
 
 from nyxgpt import cloud_secrets, config_wizard
 from nyxgpt.config import DEFAULT_CONFIG_PATH
-from nyxgpt.optional_imports import try_import
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 from nyxgpt.secrets_setup import SecretValidationError, mask_secret
 
 AWS_DIR = Path.home() / ".aws"
@@ -392,8 +392,7 @@ def write_keychain_credentials(profile: str, access_key_id: str, secret_access_k
     keyring = _keyring_module()
     if keyring is None:
         raise AwsCredentialsError(
-            "keyring is required to store AWS credentials in the OS keychain. "
-            "Install with `pip install nyxgpt[cloud]`."
+            "keyring is required to store AWS credentials in the OS keychain. " + CLOUD_EXTRA_REMEDY
         )
     try:
         keyring.set_password(KEYCHAIN_SERVICE, f"{profile}:access_key_id", access_key_id)
