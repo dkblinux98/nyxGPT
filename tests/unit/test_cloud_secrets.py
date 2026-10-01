@@ -83,13 +83,13 @@ def test_fetch_ssm_parameter_raises_when_value_missing(monkeypatch):
 def test_fetch_secretsmanager_key_returns_value(monkeypatch):
     client = _FakeSecretsManagerClient({"nyxgpt": json.dumps({"auth_api_key": "sk-sm-secret"})})
     monkeypatch.setattr(
-        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client
+        cloud_secrets, "_get_boto3_client", lambda service, region, profile="": client  # pragma: allowlist secret
     )
 
     value = cloud_secrets.fetch_secretsmanager_key("nyxgpt", "auth_api_key")
 
     assert value == "sk-sm-secret"
-    assert client.calls == [{"SecretId": "nyxgpt"}]
+    assert client.calls == [{"SecretId": "nyxgpt"}]  # pragma: allowlist secret
 
 
 def test_fetch_secretsmanager_key_wraps_client_errors(monkeypatch):
@@ -230,7 +230,7 @@ def test_resolve_secret_caches_failures_and_does_not_retry_immediately(monkeypat
     with pytest.raises(cloud_secrets.CloudSecretsError, match="ParameterNotFound"):
         cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
 
-    # Second call hit the negative cache, not AWS again.
+    # Second call hit the negative cache, not AWS again.  # pragma: allowlist secret
     assert len(client.calls) == 1
 
 
@@ -260,7 +260,7 @@ def test_resolve_secret_success_after_failure_clears_negative_cache(monkeypatch)
     with pytest.raises(cloud_secrets.CloudSecretsError):
         cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
 
-    client.params["/nyxgpt/auth_api_key"] = "sk-recovered"
+    client.params["/nyxgpt/auth_api_key"] = "sk-recovered"  # pragma: allowlist secret
     cloud_secrets.clear_cache()
     value = cloud_secrets.resolve_secret(cloud_secrets.SSM_PROVIDER, "auth_api_key")
 

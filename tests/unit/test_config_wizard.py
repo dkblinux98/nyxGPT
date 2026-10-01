@@ -156,7 +156,7 @@ def test_validate_updates_empty_secret_is_dropped_not_error():
 def test_validate_updates_nonempty_secret_is_kept():
     validated, errors = config_wizard.validate_updates({"auth": {"api_key": "s3cr3t"}})
     assert errors == []
-    assert validated == {"auth": {"api_key": "s3cr3t"}}
+    assert validated == {"auth": {"api_key": "s3cr3t"}}  # pragma: allowlist secret
 
 
 def test_validate_updates_rejects_non_object_payload():

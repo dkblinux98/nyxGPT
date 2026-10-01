@@ -520,10 +520,10 @@ export const handlers = [
       enabled: body.enabled ?? false,
       header: body.header ?? 'X-API-Key',
       api_key_set: true,
-      api_key_masked: 'newk********-key',
+      api_key_masked: 'newk********-key',  // pragma: allowlist secret
     };
     if (body.rotate) {
-      response.api_key = 'newly-generated-key-value';
+      response.api_key = 'newly-generated-key-value';  // pragma: allowlist secret
     }
     return HttpResponse.json(response);
   }),

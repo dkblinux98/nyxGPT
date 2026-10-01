@@ -35,8 +35,8 @@ from nyxgpt.secrets_setup import SecretValidationError
 
 pytestmark = pytest.mark.unit
 
-VALID_ACCESS_KEY_ID = "AKIAABCDEFGHIJKLMNOP"
-VALID_SECRET_ACCESS_KEY = "s3cr3t" + "x" * 30
+VALID_ACCESS_KEY_ID = "AKIAABCDEFGHIJKLMNOP"  # pragma: allowlist secret
+VALID_SECRET_ACCESS_KEY = "s3cr3t" + "x" * 30  # pragma: allowlist secret
 
 
 # --- fields / metadata ---
@@ -142,7 +142,7 @@ def test_save_aws_credentials_rejects_malformed_secret_access_key(tmp_path: Path
             "nyxgpt",
             "us-east-1",
             access_key_id=VALID_ACCESS_KEY_ID,
-            secret_access_key="short",
+            secret_access_key="short",  # pragma: allowlist secret
         )
 
 

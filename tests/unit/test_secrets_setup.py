@@ -68,7 +68,7 @@ def test_mask_secret_long_value_keeps_edges():
     assert masked.endswith("wxyz")
     assert "*" in masked
     # never reveals the full value
-    assert masked != "ghp_abcdefghijklmnopqrstuvwxyz"
+    assert masked != "ghp_abcdefghijklmnopqrstuvwxyz"  # pragma: allowlist secret
 
 
 # --- validators ---
@@ -131,18 +131,18 @@ def test_secret_status_reports_unset_secrets():
 def test_secret_status_reports_set_secret_masked_only():
     cfg = ConfigParser()
     cfg.add_section("github")
-    cfg.set("github", "pat", "ghp_abcdefghijklmnopqrstuvwxyz")
+    cfg.set("github", "pat", "ghp_abcdefghijklmnopqrstuvwxyz")  # pragma: allowlist secret
     status = secret_status(cfg)
     github_entry = next(e for e in status if e["full_key"] == "github.pat")
     assert github_entry["set"] is True
     assert github_entry["masked"] is not None
-    assert "ghp_abcdefghijklmnopqrstuvwxyz" not in str(github_entry)
+    assert "ghp_abcdefghijklmnopqrstuvwxyz" not in str(github_entry)  # pragma: allowlist secret
 
 
 def test_secret_status_never_leaks_cleartext_value():
     cfg = ConfigParser()
     cfg.add_section("openai")
-    secret_value = "sk-topsecretvalue1234567890"
+    secret_value = "sk-topsecretvalue1234567890"  # pragma: allowlist secret
     cfg.set("openai", "api_key", secret_value)
     status = secret_status(cfg)
     assert secret_value not in str(status)
@@ -335,7 +335,7 @@ def test_run_secrets_setup_skips_after_too_many_invalid_attempts(tmp_path: Path,
 
 def test_run_secrets_setup_never_prints_secret_values(tmp_path: Path, capsys):
     cfg_path = tmp_path / "config.ini"
-    secret_value = "sk-" + "i" * 30
+    secret_value = "sk-" + "i" * 30  # pragma: allowlist secret
     with (
         patch("builtins.input", return_value="n"),
         patch(

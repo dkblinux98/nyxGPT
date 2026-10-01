@@ -116,7 +116,7 @@ def test_admin_access_get_masks_api_key():
     body = response.json()
     assert body["enabled"] is True
     assert body["api_key_set"] is True
-    assert body["api_key_masked"] == "supe********alue"
+    assert body["api_key_masked"] == "supe********alue"  # pragma: allowlist secret
     assert "api_key" not in body
 
 
@@ -184,7 +184,7 @@ def test_admin_access_update_rotate_returns_new_key_once():
     body = response.json()
     # The freshly generated key is returned once in the response body...
     assert isinstance(body["api_key"], str) and len(body["api_key"]) > 16
-    assert body["api_key"] != "brand-new-generated-key"  # not the pre-rotation key
+    assert body["api_key"] != "brand-new-generated-key"  # not the pre-rotation key  # pragma: allowlist secret
     assert body["api_key_masked"] != body["api_key"]
 
     # ...and the same generated value is what got persisted to config.
@@ -355,7 +355,7 @@ def test_dashboard_revert_retires_the_notice(isolated_auth_config):
     # one state file, so either can retire what the other raised.
     resp = client.post(
         "/api/v1/config/sections",
-        json={"auth": {"api_key": "original-key"}},
+        json={"auth": {"api_key": "original-key"}},  # pragma: allowlist secret
         headers={"X-API-Key": rotated},
     )
     assert resp.status_code == 200

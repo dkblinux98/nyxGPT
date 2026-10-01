@@ -1356,7 +1356,7 @@ def test_sync_host_relay_env_explains_how_to_revert_a_widened_bind(tmp_path, mon
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text("[api]\nhost = 0.0.0.0\nport = 8000\n", encoding="utf-8")
     env_path = tmp_path / ".env"
-    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8")
+    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8")  # pragma: allowlist secret
     monkeypatch.setattr(ops, "_is_linux", lambda: True)
     monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
 
@@ -1374,7 +1374,7 @@ def test_sync_host_relay_env_stays_quiet_when_disabled_for_other_reasons(tmp_pat
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text("[api]\nhost = 127.0.0.1\nport = 8000\n", encoding="utf-8")
     env_path = tmp_path / ".env"
-    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8")
+    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8")  # pragma: allowlist secret
     monkeypatch.setattr(ops, "_is_linux", lambda: False)
 
     result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
@@ -1807,7 +1807,7 @@ def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkey
 @pytest.mark.unit
 def test_sync_env_from_config_creates_env_from_example(tmp_path):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw")
+    _write_config(cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw")  # pragma: allowlist secret
 
     example_path = tmp_path / ".env.example"
     example_path.write_text(
@@ -1838,7 +1838,7 @@ def test_sync_env_from_config_creates_env_from_example(tmp_path):
 @pytest.mark.unit
 def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="new-api-key", grafana_password="new-grafana-pw")
+    _write_config(cfg_path, api_key="new-api-key", grafana_password="new-grafana-pw")  # pragma: allowlist secret
 
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -1863,21 +1863,21 @@ def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
 @pytest.mark.unit
 def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="only-api-key-set")
+    _write_config(cfg_path, api_key="only-api-key-set")  # pragma: allowlist secret
 
     env_path = tmp_path / ".env"
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
     assert results[0].ok is True
     content = env_path.read_text(encoding="utf-8")
-    assert "NYXGPT_AUTH_API_KEY=only-api-key-set" in content
+    assert "NYXGPT_AUTH_API_KEY=only-api-key-set" in content  # pragma: allowlist secret
     assert "GRAFANA_ADMIN_PASSWORD" not in content
 
 
 @pytest.mark.unit
 def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")
+    _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -1902,7 +1902,7 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
 ):
     # Regression test (#3621): `nyxgpt ops env-sync` is documented (docs/ops.md,
     # _sync_grafana_slack_webhook_secret's docstring) as runnable as the very
-    # first command -- e.g. the Compose-only Quickstart's `nyxgpt wizard` then
+    # first command -- e.g. the Compose-only Quickstart's `nyxgpt wizard` then  # pragma: allowlist secret
     # `nyxgpt ops env-sync`, with no `nyxgpt ops install` beforehand. That means
     # NYXGPT_HOME/.env.example doesn't exist yet unless env_sync() syncs the
     # packaged resources itself; without that, sync_env_from_config()'s
@@ -1915,8 +1915,8 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     (src_root / "scripts").mkdir(parents=True)
     (src_root / "k8s").mkdir(parents=True)
     (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    (src_root / ".env.example").write_text(
-        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n", encoding="utf-8"
+    (src_root / ".env.example").write_text(  # pragma: allowlist secret
+        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n", encoding="utf-8"  # pragma: allowlist secret
     )
 
     home = tmp_path / "home"
@@ -1928,8 +1928,8 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", nyxgpt_home / "docker" / "config.docker.ini")
 
-    cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="fresh-api-key")
+    cfg_path = tmp_path / "config.ini"  # pragma: allowlist secret
+    _write_config(cfg_path, api_key="fresh-api-key")  # pragma: allowlist secret
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -1942,7 +1942,7 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     env_path = nyxgpt_home / ".env"
     assert env_path.exists()
     content = env_path.read_text(encoding="utf-8")
-    assert "NYXGPT_AUTH_API_KEY=fresh-api-key" in content
+    assert "NYXGPT_AUTH_API_KEY=fresh-api-key" in content  # pragma: allowlist secret
     # The non-secret default from the packaged .env.example must survive --
     # this is the line that silently vanished before env_sync() synced the
     # packaged resources first.
@@ -6134,7 +6134,7 @@ def test_detect_deployment_mode_logs_conflict_at_warning(caplog, monkeypatch):
 @pytest.mark.unit
 def test_env_sync_logs_summary(caplog, tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")
+    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -6302,7 +6302,7 @@ def test_sync_host_relay_env_enables_relay_and_preserves_other_lines(tmp_path, m
     env_path.write_text(
         "NYXGPT_BIND_ADDR=127.0.0.1\n"
         "NYXGPT_API_PORT=8000\n"
-        "NYXGPT_HOST_RELAY_PROFILE=disabled\n"
+        "NYXGPT_HOST_RELAY_PROFILE=disabled\n"  # pragma: allowlist secret
         "NYXGPT_HOST_GATEWAY_IP=127.0.0.1\n"
         "GRAFANA_ADMIN_PASSWORD=secret\n",
         encoding="utf-8",
@@ -7092,7 +7092,7 @@ def test_verify_grafana_datasources_resolve_fails_when_uid_missing(monkeypatch):
 def test_verify_grafana_datasources_resolve_fails_when_unreachable(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus"])
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
-
+  # pragma: allowlist secret
     class FakeClient:
         def __enter__(self):
             return self
@@ -7119,7 +7119,7 @@ def test_verify_grafana_datasources_resolve_fails_with_http_error_includes_body(
     class FakeResponse:
         status_code = 500
         text = "internal server error: datasource registry unavailable"
-
+  # pragma: allowlist secret
     class FakeClient:
         def __enter__(self):
             return self
@@ -7581,7 +7581,7 @@ def test_reconcile_grafana_admin_credential_skips_reset_when_already_working(mon
         "http://localhost:3001", ConfigParser()
     )
 
-    assert password == "already-good"
+    assert password == "already-good"  # pragma: allowlist secret
     assert result.ok is True
 
 
@@ -7608,7 +7608,7 @@ def test_reconcile_grafana_admin_credential_resets_on_401_then_succeeds(monkeypa
         "http://localhost:3001", ConfigParser(), attempts=2
     )
 
-    assert password == "ops-managed-secret"
+    assert password == "ops-managed-secret"  # pragma: allowlist secret
     assert result.ok is True
     assert reset_calls == ["ops-managed-secret"]
 
@@ -9272,7 +9272,7 @@ def test_down_refuses_volumes_without_yes_really(capsys):
 def test_down_all_scope_stops_native_and_composes_down(capsys):
     args = MagicMock(
         app_only=False,
-        observability_only=False,
+        observability_only=False,  # pragma: allowlist secret
         volumes=False,
         yes_really=False,
         terraform=False,
@@ -9352,7 +9352,7 @@ def test_down_leaves_terraform_or_kubernetes_managed_components_unmarked():
     stopped either -- otherwise self-heal would stop guarding a component
     that never went down (#3406)."""
     args = MagicMock(
-        app_only=False,
+        app_only=False,  # pragma: allowlist secret
         observability_only=False,
         volumes=False,
         yes_really=False,
@@ -9834,7 +9834,7 @@ def test_resolve_admin_credentials_reads_existing(tmp_path):
     email, password, generated = ops._resolve_admin_credentials(cfg_path)
 
     assert email == "owner@example.com"
-    assert password == "s3cr3t"
+    assert password == "s3cr3t"  # pragma: allowlist secret
     assert generated is False
 
 
@@ -9914,7 +9914,7 @@ def test_glitchtip_ensure_superuser_command_shape(monkeypatch):
     assert not any("s3cr3t-pw" in arg for arg in cmd)
     env = captured["env"]
     assert env["DJANGO_SUPERUSER_EMAIL"] == "admin@nyxgpt.local"
-    assert env["DJANGO_SUPERUSER_PASSWORD"] == "s3cr3t-pw"
+    assert env["DJANGO_SUPERUSER_PASSWORD"] == "s3cr3t-pw"  # pragma: allowlist secret
     assert env["DJANGO_SUPERUSER_USERNAME"] == "admin@nyxgpt.local"
 
 
@@ -14742,7 +14742,7 @@ def test_env_sync_survives_malformed_native_config(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".nyxGPT").mkdir(parents=True)
     native = home / ".nyxGPT" / "config.ini"
-    _write_config(native, api_key="cli-api-key")
+    _write_config(native, api_key="cli-api-key")  # pragma: allowlist secret
     with native.open("a", encoding="utf-8") as f:
         f.write(
             "[error_tracking]\ndsn = http://one@localhost:8080/1\n"

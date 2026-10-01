@@ -23,7 +23,7 @@ def _cfg_with_monitoring_enabled(tmp_path: Path) -> Path:
     cfg_path = tmp_path / "config.ini"
     parser = ConfigParser()
     parser["monitoring"] = {"enabled": "true"}
-    parser["auth"] = {"api_key": "test-key"}
+    parser["auth"] = {"api_key": "test-key"}  # pragma: allowlist secret
     with cfg_path.open("w") as f:
         parser.write(f)
     return cfg_path

@@ -241,7 +241,7 @@ def _cfg_with_monitoring(**overrides):
     cfg["monitoring"] = {
         "enabled": "true",
         "grafana_ui_url": "http://localhost:3001",
-        "grafana_admin_password": "test-password",
+        "grafana_admin_password": "test-password",  # pragma: allowlist secret
         **overrides,
     }
     return cfg

@@ -47,7 +47,7 @@ describe('apiFetch', () => {
   });
 
   it('attaches X-API-Key when NYXGPT_AUTH_API_KEY is set', async () => {
-    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';
+    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';  // pragma: allowlist secret
     global.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
     const { apiFetch } = await import('../../src/lib/apiProxy');
     await apiFetch('/api/v1/models');
@@ -66,7 +66,7 @@ describe('apiFetch', () => {
   });
 
   it('preserves caller-supplied headers alongside the auth header', async () => {
-    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';
+    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';  // pragma: allowlist secret
     global.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
     const { apiFetch } = await import('../../src/lib/apiProxy');
     await apiFetch('/api/v1/models', { headers: { 'Content-Type': 'application/json' } });

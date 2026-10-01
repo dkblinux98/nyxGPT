@@ -261,7 +261,7 @@ describe('/api/chat/stream POST route', () => {
   });
 
   it('forwards the JSON body, SSE headers, auth key, and timeout options to undici request()', async () => {
-    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';
+    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';  // pragma: allowlist secret
     mockUpstream(200, makeBody([]));
 
     const { POST } = await import(ROUTE_PATH);

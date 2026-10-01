@@ -612,7 +612,7 @@ def test_apply_auth_config_updates_api_key(tmp_path):
     cfg_path = tmp_path / "config.ini"
     with patch("nyxgpt.app._config_file_path", return_value=cfg_path):
         out = _apply_auth_config_updates({"api_key": "supersecret"})
-    assert out == {"api_key": "supersecret"}
+    assert out == {"api_key": "supersecret"}  # pragma: allowlist secret
     parsed = load_config(cfg_path)
     assert parsed.get("auth", "api_key") == "supersecret"
 
@@ -661,7 +661,7 @@ def test_apply_hot_config_updates_lands_0600(tmp_path):
 def test_apply_auth_config_updates_lands_0600(tmp_path):
     cfg_path = tmp_path / "config.ini"
     with patch("nyxgpt.app._config_file_path", return_value=cfg_path):
-        _apply_auth_config_updates({"api_key": "supersecret"})
+        _apply_auth_config_updates({"api_key": "supersecret"})  # pragma: allowlist secret
     assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
 
 

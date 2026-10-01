@@ -1394,7 +1394,7 @@ describe('AdminPage Component', () => {
     });
 
     await waitFor(() => {
-      expect(capturedBody?.auth).toEqual({ api_key: 'brand-new-key' });
+      expect(capturedBody?.auth).toEqual({ api_key: 'brand-new-key' });  // pragma: allowlist secret
     });
     expect(capturedBody?.error_tracking).toEqual({ dsn: 'http://new@dsn/1' });
   });
@@ -2503,8 +2503,8 @@ describe('AdminPage Component', () => {
 
       await waitFor(() => {
         expect(capturedBody?.monitoring).toMatchObject({
-          grafana_admin_password: 'secret-one',
-          admin_email_secret: 'secret-two',
+          grafana_admin_password: 'secret-one',  // pragma: allowlist secret
+          admin_email_secret: 'secret-two',  // pragma: allowlist secret
         });
       });
     });

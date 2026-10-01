@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { context as otelContext, trace } from '@opentelemetry/api';
 
 const ACTIVE_SPAN_CONTEXT = {
-  traceId: '0af7651916cd43dd8448eb211c80319c',
-  spanId: 'b7ad6b7169203331',
+  traceId: '0af7651916cd43dd8448eb211c80319c',  // pragma: allowlist secret
+  spanId: 'b7ad6b7169203331',  // pragma: allowlist secret
   traceFlags: 1,
 };
 

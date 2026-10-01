@@ -251,17 +251,17 @@ def test_verification_goes_through_the_tunnel_with_the_instances_api_key(monkeyp
     # tunnel is the only path in, so verifying the app verifies that path.
     assert cloud_smoke.API_BASE == "http://localhost:8000/api/v1"
     assert chat["base"] == cloud_smoke.API_BASE
-    assert chat["api_key"] == "secret-key"
+    assert chat["api_key"] == "secret-key"  # pragma: allowlist secret
 
 
 def test_an_explicit_api_key_beats_the_instances_own(monkeypatch):
     deploy, http = FakeDeploy(), FakeHttp()
     _install(monkeypatch, deploy=deploy, http=http)
 
-    cloud_smoke.run_smoke(_args(api_key="from-the-flag"))
+    cloud_smoke.run_smoke(_args(api_key="from-the-flag"))  # pragma: allowlist secret
 
     assert all(
-        c["api_key"] == "from-the-flag" for c in http.calls if c["base"] == cloud_smoke.API_BASE
+        c["api_key"] == "from-the-flag" for c in http.calls if c["base"] == cloud_smoke.API_BASE  # pragma: allowlist secret
     )
 
 

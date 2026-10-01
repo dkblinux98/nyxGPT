@@ -2488,7 +2488,7 @@ def test_secrets_resolution_uses_the_configured_aws_profile(
     assert calls and calls[0]["profile"] == "nyxgpt"
 
 
-def test_secrets_profile_overrides_the_cloud_profile(
+def test_secrets_profile_overrides_the_cloud_profile(  # pragma: allowlist secret
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An install whose secrets live in a different account than its substrate."""
@@ -2529,7 +2529,7 @@ def test_validate_config_accepts_known_secrets_providers(tmp_path: Path) -> None
 
 
 def test_get_github_repo_owner_and_name_read_values(tmp_path: Path) -> None:
-    ini = tmp_path / "config.ini"
+    ini = tmp_path / "config.ini"  # pragma: allowlist secret
     _write(ini, "[github]\nrepo_owner = dkblinux98\nrepo_name = nyxGPT\n")
     cfg = load_config(str(ini))
     assert get_github_repo_owner(cfg) == "dkblinux98"
@@ -2618,7 +2618,7 @@ def test_log_effective_config_logs_at_info(
 
 def test_redact_url_userinfo_removes_a_password() -> None:
     assert (
-        redact_url_userinfo("http://alice:s3cr3t@ollama.internal:11434")
+        redact_url_userinfo("http://alice:s3cr3t@ollama.internal:11434")  # pragma: allowlist secret
         == "http://***@ollama.internal:11434"
     )
 
@@ -2635,7 +2635,7 @@ def test_redact_url_userinfo_does_not_touch_an_at_sign_in_a_path() -> None:
 def test_validate_config_does_not_echo_a_password_in_the_base_url(tmp_path: Path) -> None:
     """A rejected `ollama.base_url` reaches stderr -- without its credential."""
     ini = tmp_path / "config.ini"
-    _write(ini, "[ollama]\nbase_url = ftp://alice:s3cr3t@ollama.internal\n")
+    _write(ini, "[ollama]\nbase_url = ftp://alice:s3cr3t@ollama.internal\n")  # pragma: allowlist secret
     cfg = load_config(str(ini))
 
     errors = validate_config(cfg)
@@ -2659,11 +2659,11 @@ def test_cloud_secret_failure_log_omits_the_provider_exception_text(
     reset_fallback_warnings()
 
     def _raise(provider, key, **kwargs):
-        raise cloud_secrets.CloudSecretsError("payload was {'auth_api_key': 'sk-live-leaked'}")
+        raise cloud_secrets.CloudSecretsError("payload was {'auth_api_key': 'sk-live-leaked'}")  # pragma: allowlist secret
 
     monkeypatch.setattr(cloud_secrets, "resolve_secret", _raise)
 
-    with caplog.at_level(logging.WARNING, logger="nyxgpt.config"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.config"):  # pragma: allowlist secret
         assert get_auth_api_key(cfg) == ""
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
@@ -2690,7 +2690,7 @@ def test_cloud_secret_failure_debug_line_does_not_relog_the_provider(
     reset_fallback_warnings()
 
     def _raise(provider, key, **kwargs):
-        raise cloud_secrets.CloudSecretsError("payload was {'auth_api_key': 'sk-live-leaked'}")
+        raise cloud_secrets.CloudSecretsError("payload was {'auth_api_key': 'sk-live-leaked'}")  # pragma: allowlist secret
 
     monkeypatch.setattr(cloud_secrets, "resolve_secret", _raise)
 
@@ -2793,7 +2793,7 @@ def test_describe_config_parse_error_redacts_the_offending_line_by_default() -> 
 
     from nyxgpt.config import describe_config_parse_error
 
-    secret = "sk-live-VERYSECRETVALUE"
+    secret = "sk-live-VERYSECRETVALUE"  # pragma: allowlist secret
     cases = [
         (f"api_key = {secret}\n[auth]\n", "MissingSectionHeaderError", "line 1"),
         (f"[auth]\napi_key = {secret}\n oops\nkey {secret}\n", "ParsingError", "line 4"),
@@ -2856,7 +2856,7 @@ def test_describe_config_parse_error_quotes_the_line_only_when_opted_in() -> Non
 
     from nyxgpt.config import describe_config_parse_error
 
-    secret = "sk-live-VERYSECRETVALUE"
+    secret = "sk-live-VERYSECRETVALUE"  # pragma: allowlist secret
     try:
         configparser.ConfigParser().read_string(f"api_key = {secret}\n[auth]\n")
     except configparser.Error as e:

@@ -272,8 +272,8 @@ def test_rag_ingest_skipped_status(tmp_path: Path, capsys: pytest.CaptureFixture
         mock_ingest.return_value = {
             "status": "skipped",
             "chunks_ingested": 0,
-            "doc_hash": "abcdef0123456789abcdef0123456789",
-            "previous_hash": "abcdef0123456789abcdef0123456789",
+            "doc_hash": "abcdef0123456789abcdef0123456789",  # pragma: allowlist secret
+            "previous_hash": "abcdef0123456789abcdef0123456789",  # pragma: allowlist secret
         }
 
         exit_code = cli(["rag", "ingest", "unchanged-doc", str(test_file)])
