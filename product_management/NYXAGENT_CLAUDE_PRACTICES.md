@@ -422,14 +422,16 @@ The question is **not** "adopt or don't." It is **which layer nyxAgent is**:
 **Owner direction, 2026-09-30 — a fourth option, chosen:** *"instantiate
 nyxAgent in GitHub with a fork of Paperclip… I don't want Paperclip to be an
 add-on to nyxAgent but rather a starting point for nyxAgent."* That is **(d) a
-hard fork as the foundation** — (a)'s codebase with (b)'s ownership, which the
-three options above did not name. MIT permits it outright and the compliance
+divergent copy as the foundation** — the whole codebase taken once and developed
+as nyxAgent's own product, never merged back: (a)'s codebase with (b)'s
+ownership, which the three options above did not name. (Not a GitHub fork; see
+`NYXAGENT_BOOTSTRAP.md` §1.) MIT permits it outright and the compliance
 work is small; the cost is maintenance ownership of ~2.76M lines. The mechanics,
-the licence findings and the procedure are in `NYXAGENT_BOOTSTRAP.md`, including
-why GitHub's Fork button is the wrong mechanism for that intent. The
-recommendation below is superseded as a decision and kept as the reasoning it
-was weighed against; the owner's rationale for (d) belongs in a ledger `D-`
-entry.
+the licence findings and the procedure are in `NYXAGENT_BOOTSTRAP.md` — which
+also establishes that GitHub's **Fork** feature is the wrong mechanism for this
+intent, so the copy is made by duplicating the repository rather than forking
+it. The recommendation below is superseded as a decision and kept as the
+reasoning it was weighed against.
 
 **Recommendation as drafted (superseded by the owner's (d) above): (b), with one
 deliberate borrowing from (a).** The doctrine —
@@ -456,6 +458,80 @@ already establishes for work tracking.
    fast. That cuts both ways: maintained, but a fork or a dependency diverges
    immediately, and the codebase is ~2.76M lines of TypeScript excluding tests
    across 5,861 files.
+
+### 3b.6 Paperclip's memory, decision and audit layers (read 2026-10-01)
+
+Checked because §1 claims durable cross-session memory as nyxAgent's own. Against
+*the guide* that still holds. Against Paperclip it does not: there are four
+distinct layers here, and only one is ledger-shaped.
+
+**A. `skills/para-memory-files` — the real analogue, and it is file-based.**
+There is **no memory table among Paperclip's 224 Postgres tables**; durable agent
+memory is deliberately files under `$AGENT_HOME`. The doctrine is nearly verbatim
+§9b's: *"Memory does not survive session restarts. Files do."* and *"Never delete
+facts. Supersede instead (`status: superseded`, add `superseded_by`)"* — the
+Superseded section's rule, independently derived. Three layers: a PARA knowledge
+graph (`life/{projects,areas,resources,archives}`, each entity a `summary.md` plus
+an `items.yaml` of atomic facts), daily notes (`memory/YYYY-MM-DD.md`), and tacit
+knowledge (`MEMORY.md` — facts about the *user*, not the world).
+
+Two differences that matter:
+
+- **Scope.** It is *per-agent personal* memory. Paperclip has nothing
+  corresponding to one project-level system of record, binding on every agent and
+  read in full at session start. nyxAgent is ahead here.
+- **Retrieval, and decay.** Recall is `qmd` — vector plus BM25 plus reranking,
+  i.e. the RAG approach §5.2 argues against for the knowledge base. But it is
+  paired with **memory decay** that is worth taking on its own: each fact carries
+  `access_count` and `last_accessed`; facts are tiered hot (7 days) / warm (8–30)
+  / cold (30+); `summary.md` is rewritten weekly from hot and warm only, while
+  cold facts stay in `items.yaml` and *reheat* on access. Nothing is ever deleted
+  — decay affects retrieval priority, not retention. **That is a working answer
+  to Q-001**, which carries the owner's 2026-08-18 directive to split this ledger
+  into a hot set and an on-demand archive. The mechanism is adoptable without the
+  RAG half.
+
+**B. `activity_log` — the audit trail.** One table: `actorType`, `actorId`,
+`action`, `entityType`, `entityId`, `agentId`, `runId`, `responsibleUserId`,
+`details` jsonb, `createdAt`, five indexes. Redacted on read, cursor-paginated
+through `agent-action-audit.ts`, and forwarded to plugins as typed events.
+`responsibleUserId` threads a human back through agent actions — worth noting
+against this project's auditable-comment rule. It records *what happened*, not
+what was decided or why.
+
+**C. `decisions` — a decision *inbox*, pointing the opposite way from the
+ledger.** This is the layer most likely to be misread as equivalent. A Paperclip
+decision is **forward-looking**: it carries `options`, each option carries
+`effects` that *execute* on selection (`decisionEffectExecutions`); the spec is
+**HMAC-signed** (`decision-signing.ts`, 0600 key, ownership-checked) so options
+cannot be altered between presentation and execution; and decisions **expire**
+under a shelf/archive lifecycle (`decision-retention.ts`, 30-day shelf, 90-day
+archive, hashed archive manifests). `agents/LEDGER.md` is **backward-looking** —
+what was already settled, so no session re-derives it. Paperclip has no
+backward-looking project decision record at all.
+
+**D. `decision_training_examples` — the golden set, already built.** The
+strongest single find, and it confirms §2.4 named the right gap:
+`cutoffAt` plus a versioned `snapshot` (`DecisionTrainingSnapshotV1`) freezing
+what the agent could see at that moment; `decisionOutcome` as the label; `notes`
+with a `notesHistory` of revisions; `retentionPolicy`
+(`scrub_deleted_comments_v1`) scrubbing deleted comments out of frozen snapshots;
+`createdByUserId`, so it is human-curated rather than scraped.
+
+This is a **better design than §2.4's proposal**. Reconstructing labels from
+`reviews_final.json` joins gives no point-in-time snapshot and no cutoff, so it
+cannot honestly replay what the reviewer knew — it can only ask the question
+against today's tree. The `cutoffAt` + `snapshot` + curated-`notes` shape is what
+§2.4 should be built to, whichever way the topology decision goes.
+
+**Terminology note.** "Ledger" does appear in Paperclip's code, meaning something
+else: the **spend** ledger. `heartbeat.ts` resolves a billing code, biller,
+provider and cost status per heartbeat run. That is closer to `spend.json` than
+to `LEDGER.md`.
+
+**Maintenance texture, for §7's concern.** Found while reading the above: **224
+Postgres tables**, and `server/src/services/heartbeat.ts` is a single
+**30,096-line** file.
 
 ### 3b.5 Relationship to §3
 
@@ -595,7 +671,8 @@ notes that became `D-` entries — not the count of notes.
 2. **§3b — which layer is nyxAgent?** (a) a Paperclip company definition,
    (b) purpose-built borrowing Paperclip's design, or (c) a competitor. This
    re-opens the decision `PHASE_7_PLAN.md` settled against OpenClaw, on better
-   terms. **Answered 2026-09-30** by the owner's direction to hard-fork —
+   terms. **Answered 2026-09-30** by the owner's direction to take the whole
+   codebase as a divergent copy —
    option (d) — which none of the three named. The residual choices (visibility,
    upstream posture, repository owner) moved to `NYXAGENT_BOOTSTRAP.md` §8.
 3. **§2.2 and §2.4 ordering.** Evals (§2.4) are the precondition for safely

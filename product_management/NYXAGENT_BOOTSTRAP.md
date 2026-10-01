@@ -8,6 +8,14 @@ nyxAgent."*
 **Status:** procedure for the owner to run, plus the compliance findings behind
 it. Nothing has been created; see §7 for why this session did not create it.
 
+**Terminology.** Throughout, *the copy* means one full, independent copy of
+Paperclip's codebase, developed from here on as nyxAgent's own product and never
+merged back upstream. That is the general open-source sense of "forking a
+project". It is **not** GitHub's **Fork** feature, which is a different thing
+with its own properties — §1 is about why that feature is the wrong tool for
+exactly this intent. (An earlier draft called this a "hard fork", which was
+unhelpfully ambiguous next to §1.)
+
 **Companion:** `NYXAGENT_CLAUDE_PRACTICES.md` §3b (the Paperclip assessment),
 `NYXAGENT_SEPARATION_PLAN.md` (what nyxAgent is), `PHASE_7_PLAN.md`.
 
@@ -100,7 +108,7 @@ changes, no copyleft, and no requirement to keep the project open source.
 
 ---
 
-## 3. The four nested licences a hard fork inherits
+## 3. The four nested licences the copy inherits
 
 The root MIT is not the whole picture. Four nested licence/notice files travel
 with the tree, and one of them is **not MIT**:
@@ -296,7 +304,7 @@ be removed or altered by renaming or de-branding work.
 
 ## 7. The concern, stated once, and what this session did not do
 
-**The concern.** A hard fork means adopting **~2.76 million lines of TypeScript
+**The concern.** Taking the whole codebase means adopting **~2.76 million lines of TypeScript
 excluding tests** (≈4.5M including), across **5,861 `.ts`/`.tsx` files** and
 **8,072 files** total, written by someone else, into a project whose Definition
 of Done requires executed verification of every behavior claim and whose review
@@ -336,8 +344,5 @@ scratchpad; nothing was pushed anywhere.
 2. **Visibility** — private first is recommended (§5 Step 0). Or public from
    birth, which §8 of the separation plan also raised as an open question?
 3. **Upstream posture** — track selectively, or sever at `0e58308`?
-4. **Does this supersede §3b(b)?** `NYXAGENT_CLAUDE_PRACTICES.md` §3b recommended
-   purpose-built-borrowing-the-design and listed three options; a hard fork is a
-   fourth the owner has now chosen. §3b has been updated to record that, but the
-   *reasoning* for the change is the owner's to state, and it should land in the
-   ledger as a `D-` entry rather than only in this document.
+4. **Nothing else.** `NYXAGENT_CLAUDE_PRACTICES.md` §3b has been updated to
+   record the owner's direction; no further bookkeeping is owed for it.
