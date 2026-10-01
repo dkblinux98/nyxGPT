@@ -161,8 +161,13 @@ ok "config seeded from package data"
 # what this artifact ships rather than whatever python happens to be on PATH.
 # The env overrides stay, for driving the smoke at a deliberately different
 # model.
+#
+# stderr is deliberately NOT redirected -- see the same note in
+# k8s-local-smoke.sh. `2>/dev/null` here left the guard below reporting that the
+# model could not be read without ever saying why. Only stdout is captured.
+# Review finding on #4034, 2026-08-26.
 _resolve_models() {
-    "${VENV}/bin/python" - <<'PYEOF' 2>/dev/null
+    "${VENV}/bin/python" - <<'PYEOF'
 from nyxgpt.config import get_default_model, load_config
 
 cfg = load_config()

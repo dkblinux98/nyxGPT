@@ -59,12 +59,30 @@ def test_an_operators_configured_model_wins_over_the_shipped_one() -> None:
 def test_the_k8s_configmap_is_rendered_from_config_not_shipped_verbatim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The ConfigMap is the cluster's config.ini; it must not carry its own copy."""
+    """The ConfigMap is the cluster's config.ini; it must not carry its own copy.
+
+    Asserts the Ollama StatefulSet's env follows in the SAME render. Rendering
+    only the ConfigMap is worse than rendering neither: its env values are the
+    only input to the postStart pull and the readiness probe, so a custom-model
+    install would come up Ready on the shipped model while the api asked for the
+    operator's, and every chat would 404. Review finding on #4034, 2026-08-26.
+    """
     (tmp_path / "k8s").mkdir()
     target = tmp_path / "k8s" / "configmap.yaml"
     target.write_text(
         "data:\n  config.ini: |\n    [nyxgpt]\n    default_model = SHIPPED\n"
         "    [rag]\n    embedding_model = SHIPPED-EMB\n",
+        encoding="utf-8",
+    )
+    sts = tmp_path / "k8s" / "statefulset-ollama.yaml"
+    sts.write_text(
+        "          env:\n"
+        "            # MUST stay identical to the ConfigMap -- a comment that\n"
+        "            # has to survive the render.\n"
+        "            - name: NYXGPT_DEFAULT_MODEL\n"
+        "              value: SHIPPED\n"
+        "            - name: NYXGPT_EMBEDDING_MODEL\n"
+        "              value: SHIPPED-EMB\n",
         encoding="utf-8",
     )
 
@@ -83,16 +101,51 @@ def test_the_k8s_configmap_is_rendered_from_config_not_shipped_verbatim(
     assert "embedding_model = operators-emb" in rendered
     assert "SHIPPED" not in rendered
 
+    sts_rendered = sts.read_text(encoding="utf-8")
+    assert "value: operators-choice:9b" in sts_rendered, (
+        "the StatefulSet's NYXGPT_DEFAULT_MODEL did not follow the ConfigMap -- a "
+        "custom-model install would be Ready on a model the api never asks for"
+    )
+    assert "value: operators-emb" in sts_rendered
+    assert "SHIPPED" not in sts_rendered
+    # The comments are what make the manifest legible from a checkout.
+    assert "MUST stay identical to the ConfigMap" in sts_rendered
+
 
 def test_rendering_never_fails_an_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An unreadable config leaves the manifest as shipped -- it does not raise."""
-    monkeypatch.setattr(ops, "NYXGPT_HOME", tmp_path)  # no k8s/ dir at all
+    """An unreadable config leaves the manifests as shipped -- it does not raise.
+
+    The manifest is CREATED first, deliberately. An earlier version of this test
+    pointed `NYXGPT_HOME` at an empty directory, so the existence check returned
+    before `load_config` was ever called: the raising stub was dead code and the
+    test passed with the `try/except` deleted. Review finding on #4034,
+    2026-08-26. The `except` carries `# pragma: no cover`, so this assertion is
+    the only thing guarding the "never fails an install" contract.
+    """
+    (tmp_path / "k8s").mkdir()
+    target = tmp_path / "k8s" / "configmap.yaml"
+    shipped = (
+        "data:\n  config.ini: |\n    [nyxgpt]\n    default_model = SHIPPED\n"
+        "    [rag]\n    embedding_model = SHIPPED-EMB\n"
+    )
+    target.write_text(shipped, encoding="utf-8")
+
+    monkeypatch.setattr(ops, "NYXGPT_HOME", tmp_path)
+
+    called: list[bool] = []
 
     def _boom(*_a, **_k):
+        called.append(True)
         raise OSError("no config")
 
     monkeypatch.setattr(ops, "load_config", _boom)
+
     ops._render_k8s_config_models()  # must not raise
+
+    assert called, "load_config was never reached -- the test is not exercising the try/except"
+    assert target.read_text(encoding="utf-8") == shipped, (
+        "a failed render must leave the synced manifest exactly as shipped"
+    )
 
 
 @pytest.mark.parametrize("script", ["k8s-local-smoke.sh", "k8s-artifact-smoke.sh"])

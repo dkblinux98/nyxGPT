@@ -68,8 +68,16 @@ SESSION="k8s-smoke-$$"
 # `get_default_model` the install itself reads means this smoke cannot assert
 # on a model nothing pulled. The env overrides stay, for driving the smoke at
 # a deliberately different model.
+#
+# stderr is deliberately NOT redirected. It used to end in `2>/dev/null`, which
+# left the guard below printing "could not read the shipped chat model" with no
+# cause -- and the cause is usually specific and actionable (`load_config`
+# raises FileNotFoundError when no `~/.nyxGPT/config.ini` has been seeded yet).
+# Only stdout is captured by the caller, so letting the traceback through costs
+# nothing and is the difference between a one-line diagnosis and reading the
+# code. Review finding on #4034, 2026-08-26.
 _shipped_models() {
-    python3 - <<'PYEOF' 2>/dev/null
+    python3 - <<'PYEOF'
 from nyxgpt.config import get_default_model, load_config
 cfg = load_config()
 chat = get_default_model(cfg)

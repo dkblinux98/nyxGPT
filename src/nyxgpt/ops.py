@@ -1282,8 +1282,24 @@ def _packaged_resources_root() -> Path:
     return Path(str(importlib.resources.files("nyxgpt.resources")))
 
 
+def _render_k8s_env_value(text: str, env_name: str, value: str) -> str:
+    """Rewrite the `value:` of a `- name: <env_name>` entry in a k8s manifest.
+
+    Matches the two-line `- name: X` / `value: Y` shape the Ollama StatefulSet
+    uses, anchored on the env name so the surrounding comments (which are what
+    make the manifest legible from a checkout) survive untouched.
+    """
+    return re.sub(
+        rf"(?m)^([ \t]*-[ \t]*name:[ \t]*{re.escape(env_name)}[ \t]*\n[ \t]*value:[ \t]*)\S+",
+        lambda m: m.group(1) + value,
+        text,
+        count=1,
+    )
+
+
 def _render_k8s_config_models() -> None:
-    """Rewrite the synced ConfigMap's model lines from the operator's config.
+    """Rewrite the synced ConfigMap *and* the synced Ollama StatefulSet's model
+    env from the operator's config.
 
     The ConfigMap is the cluster's `config.ini`, and it shipped its own copy of
     the chat and embedding model names. That copy is what made a Kubernetes
@@ -1291,39 +1307,74 @@ def _render_k8s_config_models() -> None:
     three of the nine sites and not the rest (owner, 2026-08-23): copies that
     must agree do not.
 
-    So the packaged manifest is a template now, not an authority. It is
+    So the packaged manifests are templates now, not authorities. They are
     rendered here -- after `_sync_packaged_resources` has overwritten the
-    synced copy, and before anything applies it -- from the same
+    synced copies, and before anything applies them -- from the same
     `get_default_model` / `[rag] embedding_model` the native path reads. The
-    manifest in git still carries readable values so the file is legible and
+    manifests in git still carry readable values so the files are legible and
     `kubectl apply -k k8s/` from a checkout still works; they are simply not
     the source any install uses.
 
+    BOTH manifests, and never only one. `statefulset-ollama.yaml`'s
+    `NYXGPT_DEFAULT_MODEL` / `NYXGPT_EMBEDDING_MODEL` env values are the *only*
+    input to its postStart pull and its readiness probe -- k8s mode has no
+    install-side pull of the configured model the way Compose does via
+    `COMPOSE_ENV_MODEL_MAP`. Rendering the ConfigMap alone therefore made a
+    custom-model install strictly worse than before: the api Pods read the
+    rendered config and ask Ollama for the operator's model, Ollama pulled and
+    gates Ready on the shipped one, `install` waits on that probe and reports
+    the stack healthy, and every chat 404s. That is the failure mode
+    `k8s/statefulset-ollama.yaml`'s own env comment documents, and it violates
+    D-024's contract that every run mode pulls the *configured* chat model.
+    Before any render existed the pair at least agreed (both shipped -- the
+    custom model was ignored in-cluster, which was wrong but working). Caught
+    in review of #4034 (`myGPT-review-agent`, 2026-08-26) and merged over by an
+    administrator override; fixed here.
+
+    Both files are rendered in memory and written only once both substitutions
+    have succeeded, because a half-applied render reintroduces exactly the
+    divergence above.
+
     Best-effort by design: a config that cannot be read leaves the synced
-    manifest as shipped, which is the pre-existing behaviour rather than a new
+    manifests as shipped, which is the pre-existing behaviour rather than a new
     failure mode. `install` must not die because a model line could not be
     rewritten.
     """
-    target = NYXGPT_HOME / "k8s" / "configmap.yaml"
-    if not target.exists():
+    k8s_dir = NYXGPT_HOME / "k8s"
+    configmap = k8s_dir / "configmap.yaml"
+    statefulset = k8s_dir / "statefulset-ollama.yaml"
+    if not configmap.exists() and not statefulset.exists():
         return
     try:
         cfg = load_config()
         chat = get_default_model(cfg)
         embedding = cfg.get("rag", "embedding_model", fallback="").strip() or chat
-        text = target.read_text(encoding="utf-8")
-        text = re.sub(
-            r"(?m)^(\s*default_model\s*=\s*)\S+", lambda m: m.group(1) + chat, text, count=1
-        )
-        text = re.sub(
-            r"(?m)^(\s*embedding_model\s*=\s*)\S+",
-            lambda m: m.group(1) + embedding,
-            text,
-            count=1,
-        )
-        target.write_text(text, encoding="utf-8")
+
+        pending: list[tuple[Path, str]] = []
+
+        if configmap.exists():
+            text = configmap.read_text(encoding="utf-8")
+            text = re.sub(
+                r"(?m)^(\s*default_model\s*=\s*)\S+", lambda m: m.group(1) + chat, text, count=1
+            )
+            text = re.sub(
+                r"(?m)^(\s*embedding_model\s*=\s*)\S+",
+                lambda m: m.group(1) + embedding,
+                text,
+                count=1,
+            )
+            pending.append((configmap, text))
+
+        if statefulset.exists():
+            text = statefulset.read_text(encoding="utf-8")
+            text = _render_k8s_env_value(text, "NYXGPT_DEFAULT_MODEL", chat)
+            text = _render_k8s_env_value(text, "NYXGPT_EMBEDDING_MODEL", embedding)
+            pending.append((statefulset, text))
+
+        for path, rendered in pending:
+            path.write_text(rendered, encoding="utf-8")
     except Exception as e:  # pragma: no cover - never fail an install over this
-        logger.warning("could not render model names into the synced ConfigMap: %s", e)
+        logger.warning("could not render model names into the synced k8s manifests: %s", e)
 
 
 def _sync_packaged_resources() -> list[OpsResult]:
