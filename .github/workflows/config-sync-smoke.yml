@@ -55,6 +55,31 @@ concurrency:
 
 jobs:
   config-sync:
+    # Dependabot-triggered runs cannot pass this job, and must not pretend to.
+    # GitHub does not expose repository secrets to any workflow Dependabot
+    # triggers -- those runs read the separate `dependabot` secrets store -- so
+    # every name in `GITHUB_TOKEN_CANDIDATES` resolves to an empty value and the
+    # job dies with "no candidate tokens are set" before it reaches a single
+    # assertion. Observed on PR #4059 (2026-10-01): RELEASE_CEREMONY_TOKEN,
+    # DEVELOPER_AGENT_TOKEN, SCRUMMASTER_AGENT_TOKEN and REVIEW_AGENT_TOKEN all
+    # arrived empty on a `fast-uri` bump that touched no path this job guards.
+    #
+    # That is a credential-scope fact, not a defect in the bump. A red check
+    # nobody can clear is worse than an absent one: it made every dependency PR
+    # look broken and need an administrator override to merge, which is how a
+    # routine bump starts costing owner attention.
+    #
+    # Skipped, not weakened: every other push to the paths above still runs the
+    # full job, and those are the pushes where the code it guards actually
+    # changes. Dependabot only ever moves `web/package*.json`, none of which is
+    # in the path filter -- it reaches this job at all only because a Dependabot
+    # rebase makes the push diff include whatever else moved on the base branch
+    # (D-011 forbids agents rebasing; Dependabot is not an agent and runs on its
+    # own `rebase-strategy: auto` default).
+    #
+    # If these tokens are ever mirrored into the `dependabot` secrets store,
+    # delete this condition rather than widening it.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
