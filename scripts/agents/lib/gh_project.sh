@@ -253,7 +253,42 @@ load_config() {
       val="$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
       # Normalize key to uppercase
       key_upper="$(echo "$key" | tr '[:lower:]' '[:upper:]')"
-      export "$key_upper=$val"
+      # ... but NEVER into a name the shell or its callers already own.
+      #
+      # This parser exports straight into the caller's namespace, so a config
+      # key silently becomes a shell variable of the same (uppercased) name.
+      # `[logging] dir` therefore set DIR -- and DIR is what every script in
+      # scripts/agents/ calls its own directory:
+      #
+      #     DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+      #     source "$DIR/lib/gh_project.sh"      # line 41: fine, DIR intact
+      #     load_config                          # line 59: DIR := ~/.nyxGPT/logs
+      #     python3 "$DIR/lib/board_pull_state.py"   # line 151: resolves to
+      #                                              # <cwd>/~/.nyxGPT/logs/lib/...
+      #
+      # The collision was latent for months because `$DIR` was only ever used
+      # one line above `load_config`. `517a12fc` (2026-08-18, #3919) added the
+      # first use BELOW it, and `developer_pull_next.sh` has failed on every
+      # run since 2026-08-19 -- six weeks of a silently dead dispatch queue,
+      # because the error was swallowed by a `2>/dev/null` and reported as
+      # "Nothing eligible to pull".
+      #
+      # Skipping is deliberately NOISY. A config key that cannot be honoured
+      # must say so; this failure mode cost six weeks precisely because every
+      # layer stayed quiet.
+      case "$key_upper" in
+        DIR | PATH | HOME | IFS | PWD | OLDPWD | SHELL | USER | LOGNAME | \
+        TMPDIR | TMP | TEMP | UID | EUID | PPID | RANDOM | SECONDS | LINENO | \
+        FUNCNAME | BASH | BASH_SOURCE | BASHOPTS | SHELLOPTS | OPTARG | OPTIND | \
+        REPLY | PS1 | PS2 | PS4 | LANG | LC_ALL)
+          echo "[config] refusing to export reserved shell name '$key_upper'" \
+               "(from key '$key' in $CONFIG_FILE) -- it would overwrite the" \
+               "caller's own variable. Read this value in Python instead." >&2
+          ;;
+        *)
+          export "$key_upper=$val"
+          ;;
+      esac
     fi
   done < "$CONFIG_FILE"
 
