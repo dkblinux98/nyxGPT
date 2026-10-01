@@ -1082,6 +1082,18 @@ acceptance_lane_snapshot() {
     acc="$(mktemp)"
     trap 'rm -f "$tmp" "$acc"' EXIT
 
+    # The sprint the gate is scoped to (owner decision 2026-10-01): the gate
+    # runs on ROUNDS, and a sprint is a round. Taken from the environment, NOT
+    # resolved here: this function is a pure pager over `BACKLOG_PAGE_QUERY`,
+    # and calling `iteration_active_title` inside it would issue an extra
+    # `graphql` request mid-sequence. Callers resolve it once
+    # (`drain_gate.sh`) and export it. Empty means no sprint was resolved, and
+    # `summarize` then omits `sprint_unreleased` entirely so `decide` falls
+    # back to its pre-sprint, lane-only rule rather than jamming the gate shut
+    # on a field nobody read.
+    local sprint_field="${SPRINT_FIELD:-Sprint}"
+    local active_sprint="${ACTIVE_SPRINT_TITLE:-}"
+
     local max_pages="${MAX_PAGES:-200}"
     local page
     for ((page = 1; page <= max_pages; page++)); do
@@ -1094,6 +1106,9 @@ acceptance_lane_snapshot() {
       STATUS_FIELD="$STATUS_FIELD" \
         STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}" \
         STATUS_ACCEPTANCE_FAILED="${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}" \
+        STATUS_FOR_RELEASE="${STATUS_FOR_RELEASE:-For Release}" \
+        SPRINT_FIELD="$sprint_field" \
+        ACTIVE_SPRINT_TITLE="$active_sprint" \
         python3 "${_LIB_DIR}/drain_gate.py" summarize "$tmp" >>"$acc"
 
       has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
@@ -1206,6 +1221,17 @@ drain_gate_state() {
   require_cmd jq
   require_cmd python3
   local snapshot held classified rework parked_open
+  # Resolve the sprint ONCE, here, before the pager runs (owner decision
+  # 2026-10-01 -- the gate runs on rounds, and a sprint is a round).
+  # `acceptance_lane_snapshot` deliberately does not do this itself: it is a
+  # pure pager, and an extra `graphql` call inside its loop would interleave
+  # with the page sequence. Best-effort -- if the sprint cannot be read the
+  # snapshot omits `sprint_unreleased` and `decide` falls back to the
+  # pre-sprint, lane-only rule rather than refusing to open.
+  if [[ -z "${ACTIVE_SPRINT_TITLE:-}" ]]; then
+    ACTIVE_SPRINT_TITLE="$(iteration_active_title "${SPRINT_FIELD:-Sprint}" 2>/dev/null || true)"
+  fi
+  export ACTIVE_SPRINT_TITLE
   snapshot="$(acceptance_lane_snapshot)" || return 1
   # Owner-parked features (CLOSED items in the holding lane, #3780) are not
   # held work: they are subtracted here so the rework lookup does not spend

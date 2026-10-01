@@ -130,20 +130,29 @@ RELATED_FEATURE_RE = re.compile(r"(?:Parent|Related)\s+feature:\s*#(\d+)", re.IG
 DEFAULT_REWORK_LABELS = ("Acceptance Failure", "Improvement")
 
 
-def _lane(page: dict) -> tuple[list[int], list[int], list[int]]:
+def _lane(page: dict) -> tuple[list[int], list[int], list[int], list[int] | None]:
     status_field = os.getenv("STATUS_FIELD", "Status")
     testing = os.getenv("STATUS_ACCEPTANCE_TESTING", "Acceptance Testing")
     failed = os.getenv("STATUS_ACCEPTANCE_FAILED", "Acceptance Failed")
+    # The sprint scope (owner decision 2026-10-01). Absent `ACTIVE_SPRINT_TITLE`
+    # means the caller did not resolve a sprint, and the fourth list comes back
+    # None so `decide` keeps its pre-sprint, lane-only behaviour rather than
+    # fail-closed on an empty set.
+    for_release = os.getenv("STATUS_FOR_RELEASE", "For Release")
+    sprint_field = os.getenv("SPRINT_FIELD", "Sprint")
+    active_sprint = (os.getenv("ACTIVE_SPRINT_TITLE") or "").strip()
 
     in_testing: list[int] = []
     in_failed: list[int] = []
     parked: list[int] = []
+    sprint_unreleased: list[int] | None = [] if active_sprint else None
 
     for it in page["data"]["node"]["items"]["nodes"]:
         content = it.get("content") or {}
         if content.get("__typename") != "Issue":
             continue
         status = None
+        sprint = None
         for fv in (it.get("fieldValues") or {}).get("nodes", []):
             field = fv.get("field") or {}
             if (
@@ -151,6 +160,16 @@ def _lane(page: dict) -> tuple[list[int], list[int], list[int]]:
                 and field.get("name") == status_field
             ):
                 status = fv.get("name")
+            elif (
+                fv.get("__typename") == "ProjectV2ItemFieldIterationValue"
+                and field.get("name") == sprint_field
+            ):
+                sprint = fv.get("title")
+        # Sprint membership is read independently of the lane: the question
+        # "does this sprint still owe work?" spans every lane, not just these
+        # two.
+        if sprint_unreleased is not None and sprint == active_sprint and status != for_release:
+            sprint_unreleased.append(int(content["number"]))
         if status == testing:
             in_testing.append(int(content["number"]))
         elif status == failed:
@@ -166,16 +185,22 @@ def _lane(page: dict) -> tuple[list[int], list[int], list[int]]:
             if str(content.get("state") or "").upper() == "CLOSED":
                 parked.append(int(content["number"]))
 
-    return in_testing, in_failed, parked
+    return in_testing, in_failed, parked, sprint_unreleased
 
 
 def summarize(page: dict) -> dict:
-    in_testing, in_failed, parked = _lane(page)
-    return {
+    in_testing, in_failed, parked, sprint_unreleased = _lane(page)
+    out = {
         "acceptance_testing": in_testing,
         "acceptance_failed": in_failed,
         "acceptance_failed_parked": parked,
     }
+    # Emitted ONLY when a sprint was resolved. An absent key is how `decide`
+    # knows to fall back to the lane-only rule, so an unresolved sprint cannot
+    # silently jam the gate shut.
+    if sprint_unreleased is not None:
+        out["sprint_unreleased"] = sprint_unreleased
+    return out
 
 
 def _label_names(issue: dict) -> set[str]:
@@ -328,10 +353,41 @@ def classify_held(issues: list[dict]) -> dict:
 def decide(snapshot: dict) -> dict:
     """Gate state from a merged lane snapshot.
 
-    Open when `Acceptance Testing` holds nothing but exempt items: the
-    release tracking issue, and any feature that a currently held issue
-    names as its related feature (that feature is parked awaiting rework,
-    and the rework cannot start until this very gate opens).
+    Open when BOTH hold:
+
+      1. `Acceptance Testing` holds nothing but exempt items -- the release
+         tracking issue, and any feature that a currently held issue names as
+         its related feature (that feature is parked awaiting rework, and the
+         rework cannot start until this very gate opens); AND
+      2. the CURRENT SPRINT still owes work: at least one of its issues is not
+         yet in `For Release`, counting only issues that can actually move.
+
+    Condition 2 is the owner decision of 2026-10-01, and it is what makes the
+    gate run on ROUNDS rather than on lanes. The lane emptying is not the same
+    event as the round finishing: recording an acceptance failure on the last
+    issue under test MOVES that issue to `Acceptance Failed`, which empties
+    `Acceptance Testing` and -- under condition 1 alone -- opened the gate
+    mid-round. That is exactly what happened on 2026-09-30: the owner was still
+    testing #3995 with two acceptance criteria outstanding when the failure
+    comment relocated it, the gate opened within seconds on the `issues:
+    [closed]` trigger, and seven held items were released and worked while the
+    round was still running.
+
+    A sprint whose every issue has reached `For Release` is a sprint ready to
+    release, and the gate stays shut: there is no next batch to drain into.
+    The owner bumps anything unfinished to the next sprint by hand when the
+    sprint date expires -- deliberately not automated, because nothing fires at
+    midnight without reintroducing the scheduled sweep removed on 2026-08-25.
+
+    Issues the sprint still owes are counted EXCLUDING `parked`: a parked
+    original cannot be worked, and it leaves the lane only when the promotion
+    sweep moves it after its whole blocked-by closure is accepted. Counting it
+    would hold the gate open forever on work that nothing can pick up.
+
+    `sprint_unreleased` ABSENT means no sprint was resolved, and the decision
+    falls back to condition 1 alone -- the pre-2026-10-01 behaviour. An absent
+    key and an empty list mean opposite things here, so the snapshot omits the
+    key rather than reporting an empty one.
 
     `blockers` is what is still holding the gate closed; `held` is what
     gets released into Backlog when it opens; `parked` is what sits in the
@@ -365,14 +421,30 @@ def decide(snapshot: dict) -> dict:
     exempt = release_exempt | rework
     blockers = [n for n in testing if n not in exempt]
 
-    return {
-        "open": not blockers,
+    # Condition 2: does the sprint still owe anything that can move?
+    sprint_scoped = "sprint_unreleased" in snapshot
+    sprint_remaining: list[int] = []
+    if sprint_scoped:
+        sprint_remaining = sorted(
+            {int(n) for n in snapshot["sprint_unreleased"]} - release_exempt - parked
+        )
+
+    is_open = not blockers and (not sprint_scoped or bool(sprint_remaining))
+
+    result = {
+        "open": is_open,
         "blockers": blockers,
         "held": held,
         "parked": sorted(parked),
         "release_issue_exempt": sorted(release_exempt & set(testing)),
         "rework_exempt": sorted(rework & set(testing)),
     }
+    if sprint_scoped:
+        result["sprint_remaining"] = sprint_remaining
+        # The terminal state of a round: the lane is clear AND the sprint owes
+        # nothing, so there is no next batch and the sprint is ready to release.
+        result["sprint_complete"] = not blockers and not sprint_remaining
+    return result
 
 
 def bypass(issue: dict) -> bool:
@@ -414,7 +486,16 @@ def _merge(snapshots: list[dict]) -> dict:
     for snap in snapshots:
         for key in merged:
             merged[key].extend(int(n) for n in snap.get(key, []))
-    return {key: sorted(set(values)) for key, values in merged.items()}
+    out = {key: sorted(set(values)) for key, values in merged.items()}
+    # Carried only when at least one page reported it, so "no sprint resolved"
+    # stays distinguishable from "the sprint owes nothing" -- those mean
+    # opposite things to `decide`.
+    if any("sprint_unreleased" in snap for snap in snapshots):
+        unreleased: list[int] = []
+        for snap in snapshots:
+            unreleased.extend(int(n) for n in snap.get("sprint_unreleased", []))
+        out["sprint_unreleased"] = sorted(set(unreleased))
+    return out
 
 
 def main(argv: list[str]) -> int:
