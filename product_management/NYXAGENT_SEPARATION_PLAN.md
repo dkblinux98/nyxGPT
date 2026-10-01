@@ -194,3 +194,45 @@ discipline the doctrine demands: judgment first, crystallize later.
 - Migration of open history: do in-flight agent-process issues (#3784-class)
   finish on nyxGPT's board or transfer?
 - Licensing/visibility: is nyxAgent public from birth the way nyxGPT is?
+- Context architecture: does nyxAgent build the thing that decides what an
+  agent sees, or consume one? Today it is built — `CLAUDE.md`'s bootstrap
+  list, the ledger, `agents/CONTEXT_INDEX.md`, the role-scoped charters and
+  runbooks are all hand-written context architecture, and the 97.3%
+  context-vs-production token split is the measurement of how well it works.
+  See §9.
+
+## 9. Reading before we build
+
+Sources the owner wants consulted when nyxAgent's own design starts. Listed
+here rather than in the operating ledger: none of them gates work today, and
+the ledger is read in full on every agent run.
+
+- **"AI context architecture: build vs. buy"** — Stack Overflow blog
+  (Doug Whitley, Ash Zade), 2026-08-14.
+  <https://stackoverflow.blog/2026/08/14/ndq-ai-context-architecture-build-buy/>
+  Read 2026-08-19; gist below is the assistant's, not a substitute for the
+  article.
+
+  Its frame: context architecture is the system that decides what an agent
+  may see and what it does when the answer is missing or contradictory — and
+  its purpose is *removing variables* so behavior is predictable. It claims
+  the hard part is not retrieval but the philosophical part teams do not
+  budget for: which source wins when two disagree, and what "I don't know"
+  looks like. It measures a good architecture by three outcomes — consistency
+  across users, lower token cost from targeted context, and trust from
+  expectations that hold. Its build-vs-buy criteria: whether generalized
+  cross-industry knowledge helps you, whether you can staff the
+  conflicting/incomplete-data judgment calls, and whether federating many
+  sources (Slack, Jira, SharePoint) is part of the strategy. Its conclusion
+  favors buying, from a vendor.
+
+  Why it bears on nyxAgent: the seam this plan draws (§6) is a context seam.
+  nyxAgent decides what each role reads before it acts, and this project has
+  already paid for getting that wrong — the bootstrap-list rewrite in
+  `CLAUDE.md`, and the ledger existing at all, are both context-architecture
+  fixes. Two of the article's three quality measures are things nyxAgent must
+  serve for *any* customer project, not just this one. Note the source's
+  interest when weighing its conclusion: the buy case is argued by a vendor
+  of the thing being bought, and nyxAgent's inputs are a repository and a
+  tracker rather than a federation of SaaS sources — the criterion that
+  carries most of the article's argument is the one that fits us least.
