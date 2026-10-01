@@ -56,6 +56,12 @@ from typing import Any
 # never heard of is still read as "not scheduled" rather than as schedulable.
 UNSCHEDULABLE_REASONS = frozenset({"Unschedulable", "SchedulingGated"})
 
+# Phases whose Pods have a reading of their own already: `Pending`/`Running`
+# are answered by the waiting-container and readiness checks, and `Succeeded`
+# is its own answer. `_terminated_reason` is consulted only outside this set --
+# `Failed`, `Unknown`, and whatever a future Kubernetes adds.
+_PHASES_WITH_A_LIVE_READING = frozenset({"Pending", "Running", "Succeeded"})
+
 # Longest scheduler/kubelet message rendered into a status line. These strings
 # reach the SRE dashboard's component list, not a log pane.
 _MAX_DETAIL_CHARS = 240
@@ -178,6 +184,46 @@ def _waiting_reason(status: Mapping[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
+def _terminated_reason(status: Mapping[str, Any]) -> tuple[str, str]:
+    """Why a Pod that is no longer running stopped: `(reason, detail)` (#3956).
+
+    `_waiting_reason` covers every Pod that has not started yet; this covers the
+    other end, which had no reading at all. A `Failed` Pod reported as the bare
+    word `Failed` -- no reason, no container state, no exit code -- is what the
+    owner's 2026-08-26 acceptance round had to SSH in and run kubectl by hand to
+    diagnose.
+
+    The Pod's own `.status.reason`/`.message` first (`Evicted`, `NodeShutdown`,
+    `DeadlineExceeded` -- set by the component that ended the Pod, and the whole
+    answer when no container ever ran), then the first terminated container's
+    reason and exit code, which is where `OOMKilled` and `Error` live.
+    """
+    reason = status.get("reason")
+    if isinstance(reason, str) and reason:
+        return reason, _one_line(status.get("message"))
+    for key in ("initContainerStatuses", "containerStatuses"):
+        entries = status.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            state = entry.get("state")
+            terminated = state.get("terminated") if isinstance(state, Mapping) else None
+            if not isinstance(terminated, Mapping):
+                continue
+            container_reason = terminated.get("reason")
+            if not (isinstance(container_reason, str) and container_reason):
+                continue
+            exit_code = terminated.get("exitCode")
+            detail = _one_line(terminated.get("message"))
+            if isinstance(exit_code, int):
+                prefix = f"container {entry.get('name') or '?'} exited {exit_code}"
+                detail = f"{prefix}: {detail}" if detail else prefix
+            return container_reason, detail
+    return "", ""
+
+
 def _workload_key(metadata: Mapping[str, Any], fallback: str) -> str:
     """The Pod's owner (`<kind>/<name>`), or its own name when it has none.
 
@@ -237,6 +283,14 @@ def classify_pod(pod: Mapping[str, Any]) -> PodState:
         detail = _one_line(scheduled.get("message"))
     else:
         reason, detail = _waiting_reason(status)
+        if not reason and phase not in _PHASES_WITH_A_LIVE_READING:
+            # A phase with nothing waiting and nothing running has already
+            # stopped, so ask the other end (#3956). Restricted to those
+            # phases on purpose: a `Running` Pod whose init container
+            # terminated `Completed` is a Pod that started normally, and
+            # reporting "Completed" as the reason it is not ready would be a
+            # worse answer than the generic one its caller already prints.
+            reason, detail = _terminated_reason(status)
 
     return PodState(
         name=name,

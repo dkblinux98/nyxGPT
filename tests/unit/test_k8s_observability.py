@@ -1638,7 +1638,11 @@ def test_the_placeholder_grafana_token_is_reported_not_hidden(monkeypatch) -> No
 
     result = ops._k8s_errors_flow_result()
 
-    assert ops._result_status_label(result) == ops.K8S_NO_DATA_LABEL
+    # `[ATTENTION]`, not `[NO DATA]` (#3956): the owner's 2026-08-26 cloud
+    # round hit this and it logged as `ops: install ok:`. A backend that is up
+    # and empty is a legitimate state; a placeholder credential never will be.
+    assert ops._result_status_label(result) == ops.ATTENTION_LABEL
+    assert ops._result_log_verb(result) == "attention"
     assert "placeholder" in result.message
     assert "401" in result.details
 
@@ -1687,6 +1691,11 @@ def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
     assert [m for m, label in labels.items() if label == ops.K8S_NO_DATA_LABEL] == [
         "observability traces: Jaeger has no nyxGPT spans yet",
         "observability logs: Loki has received nothing",
+    ]
+    # The GlitchTip placeholder is a misconfiguration rather than an empty
+    # backend, so it carries the louder label (#3956) -- and neither label
+    # fails the install.
+    assert [m for m, label in labels.items() if label == ops.ATTENTION_LABEL] == [
         "observability errors: Grafana's GlitchTip token is still the placeholder",
     ]
     assert all(r.ok for r in results)

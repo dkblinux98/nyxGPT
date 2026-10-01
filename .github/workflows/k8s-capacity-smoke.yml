@@ -112,8 +112,14 @@ jobs:
       # cheap enough to exist at all.
       #
       # It is also the fault-injection half for that ordering: on the previous
-      # order the same run reaches the preflight only after building
-      # `nyxgpt-api:local`, so the "no image was built" assertion below fails.
+      # order the same run reaches the preflight only after building the api
+      # image, so the "no image was built" assertion below fails.
+      #
+      # The image tag is asked of the product (`ops.k8s_image_refs`) rather than
+      # written out: since #3956 it carries the build path and the version
+      # (`artifact-<version>`), so a literal here would silently stop naming the
+      # image the install actually builds -- and this assertion would then pass
+      # no matter when the build ran.
       - name: The real install refuses before it builds anything
         run: |
           set -euo pipefail
@@ -136,7 +142,12 @@ jobs:
                     memory: 4096Mi
           YAML
           kubectl -n capacity-ballast wait --for=condition=Ready pod/ballast-extra --timeout=120s
-          docker image rm -f nyxgpt-api:local nyxgpt-web:local >/dev/null 2>&1 || true
+          API_IMAGE=$(python -c \
+            'from nyxgpt import ops; print(ops.k8s_image_refs(dev=False)["api"])')
+          WEB_IMAGE=$(python -c \
+            'from nyxgpt import ops; print(ops.k8s_image_refs(dev=False)["web"])')
+          echo "MEASURED: the install's image tags are $API_IMAGE / $WEB_IMAGE"
+          docker image rm -f "$API_IMAGE" "$WEB_IMAGE" >/dev/null 2>&1 || true
 
           set +e
           nyxgpt ops install --kubernetes --local --api-key capacity-smoke-key \
@@ -150,7 +161,7 @@ jobs:
           fi
           grep -q 'Not enough node memory' /tmp/refusal.log || {
             echo "::error::the install failed, but not with the capacity refusal"; exit 1; }
-          if docker image inspect nyxgpt-api:local >/dev/null 2>&1; then
+          if docker image inspect "$API_IMAGE" >/dev/null 2>&1; then
             echo "::error::the refusal came after the api image build -- the preflight is" \
                  "behind the ~20 expensive minutes it exists to save (#3825)"
             exit 1

@@ -232,13 +232,24 @@ def test_a_release_candidate_installs_at_its_own_version(monkeypatch):
 
 
 def test_the_artifact_tag_collides_with_neither_dev_nor_canary(monkeypatch):
-    """`nyxgpt-api:local` is dev mode's tag here and the Kubernetes install's
-    (`K8S_IMAGE`); `nyxgpt-api:<version>` is what `nyxgpt canary deploy`
-    builds (`canary.IMAGE_REPOSITORY`). Sharing either would let one path
-    overwrite another path's image on the same daemon."""
+    """`dev-<version>` is a working-tree build's tag (here and in Kubernetes
+    mode); `nyxgpt-api:<version>-<sha>` is what `nyxgpt canary deploy` builds
+    (`canary.IMAGE_REPOSITORY`). Sharing any of them would let one path
+    overwrite another path's image on the same daemon -- which is exactly what
+    the mutable `nyxgpt-api:local` tag they all shared until #3956 did."""
     ref = ops._terraform_artifact_image_ref("api", "3.0.0rc13")
-    assert ref not in (ops.TF_API_IMAGE, ops.K8S_IMAGE, "nyxgpt-api:3.0.0rc13")
+    assert ref not in (
+        ops.local_image_ref("api", dev=True, version="3.0.0rc13"),
+        ops.local_image_ref("web", dev=False, version="3.0.0rc13"),
+        "nyxgpt-api:3.0.0rc13",
+        "nyxgpt-api:local",
+    )
     assert "3.0.0rc13" in ref
+    # ...and the Kubernetes install builds the SAME tag from the same tarball,
+    # deliberately: one tag, one image, rather than two paths racing for a name.
+    assert ops.k8s_image_refs(dev=False)["api"] == ops._terraform_artifact_image_ref(
+        "api", ops._native_service_version()
+    )
 
 
 def test_an_unresolvable_artifact_fails_naming_the_version_it_wanted(monkeypatch):
@@ -509,7 +520,10 @@ def test_dev_install_builds_from_the_working_tree(monkeypatch, checkout):
 
     assert all(r.ok for r in results)
     assert built == ["built"]
-    assert applied == [{"api": ops.TF_API_IMAGE, "web": ops.TF_WEB_IMAGE}]
+    assert applied == [ops._terraform_dev_image_refs()]
+    # Version-qualified and namespaced to the dev path (#3956): a `-var` of
+    # `nyxgpt-api:local` could name an artifact build's image just as easily.
+    assert applied[0]["api"] == f"nyxgpt-api:dev-{ops._native_service_version()}"
     assert install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_TERRAFORM).is_dev is True
 
 

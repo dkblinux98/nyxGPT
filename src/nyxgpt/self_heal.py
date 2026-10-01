@@ -108,7 +108,12 @@ from nyxgpt.config import (
 from nyxgpt.install_mode import DEV_LAUNCHD_LABELS, read_install_mode
 from nyxgpt.k8s_pod_state import PodState, classify_pod
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
-from nyxgpt.subprocess_bounds import bounded_argv, timeout_message, timeout_result
+from nyxgpt.subprocess_bounds import (
+    bounded_argv,
+    kubectl_env,
+    timeout_message,
+    timeout_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +494,13 @@ def _run(
     uses it, to prove a candidate hop hands this process's environment
     through.
     """
+    # The kubeconfig a `kubectl` child would have resolved by default, named
+    # explicitly (#3956): on a k3s node kubectl is k3s's shim and its default is
+    # a root-only file, so the Pod watchdog on a `cloud deploy --kubernetes`
+    # instance could not read the namespace it is supposed to heal. Applied
+    # before `env` is used, and a no-op for every non-kubectl command, so the
+    # wholesale-replacement contract above is unaffected.
+    env = kubectl_env(cmd, env)
     cmd = bounded_argv(cmd, timeout)
     try:
         result = subprocess.run(
