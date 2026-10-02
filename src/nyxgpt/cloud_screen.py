@@ -586,12 +586,19 @@ def resolve_screen_target(args: argparse.Namespace) -> cloud_deploy.DeployTarget
             "inspected, and `nyxgpt cloud tunnel` reaches its UIs."
         )
 
-    target = cloud_deploy.resolve_access_target(args)
+    # Deliberately *not* `cloud_deploy.resolve_access_target`, which takes the
+    # address from the Linux substrate's `state.json` `public_ip`. A macOS
+    # deploy never applies that substrate, so that key is not written for a
+    # Mac at all -- the Mac's address is `mac_public_ip`, recorded by
+    # `cloud_mac.record_mac_host` at allocation. Reading it from there is also
+    # what makes the check below exact rather than approximate: the host this
+    # command acts on is, by construction, the one nyxGPT allocated.
     mac = cloud_mac.load_mac_record()
     managed_ip = str(mac.get("mac_public_ip") or "")
-    if not managed_ip or managed_ip != target.host:
+    requested = str(getattr(args, "host", None) or record.get("host") or managed_ip)
+    if not managed_ip or managed_ip != requested:
         raise CloudCommandError(
-            f"nyxGPT did not configure the Mac at {target.host or 'the requested host'}, so it "
+            f"nyxGPT did not configure the Mac at {requested or 'the requested host'}, so it "
             "will not enable a screen-sharing listener on it. "
             + (
                 f"The EC2 Mac nyxGPT manages is at {managed_ip}."
@@ -604,7 +611,22 @@ def resolve_screen_target(args: argparse.Namespace) -> cloud_deploy.DeployTarget
             f"`{commands['allow_ip']}` on a `--host` Mac (see docs/cloud.md, 'EC2 Mac "
             f"targets').\nDeploy a Mac nyxGPT manages with `{commands['deploy']} --os macos`."
         )
-    return target
+    # Flags win, then what the deploy recorded -- the same precedence
+    # `cloud_deploy.resolve_access_target` applies, so a Mac deployed with a
+    # non-default key does not need `--identity-file` re-typed here either.
+    identity = str(getattr(args, "identity_file", None) or record.get("identity_file") or "")
+    return cloud_deploy.DeployTarget(
+        host=managed_ip,
+        user=str(
+            getattr(args, "ssh_user", None)
+            or record.get("ssh_user")
+            or cloud_deploy.DEFAULT_SSH_USER
+        ),
+        identity_file=str(Path(identity).expanduser()) if identity else "",
+        region=str(mac.get("mac_region") or record.get("region") or ""),
+        instance_id=str(mac.get("mac_instance_id") or ""),
+        security_group_id=str(mac.get("mac_security_group_id") or ""),
+    )
 
 
 # --- CLI ---------------------------------------------------------------
@@ -670,8 +692,10 @@ def screen_command(args: argparse.Namespace) -> int:
             result = stop_screen_tunnel()
             print("Screen path closed." if result["stopped"] else "No screen path is open.")
             print(
-                "Screen Sharing is still enabled on the Mac (nothing can reach it -- it binds "
-                f"127.0.0.1). `{cloud_deploy.LIFECYCLE_COMMANDS['screen']} --disable` turns it off."
+                "Screen Sharing is still enabled on the Mac, and nothing can reach it: its "
+                "packet filter drops every non-loopback connection to 5900 and no "
+                "security-group port is open. "
+                f"`{cloud_deploy.LIFECYCLE_COMMANDS['screen']} --disable` turns it off."
             )
             return 0
 

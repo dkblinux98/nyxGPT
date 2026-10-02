@@ -399,6 +399,54 @@ def test_it_accepts_the_mac_nyxgpt_manages(_isolated_cloud_home):
     assert target.user == "ec2-user"
 
 
+def test_it_finds_the_mac_without_the_linux_substrates_public_ip(_isolated_cloud_home):
+    """A macOS deploy never applies the Linux substrate, so `state.json` has no
+    `public_ip` -- only `mac_public_ip`. Resolving through
+    `cloud_deploy.resolve_target` would therefore refuse a Mac nyxGPT really
+    does manage, with "No provisioned instance found"."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10", "os_family": "macos", "ssh_user": "ec2-user"}),
+        encoding="utf-8",
+    )
+    (_isolated_cloud_home / "state.json").write_text(
+        json.dumps(
+            {
+                "mac_host_id": "h-0abc",
+                "mac_instance_id": "i-0mac",
+                "mac_public_ip": "198.51.100.10",
+                "mac_region": "us-east-1",
+                "mac_security_group_id": "sg-0mac",
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = cloud_screen.resolve_screen_target(_args())
+    assert (target.host, target.region, target.instance_id) == (
+        "198.51.100.10",
+        "us-east-1",
+        "i-0mac",
+    )
+
+
+def test_the_identity_file_the_deploy_used_is_reused(_isolated_cloud_home):
+    _record_macos_deploy(_isolated_cloud_home)
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps(
+            {
+                "host": "198.51.100.10",
+                "os_family": "macos",
+                "ssh_user": "mac-admin",
+                "identity_file": "~/.ssh/mac_key",
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = cloud_screen.resolve_screen_target(_args())
+    assert target.user == "mac-admin"
+    assert target.identity_file.endswith("/.ssh/mac_key")
+    assert "~" not in target.identity_file
+
+
 # --- The command ---------------------------------------------------------
 
 
