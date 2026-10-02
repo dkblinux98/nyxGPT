@@ -517,3 +517,26 @@ class TestSurfaces:
         secrets_setup.write_secret(cfg_path, spec, "old-key")
 
         assert restart_state.snapshot() == {}
+
+    def test_the_cli_summary_names_a_failed_restart_attempt(self, capsys, monkeypatch):
+        """A refusal recorded elsewhere has to reach the CLI surface too (#4043).
+
+        The attempt may have been made from the dashboard, in another process.
+        Without this the closing summary says "RESTART REQUIRED" and nothing
+        about the restart that was already tried and refused, which reads as a
+        notice that is simply stuck.
+        """
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed(
+            "api", "Refused to act on invalid service name: 'nyxgpt-api@3.0.0rc'"
+        )
+        # Skip the interactive prompts; the closing summary is what is under test.
+        monkeypatch.setattr(secrets_setup, "GUIDED_SECRETS", ())
+        monkeypatch.setattr("builtins.input", lambda *_a: "")
+
+        assert secrets_setup.run_secrets_setup(cfg_path=None) == 0
+
+        out = capsys.readouterr().out
+        assert "RESTART REQUIRED" in out
+        assert "last restart attempt FAILED" in out
+        assert "nyxgpt-api@3.0.0rc" in out
