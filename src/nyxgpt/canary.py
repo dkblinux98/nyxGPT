@@ -57,6 +57,11 @@ from typing import Any
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
+from nyxgpt.k8s_pod_state import (
+    parse_retired_replicasets,
+    pod_is_retired,
+    retired_replicaset_argv,
+)
 from nyxgpt.ops import OpsResult as CanaryResult
 from nyxgpt.subprocess_bounds import (
     PROBE_TIMEOUT_SECONDS,
@@ -511,6 +516,19 @@ def _join_reason(reason: Any, message: Any) -> str:
     return reason_text or message_text
 
 
+def _retired_replicasets(namespace: str) -> frozenset[str]:
+    """The namespace's ReplicaSets with zero desired replicas, or an empty set.
+
+    Fail-open like the other two readers of this (`ops`, `self_heal`): without
+    positive evidence that a Pod's owner is finished, the Pod stays in the
+    report.
+    """
+    cp = _run(retired_replicaset_argv(namespace), expected=True, timeout=PROBE_TIMEOUT_SECONDS)
+    if cp.returncode != 0:
+        return frozenset()
+    return parse_retired_replicasets(cp.stdout or "")
+
+
 def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> list[str]:
     """Ask the cluster why the Pods matching `selector` are not serving.
 
@@ -518,6 +536,13 @@ def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> li
     Pods. Best-effort by design -- an unreachable cluster, an RBAC denial or
     an unparseable response yields an empty list, so every caller degrades to
     the generic message it would have produced anyway (#3831).
+
+    A Pod owned by a ReplicaSet scaled to zero is not consulted (#3956): the
+    label selector of a track also matches the Pods the *previous* rollout left
+    behind, so a rollout that is unhealthy now could be explained by the
+    terminated remains of the one before it -- the cause an operator would then
+    chase is one Kubernetes has already finished with. The read is taken only
+    on this path, which is entered only when a track is already unhealthy.
     """
     if not selector or _which("kubectl") is None:
         return []
@@ -532,9 +557,11 @@ def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> li
         data = json.loads(cp.stdout)
     except Exception:
         return []
+    pods = [p for p in data.get("items", []) if isinstance(p, dict)]
+    retired = _retired_replicasets(namespace) if pods else frozenset()
     reasons: list[str] = []
-    for pod in data.get("items", []):
-        if not isinstance(pod, dict):
+    for pod in pods:
+        if pod_is_retired(pod, retired):
             continue
         reason = _pod_reason(pod)
         if not reason:

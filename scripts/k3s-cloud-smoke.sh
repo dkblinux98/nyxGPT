@@ -57,7 +57,10 @@
 #      installed, so the feature could not produce a reachable deployment. Both
 #      halves: the unfiltered reading must fail on the corpse, the product's
 #      must not, and a Failed Pod of the CURRENT ReplicaSet must still fail
-#      (the narrow fix the owner ruled out).
+#      (the narrow fix the owner ruled out). All THREE readers of a Pod list
+#      are measured against the same live corpse -- the install, self-heal's
+#      component list (where it rendered as a permanently Failed component of a
+#      healthy deployment) and canary's per-track reason enrichment.
 #   8  FAULT INJECTION: `kubectl` on a k3s node is a symlink to `k3s`, whose
 #      shim defaults KUBECONFIG to a root-only file -- which is why `cloud
 #      canary status` reported "native mode" on a live cluster. The shim is
@@ -568,7 +571,16 @@ step "7/10  FAULT INJECTION: a corpse from a finished rollout fails the install"
 # state exists and that Kubernetes leaves it there. So this builds it for real:
 # a Deployment, a rollout that supersedes its ReplicaSet, and a Failed Pod
 # adopted by the retired one.
+#
+# The Pod label is a REAL core one (`self_heal.K8S_CORE_POD_APPS`) rather than
+# the Deployment's own name, because three readers have to be shown dropping
+# this Pod and one of them selects by that label: the first cut of this fix
+# covered the install alone, and the same corpse went on rendering on the
+# Self-Heal dashboard as a Failed, unhealable component of a healthy
+# deployment. A stand-in label would have exercised the filter while skipping
+# the tier classification that puts the Pod on that page at all.
 ROLLOUT=smoke-rollout
+ROLLOUT_LABEL=nyxgpt-web-canary-pool
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: apps/v1
 kind: Deployment
@@ -579,11 +591,11 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: $ROLLOUT
+      app: $ROLLOUT_LABEL
   template:
     metadata:
       labels:
-        app: $ROLLOUT
+        app: $ROLLOUT_LABEL
     spec:
       containers:
         - name: probe
@@ -591,7 +603,7 @@ spec:
           imagePullPolicy: IfNotPresent
 YAML
 kubectl -n "$NAMESPACE" rollout status "deploy/$ROLLOUT" --timeout=120s | sed 's/^/    | /'
-OLD_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT" \
+OLD_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT_LABEL" \
   -o jsonpath='{.items[0].metadata.name}')"
 OLD_RS_UID="$(kubectl -n "$NAMESPACE" get "rs/$OLD_RS" -o jsonpath='{.metadata.uid}')"
 
@@ -617,7 +629,7 @@ metadata:
   name: $ROLLOUT-corpse
   namespace: $NAMESPACE
   labels:
-    app: $ROLLOUT
+    app: $ROLLOUT_LABEL
 spec:
   restartPolicy: Never
   containers:
@@ -673,7 +685,7 @@ names = [s.name for s in states]
 print(f"    | with the fix, pods considered: {names}")
 if corpse in names:
     sys.exit(f"{corpse} is still part of the deployment's state")
-if any(s.name == corpse for s in ops._k8s_blocked_pods(namespace, selector="app=$ROLLOUT")):
+if any(s.name == corpse for s in ops._k8s_blocked_pods(namespace, selector="app=$ROLLOUT_LABEL")):
     sys.exit("the rollout wait would still fast-fail on the corpse")
 
 # ...and the Pod that IS current is still reported, so the filter did not just
@@ -684,10 +696,66 @@ if not any(n.startswith("$ROLLOUT-") and n != corpse for n in names):
 print("    | the retired ReplicaSet's Pod is out, the current one's Pod is in")
 PY
 
+# The same corpse, read by the OTHER two readers of a Pod list. The install was
+# the only one fixed in the first cut of this, and this Pod then rendered on the
+# Self-Heal dashboard as a Failed, `healable=False` component of a deployment
+# whose Deployments are both 1/1 -- so each reader is measured here, against the
+# cluster state the step above built, rather than trusted to the shared helper.
+python3 - <<PY
+import sys
+
+from nyxgpt import canary, self_heal
+
+corpse = "$ROLLOUT-corpse"
+
+# The injection: the rule switched off, which is exactly the reading self-heal
+# had before this round (the filter is the only difference in that function).
+real_rule = self_heal.pod_is_retired
+self_heal.pod_is_retired = lambda *_a, **_k: False
+before = self_heal._list_kubernetes_component_status(set())
+print(f"    | without the rule, self-heal reports: {[(c.service, c.state, c.healable) for c in before]}")
+if not any(c.service == corpse and not c.healthy for c in before):
+    sys.exit(
+        "FAULT INJECTION FAILED: the unfiltered self-heal reading does not report the corpse, "
+        "so this step cannot prove the filter does anything there"
+    )
+self_heal.pod_is_retired = real_rule
+
+after = self_heal._list_kubernetes_component_status(set())
+names = [c.service for c in after]
+print(f"    | with the rule, self-heal reports: {names}")
+if corpse in names:
+    sys.exit(
+        "the Self-Heal dashboard still shows the corpse as a component of a healthy deployment"
+    )
+if not names:
+    sys.exit("every component vanished -- the filter is too wide")
+
+# canary's per-track reason enrichment selects by the same label the corpse
+# carries, so an unhealthy track could be 'explained' by the rollout before it.
+# Injected the same way, so an empty list below is evidence rather than a Pod
+# that simply had nothing to say.
+real_rule = canary.pod_is_retired
+canary.pod_is_retired = lambda *_a, **_k: False
+unfiltered = canary.pod_failure_reasons("app=$ROLLOUT_LABEL", "$NAMESPACE")
+print(f"    | without the rule, canary's reasons: {unfiltered}")
+if not any(corpse in r for r in unfiltered):
+    sys.exit(
+        "FAULT INJECTION FAILED: the unfiltered canary reading does not blame the corpse, so "
+        "this step cannot prove the filter does anything there"
+    )
+canary.pod_is_retired = real_rule
+
+reasons = canary.pod_failure_reasons("app=$ROLLOUT_LABEL", "$NAMESPACE")
+print(f"    | with the rule, canary's reasons: {reasons}")
+if any(corpse in r for r in reasons):
+    sys.exit("the corpse is still offered as the reason the track is unhealthy")
+PY
+
 # Same question, asked of the live cluster through the real patch rather than in
 # Python: adopt the corpse onto the CURRENT ReplicaSet and the reading must fail
 # again. Nothing about the phase changed; only its owner did.
-CURRENT_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT" \
+CURRENT_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT_LABEL" \
   -o jsonpath='{range .items[*]}{.metadata.name}={.spec.replicas}{"\n"}{end}' \
   | awk -F= '$2 != "0" {print $1; exit}')"
 CURRENT_RS_UID="$(kubectl -n "$NAMESPACE" get "rs/$CURRENT_RS" -o jsonpath='{.metadata.uid}')"
@@ -718,8 +786,9 @@ if state.summary.strip() == "Failed":
 PY
 kubectl -n "$NAMESPACE" delete "pod/$ROLLOUT-corpse" --now >/dev/null
 kubectl -n "$NAMESPACE" delete "deploy/$ROLLOUT" --now >/dev/null
-log "PASS: a Pod no live ReplicaSet owns is not the deployment's state -- and one the"
-log "      current ReplicaSet owns still fails, with its reason"
+log "PASS: a Pod no live ReplicaSet owns is not the deployment's state, for the install,"
+log "      self-heal and canary alike -- and one the current ReplicaSet owns still fails,"
+log "      with its reason"
 
 # ---------------------------------------------------------------------------
 step "8/10  FAULT INJECTION: kubectl on a k3s node is not kubectl"

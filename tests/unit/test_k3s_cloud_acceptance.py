@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxgpt import canary, k8s_pod_state, ops, subprocess_bounds
+from nyxgpt import canary, k8s_pod_state, ops, self_heal, subprocess_bounds
 
 
 class CP:
@@ -209,6 +209,217 @@ def test_the_wait_cannot_fast_fail_on_a_retired_replicasets_pod(monkeypatch):
         ),
     )
     assert ops._k8s_blocked_pods(selector="app=nyxgpt-api,track=stable") == []
+
+
+# --- 1b. EVERY reader of a Pod list, not just the install's -----------------
+#
+# The first cut of blocker 1 fixed `ops._k8s_pod_states` alone. The identical
+# corpse carries `app: nyxgpt-web-canary-pool`, so self-heal's own Pod listing
+# put it in the `core` tier and rendered it on the Self-Heal dashboard as a
+# component that is Failed and unhealable forever -- on a deployment whose two
+# Deployments are both 1/1. The rule now lives in `k8s_pod_state` and all three
+# readers apply it.
+
+
+def _self_heal_pod(name, *, app, phase="Running", ready=True, replicaset=""):
+    pod = _pod(name, phase=phase, ready=ready, replicaset=replicaset)
+    pod["metadata"]["labels"] = {"app": app}
+    return pod
+
+
+def _self_heal_cluster(pods, replicasets, calls=None):
+    """A `self_heal._run` stand-in answering the Pod list and the scale read."""
+
+    def fake_run(cmd, timeout=30.0, **_k):
+        if calls is not None:
+            calls.append(cmd)
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            return CP(stdout=json.dumps({"items": pods}))
+        if cmd[:5] == ["kubectl", "-n", "nyxgpt", "get", "rs"]:
+            if replicasets is None:
+                return CP(returncode=1, stderr="Unauthorized")
+            return CP(stdout="".join(f"{n}={r};" for n, r in replicasets.items()))
+        raise AssertionError(f"unexpected: {cmd}")
+
+    return fake_run
+
+
+def _self_heal_components(monkeypatch, pods, replicasets, calls=None):
+    monkeypatch.setattr(self_heal, "_which", lambda _p: "/usr/bin/kubectl")
+    monkeypatch.setattr(self_heal, "_run", _self_heal_cluster(pods, replicasets, calls))
+    return self_heal._list_kubernetes_component_status(set())
+
+
+@pytest.mark.unit
+def test_the_corpse_is_not_a_self_heal_component(monkeypatch):
+    """THE review-round finding: the dashboard showed the same Pod as Failed."""
+    components = _self_heal_components(
+        monkeypatch,
+        pods=[
+            _self_heal_pod(
+                "nyxgpt-web-stable-69b45dd5db-aaa",
+                app="nyxgpt-web-canary-pool",
+                replicaset="nyxgpt-web-stable-69b45dd5db",
+            ),
+            _self_heal_pod(
+                "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                app="nyxgpt-web-canary-pool",
+                phase="Failed",
+                ready=False,
+                replicaset="nyxgpt-web-stable-77c7d9c6f4",
+            ),
+        ],
+        replicasets={"nyxgpt-web-stable-69b45dd5db": "1", "nyxgpt-web-stable-77c7d9c6f4": "0"},
+    )
+
+    assert [c.service for c in components] == ["nyxgpt-web-stable-69b45dd5db-aaa"]
+    assert all(c.healthy for c in components)
+
+
+@pytest.mark.unit
+def test_a_failed_pod_of_the_current_replicaset_is_still_a_self_heal_component(monkeypatch):
+    """The narrow fix the owner ruled out, ruled out on this reader too."""
+    components = _self_heal_components(
+        monkeypatch,
+        pods=[
+            _self_heal_pod(
+                "nyxgpt-web-stable-69b45dd5db-aaa",
+                app="nyxgpt-web-canary-pool",
+                phase="Failed",
+                ready=False,
+                replicaset="nyxgpt-web-stable-69b45dd5db",
+            )
+        ],
+        replicasets={"nyxgpt-web-stable-69b45dd5db": "1"},
+    )
+
+    assert [(c.service, c.healthy) for c in components] == [
+        ("nyxgpt-web-stable-69b45dd5db-aaa", False)
+    ]
+
+
+@pytest.mark.unit
+def test_a_statefulset_pod_is_never_filtered_out_of_self_heal(monkeypatch):
+    """Cassandra and Ollama have no ReplicaSet: a real failure there must stand."""
+    components = _self_heal_components(
+        monkeypatch,
+        pods=[_self_heal_pod("cassandra-0", app="cassandra", phase="Failed", ready=False)],
+        replicasets={"nyxgpt-web-stable-77c7d9c6f4": "0"},
+    )
+    assert [(c.service, c.healthy) for c in components] == [("cassandra-0", False)]
+
+
+@pytest.mark.unit
+def test_an_unreadable_replicaset_read_removes_no_self_heal_component(monkeypatch):
+    """Fail open: without positive evidence the owner is finished, the Pod stays."""
+    components = _self_heal_components(
+        monkeypatch,
+        pods=[
+            _self_heal_pod(
+                "api-x", app="nyxgpt-api-canary-pool", phase="Failed", ready=False, replicaset="rs"
+            )
+        ],
+        replicasets=None,
+    )
+    assert [c.service for c in components] == ["api-x"]
+
+
+@pytest.mark.unit
+def test_a_healthy_namespace_does_not_pay_for_the_read_on_every_watchdog_pass(monkeypatch):
+    """This runs every 15 seconds, and the read cannot change an all-healthy answer."""
+    calls: list[list[str]] = []
+    components = _self_heal_components(
+        monkeypatch,
+        pods=[_self_heal_pod("api-x", app="nyxgpt-api-canary-pool", replicaset="rs-new")],
+        replicasets={"rs-old": "0"},
+        calls=calls,
+    )
+    assert [c.service for c in components] == ["api-x"]
+    assert not any("rs" in cmd for cmd in calls)
+
+
+@pytest.mark.unit
+def test_a_retired_replicasets_pod_does_not_explain_an_unhealthy_track(monkeypatch):
+    """`canary.pod_failure_reasons` selects by label, which also matches corpses.
+
+    A track that is unhealthy *now* must not be explained by the terminated
+    remains of the rollout before it -- that sends the operator after a cause
+    Kubernetes has already finished with.
+    """
+
+    def fake_run(cmd, **_k):
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            return CP(
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            _pod(
+                                "nyxgpt-api-canary-old-1",
+                                phase="Failed",
+                                ready=False,
+                                replicaset="nyxgpt-api-canary-old",
+                                status_extra={
+                                    "containerStatuses": [
+                                        {
+                                            "name": "nyxgpt-api",
+                                            "ready": False,
+                                            "state": {
+                                                "terminated": {"reason": "Error", "exitCode": 1}
+                                            },
+                                        }
+                                    ]
+                                },
+                            ),
+                            _pod(
+                                "nyxgpt-api-canary-new-1",
+                                phase="Pending",
+                                ready=False,
+                                replicaset="nyxgpt-api-canary-new",
+                                status_extra={
+                                    "containerStatuses": [
+                                        {
+                                            "name": "nyxgpt-api",
+                                            "ready": False,
+                                            "state": {
+                                                "waiting": {
+                                                    "reason": "ImagePullBackOff",
+                                                    "message": "pull access denied",
+                                                }
+                                            },
+                                        }
+                                    ]
+                                },
+                            ),
+                        ]
+                    }
+                )
+            )
+        if cmd[:5] == ["kubectl", "-n", "nyxgpt", "get", "rs"]:
+            return CP(stdout="nyxgpt-api-canary-old=0;nyxgpt-api-canary-new=1;")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(canary, "_which", lambda _p: "/usr/bin/kubectl")
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    reasons = canary.pod_failure_reasons("app=nyxgpt-api-canary-pool,track=canary")
+
+    assert len(reasons) == 1
+    assert "ImagePullBackOff" in reasons[0]
+    assert "nyxgpt-api-canary-old-1" not in reasons[0]
+
+
+@pytest.mark.unit
+def test_every_pod_reader_shares_one_retired_replicaset_rule():
+    """Three readers, one decision -- the drift this review round was about.
+
+    A reader that re-implemented the rule is free to disagree with the other
+    two, which is how the install stopped failing on the corpse while the
+    dashboard went on reporting it.
+    """
+    for module in (ops, self_heal, canary):
+        assert module.pod_is_retired is k8s_pod_state.pod_is_retired
+        assert module.parse_retired_replicasets is k8s_pod_state.parse_retired_replicasets
+        assert module.retired_replicaset_argv is k8s_pod_state.retired_replicaset_argv
 
 
 # --- A `Failed` Pod says why (the owner's second "noted, not blocking") ----

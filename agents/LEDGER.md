@@ -1897,7 +1897,13 @@ rather than mechanism, and nothing can enforce them.
   controller owns, whatever its phase. The alternative the owner explicitly
   ruled out was filtering on the phase, which would have hidden real failures
   while leaving the actual defect (consulting Pods nothing owns) in place for
-  the next terminal state to walk back through.
+  the next terminal state to walk back through. **Every** reader of a Pod list
+  applies it, which is why the decision itself lives in `k8s_pod_state` (below
+  both `ops.py` and `self_heal.py`, per **D-022**/**D-045**) rather than in any
+  caller: the first cut fixed the install alone, and the same corpse went on
+  rendering on the Self-Heal dashboard as a Failed, unhealable component of a
+  healthy deployment — a reader with its own copy of the rule is free to
+  disagree with the others. A new Pod reader takes the shared rule.
 
   (b) *`kubectl` is not always kubectl, so nyxGPT names the kubeconfig itself.*
   Every kubectl child this codebase spawns is handed the kubeconfig kubectl's

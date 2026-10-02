@@ -6,8 +6,9 @@ machine-mutating functions: they build Docker images, write the real
 Slack secret), install Homebrew formulas and run `terraform apply`. Their unit
 tests neutralize them by patching each step **by name**, which only works while
 every name is listed -- and the lists have grown since the tests were written,
-so steps went unpatched and ran for real: the suite built the 567MB
-`nyxgpt-api:local` and 1.16GB `nyxgpt-web:local` images mid-run, wrote the real
+so steps went unpatched and ran for real: the suite built the 567MB api and
+1.16GB web images mid-run (tagged `:local` then, `dev-<version>` /
+`artifact-<version>` per build path since #3956), wrote the real
 `~/.nyxGPT/secrets/slack-webhook-url`, and cleared the machine's real
 intentional-stop markers. It also made the suite pass or fail by what the
 machine happened to have -- `test_install_terraform_steps_records_success` and

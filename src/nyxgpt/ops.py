@@ -93,7 +93,12 @@ from nyxgpt.install_mode import (
     read_install_mode,
     write_install_mode,
 )
-from nyxgpt.k8s_pod_state import classify_pod
+from nyxgpt.k8s_pod_state import (
+    classify_pod,
+    parse_retired_replicasets,
+    pod_is_retired,
+    retired_replicaset_argv,
+)
 from nyxgpt.logging import get_correlation_id
 
 # The vendored-source tarball builder lives in its own stdlib-only module
@@ -7867,11 +7872,15 @@ K8S_NAMESPACE = "nyxgpt"
 # observability Pods that share the namespace (see `_k8s_app_pods_present`).
 K8S_APP_POD_PREFIXES = ("nyxgpt-api-", "nyxgpt-web-")
 
-# The image names `k8s/deployment*.yaml` pin, with no tag. The TAG the cluster
-# runs is resolved per install by `local_image_ref` and applied through a
-# generated kustomize overlay (`_write_k8s_image_overlay`, #3956) -- the
-# manifests themselves stay as shipped, and `nyxgpt canary status` can finally
-# name the version a Pod is serving instead of the word `local`.
+# The image *names* (the repository part) of the two refs
+# `k8s/deployment*.yaml` pin -- those manifests carry a tag of their own
+# (`nyxgpt-api:local`, for the hand-run reference flow in docs/kubernetes.md),
+# which is why only the name is matched here. The tag the cluster actually runs
+# is resolved per install by `local_image_ref` and applied through a generated
+# kustomize overlay (`_write_k8s_image_overlay`, #3956), whose `newTag`
+# transform replaces whatever tag the manifest had -- the manifests themselves
+# stay as shipped, and `nyxgpt canary status` can finally name the version a Pod
+# is serving instead of the word `local`.
 K8S_IMAGE_NAMES: dict[str, str] = {"api": "nyxgpt-api", "web": "nyxgpt-web"}
 
 # The workload that serves this deployment's LLM, and the URL its clients use
@@ -9233,23 +9242,13 @@ def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
 # *current* ReplicaSet is a real failure, and phase-filtering would hide it
 # while leaving the actual defect -- consulting Pods no live controller owns --
 # in place for every other terminal state to walk back through.
-def _k8s_pod_owner_replicaset(pod: dict[str, Any]) -> str:
-    """The name of the ReplicaSet that owns `pod`, or "" if none does.
-
-    "" for a StatefulSet Pod, a bare Pod, or a Pod whose ownerReferences are
-    unreadable -- none of which this filter has anything to say about, so they
-    are always kept.
-    """
-    metadata = pod.get("metadata") or {}
-    owners = metadata.get("ownerReferences")
-    if not isinstance(owners, list):
-        return ""
-    for owner in owners:
-        if isinstance(owner, dict) and str(owner.get("kind") or "").lower() == "replicaset":
-            return str(owner.get("name") or "")
-    return ""
-
-
+#
+# The decision itself -- which ReplicaSets are retired, and whether a given Pod
+# belongs to one -- is `k8s_pod_state`'s, shared with `self_heal.py` and
+# `canary.py` (#3956 review round 1): the first cut of this fixed only the
+# install's reading, and the same corpse then rendered on the Self-Heal
+# dashboard as a permanently Failed component of a healthy deployment. Only the
+# kubectl call is local, because the bound and the `expected=True` logging are.
 def _k8s_retired_replicasets(namespace: str) -> frozenset[str]:
     """The namespace's ReplicaSets with zero desired replicas (see above).
 
@@ -9258,27 +9257,14 @@ def _k8s_retired_replicasets(namespace: str) -> frozenset[str]:
     finished. Without that evidence the report is the one it has always been.
     """
     cp = _run(
-        [
-            "kubectl",
-            "-n",
-            namespace,
-            "get",
-            "rs",
-            "-o",
-            "jsonpath={range .items[*]}{.metadata.name}={.spec.replicas};{end}",
-        ],
+        retired_replicaset_argv(namespace),
         check=False,
         expected=True,
         timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
         return frozenset()
-    retired = set()
-    for entry in (e for e in (cp.stdout or "").split(";") if e):
-        name, _, replicas = entry.partition("=")
-        if name and replicas.strip() == "0":
-            retired.add(name)
-    return frozenset(retired)
+    return parse_retired_replicasets(cp.stdout or "")
 
 
 def _k8s_pod_states(
@@ -9334,11 +9320,7 @@ def _k8s_pod_states(
     if any(state.state != K8S_STATE_READY for _pod, state in states):
         retired = _k8s_retired_replicasets(namespace or K8S_NAMESPACE)
         if retired:
-            states = [
-                (pod, state)
-                for pod, state in states
-                if _k8s_pod_owner_replicaset(pod) not in retired
-            ]
+            states = [(pod, state) for pod, state in states if not pod_is_retired(pod, retired)]
     return [state for _pod, state in states], None
 
 
