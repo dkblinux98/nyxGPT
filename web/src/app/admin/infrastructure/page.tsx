@@ -158,12 +158,15 @@ type InfraStatus = {
       probe_available: boolean;
       deployed: boolean;
       workloads: Record<string, string>;
-      // The same three states the Pod list above badges (#3827). Without it
-      // this section rendered raw `"0/1 ready"`/`"1/1 ready"`/`"absent"`
-      // strings in undifferentiated grey -- a workload that is up, one still
-      // rolling out and one that never deployed all looked identical, on the
-      // same card that badges every Pod READY/PENDING/FAILED. Optional, so an
-      // older api falls back to those plain lines.
+      // Badged from the same vocabulary as the Pod list above (#3827), minus
+      // the one state only a Pod can be in: READY/PENDING/FAILED here, and
+      // additionally SUPERSEDED there (#3990), because supersession is a
+      // question about one replica being rolled past and a *workload* is never
+      // rolled past. Without these states this section rendered raw
+      // `"0/1 ready"`/`"1/1 ready"`/`"absent"` strings in undifferentiated
+      // grey -- a workload that is up, one still rolling out and one that
+      // never deployed all looked identical, on the same card that badges
+      // every Pod. Optional, so an older api falls back to those plain lines.
       workload_states?: {
         name: string;
         state: 'ready' | 'pending' | 'failed' | string;
@@ -415,12 +418,22 @@ function badgeStyle(ok: boolean, neutral = false): React.CSSProperties {
   };
 }
 
-// A Pod is ready, still starting, or broken -- the same three states
-// `nyxgpt ops` prints as [OK]/[PENDING]/[FAIL] (#3827). Pending is amber
-// rather than red on purpose: it is a normal stage of a rollout, and colouring
-// it as a failure is the browser version of the defect this fixed.
+// A Pod is ready, still starting, superseded or broken -- the same states
+// `nyxgpt ops` prints as [OK]/[PENDING]/[SUPERSEDED]/[FAIL] (#3827, #3990).
+// Pending is amber rather than red on purpose: it is a normal stage of a
+// rollout, and colouring it as a failure is the browser version of the defect
+// this fixed. Superseded is grey for the same reason in the other direction:
+// the Pod really is dead, but its workload has already replaced it, so nothing
+// about it is a call to action.
 function podStateBadgeStyle(state: string): React.CSSProperties {
-  const color = state === 'ready' ? '#22c55e' : state === 'pending' ? '#f59e0b' : '#ef4444';
+  const color =
+    state === 'ready'
+      ? '#22c55e'
+      : state === 'pending'
+        ? '#f59e0b'
+        : state === 'superseded'
+          ? '#6b7280'
+          : '#ef4444';
   return {
     fontSize: '0.7rem',
     fontWeight: 600,
@@ -990,14 +1003,27 @@ export default function InfrastructurePage() {
                      [FAIL] for exactly this and buried the one Pod that really
                      could not start. FAILED carries the scheduler's/kubelet's own
                      reason, because "Pending" on its own does not distinguish
-                     "downloading" from "this node cannot fit it". */
+                     "downloading" from "this node cannot fit it".
+
+                     Four since #3990's rework: a terminal Pod its own workload
+                     has already replaced is SUPERSEDED. Kubernetes keeps those
+                     for diagnosis, so every rollout leaves one behind, and
+                     badging it FAILED would show a serving deployment as broken
+                     for ever -- and would contradict `nyxgpt ops status`, which
+                     is the disagreement #3827 exists to prevent. */
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem' }}>
                     {status.kubernetes.pod_states.map((pod) => (
                       <li key={pod.name} style={{ padding: '3px 0' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
                           <span style={{ fontFamily: 'monospace' }}>{pod.name}</span>
                           <span style={podStateBadgeStyle(pod.state)}>
-                            {pod.state === 'ready' ? 'READY' : pod.state === 'pending' ? 'PENDING' : 'FAILED'}
+                            {pod.state === 'ready'
+                              ? 'READY'
+                              : pod.state === 'pending'
+                                ? 'PENDING'
+                                : pod.state === 'superseded'
+                                  ? 'SUPERSEDED'
+                                  : 'FAILED'}
                           </span>
                         </div>
                         <div style={{ color: 'var(--foreground-muted)', fontFamily: 'monospace' }}>
@@ -1070,10 +1096,13 @@ export default function InfrastructurePage() {
                     <>
                       {status.kubernetes.observability.workload_states &&
                       status.kubernetes.observability.workload_states.length > 0 ? (
-                        /* Badged with the same three states as the Pods above (#3827):
-                           `0/1 ready` is PENDING, not a quiet grey line the operator
-                           has to interpret against a Pod list that already ruled on
-                           the same condition two sections up. */
+                        /* Badged READY/PENDING/FAILED from the same vocabulary as the
+                           Pods above (#3827): `0/1 ready` is PENDING, not a quiet grey
+                           line the operator has to interpret against a Pod list that
+                           already ruled on the same condition two sections up. Three
+                           of the four, not four: the Pod list also badges SUPERSEDED
+                           (#3990), which a workload can never be -- only one of its
+                           replicas can be rolled past. */
                         <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                           {status.kubernetes.observability.workload_states.map((workload) => (
                             <li
@@ -1099,6 +1128,22 @@ export default function InfrastructurePage() {
                       ) : (
                         <ComponentList components={status.kubernetes.observability.workloads} />
                       )}
+                      {/* READY here means the workload is RUNNING, which is not the
+                          same as receiving anything -- a collector with no clients is
+                          as ready as one with a thousand, and #3990 was exactly that:
+                          ten READY badges over a tier that observed nothing. The
+                          data-flow answer is a `kubectl exec` into the Grafana and api
+                          Pods, which this api's ServiceAccount deliberately has no
+                          `pods/exec` rights for, so the page names the command that
+                          asks instead of growing the privilege to ask it itself. */}
+                      <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
+                        READY means the workload is running, not that telemetry is
+                        reaching it. For what each backend has actually received —
+                        Jaeger&apos;s spans, Prometheus&apos;s scrape targets,
+                        Loki&apos;s log labels, GlitchTip&apos;s errors, and whether
+                        Grafana&apos;s GlitchTip credential still authenticates — run{' '}
+                        <code>nyxgpt ops status</code>.
+                      </p>
                       <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
                         The observability Services are ClusterIP-only. Publish Grafana,
                         Prometheus, Jaeger and GlitchTip on the ports this dashboard links to

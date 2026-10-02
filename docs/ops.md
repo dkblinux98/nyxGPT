@@ -701,8 +701,9 @@ Reports:
   without the line at all read as "nothing is deployed" directly above 14
   running Pods.
 - **Kubernetes deployment**, when Pods are present: the namespace's Pods, the
-  cluster context, the in-cluster observability workloads, the per-component
-  canary rollout state — and that deployment's **own install mode**, `artifact`
+  cluster context, the in-cluster observability workloads **and what each of
+  those backends has actually received**, the per-component canary rollout
+  state — and that deployment's **own install mode**, `artifact`
   (images built from the published `nyxgpt-api`/`nyxgpt-web` artifacts) or
   `dev` (images built from a checkout's working tree, #3834). It is reported
   here, not in the native line above, because the two are separate installs
@@ -710,6 +711,17 @@ Reports:
   named as a record of the last install rather than described as what the
   Pods are running (#3989)
   ([kubernetes.md](kubernetes.md#install-modes-artifact-and---dev)).
+
+  The five data-flow lines after the readiness ones — traces, metrics, logs,
+  errors, and error-reporting credentials — are the ones that distinguish *the
+  tier is running* from *the tier is receiving*. They print here and not only
+  in the install's report because `ops status` is the command an operator runs
+  to ask whether the tier is working, and ten `1/1 ready` workloads with no
+  word about what any of them has received is exactly the state that reached
+  acceptance testing in #3990. They are skipped entirely when there is no
+  observability tier to ask. See [observability in the
+  cluster](kubernetes.md#observability-in-the-cluster) for what each line asks
+  and why the credential question has a line of its own.
 - **Terraform component state** for each `nyxgpt-tf-*` core container, when any are
   running. If a component is reported running under Terraform *and* under native/Compose
   at the same time, `status` prints a second **WARNING** — this means an incomplete mode
@@ -1259,6 +1271,21 @@ out of the other one's config is the defect itself.
 code and fails when a check is added to `doctor` without being classified,
 so the next check with this shape is caught there rather than by an operator
 running the product.
+
+**The cluster's error-tracking check asks the Pods, not only the Secret**
+(#3990). Its original question was whether the DSN in `nyxgpt-secrets` still
+matches a live GlitchTip project key — a key re-minted since provisioning
+means every event is rejected and silently dropped. But a Pod's environment is
+fixed at process start, so a Pod that booted before the DSN was provisioned
+keeps the empty value it started with however correct that Secret has since
+become, and the key comparison passes over it: the Secret's key really is
+live. `doctor` therefore asks the running api Pod first, through the same probe
+`nyxgpt ops status`'s `errors:` line uses, and reports an api carrying no DSN
+as its own finding. Both surfaces now answer that deployment the same way —
+two surfaces disagreeing about one fact is its own defect (#3827), and the
+disagreement here pointed the wrong way: a clean `doctor` over an api
+reporting errors nowhere. A Pod that cannot be asked (no api tier, not yet
+serving) is `unknown`, not empty, and falls through to the key comparison.
 
 ---
 

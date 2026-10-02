@@ -2175,11 +2175,87 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/Insufficient memory/)).toBeInTheDocument();
   });
 
-  it('badges the observability workloads with the same three states as the Pods (#3827)', async () => {
-    // The card badged every Pod READY/PENDING/FAILED and then, a section
-    // lower, printed the observability workloads as grey `0/1 ready` text --
-    // one screen giving two different verdicts on the same condition, which
-    // is the contradiction this issue is about.
+  it('badges a Pod the rollout already replaced as SUPERSEDED, not FAILED (#3990)', async () => {
+    // Kubernetes keeps terminal Pods for diagnosis, so every rollout leaves one
+    // behind in phase Failed. Badging that red showed a serving deployment as
+    // broken for ever -- and disagreed with `nyxgpt ops status`, which is the
+    // one-screen-two-verdicts defect #3827 exists to prevent.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusTerraform,
+          kubernetes: {
+            ...mockStatusTerraform.kubernetes,
+            pod_states: [
+              {
+                name: 'nyxgpt-web-stable-598d7fddd8-45w4x',
+                state: 'superseded',
+                summary: 'Failed: superseded by nyxgpt-web-stable-6774c4f89-bjf7d',
+                details: 'A previous revision\u2019s Pod that its workload has already replaced.',
+              },
+              {
+                name: 'nyxgpt-web-stable-6774c4f89-bjf7d',
+                state: 'ready',
+                summary: 'Running',
+                details: '',
+              },
+            ],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('nyxgpt-web-stable-598d7fddd8-45w4x')).toBeInTheDocument();
+    });
+    expect(screen.getByText('SUPERSEDED')).toBeInTheDocument();
+    expect(screen.queryByText('FAILED')).not.toBeInTheDocument();
+    // Shown, not hidden: an operator looking for why a Pod died needs it.
+    expect(screen.getByText(/superseded by nyxgpt-web-stable-6774c4f89-bjf7d/)).toBeInTheDocument();
+  });
+
+  it('says READY is not the same as receiving, and names the command that asks (#3990)', async () => {
+    // Ten READY badges over a tier that observed nothing is the #3990 state.
+    // The data-flow answer needs `kubectl exec` into the Grafana and api Pods,
+    // which this api's ServiceAccount deliberately cannot do, so the page
+    // points at the CLI instead of growing the privilege.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            observability: {
+              ...observabilityDeployed,
+              workload_states: [
+                { name: 'grafana', state: 'ready', summary: '1/1 ready', details: '' },
+              ],
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'In-cluster observability' })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/READY means the workload is running, not that telemetry is reaching it/)
+    ).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt ops status')).toBeInTheDocument();
+  });
+
+  it('badges the observability workloads from the same vocabulary as the Pods (#3827)', async () => {
+    // The card badged every Pod READY/PENDING/FAILED/SUPERSEDED and then, a
+    // section lower, printed the observability workloads as grey `0/1 ready`
+    // text -- one screen giving two different verdicts on the same condition,
+    // which is the contradiction this issue is about. Three of those four
+    // apply here: SUPERSEDED is a Pod-only answer (#3990), since a workload is
+    // never the replica that got rolled past.
     server.use(
       http.get('/api/v1/infra/status', () =>
         HttpResponse.json({

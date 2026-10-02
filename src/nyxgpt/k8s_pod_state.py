@@ -40,12 +40,19 @@ recreate. Anything that budgets repair attempts has to count against that --
 counting against the Pod name is why #3832's per-service restart cap never
 fired even once across seven deletions.
 
-A second shared reading lives at the bottom of this module (#3956): *which*
-Pods are the deployment's state at all. A Pod owned by a ReplicaSet scaled to
-zero is the residue of a finished rollout, and every reader of a Pod list has
-to drop it -- `ops.py` failed an install on one, and self-heal rendered the
-same Pod as a permanently Failed component, because that rule had one copy
-instead of none.
+Two further shared readings live at the bottom of this module, and they answer
+the same question from different ends: *which* Pods are the deployment's state
+at all.
+
+- A Pod owned by a ReplicaSet scaled to zero is the residue of a finished
+  rollout, and every reader of a Pod list has to drop it (#3956) -- `ops.py`
+  failed an install on one, and self-heal rendered the same Pod as a
+  permanently Failed component, because that rule had one copy instead of none.
+- A terminal Pod whose own workload already has a ready Pod of a newer revision
+  has been rolled past (#3990). This one needs no second question of the
+  cluster, so it still answers for the populations the first cannot see.
+
+Neither subsumes the other; see the comment above `POD_TERMINAL_PHASES`.
 
 No nyxgpt imports: `ops.py` already imports `self_heal.py`, so anything the
 two share has to sit below both.
@@ -53,7 +60,8 @@ two share has to sit below both.
 
 from __future__ import annotations
 
-from collections.abc import Container, Mapping
+import json
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -397,14 +405,173 @@ def pod_is_retired(pod: Mapping[str, Any], retired: Container[str]) -> bool:
     return bool(owner) and owner in retired
 
 
+# --- Pods the rollout has already replaced (#3990) --------------------------
+#
+# The second of the two rules that keep a finished rollout's residue out of a
+# verdict, and NOT a substitute for the first. `pod_is_retired` asks the
+# ReplicaSets which of them have zero desired replicas, which costs an extra
+# `kubectl` and says nothing about a Pod no ReplicaSet owns. This one asks only
+# the Pods already in hand, so it still answers for the populations that one
+# cannot see: a StatefulSet's rolled Pod, and any residue at all on a run where
+# the ReplicaSet read timed out and the retired set came back empty -- which on
+# a node sized for one rollout's surge is exactly the run that leaves residue
+# behind.
+#
+# It lives here, beside `pod_is_retired`, for the reason that rule learned the
+# hard way: `ops.py`'s first cut of this reading was `ops.py`'s alone, so the
+# Infrastructure page could badge a Pod `SUPERSEDED` while the Self-Heal page
+# rendered the same Pod as a permanently `Failed`, unhealable component of a
+# deployment whose Deployments were both `1/1`. Two dashboards giving two
+# verdicts about one Pod is the D-022/D-052 class of defect, and one copy of
+# the reading is what prevents it.
+#
+# What each caller does with the reading is still its own: `ops.py` RE-LABELS
+# the Pod (printed, not counted -- an operator looking for why a Pod died needs
+# to see it is there), self-heal DROPS it from the component list (the same
+# thing it does with a retired Pod, because there is nothing for the watchdog
+# to heal and no component the operator must act on).
+
+# Phases no container comes back from: the Pod is only still in the API because
+# nothing has collected it yet. `Succeeded` is deliberately absent -- a one-shot
+# Pod that completed is a success, not residue to be explained away.
+POD_TERMINAL_PHASES = frozenset({"Failed", "Unknown"})
+
+# Labels that identify the *revision* that minted a Pod rather than the
+# workload it belongs to. Stripping them is what lets two Pods of one Deployment
+# be recognised as the same workload across a rollout; comparing them is what
+# tells "replaced by a newer revision" apart from "one replica of the current
+# revision died", which is a real failure.
+REVISION_LABELS = ("pod-template-hash", "controller-revision-hash")
+
+# Also stripped from the identity: the label a StatefulSet stamps with the Pod's
+# own name. See `pod_workload_identity` for what that costs and why it is paid.
+_REPLICA_IDENTITY_LABELS = ("statefulset.kubernetes.io/pod-name",)
+
+
+def pod_name(pod: Mapping[str, Any]) -> str:
+    """The Pod's `metadata.name`, or "" when it is missing or not a string."""
+    metadata = pod.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return ""
+    name = metadata.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _pod_labels(pod: Mapping[str, Any]) -> dict[str, str]:
+    """`metadata.labels` as a `str -> str` dict, skipping anything malformed."""
+    metadata = pod.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    raw = metadata.get("labels")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def pod_workload_identity(pod: Mapping[str, Any]) -> str:
+    """The workload a Pod belongs to, independent of which revision minted it.
+
+    The Pod's labels with the revision labels removed: two Pods of the same
+    Deployment agree on this across a rollout, and two Pods of different
+    workloads never do (every workload in `k8s/` carries an `app` label). "" for
+    a Pod carrying nothing but its revision -- a bare Pod nothing owns, which
+    has no workload to be superseded by -- and "" is never treated as a match.
+
+    `statefulset.kubernetes.io/pod-name` is stripped too, and that is the one
+    imprecision in this reading: it makes every replica of a StatefulSet share
+    one identity, so mid-rollout a terminal `cassandra-0` of the old revision
+    can be excused by a Ready `cassandra-1` of the new one. Keying the identity
+    on the ordinal instead would be stricter and would also retire the rule for
+    StatefulSets entirely -- a StatefulSet recreates a replica under the *same*
+    Pod name, so no two Pods ever share that label and no replacement could ever
+    be found. The looser identity is chosen because the residue it exists to
+    explain is real, the Pod is still printed either way, and that controller
+    replaces its own terminal replica under the same name rather than leaving it
+    indefinitely.
+    """
+    labels = _pod_labels(pod)
+    for label in REVISION_LABELS + _REPLICA_IDENTITY_LABELS:
+        labels.pop(label, None)
+    return json.dumps(sorted(labels.items())) if labels else ""
+
+
+def pod_revision(pod: Mapping[str, Any]) -> str:
+    """The revision hash that minted a Pod, or "" when its controller stamps none."""
+    labels = _pod_labels(pod)
+    for label in REVISION_LABELS:
+        value = labels.get(label) or ""
+        if value:
+            return value
+    return ""
+
+
+def pod_is_terminal(pod: Mapping[str, Any]) -> bool:
+    """Whether the Pod's phase is one no container comes back from."""
+    status = pod.get("status")
+    status = status if isinstance(status, Mapping) else {}
+    phase = status.get("phase")
+    return (phase if isinstance(phase, str) else "") in POD_TERMINAL_PHASES
+
+
+def superseded_pods(pods: Sequence[Mapping[str, Any]], ready: Sequence[bool]) -> dict[int, str]:
+    """Which Pods their own workload has already rolled past: `{index: replacement}`.
+
+    `ready[i]` is the caller's own verdict on whether `pods[i]` is serving --
+    `ops.py` counts a `Succeeded` one-shot Pod, self-heal does not -- so the
+    policy stays with the caller and only the reading is shared. Keyed by index
+    rather than by name because the caller already holds its own per-Pod state
+    in the same order, and because two Pods with an unreadable name would
+    otherwise collide on "".
+
+    A Pod is superseded when all three hold: its phase is terminal
+    (`POD_TERMINAL_PHASES`), it carries a revision hash, and another Pod of the
+    same workload (`pod_workload_identity`) from a DIFFERENT revision is ready.
+    The last clause is what keeps this from swallowing real failures -- one
+    replica of the *current* revision dying still reports as itself, because its
+    replacement carries the same hash. A workload with no ready Pod at all is
+    the whole workload being down, and nothing here excuses it.
+    """
+    if len(pods) != len(ready):  # pragma: no cover - caller contract
+        raise ValueError("superseded_pods: `ready` must carry one verdict per Pod")
+
+    ready_by_identity: dict[str, list[tuple[str, str]]] = {}
+    for pod, is_ready in zip(pods, ready, strict=True):
+        if is_ready:
+            ready_by_identity.setdefault(pod_workload_identity(pod), []).append(
+                (pod_revision(pod), pod_name(pod))
+            )
+
+    superseded: dict[int, str] = {}
+    for index, pod in enumerate(pods):
+        if not pod_is_terminal(pod):
+            continue
+        revision = pod_revision(pod)
+        identity = pod_workload_identity(pod)
+        if not (revision and identity):
+            continue
+        replacement = next(
+            (name for rev, name in ready_by_identity.get(identity, ()) if rev and rev != revision),
+            "",
+        )
+        if replacement:
+            superseded[index] = replacement
+    return superseded
+
+
 __all__ = [
+    "POD_TERMINAL_PHASES",
     "RETIRED_REPLICASET_JSONPATH",
+    "REVISION_LABELS",
     "UNSCHEDULABLE_REASONS",
     "PodState",
     "classify_pod",
     "classify_pods",
     "parse_retired_replicasets",
     "pod_is_retired",
+    "pod_is_terminal",
+    "pod_name",
     "pod_owner_replicaset",
+    "pod_revision",
+    "pod_workload_identity",
     "retired_replicaset_argv",
+    "superseded_pods",
 ]

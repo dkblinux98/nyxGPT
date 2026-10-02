@@ -1951,6 +1951,20 @@ rather than mechanism, and nothing can enforce them.
   healthy deployment — a reader with its own copy of the rule is free to
   disagree with the others. A new Pod reader takes the shared rule.
 
+  *Amended 2026-10-02 by #3990:* "keep every Pod a live controller owns,
+  whatever its phase" is narrowed by a **second** residue rule, not reversed.
+  `k8s_pod_state.superseded_pods` also sets aside a *terminal* Pod whose own
+  workload already has a **Ready Pod of a different revision** serving in its
+  place — which is the only population (a) structurally cannot reach: a
+  StatefulSet's rolled replica belongs to no ReplicaSet, and a pass whose
+  `kubectl get rs` fails is exactly the pass that leaves residue. It is still
+  not a filter on the phase — a terminal Pod of the *current* revision, or one
+  whose workload has no Ready replica at all, is reported as itself — so the
+  alternative the owner ruled out stays ruled out. Both rules live in
+  `k8s_pod_state` for the same reason, and the *policy* stays with the caller:
+  `ops.py` relabels such a Pod `[SUPERSEDED]` (shown, not counted),
+  `self_heal.py` drops it. A new Pod reader takes **both**.
+
   (b) *`kubectl` is not always kubectl, so nyxGPT names the kubeconfig itself.*
   Every kubectl child this codebase spawns is handed the kubeconfig kubectl's
   own default resolution would have used, instead of relying on an exported

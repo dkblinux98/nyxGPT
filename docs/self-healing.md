@@ -414,15 +414,51 @@ touched, and a Pod that is already terminating
 (`metadata.deletionTimestamp`) is skipped -- its replacement is already on
 the way, so healing it again would only spend a restart-budget attempt.
 
-**A Pod whose ReplicaSet has been scaled to zero is skipped too** (#3956): it
-is the residue of a finished rollout, not part of the deployment. Rollouts
-happen on an ordinary install -- writing the real error-tracking DSN rolls api
-and web -- and the superseded ReplicaSet leaves its terminated Pod in the
-namespace, which would otherwise appear here as a `Failed`, unhealable
-component of a deployment whose Deployments are both fully ready. A Pod a
-*live* controller owns is reported whatever its phase, so a real failure is
-never hidden, and a ReplicaSet read that fails changes nothing: a Pod leaves
-the list only on positive evidence that its owner is finished.
+**A finished rollout's residue is skipped too**, by the *two* rules
+`src/nyxgpt/k8s_pod_state.py` shares with `ops.py` so that no two surfaces can
+disagree about one Pod (#3827):
+
+- **a Pod whose ReplicaSet has been scaled to zero** (`pod_is_retired`,
+  #3956) -- no live controller owns it, so it is residue rather than part of
+  the deployment;
+- **a terminal Pod its own workload has already replaced** with a Ready Pod of
+  a *newer* revision (`superseded_pods`, #3990). This one asks only the Pods
+  already in hand, so it still answers for the two populations the first rule
+  structurally cannot see: a StatefulSet's rolled replica, which no ReplicaSet
+  owns at all, and any residue left on a pass where the ReplicaSet query
+  itself failed or timed out.
+
+Rollouts happen on an ordinary install -- provisioning the real error-tracking
+DSN rolls api and web -- and Kubernetes keeps the terminated Pod in the
+namespace for diagnosis, carrying the `app` label that puts it in the `core`
+tier. Reported, it is a `Failed`, `healable=False` component of a deployment
+whose Deployments are both fully ready: the misreading that failed the owner's
+2026-08-26 install three lines above `nyxgpt-web-stable 1/1`.
+
+Neither rule hides a real failure, because neither is a filter on the *phase*.
+A Pod leaves the list only when it is residue by one of the two readings above:
+its ReplicaSet has been scaled to zero, or it is terminal **and** its own
+workload already has a Ready Pod of a *different* revision. Everything else is
+reported whatever its phase -- in particular a terminal Pod of the **current**
+revision, whose replacement carries the same revision hash and so is no
+replacement at all, and every Pod of a workload with no Ready replica anywhere,
+which is the whole workload being down and is nothing either rule excuses. The
+extra `kubectl get rs` the first rule needs is taken only on a pass where some
+Pod is unhealthy -- the only pass where either rule can change an answer, and
+this survey runs every 15 seconds (first principle 1); the second rule costs no
+cluster read at all.
+
+Both readings also serve the readouts an operator *looks* at, and the second
+one with the opposite policy there: `nyxgpt ops status` and the Infrastructure
+page drop a retired Pod as this survey does, but **show** a superseded one,
+labelled `[SUPERSEDED]` (grey), because someone asking why a Pod died needs to
+see the corpse -- see
+[kubernetes.md](kubernetes.md#ready-pending-failed-superseded). Here it is
+dropped instead, because there is nothing for the watchdog to heal and nothing
+for the operator to act on. Shown there, dropped here, one reading in both: the
+first cut of the supersession rule lived in `ops.py` alone, and the same Pod it
+badged `[SUPERSEDED]` on the Infrastructure page rendered on the Self-Heal page
+as a component that was Failed and unhealable forever.
 
 Until #3828 the survey selected `app=nyxgpt-api-canary-pool` alone, so web,
 Cassandra, Ollama and the entire observability tier were observed and healed

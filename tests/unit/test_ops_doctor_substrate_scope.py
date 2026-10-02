@@ -91,7 +91,8 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
     ),
     "_k8s_error_tracking_dsn_drift_issue": (
         CLUSTER_HALF,
-        "compares the Secret's DSN against the in-cluster GlitchTip's live keys",
+        "asks the running api Pod for its DSN, then compares the Secret's against "
+        "the in-cluster GlitchTip's live keys",
     ),
     # --- already substrate-aware before this change ---
     "_missing_required_models_issue": (
@@ -459,9 +460,17 @@ def test_a_prometheus_that_cannot_be_asked_is_not_this_checks_finding(monkeypatc
 LIVE_KEYS = json.dumps([{"dsn": {"public": "http://livekey@glitchtip:8080/1"}}])
 
 
-def _dsn_in_secret(monkeypatch, dsn: str) -> None:
+def _dsn_in_secret(monkeypatch, dsn: str, *, on_pod: str = ops._K8S_DSN_SET) -> None:
+    """The Secret holds `dsn`; the running api Pod reports `on_pod`.
+
+    Two separate questions since #3990 -- see
+    `test_a_secret_dsn_the_running_pod_does_not_carry_is_a_drift`. The default
+    is the healthy case (the Pod carries what was provisioned) so the
+    pre-existing key-comparison tests read as they always did.
+    """
     monkeypatch.setattr(ops, "_which", lambda _prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(ops, "_k8s_error_tracking_dsn", lambda: dsn)
+    monkeypatch.setattr(ops, "_k8s_error_tracking_dsn_state", lambda: (on_pod, "glitchtip:8080"))
 
 
 @pytest.mark.unit
@@ -511,6 +520,63 @@ def test_an_empty_cluster_dsn_is_inert_not_drifted(monkeypatch):
     _dsn_in_secret(monkeypatch, "")
     monkeypatch.setattr(
         ops, "_k8s_incluster_get", lambda *_a, **_k: pytest.fail("nothing to compare")
+    )
+
+    assert ops._k8s_error_tracking_dsn_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_a_secret_dsn_the_running_pod_does_not_carry_is_a_drift(monkeypatch):
+    """The owner's AC2 state: `nyxgpt-secrets` correct, the api Pod empty.
+
+    A Pod's environment is fixed at process start, so the two genuinely
+    diverge. The key comparison cannot see it -- the Secret's key IS a live
+    GlitchTip key here, which is why `_k8s_incluster_get` would pass -- so
+    before #3990 reconciled them, `doctor` printed nothing while `ops status`
+    printed `[FAIL]` about the same deployment (#3827: two surfaces must not
+    disagree about one fact).
+    """
+    _dsn_in_secret(monkeypatch, "http://livekey@glitchtip:8080/1", on_pod=ops._K8S_DSN_UNSET)
+    monkeypatch.setattr(
+        ops,
+        "_k8s_incluster_get",
+        lambda *_a, **_k: pytest.fail("the Pod is asked before GlitchTip's keys"),
+    )
+
+    issue = ops._k8s_error_tracking_dsn_drift_issue()
+
+    assert issue is not None
+    assert "nyxgpt ops glitchtip-init --kubernetes" in issue
+    assert ops.K8S_ERROR_TRACKING_DSN_PROBE_DEPLOYMENT in issue
+    # The DSN never travels into the finding -- only the fact of its absence.
+    assert "livekey" not in issue
+
+
+@pytest.mark.unit
+def test_a_pod_that_cannot_be_asked_falls_through_to_the_key_comparison(monkeypatch):
+    """`unknown` is not `unset`: an api tier that is absent or not yet serving
+    must not be reported as a Pod that lost its DSN. The Secret/key comparison
+    still runs, so this check keeps the finding it had before #3990."""
+    _dsn_in_secret(monkeypatch, "http://stalekey@glitchtip:8080/1", on_pod=ops._K8S_DSN_UNKNOWN)
+    monkeypatch.setattr(ops, "_k8s_incluster_get", lambda *_a, **_k: (True, LIVE_KEYS))
+
+    issue = ops._k8s_error_tracking_dsn_drift_issue()
+
+    assert issue is not None
+    assert "NYXGPT_ERROR_TRACKING_DSN is empty" not in issue
+
+
+@pytest.mark.unit
+def test_an_empty_secret_does_not_ask_the_pod_either(monkeypatch):
+    """`--skip-observability` leaves error tracking inert by design, and an
+    inert deployment's Pods legitimately carry no DSN -- asking them would turn
+    a supported configuration into a finding, and costs a `kubectl exec`."""
+    monkeypatch.setattr(ops, "_which", lambda _prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_k8s_error_tracking_dsn", lambda: "")
+    monkeypatch.setattr(
+        ops,
+        "_k8s_error_tracking_dsn_state",
+        lambda: pytest.fail("no DSN provisioned: nothing for the Pod to be missing"),
     )
 
     assert ops._k8s_error_tracking_dsn_drift_issue() is None

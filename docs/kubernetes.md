@@ -108,17 +108,25 @@ on Pods that are still pulling images and its exit status describes a
 mid-rollout snapshot rather than the stack the operator is handed (#3826,
 #3827).
 
-### Ready, pending, failed
+### Ready, pending, failed, superseded
 
 Every Kubernetes readout `nyxgpt ops` prints — the install's health snapshot,
 the observability workload list, `nyxgpt ops status` — classifies a workload
-into one of three states, and the same way in each (#3827):
+into one of these states, and the same way in each (#3827):
 
 | Label | Meaning | Counts as a failure? |
 | --- | --- | --- |
 | `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
 | `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
-| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a terminal Pod (`Failed`/`Unknown`) nothing has rolled past — one of the revision that is meant to be serving, or one whose workload has no Ready replacement at all | yes |
+| `[SUPERSEDED]` | Pods only: terminal, and its own workload already has a Ready Pod of a **newer** revision serving in its place — the residue Kubernetes keeps for diagnosis after a rollout (#3990) | **no** |
+
+The first three apply to a workload and to a Pod alike; `[SUPERSEDED]` is a
+Pod-level answer, because supersession is a question about one replica being
+rolled past and a *workload* is never superseded. So the observability workload
+list prints three labels and the Pod lists print four. See [a Pod the rollout
+already replaced](#observability-in-the-cluster) for the rule and for why it is
+not interchangeable with "a Pod no live controller owns".
 
 Since #3832 the *reading* behind this table — phase, readiness, whether the
 scheduler placed the Pod, and the cluster's own words for why it did not —
@@ -157,14 +165,17 @@ Both readouts the operator actually looks at carry these labels, not raw
 `kubectl` output: `nyxgpt ops status` prints `[OK]`/`[PENDING]`/`[FAIL]` per
 Pod (with the reason for a failed one) and per observability workload, and the
 Infrastructure page in the admin dashboard badges both lists READY / PENDING
-(amber) / FAILED from the same classification.
+(amber) / FAILED from the same classification. Pods carry one further label,
+`[SUPERSEDED]` (grey on the page) — see "a Pod the rollout already replaced"
+under [Observability in the cluster](#observability-in-the-cluster).
 
-A fourth label, `[ATTENTION]`, marks a **misconfiguration the step found**: not
-a failure of the step, and not a pass either. The observability GlitchTip checks
-use it — a placeholder or rejected Grafana token means every SRE Home GlitchTip
-panel will answer `401` until an operator acts, which is nothing like the
-`[NO DATA]` of a backend that is up and has simply received nothing yet. It logs
-at WARNING with its remedy; it does not fail the install (#3956).
+One further label belongs to the report *lines* rather than to a Pod:
+`[ATTENTION]` marks a **misconfiguration the step found** — not a failure of the
+step, and not a pass either. The observability GlitchTip credential check uses
+it: a placeholder or rejected Grafana token means every SRE Home GlitchTip panel
+will answer `401` until an operator acts, which is nothing like the `[NO DATA]`
+of a backend that is up and has simply received nothing yet. It logs at WARNING
+with its remedy; it does not fail the install (#3956).
 
 **A Pod no live controller owns is not the deployment's state.** Pods whose
 ReplicaSet the Deployment controller has scaled to zero are dropped from every
@@ -877,14 +888,53 @@ Notes:
   Without it Grafana authenticates with `UNCONFIGURED-glitchtip-token` and
   the SRE Home GlitchTip panels answer `401 Unauthorized`.
 - **Running is reported separately from receiving.** `nyxgpt ops install
-  --kubernetes` and `nyxgpt ops observability --kubernetes` print four extra
-  lines after the per-workload readiness ones, asking each backend what it
-  has actually received -- Jaeger's service list, Prometheus's scrape
-  targets, Loki's job labels, and whether GlitchTip accepts Grafana's token.
-  A backend that is up but empty prints `[NO DATA]`, not `[OK]`: a stack
-  nobody has chatted with legitimately has no spans, so it is not a failure
-  either. Ten `1/1 ready` workloads receiving nothing is precisely the state
-  that reached acceptance testing in #3990.
+  --kubernetes`, `nyxgpt ops observability --kubernetes` **and `nyxgpt ops
+  status`** print five extra lines after the per-workload readiness ones,
+  asking each backend what it has actually received -- Jaeger's service list,
+  Prometheus's scrape targets, Loki's job labels, GlitchTip's issue list, and
+  (on its own line) whether GlitchTip accepts Grafana's token. A backend that
+  is up but empty prints `[NO DATA]`, not `[OK]`: a stack nobody has chatted
+  with legitimately has no spans, so it is not a failure either. Ten `1/1
+  ready` workloads receiving nothing is precisely the state that reached
+  acceptance testing in #3990.
+
+  Two of those lines are deliberately kept apart, because they are two
+  questions with two remedies. `errors:` asks what GlitchTip has **received**
+  from nyxGPT, and starts by asking the running api Pod whether it has an
+  error-tracking DSN at all -- an api with `NYXGPT_ERROR_TRACKING_DSN=`
+  reports errors nowhere however healthy GlitchTip is, so that one is a
+  `[FAIL]`, not a `[NO DATA]`. `error reporting credentials:` asks whether
+  Grafana's bearer token is accepted, i.e. whether the SRE Home panels will
+  401; that is the line the `[ATTENTION]` label above belongs to. Collapsing
+  the two into one `errors:` line is what let an api with no DSN print green
+  through the whole report (owner acceptance, 2026-08-26) -- the credential was
+  fine and the wiring was not.
+
+  The DSN question is asked of the **Pod**, never of the Secret: an
+  environment is fixed at process start, so a Pod that booted before
+  provisioning keeps the empty DSN it started with even once `nyxgpt-secrets`
+  holds the real one. `nyxgpt ops glitchtip-init --kubernetes` rolls the api
+  and web Deployments whenever the running Pods lack it, not only when the
+  value on disk changed.
+- **A Pod the rollout already replaced is not a stack failure.** Kubernetes
+  keeps terminal Pods around for diagnosis rather than collecting them
+  immediately, so a rollout that loses an old Pod leaves one behind in phase
+  `Failed`. Those print as `[SUPERSEDED]` -- shown, because an operator
+  looking for why a Pod died needs to see it, but not counted against the
+  command, since the workload has a Ready Pod of a newer revision serving in
+  its place. A terminal Pod of the *current* revision, or one with no Ready
+  replacement, still fails.
+
+  This is the **second** of the two rules above that keep a finished rollout's
+  residue out of the verdict, and the two are not interchangeable. "A Pod no
+  live controller owns" asks the ReplicaSets which have been scaled to zero
+  and drops their Pods from every readout, for the install, self-heal and
+  `nyxgpt canary status` alike. `[SUPERSEDED]` needs no second question of the
+  cluster, so it still answers for the two populations that rule cannot see: a
+  StatefulSet's rolled Pod, which no ReplicaSet owns at all, and any residue
+  left on a run where the ReplicaSet query itself timed out -- which on a
+  node sized for one rollout's surge is exactly the run that leaves residue
+  behind.
 - **Storage is ephemeral.** Prometheus, Loki, Grafana and GlitchTip's
   Postgres use `emptyDir`, not PersistentVolumeClaims: `nyxgpt ops down
   --kubernetes` deletes the local cluster nyxgpt provisioned, so there is
@@ -1061,14 +1111,16 @@ merely unknown, and they now say so:
 
 Run `nyxgpt ops status` on the host to survey either of those there.
 
-Each Pod on that card is badged with the same three states the CLI prints,
-from `kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
+Each Pod on that card is badged with the same states the CLI prints, from
+`kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
 scheduling, pulling or creating containers -- amber, because that is a normal
-stage of a rollout and not a fault) and **FAILED**, which carries the
-scheduler's or kubelet's own reason. The raw `kubectl get pods` line the card
-used to echo says `Pending` for both of the last two, which is the same
-conflation the install used to print — see [Ready, pending,
-failed](#ready-pending-failed).
+stage of a rollout and not a fault), **FAILED**, which carries the scheduler's
+or kubelet's own reason, and **SUPERSEDED** (grey, #3990 -- a terminal Pod the
+workload has already replaced, so nothing about it is a call to action). The raw
+`kubectl get pods` line the card used to echo says `Pending` both for a Pod
+pulling its image and for one no node can fit — PENDING and FAILED here — which
+is the same conflation the install used to print. See [Ready, pending, failed,
+superseded](#ready-pending-failed-superseded).
 
 Below that list, the card also names any Pod **no node would take** (#3825),
 and says what to do about it: the badge tells the operator the Pod will not

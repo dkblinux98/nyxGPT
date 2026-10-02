@@ -14,6 +14,7 @@ Two halves:
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
 import re
@@ -27,7 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from nyxgpt import ops
+from nyxgpt import k8s_pod_state, ops, self_heal
 from nyxgpt.config import get_error_tracking_config, get_tracing_config
 
 pytestmark = pytest.mark.unit
@@ -399,10 +400,11 @@ def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     # Command wrapping: the dashboard tells the operator a `nyxgpt` command.
     assert observability["port_forward_command"].startswith("nyxgpt ops port-forward")
 
-    # ...and the same three states the Pod badges use (#3827). The raw
-    # `workloads` map rendered as undifferentiated grey text, so a workload
-    # that is up, one still rolling out and one that never deployed were
-    # indistinguishable on a card that badges every Pod READY/PENDING/FAILED.
+    # ...and the same states the Pod badges use (#3827), bar the one only a Pod
+    # can be in (`SUPERSEDED`, #3990 -- a workload is never the replica that got
+    # rolled past). The raw `workloads` map rendered as undifferentiated grey
+    # text, so a workload that is up, one still rolling out and one that never
+    # deployed were indistinguishable on a card that badges every Pod.
     by_name = {w["name"]: w for w in observability["workload_states"]}
     assert by_name["grafana"]["state"] == ops.K8S_STATE_READY
     assert by_name["prometheus"]["state"] == ops.K8S_STATE_PENDING
@@ -891,6 +893,558 @@ def test_k8s_stack_health_fails_a_crashlooping_pod(monkeypatch) -> None:
 
     assert not pod.ok
     assert "CrashLoopBackOff" in pod.message
+
+
+# --- A Pod the rollout already replaced is not a stack failure -------------
+#
+# #4004's end-of-install DSN rollout left a terminal `nyxgpt-web-stable` Pod on
+# CI's deliberately-small node; `rollout status` reported both Deployments
+# `successfully rolled out`, the replacements were Running, and
+# `_k8s_stack_health` still failed the install on the corpse -- five
+# consecutive `k8s-local-smoke` reds from that merge on. Kubernetes keeps
+# terminal Pods for diagnosis, so this is general: any rollout that loses an
+# old Pod would otherwise make the deployment permanently unhealthy on every
+# surface until someone deleted it by hand.
+
+
+def _revision_pod(name: str, phase: str, *, app: str, revision: str, **status) -> dict:
+    return {
+        "metadata": {"name": name, "labels": {"app": app, "pod-template-hash": revision}},
+        "status": {"phase": phase, **status},
+    }
+
+
+def test_a_terminal_pod_its_workload_already_replaced_does_not_fail_the_stack(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _revision_pod(
+                    "nyxgpt-web-stable-598d7fddd8-45w4x",
+                    "Failed",
+                    app="nyxgpt-web",
+                    revision="598d7fddd8",
+                ),
+                _revision_pod(
+                    "nyxgpt-web-stable-6774c4f89-bjf7d",
+                    "Running",
+                    app="nyxgpt-web",
+                    revision="6774c4f89",
+                    conditions=[{"type": "Ready", "status": "True"}],
+                ),
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    old = next(r for r in results if "45w4x" in r.message)
+
+    assert old.ok, "the install must not fail on a Pod its own rollout replaced"
+    assert ops._result_status_label(old) == "SUPERSEDED"
+    # Still printed, never hidden: an operator looking for why a Pod died
+    # needs to see that it is there.
+    assert "superseded by nyxgpt-web-stable-6774c4f89-bjf7d" in old.message
+
+
+def test_a_terminal_pod_of_the_CURRENT_revision_still_fails(monkeypatch) -> None:
+    """The clause that keeps the reclassification from swallowing real
+    failures: one replica of the revision that is meant to be serving died,
+    and its replacement carries the same hash."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _revision_pod(
+                    "nyxgpt-web-stable-6774c4f89-dead",
+                    "Failed",
+                    app="nyxgpt-web",
+                    revision="6774c4f89",
+                ),
+                _revision_pod(
+                    "nyxgpt-web-stable-6774c4f89-live",
+                    "Running",
+                    app="nyxgpt-web",
+                    revision="6774c4f89",
+                    conditions=[{"type": "Ready", "status": "True"}],
+                ),
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    dead = next(r for r in results if "dead" in r.message)
+
+    assert not dead.ok
+
+
+def test_a_terminal_pod_with_no_ready_replacement_still_fails(monkeypatch) -> None:
+    """Nothing is serving in its place, so this is the whole workload being
+    down -- exactly what the snapshot exists to report."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _revision_pod(
+                    "nyxgpt-web-stable-598d7fddd8-45w4x",
+                    "Failed",
+                    app="nyxgpt-web",
+                    revision="598d7fddd8",
+                ),
+                _revision_pod(
+                    "nyxgpt-web-stable-6774c4f89-bjf7d",
+                    "Pending",
+                    app="nyxgpt-web",
+                    revision="6774c4f89",
+                    containerStatuses=[{"state": {"waiting": {"reason": "ContainerCreating"}}}],
+                ),
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    old = next(r for r in results if "45w4x" in r.message)
+
+    assert not old.ok
+
+
+def test_a_newer_revision_of_a_DIFFERENT_workload_supersedes_nothing(monkeypatch) -> None:
+    """Workload identity is the Pod's labels minus the revision hash, so a
+    healthy Grafana cannot excuse a dead api Pod."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _revision_pod(
+                    "nyxgpt-api-stable-aaa-1", "Failed", app="nyxgpt-api", revision="aaa"
+                ),
+                _revision_pod(
+                    "grafana-bbb-1",
+                    "Running",
+                    app="grafana",
+                    revision="bbb",
+                    conditions=[{"type": "Ready", "status": "True"}],
+                ),
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    api = next(r for r in results if "nyxgpt-api-stable-aaa-1" in r.message)
+
+    assert not api.ok
+
+
+def test_a_crashlooping_old_pod_is_not_excused_as_superseded(monkeypatch) -> None:
+    """Only the bare-terminal-phase classification is reclassified. A blocked
+    container or an unschedulable Pod is a live condition an operator still has
+    to act on, whatever revision it belongs to."""
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _pods_run(
+            [
+                _revision_pod(
+                    "nyxgpt-api-stable-aaa-1",
+                    "Running",
+                    app="nyxgpt-api",
+                    revision="aaa",
+                    conditions=[{"type": "Ready", "status": "False"}],
+                    containerStatuses=[
+                        {"state": {"waiting": {"reason": "CrashLoopBackOff", "message": "boom"}}}
+                    ],
+                ),
+                _revision_pod(
+                    "nyxgpt-api-stable-bbb-1",
+                    "Running",
+                    app="nyxgpt-api",
+                    revision="bbb",
+                    conditions=[{"type": "Ready", "status": "True"}],
+                ),
+            ]
+        ),
+    )
+
+    results = ops._k8s_stack_health()
+    crashing = next(r for r in results if "nyxgpt-api-stable-aaa-1" in r.message)
+
+    assert not crashing.ok
+    assert "CrashLoopBackOff" in crashing.message
+
+
+# --- ...and it is the SECOND of two rollout-residue rules -------------------
+#
+# #3956's `pod_is_retired` landed on `v3.0.0` while this one was in review, and
+# both live in `_k8s_pod_states`. They are not interchangeable and neither is
+# redundant: the retired rule asks the ReplicaSets (a second `kubectl`) and
+# DROPS what no live controller owns, for ops, self-heal and canary alike;
+# SUPERSEDED asks only the Pods already in hand and RE-LABELS, which is all
+# there is to go on for a Pod no ReplicaSet owns or on a run where that extra
+# call failed. A later session that deletes either one re-opens a defect the
+# other cannot cover, so the composition is pinned here rather than left to the
+# two rules' separate tests.
+
+
+def test_both_rollout_residue_rules_apply_to_one_pod_list(monkeypatch) -> None:
+    """One read, one namespace, each rule answering for what the other cannot see."""
+
+    def fake_run(cmd, **_kwargs):
+        if "pods" in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            # The retired rule's population: a ReplicaSet the
+                            # Deployment controller has scaled to zero.
+                            {
+                                "metadata": {
+                                    "name": "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                                    "labels": {
+                                        "app": "nyxgpt-web",
+                                        "pod-template-hash": "77c7d9c6f4",
+                                    },
+                                    "ownerReferences": [
+                                        {"kind": "ReplicaSet", "name": "nyxgpt-web-stable-77c7"}
+                                    ],
+                                },
+                                "status": {"phase": "Failed"},
+                            },
+                            _revision_pod(
+                                "nyxgpt-web-stable-69b45dd5db-live",
+                                "Running",
+                                app="nyxgpt-web",
+                                revision="69b45dd5db",
+                                conditions=[{"type": "Ready", "status": "True"}],
+                            ),
+                            # SUPERSEDED's population: a StatefulSet's rolled
+                            # Pod, which no ReplicaSet owns, so the retired
+                            # rule has nothing to say about it.
+                            {
+                                "metadata": {
+                                    "name": "cassandra-0",
+                                    "labels": {
+                                        "app": "cassandra",
+                                        "controller-revision-hash": "cassandra-5f6",
+                                    },
+                                },
+                                "status": {"phase": "Failed"},
+                            },
+                            {
+                                "metadata": {
+                                    "name": "cassandra-1",
+                                    "labels": {
+                                        "app": "cassandra",
+                                        "controller-revision-hash": "cassandra-7a9",
+                                    },
+                                },
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [{"type": "Ready", "status": "True"}],
+                                },
+                            },
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        if "rs" in cmd:
+            return MagicMock(returncode=0, stdout="nyxgpt-web-stable-77c7=0;", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    states, read_failure = ops._k8s_pod_states()
+
+    assert read_failure is None
+    # Dropped by the retired rule -- it is not in the list at all.
+    assert "nyxgpt-web-stable-77c7d9c6f4-gz62g" not in [s.name for s in states]
+    # Kept by it (no ReplicaSet), and re-labelled by this one.
+    rolled = next(s for s in states if s.name == "cassandra-0")
+    assert rolled.state == ops.K8S_STATE_SUPERSEDED
+    assert rolled.ok
+    # Neither rule touched what is actually serving.
+    assert {s.name for s in states if s.state == ops.K8S_STATE_READY} == {
+        "nyxgpt-web-stable-69b45dd5db-live",
+        "cassandra-1",
+    }
+
+
+def test_the_superseded_rule_still_answers_when_the_replicaset_read_fails(monkeypatch) -> None:
+    """The run that most needs an answer is the one where the extra call failed.
+
+    `_k8s_retired_replicasets` returns an empty set on a non-zero exit -- it may
+    only drop a Pod on positive evidence (#3956) -- and a node under the
+    pressure that leaves residue behind is exactly where a `kubectl get rs` is
+    apt to time out. Without this second rule that run fails the install on a
+    corpse again.
+    """
+
+    def fake_run(cmd, **_kwargs):
+        if "pods" in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "name": "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                                    "labels": {
+                                        "app": "nyxgpt-web",
+                                        "pod-template-hash": "77c7d9c6f4",
+                                    },
+                                    "ownerReferences": [
+                                        {"kind": "ReplicaSet", "name": "nyxgpt-web-stable-77c7"}
+                                    ],
+                                },
+                                "status": {"phase": "Failed"},
+                            },
+                            _revision_pod(
+                                "nyxgpt-web-stable-69b45dd5db-live",
+                                "Running",
+                                app="nyxgpt-web",
+                                revision="69b45dd5db",
+                                conditions=[{"type": "Ready", "status": "True"}],
+                            ),
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        if "rs" in cmd:
+            return MagicMock(returncode=1, stdout="", stderr="timed out")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    states, _ = ops._k8s_pod_states()
+    corpse = next(s for s in states if s.name == "nyxgpt-web-stable-77c7d9c6f4-gz62g")
+
+    assert corpse.state == ops.K8S_STATE_SUPERSEDED
+    assert corpse.ok, "an unreadable ReplicaSet list must not re-fail the install on a corpse"
+
+
+# --- ...and self-heal reads it the same way (review round 2) ----------------
+#
+# The first cut of the SUPERSEDED rule was `ops.py`'s alone, which is the exact
+# shape of the defect `pod_is_retired` was moved into `k8s_pod_state` to fix
+# (#3956): the Infrastructure page badged a Pod SUPERSEDED while the Self-Heal
+# page rendered the same Pod as a component that is Failed and `healable=False`
+# forever, on a deployment whose Deployments were both 1/1. Two dashboards, two
+# verdicts, one Pod (#3827, D-022/D-052). The reading is now shared; what each
+# does with it is still its own -- `ops` prints the Pod, self-heal drops it.
+
+
+def _self_heal_k8s_run(pods: list[dict], *, rs_stdout: str = "", rs_returncode: int = 0):
+    """A `self_heal._run` stand-in answering the Pod list and the ReplicaSet scale read."""
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            return MagicMock(returncode=0, stdout=json.dumps({"items": pods}), stderr="")
+        if "rs" in cmd:
+            return MagicMock(returncode=rs_returncode, stdout=rs_stdout, stderr="")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    return fake_run
+
+
+def _self_heal_components(monkeypatch, pods: list[dict], **kwargs):
+    monkeypatch.setattr(self_heal, "_which", lambda _p: "/usr/bin/kubectl")
+    monkeypatch.setattr(self_heal, "_run", _self_heal_k8s_run(pods, **kwargs))
+    return self_heal._list_kubernetes_component_status(set())
+
+
+def test_a_superseded_corpse_is_not_a_failed_self_heal_component(monkeypatch) -> None:
+    """The finding: one Pod, two dashboards, two verdicts.
+
+    `cassandra-0` is owned by a StatefulSet, so no ReplicaSet scale read can
+    ever drop it -- `pod_is_retired` is structurally blind to this population.
+    Without the shared supersession rule it renders here forever as a Failed
+    component the watchdog refuses to heal, while `nyxgpt ops status` says
+    SUPERSEDED about the same Pod.
+    """
+    pods = [
+        {
+            "metadata": {
+                "name": "cassandra-0",
+                "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-5f6"},
+            },
+            "status": {"phase": "Failed"},
+        },
+        {
+            "metadata": {
+                "name": "cassandra-1",
+                "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-7a9"},
+            },
+            "status": {
+                "phase": "Running",
+                "conditions": [{"type": "Ready", "status": "True"}],
+            },
+        },
+    ]
+
+    components = _self_heal_components(monkeypatch, pods)
+
+    assert [c.service for c in components] == ["cassandra-1"]
+    # And the other surface's verdict on the same Pod list, so the two cannot
+    # be fixed apart: shown there, dropped here, and a failure on neither.
+    monkeypatch.setattr(ops, "_run", _pods_run(pods))
+    states, _ = ops._k8s_pod_states()
+    corpse = next(s for s in states if s.name == "cassandra-0")
+    assert corpse.state == ops.K8S_STATE_SUPERSEDED and corpse.ok
+
+
+def test_self_heal_still_reports_a_terminal_pod_of_the_current_revision(monkeypatch) -> None:
+    """The clause that stops the rule swallowing real failures, on this side too.
+
+    One replica of the revision that is meant to be serving died; its
+    replacement carries the same hash, so nothing has rolled past it and the
+    operator still needs to see it.
+    """
+    components = _self_heal_components(
+        monkeypatch,
+        [
+            {
+                "metadata": {
+                    "name": "cassandra-0",
+                    "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-7a9"},
+                },
+                "status": {"phase": "Failed"},
+            },
+            {
+                "metadata": {
+                    "name": "cassandra-1",
+                    "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-7a9"},
+                },
+                "status": {
+                    "phase": "Running",
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            },
+        ],
+    )
+
+    dead = next(c for c in components if c.service == "cassandra-0")
+    assert not dead.healthy and not dead.healable
+
+
+def test_self_heal_drops_a_corpse_when_the_replicaset_read_fails(monkeypatch) -> None:
+    """The pass that most needs an answer is the one where the extra call failed.
+
+    `_retired_replicasets` may only drop a Pod on positive evidence, so a timed
+    out `kubectl get rs` leaves the retired set empty -- and a node under the
+    pressure that leaves residue behind is exactly where that call times out.
+    """
+    components = _self_heal_components(
+        monkeypatch,
+        [
+            {
+                "metadata": {
+                    "name": "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                    # The labels `k8s/deployment-web-stable.yaml` really stamps.
+                    "labels": {
+                        "app": "nyxgpt-web-canary-pool",
+                        "track": "stable",
+                        "pod-template-hash": "77c7d9c6f4",
+                    },
+                    "ownerReferences": [{"kind": "ReplicaSet", "name": "nyxgpt-web-stable-77c7"}],
+                },
+                "status": {"phase": "Failed"},
+            },
+            {
+                "metadata": {
+                    "name": "nyxgpt-web-stable-69b45dd5db-live",
+                    "labels": {
+                        "app": "nyxgpt-web-canary-pool",
+                        "track": "stable",
+                        "pod-template-hash": "69b45dd5db",
+                    },
+                    "ownerReferences": [{"kind": "ReplicaSet", "name": "nyxgpt-web-stable-69b4"}],
+                },
+                "status": {
+                    "phase": "Running",
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            },
+        ],
+        rs_returncode=1,
+    )
+
+    assert [c.service for c in components] == ["nyxgpt-web-stable-69b45dd5db-live"]
+
+
+def test_both_pod_readers_share_one_supersession_rule() -> None:
+    """A reader that re-implements the rule is free to disagree with the other.
+
+    The identity check, not a behavioural one, for the same reason #3956's
+    `test_every_pod_reader_shares_one_retired_replicaset_rule` is: a copy that
+    happens to agree today is the state this finding was about.
+    """
+    for module in (ops, self_heal):
+        assert module.superseded_pods is k8s_pod_state.superseded_pods
+
+
+def test_the_supersession_reading_carries_no_policy() -> None:
+    """Each caller's readiness verdict is its own, and that is why it is a parameter.
+
+    `ops` counts a `Succeeded` one-shot Pod as READY; self-heal's `healthy`
+    does not. A shared reading that decided readiness for both would have to
+    pick one of those and be wrong for the other caller.
+    """
+    pods = [
+        {
+            "metadata": {"name": "old", "labels": {"app": "x", "pod-template-hash": "a"}},
+            "status": {"phase": "Failed"},
+        },
+        {
+            "metadata": {"name": "new", "labels": {"app": "x", "pod-template-hash": "b"}},
+            "status": {"phase": "Succeeded"},
+        },
+    ]
+
+    assert k8s_pod_state.superseded_pods(pods, [False, True]) == {0: "new"}
+    assert k8s_pod_state.superseded_pods(pods, [False, False]) == {}
+
+
+# `docs/self-healing.md` is where an operator reads what the Self-Heal page's
+# Kubernetes survey will and will not show them, and it described ONE residue
+# rule for as long as there was one. A doc that names only `pod_is_retired`
+# tells them a terminal Pod a live controller owns is always reported -- which
+# `superseded_pods` makes untrue for exactly the population the first rule
+# cannot reach (a StatefulSet's rolled replica owns no ReplicaSet), so the
+# operator concludes a `Failed cassandra-0` must appear and reads its absence as
+# the page being broken. Derived from the drop block itself rather than from a
+# list written here, so a THIRD residue rule cannot be added to the survey while
+# the page that documents it goes on describing two.
+def _self_heal_drop_rules() -> set[str]:
+    """The `k8s_pod_state` readings the survey uses to remove Pods from its list.
+
+    Sliced at the `if any(not pod_state.healthy ...)` guard, because everything
+    above it classifies Pods and only the block below it drops them --
+    `classify_pod` is shared too and is no part of this claim.
+    """
+    source = inspect.getsource(self_heal._list_kubernetes_component_status)
+    _, _, drop_block = source.partition("if any(not pod_state.healthy")
+    assert drop_block, "the survey's residue block moved -- re-derive the slice"
+    return {name for name in k8s_pod_state.__all__ if re.search(rf"\b{name}\(", drop_block)}
+
+
+def test_the_self_heal_docs_name_every_residue_rule_the_survey_applies() -> None:
+    kubernetes_section = (
+        (REPO_ROOT / "docs" / "self-healing.md").read_text().partition("## Kubernetes mode")[2]
+    )
+    assert kubernetes_section, "the Kubernetes mode section was renamed"
+
+    rules = _self_heal_drop_rules()
+    assert rules == {"pod_is_retired", "superseded_pods"}, (
+        "the survey's residue rules changed; document the new one in "
+        "docs/self-healing.md's Kubernetes mode section and update this guard"
+    )
+    assert [rule for rule in rules if rule not in kubernetes_section] == []
 
 
 def test_k8s_stack_health_and_observability_health_agree_on_zero_ready(monkeypatch) -> None:
@@ -1477,7 +2031,9 @@ def test_provisioning_writes_the_dsn_and_the_token_into_the_secrets(tmp_path, mo
     restarted = [c[-1] for c in ran if "restart" in c]
     assert restarted == ["deploy/nyxgpt-api-stable", "deploy/nyxgpt-web-stable"]
     waited = [c for c in ran if "status" in c and "rollout" in c]
-    assert {c[c.index("status") + 1] for c in waited} == set(restarted)
+    # Grafana is waited out too (it is rolled for the new token), so the DSN
+    # consumers are a subset rather than the whole set.
+    assert set(restarted) <= {c[c.index("status") + 1] for c in waited}
 
 
 def test_reprovisioning_the_same_values_restarts_nothing(tmp_path, monkeypatch) -> None:
@@ -1500,6 +2056,92 @@ def test_reprovisioning_the_same_values_restarts_nothing(tmp_path, monkeypatch) 
     assert all(r.ok for r in results)
     restart_grafana.assert_not_called()
     assert not [c for c in ran if "rollout" in c]
+
+
+def test_the_dsn_rollout_is_one_deployment_at_a_time(tmp_path, monkeypatch) -> None:
+    """Restarting api and web together asked a Docker Desktop-sized node for
+    two rollouts' surge Pods at once, on top of a full observability tier --
+    the node preflight sizes for one (#3825). That is how `k8s-local-smoke`
+    came to end every run with a terminal web Pod left on the node. Each
+    Deployment is now waited out before the next is touched."""
+    _bootstrap_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (ran.append(cmd), MagicMock(returncode=0, stdout="", stderr=""))[1],
+    )
+
+    ops._k8s_provision_glitchtip()
+
+    rollouts = [
+        (c[c.index("rollout") + 1], next(a for a in c if a.startswith("deploy/")))
+        for c in ran
+        if "rollout" in c
+    ]
+    rollouts = [
+        r for r in rollouts if r[1].removeprefix("deploy/") in ops.K8S_DSN_CONSUMER_DEPLOYMENTS
+    ]
+    assert rollouts == [
+        ("restart", "deploy/nyxgpt-api-stable"),
+        ("status", "deploy/nyxgpt-api-stable"),
+        ("restart", "deploy/nyxgpt-web-stable"),
+        ("status", "deploy/nyxgpt-web-stable"),
+    ], "the second Deployment must not be restarted until the first has rolled"
+
+
+def test_a_reprovision_rolls_the_pods_when_the_running_api_has_no_dsn(
+    tmp_path, monkeypatch
+) -> None:
+    """`dsn_changed` alone could never repair the owner's cluster: on a re-run
+    that mints the SAME DSN it is False, so the api Pod that booted without one
+    would keep reporting errors nowhere for ever."""
+    _bootstrap_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: MagicMock(returncode=0, stdout="", stderr=""))
+    ops._k8s_provision_glitchtip()  # the DSN is now already in the manifest
+
+    states = iter([("unset", ""), ("set", "glitchtip:8080")])
+    monkeypatch.setattr(ops, "_k8s_error_tracking_dsn_state", lambda: next(states))
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (ran.append(cmd), MagicMock(returncode=0, stdout="", stderr=""))[1],
+    )
+
+    results = ops._k8s_provision_glitchtip()
+
+    assert [c[-1] for c in ran if "restart" in c] == [
+        "deploy/nyxgpt-api-stable",
+        "deploy/nyxgpt-web-stable",
+    ]
+    assert all(r.ok for r in results), [r.message for r in results]
+    assert any("reports errors to glitchtip:8080" in r.message for r in results)
+
+
+def test_the_grafana_restart_is_waited_out_before_anything_reports(tmp_path, monkeypatch) -> None:
+    """`kubectl exec deploy/grafana` during a rolling update lands on whichever
+    Pod kubectl picks, so an unwaited restart made the install's own
+    credentials line read the OUTGOING Pod and announce the placeholder token
+    it had just replaced."""
+    _bootstrap_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (ran.append(cmd), MagicMock(returncode=0, stdout="", stderr=""))[1],
+    )
+
+    results = ops._k8s_provision_glitchtip()
+
+    assert all(r.ok for r in results), [r.message for r in results]
+    assert any("grafana (new GlitchTip token) ready" in r.message for r in results)
+    assert any(
+        "rollout" in c and "status" in c and "deploy/grafana" in c for c in ran
+    ), "the Grafana rollout must be waited out, not fired and forgotten"
 
 
 def test_provisioning_skips_when_glitchtip_is_not_ready(monkeypatch) -> None:
@@ -1642,7 +2284,7 @@ def test_the_placeholder_grafana_token_is_reported_not_hidden(monkeypatch) -> No
         _telemetry_run({"cat": (0, f"{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}\n")}),
     )
 
-    result = ops._k8s_errors_flow_result()
+    result = ops._k8s_error_reporting_credentials_result()
 
     # `[ATTENTION]`, not `[NO DATA]` (#3956): the owner's 2026-08-26 cloud
     # round hit this and it logged as `ops: install ok:`. A backend that is up
@@ -1659,9 +2301,137 @@ def test_a_real_token_glitchtip_accepts_is_reported_as_working(monkeypatch) -> N
         ops, "_run", _telemetry_run({"cat": (0, "tok-abc\n"), "organizations": (0, "[]")})
     )
 
+    result = ops._k8s_error_reporting_credentials_result()
+
+    assert ops._result_status_label(result) == "OK"
+
+
+# --- AC2/AC5 rework: the errors line asks what ARRIVED (owner, 2026-08-26) ---
+#
+# The re-test found AC1/AC3/AC4 passing, AC2 failing, and AC5 unable to see it:
+# `observability errors:` reported on Grafana's CREDENTIAL while the api's
+# error-tracking DSN was empty, so an api reporting errors nowhere printed
+# green on every surface. Two questions, two lines.
+
+
+def _dsn_probe_response(answer: str) -> dict[str, tuple[int, str]]:
+    """Make `_telemetry_run` answer the api Pod's DSN probe with `answer`.
+
+    Keyed on the env var name, which only that probe's script carries -- and
+    FIRST in the dict, because `_telemetry_run` takes the first needle that
+    matches and the generic in-cluster fetch script also mentions `cat`.
+    """
+    return {"NYXGPT_ERROR_TRACKING_DSN": (0, answer)}
+
+
+def test_the_dsn_probe_asks_the_deployment_the_repair_path_rolls() -> None:
+    """Two constants, one fact: if the probe asked a Deployment that
+    `glitchtip-init` does not roll, the report and the repair would be about
+    different Pods and could never agree."""
+    assert ops.K8S_ERROR_TRACKING_DSN_PROBE_DEPLOYMENT in ops.K8S_DSN_CONSUMER_DEPLOYMENTS
+    assert ops.K8S_DSN_CONSUMER_DEPLOYMENTS[0] == ops.K8S_ERROR_TRACKING_DSN_PROBE_DEPLOYMENT
+
+
+def test_an_api_with_no_dsn_fails_the_errors_line(monkeypatch) -> None:
+    """The owner's literal AC2 finding: `[error_tracking] enabled = true` with
+    `NYXGPT_ERROR_TRACKING_DSN=` on the api Pod. Unlike an idle backend this is
+    a wiring defect, so it must fail rather than print `[NO DATA]` -- an
+    install cannot be allowed to finish calling that a healthy tier."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_run", _telemetry_run(_dsn_probe_response("unset")))
+
+    result = ops._k8s_errors_flow_result()
+
+    assert not result.ok, "an api that reports errors nowhere is not a healthy tier"
+    assert "reports errors nowhere" in result.message
+    assert "glitchtip-init --kubernetes" in result.details
+
+
+def test_the_errors_line_reports_what_glitchtip_has_received(monkeypatch) -> None:
+    """With a DSN in place the question becomes the traces question: what has
+    actually arrived."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _telemetry_run(
+            {
+                **_dsn_probe_response("set glitchtip:8080"),
+                "issues": (0, '[{"title":"ValueError"},{"title":"KeyError"}]'),
+            }
+        ),
+    )
+
     result = ops._k8s_errors_flow_result()
 
     assert ops._result_status_label(result) == "OK"
+    assert "GlitchTip holds 2 issue group(s)" in result.message
+
+
+def test_a_wired_api_with_an_empty_glitchtip_is_no_data_not_a_failure(monkeypatch) -> None:
+    """A stack nobody has broken yet legitimately has no errors -- the same
+    rule the traces line follows, so the line stays worth reading."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        _telemetry_run({**_dsn_probe_response("set glitchtip:8080"), "issues": (0, "[]")}),
+    )
+
+    result = ops._k8s_errors_flow_result()
+
+    assert ops._result_status_label(result) == ops.K8S_NO_DATA_LABEL
+    assert result.ok
+    assert "received no nyxGPT errors yet" in result.message
+
+
+def test_the_dsn_probe_never_lets_the_dsn_out_of_the_container(monkeypatch) -> None:
+    """A DSN carries GlitchTip's project key. The emptiness test and the
+    redaction both run inside the Pod, so no DSN reaches this process's argv
+    (which `_run` logs) or any `details` string a caller prints."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        return MagicMock(returncode=0, stdout="set glitchtip:8080", stderr="")
+
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    state, target = ops._k8s_error_tracking_dsn_state()
+
+    assert (state, target) == ("set", "glitchtip:8080")
+    script = " ".join(seen[0])
+    assert "$NYXGPT_ERROR_TRACKING_DSN" in script, "the value is read inside the container"
+    # Scheme, userinfo and path are all stripped IN THERE, so what crosses the
+    # boundary is a host:port an operator can read and not a credential.
+    assert "s#^[^@/]*@##" in script
+    assert "s#/.*##" in script
+
+
+def test_provisioning_verifies_the_dsn_against_the_running_pod(monkeypatch) -> None:
+    """The check that would have caught AC2: the Secret can be perfect while
+    the api Pod still holds the empty environment it booted with."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_k8s_error_tracking_dsn_state", lambda: ("unset", ""))
+
+    result = ops._k8s_error_tracking_dsn_wired()
+
+    assert not result.ok
+    assert "still has no error-tracking DSN" in result.message
+
+
+def test_an_unaskable_api_pod_is_a_skip_not_an_install_failure(monkeypatch) -> None:
+    """`ops observability --kubernetes` on a cluster with no app tier has
+    nothing to verify; provisioning must not fail over a question it could not
+    put."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ops, "_k8s_error_tracking_dsn_state", lambda: ("unknown", ""))
+
+    result = ops._k8s_error_tracking_dsn_wired()
+
+    assert result.ok
+    assert result.message.startswith("Skipped")
 
 
 def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
@@ -1680,9 +2450,11 @@ def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
         "_run",
         _telemetry_run(
             {
+                "NYXGPT_ERROR_TRACKING_DSN": (0, "set glitchtip:8080"),
                 "jaeger": (0, '{"data":["jaeger-all-in-one"]}'),
                 "prometheus": (0, '{"data":{"activeTargets":[{"health":"up"}]}}'),
                 "loki": (0, '{"data":[]}'),
+                "issues": (0, "[]"),
                 "cat": (0, f"{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}\n"),
             }
         ),
@@ -1693,22 +2465,28 @@ def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
 
     # Every workload is ready...
     assert all(labels[f"observability {name}: 1/1 ready"] == "OK" for name in ("grafana", "jaeger"))
-    # ...and the tier is still not receiving what it exists to receive.
+    # ...and the tier is still not receiving what it exists to receive -- with
+    # the credential question answered on its own line, in its own words, so a
+    # green credential can never again read as "errors are flowing" (owner,
+    # 2026-08-26).
     assert [m for m, label in labels.items() if label == ops.K8S_NO_DATA_LABEL] == [
         "observability traces: Jaeger has no nyxGPT spans yet",
         "observability logs: Loki has received nothing",
+        "observability errors: GlitchTip has received no nyxGPT errors yet",
     ]
     # The GlitchTip placeholder is a misconfiguration rather than an empty
-    # backend, so it carries the louder label (#3956) -- and neither label
+    # backend, so it carries the louder label (#3956) -- on the CREDENTIALS
+    # line, which is the one that asks the question it answers. Neither label
     # fails the install.
     assert [m for m, label in labels.items() if label == ops.ATTENTION_LABEL] == [
-        "observability errors: Grafana's GlitchTip token is still the placeholder",
+        "observability error reporting credentials: Grafana's GlitchTip token is still "
+        "the placeholder",
     ]
     assert all(r.ok for r in results)
 
 
 def test_data_flow_is_not_probed_through_a_grafana_that_is_not_ready(monkeypatch) -> None:
-    """Four `[NO DATA]` lines about a tier that is mid-rollout would be the
+    """A run of `[NO DATA]` lines about a tier that is mid-rollout would be the
     wall of false negatives #3827 removed from the readiness half."""
     monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
     with patch.object(ops, "_run") as run:
