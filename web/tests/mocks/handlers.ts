@@ -469,7 +469,14 @@ export const handlers = [
   // POST /api/v1/infra/restart-required
   http.post('/api/v1/infra/restart-required', async ({ request }) => {
     const body = (await request.json().catch(() => ({}))) as { target?: string };
-    return HttpResponse.json({ targets: body.target ? [body.target] : ['api'], status: 'running' });
+    // `scheduled`, not `running`: since #4043 the endpoint reports only what
+    // the request established -- the restart is dispatched after the response
+    // is sent, so nothing is running yet. This file is the declared mirror of
+    // the real API, so it must not assert a payload the API no longer sends.
+    return HttpResponse.json({
+      targets: body.target ? [body.target] : ['api'],
+      status: 'scheduled',
+    });
   }),
 
   // GET /api/v1/admin/health

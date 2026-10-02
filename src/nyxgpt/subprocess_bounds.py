@@ -30,6 +30,11 @@ cannot reinvent a subtly different answer:
   running inside a Pod, because there it breaks kubectl outright -- see
   `bounded_argv`. The Python bound, which carries the whole safety property
   above, applies everywhere unconditionally.
+* `kubectl_env` -- hands a `kubectl` child the kubeconfig kubectl's own default
+  resolution would have used. Not a bound; it lives here because it needs the
+  same in-a-Pod exception, and two copies of that exception would be free to
+  disagree (#3956). See its docstring for why `kubectl` on a k3s node is not
+  kubectl.
 
 Enumeration of every `subprocess.run`/`subprocess.Popen` in `src/nyxgpt/`, as
 of #3858 -- **18 call sites, 10 of them reachable from an HTTP handler**. Kept
@@ -209,6 +214,83 @@ def timeout_result(
         for part in (exc.stdout, exc.stderr)
     )
     return subprocess.CompletedProcess(cmd, TIMEOUT_RETURNCODE, captured, timeout_message(timeout))
+
+
+# Where kubectl's own default resolution looks when `$KUBECONFIG` is unset.
+# Named here rather than left implicit because the whole point of
+# `kubectl_env` below is that on some machines kubectl does NOT look here.
+_DEFAULT_KUBECONFIG_RELPATH = Path(".kube") / "config"
+
+
+def default_kubeconfig() -> Path | None:
+    """The kubeconfig kubectl would read by default, if it exists.
+
+    A plain `Path.home()/".kube"/"config"` existence check, resolved at call
+    time so a test (and a service whose HOME changes) gets the answer for the
+    environment it is actually in.
+    """
+    try:
+        candidate = Path.home() / _DEFAULT_KUBECONFIG_RELPATH
+    except RuntimeError:  # pragma: no cover - no home directory resolvable
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def kubectl_env(cmd: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
+    """Name the default kubeconfig explicitly for a `kubectl` child process (#3956).
+
+    **`kubectl` is not always kubectl.** On a k3s node -- which is what
+    `nyxgpt cloud deploy --kubernetes` creates -- `/usr/local/bin/kubectl` is a
+    symlink to the `k3s` binary, and k3s's kubectl shim defaults `$KUBECONFIG`
+    to `/etc/rancher/k3s/k3s.yaml` when the variable is unset. That file is
+    mode 0600 and root-owned, so every nyxGPT kubectl call made as the login
+    user failed with `permission denied` -- and `~/.kube/config`, which the
+    deploy writes for exactly this purpose, was never consulted because k3s had
+    already answered the question kubectl's own default would have answered.
+
+    The owner's 2026-08-26 acceptance round is what that cost: on a running
+    k3s cluster, `nyxgpt cloud canary status` reported *"this process is
+    currently running in native mode"* and pointed at `ops install
+    --kubernetes` -- the capability #3506 chose the substrate for, reporting
+    itself absent. Self-heal's Pod watchdog was blind on the same box for the
+    same reason.
+
+    So the fix is not "export KUBECONFIG in one more place" (the provisioning
+    script already does, and a later `ssh host nyxgpt ...` inherits none of
+    it): every kubectl child this codebase spawns is handed the kubeconfig
+    kubectl's *own* default resolution would have used, which makes the call
+    independent of whose kubectl is on PATH. On a machine with real kubectl
+    this is a no-op by construction -- it names the file kubectl was going to
+    read anyway.
+
+    Three cases are left alone, each deliberately:
+
+    * **`$KUBECONFIG` already set** -- the operator (or the bridge unit) has
+      chosen, and a product default must not overrule a stated choice.
+    * **inside a Pod** -- the same trap `bounded_argv` documents at length:
+      kubectl only falls back to the mounted service account while the merged
+      config is still the built-in default, so setting `KUBECONFIG` there
+      sends it to `http://localhost:8080` instead of the API server. In-cluster
+      is the one place a kubeconfig file is *not* how kubectl reaches the
+      cluster.
+    * **no `~/.kube/config`** -- there is nothing to name, and inventing a
+      path would turn "no cluster configured here" into "a kubeconfig that
+      does not exist", which reads as a broken deployment rather than none.
+
+    Returns `env` unchanged in those cases, so a caller can pass the result
+    straight through to `subprocess.run(env=...)`.
+    """
+    if not cmd or Path(cmd[0]).name != "kubectl":
+        return env
+    if _running_in_cluster():
+        return env
+    base = env if env is not None else dict(os.environ)
+    if base.get("KUBECONFIG", "").strip():
+        return env
+    kubeconfig = default_kubeconfig()
+    if kubeconfig is None:
+        return env
+    return {**base, "KUBECONFIG": str(kubeconfig)}
 
 
 def bounded_argv(cmd: list[str], timeout: float | None) -> list[str]:

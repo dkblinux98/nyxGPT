@@ -324,8 +324,9 @@ export default function SelfHealPage() {
               Observability tier: <strong>queried in-cluster</strong>. Grafana, Loki, Jaeger,
               GlitchTip and the collectors run as Pods in this cluster (
               <code>k8s/observability</code>), so their rows below are read from the cluster
-              itself and are healed like any other Pod. Reach their UIs with{' '}
-              <code>nyxgpt ops port-forward --target observability</code>.
+              itself and are healed like any other Pod. Their UIs are published on the host by
+              the install where nyxgpt provisioned the cluster; on a bring-your-own cluster,
+              reach them with <code>nyxgpt ops port-forward --target observability</code>.
             </p>
           )}
 

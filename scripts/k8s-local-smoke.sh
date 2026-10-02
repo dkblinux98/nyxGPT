@@ -99,6 +99,20 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK] $*"; }
 step() { echo; echo "=== $* ==="; }
 
+# True only when a managed background forward really is up.
+#
+# Anchored on the running message's own prefix, NOT on the word "running":
+# `--status` says "No managed background port-forward is running." when there
+# is none, so the `grep -qi 'running'` this script shipped with was true in
+# both states. That made every guard below take the bring-your-own branch on a
+# cluster with correctly published node ports -- skipping the ClusterIP fault
+# injections with an `[OK]` and leaving #3986's executed evidence vacuous.
+# The sentinel is `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`, pinned by
+# tests/unit/test_port_forward_status_predicate.py.
+managed_forward_running() {
+    nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
+}
+
 cleanup() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -158,7 +172,7 @@ chat_round_trip() {
     echo "$out" | grep -q '"content"' || return 1
 }
 
-step "1/17 Bring the stack up: nyxgpt ops install --kubernetes"
+step "1/19 Bring the stack up: nyxgpt ops install --kubernetes"
 # No --skip-observability: this is the command as a user types it (#3826).
 # The layer that flag used to hide is also the one that did not fit the node
 # (#3825), so a gate that installs less than the default cannot see either.
@@ -170,7 +184,7 @@ step "1/17 Bring the stack up: nyxgpt ops install --kubernetes"
 nyxgpt ops install --kubernetes --api-key "$API_KEY"
 ok "install --kubernetes completed with no locality flag"
 
-step "2/17 Every Pod of the default stack was scheduled"
+step "2/19 Every Pod of the default stack was scheduled"
 # #3825: `install` reported success on a node whose memory was 99% reserved,
 # with prometheus left Pending / FailedScheduling for good. Nothing in the
 # steps below would have noticed -- chat worked fine. An unscheduled Pod has
@@ -196,7 +210,7 @@ cannot fit the default stack (size the cluster VM, do not drop observability)"
 fi
 ok "every Pod in the default stack has a node"
 
-step "3/17 The data/LLM tier exists and is Ready"
+step "3/19 The data/LLM tier exists and is Ready"
 # `install` already waits for these (ops._wait_for_k8s_data_tier); asserting
 # again here is what makes the *absence* of the tier a test failure rather
 # than a silently degraded stack.
@@ -229,7 +243,7 @@ ok "embedding model ${EMBEDDING_MODEL} present in the in-cluster Ollama"
 # the rollout-status wait above only returned because both were there -- this
 # assertion names which model, so a probe regression fails with the reason.
 
-step "4/17 ops status/doctor report on THIS deployment, not the host (#3987)"
+step "4/19 ops status/doctor report on THIS deployment, not the host (#3987)"
 # Executed evidence for #3987 (#3775). The defect it fixes is invisible to
 # inspection and to unit tests, because it is about which machine the command
 # asks: on the owner's acceptance run `ops status` reported the two models
@@ -287,7 +301,7 @@ if grep -q "pull into the cluster" <<<"$DOCTOR_OUT"; then
 fi
 ok "ops doctor reports model readiness against the cluster, and finds nothing missing"
 
-step "5/17 The observability layer came up with the app tier"
+step "5/19 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
 # the workload #3787 found missing. `install` already waits for these
@@ -310,7 +324,7 @@ ok "all ten observability workloads are Ready alongside the app tier"
 # step 2 already ruled out the unschedulable case with the node arithmetic
 # printed alongside it (#3826, #3825).
 
-step "6/17 The web UI is reachable from the host with NO port-forward (#3986)"
+step "6/19 The web UI is reachable from the host with NO port-forward (#3986)"
 # THE assertion #3986 asks for: an HTTP request to the web UI from the host,
 # with no forward running. Before the fix a completed install left nothing
 # listening -- every Pod Ready, `ops status` healthy, and `curl` refused --
@@ -318,7 +332,7 @@ step "6/17 The web UI is reachable from the host with NO port-forward (#3986)"
 # terminal before the product could be used at all.
 # `x && fail` would be an errexit trap of its own (a compound whose overall
 # status is non-zero exits the script under `set -e`), so this is an `if`.
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     echo "[info] this cluster uses the managed background forward (the bring-your-own path)."
     echo "       The install established it; the operator still ran no second command."
 elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
@@ -333,7 +347,141 @@ kubectl -n "$NAMESPACE" get svc nyxgpt-web nyxgpt-api \
     -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
 nyxgpt ops port-forward --status
 
-step "7/17 Fault injection: the shipped ClusterIP Service must break that reachability"
+step "7/19 The SRE UIs are reachable from the host with NO port-forward (#3986)"
+# The second half of #3986, and the owner's re-test failure (2026-08-26): the
+# first round published the app tier and left all six observability Services
+# ClusterIP, so a healthy 14/14 install answered on 127.0.0.1:3000 and gave
+# ERR_CONNECTION_REFUSED on Grafana, Prometheus, Jaeger and GlitchTip. Every
+# panel of the SRE dashboard stayed dark until the operator opened a terminal
+# and ran `nyxgpt ops port-forward --target observability` -- which the
+# Definition of Done does not allow ("observable ... without a terminal").
+#
+# Asserted the same way as the web UI above, and for the same reason: nothing
+# in this script forwards anything, so an answer here is the install's own
+# doing.
+if managed_forward_running; then
+    echo "[info] this cluster uses the managed background forward (the bring-your-own path)."
+    echo "       The install established it; the operator still ran no second command."
+elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
+    pgrep -af "kubectl.*port-forward" >&2 || true
+    fail "a stray port-forward is running -- this step must prove reachability WITHOUT one"
+fi
+# <name>=<url>: a URL per UI that answers only when that component is really
+# serving, not merely bound -- the same four the admin dashboard's SRE links
+# open, on the ports `[monitoring] grafana_ui_url` and friends default to.
+SRE_UI_PROBES=(
+    "grafana=http://127.0.0.1:3001/api/health"
+    "prometheus=http://127.0.0.1:9090/-/ready"
+    "jaeger=http://127.0.0.1:16686/"
+    "glitchtip=http://127.0.0.1:8080/"
+)
+# Returns 0 if `url` answers within the attempts given. Used in both
+# directions: this step needs them up, the injection below needs them down.
+sre_ui_answers() {
+    local url="$1" attempts="${2:-30}" _attempt
+    for _attempt in $(seq 1 "$attempts"); do
+        if curl -fsS -o /dev/null --max-time 10 "$url" 2>/dev/null; then return 0; fi
+        sleep 2
+    done
+    return 1
+}
+for probe in "${SRE_UI_PROBES[@]}"; do
+    sre_ui_answers "${probe#*=}" ||
+        fail "${probe%%=*} did not answer at ${probe#*=} with nothing forwarding to it -- \
+the SRE tier is unreachable from the browser (#3986)"
+    ok "${probe%%=*} answers at ${probe#*=} with no port-forward running"
+done
+
+echo "--- how the SRE addresses are provided ---"
+kubectl -n "$NAMESPACE" get svc grafana prometheus jaeger glitchtip \
+    -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
+docker port nyxgpt-local-control-plane 2>/dev/null || true
+
+step "8/19 Fault injection: ClusterIP SRE Services must break that, and the wrapped \
+commands must restore it"
+# Without this half, step 7 passes on any build. Returning the four Services
+# to the type the SHIPPED manifests declare -- ClusterIP, with no nodePort, the
+# base posture #3503 depends on because the AWS k3s deployment applies the same
+# files onto an instance whose invariant is that only port 22 exists -- is the
+# pre-fix state exactly.
+#
+# Raw kubectl is deliberate HERE and only here: this reconstructs the old state
+# to prove it was broken. The Services and ports come from the product's own
+# table so the injection cannot drift from what the fix publishes, and the
+# patch is a strategic merge (kubectl's default), which merges `spec.ports` by
+# port number -- so Jaeger keeps the otlp ports the collector exports to
+# instead of being cut down to its UI port.
+#
+# TWO wrapped ways back are exercised, and both of them republish rather than
+# forward. That is not a shortcut: on a cluster nyxGPT provisioned, the four
+# host ports are held by the kind node container (extraPortMappings are fixed
+# at cluster creation and cannot be withdrawn from a running node), so
+# `kubectl port-forward` physically cannot bind them -- `address already in
+# use` is the only thing a forward can produce here. The managed background
+# forward is the bring-your-own-cluster answer and is asserted on the branch
+# above, where it is the path the install actually took.
+#
+# What `nyxgpt ops port-forward` must NOT do is believe the node's mapping and
+# report the UI as reachable: that is the shape of the original defect (an
+# install reporting success over a dark UI), and it is what this leg guards.
+inject_clusterip_sre() {
+    while read -r svc port; do
+        kubectl -n "$NAMESPACE" patch svc "$svc" \
+            -p "{\"spec\":{\"type\":\"ClusterIP\",\"ports\":[{\"port\":${port},\"nodePort\":null}]}}" \
+            >/dev/null
+    done < <(python3 -c 'from nyxgpt import ops
+for entry in ops.K8S_OBSERVABILITY_PUBLISHED_SERVICES.values():
+    print(entry.service, entry.port)')
+    kubectl -n "$NAMESPACE" get svc grafana prometheus jaeger glitchtip \
+        -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
+    local still_reachable="" probe
+    for probe in "${SRE_UI_PROBES[@]}"; do
+        # Five attempts, not thirty: this is waiting for a port to STOP
+        # answering, and kube-proxy withdraws the node port in seconds.
+        if sre_ui_answers "${probe#*=}" 5; then still_reachable="$still_reachable ${probe%%=*}"; fi
+    done
+    [ -z "$still_reachable" ] ||
+        fail "the SRE UIs were still reachable with the shipped ClusterIP Services \
+(${still_reachable# }) -- step 7 is vacuous and cannot detect the #3986 regression"
+}
+if managed_forward_running; then
+    ok "this cluster uses the managed background forward, not NodePorts -- \
+the Service-type injection does not apply, skipping"
+else
+    inject_clusterip_sre
+    ok "the shipped ClusterIP Services leave every SRE UI unreachable -- step 7 is load-bearing"
+
+    # Way back 1: the command an operator's notes still name. It must repair
+    # the access path, not report the dead mapping as "already published".
+    nyxgpt ops port-forward --target observability --background ||
+        fail "the wrapped port-forward command would not restore the SRE tier"
+    if managed_forward_running; then
+        fail "a forward was started onto host ports the kind node holds -- that bind \
+cannot succeed; the node ports are what has to come back"
+    fi
+    for probe in "${SRE_UI_PROBES[@]}"; do
+        sre_ui_answers "${probe#*=}" ||
+            fail "${probe%%=*} did not come back after the wrapped port-forward command -- \
+it reported on the node's mapping instead of on what the cluster is serving (#3986)"
+    done
+    ok "the wrapped port-forward command republished every SRE UI it found dark"
+
+    # Way back 2: the wrapped install command for the SRE tier, from the same
+    # injected state -- the path `ops install` itself takes.
+    inject_clusterip_sre
+    nyxgpt ops observability --kubernetes --local >/dev/null ||
+        fail "nyxgpt ops observability --kubernetes did not complete after the injection"
+    if managed_forward_running; then
+        fail "the re-run started a forward instead of republishing the node ports"
+    fi
+    for probe in "${SRE_UI_PROBES[@]}"; do
+        sre_ui_answers "${probe#*=}" ||
+            fail "${probe%%=*} did not come back after the wrapped re-run republished it"
+    done
+    ok "re-running the wrapped observability command republished every SRE UI"
+fi
+
+step "9/19 Fault injection: the shipped ClusterIP Service must break that reachability"
 # Without this half, step 6 passes on any build -- the runner would simply be
 # reaching the UI some other way and nobody would know. `k8s/service-web.yaml`
 # as committed is ClusterIP (the base posture the AWS deployment relies on,
@@ -341,7 +489,7 @@ step "7/17 Fault injection: the shipped ClusterIP Service must break that reacha
 # port the install patched on. The address must stop answering, and the same
 # wrapped install must then restore it.
 INJECTED_CLUSTERIP=0
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     ok "this cluster uses the managed background forward, not a NodePort -- \
 the Service-type injection does not apply, skipping"
 else
@@ -369,7 +517,7 @@ vacuous and cannot detect the #3986 regression"
     ok "re-running the install republished the Service and restored ${BASE}"
 fi
 
-step "8/17 Reachability survives Pod replacement (#3986)"
+step "10/19 Reachability survives Pod replacement (#3986)"
 # The property a `kubectl port-forward` does NOT have: it attaches to one Pod
 # and exits when that Pod is replaced, so a canary rollout or a self-heal
 # restart silently took the UI down again -- which is why #3986 rejects the
@@ -380,7 +528,7 @@ kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-web-stable --timeout=30
 wait_for_web
 ok "the same URL answers after every web Pod was replaced"
 
-step "9/17 The canary pair rests at 0, and there is a wrapped way back (#3991)"
+step "11/19 The canary pair rests at 0, and there is a wrapped way back (#3991)"
 for deployment in nyxgpt-api-canary nyxgpt-web-canary; do
     replicas=$(kubectl -n "$NAMESPACE" get "deploy/${deployment}" -o jsonpath='{.spec.replicas}')
     [ "$replicas" = "0" ] ||
@@ -404,7 +552,7 @@ replicas=$(kubectl -n "$NAMESPACE" get deploy/nyxgpt-api-canary -o jsonpath='{.s
     fail "canary reset returned success but nyxgpt-api-canary is still at ${replicas} replicas"
 ok "nyxgpt canary reset returns an off-contract canary to 0 -- no raw kubectl scale"
 
-step "10/17 The install reconciles a canary left off-contract"
+step "12/19 The install reconciles a canary left off-contract"
 # The other half of #3991: the install applies the manifests and must then
 # ASSERT the resting state, not assume it. Scale the canary up and re-run the
 # install; it must come back to rest. (`kubectl apply -k` alone already sets
@@ -421,7 +569,7 @@ replicas=$(kubectl -n "$NAMESPACE" get deploy/nyxgpt-web-canary -o jsonpath='{.s
 not assert the resting contract it applied (#3991)"
 ok "a re-install brings an off-contract canary back to its resting 0"
 
-step "11/17 The Infrastructure page detects this cluster from inside it (#3988)"
+step "13/19 The Infrastructure page detects this cluster from inside it (#3988)"
 # The api Pod answers about the cluster it is running in. The gate used to ask
 # `kubectl config current-context`, which is EMPTY in a Pod -- print it, so the
 # log carries the pre-fix input alongside the post-fix verdict.
@@ -449,19 +597,19 @@ print(f"[OK] in-cluster: {pod_count} Pods, context={context!r}")
 ' || fail "the Infrastructure payload served from inside the cluster is wrong (#3988)"
 ok "the page served by the api Pod reports the deployment it is running in"
 
-step "12/17 The user path works: sessions list, via the web Service"
+step "14/19 The user path works: sessions list, via the web Service"
 wait_for_web
 curl -fsS "${BASE}/api/sessions" >/dev/null ||
     fail "GET /api/sessions failed -- this is the UI's 'Failed to load sessions'"
 ok "session list loads through the web UI's own proxy route"
 
-step "13/17 A real chat round-trip"
+step "15/19 A real chat round-trip"
 curl -fsS -X POST "${BASE}/api/sessions/init" -H 'Content-Type: application/json' \
     -d "{\"name\":\"${SESSION}\"}" >/dev/null || fail "could not create a chat session"
 chat_round_trip "$SESSION" || fail "chat round-trip produced no answer -- no chat is possible"
 ok "chat answered through web -> api -> in-cluster Ollama"
 
-step "14/17 The observability tier RECEIVES telemetry, not just runs (#3990)"
+step "16/19 The observability tier RECEIVES telemetry, not just runs (#3990)"
 # The question step 4 cannot answer. #3990 was an install where all ten
 # observability workloads reported `1/1 ready`, Grafana and Prometheus
 # answered 200, and the tier received NOTHING from the application it exists
@@ -665,7 +813,7 @@ Pod that booted without one"
 fi
 ok "glitchtip-init re-wired the api and the report went green again"
 
-step "15/17 Sessions are shared by every api replica (Cassandra-backed)"
+step "17/19 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
 # consecutive requests from one browser see different sessions; the poll below
 # runs enough times to land on every replica. The stable Deployment rests at 1
@@ -687,7 +835,7 @@ kubectl -n "$NAMESPACE" exec cassandra-0 -- \
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null
 
-step "16/17 Self-heal sees the whole cluster, not just the api pool (#3828)"
+step "18/19 Self-heal sees the whole cluster, not just the api pool (#3828)"
 # Deletes a web Pod for real (the heal action), which is why it runs after the
 # user-path steps. Nothing has to be torn down first any more (#3986): the
 # address the steps above used is a NodePort (or a supervised forward), not a
@@ -697,7 +845,7 @@ python3 scripts/k8s-self-heal-coverage-smoke.py ||
     fail "self-heal does not cover this deployment -- see the output above (#3828)"
 ok "self-heal names the mode, watches every tier, and heals a non-api Pod"
 
-step "17/17 Fault injection: the pre-#3786 topology must FAIL this same check"
+step "19/19 Fault injection: the pre-#3786 topology must FAIL this same check"
 kubectl -n "$NAMESPACE" delete statefulset cassandra ollama --wait=true >/dev/null
 kubectl -n "$NAMESPACE" wait --for=delete pod/ollama-0 --timeout=180s >/dev/null 2>&1 || true
 wait_for_web

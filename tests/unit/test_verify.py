@@ -389,8 +389,8 @@ def test_capture_dashboard_screenshots_happy_path(monkeypatch, tmp_path):
     _, kwargs = browser.new_context.call_args
     assert kwargs["http_credentials"] == {
         "username": "admin",
-        "password": "pw",
-    }  # pragma: allowlist secret
+        "password": "pw",  # pragma: allowlist secret
+    }
 
 
 def test_capture_dashboard_screenshots_records_per_dashboard_failure(monkeypatch, tmp_path):

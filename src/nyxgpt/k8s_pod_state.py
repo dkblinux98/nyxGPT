@@ -40,13 +40,20 @@ recreate. Anything that budgets repair attempts has to count against that --
 counting against the Pod name is why #3832's per-service restart cap never
 fired even once across seven deletions.
 
+A second shared reading lives at the bottom of this module (#3956): *which*
+Pods are the deployment's state at all. A Pod owned by a ReplicaSet scaled to
+zero is the residue of a finished rollout, and every reader of a Pod list has
+to drop it -- `ops.py` failed an install on one, and self-heal rendered the
+same Pod as a permanently Failed component, because that rule had one copy
+instead of none.
+
 No nyxgpt imports: `ops.py` already imports `self_heal.py`, so anything the
 two share has to sit below both.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,6 +62,12 @@ from typing import Any
 # -- the decision keys off the condition being False, so a reason this set has
 # never heard of is still read as "not scheduled" rather than as schedulable.
 UNSCHEDULABLE_REASONS = frozenset({"Unschedulable", "SchedulingGated"})
+
+# Phases whose Pods have a reading of their own already: `Pending`/`Running`
+# are answered by the waiting-container and readiness checks, and `Succeeded`
+# is its own answer. `_terminated_reason` is consulted only outside this set --
+# `Failed`, `Unknown`, and whatever a future Kubernetes adds.
+_PHASES_WITH_A_LIVE_READING = frozenset({"Pending", "Running", "Succeeded"})
 
 # Longest scheduler/kubelet message rendered into a status line. These strings
 # reach the SRE dashboard's component list, not a log pane.
@@ -178,6 +191,46 @@ def _waiting_reason(status: Mapping[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
+def _terminated_reason(status: Mapping[str, Any]) -> tuple[str, str]:
+    """Why a Pod that is no longer running stopped: `(reason, detail)` (#3956).
+
+    `_waiting_reason` covers every Pod that has not started yet; this covers the
+    other end, which had no reading at all. A `Failed` Pod reported as the bare
+    word `Failed` -- no reason, no container state, no exit code -- is what the
+    owner's 2026-08-26 acceptance round had to SSH in and run kubectl by hand to
+    diagnose.
+
+    The Pod's own `.status.reason`/`.message` first (`Evicted`, `NodeShutdown`,
+    `DeadlineExceeded` -- set by the component that ended the Pod, and the whole
+    answer when no container ever ran), then the first terminated container's
+    reason and exit code, which is where `OOMKilled` and `Error` live.
+    """
+    reason = status.get("reason")
+    if isinstance(reason, str) and reason:
+        return reason, _one_line(status.get("message"))
+    for key in ("initContainerStatuses", "containerStatuses"):
+        entries = status.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            state = entry.get("state")
+            terminated = state.get("terminated") if isinstance(state, Mapping) else None
+            if not isinstance(terminated, Mapping):
+                continue
+            container_reason = terminated.get("reason")
+            if not (isinstance(container_reason, str) and container_reason):
+                continue
+            exit_code = terminated.get("exitCode")
+            detail = _one_line(terminated.get("message"))
+            if isinstance(exit_code, int):
+                prefix = f"container {entry.get('name') or '?'} exited {exit_code}"
+                detail = f"{prefix}: {detail}" if detail else prefix
+            return container_reason, detail
+    return "", ""
+
+
 def _workload_key(metadata: Mapping[str, Any], fallback: str) -> str:
     """The Pod's owner (`<kind>/<name>`), or its own name when it has none.
 
@@ -237,6 +290,14 @@ def classify_pod(pod: Mapping[str, Any]) -> PodState:
         detail = _one_line(scheduled.get("message"))
     else:
         reason, detail = _waiting_reason(status)
+        if not reason and phase not in _PHASES_WITH_A_LIVE_READING:
+            # A phase with nothing waiting and nothing running has already
+            # stopped, so ask the other end (#3956). Restricted to those
+            # phases on purpose: a `Running` Pod whose init container
+            # terminated `Completed` is a Pod that started normally, and
+            # reporting "Completed" as the reason it is not ready would be a
+            # worse answer than the generic one its caller already prints.
+            reason, detail = _terminated_reason(status)
 
     return PodState(
         name=name,
@@ -257,9 +318,93 @@ def classify_pods(payload: Mapping[str, Any]) -> list[PodState]:
     return [classify_pod(item) for item in items if isinstance(item, Mapping)]
 
 
+# --- Pods no live ReplicaSet owns (#3956) ----------------------------------
+#
+# `nyxgpt ops install --kubernetes` applies `k8s/` (whose ConfigMap carries the
+# placeholder error-tracking DSN), waits for the stack, then provisions
+# GlitchTip -- which writes the real DSN and rolls api/web onto a new pod
+# template. The superseded ReplicaSet is scaled to zero and its Pod is left
+# behind terminated, and the owner's 2026-08-26 acceptance round watched that
+# Pod fail the whole install (`pod nyxgpt-web-stable-77c7d9c6f4-gz62g: Failed`)
+# three lines above `nyxgpt-web-stable 1/1`, which said the opposite.
+#
+# The rule, stated once for every reader of a Pod list: a Pod whose ReplicaSet
+# has zero desired replicas is the residue of a finished rollout, not the
+# deployment's state. It lives here rather than in either caller because
+# `ops.py` imports `self_heal.py`, so nothing they share can sit in either
+# (#3832's placement rule) -- and because the alternative, a copy per reader,
+# is exactly how `ops._k8s_pod_states` came to drop the corpse while
+# `self_heal._list_kubernetes_component_status` still rendered it as a
+# permanently Failed component of a healthy deployment.
+#
+# Deliberately NOT "ignore Pods whose phase is Failed": a Failed Pod of the
+# *current* ReplicaSet is a real failure, and phase-filtering would hide it
+# while leaving the actual defect -- consulting Pods no live controller owns --
+# in place for every other terminal state to walk back through.
+#
+# The kubectl read is each caller's own (they have different `_run` wrappers,
+# bounds and namespaces), but the argv and the parse are shared so the two
+# cannot end up asking the cluster different questions.
+RETIRED_REPLICASET_JSONPATH = "jsonpath={range .items[*]}{.metadata.name}={.spec.replicas};{end}"
+
+
+def retired_replicaset_argv(namespace: str) -> list[str]:
+    """The `kubectl` read whose stdout `parse_retired_replicasets` expects."""
+    return ["kubectl", "-n", namespace, "get", "rs", "-o", RETIRED_REPLICASET_JSONPATH]
+
+
+def parse_retired_replicasets(stdout: str) -> frozenset[str]:
+    """ReplicaSet names with zero desired replicas, from that read's stdout.
+
+    Tolerant like everything else here: an entry this cannot parse is simply
+    not in the set, which keeps the Pod it owns in the report.
+    """
+    retired = set()
+    for entry in (e for e in (stdout or "").split(";") if e):
+        name, _, replicas = entry.partition("=")
+        if name and replicas.strip() == "0":
+            retired.add(name)
+    return frozenset(retired)
+
+
+def pod_owner_replicaset(pod: Mapping[str, Any]) -> str:
+    """The name of the ReplicaSet that owns `pod`, or "" if none does.
+
+    "" for a StatefulSet Pod (Cassandra, Ollama), a bare Pod, or a Pod whose
+    ownerReferences are unreadable -- none of which this rule has anything to
+    say about, so they are always kept.
+    """
+    metadata = pod.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return ""
+    owners = metadata.get("ownerReferences")
+    if not isinstance(owners, list):
+        return ""
+    for owner in owners:
+        if isinstance(owner, Mapping) and str(owner.get("kind") or "").lower() == "replicaset":
+            return str(owner.get("name") or "")
+    return ""
+
+
+def pod_is_retired(pod: Mapping[str, Any], retired: Container[str]) -> bool:
+    """Whether `pod` belongs to a ReplicaSet in `retired` and may be dropped.
+
+    A Pod may only ever be dropped on *positive* evidence that its owner is
+    finished, so an unreadable ReplicaSet read (an empty `retired`) removes
+    nothing and the report is the one it has always been.
+    """
+    owner = pod_owner_replicaset(pod)
+    return bool(owner) and owner in retired
+
+
 __all__ = [
+    "RETIRED_REPLICASET_JSONPATH",
     "UNSCHEDULABLE_REASONS",
     "PodState",
     "classify_pod",
     "classify_pods",
+    "parse_retired_replicasets",
+    "pod_is_retired",
+    "pod_owner_replicaset",
+    "retired_replicaset_argv",
 ]

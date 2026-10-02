@@ -1703,6 +1703,97 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  it('reports the EC2 Mac screen path on a macOS deployment, and only there (#4121)', async () => {
+    // Observable, not operable (D-017): the page says whether the screen path
+    // is open and names the wrapped command, and carries no control that
+    // opens it. The three states are distinct answers with distinct next
+    // commands, so collapsing any two would send an operator to re-run a
+    // configuration step that already succeeded.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const base = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      os_family: 'macos',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+      commands: {
+        ...CLOUD_DEPLOY_UNKNOWN.commands,
+        screen: 'nyxgpt cloud screen',
+        screen_stop: 'nyxgpt cloud screen --stop',
+      },
+    };
+    const screenPayload = {
+      running: true,
+      pid: 4242,
+      local_port: 5900,
+      url: 'vnc://localhost:5900',
+      configured: true,
+      configured_at: '2026-10-02T05:00:00',
+      password_file: '/home/op/.nyxGPT/secrets/cloud-mac-vnc-password',
+      command: 'nyxgpt cloud screen',
+      stop_command: 'nyxgpt cloud screen --stop',
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...base, screen: screenPayload })
+      )
+    );
+    const open = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/open at vnc:\/\/localhost:5900 \(pid 4242\)/)).toBeInTheDocument();
+    });
+    // The pointer is there; a button is not.
+    expect(screen.getAllByText('nyxgpt cloud screen').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /screen/i })).toBeNull();
+    open.unmount();
+
+    // Enabled on the Mac but no tunnel: a different answer from "never set up".
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...base,
+          screen: { ...screenPayload, running: false, pid: 0, url: '' },
+        })
+      )
+    );
+    const closed = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Screen Sharing is enabled on the Mac \(loopback only\)/)).toBeInTheDocument();
+    });
+    closed.unmount();
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...base,
+          screen: { ...screenPayload, running: false, pid: 0, url: '', configured: false },
+        })
+      )
+    );
+    const never = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/not set up — `nyxgpt cloud screen` opens one/)).toBeInTheDocument();
+    });
+    never.unmount();
+
+    // A Linux deployment has no screen, so the row and the pointer are absent
+    // rather than claiming a closed path on a box that has not got one.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...base, os_family: 'linux', screen: screenPayload })
+      )
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Linux — published PyPI release/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Mac screen path')).toBeNull();
+    expect(screen.queryByText('nyxgpt cloud screen')).toBeNull();
+  });
+
   it('reads "not provisioned" only when this machine has Terraform state that records no instance', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     server.use(
@@ -2221,5 +2312,307 @@ describe('InfrastructurePage', () => {
     });
     expect(screen.getByText(/containers Terraform runs on/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // EC2 Mac Dedicated Host panel (#3995/#4121).
+  //
+  // The whole panel reached v3.0.0 with no test naming `mac_host` at all, and it
+  // is nothing but branches: every Row picks between two strings. CI's 100%
+  // coverage gate caught it only once an unrelated merge touched `web/`, because
+  // the `web` job is conditional on the diff -- so the gap sat in the tree while
+  // several runs reported green with that job skipped.
+  //
+  // These cover both sides of each branch the panel owns, because the panel's
+  // whole job is to say which of two true-but-different things is the case: a
+  // host still inside AWS's 24-hour window versus one past it, a release AWS has
+  // been asked for versus one nobody has scheduled, a rate we recorded versus
+  // one we did not. Getting that wrong costs real money quietly.
+  describe('EC2 Mac Dedicated Host panel', () => {
+    const macHost = (over = {}) => ({
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      commands: CLOUD_LIFECYCLE_COMMANDS,
+      mac_host: {
+        host_id: 'h-0abc123def456',
+        instance_type: 'mac2.metal',
+        region: 'us-east-1',
+        availability_zone: 'us-east-1a',
+        allocated_at: '2026-10-01T09:50:00Z',
+        release_at: '2026-10-02T09:50:00Z',
+        releasable_now: false,
+        release_scheduled: false,
+        accrued_cost: 15.6,
+        hourly_rate: 0.65,
+        ...over,
+      },
+    });
+
+    const renderWith = async (over = {}) => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(macHost(over))));
+      render(<InfrastructurePage />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { name: /EC2 Mac Dedicated Host — still billing/ })
+        ).toBeInTheDocument();
+      });
+    };
+
+    it('names the host, its type, location, allocation and accrued charge', async () => {
+      await renderWith();
+      expect(screen.getByText('h-0abc123def456 (mac2.metal)')).toBeInTheDocument();
+      expect(screen.getByText('us-east-1 / us-east-1a')).toBeInTheDocument();
+      expect(screen.getByText('2026-10-01T09:50:00Z')).toBeInTheDocument();
+      expect(screen.getByText(/\$15\.60 at \$0\.6500\/hour/)).toBeInTheDocument();
+    });
+
+    it('falls back to the bare host id and unknown location when AWS reported neither', async () => {
+      await renderWith({ instance_type: '', region: '', availability_zone: '', allocated_at: '' });
+      expect(screen.getByText('h-0abc123def456')).toBeInTheDocument();
+      expect(screen.getByText('unknown / unknown')).toBeInTheDocument();
+    });
+
+    it('says the 24-hour minimum has not passed while the window is open', async () => {
+      await renderWith({ releasable_now: false });
+      expect(screen.getByText(/AWS’s 24-hour minimum/)).toBeInTheDocument();
+    });
+
+    it('says the moment has passed once the window closes', async () => {
+      await renderWith({ releasable_now: true });
+      expect(screen.getByText(/that moment has passed/)).toBeInTheDocument();
+    });
+
+    it('points at the wrapped destroy command when no release is scheduled', async () => {
+      await renderWith({ release_scheduled: false });
+      // One assertion on the whole Row value: the command also appears in the
+      // cards above, so matching it alone finds several elements.
+      expect(
+        screen.getByText(/not scheduled yet — .*nyxgpt cloud destroy --yes.* terminates the Mac/)
+      ).toBeInTheDocument();
+    });
+
+    it('reports a scheduled release as scheduled, not as released', async () => {
+      await renderWith({ release_scheduled: true, releasable_now: false });
+      expect(screen.getByText(/scheduled — a one-shot AWS schedule releases it/)).toBeInTheDocument();
+    });
+
+    // The distinction the panel exists to make: a schedule that has FIRED is
+    // still not "released", because nothing here watched it happen.
+    it('refuses to claim a fired schedule released', async () => {
+      await renderWith({ release_scheduled: true, releasable_now: true });
+      expect(screen.getByText(/the scheduled release has fired/)).toBeInTheDocument();
+      expect(screen.getByText(/nothing here watched it/)).toBeInTheDocument();
+    });
+
+    // The `|| 'unknown'` fallbacks on the Releasable row (:1497, :1498). A host
+    // AWS returned without a release timestamp still has to render both sides of
+    // the window, because "we do not know when" is the case most worth seeing.
+    it('says unknown rather than blank when AWS reported no release time', async () => {
+      await renderWith({ release_at: '', releasable_now: false });
+      expect(screen.getByText(/unknown \(AWS’s 24-hour minimum\)/)).toBeInTheDocument();
+    });
+
+    it('says unknown on a closed window with no release time either', async () => {
+      await renderWith({ release_at: '', releasable_now: true });
+      expect(screen.getByText(/unknown — that moment has passed/)).toBeInTheDocument();
+    });
+
+    // `cloud?.commands?.destroy ?? 'nyxgpt cloud destroy --yes'` (:1509): an
+    // older deploy record carries no command table, and the row must still name
+    // the command that schedules the release.
+    it('names a default destroy command when the record carries no command table', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(
+        http.get('/api/v1/cloud/deploy', () =>
+          HttpResponse.json({
+            ...macHost({ release_scheduled: false }),
+            commands: undefined,
+          })
+        )
+      );
+      render(<InfrastructurePage />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { name: /EC2 Mac Dedicated Host — still billing/ })
+        ).toBeInTheDocument();
+      });
+      expect(
+        screen.getByText(/not scheduled yet — .*nyxgpt cloud destroy --yes.* terminates the Mac/)
+      ).toBeInTheDocument();
+    });
+
+    it('says the accrued charge is unknown when no rate was recorded', async () => {
+      await renderWith({ accrued_cost: null, hourly_rate: null });
+      expect(screen.getByText(/unknown — no rate was recorded for this host/)).toBeInTheDocument();
+    });
+
+    it('omits the panel entirely when no Mac host is allocated', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(
+        http.get('/api/v1/cloud/deploy', () =>
+          HttpResponse.json({ ...CLOUD_DEPLOY_UNKNOWN, known: true, mac_host: null })
+        )
+      );
+      render(<InfrastructurePage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+      ).not.toBeInTheDocument();
+    });
+
+    // `cloud.commands?.deploy ?? 'nyxgpt cloud deploy'` (page.tsx:1273): an older
+    // deploy record carries no command table, and the card must still name a
+    // command rather than printing nothing.
+    it('names a default deploy command when the record carries no command table', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(
+        http.get('/api/v1/cloud/deploy', () =>
+          HttpResponse.json({
+            ...CLOUD_DEPLOY_UNKNOWN,
+            source: 'deploy-attempt',
+            known: true,
+            deployed: false,
+            host: '',
+            instance_id: '',
+            instance_type: '',
+            commands: undefined,
+            attempt: { status: 'failed', phase: 'infra', error: 'terraform init failed' },
+          })
+        )
+      );
+      render(<InfrastructurePage />);
+      await waitFor(() => {
+        expect(screen.getByText(/Nothing is recorded as provisioned by this attempt/)).toBeInTheDocument();
+      });
+      // Scoped to the attempt paragraph: the same command is named by the
+      // cards above, so an unscoped match is ambiguous.
+      const para = screen.getByText(/Nothing is recorded as provisioned by this attempt/);
+      expect(within(para).getByText('nyxgpt cloud deploy')).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The `??` and `: ''` fallbacks on the out-of-scope and attempt cards.
+  //
+  // Each of these is the page refusing to render a blank where an explanation
+  // belongs. They were the last uncovered branches in the file, and they are
+  // uncovered for the same reason every time: the fixtures all supply the
+  // optional field, so the arm that runs when the api DOESN'T send it never
+  // executes. An api that omits a reason is not hypothetical -- an older one
+  // simply did not have the field.
+  describe('fallbacks when the api sends no reason', () => {
+    it('explains a native install being out of scope even with no reason given', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({
+            ...mockStatusInCluster,
+            install_mode: { ...mockStatusInCluster.install_mode, out_of_scope_reason: undefined },
+          })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Not in scope from here: this API is running inside a Kubernetes Pod\./)
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByText(/to survey a native install there/)).toBeInTheDocument();
+    });
+
+    it('explains Compose being out of scope even with no reason given', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({ ...mockStatusInCluster, compose_probe_reason: undefined })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/no host filesystem and no Docker socket/)
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('reports an unreadable native probe with no reason attached', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({
+            ...mockStatusEmpty,
+            mode: 'native',
+            native: { api: 'started', web: 'started', cassandra: 'unknown' },
+            native_probe_available: false,
+            native_probe_reason: undefined,
+          })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/predates its/)).toBeInTheDocument();
+      });
+      // No "Reason:" clause, because there was no reason to print.
+      expect(screen.queryByText(/^Reason:/)).not.toBeInTheDocument();
+    });
+
+    it('prints the Terraform probe reason when one is given', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({
+            ...mockStatusEmpty,
+            mode: 'terraform',
+            terraform: {
+              probe_available: false,
+              deployed: false,
+              containers: {},
+              probe_reason: '`docker ps` exited 1: cannot connect to the Docker daemon',
+            },
+          })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/cannot connect to the Docker daemon/)
+        ).toBeInTheDocument();
+      });
+    });
+
+    // `cloud.attempt?.phase ? … : ''` and `cloud.attempt?.error ? … : '.'`
+    // (:1254-1255). A recorded attempt that names neither a phase nor an error
+    // still has to read as a sentence rather than trail off.
+    it('reads as a sentence when an attempt names neither phase nor error', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(
+        http.get('/api/v1/cloud/deploy', () =>
+          HttpResponse.json({
+            ...CLOUD_DEPLOY_UNKNOWN,
+            source: 'deploy-attempt',
+            known: true,
+            deployed: false,
+            commands: CLOUD_LIFECYCLE_COMMANDS,
+            attempt: { status: 'failed' },
+          })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/A deploy started on this machine and did not finish\./)
+        ).toBeInTheDocument();
+      });
+    });
   });
 });

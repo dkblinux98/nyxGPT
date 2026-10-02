@@ -56,6 +56,15 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK] $*"; }
 step() { echo; echo "=== $* ==="; }
 
+# True only when a managed background forward really is up. Anchored on the
+# running message's prefix rather than on the word "running", which the
+# "No managed background port-forward is running." message also contains --
+# see the same helper in scripts/k8s-local-smoke.sh and
+# `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`.
+managed_forward_running() {
+    nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
+}
+
 cleanup() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -200,10 +209,15 @@ ok "install --kubernetes --local completed with no checkout"
 # The manifests came from package data, not from a repository.
 [ -f "${HOME}/.nyxGPT/k8s/kustomization.yaml" ] ||
     fail "no kustomization under ~/.nyxGPT/k8s -- the manifests were not synced from package data"
-docker image inspect nyxgpt-api:local >/dev/null ||
-    fail "nyxgpt-api:local was never built"
-docker image inspect nyxgpt-web:local >/dev/null ||
-    fail "nyxgpt-web:local was never built"
+# The tags come from the product (`ops.k8s_image_refs`), not from a literal:
+# since #3956 they carry the build path and the version, so a hard-coded
+# `:local` would assert an image no install builds -- which fails this smoke
+# for the wrong reason, or passes it on a stale leftover.
+for image in $(python3 -c \
+    'from nyxgpt import ops; print(" ".join(ops.k8s_image_refs(dev=False).values()))'); do
+    log "MEASURED: the install should have built $image"
+    docker image inspect "$image" >/dev/null || fail "$image was never built"
+done
 ok "manifests synced from package data; both images built from the staged artifacts"
 
 step "7/9 The data/LLM tier is Ready and the app tier is serving"
@@ -227,7 +241,7 @@ step "8/9 A user can actually chat -- with no port-forward of our own (#3986)"
 # assertion here, not setup.
 # An `if`, not `x && fail`: a compound whose overall status is non-zero exits
 # the script under `set -e`, which would make this guard a hang-up of its own.
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     echo "[info] the install established a managed background forward (bring-your-own path)."
 elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
     pgrep -af "kubectl.*port-forward" >&2 || true

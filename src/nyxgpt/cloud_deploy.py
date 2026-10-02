@@ -1430,7 +1430,7 @@ fi
 #     Ollama would be a second model server on the same box, holding a
 #     second copy of every pulled model in RAM, that nothing points at.
 #   * **Node/npm.** The native web service builds the Next bundle on the
-#     host with `npm ci`; in Kubernetes mode `nyxgpt-web:local` is a
+#     host with `npm ci`; in Kubernetes mode the web image is a
 #     *container* built by docker from the published `nyxgpt-web` artifact
 #     (`_build_and_load_k8s_web_image`), so the host toolchain is never
 #     used. Installing it would add a NodeSource repo and several minutes to
@@ -2662,6 +2662,17 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
     # torn down, which is unrecoverable once `deploy.json` is gone.
     previous = load_deploy_state()
     tunnel = stop_tunnel()
+    # #4121. The screen path is a second SSH child with its own pid, so
+    # `stop_tunnel` does not touch it -- and an `ssh -N` left pointed at a
+    # terminated instance is a process that never exits and a `cloud status`
+    # that keeps reporting an open path to a machine that is gone.
+    from nyxgpt import cloud_screen
+
+    screen = cloud_screen.stop_screen_tunnel()
+    # And the record with it: `configured: true` after the Mac is terminated is
+    # a claim about a machine that no longer exists, and `cloud status` would
+    # keep offering to re-open a screen path to it.
+    cloud_screen.clear_screen_record()
 
     # #3995: the EC2 Mac comes down first and on its own terms. `cloud_mac.
     # teardown` terminates the instance immediately and schedules the host
@@ -2691,6 +2702,7 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
         return {
             "action": "destroy",
             "tunnel": tunnel,
+            "screen": screen,
             "settings": {},
             "unmanaged_target": "",
             "mac": mac,
@@ -2750,6 +2762,7 @@ def destroy(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "action": "destroy",
         "tunnel": tunnel,
+        "screen": screen,
         "settings": settings,
         "unmanaged_target": previous.get("host", "") if macos_target else "",
         "mac": mac,
@@ -2792,6 +2805,13 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
     "smoke": "nyxgpt cloud smoke",
     "tunnel": "nyxgpt cloud tunnel",
     "tunnel_stop": "nyxgpt cloud tunnel --stop",
+    # #4121. The EC2 Mac's screen, over the same loopback-only SSH path the
+    # app ports use. Named here so the status surfaces that *report* whether
+    # the path is open can also name the command that opens it -- the
+    # Definition of Done's observable-not-operable rule, which is what keeps
+    # this a terminal command and not a dashboard button.
+    "screen": "nyxgpt cloud screen",
+    "screen_stop": "nyxgpt cloud screen --stop",
     "status": "nyxgpt cloud status",
     "ops_status": "nyxgpt cloud ops status",
     "doctor": "nyxgpt cloud ops doctor",
@@ -2961,6 +2981,18 @@ def connection_status(on_instance: bool = False) -> dict[str, Any]:
         "command": LIFECYCLE_COMMANDS["tunnel"],
         "reason": "",
     }
+
+
+def _screen_status() -> dict[str, Any]:
+    """`cloud_screen.screen_status()`, imported late to break the import cycle.
+
+    `cloud_screen` needs this module's `ssh_argv`, `DeployTarget` and
+    state-file helpers, so it imports `cloud_deploy` at module level. The
+    dependency only runs the other way inside this one function.
+    """
+    from nyxgpt import cloud_screen
+
+    return cloud_screen.screen_status()
 
 
 def deploy_status(probe_health: bool = False) -> dict[str, Any]:
@@ -3138,6 +3170,14 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
+        # #4121. Whether the EC2 Mac's screen is reachable from here right
+        # now, and whether nyxGPT enabled Screen Sharing on that Mac at all.
+        # Reported on every deployment rather than only on macOS ones so the
+        # payload keeps one shape, and read from recorded state plus one
+        # liveness check -- no network call, so the dashboard can poll it.
+        # Imported inside the function because `cloud_screen` imports this
+        # module for the SSH argv and the state-file helpers.
+        "screen": _screen_status(),
         "health": health,
         "history": deploy_history(),
         "urls": tunnel_urls(profiles),
@@ -3449,6 +3489,27 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
         _print_row("Accrued", "unknown -- no rate was recorded for this host")
 
 
+def _screen_label(screen: dict[str, Any], commands: dict[str, str]) -> str:
+    """One line for the EC2 Mac's screen path (#4121).
+
+    Three answers, not two. "The tunnel is closed" and "Screen Sharing was
+    never enabled on that Mac" are different states with different next
+    commands, and collapsing them would send an operator to re-run a
+    configuration step that already succeeded.
+    """
+    if screen.get("running"):
+        return (
+            f"open at {screen.get('url') or 'localhost'} (pid {screen.get('pid')}) -- "
+            f"close it with `{commands.get('screen_stop', 'nyxgpt cloud screen --stop')}`"
+        )
+    if screen.get("configured"):
+        return (
+            "Screen Sharing is enabled on the Mac (loopback only) but no tunnel is open -- "
+            f"`{commands.get('screen', 'nyxgpt cloud screen')}` re-opens it"
+        )
+    return f"not set up -- `{commands.get('screen', 'nyxgpt cloud screen')}` opens one"
+
+
 def _print_status_summary(status: dict[str, Any]) -> None:
     """Print `nyxgpt cloud status` in the form an operator reads (#3813).
 
@@ -3576,6 +3637,13 @@ def _print_status_summary(status: dict[str, Any]) -> None:
     else:
         _print_row("State", f"closed -- open it with `{commands['tunnel']}`")
     _print_row("Stack health", _health_label(status.get("health") or {}))
+    # #4121. macOS only, and deliberately so: there is no screen to share on a
+    # Linux instance, and a row that said "closed" about one would be an
+    # answer to a question that does not apply. Reported here rather than left
+    # to the operator's memory because the screen path is the one access path
+    # that can be open while the app tunnel is shut, and vice versa.
+    if status.get("os_family") == OS_FAMILY_MACOS and not status["on_instance"]:
+        _print_row("Screen path", _screen_label(status.get("screen") or {}, commands))
     # #3993. A deployment that exists plus a *later* deploy that failed is a
     # real and confusing state -- the box is up on the previous release while
     # the operator believes they just shipped a new one. The record above
@@ -3593,6 +3661,14 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         for label, key in (
             ("Open the tunnel", "tunnel"),
             ("Close the tunnel", "tunnel_stop"),
+            # #4121, macOS only for the same reason the row above is: naming a
+            # screen command on a Linux deployment would advertise a
+            # capability that box does not have.
+            *(
+                (("Open the Mac's screen", "screen"),)
+                if status.get("os_family") == OS_FAMILY_MACOS
+                else ()
+            ),
             ("Containers on the instance", "ops_status"),
             ("Diagnose the instance", "doctor"),
             ("Observability logins", "credentials"),

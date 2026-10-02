@@ -53,6 +53,22 @@ name: Cloud Target OS Smoke
 #                          nyxgpt-web`, which certified the defect -- a
 #                          candidate deploy silently installing stable.
 #
+#                          Since #4121 it answers a third question about the
+#                          same delivery path: does `nyxgpt cloud screen` put
+#                          the Screen Sharing configuration on the Mac itself,
+#                          loopback-only, without opening a security-group port
+#                          or putting the VNC credential in an argv? Phase 5a
+#                          injects the condition -- the command must REFUSE on a
+#                          Mac nyxGPT did not configure and deliver nothing --
+#                          and 5b asserts the delivered script loads the
+#                          loopback-only pf rule and reads it back BEFORE
+#                          activating the agent, which is the ordering that
+#                          keeps `DECISION_PRIVATE_ACCESS_MECHANISM.md`'s
+#                          "nothing is ever listening on a non-loopback
+#                          address" true for the screen as well as the app
+#                          ports. 5c asserts a Linux deployment is refused and
+#                          never advertised a screen.
+#
 # What it does NOT cover: a real EC2 Mac executing the bootstrap. GitHub
 # Actions has no macOS EC2 runner and Apple's licensing does not permit macOS
 # in a container, so EC2 Mac hardware stays on the short list in
@@ -67,6 +83,7 @@ on:
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud_provision.py'
       - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cloud_screen.py'
       - 'src/nyxgpt/cli.py'
       # The formula names the macOS bootstrap installs are derived from this
       # module's `rc_formula_name` (#4122), so a change to how a candidate
@@ -80,6 +97,7 @@ on:
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud_provision.py'
       - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cloud_screen.py'
       - 'src/nyxgpt/cli.py'
       # The formula names the macOS bootstrap installs are derived from this
       # module's `rc_formula_name` (#4122), so a change to how a candidate

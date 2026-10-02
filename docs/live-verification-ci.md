@@ -303,6 +303,23 @@ and screenshots make verifiable in the review loop:
   list is not a licence for the job that surrounds it to assert a command
   string.** Where the claim is "the right thing is installed", assert the
   installed *artifact*, not the instruction that was meant to install it.
+
+  **The screen path, #4121, read the same narrow way.** `nyxgpt cloud screen`
+  enables macOS Screen Sharing on an EC2 Mac and forwards 5900 over SSH, and no
+  job can run `kickstart` or `pfctl` — those need macOS, and the `macos-15`
+  runners are not EC2 Macs with a Dedicated Host under them. What *is* executed,
+  by [`cloud-target-os-smoke.yml`](../.github/workflows/cloud-target-os-smoke.yml)
+  phase 5 against a real sshd: the CLI delivers the configuration script itself
+  over a real SSH connection; that script loads the loopback-only `pf` rule and
+  reads it back **before** activating the agent (asserted on the delivered text,
+  and the reordered script is rejected); it opens no security-group port and
+  sets no account password; the VNC credential is generated into
+  `~/.nyxGPT/secrets` at mode 0600 and appears in the delivered stdin but in no
+  argv and not on the terminal; the forward really opens and closes; and the
+  command **refuses** both on a Mac nyxGPT did not configure and on a Linux
+  deployment. What remains owner acceptance is only that a `mac*.metal` instance
+  executes the script — i.e. that `pfctl` loads that anchor and `kickstart`
+  activates that agent on real Apple hardware.
 - **Anything gated behind a real (non-stubbed) LLM** -- CI runs the chat
   round-trip against whatever Ollama model is configured for the runner
   (small/stubbed per the acceptance criteria); response *quality* is not
@@ -328,11 +345,20 @@ and screenshots make verifiable in the review loop:
   frees `127.0.0.1:8000`, uninstalls k3s, frees 6443, and is a no-op on a
   second pass (which is what every first deploy runs). That last one is only
   meaningful with a cluster actually running, which is why it is here and not
-  in a unit test. Three of its steps carry fault injections rather than happy
+  in a unit test. Five of its ten steps carry fault injections rather than happy
   paths -- an overlapping VPC network is proved to be refused with nothing
   installed, a Pod referencing a docker-built image is proved to fail before
-  `_k3s_import_image` and to run after it, and stopping the bridge is proved
-  to kill `127.0.0.1:8000` -- so no assertion can pass by luck. What is
+  `_k3s_import_image` and to run after it, stopping the bridge is proved to
+  kill `127.0.0.1:8000`, and (since the 2026-08-26 acceptance round) a real
+  rollout's leftover Pod is proved to fail the *unfiltered* reading while the
+  product's reading ignores it, and a k3s-style kubectl shim is proved unable
+  to read `/etc/rancher/k3s/k3s.yaml` while nyxGPT's own calls still reach the
+  cluster -- so no assertion can pass by luck. Those last two each need a live
+  cluster for a reason inspection cannot supply: Kubernetes has to actually
+  leave a terminated Pod attached to a ReplicaSet it scaled to zero, and that
+  kubeconfig has to actually be root-only. The same job also renders and
+  server-side-applies the generated image overlay, because only a real cluster
+  can say whether kubectl's *embedded* kustomize accepts it. What is
   genuinely left to owner acceptance is the part that requires being in AWS:
   the IMDSv2 read of the instance's private IPv4 (the runner exercises its
   documented non-EC2 fallback instead), the security group actually refusing
