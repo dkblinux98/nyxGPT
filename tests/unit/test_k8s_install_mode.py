@@ -238,6 +238,7 @@ def test_default_web_build_uses_the_staged_artifact(staged_artifacts, monkeypatc
 
 
 def test_recording_a_first_install_writes_the_marker_without_rolling_anything(monkeypatch):
+    recorded = _stub_cluster_install_record(monkeypatch)
     monkeypatch.setattr(
         ops,
         "_restart_k8s_app_tier",
@@ -245,11 +246,14 @@ def test_recording_a_first_install_writes_the_marker_without_rolling_anything(mo
     )
     results = ops._record_k8s_install_mode(dev=False)
     assert all(r.ok for r in results)
+    # Both records, not just this machine's (#3988).
+    assert recorded == [(install_mode.INSTALL_MODE_ARTIFACT, None)]
     state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_KUBERNETES)
     assert (state.mode, state.recorded) == (install_mode.INSTALL_MODE_ARTIFACT, True)
 
 
 def test_switching_modes_rolls_the_app_tier_before_recording(monkeypatch, tmp_path):
+    _stub_cluster_install_record(monkeypatch)
     install_mode.write_install_mode(
         install_mode.INSTALL_MODE_ARTIFACT, None, substrate=install_mode.SUBSTRATE_KUBERNETES
     )
@@ -272,6 +276,7 @@ def test_switching_modes_rolls_the_app_tier_before_recording(monkeypatch, tmp_pa
 
 
 def test_a_failed_rollout_does_not_record_the_new_mode(monkeypatch):
+    recorded = _stub_cluster_install_record(monkeypatch)
     install_mode.write_install_mode(
         install_mode.INSTALL_MODE_ARTIFACT, None, substrate=install_mode.SUBSTRATE_KUBERNETES
     )
@@ -287,6 +292,9 @@ def test_a_failed_rollout_does_not_record_the_new_mode(monkeypatch):
     # failed rollout means is not true.
     state = install_mode.read_install_mode(substrate=install_mode.SUBSTRATE_KUBERNETES)
     assert state.mode == install_mode.INSTALL_MODE_ARTIFACT
+    # ...and the cluster's own record is left alone for the same reason (#3988):
+    # two records of a mode the deployment is not in is worse than one.
+    assert recorded == []
 
 
 def test_restart_app_tier_skips_deployments_that_are_not_there(monkeypatch):
@@ -344,6 +352,10 @@ def _stub_install_steps(monkeypatch, calls):
         monkeypatch.setattr(ops, name, lambda *_a, name=name, **_k: [ops.OpsResult(True, name)])
     monkeypatch.setattr(ops, "_clear_intentional_stops", lambda _c: [ops.OpsResult(True, "stops")])
     monkeypatch.setattr(ops, "_ensure_k8s_secret", lambda _k: [ops.OpsResult(True, "secret")])
+    # #3988: the install also records its mode *in the cluster*, which is a
+    # `kubectl apply` -- stubbed here (and asserted in test_k8s_host_access.py)
+    # so these tests stay about which image path was built.
+    _stub_cluster_install_record(monkeypatch)
 
     def fake_api_build(dev=False):
         calls.append(("api", dev))
@@ -355,6 +367,26 @@ def _stub_install_steps(monkeypatch, calls):
 
     monkeypatch.setattr(ops, "_build_and_load_k8s_api_image", fake_api_build)
     monkeypatch.setattr(ops, "_build_and_load_k8s_web_image", fake_web_build)
+
+
+def _stub_cluster_install_record(monkeypatch):
+    """Stub both halves of the in-cluster install record (#3988).
+
+    The read is a probe against a cluster that does not exist here; the write
+    is a `kubectl apply` a unit test must not make. Returns the list of
+    `(mode, checkout)` pairs the write was called with.
+    """
+    recorded: list[tuple[str, object]] = []
+    monkeypatch.setattr(ops, "_read_k8s_install_record", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_write_k8s_install_record",
+        lambda mode, checkout: (
+            recorded.append((mode, checkout)),
+            ops.OpsResult(True, "Recorded the install mode in the cluster"),
+        )[1],
+    )
+    return recorded
 
 
 def test_install_defaults_to_the_artifact_path_and_records_it(monkeypatch):
@@ -568,6 +600,38 @@ def test_infra_status_reports_an_unrecorded_kubernetes_mode_as_unrecorded(monkey
 
     assert result["kubernetes"]["install_mode"]["recorded"] is False
     assert "unrecorded" in result["kubernetes"]["install_mode"]["label"]
+    # And `mode` agrees with the label beside it (#3988): the payload used to
+    # carry `artifact` here, so a reader of one field was told the opposite of
+    # what the other said.
+    assert result["kubernetes"]["install_mode"]["mode"] == install_mode.INSTALL_MODE_UNRECORDED
+
+
+def test_reported_mode_never_renders_an_unknown_as_a_determinate_mode():
+    """`mode` is a two-value field; "nothing recorded" is a third fact (#3988).
+
+    `label`/`short_label` already carried the tri-state, so the only reader
+    that could be misled was one looking at `mode` -- which is what the
+    Infrastructure page's Kubernetes card does. Native keeps the documented
+    artifact default: there it is what every machine installed before #3789 is
+    really running, and what `restart api` has to act on.
+    """
+    k8s_unrecorded = install_mode.InstallModeState(substrate=install_mode.SUBSTRATE_KUBERNETES)
+    assert k8s_unrecorded.reported_mode() == install_mode.INSTALL_MODE_UNRECORDED
+
+    k8s_recorded = install_mode.InstallModeState(
+        mode=install_mode.INSTALL_MODE_ARTIFACT,
+        substrate=install_mode.SUBSTRATE_KUBERNETES,
+        recorded=True,
+    )
+    assert k8s_recorded.reported_mode() == install_mode.INSTALL_MODE_ARTIFACT
+
+    native = install_mode.InstallModeState()
+    assert native.recorded is False
+    assert native.reported_mode() == install_mode.INSTALL_MODE_ARTIFACT
+
+    terraform = install_mode.InstallModeState(substrate=install_mode.SUBSTRATE_TERRAFORM)
+    assert terraform.reported_mode(deployed=True) == install_mode.INSTALL_MODE_UNRECORDED
+    assert terraform.reported_mode(deployed=False) == install_mode.INSTALL_MODE_ARTIFACT
 
 
 # --- the generated secrets never ship in the wheel ---

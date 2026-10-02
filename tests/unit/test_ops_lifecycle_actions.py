@@ -426,6 +426,11 @@ def test_install_kubernetes_steps_records_success():
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)

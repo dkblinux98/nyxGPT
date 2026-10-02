@@ -144,33 +144,58 @@ def test_kustomization_lists_every_manifest() -> None:
 # --- ops wiring ------------------------------------------------------------
 
 
+# The install steps every test of the step ORDER has to neutralise. Collected
+# into one context manager rather than one `with` item each (#3988): the
+# parenthesised form was one step away from CPython's 20-statically-nested-
+# blocks ceiling, so the next step added to `_install_kubernetes_steps` broke
+# these tests at *compile* time with a SyntaxError. Each of these really talks
+# to a cluster, builds an image, or writes to a real `~/.nyxGPT`.
+_NEUTRAL_K8S_INSTALL_STEPS = (
+    "_clear_intentional_stops",
+    "_ensure_kubectl_and_cluster",
+    "_build_and_load_k8s_api_image",
+    "_build_and_load_k8s_web_image",
+    "_ensure_k8s_secret",
+    # #3825's capacity preflight really reads a cluster and really bootstraps
+    # the observability Secret to render it.
+    "_preflight_k8s_capacity",
+    "_kubectl_apply_kustomization",
+    # #3786's in-cluster Cassandra/Ollama wait sits between the app tier and
+    # the observability layer, and really polls a cluster.
+    "_wait_for_k8s_data_tier",
+    "_wait_for_k8s_app_tier",
+    "_reconcile_k8s_canary_resting",
+    "_ensure_k8s_host_access",
+    "_sync_packaged_resources",
+)
+
+
+@contextlib.contextmanager
+def _neutral_k8s_install_steps():
+    """Patch every install step these tests are not asserting about.
+
+    One nesting level for all of them, so a test below holds only the mocks it
+    actually inspects.
+    """
+    with contextlib.ExitStack() as stack:
+        for name in _NEUTRAL_K8S_INSTALL_STEPS:
+            stack.enter_context(patch.object(ops, name, return_value=[ops.OpsResult(True, "ok")]))
+        stack.enter_context(patch.object(ops, "_refuse_port_collision", return_value=None))
+        stack.enter_context(patch.object(ops, "_k8s_stack_health", return_value=[]))
+        stack.enter_context(patch.object(ops, "_record_ops_action"))
+        # #3988's install record lives in the cluster as well as in this
+        # machine's marker, so the install now does a `kubectl get`/`apply` of
+        # a ConfigMap in a cluster that does not exist in a unit test.
+        stack.enter_context(patch.object(ops, "_read_k8s_install_record", return_value={}))
+        stack.enter_context(
+            patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok"))
+        )
+        yield
+
+
 def test_install_kubernetes_applies_the_observability_layer() -> None:
     with (
-        patch.object(ops, "_refuse_port_collision", return_value=None),
-        patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(
-            ops, "_build_and_load_k8s_api_image", return_value=[ops.OpsResult(True, "ok")]
-        ),
-        patch.object(
-            ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
-        ),
-        patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
-        # #3825's capacity preflight really reads a cluster and really
-        # bootstraps the observability Secret to render it; neither belongs
-        # in a unit test of the step ORDER.
-        patch.object(ops, "_preflight_k8s_capacity", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
-        # #3786's in-cluster Cassandra/Ollama wait sits between the app tier
-        # and the observability layer, and really polls a cluster.
-        patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(
-            ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
-        ),
-        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_sync_packaged_resources", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_k8s_stack_health", return_value=[]),
+        _neutral_k8s_install_steps(),
         # #3990's provisioning step execs into a Pod and opens a port-forward;
         # it is a step of this install like any other, so it is patched out of
         # a test about step ORDER.
@@ -181,7 +206,6 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
         ) as apply_observability,
         # #3826's rollout wait, for the same reason as the data-tier one above.
         patch.object(ops, "_wait_for_k8s_observability", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_record_ops_action"),
     ):
         results = ops._install_kubernetes_steps(None)
 
@@ -192,35 +216,11 @@ def test_install_kubernetes_applies_the_observability_layer() -> None:
 def test_install_kubernetes_honours_skip_observability() -> None:
     """`--skip-observability` used to be silently ignored in Kubernetes mode."""
     with (
-        patch.object(ops, "_refuse_port_collision", return_value=None),
-        patch.object(ops, "_clear_intentional_stops", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(
-            ops, "_build_and_load_k8s_api_image", return_value=[ops.OpsResult(True, "ok")]
-        ),
-        patch.object(
-            ops, "_build_and_load_k8s_web_image", return_value=[ops.OpsResult(True, "ok")]
-        ),
-        patch.object(ops, "_ensure_k8s_secret", return_value=[ops.OpsResult(True, "ok")]),
-        # #3825's capacity preflight really reads a cluster and really
-        # bootstraps the observability Secret to render it; neither belongs
-        # in a unit test of the step ORDER.
-        patch.object(ops, "_preflight_k8s_capacity", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_kubectl_apply_kustomization", return_value=[ops.OpsResult(True, "ok")]),
-        # Patched for the same reason as above: otherwise the install stops at
-        # the data-tier wait and this would assert nothing.
-        patch.object(ops, "_wait_for_k8s_data_tier", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_wait_for_k8s_app_tier", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(
-            ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
-        ),
-        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),  # pragma: allowlist secret
-        patch.object(ops, "_k8s_stack_health", return_value=[]),
+        _neutral_k8s_install_steps(),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
-        patch.object(ops, "_wait_for_k8s_observability") as wait_observability,  # pragma: allowlist secret
+        patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
         patch.object(ops, "_k8s_provision_glitchtip") as provision_glitchtip,
         patch.object(ops, "_k8s_observability_health") as observability_health,
-        patch.object(ops, "_record_ops_action"),
     ):
         results = ops._install_kubernetes_steps(None, skip_observability=True)
 
@@ -741,18 +741,7 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
     order: list[str] = []
     ok = [ops.OpsResult(True, "ok")]
     with (
-        patch.object(ops, "_refuse_port_collision", return_value=None),
-        patch.object(ops, "_clear_intentional_stops", return_value=ok),
-        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_api_image", return_value=ok),
-        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
-        patch.object(ops, "_ensure_k8s_secret", return_value=ok),
-        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
-        patch.object(ops, "_wait_for_k8s_data_tier", return_value=ok),
-        patch.object(ops, "_wait_for_k8s_app_tier", return_value=ok),
-        patch.object(ops, "_reconcile_k8s_canary_resting", return_value=ok),
-        patch.object(ops, "_ensure_k8s_host_access", return_value=ok),
-        patch.object(ops, "_sync_packaged_resources", return_value=ok),
+        _neutral_k8s_install_steps(),
         patch.object(ops, "_apply_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_provision_glitchtip", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
@@ -762,7 +751,6 @@ def test_install_waits_for_observability_before_reading_pod_phases() -> None:
             side_effect=lambda: (order.append("wait"), ok)[1],
         ),
         patch.object(ops, "_k8s_stack_health", side_effect=lambda: (order.append("health"), ok)[1]),
-        patch.object(ops, "_record_ops_action"),
     ):
         results = ops._install_kubernetes_steps(None)
 

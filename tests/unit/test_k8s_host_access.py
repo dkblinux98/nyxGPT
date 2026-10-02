@@ -33,7 +33,7 @@ import httpx
 import pytest
 import yaml
 
-from nyxgpt import canary, ops
+from nyxgpt import canary, install_mode, ops
 
 pytestmark = pytest.mark.unit
 
@@ -468,7 +468,15 @@ def test_in_cluster_requires_both_signals(monkeypatch, tmp_path):
     assert ops._in_cluster() is True
 
 
-def _infra_status_in_cluster(monkeypatch, *, in_cluster: bool, pods: list[str]):
+def _infra_status_in_cluster(
+    monkeypatch,
+    *,
+    in_cluster: bool,
+    pods: list[str],
+    record: dict[str, str] | None = None,
+    version: str = "3.0.0rc13",
+    context: str = "",
+):
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
     monkeypatch.setattr(
         ops,
@@ -485,8 +493,10 @@ def _infra_status_in_cluster(monkeypatch, *, in_cluster: bool, pods: list[str]):
     )
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(ops, "_in_cluster", lambda: in_cluster)
-    # The gate the issue is about: a Pod's `kubectl config current-context` is empty.
-    monkeypatch.setattr(ops, "_kubectl_context", lambda: "")
+    # The gate the issue is about: a Pod's `kubectl config current-context` is
+    # empty. An off-cluster caller passes a `context` to stand in for a host
+    # with a kubeconfig pointed at the deployment.
+    monkeypatch.setattr(ops, "_kubectl_context", lambda: context)
     monkeypatch.setattr(
         ops,
         "_k8s_pod_states",
@@ -496,6 +506,11 @@ def _infra_status_in_cluster(monkeypatch, *, in_cluster: bool, pods: list[str]):
         ),
     )
     monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {})
+    # The deployment's own install record (#3988, second round) -- the cluster
+    # ConfigMap `ops install --kubernetes` writes. `{}` is a cluster that
+    # carries none.
+    monkeypatch.setattr(ops, "_read_k8s_install_record", lambda: dict(record or {}))
+    monkeypatch.setattr(ops, "running_version", lambda: version)
     return ops.infra_status()
 
 
@@ -572,6 +587,231 @@ def test_rbac_grants_the_list_the_in_cluster_read_needs():
     assert "list" in verbs["deployments"]
     assert "list" in verbs["daemonsets"]
     assert {"get", "list"} <= verbs["pods"]
+
+
+# --- #3988, second round: version and install mode from inside the cluster ---
+#
+# The re-test (2026-08-26) passed detection and the scope statements, and
+# failed AC1's other two subjects: the `kubernetes` section carried no
+# `version` field at all, and reported `install_mode.mode: "artifact"` for a
+# deployment the owner had installed with `--dev` -- beside a `label` that
+# said "unrecorded". Both have the same cause: the only record consulted was a
+# marker file in the installing machine's `~/.nyxGPT`, which inside a Pod is
+# the container's own empty home.
+
+
+def test_infra_status_reports_the_version_it_is_serving_from_inside_the_cluster(monkeypatch):
+    """The Definition of Done's "what version", which the card did not answer.
+
+    Never a vantage-point limit: in-cluster the api process serving this page
+    IS this deployment's api, so its own version is the version serving now.
+    """
+    status = _infra_status_in_cluster(
+        monkeypatch, in_cluster=True, pods=["nyxgpt-api-stable-1"], version="3.0.0rc13"
+    )
+
+    assert status["kubernetes"]["version"]["known"] is True
+    assert status["kubernetes"]["version"]["version"] == "3.0.0rc13"
+    assert status["kubernetes"]["version"]["channel"] == "rc"
+    assert "this api process" in status["kubernetes"]["version"]["source"]
+
+
+def test_infra_status_reports_the_dev_install_mode_recorded_in_the_cluster(monkeypatch):
+    """The owner's `--dev` cluster, read from the cluster rather than from a host."""
+    status = _infra_status_in_cluster(
+        monkeypatch,
+        in_cluster=True,
+        pods=["nyxgpt-api-stable-1"],
+        record={"mode": "dev", "checkout": "/Users/o/src/nyxGPT", "version": "3.0.0rc13"},
+    )
+
+    install = status["kubernetes"]["install_mode"]
+    assert install["recorded"] is True
+    assert install["mode"] == "dev"
+    assert install["checkout"] == "/Users/o/src/nyxGPT"
+    assert "dev (images built from the working tree" in install["label"]
+    assert f"configmap/{ops.K8S_INSTALL_RECORD_CONFIGMAP}" in install["source"]
+
+
+def test_infra_status_prefers_the_recorded_channel_over_a_derived_one(monkeypatch):
+    """A `--dev` deployment runs a working tree, whatever its version parses as.
+
+    The checkout's version string is a perfectly good `rc`, and reporting that
+    would send an operator hunting a published candidate that does not exist
+    (#3982) -- so the install's own answer wins.
+    """
+    status = _infra_status_in_cluster(
+        monkeypatch,
+        in_cluster=False,
+        pods=["nyxgpt-api-stable-1"],
+        context="kind-nyxgpt-local",
+        record={"mode": "dev", "version": "3.0.0rc13", "channel": "dev"},
+    )
+
+    assert status["kubernetes"]["version"]["version"] == "3.0.0rc13"
+    assert status["kubernetes"]["version"]["channel"] == "dev"
+
+
+def test_infra_status_never_calls_an_unrecorded_kubernetes_mode_artifact(monkeypatch):
+    """`mode` must not answer `artifact` while `recorded` is false (#3988, D-032).
+
+    Non-vacuous by construction: a marker IS written here, in the home this
+    process can see -- which from inside a Pod is the container's own, i.e. a
+    record of a deployment somewhere else. The honest answers are `unrecorded`
+    and "no version".
+    """
+    install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_ARTIFACT, None, substrate=install_mode.SUBSTRATE_KUBERNETES
+    )
+
+    status = _infra_status_in_cluster(
+        monkeypatch, in_cluster=True, pods=["nyxgpt-api-stable-1"], version=""
+    )
+
+    install = status["kubernetes"]["install_mode"]
+    assert install["recorded"] is False
+    assert install["mode"] == "unrecorded"
+    assert install["source"] == ""
+    assert "unrecorded" in install["label"]
+    # And no version invented from the container's own absent metadata.
+    assert status["kubernetes"]["version"] == {
+        "known": False,
+        "version": "",
+        "channel": "unknown",
+        "source": "",
+    }
+
+
+def test_infra_status_falls_back_to_the_local_marker_off_cluster(monkeypatch):
+    """On a host, the marker is still the record -- a pre-#3988 deployment answers."""
+    marker = install_mode.write_install_mode(
+        install_mode.INSTALL_MODE_DEV, "/co", substrate=install_mode.SUBSTRATE_KUBERNETES
+    )
+
+    status = _infra_status_in_cluster(monkeypatch, in_cluster=False, pods=["nyxgpt-api-stable-1"])
+
+    install = status["kubernetes"]["install_mode"]
+    assert install["recorded"] is True
+    assert install["mode"] == "dev"
+    assert str(marker) in install["source"]
+
+
+def test_write_k8s_install_record_applies_a_configmap_the_cluster_keeps(monkeypatch):
+    """The write half: the record lands in the deployment's own namespace."""
+    applied: dict[str, object] = {}
+
+    def fake_run(cmd, check=True, input=None, **_kwargs):
+        applied["cmd"] = cmd
+        applied["manifest"] = json.loads(input)
+        return SimpleNamespace(returncode=0, stdout="configmap/nyxgpt-install-mode configured")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "running_version", lambda: "3.0.0rc13")
+
+    result = ops._write_k8s_install_record("dev", "/Users/o/src/nyxGPT")
+
+    assert result.ok is True
+    assert applied["cmd"] == ["kubectl", "-n", ops.K8S_NAMESPACE, "apply", "-f", "-"]
+    manifest = applied["manifest"]
+    assert manifest["kind"] == "ConfigMap"
+    assert manifest["metadata"]["name"] == ops.K8S_INSTALL_RECORD_CONFIGMAP
+    assert manifest["metadata"]["namespace"] == ops.K8S_NAMESPACE
+    assert manifest["data"] == {
+        "mode": "dev",
+        "checkout": "/Users/o/src/nyxGPT",
+        "version": "3.0.0rc13",
+        # Not `rc`: a working-tree build is no published channel (#3982).
+        "channel": "dev",
+    }
+
+
+def test_install_records_the_mode_in_the_cluster_as_well_as_on_this_machine(monkeypatch, tmp_path):
+    """Two readers, two records (#3988): this machine's CLI, and the deployment."""
+    monkeypatch.setattr(ops, "_read_k8s_install_record", lambda: {})
+    monkeypatch.setattr(ops, "_dev_checkout_root", lambda: tmp_path / "checkout")
+    written: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        ops,
+        "_write_k8s_install_record",
+        lambda mode, checkout: (
+            written.append((mode, checkout)),
+            ops.OpsResult(True, "Recorded the install mode in the cluster"),
+        )[1],
+    )
+
+    results = ops._record_k8s_install_mode(dev=True)
+
+    assert all(r.ok for r in results)
+    assert written == [("dev", tmp_path / "checkout")]
+    assert install_mode.install_mode_file(install_mode.SUBSTRATE_KUBERNETES).exists()
+    assert any("in the cluster" in r.message for r in results)
+
+
+def test_install_rolls_the_app_tier_on_a_mode_change_recorded_only_in_the_cluster(monkeypatch):
+    """The record the install must not ignore (#3988).
+
+    `kubectl apply` on an unchanged `:local` image tag does not replace the
+    Pods, so without consulting the cluster's own record an install from a
+    second machine -- which has no marker -- would leave the app tier serving
+    the previous mode's images while both records claimed the new one.
+    """
+    monkeypatch.setattr(ops, "_read_k8s_install_record", lambda: {"mode": "dev", "checkout": "/co"})
+    monkeypatch.setattr(ops, "_write_k8s_install_record", lambda *_a: ops.OpsResult(True, "ok"))
+    rolled: list[bool] = []
+    monkeypatch.setattr(
+        ops,
+        "_restart_k8s_app_tier",
+        lambda: (rolled.append(True), [ops.OpsResult(True, "rolled")])[1],
+    )
+
+    results = ops._record_k8s_install_mode(dev=False)
+
+    assert rolled == [True]
+    assert any("install mode changing: dev -> artifact" in r.message for r in results)
+
+
+def test_read_k8s_install_record_treats_an_unreadable_record_as_no_record(monkeypatch):
+    """An RBAC refusal, a deleted namespace and a pre-#3988 deployment are one answer.
+
+    They are all "nothing recorded here", which the card reports as unknown --
+    the one thing it must not do is turn any of them into a mode.
+    """
+    monkeypatch.setattr(
+        ops, "_run", lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="", stderr="forbidden")
+    )
+    assert ops._read_k8s_install_record() == {}
+
+    monkeypatch.setattr(
+        ops, "_run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="not json", stderr="")
+    )
+    assert ops._read_k8s_install_record() == {}
+
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda *_a, **_k: SimpleNamespace(
+            returncode=0, stdout=json.dumps({"data": {"mode": "dev"}}), stderr=""
+        ),
+    )
+    assert ops._read_k8s_install_record() == {"mode": "dev"}
+
+
+def test_rbac_grants_the_install_record_read_by_name_only():
+    """The read AC2 asks for, declared in `k8s/` and no wider (#3988).
+
+    Scoped with `resourceNames` rather than opening the namespace's ConfigMaps:
+    `k8s/configmap.yaml` and the deployment's Secret must stay unreadable
+    through this Role, which is what its own comment promises.
+    """
+    role = next(
+        doc
+        for doc in yaml.safe_load_all((K8S_DIR / "rbac.yaml").read_text())
+        if doc and doc.get("kind") == "Role"
+    )
+    rule = next(r for r in role["rules"] if "configmaps" in r["resources"])
+
+    assert rule["verbs"] == ["get"]
+    assert rule["resourceNames"] == [ops.K8S_INSTALL_RECORD_CONFIGMAP]
 
 
 # --- #3991: the canary resting contract -------------------------------------
