@@ -1139,7 +1139,14 @@ Checks include:
   the otel-collector container running but not publishing its port to the
   host (the default native deployment's only path to it), which otherwise
   silently drops every span while the panel still reports "active" (see
-  [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing))
+  [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing)).
+  **On a Kubernetes deployment this is asked of the cluster instead** (#3987):
+  the endpoint comes from the `nyxgpt-config` ConfigMap the api Pods actually
+  mount, and reachability is the `otel-collector` Deployment's readiness --
+  which is a TCP probe on its OTLP port, the same connect this makes
+  natively. An endpoint resolving to loopback is called out separately, since
+  inside a Pod that is *that Pod* and no collector readiness makes it work
+  (#3990)
 - (when tracing is enabled) whether every `opentelemetry-instrumentation-*`
   package and the OTLP exporter are actually importable in this venv --
   catches a venv that predates a dependency bump (or had a package manually
@@ -1154,7 +1161,12 @@ Checks include:
   healthy. On Linux the usual cause is that containers have no route to the
   host's `127.0.0.1`, so the hint points at the `host-api-relay` service
   (see
-  [docker-compose.md#linux-scraping-the-native-api](docker-compose.md#linux-scraping-the-native-api))
+  [docker-compose.md#linux-scraping-the-native-api](docker-compose.md#linux-scraping-the-native-api)).
+  **On a Kubernetes deployment the cluster's own Prometheus is asked, from
+  inside the cluster** (#3987), and the remedy becomes `nyxgpt ops
+  observability --kubernetes` -- `host-api-relay` exists only on the
+  native/Compose path, so prescribing it there would send an operator to fix
+  a machine that is not serving
 - (macOS only, once the shared Ollama store has been configured) whether
   native Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the
   expected shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift
@@ -1172,7 +1184,11 @@ Checks include:
   GlitchTip no longer recognizes; every one is rejected (401) and silently
   dropped by sentry_sdk's fire-and-forget transport, the same failure shape
   as the OTLP check above (#3565). Fix: `nyxgpt ops glitchtip-init && nyxgpt
-  ops restart api`
+  ops restart api`. **On a Kubernetes deployment the DSN compared is the one
+  the api/web Pods carry** (the `error-tracking-dsn` key of the
+  `nyxgpt-secrets` Secret), asked of the in-cluster GlitchTip with the token
+  mounted into the Grafana Pod -- the credential that deployment's own
+  consumer presents. Fix: `nyxgpt ops glitchtip-init --kubernetes` (#3987)
 - Whether the installed Python environment actually has every dependency
   declared in `pyproject.toml` (via `importlib.metadata`) -- catches a venv
   that wasn't refreshed after a `git pull` added or bumped a dependency,
@@ -1191,6 +1207,58 @@ Checks include:
   don't want (#3565)
 
 Results are reported with clear PASS / FAIL indicators.
+
+### Which machine a `doctor` check is about
+
+`doctor` runs on the workstation, but a workstation is not always what is
+serving. Owner acceptance of the Kubernetes install found `doctor` exiting 2
+on a cluster with 14/14 Pods Running and reporting *"Tracing is enabled
+(`[tracing] otlp_endpoint=http://localhost:4318/v1/traces`) but nothing is
+listening there — spans are being silently dropped and Jaeger will stay
+empty"* minutes after `curl http://localhost:16686/api/services` on the same
+machine returned three services with real spans behind them. The check had
+read the *host's* config, probed the *host's* port, and reported the verdict
+as the deployment's; the Pods read the `nyxgpt-config` ConfigMap's
+`http://otel-collector:4318/v1/traces`, which is a different endpoint and a
+working one (#3987).
+
+The rule this fixed, which binds every check `doctor` runs:
+
+> A check whose finding is a claim about **the deployment that is serving**
+> must ask the substrate that is serving. A check whose finding is a claim
+> about **this host** — its PATH, its files, its service managers, its venv —
+> stays host-scoped, and `doctor` says which is which out loud.
+
+When a Kubernetes deployment is present, `doctor` prints
+`Kubernetes deployment: …` and, under it, the line that names the split:
+
+```
+Kubernetes deployment: nyxgpt namespace: 14/14 pod(s) ready
+  Model readiness, tracing wiring, the Prometheus scrape and the
+  error-tracking DSN are reported against the cluster, not this host.
+  Every other check below is about this host -- its tools, files,
+  services and venv (docs/ops.md).
+```
+
+The sweep behind that line, with every check classified:
+
+| Scope | Checks | Why |
+|---|---|---|
+| **Asks the cluster** when a deployment is present | required-model presence, tracing wiring, the Prometheus `nyxgpt-api` scrape, the error-tracking DSN | their finding is a claim about the deployment, and each read host config or probed a host port to make it |
+| **Host-scoped by construction** | foreign native services, the Terraform install mode, OTel packages in this venv, the native API bind posture, `OLLAMA_MODELS` drift, the Linux `ollama.service` port conflict, Docker socket access, observability volume ownership, stale-venv dependencies, tools on `PATH`, `~/.nyxGPT` file permissions, the local Cassandra container, web dependencies | the finding *is* about this machine. A Kubernetes deployment does not change whether `brew` is installed or whether this venv can import its dependencies |
+| **Gated on a running Compose stack** | promtail native-log wiring, the Loki 24h log-volume line, the GlitchTip secrets directory/token | they read host config, but return nothing unless the Compose container they are about is actually running — so they cannot speak about a cluster |
+
+The two halves of each branched check are separate functions
+(`_tracing_wiring_issue` / `_k8s_tracing_wiring_issue`, and so on) and are
+deliberately **not merged or fallen back between**, the same call
+`required_models_status` documents: a machine with both a native stack and a
+cluster has two of everything, and answering "is this deployment wired up"
+out of the other one's config is the defect itself.
+
+`tests/unit/test_ops_doctor_substrate_scope.py` holds the table above as
+code and fails when a check is added to `doctor` without being classified,
+so the next check with this shape is caught there rather than by an operator
+running the product.
 
 ---
 
