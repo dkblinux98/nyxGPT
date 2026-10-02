@@ -289,15 +289,49 @@ def unique(names: Iterable[str]) -> list[str]:
 # bare -- so on the dual-tap machine the fix exists for, the *automated*
 # recovery path still failed where the manual one had been repaired.
 
-# A single path segment brew will accept. Kept identical to the inline barrier
-# self_heal has carried since CodeQL #4 so that admitting `<tap>/<name>` widens
-# nothing: the qualified form is validated segment by segment against this same
-# character class, never by relaxing it to allow `/`.
-_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# A single path segment brew will accept, as a pattern string so the inline
+# barrier `self_heal._restart_brew_service` must carry (CodeQL #4 recognizes
+# the `re.fullmatch(r"...", x)` call form, not a precompiled pattern or a
+# helper) has one authority to be identical to -- pinned by
+# `test_brew_formula_at_version.py::test_the_inline_barrier_matches_the_shared_pattern`.
+#
+# The trailing `@<version>` group is Homebrew's versioned-formula syntax, and
+# omitting it is the whole of #4043: a candidate-channel install registers its
+# services as `nyxgpt-api@3.0.0rc`, `brew_services.resolve` correctly resolves
+# to that name, and then every self-heal restart of it was refused as an
+# "invalid service name" -- so the watchdog structurally could not heal `api`
+# or `web` on the one channel acceptance testing runs on (same shape as
+# D-030(b)). `python@3.12` is an equally legitimate formula name; the defect
+# was in the validator, never in the caller that passed the real name.
+#
+# Admitting `@` widens nothing CodeQL #4 closed: a segment still must begin
+# alphanumeric (so it can never be read as a CLI flag), still excludes every
+# shell metacharacter, whitespace and path separator, and `@` is not special
+# to any shell. The version part is held to the same character class as the
+# name part, and at most one `@` is accepted -- `a@`, `@a` and `a@b@c` are all
+# still refused. Segment-wise validation is also what lets `<tap>/<name>`
+# through without ever relaxing the class to allow `/`.
+SEGMENT_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?"
+_SEGMENT = re.compile(SEGMENT_PATTERN)
 
 
 def is_safe_formula_spec(spec: str) -> bool:
-    """True if `spec` is a bare name or `<owner>/<tap>/<name>`, all segments safe."""
+    """True if `spec` is a bare name or `<owner>/<tap>/<name>`, all segments safe.
+
+    A segment may carry Homebrew's `@<version>` suffix, so the qualified form
+    of a candidate-channel service (`dkblinux98/nyxgpt/nyxgpt-api@3.0.0rc`)
+    is accepted as readily as the bare `nyxgpt-api` -- see `SEGMENT_PATTERN`
+    for why that is not a relaxation of the injection barrier (#4043).
+
+    The suffix is admitted on the owner and tap segments too, so
+    `owner@1/tap@2/name` passes a form Homebrew's tap syntax never produces.
+    That is wider than the legitimate grammar and no weaker as a barrier --
+    identical character class, no metacharacter reachable either way -- and
+    scoping the `@` group to the final segment would be tighter. Noted rather
+    than narrowed: this function's job is to decide whether a string is safe to
+    hand to a subprocess, not to validate Homebrew's grammar, and brew itself
+    rejects a spec it cannot name (#4043 review, Minor).
+    """
     parts = spec.split("/")
     if len(parts) not in (1, 3):
         return False

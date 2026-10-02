@@ -358,11 +358,20 @@ def run_secrets_setup(cfg_path: Path | None = None, reconfigure: bool = False) -
     # the last moment the CLI has the user's attention (#3806).
     pending = restart_state.snapshot()
     if pending:
+        last_attempts = restart_state.attempts()
         print("\n" + "!" * 60)
         print("RESTART REQUIRED -- saved values are not yet in effect:")
         for component in sorted(pending):
             keys = ", ".join(pending[component]["keys"])
             print(f"  {component}: {keys}")
+            # A restart already attempted and refused is the one thing this
+            # summary could not previously say, and the user is otherwise left
+            # to conclude the notice is simply stuck (#4043). Printed here for
+            # the same reason the pending set is read from disk: the attempt
+            # may have been made from the dashboard, in another process.
+            attempt = last_attempts.get(component)
+            if attempt and attempt["status"] == "failed":
+                print(f"    last restart attempt FAILED: {attempt['message']}")
         print(f"\nApply them with: {restart_state.restart_command(sorted(pending))}")
         print("You can defer -- this notice persists until the restart happens.")
         print("!" * 60)

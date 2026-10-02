@@ -6,8 +6,9 @@ machine-mutating functions: they build Docker images, write the real
 Slack secret), install Homebrew formulas and run `terraform apply`. Their unit
 tests neutralize them by patching each step **by name**, which only works while
 every name is listed -- and the lists have grown since the tests were written,
-so steps went unpatched and ran for real: the suite built the 567MB
-`nyxgpt-api:local` and 1.16GB `nyxgpt-web:local` images mid-run, wrote the real
+so steps went unpatched and ran for real: the suite built the 567MB api and
+1.16GB web images mid-run (tagged `:local` then, `dev-<version>` /
+`artifact-<version>` per build path since #3956), wrote the real
 `~/.nyxGPT/secrets/slack-webhook-url`, and cleared the machine's real
 intentional-stop markers. It also made the suite pass or fail by what the
 machine happened to have -- `test_install_terraform_steps_records_success` and
@@ -96,11 +97,13 @@ K8S_INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_k8s_stack_health",
     "_preflight_k8s_capacity",
     "_k8s_observability_health",
-    # #3991 / #3986: the two steps that make the install's promises true --
-    # the canary pair actually resting at 0, and the web UI actually reachable
-    # -- both of which talk to a real cluster and a real host port.
+    # #3991 / #3986: the three steps that make the install's promises true --
+    # the canary pair actually resting at 0, and the web UI and the SRE UIs
+    # actually reachable -- all of which talk to a real cluster and real host
+    # ports.
     "_reconcile_k8s_canary_resting",
     "_ensure_k8s_host_access",
+    "_ensure_k8s_observability_host_access",
 )
 
 # Every function `ops._install_terraform_steps()` runs as a step, plus the

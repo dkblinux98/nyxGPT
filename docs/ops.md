@@ -1853,8 +1853,10 @@ so operators never need to type the raw `kubectl` command themselves.
 Since #3986 it is **not** how you reach the web UI after a local install: the
 install leaves `http://127.0.0.1:3000` answering on its own. This remains the
 way to reach a cluster whose host ports nyxGPT cannot map (a bring-your-own
-cluster), and the only way to reach the observability UIs, whose Services stay
-ClusterIP.
+cluster), and, on such a cluster, the only way to reach the observability UIs,
+whose Services stay ClusterIP there. On a cluster nyxGPT provisioned, the
+install publishes them on the host and no forward is needed (see
+[kubernetes.md §4](kubernetes.md)).
 
 `--target app` forwards web and api together; `--background` hands the forward
 to a supervised, detached child (`--status` / `--stop` inspect and end it),

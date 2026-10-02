@@ -46,6 +46,18 @@
 #                                   regardless of --os would fail one of them
 #   4. `cloud status`            -> an operator who lost the scrollback can
 #                                   still see which OS is on that box
+#   5a. `cloud screen`, unmanaged -> REFUSES on a Mac nyxGPT did not configure,
+#                                   and sends nothing and generates no
+#                                   credential on the way out (#4121)
+#   5b. `cloud screen`, managed  -> the CLI delivers the Screen Sharing
+#                                   configuration itself, loads the
+#                                   loopback-only pf rule BEFORE activating the
+#                                   agent, opens no security-group port, sets no
+#                                   account password, keeps the VNC credential
+#                                   out of every argv and off the terminal, and
+#                                   `cloud status` reports the open path
+#   5c. `cloud screen`, Linux    -> refuses, and the Linux status surface does
+#                                   not advertise a screen that box has not got
 #
 # Expects `nyxgpt` on PATH (installed from the wheel by the caller), a
 # writable $HOME for nyxGPT's own state, and permission to run sshd on
@@ -330,4 +342,175 @@ contains "$OUT" "Target OS"
 contains "$OUT" "macos"
 
 echo
-echo "PASS: nyxgpt drives both target-OS bootstraps itself, over the wrapped SSH path."
+echo "== Phase 5: nyxgpt cloud screen -- the wrapped screen path (#4121) =="
+# The same question as phase 2, for the second thing that has to reach the Mac
+# over SSH and used to be hand-rolled: `kickstart`, an account password and an
+# `ssh -L`, typed by the operator. Unit tests prove what the module renders;
+# only this proves the CLI puts it on the wire, keeps the credential off every
+# argv, and opens the forward.
+#
+# Non-vacuous by construction, the #3753 rule: 5a asserts the command REFUSES
+# on a Mac nyxGPT did not configure and sends nothing, and 5b asserts it works
+# once nyxGPT's own Mac record names that host. A build that skipped the
+# scoping check would pass 5b and fail 5a.
+rm -f "$CAPTURE_DIR/cmd.txt" "$CAPTURE_DIR/script.sh"
+SECRETS_DIR="$HOME/.nyxGPT/secrets"
+VNC_SECRET="$SECRETS_DIR/cloud-mac-vnc-password"
+rm -f "$VNC_SECRET"
+
+echo "-- 5a: a Mac nyxGPT did not configure is refused, and nothing is sent"
+# Phase 2 left a macOS deploy record for 127.0.0.1 and no Dedicated Host
+# record, which is exactly the `--host` case: nyxGPT cannot know what that
+# machine's security group exposes, so it must not enable a listener on it.
+nyxgpt cloud screen --host 127.0.0.1 --ssh-user "$SSH_USER" --identity-file "$KEY" \
+    >"$OUT" 2>&1 && fail "cloud screen configured a Mac nyxGPT does not manage"
+cat "$OUT"
+contains "$OUT" "did not configure the Mac"
+contains "$OUT" "loopback"
+# A refusal must be a refusal: nothing crossed the connection...
+if [ -f "$CAPTURE_DIR/script.sh" ]; then
+    fail 'a refused cloud screen still delivered a script to the Mac'
+fi
+# ...and no credential was generated for a machine it declined to touch.
+if [ -f "$VNC_SECRET" ]; then
+    fail 'a refused cloud screen still generated a VNC credential'
+fi
+
+echo "-- 5b: the Mac nyxGPT manages gets the loopback-only listener"
+# The Dedicated Host record `nyxgpt cloud deploy --os macos` writes at
+# allocation (cloud_mac.record_mac_host). Seeded rather than allocated because
+# allocating one is a real 24-hour charge on real Mac hardware -- the thing
+# docs/live-verification-ci.md records as unreachable from CI. Everything under
+# test below (the render, the delivery, the credential, the forward) is
+# unaffected by how the record got there.
+python - "$CLOUD_DIR/state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text()) if path.exists() else {}
+state.update(
+    {
+        "mac_host_id": "h-smoke",
+        "mac_instance_id": "i-smoke",
+        "mac_instance_type": "mac2.metal",
+        "mac_public_ip": "127.0.0.1",
+        "mac_region": "us-east-1",
+        "mac_security_group_id": "sg-smoke",
+        "mac_allocated_at": "2026-01-01T00:00:00Z",
+        "mac_release_at": "2026-01-02T00:30:00Z",
+    }
+)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(state))
+PY
+
+nyxgpt cloud screen --ssh-user "$SSH_USER" --identity-file "$KEY" >"$OUT" 2>&1 || {
+    cat "$OUT"
+    fail "cloud screen exited non-zero against the Mac nyxGPT manages"
+}
+cat "$OUT"
+
+# The CLI, not a human, put the configuration script on the box -- and asked
+# for it elevated the way `kickstart` and `pfctl` need.
+contains "$CAPTURE_DIR/cmd.txt" "sudo -n NYXGPT_TARGET_USER=$SSH_USER bash -s"
+contains "$CAPTURE_DIR/script.sh" "ARDAgent.app/Contents/Resources/kickstart"
+contains "$CAPTURE_DIR/script.sh" "-activate -configure -access -on"
+
+# The constraint that may not be traded away
+# (product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md): loopback only,
+# and the rule is loaded and read back BEFORE the agent is activated.
+contains "$CAPTURE_DIR/script.sh" "block drop in quick proto tcp from any to any port 5900"
+contains "$CAPTURE_DIR/script.sh" "pass in quick on lo0 proto tcp from any to any port 5900"
+python - "$CAPTURE_DIR/script.sh" <<'PY'
+import sys
+
+script = open(sys.argv[1]).read()
+block = script.index("block drop in quick proto tcp")
+readback = script.index("-s rules | grep -q")
+activate = script.index("-activate -configure -access -on")
+if not block < readback < activate:
+    raise SystemExit(
+        "the delivered script activates Screen Sharing before the loopback-only "
+        "rule is loaded and verified, so 5900 would be reachable from the network"
+    )
+print("  -> delivered ordering: pf rule, read it back, THEN activate the agent")
+PY
+# No security-group port is opened, not even one scoped to the operator's /32
+# -- that is the alternative the decision rejected.
+not_contains "$CAPTURE_DIR/script.sh" "authorize-security-group-ingress"
+not_contains "$CAPTURE_DIR/script.sh" "0.0.0.0"
+# And no account password is set on the Mac: VNC's own credential is used.
+not_contains "$CAPTURE_DIR/script.sh" "passwd"
+contains "$CAPTURE_DIR/script.sh" "-setvncpw -vncpw"
+# Nothing is installed on the host beyond enabling what macOS ships.
+not_contains "$CAPTURE_DIR/script.sh" "brew install"
+not_contains "$CAPTURE_DIR/script.sh" "git clone"
+
+# The credential: generated, in ~/.nyxGPT/secrets, 0600, and NOT in the
+# operator's scrollback or in any argv sshd was asked to run.
+[ -f "$VNC_SECRET" ] || fail "no VNC credential was generated in $SECRETS_DIR"
+VNC_MODE="$(stat -c '%a' "$VNC_SECRET")"
+[ "$VNC_MODE" = "600" ] || fail "the VNC credential is mode $VNC_MODE, expected 600"
+VNC_PASSWORD="$(cat "$VNC_SECRET")"
+[ -n "$VNC_PASSWORD" ] || fail "the VNC credential file is empty"
+not_contains "$OUT" "$VNC_PASSWORD"
+not_contains "$CAPTURE_DIR/cmd.txt" "$VNC_PASSWORD"
+# It did reach the Mac -- on the connection's stdin, which is the whole point
+# of delivering a script rather than a command line.
+contains "$CAPTURE_DIR/script.sh" "$VNC_PASSWORD"
+# What the operator is told instead of the secret.
+contains "$OUT" "vnc://localhost:5900"
+contains "$OUT" "cloud-mac-vnc-password"
+# Wrapped end to end: no raw command is ever presented as an instruction.
+not_contains "$OUT" "ssh -L"
+not_contains "$OUT" "kickstart"
+
+echo "-- 5b: cloud status reports the screen path (observable, not operable)"
+nyxgpt cloud status --no-probe >"$OUT" 2>&1 || fail "cloud status exited non-zero"
+cat "$OUT"
+contains "$OUT" "Screen path"
+contains "$OUT" "open at vnc://localhost:5900"
+not_contains "$OUT" "$VNC_PASSWORD"
+nyxgpt cloud screen --status --json >"$OUT" 2>&1 || fail "cloud screen --status exited non-zero"
+cat "$OUT"
+contains "$OUT" '"running": true'
+not_contains "$OUT" "$VNC_PASSWORD"
+
+echo "-- 5b: and it closes again, leaving the listener enabled but unreachable"
+nyxgpt cloud screen --stop >"$OUT" 2>&1 || fail "cloud screen --stop exited non-zero"
+cat "$OUT"
+contains "$OUT" "Screen path closed"
+nyxgpt cloud screen --status >"$OUT" 2>&1 || fail "cloud screen --status exited non-zero"
+cat "$OUT"
+contains "$OUT" "closed"
+# Closing the tunnel is not the same claim as turning Screen Sharing off, and
+# the command must not make the stronger one.
+contains "$OUT" "Screen Sharing enabled by nyxGPT"
+
+echo "-- 5c: a Linux deployment has no screen, and the command says so"
+# The other half of the scoping criterion. Driven by rewriting the deploy
+# record's target OS, which is the state a Linux operator is actually in.
+python - "$CLOUD_DIR/deploy.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text())
+record["os_family"] = "linux"
+path.write_text(json.dumps(record))
+PY
+nyxgpt cloud screen >"$OUT" 2>&1 && fail "cloud screen ran against a Linux deployment"
+cat "$OUT"
+contains "$OUT" "macOS capability"
+contains "$OUT" "linux"
+# And the Linux status surface does not advertise a capability that box lacks.
+nyxgpt cloud status --no-probe >"$OUT" 2>&1 || fail "cloud status exited non-zero"
+not_contains "$OUT" "Screen path"
+
+echo
+echo "PASS: nyxgpt drives both target-OS bootstraps and the Mac screen path itself,"
+echo "      over the wrapped SSH path, with no non-loopback listener and no secret"
+echo "      in any argv."

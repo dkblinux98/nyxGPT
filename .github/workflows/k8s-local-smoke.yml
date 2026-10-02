@@ -48,6 +48,18 @@ name: Kubernetes Local Smoke
 # `kubectl port-forward` never had. The cluster is created from nyxGPT's OWN
 # rendered kind config so the published-NodePort path is the one under test.
 #
+# That same question is asked of the SRE tier since the owner's re-test of
+# #3986 (2026-08-26, steps 7-8): Grafana, Prometheus, Jaeger and GlitchTip
+# answering on 3001/9090/16686/8080 from the host with nothing forwarding, on
+# an install that reported itself healthy. The first round published the app
+# tier and left all six observability Services ClusterIP, so every panel of
+# the SRE dashboard was ERR_CONNECTION_REFUSED until the operator opened a
+# terminal -- which `CLAUDE.md`'s Definition of Done ("observable ... without
+# a terminal") does not allow. Its injection returns those Services to the
+# shipped ClusterIP posture, asserts all four go dark, then proves BOTH
+# wrapped ways back: the managed background forward (the bring-your-own
+# answer) and a re-run of `nyxgpt ops observability --kubernetes`.
+#
 # It also carries #3991's resting-state assertion (both canary Deployments at
 # 0 after a fresh install, `nyxgpt canary reset` as the wrapped way back from
 # an off-contract one, and a re-install reconciling it) and #3988's in-cluster

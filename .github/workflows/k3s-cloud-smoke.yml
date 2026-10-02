@@ -17,12 +17,24 @@ name: k3s Cloud Smoke
 # `render_provision_script()`, rather than a hand-maintained copy. A smoke that
 # tests an approximation certifies the approximation -- the #3860 lesson.
 #
-# Three of its seven steps carry FAULT INJECTIONS (#3753's both-halves rule):
-# the bootstrap step proves an overlapping VPC network is refused and nothing
+# Five of its ten steps carry FAULT INJECTIONS (#3753's both-halves rule): the
+# bootstrap step proves an overlapping VPC network is refused and nothing
 # installed, the image-import step proves the Pod fails without the import and
-# runs with it, and the bridge step proves 127.0.0.1:8000 goes dead when the
-# bridge stops -- so none can pass by luck on a runner where something else was
-# listening.
+# runs with it, the bridge step proves 127.0.0.1:8000 goes dead when the bridge
+# stops, and the two steps added for the 2026-08-26 acceptance round prove the
+# unfiltered Pod reading fails on a finished rollout's leftover Pod while the
+# product's does not, and that kubectl's own default kubeconfig on a k3s node is
+# unreadable while nyxGPT's calls reach the cluster anyway -- so none of them
+# can pass by luck on a runner where something else was listening or where
+# kubectl happened to be configured.
+#
+# Those last two are the 2026-08-26 blockers, and each needs a live cluster:
+# Kubernetes has to actually leave a terminated Pod attached to a ReplicaSet it
+# has scaled to zero, and `/etc/rancher/k3s/k3s.yaml` has to actually be
+# root-only. The third blocker (per-build-path, versioned image tags) is checked
+# here too, because only a real cluster can say whether kubectl's EMBEDDED
+# kustomize accepts the generated overlay and whether the API server admits the
+# whole manifest set through it.
 #
 # The first of those is the 2026-08-22 acceptance failure (#3956): k3s's
 # default pod network was byte-identical to the substrate's default VPC CIDR,

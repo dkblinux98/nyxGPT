@@ -154,10 +154,19 @@ System Health screen and the admin dashboard, #3384, #3413.)
   from the web UI drops that browser session, and the UI says so before it
   does it.
 
-  The CLI reports the same fact: `nyxgpt secrets setup` prints what is now
-  awaiting a restart and the command to apply it. The pending set lives in
-  `~/.nyxGPT/pending-restart.json`, which is why a key rotated from the
-  terminal raises the notice in the browser and vice versa.
+  A restart that was offered and **did not happen** says so, on both
+  surfaces: the notice reports the reason the restart mechanism itself gave
+  (`GET /api/v1/infra/restart-status`'s `attempts`, #4043) rather than
+  waiting out its poll and blaming the clock, and keeps reporting it across
+  a reload. The settings stay saved and stay pending; the restart is
+  retryable from the same control or from the wrapped command.
+
+  The CLI reports the same facts: `nyxgpt secrets setup` prints what is now
+  awaiting a restart, the command to apply it, and — per component — a
+  `last restart attempt FAILED` line when one was tried and refused. The
+  pending set lives in `~/.nyxGPT/pending-restart.json`, which is why a key
+  rotated from the terminal raises the notice in the browser and vice versa,
+  and why a restart refused in the browser is visible from the terminal.
 - **Enabling an observability toggle actually starts it.** Flipping
   `tracing`/`error_tracking`/`monitoring`/`log_aggregation` to enabled
   reconciles the Compose observability stack the same way `nyxgpt ops

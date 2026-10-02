@@ -1093,6 +1093,10 @@ export default function AdminPage() {
       // disagreement with what the dashboard would show (#3806).
       setRestartStatus({
         pending: data.restart_pending || {},
+        // A save supersedes any earlier attempt's outcome -- the backend drops
+        // the record for the same reason (`restart_state.mark_pending`), so
+        // this optimistic rendering must not re-assert a stale failure (#4043).
+        attempts: {},
         restart_command: null,
         session_disrupting: Object.keys(data.restart_pending || {}).filter((c) => c === 'web'),
       });
