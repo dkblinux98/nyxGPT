@@ -142,6 +142,29 @@ describe('GeneralSettings', () => {
    * from a different build.
    */
   describe('stack tiers (#3982)', () => {
+    // `WEB_VERSION_SOURCE_LABEL[...] ?? info.web_version_source` (:174). The
+    // map covers the four sources the resolver can return today; a build that
+    // learns a fifth must still print something, and printing the raw source is
+    // more use than printing nothing.
+    it('prints an unmapped version source verbatim rather than blank', async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...mockInfo,
+          release_version: '3.0.0',
+          web_version: '3.0.0',
+          web_version_source: 'container-image',
+        }),
+      });
+
+      renderWithTheme();
+
+      await waitFor(() => {
+        expect(screen.getByText('Web UI Version Source')).toBeInTheDocument();
+      });
+      expect(screen.getByText('container-image')).toBeInTheDocument();
+    });
+
     it('names the API and web versions as separate rows', async () => {
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,

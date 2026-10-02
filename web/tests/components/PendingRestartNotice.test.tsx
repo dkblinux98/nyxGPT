@@ -14,6 +14,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import PendingRestartNotice, {
   fetchRestartStatus,
+  failedAttemptText,
   type RestartStatus,
 } from '../../src/components/PendingRestartNotice';
 
@@ -393,5 +394,103 @@ describe('the age of a pending change', () => {
     // -3 minutes ago" would read as a bug in the notice itself.
     render(<PendingRestartNotice status={secondsAgo(-3600)} onStatusChange={vi.fn()} />);
     expect(screen.getByText('(changed just now)')).toBeInTheDocument();
+  });
+});
+
+/**
+ * `failedAttemptText` (PendingRestartNotice.tsx:116-124).
+ *
+ * The comparator on :120 only runs when there are at least TWO failed
+ * attempts, so a single-failure test leaves it uncovered -- which is how it
+ * reached the release branch untested. Ordering matters here for a plain
+ * reason: the notice is read by someone deciding what to fix first, and a set
+ * of failures that reorders itself between renders is harder to act on than
+ * one that does not.
+ */
+/**
+ * `next.restart_command ?? 'nyxgpt ops restart'` (:207).
+ *
+ * When a restart fails, the notice tells the user what to run by hand. The
+ * sibling case -- a status that names its own command -- is already covered;
+ * this is the other side: a status that carries none must still name a command,
+ * because "the restart did not happen" with no next step is precisely the
+ * dead end this notice exists to avoid. Unwrapped commands stay out of it
+ * either way (the 2026-07-15 wrapping rule).
+ */
+describe('failed restart whose status names no command', () => {
+  it('falls back to the generic wrapped restart command', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const noCommand = {
+        pending: { api: { keys: ['api.port'], since: Math.floor(Date.now() / 1000) } },
+        attempts: { api: { status: 'failed', message: 'unit not loaded', at: Date.now() / 1000 } },
+        restart_command: null,
+        session_disrupting: [],
+      };
+      server.use(
+        http.post('/api/v1/infra/restart-required', () =>
+          HttpResponse.json({ targets: ['api'], status: 'scheduled' })
+        ),
+        http.get('/api/v1/infra/restart-status', () => HttpResponse.json(noCommand))
+      );
+
+      render(<PendingRestartNotice status={API_PENDING} onStatusChange={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      await waitFor(() => expect(screen.getByText(/did not happen/i)).toBeInTheDocument());
+      // The bare wrapper, with no service argument to append.
+      expect(document.body.textContent).toMatch(/nyxgpt ops restart[^ ]/);
+      expect(document.body.textContent).not.toMatch(/docker compose|brew services|kubectl/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('failedAttemptText', () => {
+  const status = (attempts: Record<string, { status: string; message?: string }>, pending: Record<string, unknown>) =>
+    ({ attempts, pending }) as never;
+
+  it('returns null without a status at all', () => {
+    expect(failedAttemptText(null)).toBeNull();
+  });
+
+  it('returns null when nothing failed', () => {
+    expect(failedAttemptText(status({ api: { status: 'ok' } }, { api: true }))).toBeNull();
+  });
+
+  it('names a single failure with its own message', () => {
+    expect(
+      failedAttemptText(status({ api: { status: 'failed', message: 'Refused to act on invalid service name' } }, { api: true }))
+    ).toBe('api: Refused to act on invalid service name');
+  });
+
+  it('orders several failures by component, whatever order they arrived in', () => {
+    const text = failedAttemptText(
+      status(
+        {
+          web: { status: 'failed', message: 'port 3000 busy' },
+          api: { status: 'failed', message: 'unit not loaded' },
+          ollama: { status: 'failed', message: 'not installed' },
+        },
+        { web: true, api: true, ollama: true }
+      )
+    );
+    expect(text).toBe('api: unit not loaded\nollama: not installed\nweb: port 3000 busy');
+  });
+
+  it('falls back to a plain sentence when a failure carries no message', () => {
+    expect(
+      failedAttemptText(status({ api: { status: 'failed', message: '' }, web: { status: 'failed' } }, { api: true, web: true }))
+    ).toBe('api: the restart did not happen\nweb: the restart did not happen');
+  });
+
+  it('ignores a failed attempt for a component that is no longer pending', () => {
+    expect(
+      failedAttemptText(status({ api: { status: 'failed', message: 'stale' } }, { web: true }))
+    ).toBeNull();
   });
 });
