@@ -253,9 +253,85 @@ for one you named with `--host`:
   `--host` is not nyxGPT's to configure, so `nyxgpt cloud allow-ip` does not
   apply to it and SSH reachability for *that* machine is yours to arrange.
 
-Everything after provisioning is identical to the Linux path:
-`nyxgpt cloud tunnel` is still the only access path, and the app and web UI
-still bind `127.0.0.1` on the instance.
+Everything after provisioning works the same way as the Linux path: an SSH
+forward to a loopback address is the only access path, and the app and web UI
+still bind `127.0.0.1` on the instance. `nyxgpt cloud tunnel` forwards the
+stack's ports; on a Mac there is one more thing worth reaching, and
+[`nyxgpt cloud screen`](#reaching-the-macs-screen-4121) forwards that the same
+way.
+
+#### Reaching the Mac's screen (#4121)
+
+The only reason to pay a Dedicated Host's 24-hour minimum is that the hardware
+is a Mac — and a Mac has a screen. When the platform misbehaves in a way CI
+structurally cannot reproduce (EC2 Mac hardware is on the short list in
+[live-verification-ci.md](live-verification-ci.md)), looking at it is the test:
+
+```bash
+nyxgpt cloud screen                   # enable Screen Sharing + open the forward
+nyxgpt cloud screen --status          # is the path open, and what is enabled?
+nyxgpt cloud screen --status --show-password   # print the VNC credential
+nyxgpt cloud screen --stop            # close the forward
+nyxgpt cloud screen --disable         # close it and turn Screen Sharing off
+```
+
+The command does three things and asks you to type none of them:
+
+1. Enables macOS Screen Sharing on the Mac over the same wrapped SSH path
+   every other remote step uses.
+2. Makes it **loopback-only before it listens** (see below).
+3. Forwards `localhost:5900` to the Mac's `127.0.0.1:5900`, and prints the
+   `vnc://localhost:5900` address to point a VNC client at.
+
+**Nothing is listening on a non-loopback address, and no port is opened.** This
+is [`DECISION_PRIVATE_ACCESS_MECHANISM.md`](../product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md)
+applied to the screen exactly as it is applied to the app ports: the Mac's
+security group stays **TCP 22 only**, and `nyxgpt cloud screen` never touches
+it. A version of this that opened 5900 to your `/32` is not what you get —
+that is the alternative the decision compared and rejected.
+
+Getting there takes one step the app ports do not need. macOS's
+`com.apple.screensharing` job binds 5900 on *all* interfaces and its launchd
+plist is protected by System Integrity Protection, so the bind address is not
+nyxGPT's to change. What nyxGPT changes instead is the Mac's own packet filter
+— `pf`, which macOS already ships, so nothing is installed:
+
+| Step | Why in this order |
+| --- | --- |
+| Write and load a `pf` anchor that passes port 5900 on `lo0` and **drops it everywhere else** | Activating the agent first would leave a window, however short, with a network-reachable listener |
+| Read the anchor back and check the block rule is in it | `pfctl -f` exits 0 on a ruleset it only warned about, so a zero exit is not evidence |
+| **Only then** activate the Screen Sharing agent | If the rule did not load, the command fails here with nothing enabled and nothing listening |
+
+`--disable` turns the agent off and deliberately **leaves the `pf` rule
+loaded**: it blocks a port nothing is listening on, so it costs nothing, and it
+closes the window for any later run that fails between the two steps.
+
+**The credential.** A VNC password is generated on first use and stored in
+`~/.nyxGPT/secrets/cloud-mac-vnc-password` (mode 0600), the same place every
+other ops-managed secret on your machine lives. It is never prompted for, never
+printed unless you ask with `--show-password`, never in any `ssh` argv or shell
+history (the configuration script travels on the connection's stdin), and never
+in the `--json` payload or the HTTP API. `--rotate-password` replaces it.
+
+Because Apple's legacy VNC authentication uses that password alone, **no account
+password is ever set on the Mac** — the hand-rolled version of this flow needed
+a `passwd` on the login user, and this one does not.
+
+**Where it will refuse, and why.** Both refusals are scoped the way
+`nyxgpt cloud allow-ip` is — to machines nyxGPT configured:
+
+| Target | What happens |
+| --- | --- |
+| A Linux deployment | Refused: there is no screen to share. `nyxgpt cloud ops doctor` is how that box is inspected |
+| A Mac you supplied with `--host` | Refused: that machine's security group is not nyxGPT's, so nyxGPT cannot know whether 5900 is exposed on it — and enabling a listener behind a firewall nobody checked is how the loopback-only guarantee gets traded away by accident |
+| The Mac nyxGPT allocated | Works, with no flags: the address comes from the Dedicated Host record, and the SSH user and identity file from the deploy record |
+
+`nyxgpt cloud status` reports whether the path is open, and so does the admin
+Infrastructure page — both as *observation*, with the command named as text.
+Neither opens it: per the
+[Definition of Done](../CLAUDE.md#definition-of-done-owner-requirement-2026-07-08),
+a UI served by (or alongside) the machine being operated is not where access to
+that machine is driven from.
 
 #### Teardown, and the deferred host release
 
@@ -363,6 +439,11 @@ ingress rule, the enabled observability profiles, the tunnel's state, a
 health verdict, the localhost URLs and, most importantly, the **connection
 target**: the SSH user and identity file the deploy actually used, alongside
 the host. `host` on its own is not an address you can reach.
+
+On an EC2 Mac deployment the summary adds a **`Screen path`** row — open,
+enabled-but-closed, or never set up — and names
+[`nyxgpt cloud screen`](#reaching-the-macs-screen-4121). The row is absent on a
+Linux deployment, which has no screen to report on.
 
 For support conversations it also prints, under a `Diagnostics` heading, the
 raw `ssh` invocation that `nyxgpt cloud tunnel` executes on your behalf.
@@ -485,6 +566,12 @@ on a non-loopback address, and no application port is open in the security
 group, so the tunnel is the only path in. If a local port is already taken
 (a local stack on 8000/3000, say), the tunnel refuses to open and says so;
 `nyxgpt ops down` frees them.
+
+On an **EC2 Mac** target there is one more thing worth forwarding, and it is
+forwarded the same way: see
+[Reaching the Mac's screen](#reaching-the-macs-screen-4121). It is a separate
+command (`nyxgpt cloud screen`) rather than a port on this list, because it
+also has to enable a service on the Mac and carries a credential of its own.
 
 ### `nyxgpt cloud credentials`
 

@@ -1703,6 +1703,97 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  it('reports the EC2 Mac screen path on a macOS deployment, and only there (#4121)', async () => {
+    // Observable, not operable (D-017): the page says whether the screen path
+    // is open and names the wrapped command, and carries no control that
+    // opens it. The three states are distinct answers with distinct next
+    // commands, so collapsing any two would send an operator to re-run a
+    // configuration step that already succeeded.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const base = {
+      ...CLOUD_DEPLOY_UNKNOWN,
+      source: 'deploy-record',
+      known: true,
+      deployed: true,
+      version: '3.0.0',
+      os_family: 'macos',
+      tunnel: { running: false, pid: 0, host: '', profiles: [], urls: {} },
+      commands: {
+        ...CLOUD_DEPLOY_UNKNOWN.commands,
+        screen: 'nyxgpt cloud screen',
+        screen_stop: 'nyxgpt cloud screen --stop',
+      },
+    };
+    const screenPayload = {
+      running: true,
+      pid: 4242,
+      local_port: 5900,
+      url: 'vnc://localhost:5900',
+      configured: true,
+      configured_at: '2026-10-02T05:00:00',
+      password_file: '/home/op/.nyxGPT/secrets/cloud-mac-vnc-password',
+      command: 'nyxgpt cloud screen',
+      stop_command: 'nyxgpt cloud screen --stop',
+    };
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...base, screen: screenPayload })
+      )
+    );
+    const open = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/open at vnc:\/\/localhost:5900 \(pid 4242\)/)).toBeInTheDocument();
+    });
+    // The pointer is there; a button is not.
+    expect(screen.getAllByText('nyxgpt cloud screen').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /screen/i })).toBeNull();
+    open.unmount();
+
+    // Enabled on the Mac but no tunnel: a different answer from "never set up".
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...base,
+          screen: { ...screenPayload, running: false, pid: 0, url: '' },
+        })
+      )
+    );
+    const closed = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Screen Sharing is enabled on the Mac \(loopback only\)/)).toBeInTheDocument();
+    });
+    closed.unmount();
+
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...base,
+          screen: { ...screenPayload, running: false, pid: 0, url: '', configured: false },
+        })
+      )
+    );
+    const never = render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/not set up — `nyxgpt cloud screen` opens one/)).toBeInTheDocument();
+    });
+    never.unmount();
+
+    // A Linux deployment has no screen, so the row and the pointer are absent
+    // rather than claiming a closed path on a box that has not got one.
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({ ...base, os_family: 'linux', screen: screenPayload })
+      )
+    );
+    render(<InfrastructurePage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Linux — published PyPI release/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Mac screen path')).toBeNull();
+    expect(screen.queryByText('nyxgpt cloud screen')).toBeNull();
+  });
+
   it('reads "not provisioned" only when this machine has Terraform state that records no instance', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     server.use(
