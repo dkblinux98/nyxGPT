@@ -15035,12 +15035,18 @@ def _k8s_prometheus_api_scrape_issue() -> str | None:
 
 
 def _k8s_error_tracking_dsn() -> str:
-    """The error-tracking DSN the api/web Pods were started with, or "".
+    """The error-tracking DSN the api/web Pods are *provisioned* with, or "".
 
     Read from the Secret rather than from the host's config.ini because they
     are different values: GlitchTip mints a per-install project key, and
     `_k8s_provision_glitchtip` writes the cluster's into this Secret while the
     host's config.ini carries whatever a native `glitchtip-init` wrote there.
+
+    This is the value the Pods will carry *next time they start* -- not
+    necessarily what the running ones carry, which only the Pod itself can
+    answer (`_k8s_error_tracking_dsn_state`, #3990). The two diverge whenever a
+    Pod booted before provisioning, and conflating them is what let `doctor`
+    report a healthy error-tracking path over an api reporting nowhere.
 
     The value never reaches a log or an argv. `kubectl get secret` returns it
     on stdout, and `_run` logs stdout only on a NON-zero exit -- where there
@@ -15085,14 +15091,39 @@ def _k8s_error_tracking_dsn_drift_issue() -> str | None:
     This asks the in-cluster GlitchTip with the credential the cluster's own
     consumer uses -- the token mounted into the Grafana Pod, the same one
     `_k8s_errors_flow_result` presents -- and compares against the DSN the
-    api/web Pods actually carry. An empty DSN is not a drift (a
-    `--skip-observability` install leaves error tracking inert by design), and
-    a GlitchTip that cannot be asked is not a drift either: that is the
-    errors-flow line's finding, not this one's.
+    Secret carries. An empty Secret is not a drift (a `--skip-observability`
+    install leaves error tracking inert by design), and a GlitchTip that
+    cannot be asked is not a drift either: that is the errors-flow line's
+    finding, not this one's.
+
+    **The Secret is not the Pods** (#3990, owner acceptance 2026-08-26). An
+    environment is fixed at process start, so a Pod that booted before the DSN
+    was provisioned keeps the empty one it started with however correct
+    `nyxgpt-secrets` has since become -- which is exactly the state that
+    reached acceptance testing. On it, the key comparison below passes (the
+    Secret's key IS a live GlitchTip key), so without the Pod-side question
+    first, `doctor` printed no finding at all while `ops status`'s `errors:`
+    line printed `[FAIL]` about the same deployment. Two surfaces must not
+    disagree about one fact (#3827), and of the two the `[FAIL]` is right: an
+    api with no DSN reports errors nowhere. So the Pods are asked first,
+    through the same primitive the status line uses, and the Secret/key
+    comparison is what remains once they do carry one.
     """
     dsn = _k8s_error_tracking_dsn()
     if not dsn:
         return None
+
+    dsn_state, _ = _k8s_error_tracking_dsn_state()
+    if dsn_state == _K8S_DSN_UNSET:
+        return (
+            f"The {K8S_APP_SECRET_NAME} Secret carries an error-tracking DSN but the "
+            f"running {K8S_ERROR_TRACKING_DSN_PROBE_DEPLOYMENT} Pod has none "
+            "(NYXGPT_ERROR_TRACKING_DSN is empty) -- a Pod's environment is fixed at "
+            "process start, so it kept the empty value it booted with and is reporting "
+            "errors nowhere. Fix: nyxgpt ops glitchtip-init --kubernetes (it rolls "
+            "api/web whenever the running Pods lack the DSN)."
+        )
+
     try:
         configured_key = httpx.URL(dsn).username
     except Exception:

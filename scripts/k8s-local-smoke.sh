@@ -892,6 +892,19 @@ grep -q "\\[FAIL\\] errors: the api has no error-tracking DSN" /tmp/k8s-smoke-st
 observability tier -- this check cannot detect the #3990 AC2 defect and is worthless as a gate"
 ok "an api reporting errors nowhere is reported as a failure, not as a healthy tier"
 
+# ...and `doctor` must say the same thing about the same cluster. Its
+# cluster-side DSN drift check (#3987) compares the SECRET's key against
+# GlitchTip's live keys, and in this injected state that comparison PASSES --
+# the Secret is back and its key is genuinely live -- so a doctor that asks
+# only the Secret prints nothing here while `status` prints `[FAIL]`. Two
+# surfaces must not disagree about one fact (#3827), so this gates the
+# agreement, not just the one line. `|| true`: doctor exits 2 on any finding.
+nyxgpt ops doctor >/tmp/k8s-smoke-doctor-nodsn.txt 2>&1 || true
+grep -q "NYXGPT_ERROR_TRACKING_DSN is empty" /tmp/k8s-smoke-doctor-nodsn.txt ||
+    fail "nyxgpt ops doctor reports nothing about an api Pod with no error-tracking DSN while \
+nyxgpt ops status calls it a [FAIL] -- two surfaces disagreeing about one deployment (#3827)"
+ok "doctor and status agree that this api is reporting errors nowhere"
+
 # ...and the wrapped repair path, which also proves the rollout is driven by
 # what the running Pod has rather than by whether the DSN changed on disk.
 nyxgpt ops glitchtip-init --kubernetes ||
@@ -904,7 +917,12 @@ if grep -q "\\[FAIL\\] errors: the api has no error-tracking DSN" \
     fail "the api still has no DSN after glitchtip-init -- the repair path does not roll the \
 Pod that booted without one"
 fi
-ok "glitchtip-init re-wired the api and the report went green again"
+nyxgpt ops doctor >/tmp/k8s-smoke-doctor-redsn.txt 2>&1 || true
+if grep -q "NYXGPT_ERROR_TRACKING_DSN is empty" /tmp/k8s-smoke-doctor-redsn.txt; then
+    fail "doctor still reports the api as having no DSN after glitchtip-init repaired it -- the \
+finding is not derived from the running Pod"
+fi
+ok "glitchtip-init re-wired the api and both reports went green again"
 
 step "17/19 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
