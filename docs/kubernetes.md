@@ -157,14 +157,17 @@ Both readouts the operator actually looks at carry these labels, not raw
 `kubectl` output: `nyxgpt ops status` prints `[OK]`/`[PENDING]`/`[FAIL]` per
 Pod (with the reason for a failed one) and per observability workload, and the
 Infrastructure page in the admin dashboard badges both lists READY / PENDING
-(amber) / FAILED from the same classification.
+(amber) / FAILED from the same classification. Pods carry one further label,
+`[SUPERSEDED]` (grey on the page) — see "a Pod the rollout already replaced"
+under [Observability in the cluster](#observability-in-the-cluster).
 
-A fourth label, `[ATTENTION]`, marks a **misconfiguration the step found**: not
-a failure of the step, and not a pass either. The observability GlitchTip checks
-use it — a placeholder or rejected Grafana token means every SRE Home GlitchTip
-panel will answer `401` until an operator acts, which is nothing like the
-`[NO DATA]` of a backend that is up and has simply received nothing yet. It logs
-at WARNING with its remedy; it does not fail the install (#3956).
+One further label belongs to the report *lines* rather than to a Pod:
+`[ATTENTION]` marks a **misconfiguration the step found** — not a failure of the
+step, and not a pass either. The observability GlitchTip credential check uses
+it: a placeholder or rejected Grafana token means every SRE Home GlitchTip panel
+will answer `401` until an operator acts, which is nothing like the `[NO DATA]`
+of a backend that is up and has simply received nothing yet. It logs at WARNING
+with its remedy; it does not fail the install (#3956).
 
 **A Pod no live controller owns is not the deployment's state.** Pods whose
 ReplicaSet the Deployment controller has scaled to zero are dropped from every
@@ -894,9 +897,10 @@ Notes:
   reports errors nowhere however healthy GlitchTip is, so that one is a
   `[FAIL]`, not a `[NO DATA]`. `error reporting credentials:` asks whether
   Grafana's bearer token is accepted, i.e. whether the SRE Home panels will
-  401. Collapsing the two into one `errors:` line is what let an api with no
-  DSN print green through the whole report (owner acceptance, 2026-08-26) --
-  the credential was fine and the wiring was not.
+  401; that is the line the `[ATTENTION]` label above belongs to. Collapsing
+  the two into one `errors:` line is what let an api with no DSN print green
+  through the whole report (owner acceptance, 2026-08-26) -- the credential was
+  fine and the wiring was not.
 
   The DSN question is asked of the **Pod**, never of the Secret: an
   environment is fixed at process start, so a Pod that booted before
@@ -912,6 +916,17 @@ Notes:
   command, since the workload has a Ready Pod of a newer revision serving in
   its place. A terminal Pod of the *current* revision, or one with no Ready
   replacement, still fails.
+
+  This is the **second** of the two rules above that keep a finished rollout's
+  residue out of the verdict, and the two are not interchangeable. "A Pod no
+  live controller owns" asks the ReplicaSets which have been scaled to zero
+  and drops their Pods from every readout, for the install, self-heal and
+  `nyxgpt canary status` alike. `[SUPERSEDED]` needs no second question of the
+  cluster, so it still answers for the two populations that rule cannot see: a
+  StatefulSet's rolled Pod, which no ReplicaSet owns at all, and any residue
+  left on a run where the ReplicaSet query itself timed out -- which on a
+  node sized for one rollout's surge is exactly the run that leaves residue
+  behind.
 - **Storage is ephemeral.** Prometheus, Loki, Grafana and GlitchTip's
   Postgres use `emptyDir`, not PersistentVolumeClaims: `nyxgpt ops down
   --kubernetes` deletes the local cluster nyxgpt provisioned, so there is
