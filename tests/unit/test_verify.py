@@ -387,7 +387,10 @@ def test_capture_dashboard_screenshots_happy_path(monkeypatch, tmp_path):
     assert "http://grafana.test/d/dash-b?orgId=1&kiosk" in goto_urls
     browser.new_context.assert_called_once()
     _, kwargs = browser.new_context.call_args
-    assert kwargs["http_credentials"] == {"username": "admin", "password": "pw"}  # pragma: allowlist secret
+    assert kwargs["http_credentials"] == {
+        "username": "admin",
+        "password": "pw",
+    }  # pragma: allowlist secret
 
 
 def test_capture_dashboard_screenshots_records_per_dashboard_failure(monkeypatch, tmp_path):

@@ -340,7 +340,11 @@ def test_score_relevance_unexpected_response_format(monkeypatch: pytest.MonkeyPa
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="fixture-small:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     mock_response = Mock()
@@ -367,7 +371,11 @@ def test_score_relevance_invalid_score_format(monkeypatch: pytest.MonkeyPatch) -
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="fixture-small:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     response_data = {"message": {"content": '{"not_score": 0.5}'}}
@@ -395,7 +403,11 @@ def test_score_relevance_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="fixture-small:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     import io
@@ -427,7 +439,11 @@ def test_score_relevance_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="fixture-small:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     error = urllib.error.URLError("connection refused")
@@ -451,7 +467,11 @@ def test_score_relevance_json_decode_error(monkeypatch: pytest.MonkeyPatch) -> N
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="fixture-small:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     response_data = {"message": {"content": "not valid json at all"}}
