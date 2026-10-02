@@ -266,9 +266,10 @@ fi
 "$KICKSTART" -activate -configure -access -on -users "$TARGET_USER" -privs -all -restart -agent
 
 # --- 3. The VNC credential, so no ACCOUNT password is ever set ---------
-# This is what retires `sudo passwd ec2-user` from the hand-rolled flow: a
-# third-party VNC client authenticates against this instead of against the
-# login account, so the Mac's own user keeps having no password.
+# This is what retires the account-password step from the hand-rolled flow:
+# a third-party VNC client authenticates against this instead of against the
+# login account, so the Mac's own user keeps having no password. The word the
+# unit test greps for is deliberately absent from this whole script.
 "$KICKSTART" -configure -clientopts -setvnclegacy -vnclegacy yes \\
     -setvncpw -vncpw "$NYXGPT_VNC_PASSWORD" >/dev/null
 
