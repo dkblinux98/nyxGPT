@@ -1887,6 +1887,52 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #4122; extends **D-043**; cites **D-047**, **D-030**, **D-006**.
 
+- **D-054** · 2026-10-02 · developer-agent (owner acceptance #3806, via
+  #4043) — **An injection barrier's character class is defined by what the
+  sink legitimately accepts, and is set per sink rather than once for the
+  module.** `self_heal.py` inlines one guard
+  (`re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", x)`) at nine sinks, because
+  CodeQL #4 recognizes that call form and not a constant or a helper. One of
+  those nine takes a *Homebrew formula* name, and Homebrew's versioned-formula
+  syntax carries `@` — so the guard refused `nyxgpt-api@3.0.0rc`, which is
+  what every candidate-channel install registers and what
+  `brew_services.resolve` correctly resolves `api` to (#3853, #3861). The
+  watchdog therefore could not heal `api` or `web` on **any** rc install, the
+  channel release candidates are accepted on, and the Restart control on the
+  pending-restart notice was a silent no-op (the **D-030(b)** shape again:
+  the one install flow used to accept a release is the one the machinery
+  structurally cannot run in). Only the watchdog being off on the owner's
+  machine kept it from surfacing before #3806's acceptance round.
+
+  Three parts to the decision, in descending generality:
+
+  (a) *Widen the validator, not the caller.* `ops` already resolved and
+  passed the correct `@`-suffixed name; `python@3.12` is an equally
+  legitimate formula. A caller-side exemption would have left the validator
+  wrong for the next caller.
+
+  (b) *Per-sink, not module-wide.* The issue reported five refusal sites and
+  inferred the defect was at all of them. Traced: the `@` name reaches
+  exactly one (`_restart_brew_service`). The other eight take Compose service
+  names, Docker container names, launchd labels and Pod names, none of which
+  can carry `@`, and widening them would admit names those tools cannot have.
+  **Do not "finish the job" by widening the rest.**
+
+  (c) *A duplicated guard needs a drift test, not a convention.* #3861's
+  first fix qualified ops' sites and left self_heal's bare, and the automated
+  recovery path stayed broken on the machines the manual one had been
+  repaired for. The literal is now pinned to `brew_services.SEGMENT_PATTERN`
+  by a test that reads the function's own source.
+
+  The behaviours are not recorded here — they are pinned by
+  `tests/unit/test_brew_formula_at_version.py` and by
+  `macos-brew-smoke.yml` → `stable-over-candidate` → "Self-heal can restart
+  the candidate's own service (#4043)", which reverts the barrier in the
+  installed keg and requires the refusal before requiring the restart.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4043; cites **D-030**, **D-022**; relates to **D-032**, **D-047**.
+
 - **D-052** · 2026-10-01 · developer-agent (owner acceptance #3956) — Three
   conventions settled by the 2026-08-26 cloud-Kubernetes acceptance round, each
   general rather than specific to that deploy:
