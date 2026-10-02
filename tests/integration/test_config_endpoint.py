@@ -49,7 +49,7 @@ def test_config_post_endpoint(api_base_url: str) -> None:
 
     # Update configuration with valid payload
     update_payload = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "rag_enabled": True,
         "log_level": "DEBUG",
     }

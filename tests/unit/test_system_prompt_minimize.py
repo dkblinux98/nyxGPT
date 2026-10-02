@@ -128,7 +128,7 @@ def test_chat_with_minimize_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     """Test that chat works normally when minimization is disabled."""
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
         "system_prompt": "You are a helpful assistant.",
@@ -161,7 +161,7 @@ def test_chat_with_minimize_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     """Test that chat applies minimization when enabled."""
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
         "system_prompt": "You are a helpful assistant.",

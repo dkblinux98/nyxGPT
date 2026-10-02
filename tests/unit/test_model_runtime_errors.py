@@ -144,7 +144,7 @@ def test_post_json_lines_incomplete_read_raises_model_runtime_error() -> None:
 def test_get_chat_timeout_seconds_default() -> None:
     """300s, raised from 180 when the shipped chat model grew (#3987's CI escalation).
 
-    `qwen3:0.6b` -> `qwen3.5:0.8b` pushed first-token latency on a CPU-only
+    `fixture-prev:0.6b` -> `qwen3.5:0.8b` pushed first-token latency on a CPU-only
     runner past 180s, so `terraform-local-smoke`'s chat returned 500 at exactly
     three minutes -- a timeout wearing an error's clothes, on three unrelated
     branches at once. The number is a property of the shipped model's size, so

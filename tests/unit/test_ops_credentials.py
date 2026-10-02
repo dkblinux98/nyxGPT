@@ -20,7 +20,7 @@ from nyxgpt import ops
 
 BASE_CONFIG = """\
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 host = http://localhost:11434

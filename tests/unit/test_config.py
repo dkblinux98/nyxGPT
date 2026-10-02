@@ -111,7 +111,7 @@ def test_load_config_from_explicit_path(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -119,7 +119,7 @@ base_url = http://127.0.0.1:11434
     )
 
     cfg = load_config(str(ini))
-    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert cfg.get("nyxgpt", "default_model") == "fixture-chat:8b"
     assert cfg.get("ollama", "base_url") == "http://127.0.0.1:11434"
 
 
@@ -139,12 +139,12 @@ def test_load_config_expands_tilde_home(tmp_path: Path, monkeypatch: pytest.Monk
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 """.lstrip(),
     )
 
     cfg = load_config("~/.nyxGPT/config.ini")
-    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert cfg.get("nyxgpt", "default_model") == "fixture-chat:8b"
 
 
 def test_default_log_dir_is_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,7 +204,7 @@ def test_load_config_prints_validation_errors_on_first_load(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 """.lstrip(),
     )
 
@@ -218,7 +218,7 @@ default_model = llama3.1:8b
     captured = capsys.readouterr()
     assert "ERROR: Configuration validation failed" in captured.err
     assert "Missing required section: [ollama]" in captured.err
-    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert cfg.get("nyxgpt", "default_model") == "fixture-chat:8b"
 
 
 def test_validate_config_detects_invalid_port(tmp_path: Path) -> None:
@@ -304,7 +304,7 @@ def test_get_prompt_mode_enabled_default(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -322,7 +322,7 @@ def test_get_prompt_mode_enabled_true(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -343,7 +343,7 @@ def test_get_prompt_mode_enabled_false(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -366,7 +366,7 @@ def test_get_prompt_mode_enabled_invalid_value(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -391,7 +391,7 @@ def test_get_prompt_mode_short_threshold_default(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -409,7 +409,7 @@ def test_get_prompt_mode_short_threshold_configured(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -430,7 +430,7 @@ def test_get_prompt_mode_short_threshold_minimum_value(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -453,7 +453,7 @@ def test_get_prompt_mode_short_threshold_invalid_value(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -478,7 +478,7 @@ def test_get_prompt_mode_long_threshold_default(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -496,7 +496,7 @@ def test_get_prompt_mode_long_threshold_configured(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -518,7 +518,7 @@ def test_get_prompt_mode_long_threshold_enforces_minimum(tmp_path: Path) -> None
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -543,7 +543,7 @@ def test_get_prompt_mode_long_threshold_invalid_value(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -568,7 +568,7 @@ def test_get_rag_good_score_threshold_default(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -586,7 +586,7 @@ def test_get_rag_good_score_threshold_configured(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -607,7 +607,7 @@ def test_get_rag_medium_score_threshold_default(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -625,7 +625,7 @@ def test_get_rag_medium_score_threshold_configured(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -646,7 +646,7 @@ def test_get_rag_enabled_default_is_false(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -669,7 +669,7 @@ def test_get_rag_enabled_reads_canonical_key(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -691,7 +691,7 @@ def test_get_rag_enabled_falls_back_to_legacy_alias(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -712,7 +712,7 @@ def test_get_rag_enabled_canonical_key_takes_precedence(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -734,7 +734,7 @@ def test_validate_config_detects_negative_context_window(tmp_path: Path) -> None
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -758,7 +758,7 @@ def test_validate_config_detects_zero_context_window(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -782,7 +782,7 @@ def test_validate_config_detects_too_small_context_window(tmp_path: Path) -> Non
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -806,7 +806,7 @@ def test_validate_config_detects_too_large_context_window(tmp_path: Path) -> Non
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -832,7 +832,7 @@ def test_validate_config_detects_invalid_context_window_type(tmp_path: Path) -> 
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -858,7 +858,7 @@ def test_validate_config_accepts_valid_context_window(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -884,7 +884,7 @@ def test_validate_config_detects_invalid_warning_threshold_negative(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -912,7 +912,7 @@ def test_validate_config_detects_invalid_warning_threshold_too_large(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -938,7 +938,7 @@ def test_validate_config_detects_invalid_warning_threshold_type(tmp_path: Path) 
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -962,7 +962,7 @@ def test_validate_config_accepts_valid_warning_threshold(tmp_path: Path) -> None
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -987,7 +987,7 @@ def test_validate_config_accepts_boundary_warning_thresholds(tmp_path: Path) -> 
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1007,7 +1007,7 @@ warning_threshold = 0.0
         ini2,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1029,7 +1029,7 @@ def test_validate_config_detects_invalid_model_specific_override(tmp_path: Path)
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1057,7 +1057,7 @@ def test_validate_config_detects_too_large_model_specific_override(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1086,7 +1086,7 @@ def test_validate_config_detects_invalid_model_specific_override_type(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1112,7 +1112,7 @@ def test_validate_config_accepts_valid_model_specific_override(tmp_path: Path) -
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1137,7 +1137,7 @@ def test_get_monitoring_grafana_admin_password_reads_value(tmp_path: Path) -> No
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1158,7 +1158,7 @@ def test_get_monitoring_grafana_admin_password_defaults_to_empty(tmp_path: Path)
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1175,7 +1175,7 @@ def test_get_monitoring_slack_webhook_url_reads_value(tmp_path: Path) -> None:
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1196,7 +1196,7 @@ def test_get_monitoring_slack_webhook_url_defaults_to_empty(tmp_path: Path) -> N
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1215,7 +1215,7 @@ def test_get_monitoring_config_never_exposes_grafana_admin_password(tmp_path: Pa
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 
 [ollama]
 base_url = http://127.0.0.1:11434
@@ -1347,7 +1347,7 @@ def test_load_config_stat_failure_still_loads(
         ini,
         """
 [nyxgpt]
-default_model = llama3.1:8b
+default_model = fixture-chat:8b
 """.lstrip(),
     )
 
@@ -1367,7 +1367,7 @@ default_model = llama3.1:8b
     monkeypatch.setattr(Path, "stat", bad_stat)
 
     cfg = load_config(str(ini))
-    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert cfg.get("nyxgpt", "default_model") == "fixture-chat:8b"
 
 
 # ---------------------------------------------------------------------------
@@ -1491,7 +1491,7 @@ def test_expand_path_accepts_descendants_of_allowed_roots(tmp_path: Path) -> Non
 
 def test_get_vectorstore_dir_default(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
 
     cfg = load_config(str(ini))
     assert get_vectorstore_dir(cfg) == Path.home() / ".nyxGPT" / "vectorstore"
@@ -1514,7 +1514,7 @@ vectorstore_dir = {custom}
 
 def test_get_api_host_default(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
 
     cfg = load_config(str(ini))
     assert get_api_host(cfg) == "127.0.0.1"
@@ -1562,7 +1562,7 @@ def test_is_loopback_host(host: str, expected: bool) -> None:
 
 def test_get_auth_enabled_default_false(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
 
     cfg = load_config(str(ini))
     assert get_auth_enabled(cfg) is False
@@ -2068,7 +2068,7 @@ def test_get_batch_wait_time_ms_invalid(tmp_path: Path, caplog: pytest.LogCaptur
 
 def test_get_tracing_enabled_defaults_to_true(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
 
     cfg = load_config(str(ini))
     assert get_tracing_enabled(cfg) is True
@@ -2258,7 +2258,7 @@ def test_get_effective_config_summary_redacts_secrets(tmp_path: Path) -> None:
 
 def test_get_effective_config_summary_empty_secrets_stay_empty(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
 
     summary = get_effective_config_summary(cfg)
@@ -2280,7 +2280,7 @@ def test_get_monitoring_slack_bot_token_reads_value(tmp_path: Path) -> None:
 
 def test_get_monitoring_slack_bot_token_defaults_to_empty(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
     assert get_monitoring_slack_bot_token(cfg) == ""
 
@@ -2311,7 +2311,7 @@ def _clear_cloud_secrets_cache():
 
 def test_get_secrets_provider_defaults_to_empty(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
     assert get_secrets_provider(cfg) == ""
 
@@ -2325,7 +2325,7 @@ def test_get_secrets_provider_reads_and_normalizes_value(tmp_path: Path) -> None
 
 def test_get_secrets_region_returns_none_when_unset(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
     assert get_secrets_region(cfg) is None
 
@@ -2339,14 +2339,14 @@ def test_get_secrets_region_reads_value(tmp_path: Path) -> None:
 
 def test_get_secrets_ssm_prefix_defaults(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
     assert get_secrets_ssm_prefix(cfg) == "/nyxgpt"
 
 
 def test_get_secrets_secretsmanager_id_defaults(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
     assert get_secrets_secretsmanager_id(cfg) == "nyxgpt"
 
@@ -2558,7 +2558,7 @@ def test_get_effective_config_summary_redacts_guided_secrets(tmp_path: Path) -> 
 
 def test_get_effective_config_summary_guided_secrets_empty_stay_empty(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
 
     summary = get_effective_config_summary(cfg)
@@ -2597,7 +2597,7 @@ def test_log_effective_config_logs_at_info(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    _write(ini, "[nyxgpt]\ndefault_model = fixture-chat:8b\n")
     cfg = load_config(str(ini))
 
     with caplog.at_level(logging.INFO, logger="nyxgpt.config"):

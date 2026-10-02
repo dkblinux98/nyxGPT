@@ -359,7 +359,7 @@ def test_build_user_message_document_bad_base64_skipped() -> None:
 def _cfg(tmp_path: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }

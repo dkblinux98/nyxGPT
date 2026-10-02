@@ -36,7 +36,7 @@ from nyxgpt import model_bootstrap, ops
 OLLAMA_LIST_OUTPUT = (
     "NAME                       ID              SIZE      MODIFIED\n"
     "nomic-embed-text:latest    0a109f422b47    274 MB    4 minutes ago\n"
-    "qwen3:0.6b                 7df6b6e09427    522 MB    5 minutes ago\n"
+    "fixture-prev:0.6b                 7df6b6e09427    522 MB    5 minutes ago\n"
 )
 
 
@@ -51,7 +51,7 @@ class _CP:
 
 def _cfg() -> ConfigParser:
     cfg = ConfigParser()
-    cfg["nyxgpt"] = {"default_model": "qwen3:0.6b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-prev:0.6b"}
     cfg["ollama"] = {"base_url": "http://127.0.0.1:11434"}
     cfg["rag"] = {"embedding_model": "nomic-embed-text"}
     return cfg
@@ -113,7 +113,7 @@ def test_the_in_cluster_read_reports_missing_models_as_missing(monkeypatch):
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda *_a, **_k: _CP(stdout="NAME    ID    SIZE    MODIFIED\nqwen3:0.6b  a  1 GB  now\n"),
+        lambda *_a, **_k: _CP(stdout="NAME    ID    SIZE    MODIFIED\nfixture-prev:0.6b  a  1 GB  now\n"),
     )
 
     info = ops.required_models_status(cfg=_cfg(), kubernetes=True)
@@ -164,7 +164,7 @@ def test_the_host_ollama_is_still_what_a_non_kubernetes_status_reports(monkeypat
 
     def fake_installed(base_url=None):
         asked.append(base_url)
-        return {"qwen3:0.6b", "nomic-embed-text:latest"}
+        return {"fixture-prev:0.6b", "nomic-embed-text:latest"}
 
     monkeypatch.setattr(model_bootstrap, "installed_model_names", fake_installed)
     monkeypatch.setattr(
@@ -336,7 +336,7 @@ def test_an_unreadable_namespace_makes_the_model_block_say_it_read_the_host(monk
         "required_models_status",
         lambda **_k: {
             "base_url": "http://127.0.0.1:11434",
-            "models": [{"role": "chat", "model": "qwen3:0.6b", "present": True}],
+            "models": [{"role": "chat", "model": "fixture-prev:0.6b", "present": True}],
             "reachable": True,
             "ready": True,
             "error": "",
@@ -383,7 +383,7 @@ def test_doctor_checks_the_in_cluster_ollama_when_the_deployment_is_kubernetes(
     exists to catch could not be found on a Kubernetes deployment at all."""
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text(
-        "[nyxgpt]\ndefault_model = qwen3:0.6b\n\n[rag]\nembedding_model = nomic-embed-text\n",
+        "[nyxgpt]\ndefault_model = fixture-prev:0.6b\n\n[rag]\nembedding_model = nomic-embed-text\n",
         encoding="utf-8",
     )
     _never_asked_natively(monkeypatch)
@@ -391,7 +391,7 @@ def test_doctor_checks_the_in_cluster_ollama_when_the_deployment_is_kubernetes(
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda *_a, **_k: _CP(stdout="NAME    ID    SIZE    MODIFIED\nqwen3:0.6b  a  1 GB  now\n"),
+        lambda *_a, **_k: _CP(stdout="NAME    ID    SIZE    MODIFIED\nfixture-prev:0.6b  a  1 GB  now\n"),
     )
 
     issue = ops._missing_required_models_issue(cfg_path, kubernetes=True)
@@ -409,7 +409,7 @@ def test_doctor_is_silent_when_the_in_cluster_ollama_cannot_be_asked(monkeypatch
     fault, reported by the Pod lines, and inferring "model missing" from it
     would misname it."""
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen3:0.6b\n", encoding="utf-8")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-prev:0.6b\n", encoding="utf-8")
     monkeypatch.setattr(ops, "_which", lambda _prog: "/usr/local/bin/kubectl")
     monkeypatch.setattr(ops, "_run", lambda *_a, **_k: _CP(stderr="no such pod", returncode=1))
 
@@ -421,7 +421,7 @@ def test_doctor_still_reads_the_host_when_no_kubernetes_deployment_is_running(
     monkeypatch, tmp_path
 ):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen3:0.6b\n", encoding="utf-8")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-prev:0.6b\n", encoding="utf-8")
     monkeypatch.setattr(
         ops,
         "_k8s_installed_model_names",
@@ -503,7 +503,7 @@ def test_the_ollama_list_header_is_not_read_as_a_model(monkeypatch):
     names, error, detail = ops._k8s_installed_model_names()
 
     assert error == "" and detail == ""
-    assert names == {"nomic-embed-text:latest", "qwen3:0.6b"}
+    assert names == {"nomic-embed-text:latest", "fixture-prev:0.6b"}
 
 
 @pytest.mark.unit

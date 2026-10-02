@@ -310,7 +310,7 @@ def test_sessions_stats_displays_message_counts(
         "summary": "A test session for statistics",
         "created_at": "2024-01-01T12:00:00",
         "updated_at": "2024-01-01T13:00:00",
-        "model": "llama3.1:8b",
+        "model": "fixture-chat:8b",
         "rag_enabled": True,
         "pinned": True,
         "tags": ["test", "stats"],
@@ -350,7 +350,7 @@ def test_sessions_stats_displays_message_counts(
 
     # Check configuration
     assert "Configuration:" in captured.out
-    assert "Model: llama3.1:8b" in captured.out
+    assert "Model: fixture-chat:8b" in captured.out
     assert "RAG: Enabled" in captured.out
     assert "Pinned: Yes" in captured.out
     assert "Tags: test, stats" in captured.out
@@ -1188,7 +1188,7 @@ def test_models_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     def mock_list_models():
         return [
             {
-                "name": "llama3.1:8b",
+                "name": "fixture-chat:8b",
                 "size": 4800000000,
                 "modified_at": "2024-01-01T12:00:00",
             },
@@ -1205,7 +1205,7 @@ def test_models_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 
     assert exit_code == 0
     captured = capsys.readouterr()
-    assert "llama3.1:8b" in captured.out
+    assert "fixture-chat:8b" in captured.out
     assert "mistral:latest" in captured.out
 
 
@@ -1235,7 +1235,7 @@ def test_models_pull(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 
     monkeypatch.setattr(models_mod, "pull_model", mock_pull_model)
 
-    exit_code = cli(["models", "pull", "llama3.1:8b"])
+    exit_code = cli(["models", "pull", "fixture-chat:8b"])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -1250,11 +1250,11 @@ def test_models_delete_with_force(
 
     monkeypatch.setattr(models_mod, "delete_model", lambda name: None)
 
-    exit_code = cli(["models", "delete", "llama3.1:8b", "--force"])
+    exit_code = cli(["models", "delete", "fixture-chat:8b", "--force"])
 
     assert exit_code == 0
     captured = capsys.readouterr()
-    assert "Deleted model: llama3.1:8b" in captured.out
+    assert "Deleted model: fixture-chat:8b" in captured.out
 
 
 def test_models_show(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1270,11 +1270,11 @@ def test_models_show(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 
     monkeypatch.setattr(models_mod, "show_model", mock_show_model)
 
-    exit_code = cli(["models", "show", "llama3.1:8b"])
+    exit_code = cli(["models", "show", "fixture-chat:8b"])
 
     assert exit_code == 0
     captured = capsys.readouterr()
-    assert "Model: llama3.1:8b" in captured.out
+    assert "Model: fixture-chat:8b" in captured.out
     assert "Modelfile:" in captured.out
 
 
@@ -2541,7 +2541,7 @@ def test_batch_update_meta_success(tmp_path: Path, capsys: pytest.CaptureFixture
             "--sessions-dir",
             str(sessions_dir),
             "--model",
-            "llama3.1:8b",
+            "fixture-chat:8b",
             "--rag-enabled",
             "true",
         ]
@@ -2572,7 +2572,7 @@ def test_batch_update_meta_full_success(tmp_path: Path, capsys: pytest.CaptureFi
             "--sessions-dir",
             str(sessions_dir),
             "--model",
-            "llama3.1:8b",
+            "fixture-chat:8b",
         ]
     )
 

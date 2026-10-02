@@ -77,7 +77,7 @@ class FakeHttp:
         if base != cloud_smoke.API_BASE:
             return 200, "ok"
         if path == "/models":
-            return 200, json.dumps({"models": ["llama3.1:8b"]})
+            return 200, json.dumps({"models": ["fixture-chat:8b"]})
         if path == "/models/required":
             return 200, json.dumps(
                 {
@@ -89,7 +89,7 @@ class FakeHttp:
                     "models": [
                         {
                             "role": "chat",
-                            "model": "llama3.1:8b",
+                            "model": "fixture-chat:8b",
                             "setting": "[nyxgpt] default_model",
                             "present": True,
                         },
@@ -180,7 +180,7 @@ def _install(monkeypatch, *, deploy: FakeDeploy, http: FakeHttp, tunnel_running:
         lambda *a, **k: subprocess.CompletedProcess(
             args=["ssh"],
             returncode=0,
-            stdout=json.dumps({"api_key": "secret-key", "default_model": "llama3.1:8b"}) + "\n",
+            stdout=json.dumps({"api_key": "secret-key", "default_model": "fixture-chat:8b"}) + "\n",
             stderr="",
         ),
     )
@@ -450,7 +450,7 @@ def test_a_missing_required_model_fails_the_run(monkeypatch):
             "models": [
                 {
                     "role": "chat",
-                    "model": "llama3.1:8b",
+                    "model": "fixture-chat:8b",
                     "setting": "[nyxgpt] default_model",
                     "present": False,
                 }
@@ -464,7 +464,7 @@ def test_a_missing_required_model_fails_the_run(monkeypatch):
     result = cloud_smoke.run_smoke(_args())
 
     assert result["passed"] is False
-    assert "missing required model(s) llama3.1:8b" in result["failure"]
+    assert "missing required model(s) fixture-chat:8b" in result["failure"]
     assert deploy.destroys == 1
 
 
@@ -479,7 +479,7 @@ def test_an_unreachable_ollama_fails_the_run(monkeypatch):
             "models": [
                 {
                     "role": "chat",
-                    "model": "llama3.1:8b",
+                    "model": "fixture-chat:8b",
                     "setting": "[nyxgpt] default_model",
                     "present": None,
                 }

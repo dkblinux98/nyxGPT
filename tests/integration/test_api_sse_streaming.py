@@ -23,7 +23,7 @@ def test_sse_streaming_content_type(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-content-type",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200
@@ -44,7 +44,7 @@ def test_sse_event_format(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-format",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200
@@ -84,7 +84,7 @@ def test_sse_heartbeat_event(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-heartbeat",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200
@@ -120,7 +120,7 @@ def test_sse_message_events(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-messages",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200
@@ -166,7 +166,7 @@ def test_sse_done_event(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-done",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200
@@ -207,7 +207,7 @@ def test_sse_metadata_event(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-metadata",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200
@@ -235,7 +235,7 @@ def test_sse_metadata_event(require_ollama):
         assert "model" in metadata
         assert "timestamp" in metadata
         assert metadata["session"] == "test-sse-metadata"
-        assert metadata["model"] == "llama3.1:8b"
+        assert metadata["model"] == "fixture-chat:8b"
 
 
 def test_sse_event_ids_incremental(require_ollama):
@@ -248,7 +248,7 @@ def test_sse_event_ids_incremental(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-event-ids",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         assert response.status_code == 200

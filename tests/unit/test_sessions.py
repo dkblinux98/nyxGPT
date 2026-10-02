@@ -21,7 +21,7 @@ def _cfg_with_sessions_dir(sessions_dir: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
         "sessions_dir": str(sessions_dir),
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         # Disable auto-summarization and auto-sync to prevent session renaming during tests
         "auto_summarize_enabled": "false",
         "auto_sync_filename": "false",
@@ -38,7 +38,7 @@ def _cfg_auto_summarize(
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
         "sessions_dir": str(sessions_dir),
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "auto_summarize_enabled": "true",
         "auto_summarize_after_messages": str(after_messages),
         "auto_sync_filename": "true" if auto_sync else "false",
@@ -54,7 +54,7 @@ def test_init_session_creates_files_and_defaults(tmp_path: Path) -> None:
         session_name="test-1",
         sessions_dir=sessions_dir,
         new_session=True,
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
         system="You are helpful.",
     )
 
@@ -67,7 +67,7 @@ def test_init_session_creates_files_and_defaults(tmp_path: Path) -> None:
     assert msgs[0]["content"] == "You are helpful."
 
     # Meta defaults
-    assert meta.get("model") == "llama3.1:8b"
+    assert meta.get("model") == "fixture-chat:8b"
     assert isinstance(meta.get("created_at"), str)
     assert isinstance(meta.get("updated_at"), str)
 
@@ -117,8 +117,8 @@ def test_list_sessions_finds_created_sessions(tmp_path: Path) -> None:
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
     sessions_dir = sessions.get_sessions_dir(cfg)
 
-    sessions.init_session("a", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("b", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("a", sessions_dir, new_session=True, model="fixture-chat:8b")
+    sessions.init_session("b", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     found = sessions.list_sessions(cfg)
     # list_sessions may return dict rows; normalize to names
@@ -239,7 +239,7 @@ def test_export_session_markdown(tmp_path: Path) -> None:
         "created_at": "2024-01-01T12:00:00",
         "updated_at": "2024-01-01T12:05:00",
         "tags": ["test", "example"],
-        "model": "llama3.1:8b",
+        "model": "fixture-chat:8b",
         "pinned": False,
         "token_estimate": 100,
     }
@@ -255,7 +255,7 @@ def test_export_session_markdown(tmp_path: Path) -> None:
     assert "**Summary:** A test conversation" in content
     assert "**Session:** test-session" in content
     assert "**Tags:** test, example" in content
-    assert "**Model:** llama3.1:8b" in content
+    assert "**Model:** fixture-chat:8b" in content
     assert "## User" in content
     assert "Hello" in content
     assert "## Assistant" in content
@@ -324,7 +324,7 @@ def test_export_session_html(tmp_path: Path) -> None:
         "created_at": "2024-01-01T12:00:00",
         "updated_at": "2024-01-01T12:05:00",
         "tags": ["html", "test"],
-        "model": "llama3.1:8b",
+        "model": "fixture-chat:8b",
         "pinned": False,
         "token_estimate": 50,
     }
@@ -490,7 +490,7 @@ def test_export_includes_all_metadata_fields(tmp_path: Path) -> None:
         "created_at": "2024-01-01T12:00:00",
         "updated_at": "2024-01-01T13:00:00",
         "tags": ["tag1", "tag2", "tag3"],
-        "model": "llama3.1:8b",
+        "model": "fixture-chat:8b",
         "pinned": True,
         "token_estimate": 123,
     }
@@ -506,7 +506,7 @@ def test_export_includes_all_metadata_fields(tmp_path: Path) -> None:
     assert "2024-01-01T12:00:00" in content
     assert "2024-01-01T13:00:00" in content
     assert "tag1, tag2, tag3" in content
-    assert "llama3.1:8b" in content
+    assert "fixture-chat:8b" in content
 
     # Test JSON export includes all fields
     ok, json_content = sessions.export_session_json("metadata-test", sessions_dir)
@@ -655,7 +655,7 @@ def test_sync_filename_with_title_uses_file_locking(tmp_path: Path) -> None:
         session_name="old-name",
         sessions_dir=sessions_dir,
         new_session=True,
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
     )
     meta["title"] = "New Session Title"
     sessions.save_session_meta(mf, meta)
@@ -690,7 +690,7 @@ def test_file_lock_ordering_prevents_deadlock(tmp_path: Path) -> None:
         session_name="test-lock-order",
         sessions_dir=sessions_dir,
         new_session=True,
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
     )
     meta["title"] = "Lock Order Test"
     sessions.save_session_meta(mf, meta)
@@ -731,7 +731,7 @@ def test_file_lock_concurrent_access_no_deadlock(tmp_path: Path) -> None:
             session_name=session_name,
             sessions_dir=sessions_dir,
             new_session=True,
-            model="llama3.1:8b",
+            model="fixture-chat:8b",
         )
         meta["title"] = f"Concurrent Test {i}"
         sessions.save_session_meta(mf, meta)
@@ -879,7 +879,7 @@ def test_metadata_file_deleted_between_checks(
         session_name="old-session-name",
         sessions_dir=sessions_dir,
         new_session=True,
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
     )
     meta["title"] = "New TOCTOU Test Title"
     sessions.save_session_meta(mf, meta)
@@ -1462,9 +1462,9 @@ def test_batch_delete_sessions(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session3", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session1", sessions_dir, new_session=True, model="fixture-chat:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="fixture-chat:8b")
+    sessions.init_session("session3", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     # Batch delete two sessions
     success, failure, failed = sessions.batch_delete_sessions(
@@ -1491,8 +1491,8 @@ def test_batch_tag_sessions(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session1", sessions_dir, new_session=True, model="fixture-chat:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     # Batch add tags
     success, failure, failed = sessions.batch_tag_sessions(
@@ -1537,13 +1537,13 @@ def test_batch_export_sessions(tmp_path: Path) -> None:
 
     # Create test sessions with messages
     sf1, mf1, msgs1, meta1 = sessions.init_session(
-        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
+        "session1", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs1.append({"role": "user", "content": "Test message 1"})
     sessions.save_session_messages(sf1, msgs1)
 
     sf2, mf2, msgs2, meta2 = sessions.init_session(
-        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
+        "session2", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs2.append({"role": "user", "content": "Test message 2"})
     sessions.save_session_messages(sf2, msgs2)
@@ -1578,8 +1578,8 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session1", sessions_dir, new_session=True, model="fixture-chat:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     # Batch update pinned status
     success, failure, failed = sessions.batch_update_metadata(
@@ -1698,7 +1698,7 @@ def test_rename_session_basic(tmp_path: Path) -> None:
 
     # Create a session
     sf, mf, msgs, meta = sessions.init_session(
-        "old-name", sessions_dir, new_session=True, model="llama3.1:8b"
+        "old-name", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "Test message"})
     sessions.save_session_messages(sf, msgs)
@@ -1745,8 +1745,8 @@ def test_rename_session_target_exists(tmp_path: Path) -> None:
     sessions_dir.mkdir()
 
     # Create two sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session1", sessions_dir, new_session=True, model="fixture-chat:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     # Try to rename session1 to session2
     ok, msg = sessions.rename_session("session1", "session2", sessions_dir)
@@ -1761,7 +1761,7 @@ def test_set_pinned_basic(tmp_path: Path) -> None:
 
     # Create session
     sf, mf, msgs, meta = sessions.init_session(
-        "test-pinned", sessions_dir, new_session=True, model="llama3.1:8b"
+        "test-pinned", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
 
     # Initially not pinned
@@ -1801,7 +1801,7 @@ def test_set_title_basic(tmp_path: Path) -> None:
 
     # Create session
     sf, mf, msgs, meta = sessions.init_session(
-        "test-title", sessions_dir, new_session=True, model="llama3.1:8b"
+        "test-title", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
 
     # Set title
@@ -1890,7 +1890,7 @@ def test_sync_filename_with_title_no_title(tmp_path: Path) -> None:
 
     # Create session without title
     sf, mf, msgs, meta = sessions.init_session(
-        "test-session", sessions_dir, new_session=True, model="llama3.1:8b"
+        "test-session", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     # Don't set a title
 
@@ -1910,14 +1910,14 @@ def test_sync_filename_with_title_collision(tmp_path: Path) -> None:
 
     # Create first session with title
     sf1, mf1, msgs1, meta1 = sessions.init_session(
-        "session-1", sessions_dir, new_session=True, model="llama3.1:8b"
+        "session-1", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta1["title"] = "Collision Test"
     sessions.save_session_meta(mf1, meta1)
 
     # Create second session with same title
     sf2, mf2, msgs2, meta2 = sessions.init_session(
-        "session-2", sessions_dir, new_session=True, model="llama3.1:8b"
+        "session-2", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta2["title"] = "Collision Test"
     sessions.save_session_meta(mf2, meta2)
@@ -1955,7 +1955,7 @@ def test_delete_session_basic(tmp_path: Path) -> None:
 
     # Create session
     sf, mf, msgs, meta = sessions.init_session(
-        "delete-me", sessions_dir, new_session=True, model="llama3.1:8b"
+        "delete-me", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     assert sf.exists()
     assert mf.exists()
@@ -2084,13 +2084,13 @@ def test_apply_system_prompt_none(tmp_path: Path) -> None:
 def test_ensure_meta_defaults_missing_fields(tmp_path: Path) -> None:
     """Test ensure_meta_defaults fills in missing fields."""
     meta = {}
-    result = sessions.ensure_meta_defaults(meta, model="llama3.1:8b")
+    result = sessions.ensure_meta_defaults(meta, model="fixture-chat:8b")
 
     assert "created_at" in result
     assert "updated_at" in result
     assert result["pinned"] is False
     assert result["tags"] == []
-    assert result["model"] == "llama3.1:8b"
+    assert result["model"] == "fixture-chat:8b"
     assert "rag_enabled" in result
 
 
@@ -2153,11 +2153,11 @@ def test_list_sessions_sorting(tmp_path: Path) -> None:
 
     # Create sessions
     sf1, mf1, msgs1, meta1 = sessions.init_session(
-        "unpinned", sessions_dir, new_session=True, model="llama3.1:8b"
+        "unpinned", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
 
     sf2, mf2, msgs2, meta2 = sessions.init_session(
-        "pinned", sessions_dir, new_session=True, model="llama3.1:8b"
+        "pinned", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta2["pinned"] = True
     sessions.save_session_meta(mf2, meta2)
@@ -2176,7 +2176,7 @@ def test_list_sessions_with_path_object(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
 
-    sessions.init_session("test", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("test", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     # Pass Path object instead of config
     result = sessions.list_sessions(sessions_dir)
@@ -2234,7 +2234,7 @@ def test_add_tags_preserves_existing(tmp_path: Path) -> None:
 
     # Create session with existing tags
     sf, mf, msgs, meta = sessions.init_session(
-        "tag-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "tag-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["tags"] = ["existing1", "existing2"]
     sessions.save_session_meta(mf, meta)
@@ -2255,7 +2255,7 @@ def test_remove_tags_case_insensitive(tmp_path: Path) -> None:
 
     # Create session with tags
     sf, mf, msgs, meta = sessions.init_session(
-        "remove-tags-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "remove-tags-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["tags"] = ["Python", "Java", "Rust"]
     sessions.save_session_meta(mf, meta)
@@ -2604,7 +2604,7 @@ def test_init_session_new_session_removes_existing_files(tmp_path: Path) -> None
     sessions_dir = tmp_path / "sessions"
 
     sf, mf, msgs, meta = sessions.init_session(
-        "reset-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "reset-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hello"})
     sessions.save_session_messages(sf, msgs)
@@ -2617,7 +2617,7 @@ def test_init_session_new_session_removes_existing_files(tmp_path: Path) -> None
     # Re-initializing with new_session=True should unlink both existing files
     # (session + meta) before recreating them fresh.
     sf2, mf2, msgs2, meta2 = sessions.init_session(
-        "reset-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "reset-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     assert msgs2 == []
     assert meta2.get("title") is None
@@ -2630,11 +2630,11 @@ def test_persist_after_exchange_loads_config_when_none(tmp_path: Path) -> None:
     """persist_after_exchange should load the global config when cfg is None."""
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "persist-no-cfg", sessions_dir, new_session=True, model="llama3.1:8b"
+        "persist-no-cfg", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hi"})
 
-    name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b")
+    name = sessions.persist_after_exchange(sf, mf, msgs, model="fixture-chat:8b")
     assert name == "persist-no-cfg"
 
 
@@ -2652,11 +2652,11 @@ def test_persist_after_exchange_config_error_falls_back(tmp_path: Path) -> None:
     """If cfg.getboolean/getint raise, auto-summarize should default to disabled."""
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "persist-bad-cfg", sessions_dir, new_session=True, model="llama3.1:8b"
+        "persist-bad-cfg", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hi"})
 
-    name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=_RaisingCfg())
+    name = sessions.persist_after_exchange(sf, mf, msgs, model="fixture-chat:8b", cfg=_RaisingCfg())
     assert name == "persist-bad-cfg"
 
 
@@ -2673,7 +2673,7 @@ def test_persist_after_exchange_auto_summarize_does_not_rename_session(
     """
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "auto-sum-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "auto-sum-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "Hello"})
     msgs.append({"role": "assistant", "content": "Hi there"})
@@ -2689,7 +2689,7 @@ def test_persist_after_exchange_auto_summarize_does_not_rename_session(
     monkeypatch.setattr(sessions, "load_config", lambda path=None: sync_cfg)
 
     cfg = _cfg_auto_summarize(sessions_dir)
-    new_name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=cfg)
+    new_name = sessions.persist_after_exchange(sf, mf, msgs, model="fixture-chat:8b", cfg=cfg)
 
     assert new_name == "auto-sum-test"
     assert sf.exists()
@@ -2710,7 +2710,7 @@ def test_persist_after_exchange_auto_summarize_failure_logs_warning(
     """If auto-summarization fails, a warning should be logged and name unchanged."""
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "auto-sum-fail", sessions_dir, new_session=True, model="llama3.1:8b"
+        "auto-sum-fail", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "Hello"})
     msgs.append({"role": "assistant", "content": "Hi there"})
@@ -2722,7 +2722,7 @@ def test_persist_after_exchange_auto_summarize_failure_logs_warning(
 
     cfg = _cfg_auto_summarize(sessions_dir)
     with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
-        new_name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=cfg)
+        new_name = sessions.persist_after_exchange(sf, mf, msgs, model="fixture-chat:8b", cfg=cfg)
 
     assert new_name == "auto-sum-fail"
     assert "Auto-summarization failed" in caplog.text
@@ -2766,7 +2766,7 @@ def test_save_session_keeps_name_stable_after_auto_summarize(
 def test_list_sessions_handles_stat_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
-    sessions.init_session("stat-error", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("stat-error", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     original_stat = Path.stat
     call_count = {"n": 0}
@@ -2825,7 +2825,7 @@ def test_summarize_session_nonexistent(tmp_path: Path) -> None:
 def test_summarize_session_no_messages(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
-    sessions.init_session("empty-session", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("empty-session", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     ok, msg = sessions.summarize_session("empty-session", sessions_dir)
     assert not ok
@@ -2835,7 +2835,7 @@ def test_summarize_session_no_messages(tmp_path: Path) -> None:
 def test_summarize_session_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "summarize-me", sessions_dir, new_session=True, model="llama3.1:8b"
+        "summarize-me", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "Tell me about cats"})
     msgs.append({"role": "assistant", "content": "Cats are great"})
@@ -2859,7 +2859,7 @@ def test_summarize_session_success(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_summarize_session_ollama_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "summarize-fail", sessions_dir, new_session=True, model="llama3.1:8b"
+        "summarize-fail", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hi"})
     sessions.save_session_messages(sf, msgs)
@@ -2879,7 +2879,7 @@ def test_summarize_session_invalid_json_response(
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "summarize-badjson", sessions_dir, new_session=True, model="llama3.1:8b"
+        "summarize-badjson", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hi"})
     sessions.save_session_messages(sf, msgs)
@@ -2897,7 +2897,7 @@ def test_summarize_session_wrong_types_fallback(
     """If title/summary/tags have unexpected types, fall back to empty defaults."""
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "summarize-wrongtypes", sessions_dir, new_session=True, model="llama3.1:8b"
+        "summarize-wrongtypes", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hi"})
     sessions.save_session_messages(sf, msgs)
@@ -2993,7 +2993,7 @@ def test_sync_filename_with_title_config_error_disables_sync(
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "cfg-error-sync", sessions_dir, new_session=True, model="llama3.1:8b"
+        "cfg-error-sync", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Should Not Rename"
     sessions.save_session_meta(mf, meta)
@@ -3021,7 +3021,7 @@ def test_sync_filename_with_title_too_many_collisions(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "collision-source", sessions_dir, new_session=True, model="llama3.1:8b"
+        "collision-source", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Busy Title"
     sessions.save_session_meta(mf, meta)
@@ -3063,7 +3063,7 @@ def test_sync_filename_with_title_single_lock_branch(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "solo-lock-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "solo-lock-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Solo Lock Title"
     sessions.save_session_meta(mf, meta)
@@ -3100,7 +3100,7 @@ def test_sync_filename_with_title_lock_timeout(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "timeout-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "timeout-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Timeout Title"
     sessions.save_session_meta(mf, meta)
@@ -3124,7 +3124,7 @@ def test_sync_filename_with_title_rename_failure_cleans_up(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "fail-rename-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "fail-rename-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Fail Rename Title"
     sessions.save_session_meta(mf, meta)
@@ -3167,7 +3167,7 @@ def test_sync_filename_with_title_cleans_up_new_meta_file(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "cleanup-meta-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "cleanup-meta-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Cleanup Meta Title"
     sessions.save_session_meta(mf, meta)
@@ -3203,7 +3203,7 @@ def test_sync_filename_with_title_cleanup_failure_is_swallowed(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "cleanup-fail-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "cleanup-fail-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     meta["title"] = "Cleanup Fail Title"
     sessions.save_session_meta(mf, meta)
@@ -3245,7 +3245,7 @@ def test_edit_message_fork_true_truncates(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "edit-fork-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "edit-fork-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     messages = [
         {"role": "user", "content": "Q1"},
@@ -3273,7 +3273,7 @@ def test_edit_message_fork_false_keeps_later_messages(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "edit-nofork-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "edit-nofork-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     messages = [
         {"role": "user", "content": "Q1"},
@@ -3295,7 +3295,7 @@ def test_edit_message_preserves_original_content_once(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "edit-preserve-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "edit-preserve-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     messages = [{"role": "user", "content": "Original"}]
     sessions.save_session_messages(sf, messages)
@@ -3321,7 +3321,7 @@ def test_edit_message_invalid_index(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "edit-invalid-index", sessions_dir, new_session=True, model="llama3.1:8b"
+        "edit-invalid-index", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     sessions.save_session_messages(sf, [{"role": "user", "content": "hi"}])
 
@@ -3337,7 +3337,7 @@ def test_truncate_after_message_success(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "truncate-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "truncate-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     messages = [
         {"role": "user", "content": "Q1"},
@@ -3360,7 +3360,7 @@ def test_truncate_after_message_invalid_index(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     sf, mf, msgs, meta = sessions.init_session(
-        "truncate-invalid", sessions_dir, new_session=True, model="llama3.1:8b"
+        "truncate-invalid", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     sessions.save_session_messages(sf, [{"role": "user", "content": "hi"}])
 
@@ -3490,7 +3490,7 @@ def test_merge_sessions_propagates_summary_model_rag(tmp_path: Path) -> None:
             "tags": [],
             "title": "Rich Meta",
             "summary": "A rich summary",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
             "rag_enabled": True,
         },
     )
@@ -3506,7 +3506,7 @@ def test_merge_sessions_propagates_summary_model_rag(tmp_path: Path) -> None:
     )
     merged_meta = sessions.load_session_meta(merged_meta_file)
     assert merged_meta["summary"] == "A rich summary"
-    assert merged_meta["model"] == "llama3.1:8b"
+    assert merged_meta["model"] == "fixture-chat:8b"
     assert merged_meta["rag_enabled"] is True
 
 
@@ -3576,7 +3576,7 @@ def test_merge_sessions_cleanup_failure_is_swallowed(
 def test_batch_tag_sessions_reports_failures(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
-    sessions.init_session("real-session", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("real-session", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     success, failure, failed = sessions.batch_tag_sessions(
         ["real-session", "ghost-session"], ["tag1"], sessions_dir
@@ -3593,9 +3593,9 @@ def test_batch_export_sessions_write_failure(
     sessions_dir.mkdir()
     output_dir = tmp_path / "exports"
 
-    sessions.init_session("export-ok", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("export-ok", sessions_dir, new_session=True, model="fixture-chat:8b")
     sf2, mf2, msgs2, meta2 = sessions.init_session(
-        "export-fail", sessions_dir, new_session=True, model="llama3.1:8b"
+        "export-fail", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs2.append({"role": "user", "content": "content"})
     sessions.save_session_messages(sf2, msgs2)
@@ -3624,7 +3624,7 @@ def test_batch_export_sessions_html_format(tmp_path: Path) -> None:
     output_dir = tmp_path / "exports_html"
 
     sf, mf, msgs, meta = sessions.init_session(
-        "export-html", sessions_dir, new_session=True, model="llama3.1:8b"
+        "export-html", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "hello"})
     sessions.save_session_messages(sf, msgs)
@@ -3668,7 +3668,7 @@ def test_batch_update_metadata_handles_exception(
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
-    sessions.init_session("update-fail", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("update-fail", sessions_dir, new_session=True, model="fixture-chat:8b")
 
     def raise_error(meta_file, meta):
         raise RuntimeError("write failed")
@@ -3695,7 +3695,7 @@ def test_auto_summarize_does_not_let_the_model_reason(tmp_path, monkeypatch):
     """
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
-        "think-off-test", sessions_dir, new_session=True, model="llama3.1:8b"
+        "think-off-test", sessions_dir, new_session=True, model="fixture-chat:8b"
     )
     msgs.append({"role": "user", "content": "Hello"})
     msgs.append({"role": "assistant", "content": "Hi there"})

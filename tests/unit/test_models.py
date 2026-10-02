@@ -54,7 +54,7 @@ def test_list_models(mock_get_url, mock_load_config, mock_get_json):
     mock_get_url.return_value = "http://localhost:11434"
     mock_get_json.return_value = {
         "models": [
-            {"name": "llama3.1:8b", "size": 4_700_000_000},
+            {"name": "fixture-chat:8b", "size": 4_700_000_000},
             {"name": "mistral:7b", "size": 4_100_000_000},
         ]
     }
@@ -62,7 +62,7 @@ def test_list_models(mock_get_url, mock_load_config, mock_get_json):
     result = models.list_models()
 
     assert len(result) == 2
-    assert result[0]["name"] == "llama3.1:8b"
+    assert result[0]["name"] == "fixture-chat:8b"
     assert result[1]["name"] == "mistral:7b"
     mock_get_json.assert_called_once()
 
@@ -74,13 +74,13 @@ def test_pull_model_without_progress(mock_post_json):
     mock_post_json.return_value = {"status": "success"}
     base_url = "http://localhost:11434"
 
-    result = models.pull_model("llama3.1:8b", base_url=base_url, progress_callback=None)
+    result = models.pull_model("fixture-chat:8b", base_url=base_url, progress_callback=None)
 
     assert result["status"] == "success"
     mock_post_json.assert_called_once()
     args, kwargs = mock_post_json.call_args
     # Check the payload (second positional argument)
-    assert "llama3.1:8b" in str(args[1])
+    assert "fixture-chat:8b" in str(args[1])
 
 
 @pytest.mark.unit
@@ -99,12 +99,12 @@ def test_delete_model(mock_delete_json):
     """Test delete_model function."""
     base_url = "http://localhost:11434"
 
-    models.delete_model("llama3.1:8b", base_url=base_url)
+    models.delete_model("fixture-chat:8b", base_url=base_url)
 
     mock_delete_json.assert_called_once()
     args, kwargs = mock_delete_json.call_args
     # Check the payload (second positional argument)
-    assert "llama3.1:8b" in str(args[1])
+    assert "fixture-chat:8b" in str(args[1])
 
 
 @pytest.mark.unit
@@ -122,13 +122,13 @@ def test_delete_model_empty_name():
 def test_show_model(mock_post_json):
     """Test show_model function."""
     mock_post_json.return_value = {
-        "modelfile": "FROM llama3.1:8b",
+        "modelfile": "FROM fixture-chat:8b",
         "parameters": "temperature 0.7",
         "template": "{{ .System }} {{ .Prompt }}",
     }
     base_url = "http://localhost:11434"
 
-    result = models.show_model("llama3.1:8b", base_url=base_url)
+    result = models.show_model("fixture-chat:8b", base_url=base_url)
 
     assert "modelfile" in result
     assert "parameters" in result
@@ -164,7 +164,7 @@ def test_pull_model_loads_base_url_from_config_when_none(
     mock_get_url.return_value = "http://cfg-host:11434"
     mock_post_json.return_value = {"status": "success"}
 
-    result = models.pull_model("llama3.1:8b", base_url=None, progress_callback=None)
+    result = models.pull_model("fixture-chat:8b", base_url=None, progress_callback=None)
 
     assert result["status"] == "success"
     mock_load_config.assert_called_once_with(None)
@@ -184,7 +184,7 @@ def test_delete_model_loads_base_url_from_config_when_none(
     mock_load_config.return_value = "cfg-object"
     mock_get_url.return_value = "http://cfg-host:11434"
 
-    models.delete_model("llama3.1:8b", base_url=None)
+    models.delete_model("fixture-chat:8b", base_url=None)
 
     mock_load_config.assert_called_once_with(None)
     mock_get_url.assert_called_once_with("cfg-object")
@@ -202,11 +202,11 @@ def test_show_model_loads_base_url_from_config_when_none(
     """When base_url isn't given, show_model must derive it from load_config()."""
     mock_load_config.return_value = "cfg-object"
     mock_get_url.return_value = "http://cfg-host:11434"
-    mock_post_json.return_value = {"modelfile": "FROM llama3.1:8b"}
+    mock_post_json.return_value = {"modelfile": "FROM fixture-chat:8b"}
 
-    result = models.show_model("llama3.1:8b", base_url=None)
+    result = models.show_model("fixture-chat:8b", base_url=None)
 
-    assert result["modelfile"] == "FROM llama3.1:8b"
+    assert result["modelfile"] == "FROM fixture-chat:8b"
     mock_load_config.assert_called_once_with(None)
     mock_get_url.assert_called_once_with("cfg-object")
     args, kwargs = mock_post_json.call_args

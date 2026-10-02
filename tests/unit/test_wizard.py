@@ -23,8 +23,8 @@ pytestmark = pytest.mark.unit
 def test_validate_ollama_connection_success():
     """Test successful Ollama connection validation."""
     mock_models = [
-        {"name": "llama3.1:8b", "size": 5000000000},
-        {"name": "qwen2.5:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
     ]
 
     with patch("nyxgpt.wizard.list_models", return_value=mock_models):
@@ -74,32 +74,32 @@ def test_validate_ollama_connection_other_error():
 def test_select_model_with_models():
     """Test model selection from available models."""
     models = [
-        {"name": "llama3.1:8b", "size": 5000000000},
-        {"name": "qwen2.5:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
     ]
 
     with patch("builtins.input", return_value="2"):
-        selected = _select_model(models, default="qwen2.5:0.5b")
-        assert selected == "qwen2.5:0.5b"
+        selected = _select_model(models, default="fixture-small:0.5b")
+        assert selected == "fixture-small:0.5b"
 
 
 def test_select_model_empty_list():
     """Test model selection with empty model list returns default."""
     models = []
-    selected = _select_model(models, default="qwen2.5:0.5b")
-    assert selected == "qwen2.5:0.5b"
+    selected = _select_model(models, default="fixture-small:0.5b")
+    assert selected == "fixture-small:0.5b"
 
 
 def test_select_model_default_selection():
     """Test model selection with default (pressing enter)."""
     models = [
-        {"name": "llama3.1:8b", "size": 5000000000},
-        {"name": "qwen2.5:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
     ]
 
     with patch("builtins.input", return_value=""):
-        selected = _select_model(models, default="qwen2.5:0.5b")
-        assert selected == "llama3.1:8b"  # First model is selected by default
+        selected = _select_model(models, default="fixture-small:0.5b")
+        assert selected == "fixture-chat:8b"  # First model is selected by default
 
 
 def test_select_model_blank_prompt_response_defaults_to_first():
@@ -107,38 +107,38 @@ def test_select_model_blank_prompt_response_defaults_to_first():
     default being supplied (defensive branch), _select_model still falls
     back to choice '1' rather than crashing on int('')."""
     models = [
-        {"name": "llama3.1:8b", "size": 5000000000},
-        {"name": "qwen2.5:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
     ]
 
     with patch("nyxgpt.wizard._prompt", return_value=""):
-        selected = _select_model(models, default="qwen2.5:0.5b")
-        assert selected == "llama3.1:8b"
+        selected = _select_model(models, default="fixture-small:0.5b")
+        assert selected == "fixture-chat:8b"
 
 
 def test_select_model_reprompts_on_invalid_then_non_numeric_input():
     """Non-numeric input is rejected (caught ValueError) and reprompted;
     the user then enters a valid selection on the second attempt."""
     models = [
-        {"name": "llama3.1:8b", "size": 5000000000},
-        {"name": "qwen2.5:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
     ]
 
     with patch("builtins.input", side_effect=["not-a-number", "2"]):
-        selected = _select_model(models, default="qwen2.5:0.5b")
-        assert selected == "qwen2.5:0.5b"
+        selected = _select_model(models, default="fixture-small:0.5b")
+        assert selected == "fixture-small:0.5b"
 
 
 def test_select_model_reprompts_on_out_of_range_selection():
     """A numeric but out-of-range selection is rejected and reprompted."""
     models = [
-        {"name": "llama3.1:8b", "size": 5000000000},
-        {"name": "qwen2.5:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
     ]
 
     with patch("builtins.input", side_effect=["99", "1"]):
-        selected = _select_model(models, default="qwen2.5:0.5b")
-        assert selected == "llama3.1:8b"
+        selected = _select_model(models, default="fixture-small:0.5b")
+        assert selected == "fixture-chat:8b"
 
 
 def test_configure_rag_disabled():
@@ -195,7 +195,7 @@ def test_generate_config_ini_basic(tmp_path: Path):
 
     _generate_config_ini(
         output_path=output_path,
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         ollama_base_url="http://127.0.0.1:11434",
         rag_config=rag_config,
     )
@@ -210,7 +210,7 @@ def test_generate_config_ini_basic(tmp_path: Path):
     # Read and verify content
     content = output_path.read_text()
     assert "[nyxgpt]" in content
-    assert "default_model = qwen2.5:0.5b" in content
+    assert "default_model = fixture-small:0.5b" in content
     assert "[ollama]" in content
     assert "base_url = http://127.0.0.1:11434" in content
     assert "[rag]" in content
@@ -230,7 +230,7 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
         output_path=output_path,
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         ollama_base_url="http://127.0.0.1:11434",
         rag_config={"enable_chat_context": False},
     )
@@ -256,7 +256,7 @@ def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
         output_path=output_path,
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         ollama_base_url="http://127.0.0.1:11434",
         rag_config={"enable_chat_context": False},
     )
@@ -276,7 +276,7 @@ def test_generate_config_ini_generates_secrets(tmp_path: Path):
 
     _generate_config_ini(
         output_path=output_path,
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         ollama_base_url="http://127.0.0.1:11434",
         rag_config=rag_config,
     )
@@ -304,13 +304,13 @@ def test_generate_config_ini_secrets_are_unique_per_run(tmp_path: Path):
 
     _generate_config_ini(
         output_path=first_path,
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         ollama_base_url="http://127.0.0.1:11434",
         rag_config=rag_config,
     )
     _generate_config_ini(
         output_path=second_path,
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         ollama_base_url="http://127.0.0.1:11434",
         rag_config=rag_config,
     )
@@ -342,7 +342,7 @@ def test_generate_config_ini_with_rag(tmp_path: Path):
 
     _generate_config_ini(
         output_path=output_path,
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
         ollama_base_url="http://localhost:11434",
         rag_config=rag_config,
     )
@@ -350,7 +350,7 @@ def test_generate_config_ini_with_rag(tmp_path: Path):
     assert output_path.exists()
 
     content = output_path.read_text()
-    assert "default_model = llama3.1:8b" in content
+    assert "default_model = fixture-chat:8b" in content
     assert "enable_chat_context = true" in content
     assert "cassandra_hosts = 192.168.1.100" in content
     assert "cassandra_port = 9042" in content
@@ -437,8 +437,8 @@ def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixtur
     output_path = tmp_path / "config.ini"
 
     mock_models = [
-        {"name": "qwen2.5:0.5b", "size": 500000000},
-        {"name": "llama3.1:8b", "size": 5000000000},
+        {"name": "fixture-small:0.5b", "size": 500000000},
+        {"name": "fixture-chat:8b", "size": 5000000000},
     ]
 
     inputs = [
@@ -463,7 +463,7 @@ def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixtur
         # Verify config file was created
         assert output_path.exists()
         content = output_path.read_text()
-        assert "default_model = qwen2.5:0.5b" in content
+        assert "default_model = fixture-small:0.5b" in content
         assert "enable_chat_context = false" in content
 
 
@@ -471,7 +471,7 @@ def test_run_wizard_success_with_rag(tmp_path: Path, capsys: pytest.CaptureFixtu
     """Test successful wizard run with RAG enabled."""
     output_path = tmp_path / "config.ini"
 
-    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    mock_models = [{"name": "fixture-small:0.5b", "size": 500000000}]
 
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
@@ -507,7 +507,7 @@ def test_run_wizard_uses_default_config_path_when_none_given(
     path."""
     default_path = tmp_path / "default-config.ini"
 
-    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    mock_models = [{"name": "fixture-small:0.5b", "size": 500000000}]
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
         "1",  # Select first model
@@ -537,7 +537,7 @@ def test_run_wizard_reports_non_empty_system_prompt(
     branch."""
     output_path = tmp_path / "config.ini"
 
-    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    mock_models = [{"name": "fixture-small:0.5b", "size": 500000000}]
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
         "1",  # Select first model
@@ -565,7 +565,7 @@ def test_run_wizard_reports_error_when_config_generation_fails(
     propagating the exception."""
     output_path = tmp_path / "config.ini"
 
-    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    mock_models = [{"name": "fixture-small:0.5b", "size": 500000000}]
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
         "1",  # Select first model

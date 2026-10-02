@@ -12,7 +12,7 @@ const fullSummary = {
   total_tokens: 8003,
   session_count: 12,
   by_model: [
-    { model: 'llama3.1:8b', requests: 81, prompt_tokens: 3011, completion_tokens: 2021 },
+    { model: 'fixture-chat:8b', requests: 81, prompt_tokens: 3011, completion_tokens: 2021 },
     { model: 'mistral:7b', requests: 41, prompt_tokens: 2031, completion_tokens: 1041 },
   ],
   by_day: [
@@ -49,7 +49,7 @@ describe('UsageAnalyticsSection', () => {
     expect(screen.getByText('3,002')).toBeInTheDocument();
     expect(screen.getByText('12')).toBeInTheDocument();
 
-    expect(screen.getByText('llama3.1:8b')).toBeInTheDocument();
+    expect(screen.getByText('fixture-chat:8b')).toBeInTheDocument();
     expect(screen.getByText('mistral:7b')).toBeInTheDocument();
     expect(screen.getByText('3,011')).toBeInTheDocument();
     expect(screen.getByText('1,041')).toBeInTheDocument();

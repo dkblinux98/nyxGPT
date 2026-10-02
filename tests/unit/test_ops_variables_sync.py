@@ -97,7 +97,7 @@ def test_variables_sync_missing_config_file_fails(tmp_path: Path):
 
 def test_variables_sync_nothing_mapped_is_a_success_noop(tmp_path: Path):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen2.5:0.5b\n")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-small:0.5b\n")
 
     with patch.object(ops, "_github_actions_client") as mock_client:
         results = ops.sync_variables_to_github_actions(cfg_path=cfg_path)

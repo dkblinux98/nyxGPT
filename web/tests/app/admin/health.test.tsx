@@ -51,7 +51,7 @@ const readyRequiredModels = {
   ready: true,
   remediation: '',
   models: [
-    { role: 'chat', model: 'qwen3:0.6b', setting: '[nyxgpt] default_model', present: true },
+    { role: 'chat', model: 'fixture-prev:0.6b', setting: '[nyxgpt] default_model', present: true },
     {
       role: 'embedding',
       model: 'nomic-embed-text',
@@ -540,7 +540,7 @@ describe('AdminHealthPage', () => {
             total_completion_tokens: 50,
             total_tokens: 150,
             session_count: 3,
-            by_model: [{ model: 'llama3.1:8b', requests: 42, prompt_tokens: 100, completion_tokens: 50 }],
+            by_model: [{ model: 'fixture-chat:8b', requests: 42, prompt_tokens: 100, completion_tokens: 50 }],
             by_day: [{ date: '2026-07-28', requests: 42, prompt_tokens: 100, completion_tokens: 50 }],
           })
         )
@@ -553,7 +553,7 @@ describe('AdminHealthPage', () => {
       await waitFor(() => {
         expect(screen.getByText('150')).toBeInTheDocument(); // total_tokens stat tile
       });
-      expect(screen.getByText('llama3.1:8b')).toBeInTheDocument();
+      expect(screen.getByText('fixture-chat:8b')).toBeInTheDocument();
     });
 
     it('renders the Resource Metrics section with data from the metrics endpoint', async () => {

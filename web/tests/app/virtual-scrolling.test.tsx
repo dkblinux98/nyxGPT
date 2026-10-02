@@ -63,13 +63,13 @@ describe('Virtual Scrolling Implementation', () => {
       if (url.includes('/api/models')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ models: ['llama3.1:8b', 'mistral:7b'] }),
+          json: () => Promise.resolve({ models: ['fixture-chat:8b', 'mistral:7b'] }),
         });
       }
       if (url.includes('/metadata')) {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ rag_enabled: false, title: 'Test Session', model: 'llama3.1:8b' }),
+          json: () => Promise.resolve({ rag_enabled: false, title: 'Test Session', model: 'fixture-chat:8b' }),
         });
       }
       if (url.includes('/api/v1/sessions/')) {
@@ -100,13 +100,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -133,13 +133,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -167,13 +167,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -226,13 +226,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -266,13 +266,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -306,13 +306,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -350,13 +350,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -389,13 +389,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -435,13 +435,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -481,13 +481,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -520,13 +520,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -561,13 +561,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         if (url.includes('/messages/5') && url.includes('PATCH')) {
@@ -603,13 +603,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         if (url.includes('/regenerate')) {
@@ -646,13 +646,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -689,13 +689,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -734,13 +734,13 @@ describe('Virtual Scrolling Implementation', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });

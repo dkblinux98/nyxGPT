@@ -168,13 +168,13 @@ def test_write_secret_writes_validated_value_and_chmods_0600(tmp_path: Path):
 
 def test_write_secret_preserves_other_config_content(tmp_path: Path):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen2.5:0.5b\n")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-small:0.5b\n")
 
     spec = find_guided_secret("auth", "api_key")
     write_secret(cfg_path, spec, "a-strong-generated-key")
 
     text = cfg_path.read_text()
-    assert "default_model = qwen2.5:0.5b" in text
+    assert "default_model = fixture-small:0.5b" in text
     assert "a-strong-generated-key" in text
 
 

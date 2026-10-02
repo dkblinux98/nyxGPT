@@ -20,7 +20,7 @@ def test_ollama_chat_without_format(mock_post_json):
     from nyxgpt.ollama_client import ollama_chat
 
     mock_post_json.return_value = {"message": {"content": "hello"}}
-    ollama_chat("http://localhost:11434", "llama3.1:8b", [{"role": "user", "content": "hi"}])
+    ollama_chat("http://localhost:11434", "fixture-chat:8b", [{"role": "user", "content": "hi"}])
 
     _, call_args, _ = mock_post_json.mock_calls[0]
     payload = call_args[1]
@@ -36,7 +36,7 @@ def test_ollama_chat_with_output_format(mock_post_json):
     schema = {"type": "object", "properties": {"age": {"type": "integer"}}, "required": ["age"]}
     result = ollama_chat(
         "http://localhost:11434",
-        "llama3.1:8b",
+        "fixture-chat:8b",
         [{"role": "user", "content": "How old?"}],
         output_format=schema,
     )
@@ -59,7 +59,7 @@ def test_ollama_chat_stream_tokens_without_format(mock_post_json_lines):
     list(
         ollama_chat_stream_tokens(
             "http://localhost:11434",
-            "llama3.1:8b",
+            "fixture-chat:8b",
             [{"role": "user", "content": "hi"}],
         )
     )
@@ -83,7 +83,7 @@ def test_ollama_chat_stream_tokens_with_output_format(mock_post_json_lines):
     tokens = list(
         ollama_chat_stream_tokens(
             "http://localhost:11434",
-            "llama3.1:8b",
+            "fixture-chat:8b",
             [{"role": "user", "content": "test"}],
             output_format=schema,
         )
@@ -141,7 +141,7 @@ def test_chat_passes_output_format(
     cfg.read_dict(
         {
             "ollama": {"base_url": "http://localhost:11434"},
-            "nyxgpt": {"default_model": "llama3.1:8b", "chat_timeout_seconds": "30"},
+            "nyxgpt": {"default_model": "fixture-chat:8b", "chat_timeout_seconds": "30"},
             "rag": {"enable_chat_context": "false"},
             "cache": {"response_cache_enabled": "false"},
         }
@@ -190,7 +190,7 @@ def test_chat_without_output_format(
     cfg.read_dict(
         {
             "ollama": {"base_url": "http://localhost:11434"},
-            "nyxgpt": {"default_model": "llama3.1:8b", "chat_timeout_seconds": "30"},
+            "nyxgpt": {"default_model": "fixture-chat:8b", "chat_timeout_seconds": "30"},
             "rag": {"enable_chat_context": "false"},
             "cache": {"response_cache_enabled": "false"},
         }
@@ -236,7 +236,7 @@ def test_pull_model_progress_callback(mock_post_json_lines):
     def _cb(status: str, pct: float) -> None:
         calls.append((status, pct))
 
-    pull_model("llama3.1:8b", base_url="http://localhost:11434", progress_callback=_cb)
+    pull_model("fixture-chat:8b", base_url="http://localhost:11434", progress_callback=_cb)
 
     assert len(calls) == 3
     assert calls[0] == ("pulling manifest", 0.0)

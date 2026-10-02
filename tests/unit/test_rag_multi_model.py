@@ -14,7 +14,7 @@ def test_embedding_cfg_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     from configparser import ConfigParser
 
     cfg = ConfigParser()
-    cfg["nyxgpt"] = {"default_model": "llama3.1:8b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-chat:8b"}
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
     cfg["rag"] = {
         "embedding_model": "nomic-embed-text",
@@ -22,7 +22,7 @@ def test_embedding_cfg_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("nyxgpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr("nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
+    monkeypatch.setattr("nyxgpt.rag.embeddings.get_default_model", lambda *_: "fixture-chat:8b")
     monkeypatch.setattr(
         "nyxgpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
     )
@@ -49,7 +49,7 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
     from configparser import ConfigParser
 
     cfg = ConfigParser()
-    cfg["nyxgpt"] = {"default_model": "llama3.1:8b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-chat:8b"}
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
     cfg["rag"] = {
         "embedding_model": "nomic-embed-text",
@@ -57,7 +57,7 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
     }
 
     monkeypatch.setattr("nyxgpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr("nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
+    monkeypatch.setattr("nyxgpt.rag.embeddings.get_default_model", lambda *_: "fixture-chat:8b")
     monkeypatch.setattr(
         "nyxgpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
     )

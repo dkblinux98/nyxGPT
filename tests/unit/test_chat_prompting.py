@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 def _cfg(tmp_path: Path, *, rag_enabled: bool) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }
