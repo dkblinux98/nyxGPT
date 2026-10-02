@@ -28,6 +28,10 @@ permissions:
 # about the observability tier, the app tier's own bring-up is covered
 # elsewhere, and building both images would triple this job's runtime for no
 # extra coverage of the thing that broke.
+#
+# The second job answers the OTHER half of #3986's reachability question, on
+# the topology the first one cannot reproduce: a cluster nyxGPT did not create
+# and whose host ports are therefore not nyxGPT's to map. See its own header.
 on:
   pull_request:
     paths:
@@ -271,3 +275,211 @@ jobs:
         if: always()
         # The wrapped teardown, including the kind cluster nyxgpt provisioned.
         run: nyxgpt ops down --kubernetes || kind delete cluster --name nyxgpt-local || true
+
+  # Question this job answers: on a cluster nyxGPT did NOT create, does the
+  # deploy leave the SRE UIs reachable by itself -- and does `--stop` give the
+  # host ports back?
+  #
+  # This is #3986's acceptance criterion 4 ("where host port mapping is not
+  # nyxGPT's to arrange, the access path is established by the install itself
+  # ... not left as a manual step"), and it is the one criterion the owner
+  # could not test: their re-test (2026-08-26) says of it "BYO -- inspection
+  # only -- I did not stand up a second, non-nyxGPT cluster". Inspection is
+  # exactly what #3775 says is not evidence, so the bring-your-own topology
+  # gets its own job rather than a note in the PR.
+  #
+  # The job above cannot carry this leg, and not for want of trying: it creates
+  # its cluster from nyxGPT's OWN rendered kind config, so the node container
+  # holds 3001/8080/9090/16686 on loopback for the cluster's whole life
+  # (extraPortMappings are fixed at creation and cannot be withdrawn from a
+  # running node). A `kubectl port-forward` can never bind them there -- the
+  # only thing it could produce is `address already in use`. So the forward
+  # path is only *provable* on a node that does not hold those ports, which is
+  # what a bring-your-own cluster is.
+  #
+  # Bare `kind create cluster`, and under a name that is NOT the reserved
+  # `nyxgpt-local`: that makes it a cluster nyxGPT must use as it finds
+  # (`_ensure_kubectl_and_cluster`) and must never destroy (`_down_kubernetes_steps`),
+  # both of which this job then asserts rather than taking on trust.
+  k8s-observability-byo-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    env:
+      BYO_CLUSTER: nyxgpt-byo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Seed a native config from the tracked example
+        # GlitchTip provisioning stores its admin credentials here; without it
+        # that step skips (successfully) and the GlitchTip UI would answer a
+        # login page either way -- but the skip would make this job quieter
+        # about a path the other one exercises.
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Create a bring-your-own cluster -- bare kind, no nyxGPT config
+        run: |
+          kind create cluster --name "$BYO_CLUSTER" --wait 120s
+          kubectl config current-context
+
+      - name: The precondition -- this node publishes none of the SRE host ports
+        # Without this the whole job could pass on a cluster that happened to
+        # map them, and it would be the first job over again. Asked of the
+        # product's own table so a change to `K8S_OBSERVABILITY_HOST_PORT_MAPPINGS`
+        # cannot drift away from what is asserted here.
+        run: |
+          set -uo pipefail
+          echo "node port mappings:"
+          docker port "${BYO_CLUSTER}-control-plane" || echo "(none)"
+          # The host port is the last colon-separated field of each mapping
+          # line, same as `ops._kind_published_host_ports` reads it. Compared
+          # as a whole field, not as a substring: a kind node maps its API
+          # server onto a random high port, and `:30011` contains `:3001`.
+          mapped=$(docker port "${BYO_CLUSTER}-control-plane" 2>/dev/null \
+            | sed 's/.*://' | sort -u)
+          wanted=$(python -c 'import nyxgpt.ops as o; print(" ".join(str(h) for h, _n in o.K8S_OBSERVABILITY_HOST_PORT_MAPPINGS))')
+          echo "SRE host ports (K8S_OBSERVABILITY_HOST_PORT_MAPPINGS): $wanted"
+          fail=0
+          for host in $wanted; do
+            if printf '%s\n' "$mapped" | grep -qx "$host"; then
+              echo "::error::this node publishes host port ${host} -- not a bring-your-own topology, the forward path cannot be proved here"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: nyxgpt ops observability --kubernetes --local
+        # The ONLY command this job runs against the cluster. #3986's AC4 is
+        # that the access path is established by this, with no second command
+        # -- so a forward started by the job itself would make it vacuous.
+        run: nyxgpt ops observability --kubernetes --local
+
+      - name: Wait for every observability workload to roll out
+        run: |
+          set -euo pipefail
+          for d in prometheus grafana loki otel-collector jaeger \
+                   glitchtip-postgres glitchtip-redis glitchtip glitchtip-worker; do
+            kubectl -n nyxgpt rollout status "deploy/$d" --timeout=600s
+          done
+          kubectl -n nyxgpt rollout status ds/promtail --timeout=300s
+
+      - name: The deploy established the managed background forward itself (#3986 AC4)
+        run: |
+          set -uo pipefail
+          fail=0
+          # Matched on the running message's own prefix
+          # (`ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`, pinned by
+          # tests/unit/test_port_forward_status_predicate.py), never on the
+          # word "running" -- the idle message contains that word too, which
+          # is what made this class of guard true in both states.
+          nyxgpt ops port-forward --status
+          if ! nyxgpt ops port-forward --status | grep -q 'Background port-forward running'; then
+            echo "::error::the deploy left no managed background forward on a cluster whose host ports it cannot map -- the SRE tier is unreachable until the operator opens a terminal (#3986)"
+            fail=1
+          fi
+          # Supervised and detached, which is the property a bare `kubectl
+          # port-forward` lacks: it dies with the Pod it attached to.
+          pgrep -af "kubectl.*port-forward" || true
+          kubectl -n nyxgpt get svc grafana prometheus jaeger glitchtip \
+            -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
+          exit $fail
+
+      - name: All four SRE UIs answer through it
+        run: |
+          set -uo pipefail
+          fail=0
+          check() { # <label> <url> <expected>
+            code=000
+            for _ in $(seq 1 20); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
+              [ "$code" = "$3" ] && break
+              sleep 3
+            done
+            echo "  $1 -> $code (expect $3)"
+            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
+          }
+          check "grafana health" http://127.0.0.1:3001/api/health 200
+          check "prometheus ready" http://127.0.0.1:9090/-/ready 200
+          check "jaeger UI" http://127.0.0.1:16686/ 200
+          check "glitchtip UI" http://127.0.0.1:8080/ 200
+          exit $fail
+
+      - name: nyxgpt ops port-forward --stop releases every host port
+        # The other half of an access path nyxGPT establishes: it has to be
+        # nyxGPT's to take back. A `--stop` that reported success while the
+        # child kept the ports would leave the next install unable to bind
+        # them, with nothing on screen to say why.
+        run: |
+          set -uo pipefail
+          fail=0
+          nyxgpt ops port-forward --stop
+          # The same sentinel as above, read the other way round -- NOT the
+          # idle sentence. `tests/unit/test_port_forward_status_predicate.py`
+          # pins every `--status` grep in this repo to this one pattern, and
+          # two spellings of the same question is how the predicate drifted in
+          # the first place.
+          if nyxgpt ops port-forward --status | grep -q 'Background port-forward running'; then
+            nyxgpt ops port-forward --status
+            echo "::error::--stop returned but --status still reports a forward"
+            fail=1
+          fi
+          if pgrep -af "kubectl.*port-forward"; then
+            echo "::error::--stop left a kubectl port-forward child alive"
+            fail=1
+          fi
+          # And the ports really are free: asserted by the UIs going dark, not
+          # by the absence of a pid. Five attempts, not twenty -- this waits
+          # for a port to STOP answering.
+          for probe in "grafana=http://127.0.0.1:3001/api/health" \
+                       "prometheus=http://127.0.0.1:9090/-/ready" \
+                       "jaeger=http://127.0.0.1:16686/" \
+                       "glitchtip=http://127.0.0.1:8080/"; do
+            still=0
+            for _ in $(seq 1 5); do
+              if curl -fsS -o /dev/null --max-time 5 "${probe#*=}" 2>/dev/null; then still=1; fi
+              sleep 2
+            done
+            echo "  ${probe%%=*} after --stop -> $([ "$still" = 1 ] && echo answering || echo dark)"
+            [ "$still" = 0 ] || {
+              echo "::error::${probe%%=*} still answers after --stop -- the host port was not released"; fail=1; }
+          done
+          exit $fail
+
+      - name: nyxgpt ops down --kubernetes never destroys a cluster it did not create
+        run: |
+          set -uo pipefail
+          nyxgpt ops down --kubernetes || true
+          if ! kind get clusters | grep -qx "$BYO_CLUSTER"; then
+            echo "::error::the wrapped teardown deleted a bring-your-own cluster"
+            exit 1
+          fi
+          echo "  $BYO_CLUSTER survived the wrapped teardown"
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n nyxgpt get all || true
+          kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40 || true
+          docker port "${BYO_CLUSTER}-control-plane" || true
+          kubectl -n nyxgpt get svc \
+            -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort' || true
+          nyxgpt ops port-forward --status || true
+          cat "$HOME/.nyxGPT/k8s/port-forward.log" 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        # Deleted HERE, by the job that created it -- deliberately not by
+        # `nyxgpt ops down`, which the step above asserts leaves it alone.
+        run: kind delete cluster --name "$BYO_CLUSTER" || true

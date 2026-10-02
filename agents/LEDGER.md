@@ -1968,7 +1968,27 @@ rather than mechanism, and nothing can enforce them.
   command their notes still name must not get `address already in use` about a
   UI that works.
 
-  The behaviours are pinned by `tests/unit/test_k8s_host_access.py` and by
+  (c) *Where two topologies exclude each other physically, one of them needs
+  its own cluster or it is never tested.* A kind node created from nyxGPT's
+  config holds the four SRE host ports for its life, so `kubectl port-forward`
+  can never bind them there — the bring-your-own half of this feature is not
+  merely untested on that cluster, it is **untestable** on it, and three review
+  rounds were spent on a smoke step that demanded both behaviours from one
+  topology. The bring-your-own leg is now its own job on a bare `kind create
+  cluster` under a non-reserved name, which also made it the first executed
+  evidence for that path (the owner's re-test could only inspect it).
+
+  And its corollary for prose: *a claim about reachability must be made by
+  something that can see the thing it claims.* The admin dashboard's
+  observability card asserted "the Services are ClusterIP, use a forward" —
+  served from the api Pod, which can see neither the node's port mappings nor
+  the Services. It now names both access paths and asserts neither. Same
+  lesson as #3988, one layer up: the defect is not reporting the wrong value,
+  it is reporting at all about a machine you are not on.
+
+  The behaviours are pinned by `tests/unit/test_k8s_host_access.py`,
+  `tests/unit/test_k8s_sre_access_claims.py` (the falsified claim in all three
+  files that carried it, and the BYO job's topology) and by
   `scripts/k8s-local-smoke.sh` steps 7-8 (published, then returned to the
   shipped ClusterIP posture and restored through both wrapped paths), per the
   verification retirement.

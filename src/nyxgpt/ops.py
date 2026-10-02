@@ -12765,7 +12765,25 @@ def infra_status() -> dict[str, Any]:
             ],
             # How the operator reaches the UIs above from their own machine
             # -- a `nyxgpt` command, never a raw kubectl invocation.
+            #
+            # Two commands since #3986, because there are two shapes and the
+            # card used to assert the wrong one of them as a fact -- that the
+            # SRE Services were ClusterIP and a forward the only way in.
+            # Where nyxGPT provisioned the cluster the install publishes on the
+            # host and this dashboard's own links reach them with no terminal
+            # at all, which is what the Definition of Done requires; the
+            # forward is the bring-your-own answer, and `publish_command` is
+            # what puts a stripped node port back (a `kubectl apply -k k8s/`
+            # re-asserts the shipped ClusterIP).
+            #
+            # Which of the two applies is deliberately NOT asserted here.
+            # This payload is served by the api Pod, which can see neither
+            # the node container's port mappings nor the Services (its Role
+            # grants workloads and Pods only) -- and #3988 is exactly what
+            # guessing about a machine you are not on costs. So the card
+            # names both paths and claims neither.
             "port_forward_command": "nyxgpt ops port-forward --target observability",
+            "publish_command": "nyxgpt ops observability --kubernetes",
         },
     }
 
@@ -20044,8 +20062,8 @@ def _provision_glitchtip() -> list[OpsResult]:
 # everything from `_glitchtip_login` down is plain HTTP against GlitchTip's
 # API and knows nothing about how the process was reached. Only the two ends
 # differ, and they are what this section supplies -- how to run
-# `createsuperuser` in a Pod instead of a container, how to reach the API on
-# a ClusterIP-only Service, and where the provisioned values have to land
+# `createsuperuser` in a Pod instead of a container, how to reach an API that
+# the shipped manifests leave ClusterIP, and where the provisioned values land
 # (Kubernetes Secrets, not files on the host).
 
 K8S_GLITCHTIP_DEPLOYMENT = "glitchtip"
@@ -20141,13 +20159,19 @@ def _k8s_port_forward(service: str, remote_port: int) -> Iterator[str | None]:
     Yields the base URL, or None when the tunnel never carried traffic (the
     caller reports that; a context manager cannot).
 
-    GlitchTip's Service is ClusterIP-only, like every Service in `k8s/`, so
-    there is no way to speak to its REST API from this process without one --
-    and speaking to it from here is what lets the whole provisioning sequence
-    be SHARED with the Compose path instead of reimplemented against `kubectl
-    exec`. The local port is ephemeral rather than GlitchTip's usual 8080 so
-    this never collides with an operator's own `nyxgpt ops port-forward
-    --target glitchtip`, or with a native GlitchTip on the same workstation.
+    The manifests in `k8s/` declare every Service `ClusterIP`, so nothing is
+    reachable from this process by default -- and the one case where it later
+    is (a cluster nyxGPT provisioned, where #3986's publish step patches a node
+    port onto `glitchtip` and maps `8080` on the host) is no help here: this
+    runs BEFORE that step, and on a bring-your-own cluster or the AWS k3s
+    target it never happens at all. So the forward is what makes the whole
+    provisioning sequence SHARED with the Compose path instead of reimplemented
+    against `kubectl exec`.
+
+    The local port is ephemeral rather than GlitchTip's usual 8080 so this
+    never collides with an operator's own `nyxgpt ops port-forward --target
+    glitchtip`, with the published node port on a provisioned cluster, or with
+    a native GlitchTip on the same workstation.
 
     Readiness is decided by a real HTTP request, not by the socket accepting:
     `kubectl port-forward` binds its listener immediately and only then dials
