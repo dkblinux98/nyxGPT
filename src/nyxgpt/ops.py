@@ -38,6 +38,7 @@ import tomllib
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from configparser import ConfigParser
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -17021,15 +17022,27 @@ def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
     mounts read-only did -- and env vars like `GF_INSTALL_PLUGINS` only take
     effect at container start. Recreating (not merely restarting) guarantees
     both are picked up on the next boot. Returns None if there's nothing to
-    do (not drifted, Docker unavailable, or grafana isn't running yet -- the
+    do (not drifted, Docker unavailable, or grafana doesn't exist yet -- the
     normal `up -d` right after this call handles first-boot).
     """
     if not _compose_available():
         return None
     if not _grafana_provisioning_drifted():
         return None
-    if _compose_stack_snapshot().get("grafana") != "running":
-        # Nothing running yet to be stale -- the normal `up -d` below will
+    # Gated on the container *existing*, not on it reading `running` -- the
+    # third site of the same mistake #4045 was filed for, and the one that
+    # would have outlived the fix. `_compose_stack_snapshot` returns raw
+    # Compose states, so a crash-looping Grafana reads `restarting`, and the
+    # intended skip ("nothing created yet; the `up -d` below makes it fresh
+    # with current provisioning") silently swallowed it. That is the worst
+    # case to skip in: a container crash-looping on *drifted* env is exactly
+    # one `--force-recreate` away from picking up the corrected value, and
+    # `up -d` alone will not do it -- Compose sees no change from its own
+    # point of view, so the operator fixes `GF_INSTALL_PLUGINS`, re-runs, and
+    # watches the same loop continue with the stale env. `up -d
+    # --force-recreate` does not care what state the container is in.
+    if _compose_stack_snapshot().get("grafana", "absent") == "absent":
+        # Nothing created yet to be stale -- the normal `up -d` below will
         # create it fresh with current provisioning/env already.
         return None
 
@@ -17276,17 +17289,24 @@ def _sync_host_relay_env(cfg_path: Path | None = None, env_path: Path | None = N
 # once the containers are *created*, which is a claim about Docker, not about
 # the software inside them: the Grafana crash loop in #3993 was created
 # successfully and then died on its own provisioning directory, over and over,
-# while the step printed "Observability stack up". Twenty seconds is bounded
-# (an install step may not hang) and is comfortably longer than Docker's
-# initial restart backoff, so a container that cannot survive its own boot is
-# observed `restarting` well inside it.
-OBSERVABILITY_SETTLE_TIMEOUT_SECONDS = 20.0
+# while the step printed "Observability stack up". Bounded, because an install
+# step may not hang.
+OBSERVABILITY_SETTLE_TIMEOUT_SECONDS = 45.0
 OBSERVABILITY_SETTLE_POLL_SECONDS = 2.0
 
-# A verdict must hold twice before the step calls the stack settled. One
-# reading taken immediately after `up -d` sees "running" for any container that
-# has not crashed *yet* -- which is every crash loop, for its first second.
-OBSERVABILITY_SETTLE_CONFIRMATIONS = 2
+# How long a container's *current run* must have lasted before the step calls
+# the stack settled.
+#
+# This replaced a count of consecutive `running` readings (#4045). Two readings
+# two seconds apart is two seconds of evidence, and the step returned on the
+# second one: real Grafana reads its provisioning directory several seconds
+# into boot, so it was `running` at both looks, the verdict came back `settled`
+# in 2.2s, and the crash loop that followed was reported by the *next* step as
+# "Could not reconcile Grafana admin credential". Fifteen seconds is longer than
+# Grafana's own boot-to-provisioning window and longer than Docker's early
+# restart backoff, so a container that cannot survive its own start has either
+# restarted or been seen `restarting` inside it.
+OBSERVABILITY_SETTLE_STABLE_SECONDS = 15.0
 
 # Number of log lines pulled from a container that failed to settle, of which
 # only the last non-empty one is quoted into the step message.
@@ -17352,6 +17372,32 @@ def _observability_failure_reason(service: str) -> str:
     return tail[:197] + "..." if len(tail) > 200 else tail
 
 
+def _container_run_age_seconds(started_at: str) -> float | None:
+    """Seconds since `started_at` (Docker's `State.StartedAt`), or None if unusable.
+
+    Docker stamps nanosecond precision (`2026-10-02T04:10:45.591030446Z`),
+    which `datetime.fromisoformat` rejects, so the fraction is truncated to
+    microseconds first. A container that has never run carries the zero time
+    (`0001-01-01T00:00:00Z`); that is reported as None rather than as an age of
+    two thousand years, because "no current run" is not "a very old run".
+    """
+    text = (started_at or "").strip()
+    if not text or text.startswith("0001-01-01"):
+        return None
+    # Truncate sub-microsecond digits; everything after them (a `Z` or a
+    # `+00:00`) is left exactly where it was.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        started = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - started).total_seconds()
+
+
 def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
     """Watch the just-started `services` for a bounded window and rule on them.
 
@@ -17364,27 +17410,47 @@ def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
 
     Answers with one of three verdicts, never collapsing them:
 
-    - **crashed** -- a service is `restarting`/`exited`/`dead`. Definite: the
-      probe ran and reported a container that is not staying up. Carries that
+    - **crashed** -- a service is `restarting`/`exited`/`dead`, *or* Docker's
+      own `RestartCount`/`StartedAt` for it moved while this window was open.
+      Definite either way: the probe ran and established that the container is
+      not the one this step started, or is not staying up. Carries that
       container's own last log line.
-    - **settled** -- every service the probe reported for this stack was
-      `running` on `OBSERVABILITY_SETTLE_CONFIRMATIONS` consecutive readings.
-      Two readings, not one: a container that dies a second after creation
-      reads `running` on the first look.
+    - **settled** -- every service the probe reported for this stack has been
+      `running`, restart-free, for `OBSERVABILITY_SETTLE_STABLE_SECONDS` --
+      either observed continuously from here, or already true of its current
+      run when this started (an idempotent re-run over a stack that has been up
+      for hours settles on the first look, and pays no window for it).
     - **undetermined** -- the probe could not run (no Docker access from here:
       `compose_probe().available` is False, see #3812), reported none of the
       started services, or the window closed with services neither running nor
       crashed (e.g. still `created`). Nothing is claimed either way; the caller
       must not turn this into a success *or* a failure.
 
+    **Why a sampled state string is not enough, and `restarting` in particular
+    is not the thing to look for (#4045).** The earlier version concluded
+    `settled` from two consecutive `running` readings two seconds apart, and
+    returned on the second one. A crash loop is `running` for part of every
+    cycle, so this answered `settled` in 2.2s for a container that had not yet
+    reached the line it dies on -- which is precisely real Grafana, several
+    seconds into a boot that ends in a provisioning error. Widening
+    `_CRASHED_CONTAINER_STATES` would not have helped: the readings said
+    `running` because the container genuinely *was* running, on its first of
+    many lives. So the evidence for "stayed up" is now the continuity of one
+    run (restart counter and start timestamp, via `self_heal.container_liveness`)
+    over a duration, and the state strings are only the fast path for a loop
+    slow enough to be caught mid-backoff.
+
     Reuses `self_heal.compose_probe()` rather than adding a second Docker hop:
     that function is already the project's "ask Docker, and say so if you
     couldn't" primitive, and duplicating it would mean two answers to one
-    question.
+    question. `container_liveness` lives beside it for the same reason.
     """
     wanted = set(services)
     deadline = time.monotonic() + OBSERVABILITY_SETTLE_TIMEOUT_SECONDS
-    confirmations = 0
+    # Per-service liveness as first seen in this window. A later reading that
+    # disagrees with it is a restart that happened while we were watching.
+    baseline: dict[str, self_heal.ContainerLiveness] = {}
+    running_since: float | None = None
     last_detail = ""
     while True:
         probe = self_heal.compose_probe()
@@ -17399,11 +17465,14 @@ def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
             name for name, s in observed.items() if s.state in _CRASHED_CONTAINER_STATES
         )
         if crashed:
-            reasons = "; ".join(
-                f"{name} ({observed[name].state}): {_observability_failure_reason(name)}"
-                for name in crashed
+            return _SettleVerdict(
+                SETTLE_STATE_CRASHED,
+                "; ".join(
+                    f"{name} ({observed[name].state}): {_observability_failure_reason(name)}"
+                    for name in crashed
+                ),
+                tuple(crashed),
             )
-            return _SettleVerdict(SETTLE_STATE_CRASHED, reasons, tuple(crashed))
         if not observed:
             return _SettleVerdict(
                 SETTLE_STATE_UNDETERMINED,
@@ -17411,23 +17480,66 @@ def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
                 "started, so nothing here establishes whether they are up",
                 tuple(sorted(wanted)),
             )
+
+        now = time.monotonic()
+        # Empty when the inspect could not run; that is "no restart evidence",
+        # never "nothing restarted", so it only costs the fast path below --
+        # the loop then falls back on watching the states for the full
+        # duration itself.
+        liveness = self_heal.container_liveness([s.container for s in observed.values()])
+        restarted: list[str] = []
+        for name, status in sorted(observed.items()):
+            live = liveness.get(status.container)
+            if live is None:
+                continue
+            seen = baseline.get(name)
+            if seen is None:
+                baseline[name] = live
+            elif live.restarts > seen.restarts or live.started_at != seen.started_at:
+                restarted.append(name)
+        if restarted:
+            return _SettleVerdict(
+                SETTLE_STATE_CRASHED,
+                "; ".join(
+                    f"{name} (restarted while settling, restart count "
+                    f"{liveness[observed[name].container].restarts}): "
+                    f"{_observability_failure_reason(name)}"
+                    for name in restarted
+                ),
+                tuple(restarted),
+            )
+
         unsettled = sorted(name for name, s in observed.items() if s.state != "running")
         if unsettled:
-            confirmations = 0
+            running_since = None
             last_detail = "still not running after the settle window: " + ", ".join(
                 f"{name} ({observed[name].state})" for name in unsettled
             )
         else:
-            confirmations += 1
-            if confirmations >= OBSERVABILITY_SETTLE_CONFIRMATIONS:
+            if running_since is None:
+                running_since = now
+            ages = [
+                _container_run_age_seconds(liveness[s.container].started_at)
+                for s in observed.values()
+                if s.container in liveness
+            ]
+            already_stable = len(ages) == len(observed) and all(
+                age is not None and age >= OBSERVABILITY_SETTLE_STABLE_SECONDS for age in ages
+            )
+            if already_stable or now - running_since >= OBSERVABILITY_SETTLE_STABLE_SECONDS:
                 return _SettleVerdict(SETTLE_STATE_SETTLED, "", tuple(sorted(observed)))
-        if time.monotonic() >= deadline:
+            last_detail = (
+                "running, but not yet for the "
+                f"{OBSERVABILITY_SETTLE_STABLE_SECONDS:.0f}s this step waits before "
+                "calling the stack settled: " + ", ".join(sorted(observed))
+            )
+        if now >= deadline:
             return _SettleVerdict(
                 SETTLE_STATE_UNDETERMINED,
                 last_detail
                 or (
                     "the settle window closed before the containers could be confirmed "
-                    "running twice"
+                    "running and restart-free"
                 ),
                 tuple(sorted(observed)),
             )
@@ -17657,18 +17769,32 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             # container stuck crash-looping (e.g. a broken alerting-
             # provisioning file) should surface here as one clear failure
             # rather than as a misleading "credential doesn't authenticate".
-            # Skipped as a no-op when Grafana isn't part of the running
-            # Compose stack at all (e.g. Docker not found) -- the
-            # credential-reconcile call below already handles that host
-            # shape on its own terms.
-            grafana_running = _compose_stack_snapshot().get("grafana") == "running"
-            if grafana_running and not _wait_for_grafana_healthy():
+            #
+            # Gated on the container *existing* in the Compose stack, not on
+            # it reading `running` (#4045). The intended skip is "Grafana is
+            # not part of this stack at all" -- a Docker-less host, or the
+            # observability profile never started -- and `_compose_stack_
+            # snapshot` reports exactly that as an absent key, including when
+            # the probe could not run (its `known=False` rows are dropped, so
+            # an unqueryable stack skips rather than inventing a failure,
+            # #3812). Asking for `== "running"` instead folded the crash loop
+            # into the same skip: `_compose_stack_snapshot` returns raw
+            # Compose states, a crash-looping Grafana is `restarting` or
+            # `exited`, so the one guard that exists to catch a Grafana that
+            # never comes up was switched off by the very condition it
+            # guards, and control fell straight through to the credential
+            # reconcile that then reported the wrong fault. This is the same
+            # absent-not-running rule `_restart_grafana_if_running` already
+            # follows for the same reason (#3588).
+            grafana_present = _compose_stack_snapshot().get("grafana", "absent") != "absent"
+            if grafana_present and not _wait_for_grafana_healthy():
                 results.append(
                     OpsResult(
                         False,
                         "Grafana never became healthy",
-                        "Check `nyxgpt ops status` (a compose service stuck `restarting` is "
-                        "the tell) and `nyxgpt ops logs grafana` for the boot error.",
+                        f"Grafana's last log line: {_observability_failure_reason('grafana')} "
+                        "-- read the full output with `nyxgpt ops logs grafana`, fix the "
+                        "cause, then re-run `nyxgpt ops observability`.",
                     )
                 )
                 return results
@@ -17729,13 +17855,22 @@ def _start_observability_stack_terraform() -> list[OpsResult]:
     # before Grafana is reachable and callers (the smoke gate, a user opening the
     # dashboard) race its startup. A container stuck crash-looping never reports
     # healthy, so this surfaces as one clear failure instead of a silent race.
-    if _compose_stack_snapshot().get("grafana") == "running" and not _wait_for_grafana_healthy():
+    #
+    # Gated on the container existing, not on it reading `running` -- the same
+    # correction as in `_reconcile_grafana_provisioning`, where the full
+    # reasoning lives (#4045). A crash-looping Grafana is `restarting`, so the
+    # old `== "running"` gate skipped the one wait that would have caught it.
+    if (
+        _compose_stack_snapshot().get("grafana", "absent") != "absent"
+        and not _wait_for_grafana_healthy()
+    ):
         results.append(
             OpsResult(
                 False,
                 "Grafana never became healthy",
-                "Check `nyxgpt ops status` (a compose service stuck `restarting` is the tell) "
-                "and `nyxgpt ops logs grafana` for the boot error.",
+                f"Grafana's last log line: {_observability_failure_reason('grafana')} "
+                "-- read the full output with `nyxgpt ops logs grafana`, fix the cause, "
+                "then re-run `nyxgpt ops install --terraform --local`.",
             )
         )
     return results

@@ -28,9 +28,21 @@ fault-injection pattern from ``macos-brew-smoke.yml`` and
   then asserts the shipped step returns ``ok=False``, names ``grafana``, and
   quotes ``grafana``'s own last log line. Without the first assertion this
   check could pass on a runner that never reproduced the defect.
+* **slow crash-loop (injected)** -- #4045, the acceptance failure this half was
+  added for. The fixture above crashes before the step's first look, so it was
+  caught by a ``restarting`` reading alone; the owner's real Grafana did not.
+  It ran for several seconds, failed on a malformed datasource provisioning
+  file, and crash-looped -- so every reading inside the old two-reading window
+  said ``running``, the verdict came back ``settled`` in 2.2s, and the next
+  step reported "Could not reconcile Grafana admin credential" over a crash
+  loop. This half reproduces that shape (``grafana`` stays up well past the old
+  window, then exits 1 forever) and asserts the pre-fix input first: two
+  consecutive Compose readings two seconds apart, both ``running``, which is
+  *exactly* what the old check settled on. Only then does it assert the shipped
+  verdict is ``crashed`` with ``grafana``'s own line.
 * **healthy** -- the same fixture with both services staying up: the step must
   return ``ok=True`` with "Observability stack up". A check that fails on
-  everything is not a check, and this is what keeps the crash-loop half from
+  everything is not a check, and this is what keeps the crash-loop halves from
   passing vacuously.
 * **undetermined** -- ``DOCKER_HOST`` pointed at a socket that does not exist,
   so the Compose probe genuinely cannot run. The verdict must be
@@ -42,11 +54,13 @@ Needs a working Docker engine; exits 0 with a skip notice where there is none.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # The crash-looping service is named `grafana` deliberately: it is the service
@@ -62,6 +76,28 @@ CRASH_FIXTURE = f"""services:
     profiles: ["monitoring"]
     restart: always
     command: ["sh", "-c", "echo '{CRASH_LINE}'; exit 1"]
+  jaeger:
+    image: alpine:3.20
+    profiles: ["tracing"]
+    restart: "no"
+    command: ["sh", "-c", "sleep 900"]
+"""
+
+# The #4045 shape: up long enough that every reading inside the old settle
+# window said `running`, then gone, forever. `SLOW_CRASH_UPTIME_SECONDS` only
+# has to exceed the two readings two seconds apart that the old check settled
+# on -- real Grafana's boot-to-provisioning-error gap was about this long.
+SLOW_CRASH_UPTIME_SECONDS = 8
+
+SLOW_CRASH_FIXTURE = f"""services:
+  grafana:
+    image: alpine:3.20
+    profiles: ["monitoring"]
+    restart: always
+    command:
+      - sh
+      - -c
+      - "sleep {SLOW_CRASH_UPTIME_SECONDS}; echo '{CRASH_LINE}'; exit 1"
   jaeger:
     image: alpine:3.20
     profiles: ["tracing"]
@@ -221,6 +257,98 @@ def run_crash_loop_half(root: Path) -> None:
         _compose_down(compose_file)
 
 
+def _compose_states(compose_file: Path) -> dict[str, str]:
+    """{service: Compose state} straight from the CLI, bypassing nyxgpt entirely.
+
+    Deliberately not `self_heal.compose_probe()`: this is the evidence that the
+    *input* to the old check was two `running` readings, so it must not be read
+    through the code under test.
+    """
+    cp = subprocess.run(
+        ["docker", "compose", "-f", str(compose_file), "ps", "-a", "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    states: dict[str, str] = {}
+    for line in (cp.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        if row.get("Service"):
+            states[row["Service"]] = row.get("State", "")
+    return states
+
+
+def run_slow_crash_loop_half(root: Path) -> None:
+    compose_file = _write_half(root, "home-slow-crash", SLOW_CRASH_FIXTURE)
+    ops = _reimport_ops()
+    try:
+        up = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(compose_file),
+                "--profile",
+                "monitoring",
+                "--profile",
+                "tracing",
+                "up",
+                "-d",
+                "grafana",
+                "jaeger",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if up.returncode != 0:
+            die(
+                "`docker compose up -d` did not exit 0 over the slow-crash fixture "
+                f"({up.returncode}: {up.stderr.strip()})"
+            )
+
+        # 1. The pre-fix input, executed: two Compose readings two seconds
+        #    apart, both `running`. That pair -- and nothing more -- is what
+        #    the old check returned `settled` on. If this runner cannot show
+        #    it, the half below would pass without reproducing #4045.
+        first = _compose_states(compose_file)
+        time.sleep(2.0)
+        second = _compose_states(compose_file)
+        if first.get("grafana") != "running" or second.get("grafana") != "running":
+            die(
+                "this runner does not reproduce #4045's input: grafana read "
+                f"{first.get('grafana')!r} then {second.get('grafana')!r}, so a "
+                "regression to 'two running readings means settled' would be caught "
+                "here by luck rather than by the check"
+            )
+        log(
+            "injected: two consecutive `running` readings 2s apart over a container "
+            "that is going to crash-loop -- verbatim the old check's evidence for "
+            "'Observability stack up'"
+        )
+
+        # 2. The shipped verdict on the same container: crashed, named, with
+        #    its own reason. No `restarting` reading is required to get there.
+        verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
+        if verdict.state != ops.SETTLE_STATE_CRASHED:
+            die(
+                "a container that cannot stay up was called "
+                f"{verdict.state!r} (detail={verdict.detail!r}) -- this is #4045: the "
+                "step reports the stack up and the credential reconcile takes the blame"
+            )
+        if "grafana" not in verdict.services or "jaeger" in verdict.services:
+            die(f"the verdict named the wrong containers: {verdict.services}")
+        if CRASH_LINE not in verdict.detail:
+            die(f"the verdict does not carry the container's own reason: {verdict.detail!r}")
+        log(f"injected: verdict={verdict.state} services={verdict.services}")
+        log(f"injected: reason carried through -- {verdict.detail}")
+    finally:
+        _compose_down(compose_file)
+
+
 def run_healthy_half(root: Path) -> None:
     compose_file = _write_half(root, "home-healthy", HEALTHY_FIXTURE)
     ops = _reimport_ops()
@@ -265,10 +393,12 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="nyx-settle-smoke-") as tmp:
         root = Path(tmp)
         run_crash_loop_half(root)
+        run_slow_crash_loop_half(root)
         run_healthy_half(root)
         run_undetermined_half(root)
     log(
-        "PASS: a crash loop fails the step with its own reason; a live stack passes; "
+        "PASS: a crash loop fails the step with its own reason -- including one that "
+        "reads `running` on every look inside the old window; a live stack passes; "
         "an unqueryable probe says so"
     )
 
