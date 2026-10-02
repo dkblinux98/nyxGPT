@@ -513,6 +513,45 @@ def test_disable_closes_the_path_and_turns_the_listener_off(
     assert "Screen Sharing is off" in capsys.readouterr().out
 
 
+def test_stop_does_not_claim_anything_about_a_mac_it_never_configured(capsys):
+    """D-018's rule: a surface says nothing it has not got a source for."""
+    assert cloud_screen.screen_command(_args(stop=True)) == 0
+    out = capsys.readouterr().out
+    assert "No screen path is open." in out
+    assert "still enabled on the Mac" not in out
+
+
+def test_stop_names_the_disable_command_when_it_did_configure_one(capsys):
+    cloud_screen.record_configured(cloud_deploy.DeployTarget(host="198.51.100.10"))
+    assert cloud_screen.screen_command(_args(stop=True)) == 0
+    out = capsys.readouterr().out
+    assert "still enabled on the Mac" in out
+    assert "nyxgpt cloud screen --disable" in out
+
+
+def test_rotating_the_credential_says_so_and_sets_the_new_one(
+    _isolated_cloud_home, monkeypatch, capsys
+):
+    _record_macos_deploy(_isolated_cloud_home)
+    first, _ = cloud_screen.ensure_vnc_password()
+    delivered: list[str] = []
+    monkeypatch.setattr(
+        cloud_screen,
+        "configure_remote_screen_sharing",
+        lambda _t, password: delivered.append(password) or {"configured": True},
+    )
+    monkeypatch.setattr(
+        cloud_screen, "start_screen_tunnel", lambda *_a, **_k: {"already_running": False}
+    )
+
+    assert cloud_screen.screen_command(_args(rotate_password=True)) == 0
+    out = capsys.readouterr().out
+    assert "Rotated the VNC credential" in out
+    assert delivered and delivered[0] != first
+    assert delivered[0] == cloud_screen.read_vnc_password()
+    assert delivered[0] not in out
+
+
 def test_a_refusal_exits_non_zero_with_the_reason_on_stderr(capsys):
     assert cloud_screen.screen_command(_args()) == 1
     assert "No deploy is recorded" in capsys.readouterr().err

@@ -447,13 +447,16 @@ def screen_status() -> dict[str, Any]:
 
 
 def start_screen_tunnel(
-    target: cloud_deploy.DeployTarget, local_port: int = SCREEN_PORT, *, background: bool = True
+    target: cloud_deploy.DeployTarget, local_port: int = SCREEN_PORT
 ) -> dict[str, Any]:
     """Forward `local_port` to the Mac's loopback 5900.
 
-    Detached into its own process group in background mode, exactly like the
-    app-port tunnel, so a Ctrl-C aimed at the CLI does not take the screen
-    path with it and a later `--stop` can find it.
+    Always detached into its own process group -- unlike
+    `cloud_deploy.start_tunnel`, which has a foreground mode. There is no
+    foreground mode here because there is nothing to hold the terminal for: the
+    next thing the operator does is open a VNC client, and a command that
+    blocked until Ctrl-C would make them open a second terminal to do it. A
+    later `--stop` finds the path by its recorded pid.
     """
     existing = screen_status()
     if existing["running"]:
@@ -461,10 +464,6 @@ def start_screen_tunnel(
 
     argv = screen_argv(target, local_port)
     recorded = screen_state()
-    if not background:
-        subprocess.run(argv)
-        return {"action": "screen", "already_running": False, "running": False, "pid": 0}
-
     SCREEN_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(SCREEN_LOG_FILE, "w", encoding="utf-8") as log:
         process = subprocess.Popen(
@@ -691,12 +690,16 @@ def screen_command(args: argparse.Namespace) -> int:
         if getattr(args, "stop", False):
             result = stop_screen_tunnel()
             print("Screen path closed." if result["stopped"] else "No screen path is open.")
-            print(
-                "Screen Sharing is still enabled on the Mac, and nothing can reach it: its "
-                "packet filter drops every non-loopback connection to 5900 and no "
-                "security-group port is open. "
-                f"`{cloud_deploy.LIFECYCLE_COMMANDS['screen']} --disable` turns it off."
-            )
+            # Only when nyxGPT's record says it enabled one. Saying it
+            # unconditionally would assert the state of a Mac this machine has
+            # never configured, which is the class of claim D-018 forbids.
+            if screen_state().get("configured"):
+                print(
+                    "Screen Sharing is still enabled on the Mac, and nothing can reach it: its "
+                    "packet filter drops every non-loopback connection to 5900 and no "
+                    "security-group port is open. "
+                    f"`{cloud_deploy.LIFECYCLE_COMMANDS['screen']} --disable` turns it off."
+                )
             return 0
 
         if getattr(args, "disable", False):
@@ -708,11 +711,13 @@ def screen_command(args: argparse.Namespace) -> int:
             return 0
 
         target = resolve_screen_target(args)
-        if getattr(args, "rotate_password", False):
+        rotated = bool(getattr(args, "rotate_password", False))
+        if rotated:
             rotate_vnc_password()
         password, created = ensure_vnc_password()
-        if created:
-            print(f"Generated a VNC credential and stored it in {vnc_password_path()}.")
+        if created or rotated:
+            verb = "Rotated the" if rotated else "Generated a"
+            print(f"{verb} VNC credential and stored it in {vnc_password_path()}.")
         configure_remote_screen_sharing(target, password)
         record_configured(target)
         local_port = int(getattr(args, "local_port", None) or SCREEN_PORT)
