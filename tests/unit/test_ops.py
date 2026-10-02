@@ -1356,7 +1356,9 @@ def test_sync_host_relay_env_explains_how_to_revert_a_widened_bind(tmp_path, mon
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text("[api]\nhost = 0.0.0.0\nport = 8000\n", encoding="utf-8")
     env_path = tmp_path / ".env"
-    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8")  # pragma: allowlist secret
+    env_path.write_text(
+        "NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8"  # pragma: allowlist secret
+    )
     monkeypatch.setattr(ops, "_is_linux", lambda: True)
     monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
 
@@ -1374,7 +1376,9 @@ def test_sync_host_relay_env_stays_quiet_when_disabled_for_other_reasons(tmp_pat
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text("[api]\nhost = 127.0.0.1\nport = 8000\n", encoding="utf-8")
     env_path = tmp_path / ".env"
-    env_path.write_text("NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8")  # pragma: allowlist secret
+    env_path.write_text(
+        "NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8"  # pragma: allowlist secret
+    )
     monkeypatch.setattr(ops, "_is_linux", lambda: False)
 
     result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
@@ -1807,7 +1811,11 @@ def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkey
 @pytest.mark.unit
 def test_sync_env_from_config_creates_env_from_example(tmp_path):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw")  # pragma: allowlist secret
+    _write_config(
+        cfg_path,
+        api_key="real-api-key",  # pragma: allowlist secret
+        grafana_password="real-grafana-pw",  # pragma: allowlist secret
+    )
 
     example_path = tmp_path / ".env.example"
     example_path.write_text(
@@ -1838,7 +1846,11 @@ def test_sync_env_from_config_creates_env_from_example(tmp_path):
 @pytest.mark.unit
 def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="new-api-key", grafana_password="new-grafana-pw")  # pragma: allowlist secret
+    _write_config(
+        cfg_path,
+        api_key="new-api-key",  # pragma: allowlist secret
+        grafana_password="new-grafana-pw",  # pragma: allowlist secret
+    )
 
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -1877,7 +1889,11 @@ def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path):
 @pytest.mark.unit
 def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")  # pragma: allowlist secret
+    _write_config(
+        cfg_path,
+        api_key="cli-api-key",  # pragma: allowlist secret
+        grafana_password="cli-grafana-pw",  # pragma: allowlist secret
+    )
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -1916,7 +1932,8 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     (src_root / "k8s").mkdir(parents=True)
     (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (src_root / ".env.example").write_text(  # pragma: allowlist secret
-        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n", encoding="utf-8"  # pragma: allowlist secret
+        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n",  # pragma: allowlist secret
+        encoding="utf-8",  # pragma: allowlist secret
     )
 
     home = tmp_path / "home"
@@ -7092,7 +7109,7 @@ def test_verify_grafana_datasources_resolve_fails_when_uid_missing(monkeypatch):
 def test_verify_grafana_datasources_resolve_fails_when_unreachable(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus"])
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
-  # pragma: allowlist secret
+
     class FakeClient:
         def __enter__(self):
             return self
@@ -7119,7 +7136,7 @@ def test_verify_grafana_datasources_resolve_fails_with_http_error_includes_body(
     class FakeResponse:
         status_code = 500
         text = "internal server error: datasource registry unavailable"
-  # pragma: allowlist secret
+
     class FakeClient:
         def __enter__(self):
             return self
@@ -14786,7 +14803,7 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".nyxGPT").mkdir(parents=True)
     cfg_path = home / ".nyxGPT" / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")
+    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
     out = tmp_path / "config.docker.ini"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
@@ -15087,7 +15104,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
 @pytest.mark.unit
 def test_ops_env_sync_quiet_flag_suppresses_step_announcements(tmp_path, capsys):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")
+    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
 
     args = SimpleNamespace(config=str(cfg_path), env_file=str(env_path), quiet=True)

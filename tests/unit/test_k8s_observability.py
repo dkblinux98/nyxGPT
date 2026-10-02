@@ -214,10 +214,10 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         patch.object(
             ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
         ),
-        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),  # pragma: allowlist secret
+        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
-        patch.object(ops, "_wait_for_k8s_observability") as wait_observability,  # pragma: allowlist secret
+        patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
         patch.object(ops, "_k8s_provision_glitchtip") as provision_glitchtip,
         patch.object(ops, "_k8s_observability_health") as observability_health,
         patch.object(ops, "_record_ops_action"),
@@ -237,10 +237,13 @@ def test_install_kubernetes_honours_skip_observability() -> None:
 def test_apply_observability_bootstraps_secret_then_applies(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ops, "K8S_OBSERVABILITY_DIR", tmp_path)
     (tmp_path / "secret.example.yaml").write_text(
-        'stringData:\n  grafana-admin-password: "change-me"\n', encoding="utf-8"  # pragma: allowlist secret
+        'stringData:\n  grafana-admin-password: "change-me"\n',  # pragma: allowlist secret
+        encoding="utf-8",  # pragma: allowlist secret
     )
     monkeypatch.setattr(
-        ops, "_k8s_observability_secret_values", lambda: {"grafana-admin-password": "s3cret"}  # pragma: allowlist secret
+        ops,
+        "_k8s_observability_secret_values",
+        lambda: {"grafana-admin-password": "s3cret"},  # pragma: allowlist secret
     )
     monkeypatch.setattr(
         ops, "_apply_k8s_grafana_provisioning", lambda: [ops.OpsResult(True, "configmaps")]
@@ -256,7 +259,10 @@ def test_apply_observability_bootstraps_secret_then_applies(tmp_path, monkeypatc
     results = ops._apply_k8s_observability()
 
     assert all(r.ok for r in results)
-    assert 'grafana-admin-password: "s3cret"' in (tmp_path / "secret.yaml").read_text()  # pragma: allowlist secret
+    assert (
+        'grafana-admin-password: "s3cret"'  # pragma: allowlist secret
+        in (tmp_path / "secret.yaml").read_text()  # pragma: allowlist secret
+    )
     assert applied == [["kubectl", "apply", "-k", str(tmp_path)]]
 
 

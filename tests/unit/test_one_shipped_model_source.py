@@ -143,9 +143,9 @@ def test_rendering_never_fails_an_install(tmp_path: Path, monkeypatch: pytest.Mo
     ops._render_k8s_config_models()  # must not raise
 
     assert called, "load_config was never reached -- the test is not exercising the try/except"
-    assert target.read_text(encoding="utf-8") == shipped, (
-        "a failed render must leave the synced manifest exactly as shipped"
-    )
+    assert (
+        target.read_text(encoding="utf-8") == shipped
+    ), "a failed render must leave the synced manifest exactly as shipped"
 
 
 @pytest.mark.parametrize("script", ["k8s-local-smoke.sh", "k8s-artifact-smoke.sh"])

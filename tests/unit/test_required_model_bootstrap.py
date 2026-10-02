@@ -477,7 +477,7 @@ def test_env_sync_writes_the_model_vars_even_with_no_secrets(tmp_path):
         encoding="utf-8",
     )
     env_path = tmp_path / ".env"
-  # pragma: allowlist secret
+
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
     assert all(r.ok for r in results)

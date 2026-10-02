@@ -255,7 +255,9 @@ def test_normalize_dsn_host_preserves_password_in_compose_container(
     monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
 
     assert (
-        error_tracking._normalize_dsn_host("http://key:secret@localhost:8080/1")  # pragma: allowlist secret
+        error_tracking._normalize_dsn_host(
+            "http://key:secret@localhost:8080/1"  # pragma: allowlist secret
+        )
         == "http://key:secret@glitchtip:8080/1"  # pragma: allowlist secret
     )
 
