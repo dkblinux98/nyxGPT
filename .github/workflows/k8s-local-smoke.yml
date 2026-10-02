@@ -75,6 +75,18 @@ name: Kubernetes Local Smoke
 # Required models header, models UNKNOWN) happens naturally here, so no fault
 # injection is needed for the step to fail on a revert.
 #
+# #3987's re-test added AC4 to that step: `ops doctor`'s OTHER checks were
+# still reading the host (a false "tracing is broken" on a cluster whose
+# Jaeger held real spans, and a GlitchTip 401 against a healthy GlitchTip).
+# That half IS fault-injected both ways, because this runner's own config may
+# carry no `[tracing]` section at all: the step writes a throwaway HOME whose
+# config.ini names an endpoint nothing can ever answer, runs `ops doctor` over
+# it without the Kubernetes install marker (which MUST report it -- the
+# pre-fix output, reproduced) and then with it (which must NOT). It then
+# scales the in-cluster `otel-collector` to zero and requires doctor to report
+# THAT, with the `--kubernetes` remedy, so the branch is proven to speak and
+# not merely to have gone quiet.
+#
 # A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
 # asked: does the install tell a Pod that is merely starting apart from one
 # that will never start? See scripts/k8s-pod-state-smoke.py.

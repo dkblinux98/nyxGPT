@@ -14423,6 +14423,347 @@ def _terraform_install_mode_issues() -> list[str]:
     ]
 
 
+# --- Which machine a `doctor` check is about (#3987) ---
+#
+# The owner's Kubernetes acceptance re-test found `ops doctor` exiting 2 on a
+# healthy cluster with:
+#
+#   Tracing is enabled ([tracing] otlp_endpoint=http://localhost:4318/v1/traces)
+#   but nothing is listening there -- spans are being silently dropped and
+#   Jaeger will stay empty. Confirm the otel-collector Compose service ...
+#
+# minutes after `curl http://localhost:16686/api/services` on the same machine
+# had returned three services with real spans behind them. Every clause of that
+# finding is false about the deployment: the Pods read `k8s/configmap.yaml`'s
+# `otlp_endpoint = http://otel-collector:4318/v1/traces`, a different endpoint
+# and a working one, and the remedy named the *Compose* collector on a
+# Kubernetes stack. The check had read THIS HOST's config.ini, probed THIS
+# HOST's port, and reported the verdict as the deployment's.
+#
+# So the rule, and the sweep that applies it to every check `doctor` runs:
+#
+#   A check whose finding is a claim about THE DEPLOYMENT THAT IS SERVING must
+#   ask the substrate that is serving. A check whose finding is a claim about
+#   THIS HOST -- its PATH, its files, its service managers, its venv -- stays
+#   host-scoped, and `doctor` says which is which out loud rather than leaving
+#   the operator to work it out from the wording of a failure.
+#
+# The shape to sweep for is the one the owner named: *reads host config, or
+# probes a host port, and then speaks about the deployment*. Exactly three
+# checks had it, and all three are branched here:
+#
+#   _tracing_wiring_issue           -> _k8s_tracing_wiring_issue
+#   _prometheus_api_scrape_issue    -> _k8s_prometheus_api_scrape_issue
+#   _error_tracking_dsn_drift_issue -> _k8s_error_tracking_dsn_drift_issue
+#
+# Branched, not merged -- the same call `required_models_status` documents. A
+# machine with both a native stack and a cluster has two of everything, and
+# answering "is this deployment wired up" out of the other one's config is the
+# whole defect. The printed scope line says which machine answered.
+#
+# Everything else `doctor` runs is host-scoped BY CONSTRUCTION and correct as
+# it stands: tools on PATH, file permissions, the launchd/systemd units this
+# machine registered, this venv's packages, this host's Docker containers and
+# Terraform state. Three more read host config but are already gated on a
+# Compose stack actually running (`_log_aggregation_wiring_issue`, the Loki
+# log-volume block, `_glitchtip_secrets_doctor_issues`), so they cannot fire
+# about a Kubernetes deployment at all. The full table is in
+# `docs/ops.md`, and `tests/unit/test_ops_doctor_substrate_scope.py` fails if
+# a check is added to `doctor` without being classified -- the next check with
+# this shape should not have to be found by an owner running the product.
+
+# The ConfigMap `k8s/configmap.yaml` ships: the api Pods mount its `config.ini`
+# key at the path a native api reads from `~/.nyxGPT`. It is the deployment's
+# config of record, and the file every cluster-scoped check below reads
+# *instead of* the host's.
+K8S_CONFIG_CONFIGMAP = "nyxgpt-config"
+K8S_CONFIG_CONFIGMAP_KEY = "config.ini"
+
+# The Secret `k8s/secret.example.yaml` ships; `K8S_ERROR_TRACKING_DSN_SECRET_KEY`
+# is the key inside it that the api and web Deployments expand into
+# NYXGPT_ERROR_TRACKING_DSN.
+K8S_APP_SECRET_NAME = "nyxgpt-secrets"  # pragma: allowlist secret
+
+
+def _k8s_configmap_entry(configmap: str, key: str) -> str | None:
+    """One key's value out of a ConfigMap in the nyxGPT namespace, or None.
+
+    `-o go-template` rather than `-o jsonpath`: the key this exists to read is
+    `config.ini`, and a dot inside a jsonpath field name is a path separator
+    unless it is escaped through two levels of quoting. `index` takes the key
+    as a plain string and cannot be misread.
+
+    None means "could not be read" -- no kubectl, no such ConfigMap, an
+    unreachable cluster. Callers treat that as "cannot tell", never as "not
+    configured" (the #3468 distinction, applied to config instead of Pods).
+    """
+    if _which("kubectl") is None:
+        return None
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "configmap",
+            configmap,
+            "-o",
+            f'go-template={{{{index .data "{key}"}}}}',
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    value = cp.stdout or ""
+    # `index` on a key the map does not carry renders as this literal rather
+    # than failing, so it has to be read as absence and not as content.
+    return None if value.strip() == "<no value>" else value
+
+
+def _k8s_deployment_config() -> ConfigParser | None:
+    """The `config.ini` the api Pods actually read, parsed; None if unreadable.
+
+    The substitute for `~/.nyxGPT/config.ini` in every doctor check that is
+    about the deployment rather than the host. They are different files with
+    different values on purpose -- `[tracing] otlp_endpoint` is
+    `http://otel-collector:4318/v1/traces` in the cluster and
+    `http://localhost:4318/v1/traces` on the workstation -- and reading the
+    wrong one is the whole of this issue's AC4 failure.
+    """
+    raw = _k8s_configmap_entry(K8S_CONFIG_CONFIGMAP, K8S_CONFIG_CONFIGMAP_KEY)
+    if not (raw or "").strip():
+        return None
+    parser = ConfigParser()
+    try:
+        parser.read_string(raw or "")
+    except configparser.Error as e:
+        logger.warning(
+            "Could not parse the %s ConfigMap's %s, skipping the cluster-scoped doctor "
+            "checks: %s",
+            K8S_CONFIG_CONFIGMAP,
+            K8S_CONFIG_CONFIGMAP_KEY,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return None
+    return parser
+
+
+def _k8s_tracing_wiring_issue() -> str | None:
+    """The Kubernetes twin of `_tracing_wiring_issue` (#3987).
+
+    Same question -- are the app's spans reaching a collector, or being
+    dropped into a socket nothing listens on? -- asked of the deployment
+    rather than of the workstation the operator typed the command on.
+
+    Reachability is read from the collector workload's readiness rather than
+    by connecting to the endpoint, and that is not a weaker answer: the
+    `otel-collector` Deployment's readiness probe is a TCP probe on its
+    otlp-http port (it exposes no health endpoint, see
+    `k8s/observability/otel-collector.yaml`), which is precisely the connect
+    `tracing.otlp_endpoint_reachable` makes natively. The alternative -- an
+    HTTP GET from inside the cluster -- cannot tell a 404 on `/v1/traces` from
+    a refused connection through busybox wget, so it would answer a different
+    question less reliably.
+
+    The loopback case is called out separately because it is a different
+    fault with a different fix: an endpoint of `localhost` inside a Pod is
+    *that Pod*, which is #3990 exactly, and no amount of collector readiness
+    makes it work.
+    """
+    parser = _k8s_deployment_config()
+    if parser is None:
+        return None
+    if not get_tracing_enabled(parser):
+        return None
+
+    endpoint = str(get_tracing_config(parser)["otlp_endpoint"])
+    try:
+        host = (httpx.URL(endpoint).host or "").lower()
+    except Exception as e:
+        logger.warning(
+            "Could not read a host out of the cluster's [tracing] otlp_endpoint, "
+            "skipping the tracing wiring check: %s: %s",
+            type(e).__name__,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return None
+
+    if host in LOOPBACK_API_HOSTS:
+        return (
+            f"The {K8S_NAMESPACE} deployment exports spans to {endpoint} ([tracing] "
+            f"otlp_endpoint in the {K8S_CONFIG_CONFIGMAP} ConfigMap), which inside a Pod "
+            "is that Pod itself -- every span is dropped into a socket nothing listens on "
+            "and Jaeger will stay empty (#3990). It should name the in-cluster collector "
+            "Service (http://otel-collector:4318/v1/traces); re-run `nyxgpt ops install "
+            "--kubernetes` to re-apply the shipped ConfigMap."
+        )
+
+    workloads = _k8s_observability_workload_state()
+    if host not in workloads:
+        # An endpoint pointing somewhere this command knows nothing about --
+        # a collector outside the namespace, say. "Cannot tell" is the honest
+        # answer; guessing is how the native check got here.
+        return None
+    state = workloads[host]
+    if _classify_k8s_observability_workload(host, state).state == K8S_STATE_READY:
+        return None
+    return (
+        f"Tracing is enabled in the {K8S_NAMESPACE} deployment ([tracing] "
+        f"otlp_endpoint={endpoint}, from the {K8S_CONFIG_CONFIGMAP} ConfigMap) but its "
+        f"collector workload {host} is "
+        f"{'not deployed' if state == 'absent' else state} -- spans are being silently "
+        "dropped and Jaeger will stay empty (run: nyxgpt ops observability --kubernetes)"
+    )
+
+
+def _k8s_prometheus_api_scrape_issue() -> str | None:
+    """The Kubernetes twin of `_prometheus_api_scrape_issue` (#3987).
+
+    The native check reads `[monitoring] prometheus_ui_url` off the host and
+    asks whatever answers there. On a Kubernetes deployment that address is
+    either nothing at all or -- worse -- an operator's `nyxgpt ops
+    port-forward --target prometheus`, in which case it reaches the cluster's
+    Prometheus and attaches the Compose-era `host-api-relay` remedy to it.
+    Neither is a statement about the deployment, so this asks the cluster's
+    Prometheus from inside the cluster, the same way `_k8s_metrics_flow_result`
+    does, and names a Kubernetes remedy.
+    """
+    if _which("kubectl") is None:
+        return None
+    ok, body = _k8s_incluster_get("http://prometheus:9090/api/v1/targets?state=active")
+    if not ok:
+        # Prometheus not answering is the observability layer's own failure,
+        # already reported by the workload lines in `ops status` -- the same
+        # rule the native twin applies to an unreachable Prometheus.
+        return None
+    try:
+        active = json.loads(body)["data"]["activeTargets"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+    api_targets = [t for t in active if t.get("labels", {}).get("job") == "nyxgpt-api"]
+    if not api_targets or any(t.get("health") == "up" for t in api_targets):
+        return None
+    last_error = next(
+        (t.get("lastError") for t in api_targets if t.get("lastError")),
+        "no error reported",
+    )
+    return (
+        f"Prometheus in the {K8S_NAMESPACE} namespace cannot scrape the API's /metrics "
+        f"endpoint (job nyxgpt-api is down: {last_error}) -- every Grafana dashboard will "
+        "render empty even though the Pods are Ready. This is the cluster's Prometheus and "
+        "the cluster's api Service, not this host's (check the api Pods with `nyxgpt ops "
+        "status`, then re-run `nyxgpt ops observability --kubernetes`)."
+    )
+
+
+def _k8s_error_tracking_dsn() -> str:
+    """The error-tracking DSN the api/web Pods were started with, or "".
+
+    Read from the Secret rather than from the host's config.ini because they
+    are different values: GlitchTip mints a per-install project key, and
+    `_k8s_provision_glitchtip` writes the cluster's into this Secret while the
+    host's config.ini carries whatever a native `glitchtip-init` wrote there.
+
+    The value never reaches a log or an argv. `kubectl get secret` returns it
+    on stdout, and `_run` logs stdout only on a NON-zero exit -- where there
+    is no value to leak. Only the DSN's public key, the half designed to be
+    embedded in clients, is ever compared or named in a finding.
+    """
+    if _which("kubectl") is None:
+        return ""
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "secret",
+            K8S_APP_SECRET_NAME,
+            "-o",
+            f'go-template={{{{index .data "{K8S_ERROR_TRACKING_DSN_SECRET_KEY}" '
+            "| base64decode}}",
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return ""
+    value = (cp.stdout or "").strip()
+    return "" if value == "<no value>" else value
+
+
+def _k8s_error_tracking_dsn_drift_issue() -> str | None:
+    """The Kubernetes twin of `_error_tracking_dsn_drift_issue` (#3987).
+
+    The native check authenticates to `[error_tracking] glitchtip_ui_url` --
+    `http://localhost:8080` -- with the token in `~/.nyxGPT/secrets`. On the
+    owner's Kubernetes machine that address was the cluster's GlitchTip
+    (reached through the install's port-forward) and the token was the host's,
+    so `doctor` reported `GET /api/0/projects/.../keys/ 401` against a
+    GlitchTip that was healthy and had zero errors. Wrong credential, wrong
+    config, right server, false finding.
+
+    This asks the in-cluster GlitchTip with the credential the cluster's own
+    consumer uses -- the token mounted into the Grafana Pod, the same one
+    `_k8s_errors_flow_result` presents -- and compares against the DSN the
+    api/web Pods actually carry. An empty DSN is not a drift (a
+    `--skip-observability` install leaves error tracking inert by design), and
+    a GlitchTip that cannot be asked is not a drift either: that is the
+    errors-flow line's finding, not this one's.
+    """
+    dsn = _k8s_error_tracking_dsn()
+    if not dsn:
+        return None
+    try:
+        configured_key = httpx.URL(dsn).username
+    except Exception:
+        return None
+    if not configured_key:
+        return None
+
+    ok, body = _k8s_incluster_get(
+        f"http://{GLITCHTIP_CONTAINER_HOST}:{GLITCHTIP_CONTAINER_PORT}"
+        f"/api/0/projects/{GLITCHTIP_ORG_SLUG}/{GLITCHTIP_PROJECT_SLUG}/keys/",
+        bearer_token_file=K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT,
+    )
+    if not ok:
+        return None
+    try:
+        keys: Any = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(keys, list):
+        return None
+
+    live_public_keys = set()
+    for key in keys:
+        key_dsn = _extract_dsn(key)
+        if not key_dsn:
+            continue
+        try:
+            live_public_keys.add(httpx.URL(key_dsn).username)
+        except Exception:
+            continue
+
+    if not live_public_keys or configured_key in live_public_keys:
+        return None
+    return (
+        f"The error-tracking DSN the {K8S_NAMESPACE} api/web Pods carry (the "
+        f"{K8S_ERROR_TRACKING_DSN_SECRET_KEY} key of the {K8S_APP_SECRET_NAME} Secret) "
+        f"matches no current GlitchTip key for {GLITCHTIP_ORG_SLUG}/"
+        f"{GLITCHTIP_PROJECT_SLUG} -- every event is being rejected (401) and silently "
+        "dropped, the same way an unreachable collector silently drops spans. The "
+        "project's key was likely re-minted since the DSN was provisioned. Fix: nyxgpt "
+        "ops glitchtip-init --kubernetes."
+    )
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
@@ -14453,6 +14794,13 @@ def doctor(_args) -> int:
     service-account token is missing or rejected, reports it as an issue
     rather than silently omitting the log volume line (#3438). Prints each
     issue found.
+
+    When a Kubernetes deployment is present, the four checks whose finding is
+    a claim about the *deployment* -- model readiness, tracing wiring, the
+    Prometheus scrape and the error-tracking DSN -- ask the cluster instead of
+    this host, and the report says so. Every other check is host-scoped by
+    construction. See "Which machine a `doctor` check is about" above
+    `_k8s_deployment_config` for the rule and the sweep behind it (#3987).
 
     Returns 0 if no issues were found, else 2.
     """
@@ -14489,8 +14837,18 @@ def doctor(_args) -> int:
         # against the right machine (#3987) -- doctor otherwise names a
         # Kubernetes install mode and then reports exclusively on this host.
         print(f"Kubernetes deployment: {k8s.summary}")
+        # Which machine answered each question, said plainly. The operator who
+        # found #3987's AC4 had no way to know that a tracing failure printed
+        # under a "14/14 pod(s) ready" line was a statement about their laptop
+        # -- so the four cluster-scoped checks are named, and everything else
+        # is declared as what it is.
         print(
-            "  Model readiness below is reported against the cluster, not this host."
+            (
+                "  Model readiness, tracing wiring, the Prometheus scrape and the "
+                "error-tracking DSN are reported against the cluster, not this host."
+                "\n  Every other check below is about this host -- its tools, files, "
+                "services and venv (docs/ops.md)."
+            )
             if k8s_deployed
             else "  The checks below report on this host."
         )
@@ -14652,15 +15010,23 @@ def doctor(_args) -> int:
     if log_issue:
         issues.append(log_issue)
 
-    tracing_issue = _tracing_wiring_issue()
+    # Substrate-branched (#3987): on a Kubernetes deployment these three read
+    # the cluster's own config and probe the cluster's own services. See the
+    # "Which machine a `doctor` check is about" block above the helpers.
+    tracing_issue = _k8s_tracing_wiring_issue() if k8s_deployed else _tracing_wiring_issue()
     if tracing_issue:
         issues.append(tracing_issue)
 
+    # Host-scoped on purpose, Kubernetes deployment or not: this is about the
+    # packages in THIS venv, which is what the native api and every `nyxgpt`
+    # command run from. An api Pod's OTel packages come from its image.
     tracing_packages_issue = _tracing_packages_doctor_issue()
     if tracing_packages_issue:
         issues.append(tracing_packages_issue)
 
-    scrape_issue = _prometheus_api_scrape_issue()
+    scrape_issue = (
+        _k8s_prometheus_api_scrape_issue() if k8s_deployed else _prometheus_api_scrape_issue()
+    )
     if scrape_issue:
         issues.append(scrape_issue)
 
@@ -14693,7 +15059,9 @@ def doctor(_args) -> int:
 
     issues += _observability_volume_doctor_issues()
     issues += _glitchtip_secrets_doctor_issues()
-    error_tracking_drift_issue = _error_tracking_dsn_drift_issue()
+    error_tracking_drift_issue = (
+        _k8s_error_tracking_dsn_drift_issue() if k8s_deployed else _error_tracking_dsn_drift_issue()
+    )
     if error_tracking_drift_issue:
         issues.append(error_tracking_drift_issue)
     issues += _stale_venv_doctor_issues()
