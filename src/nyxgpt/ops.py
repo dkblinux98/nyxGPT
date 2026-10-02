@@ -1523,6 +1523,47 @@ def _resolved_brew_service(component: str, snapshot: Mapping[str, str] | None = 
     return brew_services.resolve(component, NATIVE_BREW_SERVICES[component], snapshot)
 
 
+# Homebrew's launchd label scheme, and there is more than one of it.
+#
+# `homebrew.mxcl.<formula>` was the only label for years and is what every
+# plist on a machine installed under an older Homebrew still carries. Current
+# Homebrew writes `sh.brew.<formula>`. This is measured, not assumed:
+# `macos-brew-smoke.yml` run 36996645910 logged brew's own File column on
+# macos-15/arm64 as `~/Library/LaunchAgents/sh.brew.nyxgpt-api@3.0.0rc.plist`
+# for a service brew had just started, while that job asserted on the
+# `homebrew.mxcl.` path and therefore read a running, registered service as
+# "nothing is registered".
+#
+# BOTH are matched everywhere a label is *guessed* rather than read back from
+# brew. A machine that has been upgraded carries plists under the old label
+# beside anything brew has written since, so knowing only one of the two is
+# how `nyxgpt ops uninstall` leaves a service registered that launchd starts
+# again at the next login (D-032(d)) -- the exact failure that path exists to
+# prevent. Where brew names the file itself (`_brew_service_registration`
+# reads the File column) that answer still wins over any guess: the scheme is
+# Homebrew's to change again.
+_BREW_SERVICE_LABEL_PREFIXES = ("homebrew.mxcl.", "sh.brew.")
+
+
+def _brew_service_plist_candidates(name: str) -> list[Path]:
+    """Every path brew might have written the LaunchAgent for `name` to."""
+    la_dir = _launchagents_dir()
+    return [la_dir / f"{prefix}{name}.plist" for prefix in _BREW_SERVICE_LABEL_PREFIXES]
+
+
+def _brew_service_plist_exists(name: str) -> bool:
+    """Whether a brew LaunchAgent for `name` is on disk under either label."""
+    return any(path.exists() for path in _brew_service_plist_candidates(name))
+
+
+def _brew_label_formula(label: str) -> str:
+    """The formula name inside a brew launchd label, whichever scheme it uses."""
+    for prefix in _BREW_SERVICE_LABEL_PREFIXES:
+        if label.startswith(prefix):
+            return label[len(prefix) :]
+    return label
+
+
 def _brew_service_registration(name: str) -> tuple[str, Path | None]:
     """Return `(state, plist)` for brew service `name` from `brew services list`.
 
@@ -1593,42 +1634,52 @@ def _brew_service_will_restart(name: str, plist: Path | None = None) -> bool:
     one) where the exit code cost a false success.
 
     `plist` may be passed when the caller already has brew's File column, to
-    honour a label scheme other than `homebrew.mxcl.<name>` without paying a
-    second `brew services list`.
+    honour a label scheme neither of `_BREW_SERVICE_LABEL_PREFIXES` covers
+    without paying a second `brew services list`.
     """
-    for candidate in (plist, _launchagents_dir() / f"homebrew.mxcl.{name}.plist"):
+    for candidate in [plist, *_brew_service_plist_candidates(name)]:
         if candidate is not None and candidate.exists():
             return True
     if not _is_macos() or _which("launchctl") is None:
         # `brew services` drives systemd --user on Linux, where there is no
         # plist and no gui domain to ask; the systemd path answers there.
         return False
-    label = plist.stem if plist is not None else f"homebrew.mxcl.{name}"
-    try:
-        cp = _run(
-            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
-            check=False,
-            expected=True,
-            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
-        )
-    except Exception:
-        # A probe that cannot run has not found a registration. Reporting one
-        # here would fail a retire that succeeded.
-        return False
-    return cp.returncode == 0
+    if plist is not None:
+        labels = [plist.stem]
+    else:
+        # No file on disk under either scheme and brew named none, so ask
+        # launchd about both labels: a job can be loaded with its plist already
+        # unlinked, and which label it was bootstrapped under is not knowable
+        # from here.
+        labels = [f"{prefix}{name}" for prefix in _BREW_SERVICE_LABEL_PREFIXES]
+    for label in labels:
+        try:
+            cp = _run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                check=False,
+                expected=True,
+                timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # A probe that cannot run has not found a registration. Reporting
+            # one here would fail a retire that succeeded.
+            return False
+        if cp.returncode == 0:
+            return True
+    return False
 
 
 def _brew_service_is_registered(name: str) -> bool:
     """Whether brew service `name` will still be started by launchd.
 
-    The plist at brew's conventional path settles it without asking brew
-    anything -- a file that exists is a registration, and this is the cheap
-    check. Only when it is absent is brew asked which path it actually chose,
-    since the label scheme is brew's to change; see
+    The plist at either of brew's conventional paths settles it without asking
+    brew anything -- a file that exists is a registration, and this is the
+    cheap check. Only when both are absent is brew asked which path it actually
+    chose, since the label scheme is brew's to change; see
     `_brew_service_will_restart` for why the Status column is not the signal
     in either case.
     """
-    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+    if _brew_service_plist_exists(name):
         return True
     _state, plist = _brew_service_registration(name)
     return _brew_service_will_restart(name, plist)
@@ -5246,7 +5297,7 @@ def _brew_row_is_a_live_registration(name: str, state: str) -> bool:
     """
     if state == "started":
         return True
-    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+    if _brew_service_plist_exists(name):
         return True
     if state == "none":
         return False
@@ -15526,24 +15577,38 @@ def _force_deregister_brew_service(name: str) -> list[OpsResult]:
     """
     if not _is_macos():
         return []
-    _, plist = _brew_service_registration(name)
-    if plist is None:
-        # brew named no file (it reports none for an unregistered service),
-        # so fall back to the label brew has used for its service plists.
-        plist = _launchagents_dir() / f"homebrew.mxcl.{name}.plist"
-    results = _stop_launchagent(plist.stem)
-    if plist.exists():
-        try:
-            plist.unlink()
-            results.append(OpsResult(True, f"Removed brew service plist: {name}", str(plist)))
-        except OSError as e:
-            results.append(
-                OpsResult(
-                    False,
-                    f"Failed to remove brew service plist: {name}",
-                    f"{plist}: {type(e).__name__}: {e}",
+    _, named = _brew_service_registration(name)
+    # Every plist that is really there: brew's own File column when it gave
+    # one, plus any file under either of Homebrew's label schemes. A machine
+    # upgraded across Homebrew's `homebrew.mxcl.` -> `sh.brew.` rename can
+    # carry one under each, and the one left behind is reinstated at the next
+    # login -- so this is a list, not a single path.
+    plists: list[Path] = []
+    for candidate in [named, *_brew_service_plist_candidates(name)]:
+        if candidate is not None and candidate.exists() and candidate not in plists:
+            plists.append(candidate)
+    if not plists:
+        # Nothing on disk under any name. The job can still be loaded with its
+        # plist already unlinked (that is the state `brew services stop` leaves
+        # when it half-worked), and which label it was bootstrapped under is
+        # not knowable from here, so bootout both. `_stop_launchagent` reports
+        # "not loaded" as success, so the wrong guess costs a no-op.
+        plists = [named] if named is not None else _brew_service_plist_candidates(name)
+    results: list[OpsResult] = []
+    for plist in plists:
+        results.extend(_stop_launchagent(plist.stem))
+        if plist.exists():
+            try:
+                plist.unlink()
+                results.append(OpsResult(True, f"Removed brew service plist: {name}", str(plist)))
+            except OSError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to remove brew service plist: {name}",
+                        f"{plist}: {type(e).__name__}: {e}",
+                    )
                 )
-            )
     return results
 
 
@@ -16210,7 +16275,10 @@ def down(args) -> int:
 #
 # Three populations, only one of which Homebrew has ever known about:
 #
-#   brew services   `homebrew.mxcl.nyxgpt-api@X.Y.Zrc` and its web twin.
+#   brew services   `nyxgpt-api@X.Y.Zrc` and its web twin, under either of
+#                   `_BREW_SERVICE_LABEL_PREFIXES` (Homebrew renamed its
+#                   launchd labels from `homebrew.mxcl.` to `sh.brew.`, and an
+#                   upgraded machine carries both).
 #                   Stopped through `brew services stop` where brew can still
 #                   resolve the formula, and through launchd directly where it
 #                   cannot -- which is the state an operator reaches by
@@ -16225,8 +16293,6 @@ def down(args) -> int:
 # Removal, not just unloading, for everything with a plist or unit file on
 # disk: launchd and systemd --user both reinstate a registered job at the next
 # login.
-
-_BREW_SERVICE_LABEL_PREFIX = "homebrew.mxcl."
 
 
 def _loaded_launchd_labels(prefix: str) -> list[str]:
@@ -16258,7 +16324,7 @@ def _loaded_launchd_labels(prefix: str) -> list[str]:
 
 
 def _brew_service_launchd_labels() -> list[str]:
-    """Every `homebrew.mxcl.nyxgpt*` launchd label this machine still carries.
+    """Every brew-managed `*nyxgpt*` launchd label this machine still carries.
 
     The union of what is on disk and what is loaded, because either outlives
     the other: `brew services stop` removes the plist while an already-booted
@@ -16268,14 +16334,22 @@ def _brew_service_launchd_labels() -> list[str]:
     candidate channel's services are named after their formula
     (`nyxgpt-api@3.0.0rc`), and a release line this build has never heard of
     is exactly the leftover a teardown is for.
+
+    Both of `_BREW_SERVICE_LABEL_PREFIXES`, for the same reason: a teardown
+    that knows only the older `homebrew.mxcl.` label finds nothing at all on a
+    current Homebrew, reports "no Homebrew-managed nyxgpt services left
+    registered" and leaves the service for launchd to start again.
     """
     labels: set[str] = set()
-    try:
-        for plist in _launchagents_dir().glob(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt*.plist"):
-            labels.add(plist.name[: -len(".plist")])
-    except OSError as e:
-        logger.warning("Could not list %s: %s", _launchagents_dir(), e, extra={"component": "ops"})
-    labels.update(_loaded_launchd_labels(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt"))
+    for prefix in _BREW_SERVICE_LABEL_PREFIXES:
+        try:
+            for plist in _launchagents_dir().glob(f"{prefix}nyxgpt*.plist"):
+                labels.add(plist.name[: -len(".plist")])
+        except OSError as e:
+            logger.warning(
+                "Could not list %s: %s", _launchagents_dir(), e, extra={"component": "ops"}
+            )
+        labels.update(_loaded_launchd_labels(f"{prefix}nyxgpt"))
     return sorted(labels)
 
 
@@ -16296,7 +16370,7 @@ def _remove_brew_service_launchd_jobs() -> list[OpsResult]:
     la_dir = _launchagents_dir()
     results: list[OpsResult] = []
     for label in labels:
-        formula = label[len(_BREW_SERVICE_LABEL_PREFIX) :]
+        formula = _brew_label_formula(label)
         if brew is not None:
             cp = _run(
                 ["brew", "services", "stop", _brew_formula_spec(formula)],
@@ -16584,7 +16658,11 @@ def _report_orphaned_launchd_jobs() -> list[OpsResult]:
     """
     if not _is_macos():
         return []
-    loaded = _loaded_launchd_labels(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt")
+    loaded = [
+        label
+        for prefix in _BREW_SERVICE_LABEL_PREFIXES
+        for label in _loaded_launchd_labels(f"{prefix}nyxgpt")
+    ]
     loaded += [
         label
         for label in sorted(set(DEV_LAUNCHD_LABELS.values()) | set(SUPPORT_LAUNCHD_LABELS.values()))

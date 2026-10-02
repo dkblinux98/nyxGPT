@@ -1019,10 +1019,13 @@ the formulas' `caveats` say so at install time.
 Removal, not just unloading: a plist left in `~/Library/LaunchAgents` or a
 unit left in `~/.config/systemd/user` is reinstated at the next login.
 
-The Homebrew half is found by its launchd label (`homebrew.mxcl.nyxgpt*`)
-as well as through `brew services stop`, so it still works on a machine
-where the tap is already gone and brew can no longer resolve the formula
-name — the state an operator reaches by uninstalling first.
+The Homebrew half is found by its launchd label as well as through `brew
+services stop`, so it still works on a machine where the tap is already gone
+and brew can no longer resolve the formula name — the state an operator
+reaches by uninstalling first. Both of Homebrew's label schemes are swept
+(`sh.brew.nyxgpt*` on current Homebrew, `homebrew.mxcl.nyxgpt*` on machines
+installed under an older one), because a teardown that knows only one leaves
+the other registered for launchd to start again at the next login.
 
 ### Your data is preserved
 

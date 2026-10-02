@@ -131,6 +131,82 @@ def test_brew_service_labels_union_disk_and_launchd(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
+def test_brew_service_labels_find_homebrews_current_sh_brew_scheme(monkeypatch, tmp_path):
+    """The label scheme is Homebrew's, and Homebrew changed it.
+
+    Current Homebrew registers services as `sh.brew.<formula>`;
+    `homebrew.mxcl.<formula>` is what machines installed under an older
+    Homebrew still carry. Measured on macos-15/arm64 in macos-brew-smoke.yml
+    run 36996645910, where `brew services list` reported a just-started keg as
+    `~/Library/LaunchAgents/sh.brew.nyxgpt-api@3.0.0rc.plist`.
+
+    Matching only the old prefix made the teardown report "no Homebrew-managed
+    nyxgpt services left registered with launchd" on a machine carrying two of
+    them -- which launchd starts again at the next login, the exact failure
+    `ops uninstall` exists to prevent.
+    """
+    la_dir = _macos(monkeypatch, tmp_path)
+    _write_plist(la_dir, "sh.brew.nyxgpt-api@3.0.0rc", ["/bin/bash", "/gone/nyxgpt-api"])
+    # An upgraded machine carries both schemes at once.
+    _write_plist(la_dir, "homebrew.mxcl.nyxgpt-web", ["/bin/bash", "/gone/nyxgpt-web"])
+    (la_dir / "sh.brew.postgresql@16.plist").write_text("<plist/>", encoding="utf-8")
+    monkeypatch.setattr(ops, "_loaded_launchd_labels", lambda prefix: [])
+
+    assert ops._brew_service_launchd_labels() == [
+        "homebrew.mxcl.nyxgpt-web",
+        "sh.brew.nyxgpt-api@3.0.0rc",
+    ]
+
+
+@pytest.mark.unit
+def test_the_formula_is_recovered_from_either_label_scheme():
+    """`brew services stop` needs the formula, not the label it was wrapped in."""
+    assert ops._brew_label_formula("sh.brew.nyxgpt-api@3.0.0rc") == "nyxgpt-api@3.0.0rc"
+    assert ops._brew_label_formula("homebrew.mxcl.nyxgpt-web") == "nyxgpt-web"
+    # A label under neither scheme is returned whole rather than silently
+    # truncated: a wrong formula name would stop the wrong service.
+    assert ops._brew_label_formula("com.nyxgpt.ollama-logs") == "com.nyxgpt.ollama-logs"
+
+
+@pytest.mark.unit
+def test_a_sh_brew_plist_counts_as_registered(monkeypatch, tmp_path):
+    """The cheap on-disk check has to see both schemes too.
+
+    Without this, `doctor` and `ops status` ask brew for the File column on
+    every read of a service that is plainly registered, and
+    `_brew_service_will_restart` reports a live registration as gone whenever
+    brew itself cannot be run.
+    """
+    la_dir = _macos(monkeypatch, tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda tool: None)  # no brew, no launchctl
+    assert ops._brew_service_plist_exists("nyxgpt-api") is False
+    assert ops._brew_service_will_restart("nyxgpt-api") is False
+
+    _write_plist(la_dir, "sh.brew.nyxgpt-api", ["/bin/bash", "/opt/nyxgpt-api"])
+    assert ops._brew_service_plist_exists("nyxgpt-api") is True
+    assert ops._brew_service_will_restart("nyxgpt-api") is True
+    assert ops._brew_service_is_registered("nyxgpt-api") is True
+
+
+@pytest.mark.unit
+def test_force_deregister_removes_the_plist_under_either_scheme(monkeypatch, tmp_path):
+    """A stop that did not de-register must not leave the other scheme behind."""
+    la_dir = _macos(monkeypatch, tmp_path)
+    monkeypatch.setattr(ops, "_brew_service_registration", lambda name: ("none", None))
+    booted: list[str] = []
+    monkeypatch.setattr(
+        ops, "_stop_launchagent", lambda label: booted.append(label) or [ops.OpsResult(True, "")]
+    )
+    plist = _write_plist(la_dir, "sh.brew.nyxgpt-api", ["/bin/bash", "/opt/nyxgpt-api"])
+
+    results = ops._force_deregister_brew_service("nyxgpt-api")
+
+    assert not plist.exists()
+    assert "sh.brew.nyxgpt-api" in booted
+    assert any("Removed brew service plist" in r.message and r.ok for r in results)
+
+
+@pytest.mark.unit
 def test_an_untapped_brew_service_is_still_stopped_and_deregistered(monkeypatch, tmp_path):
     """The owner's actual state: brew cannot name the formula, launchd still can.
 

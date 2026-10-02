@@ -214,11 +214,27 @@ jobs:
           set -e
           echo "$upgrade_log"
           if [ "$upgrade_rc" -ne 0 ]; then
-            # "already installed" is the one non-zero worth tolerating: it
-            # means current is what is already here. Anything else is a real
-            # failure and is not swallowed.
+            # "already installed" is the one non-zero worth tolerating on its
+            # wording: it means current is what is already here.
             if printf '%s' "$upgrade_log" | grep -qF "already installed"; then
               echo "python@3.12 is already at the newest version Homebrew knows about"
+            # Otherwise tolerate it only on the OUTCOME this step is about:
+            # python@3.12 is at the newest version Homebrew knows and runs.
+            # `brew upgrade` also exits non-zero when one of the formula's
+            # DEPENDENCIES fails to link, which on a hosted runner is a
+            # property of the image rather than anything about nyxGPT -- run
+            # 36996645910 upgraded python@3.12 3.12.14 -> 3.12.15 and printed
+            # "Upgraded 1 requested outdated package", then exited 1 because
+            # `openssl@3` could not symlink `bin/openssl` over the
+            # `openssl@1.1` already owning it. Exiting there spent the entire
+            # job, including the #3859 teardown step that is this workflow's
+            # only executed proof of the launchd residue sweep, on a symlink
+            # collision in a keg nyxGPT never calls.
+            elif [ -z "$(brew outdated --quiet python@3.12)" ] \
+              && "$(brew --prefix python@3.12)/bin/python3.12" -m pip --version >/dev/null 2>&1; then
+              echo "::warning::brew upgrade exited ${upgrade_rc};" \
+                "python@3.12 is current and runs -- link conflict(s) below"
+              printf '%s\n' "$upgrade_log" | grep -i 'could not symlink' || true
             else
               echo "::error::brew upgrade python@3.12 failed"
               exit "$upgrade_rc"
@@ -1923,7 +1939,26 @@ jobs:
           # reason. Both signals are captured before the restart as well as
           # after, so a guard that cannot move is visible as one instead of
           # passing as evidence.
-          PLIST="$HOME/Library/LaunchAgents/homebrew.mxcl.$KEG.plist"
+          # BOTH of Homebrew's label schemes, because this step measured the
+          # wrong one and failed a restart that worked: run 36996645910 logged
+          # `brew services list` reporting the keg `started` with
+          # `~/Library/LaunchAgents/sh.brew.nyxgpt-api@3.0.0rc.plist`, while
+          # this assertion looked only for `homebrew.mxcl.` and reported
+          # "launchd has no plist ... nothing was restarted". Homebrew renamed
+          # its service labels from `homebrew.mxcl.<formula>` to
+          # `sh.brew.<formula>`; `ops._BREW_SERVICE_LABEL_PREFIXES` is the
+          # product's copy of this same list, and the registration is a plist
+          # under EITHER (D-032(d)).
+          plist_path() {
+            local svc="$1" prefix
+            for prefix in homebrew.mxcl. sh.brew.; do
+              if [ -e "$HOME/Library/LaunchAgents/${prefix}${svc}.plist" ]; then
+                printf '%s' "$HOME/Library/LaunchAgents/${prefix}${svc}.plist"
+                return 0
+              fi
+            done
+            return 1
+          }
 
           echo
           echo "=== half one: the pre-#4043 barrier, injected into the installed keg ==="
@@ -1979,7 +2014,7 @@ jobs:
           # `if`, not `test ... && VAR=`: under `set -e` a failing left-hand
           # side of an `&&` list aborts the step.
           PLIST_BEFORE=absent
-          if [ -e "$PLIST" ]; then PLIST_BEFORE=present; fi
+          if plist_path "$KEG" >/dev/null; then PLIST_BEFORE=present; fi
           echo "before the restart: state=$STATE_BEFORE plist=$PLIST_BEFORE"
           "$PY" /tmp/heal_driver.py > after.json
           cat after.json
@@ -2002,8 +2037,9 @@ jobs:
           # signals have to have moved.
           STATE_AFTER="$("$PY" /tmp/brew_state.py "$KEG")"
           PLIST_AFTER=absent
-          if [ -e "$PLIST" ]; then PLIST_AFTER=present; fi
-          echo "after the restart:  state=$STATE_AFTER plist=$PLIST_AFTER"
+          PLIST_AFTER_PATH="$(plist_path "$KEG" || true)"
+          if [ -n "$PLIST_AFTER_PATH" ]; then PLIST_AFTER=present; fi
+          echo "after the restart:  state=$STATE_AFTER plist=$PLIST_AFTER ${PLIST_AFTER_PATH}"
           # Non-vacuity of the two assertions below, which is the whole point
           # of capturing the before: if the keg was ALREADY registered and
           # already off `none` before the restart, neither of them can fail and
@@ -2030,7 +2066,7 @@ jobs:
           # it -- this step now mutates state the steps below read, and the
           # #3861 step registers both service sets from a clean slate.
           brew services stop "$KEG" 2>&1 | tail -5 || true
-          test ! -e "$PLIST" || {
+          ! plist_path "$KEG" >/dev/null || {
             echo "::error::$KEG is still registered with launchd after 'brew services stop' -- this step has left a service behind for the steps below (D-032(d))"
             exit 1
           }
@@ -2272,10 +2308,27 @@ jobs:
           # `ops._brew_service_will_restart` does. `brew services list` is
           # still printed, because it is the useful thing to read in the log;
           # it is just not what anything asserts on.
+          # Either label scheme counts as registered, for the reason the
+          # self-heal step above records: Homebrew writes `sh.brew.<formula>`
+          # now and `homebrew.mxcl.<formula>` historically, and this step's
+          # whole subject is whether a plist is on disk. Checking one scheme
+          # would read every registration on a current Homebrew as absent --
+          # which would fail the "measuring nothing" guard below rather than
+          # pass quietly, but for the wrong reason.
+          any_plist() {
+            local prefix
+            for prefix in homebrew.mxcl. sh.brew.; do
+              if [ -e "$HOME/Library/LaunchAgents/${prefix}${1}.plist" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
           registered() {
             local svc
             for svc in $(brew list --formula | grep '^nyxgpt-' || true); do
-              if [ -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$svc.plist" ]; then
+              if any_plist "$svc"; then
                 printf '%s ' "$svc"
               fi
             done
@@ -2283,7 +2336,7 @@ jobs:
           }
 
           plist_gone() {
-            ! test -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$1.plist"
+            ! any_plist "$1"
           }
 
           echo "=== register BOTH service sets: the state the owner's Mac was in ==="
