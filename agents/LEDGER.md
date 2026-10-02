@@ -1935,6 +1935,47 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #3956; implements **D-037**'s feature; cites **D-006**, **D-027**.
 
+- **D-053** · 2026-10-02 · developer agent (#3986) — **"Reachable" is a claim
+  about every tier an operator is told to use, not about the one the issue
+  named.** #3986's first round made `nyxgpt ops install --kubernetes` leave the
+  web UI answering with no follow-up command, and was accepted on that. The
+  same install left all six observability Services `ClusterIP` and mapped only
+  `3000`/`8000` on the kind node, so every panel of the SRE dashboard was
+  `ERR_CONNECTION_REFUSED` until the operator opened a terminal — which
+  `CLAUDE.md`'s Definition of Done ("observable … **without a terminal**")
+  does not permit. The owner's re-test recorded it as a *gap rather than a
+  decision*: nothing in the code weighed the SRE tier, and the local
+  Kubernetes path was the only deployment mode where it was unreachable
+  (Compose and Terraform publish those ports; cloud k3s tunnels them through
+  a supervised unit).
+
+  Two general rules came out of it, both cheap to apply and both invisible
+  until a second tier exists:
+
+  (a) *A host-port mapping that can only be declared at creation time has to be
+  declared for everything the deployment will ever publish.* A kind node is a
+  container; its published ports cannot be added later, so a tier left out of
+  `KIND_HOST_PORT_MAPPINGS` is unreachable for the life of that cluster and the
+  fix cannot be verified on an existing one.
+
+  (b) *When capability is per-port, the check for it must be per-port too.* The
+  publish check was all-or-nothing, and a cluster created by the first round
+  publishes the app tier's two ports and nothing else — so adding four mappings
+  would have read that cluster as unpublished and started a forward onto two
+  host ports the node already holds, costing the web UI to fix the SRE tier.
+  The same reasoning made `ops port-forward` drop any target the cluster
+  already publishes instead of failing to bind it: an operator running the
+  command their notes still name must not get `address already in use` about a
+  UI that works.
+
+  The behaviours are pinned by `tests/unit/test_k8s_host_access.py` and by
+  `scripts/k8s-local-smoke.sh` steps 7-8 (published, then returned to the
+  shipped ClusterIP posture and restored through both wrapped paths), per the
+  verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3986; cites **D-006**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -1979,6 +2020,26 @@ rather than mechanism, and nothing can enforce them.
   Revisit when: nyxAgent has its own repository and configuration, at which
   point these move there rather than being deleted.
   Source: owner in session, 2026-08-20; `example.config.ini` §`[github]`.
+
+- **P-005** · 2026-10-02 · developer-agent — Moving the web tier's Node
+  baseline from **20 to 22** is parked. `web/Dockerfile` (all three stages) and
+  every workflow that runs npm in `web/` stay on Node 20, and a web dependency
+  requiring a newer major is pinned back rather than accommodated — which is
+  what `undici` was, from `^8.11.2` to `^6.29.0`, on this branch.
+  Reason: Node 20 is past its maintenance window, so the move is coming; it is
+  not a dependency pin. It needs `@types/node` off `^20` (vitest 5 already
+  wants `^22.0.0 || >=24.0.0`), a re-type-check of the whole web tier, and
+  all three Dockerfile stages plus seven workflows moved together — the same
+  reasoning the owner gave on `b3a358db` for reverting the vitest 5 drag
+  instead of completing it: "a @types/node major is a type-checking change
+  across the whole web tier. That is daylight work with its own verification."
+  Doing it mid-release, from an unrelated issue, ahead of acceptance, is not.
+  Revisit when: v3.0.0 has shipped, as its own issue — and note that
+  `vitest 5` is waiting on the same `@types/node` bump, so the two belong in
+  one piece of work.
+  Source: this branch (#3986); `tests/unit/test_web_node_engines.py` is the
+  guard that makes a silent re-bump fail at `pytest` rather than in fifteen
+  smoke jobs.
 
 ## Open questions
 

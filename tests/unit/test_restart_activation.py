@@ -220,7 +220,7 @@ class TestPendingState:
     """Pending-restart state is durable, cross-process, and self-retiring."""
 
     def test_mark_and_snapshot(self):
-        restart_state.mark_pending("web", {"auth.api_key": "old-key"})
+        restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
         snap = restart_state.snapshot()
         assert snap["web"]["keys"] == ["auth.api_key"]
         assert snap["web"]["since"] > 0
@@ -240,7 +240,7 @@ class TestPendingState:
         """
         state_file = tmp_path / "cross-process.json"
         monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(state_file))
-        restart_state.mark_pending("web", {"auth.api_key": "old-key"})
+        restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
 
         result = subprocess.run(
             [
@@ -354,26 +354,29 @@ class TestWizardDetail:
 
     @staticmethod
     def _cfg(**auth) -> ConfigParser:
+        running = {"enabled": "true", "api_key": "old-key", **auth}  # pragma: allowlist secret
         cfg = ConfigParser()
-        cfg.read_dict({"auth": {"enabled": "true", "api_key": "old-key", **auth}})
+        cfg.read_dict({"auth": running})
         return cfg
 
     def test_records_previous_value_per_component(self):
         detail = config_wizard.restart_required_detail(
             {"auth": {"api_key": "new-key"}}, self._cfg()  # pragma: allowlist secret
         )
-        assert detail == {"web": {"auth.api_key": "old-key"}}
+        assert detail == {"web": {"auth.api_key": "old-key"}}  # pragma: allowlist secret
 
     def test_unchanged_value_is_not_pending(self):
         assert (
-            config_wizard.restart_required_detail({"auth": {"api_key": "old-key"}}, self._cfg())
+            config_wizard.restart_required_detail(
+                {"auth": {"api_key": "old-key"}}, self._cfg()  # pragma: allowlist secret
+            )  # pragma: allowlist secret
             == {}
         )
 
     def test_saved_map_covers_unchanged_keys_too(self):
         """`reconcile_saved` needs the new value of every restart-required key in the payload."""
         saved = config_wizard.restart_activation_saved({"auth": {"api_key": "old-key"}})
-        assert saved == {"web": {"auth.api_key": "old-key"}}
+        assert saved == {"web": {"auth.api_key": "old-key"}}  # pragma: allowlist secret
 
 
 class TestSurfaces:

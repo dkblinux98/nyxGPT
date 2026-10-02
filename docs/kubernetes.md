@@ -431,8 +431,9 @@ automatically, which matters during a canary rollout: replacing a Pod ends a
 port-forward. (The host publishing the local `kind` cluster gets since #3986
 does not apply here: the base Services stay `ClusterIP` on this substrate, so
 nothing but port 22 exists on the instance, and `nyxgpt ops install
---kubernetes` detects k3s and leaves those two loopback ports to the bridge
-rather than starting a forward of its own.)
+--kubernetes` detects k3s and leaves those loopback ports — the app tier's two
+and the observability tier's four — to the bridge rather than starting a
+forward of its own.)
 
 **Canary rollout against the cloud deployment:**
 
@@ -673,13 +674,30 @@ curl -H "X-API-Key: <your api-key>" http://127.0.0.1:8000/health
 
 Then open `http://127.0.0.1:3000` — **no port-forward required** (#3986). The
 `kind` cluster `nyxgpt ops install --kubernetes` provisions is created with
-`extraPortMappings` publishing node ports `30300`/`30800` on the host's
-`3000`/`8000` (loopback only), and the install then publishes `nyxgpt-web` and
-`nyxgpt-api` on those node ports. Because both halves are properties of the
-*cluster* rather than of a running process, the URL keeps working across a
-canary rollout, a self-heal Pod restart and an image change — which a `kubectl
-port-forward` does not: it attaches to one Pod and exits when that Pod is
-replaced.
+`extraPortMappings`, and the install then publishes each Service on the node
+port behind its host port:
+
+| Host (loopback only) | Node port | Service | Tier |
+| --- | --- | --- | --- |
+| `3000` | `30300` | `nyxgpt-web` | app |
+| `8000` | `30800` | `nyxgpt-api` | app |
+| `3001` | `30301` | `grafana` | SRE |
+| `8080` | `30808` | `glitchtip` | SRE |
+| `9090` | `30900` | `prometheus` | SRE |
+| `16686` | `31668` | `jaeger` | SRE |
+
+Because both halves are properties of the *cluster* rather than of a running
+process, these URLs keep working across a canary rollout, a self-heal Pod
+restart and an image change — which a `kubectl port-forward` does not: it
+attaches to one Pod and exits when that Pod is replaced.
+
+The host ports are the ones every other local deployment mode binds, so a URL
+means the same thing in every mode — and the SRE four are exactly where the
+admin dashboard's observability links already point, which is why the SRE
+dashboard loads with no terminal involved (`CLAUDE.md`'s Definition of Done).
+The flip side is that a Kubernetes deployment cannot share a machine with a
+running native/Compose/Terraform one: the install says so and stops, rather
+than letting Docker refuse the node container with an error about port ranges.
 
 The NodePort is **applied by the install, not declared in `k8s/`**, and that is
 deliberate. The same manifests are applied by the AWS k3s deployment, whose
@@ -693,6 +711,24 @@ its call — and is reached through the managed background forward below.
 
 `nyxgpt up --kubernetes` prints the URL once the stack reports healthy, and the
 install verifies it before it returns.
+
+Because the node port is patched on rather than declared, anything that
+re-asserts the shipped manifests strips it off again, and the host port is then
+held by the node container with nothing behind it — mapped, but dark. Either
+wrapped command puts it back, and both *verify* the URL rather than reporting
+the mapping:
+
+```bash
+nyxgpt ops install --kubernetes        # the app tier
+nyxgpt ops observability --kubernetes  # the SRE tier
+nyxgpt ops port-forward --target observability   # repairs what it finds dark
+```
+
+`ops port-forward` republishes here instead of forwarding, deliberately: the
+host port is already held by the node container, so a forward could only
+produce `address already in use`, and the node's mappings are fixed at cluster
+creation. Republishing is also the better answer — it survives Pod replacement,
+which a forward does not.
 
 ### Reaching a bring-your-own cluster
 
@@ -710,7 +746,16 @@ nyxgpt ops port-forward --stop
 
 # Or establish it yourself (web + api together)
 nyxgpt ops port-forward --target app --background
+
+# `--target` also takes a list, which is how the install forwards exactly
+# what the cluster does not already publish
+nyxgpt ops port-forward --target grafana,jaeger --background
 ```
+
+One supervisor covers everything that needs forwarding: a second
+`--background` call for targets it does not cover **extends** it rather than
+reporting the running one as sufficient, so establishing the app tier's path
+first cannot leave the SRE tier dark.
 
 `nyxgpt ops down --kubernetes` releases it along with the deployment. A
 foreground `nyxgpt ops port-forward` still works and is unchanged, for a
@@ -729,7 +774,11 @@ relative `/api/...` served by a Next.js route handler that reaches the api
 in-cluster. The api forward is there for `curl`, the CLI and
 [api.md](api.md)'s examples.
 
-The observability UIs are reached the same way, all four at once:
+The observability UIs are published the same way as the web UI on a cluster
+nyxGPT provisioned — Grafana `3001`, GlitchTip `8080`, Prometheus `9090`,
+Jaeger `16686`, all live when the install returns and all surviving Pod
+replacement. On a bring-your-own cluster they are reached through the same
+managed background forward, all four at once:
 
 ```bash
 nyxgpt ops port-forward --target observability
@@ -782,8 +831,10 @@ Commands (all wrapped -- no raw `kubectl`):
 # Deploy or re-apply the layer on its own, without touching the app tier
 nyxgpt ops observability --kubernetes
 
-# Publish Grafana (3001), Prometheus (9090), Jaeger (16686) and GlitchTip
-# (8080) on localhost -- the same ports the admin dashboard links to
+# Only needed on a bring-your-own cluster: where nyxGPT provisioned the
+# cluster, the install already publishes Grafana (3001), Prometheus (9090),
+# Jaeger (16686) and GlitchTip (8080) on those same localhost ports, and
+# they stay published across Pod replacement
 nyxgpt ops port-forward --target observability
 
 # Per-workload readiness, alongside the app tier's Pods
@@ -1042,8 +1093,10 @@ else's deployment.
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the
 cluster](#observability-in-the-cluster), plus the `nyxgpt ops port-forward
---target observability` command that publishes their UIs on the ports the
-dashboard's own observability links use. When the layer isn't deployed it
+--target observability` command that reaches their UIs on a bring-your-own
+cluster — where nyxGPT provisioned the cluster, the install has already
+published them on the ports the dashboard's own observability links use, and
+no command is needed. When the layer isn't deployed it
 names the command that deploys it, rather than leaving the operator to
 discover that this mode has no observability at all.
 
