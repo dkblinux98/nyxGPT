@@ -1976,7 +1976,7 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #3986; cites **D-006**.
 
-- **D-054** · 2026-10-02 · developer agent (#4121) — **When the private-access
+- **D-055** · 2026-10-02 · developer agent (#4121) — **When the private-access
   decision cannot be satisfied by a bind address, it is satisfied by a host
   firewall loaded *before* the listener — and the listener is not started if the
   rule did not load.** `nyxgpt cloud screen` reaches an EC2 Mac's screen the way
