@@ -92,6 +92,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -1719,6 +1720,87 @@ def compose_probe() -> ComposeProbe:
     return ComposeProbe(available=True, reason="", statuses=tuple(_parse_compose_ps(cp.stdout)))
 
 
+@dataclass(frozen=True)
+class ContainerLiveness:
+    """How many times Docker has restarted a container, and when its current run began.
+
+    The two fields together identify *which run* of a container a reading is
+    about. A sampled state string cannot: `docker compose ps` reports
+    `running` for a container that has crashed and been restarted a hundred
+    times, as long as the sample lands inside one of those runs. So
+    `restarts`/`started_at` are what distinguishes "still the process we
+    started" from "the fourth replacement for it" (#4045).
+    """
+
+    container: str
+    restarts: int
+    started_at: str
+
+
+def container_liveness(containers: Sequence[str]) -> dict[str, ContainerLiveness]:
+    """`RestartCount` and `State.StartedAt` for each named container.
+
+    Keyed by container name with the leading `/` Docker returns stripped.
+    Containers that do not exist are simply absent from the result: `docker
+    inspect` exits non-zero when *any* name is unknown but still prints the
+    ones it found, so the stdout is parsed regardless of the exit code.
+
+    Returns `{}` when the inspect could not run at all (no `docker`, no
+    daemon, nothing matched). Callers must read that as "no restart evidence
+    available", never as "nothing restarted" -- the same rule
+    `ComposeProbe.available` exists for (#3812).
+
+    Lives here rather than in `ops.py` so Docker reads keep going through
+    `_docker_run`'s socket-hop policy; a session whose group membership
+    postdates it would otherwise get an empty answer here while the Compose
+    survey next to it worked.
+    """
+    names = [c for c in containers if c]
+    if not names:
+        return {}
+    if _which("docker") is None:
+        return {}
+    try:
+        cp = _docker_run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{.Name}}\t{{.RestartCount}}\t{{.State.StartedAt}}",
+                *names,
+            ],
+            # A name that does not exist is an ordinary answer here, not a
+            # fault worth logging as a Docker access problem.
+            expected=True,
+        )
+    except Exception as e:
+        logger.warning(
+            "self-heal: `docker inspect` could not be run: %s: %s -- restart evidence "
+            "unavailable this pass",
+            type(e).__name__,
+            e,
+            extra={"component": "self_heal"},
+        )
+        return {}
+    liveness: dict[str, ContainerLiveness] = {}
+    for line in (cp.stdout or "").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) != 3:
+            continue
+        name, restarts, started_at = parts
+        name = name.lstrip("/")
+        if not name:
+            continue
+        try:
+            restart_count = int(restarts)
+        except ValueError:
+            continue
+        liveness[name] = ContainerLiveness(
+            container=name, restarts=restart_count, started_at=started_at.strip()
+        )
+    return liveness
+
+
 def compose_probe_available() -> bool:
     """Whether the Compose observability survey can actually run from this process.
 
@@ -3066,6 +3148,7 @@ __all__ = [
     "ComponentStatus",
     "ComponentSurvey",
     "ComposeProbe",
+    "ContainerLiveness",
     "HealResult",
     "HealEvent",
     "Watchdog",
@@ -3081,6 +3164,7 @@ __all__ = [
     "kubernetes_mode_active",
     "compose_probe",
     "compose_probe_available",
+    "container_liveness",
     "component_survey",
     "list_component_status",
     "restart_component",

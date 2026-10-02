@@ -418,6 +418,14 @@ jobs:
   # step's credential reconcile. Unit tests cannot see it -- its substance is
   # what a real `docker compose ps` says about a container a real engine keeps
   # restarting.
+  #
+  # It reached acceptance a second time (#4045) because the first version of
+  # this job only injected a container that crashes *instantly*, which the
+  # settle check caught on a single `restarting` reading. Real Grafana ran for
+  # several seconds first, so every reading said `running` and the verdict came
+  # back `settled`. The slow-crash half added for #4045 injects that shape and
+  # asserts the pre-fix input (two `running` readings two seconds apart) before
+  # asserting the verdict, so a regression cannot pass here by luck.
   observability-settle:
     runs-on: ubuntu-latest
     steps:
@@ -433,9 +441,10 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e .
 
-      # All three halves, and the script fails loudly rather than passing
-      # vacuously if this runner does NOT reproduce the pre-fix condition
-      # (`docker compose up -d` exiting 0 over a container that cannot stay up).
+      # All four halves, and the script fails loudly rather than passing
+      # vacuously if this runner does NOT reproduce the pre-fix conditions
+      # (`docker compose up -d` exiting 0 over a container that cannot stay up;
+      # two consecutive `running` readings over one that is about to crash).
       - name: A crash-looping container must fail the step with its own reason
         run: python3 scripts/observability-settle-smoke.py
 
