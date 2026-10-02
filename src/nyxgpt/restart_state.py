@@ -47,6 +47,16 @@ actor that asked for it:
   back**. `app.py`'s lifespan startup calls `clear_started("api", ...)` --
   see that function for why a newly started process is entitled to retire its
   own pending keys, and for what it deliberately does not retire.
+
+Alongside the pending keys, each component carries the outcome of the last
+restart *driven on its behalf* (`mark_attempt_started`,
+`record_attempt_failed`, `attempts`). The pending set alone cannot distinguish
+a restart still in flight from one that was refused -- both read as "still
+pending" -- and #4043 is what that costs: a self-heal refusal was recorded in
+`self_heal_state.json`, reported by `nyxgpt self-heal status`, and invisible to
+the notice's own Restart button, which polled the pending set and span until
+it timed out. The attempt record is how the surface that asked for the restart
+learns the answer.
 """
 
 from __future__ import annotations
@@ -73,6 +83,13 @@ log = logging.getLogger(__name__)
 _lock = threading.Lock()
 
 _DEFAULT_STATE_PATH = Path.home() / ".nyxGPT" / "pending-restart.json"
+
+# The three outcomes a driven restart attempt can be in, recorded per
+# component alongside its pending keys (#4043). "succeeded" is write-only in
+# practice -- a success retires the component's whole entry, taking the record
+# with it -- but it exists so a caller that records an outcome never has to
+# decide whether its own success is reportable.
+_ATTEMPT_STATUSES = ("running", "failed", "succeeded")
 
 
 def state_path() -> Path:
@@ -111,10 +128,18 @@ def _read() -> dict[str, dict[str, Any]]:
         keys = entry.get("keys")
         if not isinstance(keys, dict):
             continue
-        out[str(component)] = {
+        normalized: dict[str, Any] = {
             "keys": {str(k): str(v) for k, v in keys.items()},
             "since": float(entry.get("since") or 0.0),
         }
+        attempt = entry.get("attempt")
+        if isinstance(attempt, dict) and attempt.get("status") in _ATTEMPT_STATUSES:
+            normalized["attempt"] = {
+                "status": str(attempt["status"]),
+                "message": str(attempt.get("message") or ""),
+                "at": float(attempt.get("at") or 0.0),
+            }
+        out[str(component)] = normalized
     return out
 
 
@@ -155,6 +180,11 @@ def mark_pending(component: str, changes: dict[str, str]) -> None:
     keeps the *first* recorded previous value for a key: the running value
     does not change until the restart happens, so a second edit before the
     restart must not overwrite it with the intermediate saved value.
+
+    Drops any recorded restart attempt for `component`: the outcome of an
+    attempt against the old pending set does not describe the new one, and
+    leaving it would show the user a failure notice for a restart they had
+    not yet asked for (#4043).
     """
     if not changes:
         return
@@ -163,6 +193,7 @@ def mark_pending(component: str, changes: dict[str, str]) -> None:
         entry = state.setdefault(component, {"keys": {}, "since": time.time()})
         for full_key, previous in changes.items():
             entry["keys"].setdefault(full_key, previous)
+        entry.pop("attempt", None)
         _write(state)
 
 
@@ -245,6 +276,76 @@ def clear_started(component: str, keys: Iterable[str]) -> list[str]:
             state.pop(component, None)
         _write(state)
     return cleared
+
+
+def _record_attempt(component: str, status: str, message: str) -> None:
+    """Store `status`/`message` as `component`'s latest restart attempt.
+
+    A component with nothing pending is a no-op: there is no notice for the
+    record to qualify, and inventing an entry here would resurrect one.
+    """
+    with _lock:
+        state = _read()
+        entry = state.get(component)
+        if not entry:
+            return
+        entry["attempt"] = {"status": status, "message": message, "at": time.time()}
+        _write(state)
+
+
+def mark_attempt_started(component: str) -> None:
+    """Record that a restart of `component` has been accepted and is under way (#4043).
+
+    Written by the actor that *schedules* the restart, before anything is
+    attempted, so a caller polling `snapshot`/`attempts` can tell three states
+    apart that were previously one: in progress, finished (the pending entry is
+    gone), and failed (`record_attempt_failed`). Without this the pending set
+    says only "still pending", which is identical for a restart that is taking
+    a while and one that was refused outright -- which is why #4043's UI spun
+    forever on a refusal it could not see.
+    """
+    _record_attempt(component, "running", "")
+
+
+def record_attempt_failed(component: str, message: str) -> None:
+    """Record that the driven restart of `component` did not happen, and why (#4043).
+
+    `message` is the reason as the restart mechanism reported it (e.g. a
+    self-heal refusal, `brew not found`, an exception), carried verbatim so
+    the surface showing the notice can show the user what a terminal would
+    have told them. The pending keys are deliberately left standing: the
+    restart did not happen, so the divergence this notice describes is still
+    real.
+    """
+    _record_attempt(component, "failed", message)
+
+
+def record_attempt_succeeded(component: str) -> None:
+    """Record that the driven restart of `component` succeeded (#4043).
+
+    Normally redundant -- the caller clears the component's pending flag next,
+    which removes this record with it -- but a restart that succeeds while
+    *other* keys are still pending for the same component would otherwise
+    leave a "running" record standing forever.
+    """
+    _record_attempt(component, "succeeded", "")
+
+
+def attempts() -> dict[str, dict[str, Any]]:
+    """Return the latest restart attempt per component, JSON-serializable.
+
+    Shape: `{component: {"status": "running"|"failed"|"succeeded",
+    "message": str, "at": epoch}}`. Only components that still have pending
+    keys appear, for the same reason `snapshot` filters them: a retired
+    notice has no attempt to report.
+    """
+    with _lock:
+        state = _read()
+    return {
+        component: dict(entry["attempt"])
+        for component, entry in state.items()
+        if entry["keys"] and isinstance(entry.get("attempt"), dict)
+    }
 
 
 def snapshot() -> dict[str, dict[str, Any]]:
