@@ -1541,15 +1541,17 @@ Behavior:
   missing/changed, so re-running never duplicates a dashboard or container.
 - Skips (without failing) on a host with no Docker, since these tools have
   no native/Homebrew path -- see [docker-compose.md](docker-compose.md).
-- **Verifies the containers stayed up before reporting the stack up** (#3993).
-  `docker compose up -d` exits 0 once the containers are *created*, which says
-  nothing about whether the software inside them survived its own boot: a
-  Grafana crash-looping on a bad provisioning file used to be reported as a
-  successful step, and the only visible symptom was the *next* step failing to
-  reconcile its admin credential. The step now watches the services it started
-  for a bounded window (20s) and reports one of three outcomes:
-  - `[OK] Observability stack up: ...` -- every started container was observed
-    running on consecutive readings.
+- **Verifies the containers stayed up before reporting the stack up** (#3993,
+  #4045). `docker compose up -d` exits 0 once the containers are *created*,
+  which says nothing about whether the software inside them survived its own
+  boot: a Grafana crash-looping on a bad provisioning file used to be reported
+  as a successful step, and the only visible symptom was the *next* step
+  failing to reconcile its admin credential. The step now watches the services
+  it started for a bounded window and reports one of three outcomes:
+  - `[OK] Observability stack up: ...` -- every started container has been
+    running, with no restart, for 15 seconds. A container already up longer
+    than that when the step looked (an idempotent re-run) settles on the first
+    reading and waits for nothing.
   - `[FAIL] Observability stack did not stay up: <service> crash-looping or
     exited` -- with that container's own last log line in the detail, and
     `nyxgpt ops logs <service>` named for the rest. The config flags below are
@@ -1561,6 +1563,15 @@ Behavior:
     daemon is unreachable, see [self-healing.md](self-healing.md)). Neither
     success nor failure is claimed: nothing here establishes that the stack is
     broken, so the install continues, and the reason is printed.
+
+  The evidence for "stayed up" is the continuity of one run -- Docker's own
+  restart counter and container start timestamp -- not a sampled `docker
+  compose ps` state. A crash loop reads `running` for part of every cycle, so
+  the earlier version of this check (two `running` readings two seconds apart)
+  reported a real Grafana as up 2.2 seconds before it died on its provisioning
+  directory for the first of many times (#4045). A container whose restart
+  count or start time moves while the step is watching has crashed, whatever
+  the state string says.
 - Once the profiles are up, flips `[monitoring]`, `[log_aggregation]`, and
   `[tracing] enabled = true` in `~/.nyxGPT/config.ini` so the Admin
   Dashboard's status badges immediately reflect that they're live, instead

@@ -342,6 +342,75 @@ def test_compose_probe_nonzero_exit_logs_warning(monkeypatch, caplog):
 
 
 @pytest.mark.unit
+def test_container_liveness_reports_restart_count_and_start_time(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(
+            returncode=0,
+            stdout=(
+                "/nyxgpt-grafana-1\t7\t2026-10-02T04:13:34.848677733Z\n"
+                "/nyxgpt-jaeger-1\t0\t2026-10-02T04:10:45.591030446Z\n"
+            ),
+        ),
+    )
+
+    live = self_heal.container_liveness(["nyxgpt-grafana-1", "nyxgpt-jaeger-1"])
+
+    assert live["nyxgpt-grafana-1"].restarts == 7
+    assert live["nyxgpt-grafana-1"].started_at == "2026-10-02T04:13:34.848677733Z"
+    assert live["nyxgpt-jaeger-1"].restarts == 0
+
+
+@pytest.mark.unit
+def test_container_liveness_keeps_the_containers_that_do_exist(monkeypatch):
+    """`docker inspect` exits non-zero when *any* name is unknown but still
+    prints the ones it found, so the exit code must not discard the answer."""
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(
+            returncode=1,
+            stdout="/nyxgpt-grafana-1\t2\t2026-10-02T04:13:34.848677733Z\n",
+            stderr="Error: No such object: nyxgpt-gone-1\n",
+        ),
+    )
+
+    live = self_heal.container_liveness(["nyxgpt-grafana-1", "nyxgpt-gone-1"])
+
+    assert set(live) == {"nyxgpt-grafana-1"}
+    assert live["nyxgpt-grafana-1"].restarts == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stdout", ["", "garbage\n", "/nyxgpt-grafana-1\tnot-a-number\t2026-10-02T04:13:34Z\n"]
+)
+def test_container_liveness_is_empty_rather_than_wrong(monkeypatch, stdout):
+    """An unreadable answer is "no restart evidence", which callers treat as
+    "cannot tell" -- never as "nothing restarted"."""
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=0, stdout=stdout)
+    )
+    assert self_heal.container_liveness(["nyxgpt-grafana-1"]) == {}
+
+
+@pytest.mark.unit
+def test_container_liveness_asks_nothing_without_docker_or_names(monkeypatch):
+    calls = []
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, **_k: calls.append(cmd) or CP(returncode=0))
+    assert self_heal.container_liveness(["nyxgpt-grafana-1"]) == {}
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    assert self_heal.container_liveness([]) == {}
+    assert self_heal.container_liveness(["", None]) == {}
+    assert calls == []
+
+
+@pytest.mark.unit
 def test_compose_probe_available_true_when_docker_and_compose_file_present(monkeypatch, tmp_path):
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text("services: {}\n")
