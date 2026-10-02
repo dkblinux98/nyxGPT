@@ -2026,6 +2026,7 @@ VARIABLES_SYNC_MANIFEST: dict[str, str] = {
     "github.agent_model_canary": "AGENT_MODEL_CANARY",
     "github.huddle_max_rounds": "HUDDLE_MAX_ROUNDS",
     "github.review_ci_wait_minutes": "REVIEW_CI_WAIT_MINUTES",
+    "github.wip_limit": "WIP_LIMIT",
     "github.churn_price_sheet_json": "CHURN_PRICE_SHEET_JSON",
     "homebrew.homebrew_tap_repo": "HOMEBREW_TAP_REPO",
     "monitoring.slack_huddle_channel": "SLACK_HUDDLE_CHANNEL",
