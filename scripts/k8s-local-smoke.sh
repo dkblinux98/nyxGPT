@@ -119,12 +119,23 @@ cleanup() {
         echo "--- diagnostics ---" >&2
         kubectl -n "$NAMESPACE" get pods -o wide >&2 2>/dev/null || true
         kubectl -n "$NAMESPACE" describe pods >&2 2>/dev/null | tail -80 || true
-        # Ollama's own log, which the describe does not carry: the model pulls
-        # this smoke asserts on happen in the postStart hook, so when a model
-        # assertion fails this is the only record of what the pull did. The
-        # workflow-level "Diagnostics on failure" step cannot supply it -- the
-        # cleanup below has already torn the cluster down by then.
-        kubectl -n "$NAMESPACE" logs ollama-0 --tail=100 >&2 2>/dev/null || true
+        # EVERY Pod's log, not a hand-picked one (#3990). This block used to
+        # name `ollama-0` alone, because the teardown below removes the cluster
+        # before anything else can ask it -- so each assertion added afterwards
+        # was undiagnosable until someone noticed the omission and copied
+        # another `kubectl logs` line in. The observability assertions are what
+        # made that bite: "GlitchTip never received it" went red with no
+        # GlitchTip log in the record. A list that is derived rather than
+        # maintained cannot fall behind the assertions again.
+        #
+        # In CI the workflow sets NYXGPT_SMOKE_KEEP_UP=1 and runs its own,
+        # fuller "Diagnostics on failure" step against the surviving cluster;
+        # this is the local-run equivalent, and the reason the local run is not
+        # the poorer of the two.
+        for pod in $(kubectl -n "$NAMESPACE" get pods -o name 2>/dev/null); do
+            echo "--- logs $pod ---" >&2
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 >&2 2>/dev/null || true
+        done
     fi
     if [ "${NYXGPT_SMOKE_KEEP_UP:-0}" != "1" ]; then
         nyxgpt ops down --kubernetes >/dev/null 2>&1 || true
@@ -826,9 +837,18 @@ glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issu
     case "$issues" in *"$ERROR_MARKER"*) found=1; break ;; esac
     sleep 5
 done
-[ -n "$found" ] ||
+if [ -z "$found" ]; then
+    # Say what GlitchTip actually answered before failing (#3990). The two
+    # candidate subjects are "the api sent it somewhere else" and "GlitchTip
+    # received it and made no issue of it", and the issue list is the only
+    # record that distinguishes them which no Pod log carries. It holds no
+    # credential: the token travels in a request header, inside the Pod.
+    echo "--- GlitchTip's issue list for org nyxgpt (looking for ${ERROR_MARKER}) ---" >&2
+    printf '%s\n' "${issues:-<no response>}" | head -c 4000 >&2
+    echo >&2
     fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
 resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
+fi
 ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
 
 # 7f. The report an OPERATOR reads. Everything above is this script driving the
