@@ -158,12 +158,15 @@ type InfraStatus = {
       probe_available: boolean;
       deployed: boolean;
       workloads: Record<string, string>;
-      // The same three states the Pod list above badges (#3827). Without it
-      // this section rendered raw `"0/1 ready"`/`"1/1 ready"`/`"absent"`
-      // strings in undifferentiated grey -- a workload that is up, one still
-      // rolling out and one that never deployed all looked identical, on the
-      // same card that badges every Pod READY/PENDING/FAILED. Optional, so an
-      // older api falls back to those plain lines.
+      // Badged from the same vocabulary as the Pod list above (#3827), minus
+      // the one state only a Pod can be in: READY/PENDING/FAILED here, and
+      // additionally SUPERSEDED there (#3990), because supersession is a
+      // question about one replica being rolled past and a *workload* is never
+      // rolled past. Without these states this section rendered raw
+      // `"0/1 ready"`/`"1/1 ready"`/`"absent"` strings in undifferentiated
+      // grey -- a workload that is up, one still rolling out and one that
+      // never deployed all looked identical, on the same card that badges
+      // every Pod. Optional, so an older api falls back to those plain lines.
       workload_states?: {
         name: string;
         state: 'ready' | 'pending' | 'failed' | string;
@@ -1093,10 +1096,13 @@ export default function InfrastructurePage() {
                     <>
                       {status.kubernetes.observability.workload_states &&
                       status.kubernetes.observability.workload_states.length > 0 ? (
-                        /* Badged with the same three states as the Pods above (#3827):
-                           `0/1 ready` is PENDING, not a quiet grey line the operator
-                           has to interpret against a Pod list that already ruled on
-                           the same condition two sections up. */
+                        /* Badged READY/PENDING/FAILED from the same vocabulary as the
+                           Pods above (#3827): `0/1 ready` is PENDING, not a quiet grey
+                           line the operator has to interpret against a Pod list that
+                           already ruled on the same condition two sections up. Three
+                           of the four, not four: the Pod list also badges SUPERSEDED
+                           (#3990), which a workload can never be -- only one of its
+                           replicas can be rolled past. */
                         <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                           {status.kubernetes.observability.workload_states.map((workload) => (
                             <li

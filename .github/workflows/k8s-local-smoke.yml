@@ -87,7 +87,7 @@ name: Kubernetes Local Smoke
 # THAT, with the `--kubernetes` remedy, so the branch is proven to speak and
 # not merely to have gone quiet.
 #
-# Step 14 is #3990's: does the observability tier RECEIVE anything, or merely
+# Step 16 is #3990's: does the observability tier RECEIVE anything, or merely
 # run? Since the 2026-08-26 re-test it also asserts that the answer reaches
 # `nyxgpt ops status` -- the command an operator actually runs -- and injects
 # the AC2 defect itself: it empties the live `error-tracking-dsn`, rolls the

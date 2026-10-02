@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from nyxgpt import ops
+from nyxgpt import k8s_pod_state, ops, self_heal
 from nyxgpt.config import get_error_tracking_config, get_tracing_config
 
 pytestmark = pytest.mark.unit
@@ -399,10 +399,11 @@ def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     # Command wrapping: the dashboard tells the operator a `nyxgpt` command.
     assert observability["port_forward_command"].startswith("nyxgpt ops port-forward")
 
-    # ...and the same three states the Pod badges use (#3827). The raw
-    # `workloads` map rendered as undifferentiated grey text, so a workload
-    # that is up, one still rolling out and one that never deployed were
-    # indistinguishable on a card that badges every Pod READY/PENDING/FAILED.
+    # ...and the same states the Pod badges use (#3827), bar the one only a Pod
+    # can be in (`SUPERSEDED`, #3990 -- a workload is never the replica that got
+    # rolled past). The raw `workloads` map rendered as undifferentiated grey
+    # text, so a workload that is up, one still rolling out and one that never
+    # deployed were indistinguishable on a card that badges every Pod.
     by_name = {w["name"]: w for w in observability["workload_states"]}
     assert by_name["grafana"]["state"] == ops.K8S_STATE_READY
     assert by_name["prometheus"]["state"] == ops.K8S_STATE_PENDING
@@ -1224,6 +1225,188 @@ def test_the_superseded_rule_still_answers_when_the_replicaset_read_fails(monkey
 
     assert corpse.state == ops.K8S_STATE_SUPERSEDED
     assert corpse.ok, "an unreadable ReplicaSet list must not re-fail the install on a corpse"
+
+
+# --- ...and self-heal reads it the same way (review round 2) ----------------
+#
+# The first cut of the SUPERSEDED rule was `ops.py`'s alone, which is the exact
+# shape of the defect `pod_is_retired` was moved into `k8s_pod_state` to fix
+# (#3956): the Infrastructure page badged a Pod SUPERSEDED while the Self-Heal
+# page rendered the same Pod as a component that is Failed and `healable=False`
+# forever, on a deployment whose Deployments were both 1/1. Two dashboards, two
+# verdicts, one Pod (#3827, D-022/D-052). The reading is now shared; what each
+# does with it is still its own -- `ops` prints the Pod, self-heal drops it.
+
+
+def _self_heal_k8s_run(pods: list[dict], *, rs_stdout: str = "", rs_returncode: int = 0):
+    """A `self_heal._run` stand-in answering the Pod list and the ReplicaSet scale read."""
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:3] == ["kubectl", "get", "pods"]:
+            return MagicMock(returncode=0, stdout=json.dumps({"items": pods}), stderr="")
+        if "rs" in cmd:
+            return MagicMock(returncode=rs_returncode, stdout=rs_stdout, stderr="")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    return fake_run
+
+
+def _self_heal_components(monkeypatch, pods: list[dict], **kwargs):
+    monkeypatch.setattr(self_heal, "_which", lambda _p: "/usr/bin/kubectl")
+    monkeypatch.setattr(self_heal, "_run", _self_heal_k8s_run(pods, **kwargs))
+    return self_heal._list_kubernetes_component_status(set())
+
+
+def test_a_superseded_corpse_is_not_a_failed_self_heal_component(monkeypatch) -> None:
+    """The finding: one Pod, two dashboards, two verdicts.
+
+    `cassandra-0` is owned by a StatefulSet, so no ReplicaSet scale read can
+    ever drop it -- `pod_is_retired` is structurally blind to this population.
+    Without the shared supersession rule it renders here forever as a Failed
+    component the watchdog refuses to heal, while `nyxgpt ops status` says
+    SUPERSEDED about the same Pod.
+    """
+    pods = [
+        {
+            "metadata": {
+                "name": "cassandra-0",
+                "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-5f6"},
+            },
+            "status": {"phase": "Failed"},
+        },
+        {
+            "metadata": {
+                "name": "cassandra-1",
+                "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-7a9"},
+            },
+            "status": {
+                "phase": "Running",
+                "conditions": [{"type": "Ready", "status": "True"}],
+            },
+        },
+    ]
+
+    components = _self_heal_components(monkeypatch, pods)
+
+    assert [c.service for c in components] == ["cassandra-1"]
+    # And the other surface's verdict on the same Pod list, so the two cannot
+    # be fixed apart: shown there, dropped here, and a failure on neither.
+    monkeypatch.setattr(ops, "_run", _pods_run(pods))
+    states, _ = ops._k8s_pod_states()
+    corpse = next(s for s in states if s.name == "cassandra-0")
+    assert corpse.state == ops.K8S_STATE_SUPERSEDED and corpse.ok
+
+
+def test_self_heal_still_reports_a_terminal_pod_of_the_current_revision(monkeypatch) -> None:
+    """The clause that stops the rule swallowing real failures, on this side too.
+
+    One replica of the revision that is meant to be serving died; its
+    replacement carries the same hash, so nothing has rolled past it and the
+    operator still needs to see it.
+    """
+    components = _self_heal_components(
+        monkeypatch,
+        [
+            {
+                "metadata": {
+                    "name": "cassandra-0",
+                    "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-7a9"},
+                },
+                "status": {"phase": "Failed"},
+            },
+            {
+                "metadata": {
+                    "name": "cassandra-1",
+                    "labels": {"app": "cassandra", "controller-revision-hash": "cassandra-7a9"},
+                },
+                "status": {
+                    "phase": "Running",
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            },
+        ],
+    )
+
+    dead = next(c for c in components if c.service == "cassandra-0")
+    assert not dead.healthy and not dead.healable
+
+
+def test_self_heal_drops_a_corpse_when_the_replicaset_read_fails(monkeypatch) -> None:
+    """The pass that most needs an answer is the one where the extra call failed.
+
+    `_retired_replicasets` may only drop a Pod on positive evidence, so a timed
+    out `kubectl get rs` leaves the retired set empty -- and a node under the
+    pressure that leaves residue behind is exactly where that call times out.
+    """
+    components = _self_heal_components(
+        monkeypatch,
+        [
+            {
+                "metadata": {
+                    "name": "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                    # The labels `k8s/deployment-web-stable.yaml` really stamps.
+                    "labels": {
+                        "app": "nyxgpt-web-canary-pool",
+                        "track": "stable",
+                        "pod-template-hash": "77c7d9c6f4",
+                    },
+                    "ownerReferences": [{"kind": "ReplicaSet", "name": "nyxgpt-web-stable-77c7"}],
+                },
+                "status": {"phase": "Failed"},
+            },
+            {
+                "metadata": {
+                    "name": "nyxgpt-web-stable-69b45dd5db-live",
+                    "labels": {
+                        "app": "nyxgpt-web-canary-pool",
+                        "track": "stable",
+                        "pod-template-hash": "69b45dd5db",
+                    },
+                    "ownerReferences": [{"kind": "ReplicaSet", "name": "nyxgpt-web-stable-69b4"}],
+                },
+                "status": {
+                    "phase": "Running",
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                },
+            },
+        ],
+        rs_returncode=1,
+    )
+
+    assert [c.service for c in components] == ["nyxgpt-web-stable-69b45dd5db-live"]
+
+
+def test_both_pod_readers_share_one_supersession_rule() -> None:
+    """A reader that re-implements the rule is free to disagree with the other.
+
+    The identity check, not a behavioural one, for the same reason #3956's
+    `test_every_pod_reader_shares_one_retired_replicaset_rule` is: a copy that
+    happens to agree today is the state this finding was about.
+    """
+    for module in (ops, self_heal):
+        assert module.superseded_pods is k8s_pod_state.superseded_pods
+
+
+def test_the_supersession_reading_carries_no_policy() -> None:
+    """Each caller's readiness verdict is its own, and that is why it is a parameter.
+
+    `ops` counts a `Succeeded` one-shot Pod as READY; self-heal's `healthy`
+    does not. A shared reading that decided readiness for both would have to
+    pick one of those and be wrong for the other caller.
+    """
+    pods = [
+        {
+            "metadata": {"name": "old", "labels": {"app": "x", "pod-template-hash": "a"}},
+            "status": {"phase": "Failed"},
+        },
+        {
+            "metadata": {"name": "new", "labels": {"app": "x", "pod-template-hash": "b"}},
+            "status": {"phase": "Succeeded"},
+        },
+    ]
+
+    assert k8s_pod_state.superseded_pods(pods, [False, True]) == {0: "new"}
+    assert k8s_pod_state.superseded_pods(pods, [False, False]) == {}
 
 
 def test_k8s_stack_health_and_observability_health_agree_on_zero_ready(monkeypatch) -> None:

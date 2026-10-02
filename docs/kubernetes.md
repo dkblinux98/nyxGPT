@@ -108,17 +108,25 @@ on Pods that are still pulling images and its exit status describes a
 mid-rollout snapshot rather than the stack the operator is handed (#3826,
 #3827).
 
-### Ready, pending, failed
+### Ready, pending, failed, superseded
 
 Every Kubernetes readout `nyxgpt ops` prints — the install's health snapshot,
 the observability workload list, `nyxgpt ops status` — classifies a workload
-into one of three states, and the same way in each (#3827):
+into one of these states, and the same way in each (#3827):
 
 | Label | Meaning | Counts as a failure? |
 | --- | --- | --- |
 | `[OK]` | Running and passing its readiness probe (or `Succeeded`) | no |
 | `[PENDING]` | Still starting: being scheduled, pulling images, creating containers, or ready on some replicas but not all | **no** |
-| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a `Failed` Pod | yes |
+| `[FAIL]` | Will not start without intervention: the scheduler has not placed it (`Unschedulable` — the node cannot fit it — or `SchedulingGated`), `ImagePullBackOff`, `CrashLoopBackOff`, a container config error, or a terminal Pod (`Failed`/`Unknown`) nothing has rolled past — one of the revision that is meant to be serving, or one whose workload has no Ready replacement at all | yes |
+| `[SUPERSEDED]` | Pods only: terminal, and its own workload already has a Ready Pod of a **newer** revision serving in its place — the residue Kubernetes keeps for diagnosis after a rollout (#3990) | **no** |
+
+The first three apply to a workload and to a Pod alike; `[SUPERSEDED]` is a
+Pod-level answer, because supersession is a question about one replica being
+rolled past and a *workload* is never superseded. So the observability workload
+list prints three labels and the Pod lists print four. See [a Pod the rollout
+already replaced](#observability-in-the-cluster) for the rule and for why it is
+not interchangeable with "a Pod no live controller owns".
 
 Since #3832 the *reading* behind this table — phase, readiness, whether the
 scheduler placed the Pod, and the cluster's own words for why it did not —
@@ -1103,14 +1111,16 @@ merely unknown, and they now say so:
 
 Run `nyxgpt ops status` on the host to survey either of those there.
 
-Each Pod on that card is badged with the same three states the CLI prints,
-from `kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
+Each Pod on that card is badged with the same states the CLI prints, from
+`kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
 scheduling, pulling or creating containers -- amber, because that is a normal
-stage of a rollout and not a fault) and **FAILED**, which carries the
-scheduler's or kubelet's own reason. The raw `kubectl get pods` line the card
-used to echo says `Pending` for both of the last two, which is the same
-conflation the install used to print — see [Ready, pending,
-failed](#ready-pending-failed).
+stage of a rollout and not a fault), **FAILED**, which carries the scheduler's
+or kubelet's own reason, and **SUPERSEDED** (grey, #3990 -- a terminal Pod the
+workload has already replaced, so nothing about it is a call to action). The raw
+`kubectl get pods` line the card used to echo says `Pending` both for a Pod
+pulling its image and for one no node can fit — PENDING and FAILED here — which
+is the same conflation the install used to print. See [Ready, pending, failed,
+superseded](#ready-pending-failed-superseded).
 
 Below that list, the card also names any Pod **no node would take** (#3825),
 and says what to do about it: the badge tells the operator the Pod will not

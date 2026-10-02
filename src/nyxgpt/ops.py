@@ -99,6 +99,7 @@ from nyxgpt.k8s_pod_state import (
     parse_retired_replicasets,
     pod_is_retired,
     retired_replicaset_argv,
+    superseded_pods,
 )
 from nyxgpt.logging import get_correlation_id
 
@@ -9216,11 +9217,12 @@ def _delete_k8s_observability() -> list[OpsResult]:
 # memory`).
 #
 # Everything that reports on a Kubernetes workload now classifies it into
-# exactly one of these three states, and the distinction that matters is the
-# middle one: PENDING is not a failure. A Pod pulling a multi-hundred-megabyte
-# image is doing what it is supposed to; only a wait that runs out of budget
-# (`_await_k8s_rollout`), or a condition that will never resolve on its own,
-# turns into FAILED.
+# exactly one of these three health states -- plus, for a Pod only, the
+# relevance state defined immediately below them -- and the distinction that
+# matters is the middle one: PENDING is not a failure. A Pod pulling a
+# multi-hundred-megabyte image is doing what it is supposed to; only a wait
+# that runs out of budget (`_await_k8s_rollout`), or a condition that will
+# never resolve on its own, turns into FAILED.
 K8S_STATE_READY = "ready"
 K8S_STATE_PENDING = "pending"
 K8S_STATE_FAILED = "failed"
@@ -9255,20 +9257,15 @@ K8S_STATE_FAILED = "failed"
 # all), and any corpse on a run where that `rs` call timed out and the retired
 # set came back empty -- which on a ballasted CI node is precisely when a
 # rollout leaves one behind. See `_mark_superseded_k8s_pods`.
+#
+# The *reading* behind this state -- terminal phase, revision hash, a ready Pod
+# of the same workload from a different revision -- is
+# `k8s_pod_state.superseded_pods`, shared with self-heal for the reason
+# `pod_is_retired` had to be: a copy per reader is how the Infrastructure page
+# came to badge a Pod SUPERSEDED while the Self-Heal page rendered the same Pod
+# as a permanently Failed, unhealable component (#3827, #3990 review round 2).
+# This label is `nyxgpt ops`' policy *on* that reading, and stays its own.
 K8S_STATE_SUPERSEDED = "superseded"
-
-# Pod phases that are over: no container will run again, and the Pod is only
-# still in the API because nothing has collected it yet. `Succeeded` is not
-# here -- `_classify_k8s_pod` reports it as READY, which is correct for the
-# one-shot Pods that reach it.
-_K8S_TERMINAL_PHASES = frozenset({"Failed", "Unknown"})
-
-# Labels that identify the *revision* that minted a Pod rather than the
-# workload it belongs to. Stripping them is what lets two Pods of the same
-# Deployment be recognised as the same workload across a rollout, and
-# comparing them is what tells "replaced by a newer revision" (superseded)
-# apart from "one replica of the current revision died" (a real failure).
-_K8S_REVISION_LABELS = ("pod-template-hash", "controller-revision-hash")
 
 # The summary `_classify_k8s_pod` gives the one FAILED case whose remedy is a
 # bigger cluster, not a fix to the workload: no node would take the Pod. Named
@@ -9481,80 +9478,39 @@ def _k8s_retired_replicasets(namespace: str) -> frozenset[str]:
     return parse_retired_replicasets(cp.stdout or "")
 
 
-def _k8s_workload_identity(pod: dict[str, Any]) -> str:
-    """The workload a Pod belongs to, independent of which revision minted it.
-
-    The Pod's own labels with the revision labels removed: two Pods of the
-    same Deployment agree on this across a rollout, and two Pods of different
-    workloads never do (every workload in `k8s/` carries an `app` label).
-    Empty for a Pod with no labels but its revision -- a bare Pod nothing
-    owns, which has no workload to be superseded by.
-    """
-    labels = dict((pod.get("metadata") or {}).get("labels") or {})
-    for revision_label in _K8S_REVISION_LABELS:
-        labels.pop(revision_label, None)
-    labels.pop("statefulset.kubernetes.io/pod-name", None)
-    return json.dumps(sorted(labels.items())) if labels else ""
-
-
-def _k8s_pod_revision(pod: dict[str, Any]) -> str:
-    """The revision hash that minted a Pod, or "" when its controller stamps none."""
-    labels = (pod.get("metadata") or {}).get("labels") or {}
-    for revision_label in _K8S_REVISION_LABELS:
-        value = str(labels.get(revision_label) or "")
-        if value:
-            return value
-    return ""
-
-
 def _mark_superseded_k8s_pods(
     items: Sequence[dict[str, Any]], states: list[K8sWorkloadState]
 ) -> list[K8sWorkloadState]:
     """Re-label terminal Pods their own workload has already replaced.
 
-    A Pod is superseded when all three hold: it is in a terminal phase
-    (`_K8S_TERMINAL_PHASES`) and was classified FAILED on that phase alone --
-    not on an unschedulable Pod or a blocked container, which are live
-    conditions an operator still has to act on; it carries a revision hash;
-    and another Pod of the same workload (`_k8s_workload_identity`) from a
-    DIFFERENT revision is READY.
+    `k8s_pod_state.superseded_pods` answers *which* Pods those are -- the
+    reading self-heal shares, so the two cannot disagree about one Pod. This
+    adds the one piece of policy that is `nyxgpt ops`' own: only a Pod
+    classified FAILED **on its bare phase** is re-labelled. An unschedulable
+    Pod or one with a blocked container says so in its summary and stays
+    FAILED whatever revision minted it, because those are live conditions an
+    operator still has to act on.
 
-    The last clause is what keeps this from swallowing real failures. One
-    replica of the *current* revision dying still reports FAILED, because its
-    replacement carries the same hash -- the only thing reclassified is a Pod
-    the controller has rolled past.
+    READY is this command's readiness verdict, which includes the `Succeeded`
+    one-shot Pods `_classify_k8s_pod` reports as OK; self-heal's is narrower.
+    That difference is exactly why the predicate is passed in rather than
+    rediscovered inside the shared reading.
 
     See `K8S_STATE_SUPERSEDED` for why this exists at all.
     """
-    ready_revisions: dict[str, list[tuple[str, str]]] = {}
-    for pod, state in zip(items, states, strict=True):
-        if state.state == K8S_STATE_READY:
-            ready_revisions.setdefault(_k8s_workload_identity(pod), []).append(
-                (_k8s_pod_revision(pod), state.name)
-            )
+    replacements = superseded_pods(items, [s.state == K8S_STATE_READY for s in states])
 
     marked: list[K8sWorkloadState] = []
-    for pod, state in zip(items, states, strict=True):
+    for index, (pod, state) in enumerate(zip(items, states, strict=True)):
         phase = str((pod.get("status") or {}).get("phase") or "")
-        revision = _k8s_pod_revision(pod)
-        identity = _k8s_workload_identity(pod)
-        replacement = next(
-            (
-                name
-                for rev, name in ready_revisions.get(identity, [])
-                if rev and revision and rev != revision
-            ),
-            "",
-        )
+        replacement = replacements.get(index, "")
         if (
-            state.state == K8S_STATE_FAILED
-            and phase in _K8S_TERMINAL_PHASES
+            replacement
+            and state.state == K8S_STATE_FAILED
             # The bare-phase classification, i.e. `_classify_k8s_pod`'s last
             # branch -- an unschedulable Pod or a blocked container says so in
             # its summary and stays FAILED.
             and state.summary == phase
-            and identity
-            and replacement
         ):
             marked.append(
                 K8sWorkloadState(
@@ -9875,9 +9831,11 @@ def _classify_k8s_observability_workload(name: str, value: str) -> K8sWorkloadSt
 def _k8s_observability_health() -> list[OpsResult]:
     """Snapshot of the observability workloads right after the rollout wait.
 
-    Uses the same three-state vocabulary as `_k8s_stack_health`
+    Uses the same vocabulary as `_k8s_stack_health`
     (`_classify_k8s_observability_workload`): ready, still-rolling-out
-    (`[PENDING]`, not a failure and not a green tick), or absent. The install
+    (`[PENDING]`, not a failure and not a green tick), or absent. Three of its
+    four labels -- `[SUPERSEDED]` is about one Pod having been rolled past, and
+    a workload never is. The install
     waits for the layer first (`_wait_for_k8s_observability`), so a workload
     reported PENDING here is one that reached readiness during the wait and
     lost a replica since -- worth showing, not worth failing on, since the
@@ -13093,12 +13051,13 @@ def infra_status() -> dict[str, Any]:
             "probe_available": kubernetes_probe_available,
             "deployed": any(state != "absent" for state in observability_workloads.values()),
             "workloads": observability_workloads,
-            # The same three-state classification `pod_states` carries, for
-            # the same reason (#3827): the raw `workloads` map is `"0/1
-            # ready"`-style prose, which the card could only render as
-            # undifferentiated grey -- a healthy workload, one still rolling
-            # out and one that never deployed all looked alike, on the same
-            # card that badges every Pod READY/PENDING/FAILED.
+            # The same classification `pod_states` carries, for the same reason
+            # (#3827): the raw `workloads` map is `"0/1 ready"`-style prose,
+            # which the card could only render as undifferentiated grey -- a
+            # healthy workload, one still rolling out and one that never
+            # deployed all looked alike, on the same card that badges every Pod
+            # READY/PENDING/FAILED/SUPERSEDED. Three of those four reach a
+            # workload: supersession is about one replica being rolled past.
             "workload_states": [
                 {
                     "name": s.name,
@@ -14000,7 +13959,8 @@ def status(_args) -> int:
         # node will ever take identically -- both just say `Pending` -- which
         # is the confusion this issue is about, and `nyxgpt ops status` is the
         # command every failure message here tells the operator to run next.
-        # Same classifier, same three labels, same reasons as the install's
+        # Same classifier, same labels -- including `[SUPERSEDED]` for a Pod
+        # the rollout already replaced (#3990) -- same reasons as the install's
         # own report.
         #
         # The Pods come from the single read taken at the top of this command

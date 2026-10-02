@@ -113,6 +113,7 @@ from nyxgpt.k8s_pod_state import (
     parse_retired_replicasets,
     pod_is_retired,
     retired_replicaset_argv,
+    superseded_pods,
 )
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 from nyxgpt.subprocess_bounds import (
@@ -1074,7 +1075,10 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     "Running but not Ready" -- healing it again would spend a restart-budget
     attempt on a deletion that has already happened.
 
-    So is a Pod owned by a ReplicaSet scaled to zero (`pod_is_retired`, #3956).
+    So is a finished rollout's residue, by the two rules in
+    `nyxgpt.k8s_pod_state` -- a Pod owned by a ReplicaSet scaled to zero
+    (`pod_is_retired`, #3956) and a terminal Pod its own workload has already
+    replaced with a ready Pod of a newer revision (`superseded_pods`, #3990).
     `nyxgpt ops install --kubernetes` provisions GlitchTip after the stack is
     up, which writes the real error-tracking DSN and rolls api/web; the
     superseded ReplicaSet leaves a terminated Pod behind, and it carries the
@@ -1083,8 +1087,8 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     Deployments are 1/1 -- which is the same misreading that failed the owner's
     2026-08-26 install three lines above `nyxgpt-web-stable 1/1`. The extra
     ReplicaSet read is taken only when some Pod is not healthy, because that is
-    the only case where it can change an answer and this runs every 15 seconds
-    (first principle 1).
+    the only case where either rule can change an answer and this runs every 15
+    seconds (first principle 1); the second rule costs no read at all.
 
     What each Pod's state *means* is `nyxgpt.k8s_pod_state`'s job, shared with
     `ops.py` (#3832), and two of its distinctions land here:
@@ -1142,6 +1146,23 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
         retired = _retired_replicasets()
         if retired:
             ours = [entry for entry in ours if not pod_is_retired(entry[0], retired)]
+        # The second residue rule (#3990), and not a repeat of the first: this
+        # one asks only the Pods already in hand, so it still answers for a
+        # StatefulSet's rolled replica -- which no ReplicaSet owns, so
+        # `pod_is_retired` can never see it -- and for any corpse at all on a
+        # pass where the `rs` read above failed and `retired` came back empty.
+        # Shared with `ops.py` on purpose (`superseded_pods`): the first cut of
+        # this reading lived in `ops.py` alone, and the same Pod it badged
+        # SUPERSEDED on the Infrastructure page rendered here as a Failed,
+        # `healable=False` component of a deployment that was serving. Dropped
+        # rather than reported, exactly like a retired Pod: there is nothing for
+        # the watchdog to heal and nothing for the operator to act on.
+        superseded = superseded_pods(
+            [entry[0] for entry in ours],
+            [entry[3].healthy for entry in ours],
+        )
+        if superseded:
+            ours = [entry for index, entry in enumerate(ours) if index not in superseded]
 
     statuses: list[ComponentStatus] = []
     for _pod, name, tier, pod_state in ours:

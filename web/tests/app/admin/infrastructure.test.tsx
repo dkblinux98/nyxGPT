@@ -2249,11 +2249,13 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText('nyxgpt ops status')).toBeInTheDocument();
   });
 
-  it('badges the observability workloads with the same three states as the Pods (#3827)', async () => {
-    // The card badged every Pod READY/PENDING/FAILED and then, a section
-    // lower, printed the observability workloads as grey `0/1 ready` text --
-    // one screen giving two different verdicts on the same condition, which
-    // is the contradiction this issue is about.
+  it('badges the observability workloads from the same vocabulary as the Pods (#3827)', async () => {
+    // The card badged every Pod READY/PENDING/FAILED/SUPERSEDED and then, a
+    // section lower, printed the observability workloads as grey `0/1 ready`
+    // text -- one screen giving two different verdicts on the same condition,
+    // which is the contradiction this issue is about. Three of those four
+    // apply here: SUPERSEDED is a Pod-only answer (#3990), since a workload is
+    // never the replica that got rolled past.
     server.use(
       http.get('/api/v1/infra/status', () =>
         HttpResponse.json({
