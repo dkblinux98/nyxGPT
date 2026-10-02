@@ -14,6 +14,7 @@ Two halves:
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
 import re
@@ -1407,6 +1408,43 @@ def test_the_supersession_reading_carries_no_policy() -> None:
 
     assert k8s_pod_state.superseded_pods(pods, [False, True]) == {0: "new"}
     assert k8s_pod_state.superseded_pods(pods, [False, False]) == {}
+
+
+# `docs/self-healing.md` is where an operator reads what the Self-Heal page's
+# Kubernetes survey will and will not show them, and it described ONE residue
+# rule for as long as there was one. A doc that names only `pod_is_retired`
+# tells them a terminal Pod a live controller owns is always reported -- which
+# `superseded_pods` makes untrue for exactly the population the first rule
+# cannot reach (a StatefulSet's rolled replica owns no ReplicaSet), so the
+# operator concludes a `Failed cassandra-0` must appear and reads its absence as
+# the page being broken. Derived from the drop block itself rather than from a
+# list written here, so a THIRD residue rule cannot be added to the survey while
+# the page that documents it goes on describing two.
+def _self_heal_drop_rules() -> set[str]:
+    """The `k8s_pod_state` readings the survey uses to remove Pods from its list.
+
+    Sliced at the `if any(not pod_state.healthy ...)` guard, because everything
+    above it classifies Pods and only the block below it drops them --
+    `classify_pod` is shared too and is no part of this claim.
+    """
+    source = inspect.getsource(self_heal._list_kubernetes_component_status)
+    _, _, drop_block = source.partition("if any(not pod_state.healthy")
+    assert drop_block, "the survey's residue block moved -- re-derive the slice"
+    return {name for name in k8s_pod_state.__all__ if re.search(rf"\b{name}\(", drop_block)}
+
+
+def test_the_self_heal_docs_name_every_residue_rule_the_survey_applies() -> None:
+    kubernetes_section = (
+        (REPO_ROOT / "docs" / "self-healing.md").read_text().partition("## Kubernetes mode")[2]
+    )
+    assert kubernetes_section, "the Kubernetes mode section was renamed"
+
+    rules = _self_heal_drop_rules()
+    assert rules == {"pod_is_retired", "superseded_pods"}, (
+        "the survey's residue rules changed; document the new one in "
+        "docs/self-healing.md's Kubernetes mode section and update this guard"
+    )
+    assert [rule for rule in rules if rule not in kubernetes_section] == []
 
 
 def test_k8s_stack_health_and_observability_health_agree_on_zero_ready(monkeypatch) -> None:
