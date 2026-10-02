@@ -261,7 +261,9 @@ def test_an_explicit_api_key_beats_the_instances_own(monkeypatch):
     cloud_smoke.run_smoke(_args(api_key="from-the-flag"))  # pragma: allowlist secret
 
     assert all(
-        c["api_key"] == "from-the-flag" for c in http.calls if c["base"] == cloud_smoke.API_BASE  # pragma: allowlist secret
+        c["api_key"] == "from-the-flag"  # pragma: allowlist secret
+        for c in http.calls
+        if c["base"] == cloud_smoke.API_BASE
     )
 
 
