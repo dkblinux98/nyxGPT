@@ -1976,6 +1976,46 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #3986; cites **D-006**.
 
+- **D-054** · 2026-10-02 · developer agent (#4121) — **When the private-access
+  decision cannot be satisfied by a bind address, it is satisfied by a host
+  firewall loaded *before* the listener — and the listener is not started if the
+  rule did not load.** `nyxgpt cloud screen` reaches an EC2 Mac's screen the way
+  the app ports are reached: an SSH forward to loopback, with the Mac's security
+  group left at TCP 22 only. The complication is that macOS's
+  `com.apple.screensharing` launchd job binds 5900 on every interface and its
+  plist is SIP-protected, so "bind 127.0.0.1" — the literal wording of the
+  constraint — is not available on that platform. The resolution is a `pf`
+  anchor (passing 5900 on `lo0`, dropping it elsewhere) written, loaded and
+  **read back** first, with the Screen Sharing agent activated only afterwards;
+  a rule that did not load aborts the command with nothing enabled.
+
+  Two rules generalize past the Mac:
+
+  (a) *A constraint stated as a mechanism is really a constraint on the
+  reachable surface.* The alternative on the table was a security-group rule
+  scoped to the operator's `/32`, which is exactly what
+  `DECISION_PRIVATE_ACCESS_MECHANISM.md` compared against a never-exposed
+  loopback bind and rejected. Choosing a different *enforcement point* for the
+  same surface keeps the decision; choosing a narrower *exposure* does not.
+
+  (b) *Ordering is the guarantee, and "the command exited 0" is not evidence it
+  held.* `pfctl -f` exits 0 on a ruleset it only warned about, so the script
+  re-reads its own anchor; and the verification for it asserts the **order** of
+  the delivered text and rejects the reordered script, because a check that is
+  never made to fail is indistinguishable from no check (**D-006**'s rule
+  applied to an ordering rather than to a version).
+
+  Also settled here: the Mac's address is read from the Dedicated Host record
+  (`mac_public_ip`), not from the Linux substrate's `public_ip` — a macOS deploy
+  never applies that substrate, so the latter key does not exist for a Mac at
+  all. The behaviours are pinned by `tests/unit/test_cloud_screen.py` and by
+  `scripts/cloud-target-os-smoke.sh` phase 5 (real sshd, real delivery, refusal
+  injected), per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4121; cites **D-006**;
+  `product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
