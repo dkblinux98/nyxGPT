@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -24,6 +25,14 @@ from ops_step_isolation import (
 )
 
 from nyxgpt import docker_access, ops, self_heal
+
+# The two image tags a Kubernetes/Terraform install builds for this
+# installation. Resolved, never hard-coded: since #3956 the tag carries the
+# build path and the version (`artifact-3.0.0`/`dev-3.0.0`), so a literal here
+# would pin a release and would not survive the next version bump.
+_K8S_API_IMAGE = ops.local_image_ref("api", dev=False)
+_TF_DEV_API_IMAGE = ops.local_image_ref("api", dev=True)
+_TF_DEV_WEB_IMAGE = ops.local_image_ref("web", dev=True)
 
 # Captured before the autouse fixture below can ever monkeypatch it, so tests
 # that exercise this function's real logic can restore it for their duration.
@@ -1357,8 +1366,8 @@ def test_sync_host_relay_env_explains_how_to_revert_a_widened_bind(tmp_path, mon
     cfg_path.write_text("[api]\nhost = 0.0.0.0\nport = 8000\n", encoding="utf-8")
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8"
-    )  # pragma: allowlist secret
+        "NYXGPT_HOST_RELAY_PROFILE=monitoring\n", encoding="utf-8"  # pragma: allowlist secret
+    )
     monkeypatch.setattr(ops, "_is_linux", lambda: True)
     monkeypatch.setattr(ops, "_docker_bridge_gateway_ip", lambda: "172.17.0.1")
 
@@ -1377,8 +1386,8 @@ def test_sync_host_relay_env_stays_quiet_when_disabled_for_other_reasons(tmp_pat
     cfg_path.write_text("[api]\nhost = 127.0.0.1\nport = 8000\n", encoding="utf-8")
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8"
-    )  # pragma: allowlist secret
+        "NYXGPT_HOST_RELAY_PROFILE=disabled\n", encoding="utf-8"  # pragma: allowlist secret
+    )
     monkeypatch.setattr(ops, "_is_linux", lambda: False)
 
     result = ops._sync_host_relay_env(cfg_path=cfg_path, env_path=env_path)
@@ -1812,8 +1821,10 @@ def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkey
 def test_sync_env_from_config_creates_env_from_example(tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_config(
-        cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw"
-    )  # pragma: allowlist secret
+        cfg_path,
+        api_key="real-api-key",  # pragma: allowlist secret
+        grafana_password="real-grafana-pw",  # pragma: allowlist secret
+    )
 
     example_path = tmp_path / ".env.example"
     example_path.write_text(
@@ -1845,8 +1856,10 @@ def test_sync_env_from_config_creates_env_from_example(tmp_path):
 def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_config(
-        cfg_path, api_key="new-api-key", grafana_password="new-grafana-pw"
-    )  # pragma: allowlist secret
+        cfg_path,
+        api_key="new-api-key",  # pragma: allowlist secret
+        grafana_password="new-grafana-pw",  # pragma: allowlist secret
+    )
 
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -1885,9 +1898,7 @@ def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path):
 @pytest.mark.unit
 def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(
-        cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw"
-    )  # pragma: allowlist secret
+    _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -1912,7 +1923,7 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
 ):
     # Regression test (#3621): `nyxgpt ops env-sync` is documented (docs/ops.md,
     # _sync_grafana_slack_webhook_secret's docstring) as runnable as the very
-    # first command -- e.g. the Compose-only Quickstart's `nyxgpt wizard` then  # pragma: allowlist secret
+    # first command -- e.g. the Compose-only Quickstart's `nyxgpt wizard` then
     # `nyxgpt ops env-sync`, with no `nyxgpt ops install` beforehand. That means
     # NYXGPT_HOME/.env.example doesn't exist yet unless env_sync() syncs the
     # packaged resources itself; without that, sync_env_from_config()'s
@@ -1925,9 +1936,9 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     (src_root / "scripts").mkdir(parents=True)
     (src_root / "k8s").mkdir(parents=True)
     (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    (src_root / ".env.example").write_text(  # pragma: allowlist secret
-        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n",
-        encoding="utf-8",  # pragma: allowlist secret
+    (src_root / ".env.example").write_text(
+        "NYXGPT_API_PORT=8000\nNYXGPT_AUTH_API_KEY=change-me\n",  # pragma: allowlist secret
+        encoding="utf-8",
     )
 
     home = tmp_path / "home"
@@ -1939,7 +1950,7 @@ def test_env_sync_cli_wrapper_seeds_env_from_packaged_example_without_prior_inst
     monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", nyxgpt_home / "docker" / "config.docker.ini")
 
-    cfg_path = tmp_path / "config.ini"  # pragma: allowlist secret
+    cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="fresh-api-key")  # pragma: allowlist secret
 
     args = MagicMock()
@@ -5157,10 +5168,18 @@ def test_build_terraform_docker_images_builds_api_and_web(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_run", fake_run)
     results = ops._build_terraform_docker_images()
     assert all(r.ok for r in results)
-    assert any(ops.TF_API_IMAGE in r.message and "built" in r.message for r in results)
-    assert any(ops.TF_WEB_IMAGE in r.message and "built" in r.message for r in results)
-    assert any(c[:4] == ["docker", "build", "-t", ops.TF_API_IMAGE] for c in calls)
-    assert any(c[:4] == ["docker", "build", "-t", ops.TF_WEB_IMAGE] for c in calls)
+    assert any(_TF_DEV_API_IMAGE in r.message and "built" in r.message for r in results)
+    assert any(_TF_DEV_WEB_IMAGE in r.message and "built" in r.message for r in results)
+    assert any(c[:4] == ["docker", "build", "-t", _TF_DEV_API_IMAGE] for c in calls)
+    assert any(c[:4] == ["docker", "build", "-t", _TF_DEV_WEB_IMAGE] for c in calls)
+    # The dev tags are version-qualified and say they are dev builds (#3956):
+    # before that both paths shared `nyxgpt-api:local`, so an artifact install
+    # and a working-tree build silently overwrote each other.
+    assert _TF_DEV_API_IMAGE.endswith(f":dev-{ops._native_service_version()}")
+    assert ops.local_image_ref("api", dev=False) not in (
+        _TF_DEV_API_IMAGE,
+        _TF_DEV_WEB_IMAGE,
+    )
 
 
 @pytest.mark.unit
@@ -5170,8 +5189,12 @@ def test_build_terraform_docker_images_skips_both_when_unchanged(monkeypatch, tm
 
     api_fingerprint = ops._hash_paths(ops._API_IMAGE_FINGERPRINT_PATHS)
     web_fingerprint = ops._hash_paths([ops.REPO_ROOT / "web"], excludes=ops._WEB_VENDOR_EXCLUDES)
-    (tmp_path / ".nyxgpt-api_local.sha256").write_text(api_fingerprint, encoding="utf-8")
-    (tmp_path / ".nyxgpt-web_local.sha256").write_text(web_fingerprint, encoding="utf-8")
+    marker = {
+        image: tmp_path / f".{re.sub(r'[^A-Za-z0-9_.-]', '_', image)}.sha256"
+        for image in (_TF_DEV_API_IMAGE, _TF_DEV_WEB_IMAGE)
+    }
+    marker[_TF_DEV_API_IMAGE].write_text(api_fingerprint, encoding="utf-8")
+    marker[_TF_DEV_WEB_IMAGE].write_text(web_fingerprint, encoding="utf-8")
 
     calls = []
 
@@ -6145,7 +6168,7 @@ def test_detect_deployment_mode_logs_conflict_at_warning(caplog, monkeypatch):
 @pytest.mark.unit
 def test_env_sync_logs_summary(caplog, tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
+    _write_config(cfg_path, api_key="cli-api-key")
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -7104,7 +7127,6 @@ def test_verify_grafana_datasources_resolve_fails_when_unreachable(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus"])
     monkeypatch.setattr(ops.time, "sleep", lambda _: None)
 
-    # pragma: allowlist secret
     class FakeClient:
         def __enter__(self):
             return self
@@ -7132,7 +7154,6 @@ def test_verify_grafana_datasources_resolve_fails_with_http_error_includes_body(
         status_code = 500
         text = "internal server error: datasource registry unavailable"
 
-    # pragma: allowlist secret
     class FakeClient:
         def __enter__(self):
             return self
@@ -9285,7 +9306,7 @@ def test_down_refuses_volumes_without_yes_really(capsys):
 def test_down_all_scope_stops_native_and_composes_down(capsys):
     args = MagicMock(
         app_only=False,
-        observability_only=False,  # pragma: allowlist secret
+        observability_only=False,
         volumes=False,
         yes_really=False,
         terraform=False,
@@ -9365,7 +9386,7 @@ def test_down_leaves_terraform_or_kubernetes_managed_components_unmarked():
     stopped either -- otherwise self-heal would stop guarding a component
     that never went down (#3406)."""
     args = MagicMock(
-        app_only=False,  # pragma: allowlist secret
+        app_only=False,
         observability_only=False,
         volumes=False,
         yes_really=False,
@@ -12639,7 +12660,7 @@ def test_ensure_cli_tool_unsupported_platform(monkeypatch):
 @pytest.mark.unit
 def test_build_and_load_k8s_image_no_docker(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert results[0].ok is False
     assert "docker not found" in results[0].message
 
@@ -12657,7 +12678,7 @@ def test_build_and_load_k8s_image_build_fails(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert results[0].ok is False
     assert "docker build failed" in results[0].message
 
@@ -12677,7 +12698,7 @@ def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch, tmp_
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert all(r.ok for r in results)
     assert any("Docker Desktop" in r.message for r in results)
 
@@ -12703,9 +12724,9 @@ def test_build_and_load_k8s_image_loads_into_kind(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert all(r.ok for r in results)
-    assert ["kind", "load", "docker-image", ops.K8S_IMAGE, "--name", "nyxgpt"] in run_calls
+    assert ["kind", "load", "docker-image", _K8S_API_IMAGE, "--name", "nyxgpt"] in run_calls
 
 
 @pytest.mark.unit
@@ -12725,7 +12746,7 @@ def test_build_and_load_k8s_image_unrecognized_context(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert all(r.ok for r in results)
     assert any("Unrecognized cluster context" in r.message for r in results)
 
@@ -12738,7 +12759,8 @@ def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatc
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     fingerprint = ops._hash_paths(ops._API_IMAGE_FINGERPRINT_PATHS)
-    (tmp_path / ".nyxgpt-api_local.sha256").write_text(fingerprint, encoding="utf-8")
+    marker = re.sub(r"[^A-Za-z0-9_.-]", "_", _K8S_API_IMAGE)
+    (tmp_path / f".{marker}.sha256").write_text(fingerprint, encoding="utf-8")
 
     run_calls = []
 
@@ -12751,7 +12773,7 @@ def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatc
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert all(r.ok for r in results)
     assert "skipped rebuild" in results[0].message
     assert not any(c[:2] == ["docker", "build"] for c in run_calls)
@@ -12823,7 +12845,7 @@ def test_build_and_load_k8s_web_image_builds_web_context_with_build_arg(monkeypa
 
     assert all(r.ok for r in results)
     build_cmd = next(c for c in run_calls if c[:2] == ["docker", "build"])
-    assert build_cmd[2:5] == ["-t", ops.TF_WEB_IMAGE, "--build-arg"]
+    assert build_cmd[2:5] == ["-t", _TF_DEV_WEB_IMAGE, "--build-arg"]
     assert f"NEXT_PUBLIC_API_BASE_URL={ops.TF_WEB_API_BASE_URL_DEFAULT}" in build_cmd
     assert str(ops.REPO_ROOT / "web") in build_cmd
 
@@ -12904,6 +12926,11 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
             )
         if cmd[4] == "svc":
             return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
+        # The ReplicaSet read #3956 added, so an unhealthy Pod can be checked
+        # against its owner. No ReplicaSets here: these Pods have no owner at
+        # all, so none of them is filtered.
+        if cmd[4] == "rs":
+            return CP(returncode=0, stdout="")
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
@@ -14755,7 +14782,7 @@ def test_env_sync_survives_malformed_native_config(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".nyxGPT").mkdir(parents=True)
     native = home / ".nyxGPT" / "config.ini"
-    _write_config(native, api_key="cli-api-key")  # pragma: allowlist secret
+    _write_config(native, api_key="cli-api-key")
     with native.open("a", encoding="utf-8") as f:
         f.write(
             "[error_tracking]\ndsn = http://one@localhost:8080/1\n"

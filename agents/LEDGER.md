@@ -1887,6 +1887,54 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #4122; extends **D-043**; cites **D-047**, **D-030**, **D-006**.
 
+- **D-052** · 2026-10-01 · developer-agent (owner acceptance #3956) — Three
+  conventions settled by the 2026-08-26 cloud-Kubernetes acceptance round, each
+  general rather than specific to that deploy:
+
+  (a) *A Pod no live controller owns is not the deployment's state.* Pod
+  readings drop Pods whose ReplicaSet the Deployment controller has scaled to
+  zero — the residue of a finished rollout — and keep every Pod a live
+  controller owns, whatever its phase. The alternative the owner explicitly
+  ruled out was filtering on the phase, which would have hidden real failures
+  while leaving the actual defect (consulting Pods nothing owns) in place for
+  the next terminal state to walk back through. **Every** reader of a Pod list
+  applies it, which is why the decision itself lives in `k8s_pod_state` (below
+  both `ops.py` and `self_heal.py`, per **D-022**/**D-045**) rather than in any
+  caller: the first cut fixed the install alone, and the same corpse went on
+  rendering on the Self-Heal dashboard as a Failed, unhealable component of a
+  healthy deployment — a reader with its own copy of the rule is free to
+  disagree with the others. A new Pod reader takes the shared rule.
+
+  (b) *`kubectl` is not always kubectl, so nyxGPT names the kubeconfig itself.*
+  Every kubectl child this codebase spawns is handed the kubeconfig kubectl's
+  own default resolution would have used, instead of relying on an exported
+  `KUBECONFIG`. On a k3s node `/usr/local/bin/kubectl` is a symlink to `k3s`,
+  whose shim defaults to the root-only `/etc/rancher/k3s/k3s.yaml`; the
+  in-a-Pod exception is the same one `--request-timeout` already needed, which
+  is why both live in `subprocess_bounds`. Corollary, and the half that is a
+  rule rather than a fix: **a failed probe is not evidence about the
+  substrate** — only an answer *from* an API server is.
+
+  (c) *A locally built image tag names its build path and its version.*
+  `nyxgpt-{api,web}:{dev,artifact}-<version>`, with
+  `<version>-<sha>` reserved for `canary deploy`. Four build paths shared two
+  mutable `:local` tags, so whichever ran last owned them and `canary status` —
+  which reads the version off the Pod's image tag — reported `local` for a
+  published release. The two *substrates* share each mode's tag deliberately
+  (same source, same Dockerfile, same staging helper). The tag reaches the
+  cluster through a generated kustomize overlay beside `k8s/`, never by editing
+  it: #3506's rationale rests on those manifests being the repository's copy
+  byte for byte. A new build path must take a new namespace rather than reuse
+  one of these.
+
+  The behaviours are not recorded here — they are pinned by
+  `tests/unit/test_k3s_cloud_acceptance.py` and by `k3s-cloud-smoke.yml`'s
+  steps 7-9 (two of them fault-injected, on a real k3s cluster), per the
+  verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3956; implements **D-037**'s feature; cites **D-006**, **D-027**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

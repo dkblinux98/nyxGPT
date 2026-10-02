@@ -220,7 +220,7 @@ class TestPendingState:
     """Pending-restart state is durable, cross-process, and self-retiring."""
 
     def test_mark_and_snapshot(self):
-        restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
+        restart_state.mark_pending("web", {"auth.api_key": "old-key"})
         snap = restart_state.snapshot()
         assert snap["web"]["keys"] == ["auth.api_key"]
         assert snap["web"]["since"] > 0
@@ -228,8 +228,8 @@ class TestPendingState:
     def test_snapshot_never_leaks_the_previous_value(self):
         """Several classified keys are secrets; the notice needs names, not values."""
         restart_state.mark_pending(
-            "web", {"auth.api_key": "super-secret-old-key"}
-        )  # pragma: allowlist secret
+            "web", {"auth.api_key": "super-secret-old-key"}  # pragma: allowlist secret
+        )
         assert "super-secret-old-key" not in json.dumps(restart_state.snapshot())
 
     def test_state_is_visible_to_another_process(self, tmp_path, monkeypatch):
@@ -240,7 +240,7 @@ class TestPendingState:
         """
         state_file = tmp_path / "cross-process.json"
         monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(state_file))
-        restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
+        restart_state.mark_pending("web", {"auth.api_key": "old-key"})
 
         result = subprocess.run(
             [
@@ -263,21 +263,21 @@ class TestPendingState:
     def test_a_second_edit_keeps_the_original_running_value(self):
         """The running value doesn't change until the restart, so it must not be overwritten."""
         restart_state.mark_pending(
-            "web", {"auth.api_key": "running-value"}
-        )  # pragma: allowlist secret
+            "web", {"auth.api_key": "running-value"}  # pragma: allowlist secret
+        )
         restart_state.mark_pending(
-            "web", {"auth.api_key": "intermediate-value"}
-        )  # pragma: allowlist secret
+            "web", {"auth.api_key": "intermediate-value"}  # pragma: allowlist secret
+        )
         # Reverting to the *running* value clears it...
         restart_state.reconcile_saved(
-            "web", {"auth.api_key": "running-value"}
-        )  # pragma: allowlist secret
+            "web", {"auth.api_key": "running-value"}  # pragma: allowlist secret
+        )
         assert restart_state.snapshot() == {}
 
     def test_reverting_retires_the_notice_without_a_restart(self):
         restart_state.mark_pending(
-            "web", {"auth.api_key": "old", "web.port": "3000"}
-        )  # pragma: allowlist secret
+            "web", {"auth.api_key": "old", "web.port": "3000"}  # pragma: allowlist secret
+        )
         restart_state.reconcile_saved("web", {"auth.api_key": "old"})  # pragma: allowlist secret
         assert restart_state.snapshot()["web"]["keys"] == ["web.port"]
 
@@ -355,16 +355,14 @@ class TestWizardDetail:
     @staticmethod
     def _cfg(**auth) -> ConfigParser:
         cfg = ConfigParser()
-        cfg.read_dict(
-            {"auth": {"enabled": "true", "api_key": "old-key", **auth}}
-        )  # pragma: allowlist secret
+        cfg.read_dict({"auth": {"enabled": "true", "api_key": "old-key", **auth}})
         return cfg
 
     def test_records_previous_value_per_component(self):
         detail = config_wizard.restart_required_detail(
             {"auth": {"api_key": "new-key"}}, self._cfg()  # pragma: allowlist secret
         )
-        assert detail == {"web": {"auth.api_key": "old-key"}}  # pragma: allowlist secret
+        assert detail == {"web": {"auth.api_key": "old-key"}}
 
     def test_unchanged_value_is_not_pending(self):
         assert (

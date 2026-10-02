@@ -159,9 +159,10 @@ def test_api_container_still_mounts_docker_socket() -> None:
 
 def test_images_are_variables_so_any_resolvable_ref_can_be_deployed() -> None:
     """The image an operator deploys is a full ref passed in, not a tag
-    appended to a hard-coded name: dev mode names `nyxgpt-api:local`, the
-    artifact path names `nyxgpt-api:artifact-<version>` (#3985), and an
-    operator may name a registry ref whose repository is neither."""
+    appended to a hard-coded name: dev mode names `nyxgpt-api:dev-<version>`
+    and the artifact path `nyxgpt-api:artifact-<version>` (#3985, namespaced
+    per build path in #3956), and an operator may name a registry ref whose
+    repository is neither."""
     main = _read("main.tf")
     for resource, variable in (("api", "var.api_image"), ("web", "var.web_image")):
         block = _resource_block(main, "docker_image", resource)

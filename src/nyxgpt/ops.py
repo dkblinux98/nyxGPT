@@ -93,7 +93,12 @@ from nyxgpt.install_mode import (
     read_install_mode,
     write_install_mode,
 )
-from nyxgpt.k8s_pod_state import classify_pod
+from nyxgpt.k8s_pod_state import (
+    classify_pod,
+    parse_retired_replicasets,
+    pod_is_retired,
+    retired_replicaset_argv,
+)
 from nyxgpt.logging import get_correlation_id
 
 # The vendored-source tarball builder lives in its own stdlib-only module
@@ -112,6 +117,7 @@ from nyxgpt.subprocess_bounds import (
     LOCAL_PROBE_TIMEOUT_SECONDS,
     PROBE_TIMEOUT_SECONDS,
     bounded_argv,
+    kubectl_env,
     timed_out,
     timeout_message,
     timeout_result,
@@ -426,6 +432,44 @@ def _superseded_attempts(results: list[OpsResult]) -> list[OpsResult]:
     return settled
 
 
+# The label for a result that is not a failure of its step and is not a pass
+# either: a *misconfiguration* the step found and reported, which will not fix
+# itself and which nothing downstream is waiting on (#3956).
+#
+# `_no_data` ("the backend is up and has received nothing") was the nearest
+# existing label and it is the wrong one: a stack nobody has chatted with
+# legitimately has no spans, whereas Grafana holding a placeholder GlitchTip
+# token means every SRE Home panel will answer 401 forever. Both read as
+# `ops: install ok: ...` in the log, which is how two of these reached the
+# owner's 2026-08-26 acceptance round "logged as passing steps".
+ATTENTION_LABEL = "ATTENTION"
+
+
+def _attention(message: str, details: str = "") -> OpsResult:
+    """An `[ATTENTION]` line: the step found a misconfiguration (see above).
+
+    `ok=True`, deliberately and for the same reason `_no_data` is: these are
+    conditions an operator must act on, not reasons to fail an install that
+    otherwise brought a working stack up. What changes is that the line says
+    so -- on stdout and in the log, at WARNING.
+    """
+    return OpsResult(True, message, details, status=ATTENTION_LABEL)
+
+
+def _result_log_verb(r: OpsResult) -> str:
+    """How a result's log line names its own outcome.
+
+    `ok`/`failed` lost every label the result had already classified itself
+    with, so `[NO DATA]` and `[ATTENTION]` lines -- which are precisely the
+    ones that are neither -- logged as `ok` (#3956). The printed label and the
+    logged verb now come from the same place and cannot disagree.
+    """
+    if not r.ok:
+        return "failed"
+    label = _result_status_label(r)
+    return "ok" if label == "OK" else label.lower().replace(" ", "-")
+
+
 def _emit_results(action: str, results: list[OpsResult]) -> bool:
     """Print and structured-log each OpsResult from an ops step, returning overall success.
 
@@ -440,19 +484,29 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
     bounded by `_bounded_output` (#3783). They were previously carried only in
     the structured `extra`, so the step-failure line an operator actually reads
     ("ops: install failed: Failed to pip install nyxgpt-api") named the step
-    and dropped the reason.
+    and dropped the reason. An `[ATTENTION]` result is treated the same way
+    (#3956): it is a finding an operator has to act on, so it logs at WARNING
+    with its remedy, not as `ok` with the remedy left in the structured extra.
+
+    The logged verb is the printed label (`_result_log_verb`), so no line can
+    read `[NO DATA]` on stdout and `ok` in the log.
     """
     ok = True
     for r in results:
         print(f"[{_result_status_label(r)}] {r.message}")
         if r.details:
             print(f"  {r.details}")
-        log = logger.info if r.ok else logger.warning
-        detail_excerpt = "" if r.ok else _bounded_output(r.details)
+        verb = _result_log_verb(r)
+        # An `[ATTENTION]` line is a finding, so it logs at WARNING and carries
+        # its remedy into the message: an operator reading the log of a deploy
+        # that otherwise succeeded must be able to find it (#3956).
+        attention = verb == ATTENTION_LABEL.lower()
+        log = logger.warning if (not r.ok or attention) else logger.info
+        detail_excerpt = "" if (r.ok and not attention) else _bounded_output(r.details)
         log(
             "ops: %s %s: %s",
             action,
-            "ok" if r.ok else "failed",
+            verb,
             f"{r.message}\n{detail_excerpt}" if detail_excerpt else r.message,
             extra={
                 "component": "ops",
@@ -905,7 +959,11 @@ def _run(
             check=check,
             text=True,
             input=input,
-            env=env,
+            # A `kubectl` child is handed the default kubeconfig explicitly
+            # (#3956) -- on a k3s node, kubectl's default is k3s's root-only
+            # file, not `~/.kube/config`. A no-op for every other command and
+            # for any caller that set `KUBECONFIG` itself; see `kubectl_env`.
+            env=kubectl_env(cmd, env),
             timeout=timeout,
             **output_kwargs,
         )
@@ -6887,13 +6945,62 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
 # so `brew install terraform` fails -- install from the official tap instead.
 HASHICORP_TAP = "hashicorp/tap"
 
-# Dev mode's image refs (`--terraform --dev`, #3835): built from the
-# checkout's working tree and never pushed anywhere, so the tag says so.
-# `_build_terraform_docker_images` builds them before `terraform apply`, and
-# since #3984 that is the ONLY build in the dev path -- terraform/main.tf has
-# no `build {}` block in any mode and simply consumes these tags.
-TF_API_IMAGE = "nyxgpt-api:local"
-TF_WEB_IMAGE = "nyxgpt-web:local"
+# --- One tag namespace per build path, and every one of them versioned
+# --- (#3956, extending #3985) ---
+#
+# FOUR local build paths put images on one docker daemon: Terraform dev,
+# Terraform artifact, Kubernetes dev, Kubernetes artifact. Three of them shared
+# two MUTABLE tags -- `nyxgpt-api:local` and `nyxgpt-web:local` -- so whichever
+# ran last owned them, and nothing downstream could tell what it was running.
+#
+# The owner's 2026-08-26 cloud acceptance round is the cost: an EC2 instance
+# running published 3.0.0rc14 reported its images as `local`, and `nyxgpt
+# canary status`/`promote` read the version from exactly that tag
+# (`canary.deployment_health`). Remotely this is worse than locally -- the
+# operator has no second window to run `docker images` in, so there is no way
+# at all to tell which build a Pod is serving, or whether it is the published
+# release they asked for.
+#
+# So the tag names the path AND the version:
+#
+#   nyxgpt-api:artifact-3.0.0rc14   built from the published source tarball
+#   nyxgpt-api:dev-3.0.0rc14        built from a checkout's working tree
+#
+# The two substrates deliberately SHARE each tag: at a given version and mode
+# both build the same source with the same Dockerfile through the same staging
+# helper (`_stage_artifact_build_context`, whose context directory names are
+# chosen so the build fingerprint matches across staging roots), so one tag
+# means one image rather than two paths racing for a name. What is no longer
+# shared is anything mutable: `dev-` cannot overwrite `artifact-`, and neither
+# can overwrite `nyxgpt-api:<version>-<sha>` (what `nyxgpt canary deploy`
+# stamps -- `canary._versioned_image_tag`).
+_IMAGE_MODE_PREFIXES = {True: "dev", False: "artifact"}
+
+
+def local_image_ref(component: str, *, dev: bool, version: str = "") -> str:
+    """The local tag `component`'s image is built at for this build path (see above).
+
+    `component` is "api" or "web"; `dev` picks the working-tree build over the
+    published artifact; `version` defaults to this nyxGPT's own
+    (`_native_service_version`), which is the release whose tarballs the
+    artifact path builds and the version a dev checkout declares.
+
+    Public because `canary.py` and the deployment's own manifests have to be
+    able to name the same image the install built, without re-deriving the
+    convention.
+    """
+    return f"nyxgpt-{component}:{_IMAGE_MODE_PREFIXES[bool(dev)]}-{version or _native_service_version()}"
+
+
+def _terraform_dev_image_refs() -> dict[str, str]:
+    """`{component: ref}` for the Terraform `--dev` path's two working-tree builds.
+
+    Resolved per call rather than held in a module constant (what
+    `TF_API_IMAGE`/`TF_WEB_IMAGE` were until #3956): the tag carries the
+    version now, and a constant would freeze whatever version was installed
+    when this module was first imported.
+    """
+    return {component: local_image_ref(component, dev=True) for component in ("api", "web")}
 
 
 # --- the artifact path's images (#3985) ---
@@ -6929,14 +7036,19 @@ TF_WEB_IMAGE = "nyxgpt-web:local"
 #   - the version is what lets `ops status` name the build a Terraform
 #     deployment is running (the install-mode marker records these refs, and
 #     `InstallModeState._terraform_label` prints them);
-#   - `artifact-` keeps it out of two tag namespaces already in use on the
-#     same daemon: `nyxgpt-api:local` (dev mode here, and the Kubernetes
-#     install's `K8S_IMAGE`) and `nyxgpt-api:<version>` (what `nyxgpt canary
-#     deploy` builds -- `canary.IMAGE_REPOSITORY`). Sharing a tag would let
-#     one path silently overwrite another's image.
+#   - `artifact-` keeps it out of the other tag namespaces in use on the same
+#     daemon: `dev-<version>` (a working-tree build, here or in Kubernetes
+#     mode) and `nyxgpt-api:<version>-<sha>` (what `nyxgpt canary deploy`
+#     builds -- `canary.IMAGE_REPOSITORY`). Sharing a tag would let one path
+#     silently overwrite another's image, which is what the mutable `:local`
+#     tag this comment used to name did until #3956.
 def _terraform_artifact_image_ref(component: str, version: str) -> str:
-    """The local tag the Terraform artifact path builds `component` at."""
-    return f"nyxgpt-{component}:artifact-{version}"
+    """The local tag the Terraform artifact path builds `component` at.
+
+    One line of `local_image_ref`, kept as a name because the Terraform path
+    reads as "the artifact ref for this component" at every call site.
+    """
+    return local_image_ref(component, dev=False, version=version)
 
 
 # {component: (published service artifact, staged build-context directory
@@ -7175,7 +7287,7 @@ def _terraform_image_vars(images: dict[str, str]) -> list[str]:
 
 def _terraform_init_plan_apply(images: dict[str, str] | None = None) -> list[OpsResult]:
     """Run `terraform init` -> `plan` -> `apply`, stopping at the first failure."""
-    var_args = _terraform_image_vars(images or {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE})
+    var_args = _terraform_image_vars(images or _terraform_dev_image_refs())
     chdir = f"-chdir={TERRAFORM_DIR}"
     cp = _run(["terraform", chdir, "init", "-input=false"], check=False, stream_stdout=True)
     if cp.returncode != 0:
@@ -7345,9 +7457,9 @@ def _build_terraform_docker_images() -> list[OpsResult]:
     Dev mode only (#3835): the artifact path builds the same two images from
     the published source tarballs instead (`_build_terraform_artifact_images`)
     and never needs a checkout. Runs before `terraform init/plan/apply` so
-    `docker_image.api`/`.web` in terraform/main.tf (the `local` tags, matching
-    `TF_API_IMAGE`/`TF_WEB_IMAGE` here) already exist locally when the plan
-    resolves them: unchanged source means `_docker_build_if_needed` skips the
+    `docker_image.api`/`.web` in terraform/main.tf (the `dev-<version>` tags
+    `_terraform_dev_image_refs` names, passed in as `-var`s) already exist
+    locally when the plan resolves them: unchanged source means `_docker_build_if_needed` skips the
     rebuild entirely (reported below, mirroring the Homebrew
     `_install_homebrew_api`/`_web` decision output); changed source means it
     rebuilds now, and the new image id is what the next apply rolls the
@@ -7356,30 +7468,31 @@ def _build_terraform_docker_images() -> list[OpsResult]:
     if _which("docker") is None:
         return [OpsResult(False, "docker not found on PATH -- cannot build nyxgpt-api/nyxgpt-web")]
 
+    refs = _terraform_dev_image_refs()
     results: list[OpsResult] = []
     try:
         decision = _docker_build_if_needed(
-            TF_API_IMAGE,
+            refs["api"],
             REPO_ROOT,
             fingerprint_paths=_API_IMAGE_FINGERPRINT_PATHS,
             marker_dir=DOCKER_IMAGE_MARKER_DIR,
         )
-        results.append(OpsResult(True, f"{TF_API_IMAGE}: {decision}"))
+        results.append(OpsResult(True, f"{refs['api']}: {decision}"))
     except RuntimeError as e:
-        results.append(OpsResult(False, f"docker build {TF_API_IMAGE} failed", str(e)))
+        results.append(OpsResult(False, f"docker build {refs['api']} failed", str(e)))
 
     try:
         decision = _docker_build_if_needed(
-            TF_WEB_IMAGE,
+            refs["web"],
             REPO_ROOT / "web",
             fingerprint_paths=[REPO_ROOT / "web"],
             excludes=_WEB_VENDOR_EXCLUDES,
             build_args={"NEXT_PUBLIC_API_BASE_URL": TF_WEB_API_BASE_URL_DEFAULT},
             marker_dir=DOCKER_IMAGE_MARKER_DIR,
         )
-        results.append(OpsResult(True, f"{TF_WEB_IMAGE}: {decision}"))
+        results.append(OpsResult(True, f"{refs['web']}: {decision}"))
     except RuntimeError as e:
-        results.append(OpsResult(False, f"docker build {TF_WEB_IMAGE} failed", str(e)))
+        results.append(OpsResult(False, f"docker build {refs['web']} failed", str(e)))
 
     return results
 
@@ -7535,7 +7648,7 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
     # Filled in by the image step below and read by the two steps after it.
     # A dict rather than a return value because every step in this list has
     # the same `() -> list[OpsResult]` shape.
-    images: dict[str, str] = {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE} if dev else {}
+    images: dict[str, str] = _terraform_dev_image_refs() if dev else {}
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
@@ -7682,8 +7795,8 @@ def _down_terraform_steps() -> list[OpsResult]:
         results += _stop_observability_stack_terraform()
         recorded = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
         images = {
-            "api": recorded.images.get("api", TF_API_IMAGE),
-            "web": recorded.images.get("web", TF_WEB_IMAGE),
+            "api": recorded.images.get("api", _terraform_dev_image_refs()["api"]),
+            "web": recorded.images.get("web", _terraform_dev_image_refs()["web"]),
         }
         cp = _run(
             [
@@ -7758,7 +7871,17 @@ K8S_NAMESPACE = "nyxgpt"
 # Pod-name prefixes of the two *app* workloads, as distinct from the
 # observability Pods that share the namespace (see `_k8s_app_pods_present`).
 K8S_APP_POD_PREFIXES = ("nyxgpt-api-", "nyxgpt-web-")
-K8S_IMAGE = "nyxgpt-api:local"
+
+# The image *names* (the repository part) of the two refs
+# `k8s/deployment*.yaml` pin -- those manifests carry a tag of their own
+# (`nyxgpt-api:local`, for the hand-run reference flow in docs/kubernetes.md),
+# which is why only the name is matched here. The tag the cluster actually runs
+# is resolved per install by `local_image_ref` and applied through a generated
+# kustomize overlay (`_write_k8s_image_overlay`, #3956), whose `newTag`
+# transform replaces whatever tag the manifest had -- the manifests themselves
+# stay as shipped, and `nyxgpt canary status` can finally name the version a Pod
+# is serving instead of the word `local`.
+K8S_IMAGE_NAMES: dict[str, str] = {"api": "nyxgpt-api", "web": "nyxgpt-web"}
 
 # The workload that serves this deployment's LLM, and the URL its clients use
 # (#3987). `k8s/configmap.yaml` gives the api Pods `[ollama] base_url =
@@ -8304,7 +8427,7 @@ def _kubectl_context() -> str:
 
 
 def _build_and_load_k8s_image(
-    image: str = K8S_IMAGE,
+    image: str,
     *,
     context: Path = REPO_ROOT,
     fingerprint_paths: list[Path] | None = None,
@@ -8328,20 +8451,20 @@ def _build_and_load_k8s_image(
     k3s installed but is currently pointed at a kind cluster still takes the
     kind branch.
 
-    `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
-    install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` (via
-    `canary.deploy`) passes a versioned tag instead (see
+    `image` is always the caller's: the install passes `local_image_ref(...)`
+    (`dev-<version>`/`artifact-<version>`, #3956 -- it used to default to a
+    mutable `nyxgpt-api:local`), and `nyxgpt ops deploy --kubernetes` (via
+    `canary.deploy`) passes its own `<version>-<sha>` stamp (see
     `build_and_load_k8s_image` / #3409). `context`/`fingerprint_paths`/
     `excludes`/`build_args` default to the `nyxgpt-api` image's build (repo
     root, `_API_IMAGE_FINGERPRINT_PATHS`); `canary.deploy` overrides them for
     the `web` component to build `web/` with `_WEB_VENDOR_EXCLUDES` and the
     `NEXT_PUBLIC_API_BASE_URL` build arg (#3419), mirroring
     `_build_terraform_docker_images`'s web build. Either way the build
-    itself is gated by `_docker_build_if_needed` (#3414): a versioned tag is
-    always missing locally the first time (so it always builds), while the
-    repeated `:local` tag skips the rebuild once the source stops changing
-    between installs, mirroring the Homebrew reinstall-if-needed behavior
-    from #3406.
+    itself is gated by `_docker_build_if_needed` (#3414): a tag absent from
+    the daemon always builds, while a tag an earlier install already produced
+    skips the rebuild once the source stops changing between installs,
+    mirroring the Homebrew reinstall-if-needed behavior from #3406.
     """
     if _which("docker") is None:
         return [OpsResult(False, f"docker not found on PATH -- cannot build the {image} image")]
@@ -8591,12 +8714,76 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
     return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
 
 
-def _kubectl_apply_kustomization() -> list[OpsResult]:
-    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, Service)."""
-    cp = _run(["kubectl", "apply", "-k", str(K8S_DIR)], check=False)
+# Where the generated image-tag overlay lives (#3956). Beside `K8S_DIR`, never
+# inside it: `k8s/` is the manifest set the deployment applies, and #3506's
+# rationale rests on it being the repository's copy byte for byte (the
+# `k3s-cloud-smoke` job asserts exactly that). A generated file inside it would
+# make that assertion unmaintainable and leave the next reader unable to tell
+# shipped manifests from install-time output.
+K8S_IMAGE_OVERLAY_DIR = NYXGPT_HOME / "k8s-images"
+
+_K8S_IMAGE_OVERLAY_HEADER = """# GENERATED by `nyxgpt ops install --kubernetes` -- do not edit (#3956).
+#
+# The deployment's manifests pin image NAMES; this names the TAG, so the four
+# local build paths cannot overwrite one another's images and `nyxgpt canary
+# status` can report the version a Pod is actually serving. Regenerated on
+# every install from `ops.local_image_ref`; `k8s/` itself is untouched.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - {base}
+images:
+"""
+
+
+def k8s_image_refs(dev: bool) -> dict[str, str]:
+    """`{component: ref}` for the two images a Kubernetes install builds and applies."""
+    return {component: local_image_ref(component, dev=dev) for component in K8S_IMAGE_NAMES}
+
+
+def _write_k8s_image_overlay(dev: bool) -> Path:
+    """Generate the kustomize overlay that pins this install's image tags; returns its dir.
+
+    A kustomize `images:` transform rather than an edit to the Deployments or a
+    `kubectl set image` after the fact, and the difference matters twice over:
+    the manifests apply exactly as shipped (#3506), and the tag is in the
+    object the FIRST apply creates -- a post-apply patch would roll every
+    Deployment a second time on every install, which is precisely the
+    superseded-ReplicaSet churn `_k8s_retired_replicasets` exists to survive.
+    """
+    _ensure_dir(K8S_IMAGE_OVERLAY_DIR)
+    lines = [_K8S_IMAGE_OVERLAY_HEADER.format(base=os.path.relpath(K8S_DIR, K8S_IMAGE_OVERLAY_DIR))]
+    for component, name in sorted(K8S_IMAGE_NAMES.items()):
+        ref = local_image_ref(component, dev=dev)
+        lines.append(f"  - name: {name}\n    newTag: {ref.split(':', 1)[1]}\n")
+    path = K8S_IMAGE_OVERLAY_DIR / "kustomization.yaml"
+    path.write_text("".join(lines), encoding="utf-8")
+    return K8S_IMAGE_OVERLAY_DIR
+
+
+def _kubectl_apply_kustomization(dev: bool = False) -> list[OpsResult]:
+    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, Service).
+
+    Applied through the generated image overlay (`_write_k8s_image_overlay`),
+    which adds this install's image tags and nothing else -- so what reaches
+    the cluster is the shipped manifest set plus the tag of the image this very
+    run built.
+    """
+    try:
+        overlay = _write_k8s_image_overlay(dev)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Could not write the image overlay at {K8S_IMAGE_OVERLAY_DIR}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    refs = ", ".join(sorted(k8s_image_refs(dev).values()))
+    cp = _run(["kubectl", "apply", "-k", str(overlay)], check=False)
     if cp.returncode != 0:
         return [OpsResult(False, "kubectl apply -k k8s/ failed", _cp_details(cp))]
-    return [OpsResult(True, "kubectl apply -k k8s/", _cp_details(cp))]
+    return [OpsResult(True, f"kubectl apply -k k8s/ ({refs})", _cp_details(cp))]
 
 
 # --- In-cluster observability layer (#3787) ---
@@ -9021,8 +9208,63 @@ def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
         return K8sWorkloadState(name, K8S_STATE_READY, "Succeeded")
 
     # `Failed`, `Unknown`, and anything a future Kubernetes adds: not ready,
-    # and not something waiting resolves.
-    return K8sWorkloadState(name, K8S_STATE_FAILED, phase, str(status.get("message") or "").strip())
+    # and not something waiting resolves. The phase ALONE is not a diagnosis --
+    # `pod nyxgpt-web-stable-77c7d9c6f4-gz62g: Failed` is the line the owner
+    # had to SSH in and run kubectl by hand to make sense of (#3956) -- so the
+    # Pod's own reason (`Evicted`, `OOMKilled`, a container's exit code; see
+    # `k8s_pod_state._terminated_reason`) is named here, with the cluster's
+    # message as the detail.
+    summary = f"{phase}: {state.reason}" if state.reason else phase
+    detail = state.detail or str(status.get("message") or "").strip()
+    return K8sWorkloadState(name, K8S_STATE_FAILED, summary, detail, state.reason)
+
+
+# --- Pods no live controller owns (#3956) ---
+#
+# A ReplicaSet the Deployment controller has scaled to zero is finished: it is
+# kept only so a rollback can scale it up again, and it is NOT expected to have
+# Pods. A Pod still attached to one is the leftover of a completed rollout, and
+# the cluster's own answer about the workload is the current ReplicaSet's.
+#
+# Reading those leftovers as the deployment's state is the 2026-08-26
+# acceptance failure. `nyxgpt cloud deploy --kubernetes` applies the
+# kustomization (whose ConfigMap carries the placeholder error-tracking DSN),
+# brings the stack up, and then provisions GlitchTip -- which writes the real
+# DSN and rolls the api/web Deployments onto a new pod template. The pre-DSN
+# ReplicaSet is scaled to zero and its Pod is left behind terminated, so
+# `_k8s_stack_health` reported `pod nyxgpt-web-stable-77c7d9c6f4-gz62g: Failed`
+# and failed the install -- three lines above `nyxgpt-web-stable 1/1`, which is
+# the authoritative signal and said the opposite. The deploy then exited before
+# installing the access bridge, so a `--kubernetes` deploy could not produce a
+# reachable deployment at all.
+#
+# Deliberately NOT "ignore Pods whose phase is Failed": a Failed Pod of the
+# *current* ReplicaSet is a real failure, and phase-filtering would hide it
+# while leaving the actual defect -- consulting Pods no live controller owns --
+# in place for every other terminal state to walk back through.
+#
+# The decision itself -- which ReplicaSets are retired, and whether a given Pod
+# belongs to one -- is `k8s_pod_state`'s, shared with `self_heal.py` and
+# `canary.py` (#3956 review round 1): the first cut of this fixed only the
+# install's reading, and the same corpse then rendered on the Self-Heal
+# dashboard as a permanently Failed component of a healthy deployment. Only the
+# kubectl call is local, because the bound and the `expected=True` logging are.
+def _k8s_retired_replicasets(namespace: str) -> frozenset[str]:
+    """The namespace's ReplicaSets with zero desired replicas (see above).
+
+    An unreadable answer is an empty set, not a guess: this filter may only
+    ever *remove* a Pod from a report on positive evidence that its owner is
+    finished. Without that evidence the report is the one it has always been.
+    """
+    cp = _run(
+        retired_replicaset_argv(namespace),
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return frozenset()
+    return parse_retired_replicasets(cp.stdout or "")
 
 
 def _k8s_pod_states(
@@ -9033,6 +9275,14 @@ def _k8s_pod_states(
     `read_failure` is non-None only when the Pod list could not be read at
     all -- which is a real failure (an unreachable cluster is not "pending"),
     kept separate so callers do not have to invent a fake state for it.
+
+    Pods owned by a ReplicaSet with zero desired replicas are dropped
+    (`_k8s_retired_replicasets`, #3956): they are the residue of a finished
+    rollout, not the deployment's state. The extra read that costs is taken
+    only when at least one Pod is not READY, which is the only case where the
+    filter can change an answer -- a retired Pod that is Ready can remove a
+    line from a report but can never turn a pass into a failure, and
+    `/infra/status` polls this (first principle 1).
 
     `selector` narrows the read to one workload's Pods (`-l app=x,track=y`).
     `expected=True` for the read-only probes (`infra_status`) where an
@@ -9065,8 +9315,13 @@ def _k8s_pod_states(
         payload = json.loads(cp.stdout or "{}")
     except json.JSONDecodeError as e:
         return [], OpsResult(False, "Could not parse pod status", f"{e}\n{_cp_details(cp)}")
-    items = payload.get("items") or []
-    return [_classify_k8s_pod(p) for p in items if isinstance(p, dict)], None
+    pods = [p for p in (payload.get("items") or []) if isinstance(p, dict)]
+    states = [(p, _classify_k8s_pod(p)) for p in pods]
+    if any(state.state != K8S_STATE_READY for _pod, state in states):
+        retired = _k8s_retired_replicasets(namespace or K8S_NAMESPACE)
+        if retired:
+            states = [(pod, state) for pod, state in states if not pod_is_retired(pod, retired)]
+    return [state for _pod, state in states], None
 
 
 def _k8s_app_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
@@ -9520,6 +9775,12 @@ def _k8s_errors_flow_result() -> OpsResult:
     refused means it ran and the credential has since been invalidated (the
     Kubernetes shape of the #3565 drift `ops doctor` already checks for
     natively).
+
+    All three findings are `[ATTENTION]`, not `[NO DATA]` (#3956). The owner's
+    2026-08-26 cloud round hit two of them and both logged as `ops: install
+    ok:`, which is how a deploy reported a 401-on-every-panel deployment as a
+    clean run. Nothing here is "up but empty" -- each one is a credential that
+    is wrong and will stay wrong until an operator acts.
     """
     cp = _run(
         [
@@ -9537,13 +9798,13 @@ def _k8s_errors_flow_result() -> OpsResult:
         timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
-        return _no_data(
+        return _attention(
             "observability errors: Grafana has no GlitchTip token mounted",
             f"{K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT} is not readable in the grafana Pod; the "
             "SRE Home GlitchTip panels cannot authenticate.",
         )
     if (cp.stdout or "").strip() == GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER:
-        return _no_data(
+        return _attention(
             "observability errors: Grafana's GlitchTip token is still the placeholder",
             "The SRE Home GlitchTip panels will answer 401 Unauthorized. Provision a real "
             "token with `nyxgpt ops glitchtip-init --kubernetes`.",
@@ -9554,7 +9815,7 @@ def _k8s_errors_flow_result() -> OpsResult:
         bearer_token_file=K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT,
     )
     if not ok:
-        return _no_data(
+        return _attention(
             "observability errors: GlitchTip rejected Grafana's token",
             "The token is not the placeholder but GlitchTip will not accept it -- its "
             "project data was probably re-minted underneath it (#3565). Re-run "
@@ -10144,14 +10405,13 @@ def _ensure_k8s_host_access() -> list[OpsResult]:
 # working tree.
 K8S_BUILD_DIR = NYXGPT_HOME / "build" / "kubernetes"
 
-# The published artifact each Kubernetes image is built from, and the
-# directory name its staged context gets -- the same two pairs the Terraform
-# artifact path uses, keyed by this path's image tags. See
-# `ARTIFACT_IMAGE_SOURCES` for why the context directory name is load-bearing.
-K8S_IMAGE_ARTIFACTS: dict[str, tuple[str, str]] = {
-    K8S_IMAGE: ARTIFACT_IMAGE_SOURCES["api"],
-    TF_WEB_IMAGE: ARTIFACT_IMAGE_SOURCES["web"],
-}
+# The published artifact each Kubernetes image is built from, and the directory
+# name its staged context gets: the same two pairs the Terraform artifact path
+# uses. Keyed by COMPONENT since #3956 -- it used to be keyed by image tag,
+# which only worked while those tags were two fixed strings.
+# See `ARTIFACT_IMAGE_SOURCES` for why the context directory name is
+# load-bearing.
+K8S_IMAGE_ARTIFACTS: dict[str, tuple[str, str]] = dict(ARTIFACT_IMAGE_SOURCES)
 
 
 def _stage_api_build_files(context: Path) -> None:
@@ -10190,9 +10450,9 @@ def _stage_api_build_files(context: Path) -> None:
     _copy_file(entrypoint, context / "docker" / "entrypoint.sh", mode=0o755)
 
 
-def _stage_k8s_artifact_context(image: str) -> Path:
-    """`_stage_artifact_build_context` for a Kubernetes `image` tag."""
-    service, context_name = K8S_IMAGE_ARTIFACTS[image]
+def _stage_k8s_artifact_context(component: str) -> Path:
+    """`_stage_artifact_build_context` for a Kubernetes image `component` ("api"/"web")."""
+    service, context_name = K8S_IMAGE_ARTIFACTS[component]
     return _stage_artifact_build_context(service, context_name, K8S_BUILD_DIR)
 
 
@@ -10247,18 +10507,19 @@ def _stage_artifact_build_context(service: str, context_name: str, root_dir: Pat
 
 
 def _build_and_load_k8s_api_image(dev: bool = False) -> list[OpsResult]:
-    """Build/load `nyxgpt-api:local` from the working tree (`dev`) or the published artifact.
+    """Build/load the api image from the working tree (`dev`) or the published artifact.
 
     Artifact mode (the default) stages the published `nyxgpt-api` tarball and
     builds that; dev mode builds the checkout exactly as every install did
-    before #3834. Both produce the same tag from the same Dockerfile -- what
-    differs is *which source* is in the image, which is why the mode is
-    recorded and reported rather than left to be guessed at.
+    before #3834. What differs is *which source* is in the image -- and since
+    #3956 the tag says which, so the two can no longer overwrite each other
+    (`local_image_ref`).
     """
+    image = local_image_ref("api", dev=dev)
     if dev:
-        return _build_and_load_k8s_image()
+        return _build_and_load_k8s_image(image)
     try:
-        context = _stage_k8s_artifact_context(K8S_IMAGE)
+        context = _stage_k8s_artifact_context("api")
     except (RuntimeError, OSError, tarfile.TarError) as e:
         return [
             OpsResult(
@@ -10268,14 +10529,14 @@ def _build_and_load_k8s_api_image(dev: bool = False) -> list[OpsResult]:
             )
         ]
     return _build_and_load_k8s_image(
-        K8S_IMAGE,
+        image,
         context=context,
         fingerprint_paths=[context / rel for rel in _API_IMAGE_FINGERPRINT_RELPATHS],
     )
 
 
 def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
-    """Build/load `nyxgpt-web:local`, the web canary pair's image (#3419).
+    """Build/load the web canary pair's image (#3419).
 
     Mirrors `_build_terraform_docker_images`'s web build: the context is the
     web tree (not the repo root), fingerprinted on that tree itself (excluding
@@ -10297,7 +10558,7 @@ def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
         context = REPO_ROOT / "web"
     else:
         try:
-            context = _stage_k8s_artifact_context(TF_WEB_IMAGE)
+            context = _stage_k8s_artifact_context("web")
         except (RuntimeError, OSError, tarfile.TarError) as e:
             return [
                 OpsResult(
@@ -10307,7 +10568,7 @@ def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
                 )
             ]
     return _build_and_load_k8s_image(
-        TF_WEB_IMAGE,
+        local_image_ref("web", dev=dev),
         context=context,
         fingerprint_paths=[context],
         excludes=_WEB_VENDOR_EXCLUDES,
@@ -11009,10 +11270,11 @@ def _install_kubernetes_steps(
 ) -> list[OpsResult]:
     """Run the Kubernetes bring-up steps and return structured results (no printing).
 
-    Prereq checks (cluster reachable, kubectl present), builds and loads
-    `nyxgpt-api:local` and `nyxgpt-web:local`, bootstraps the deployment's
-    secret.yaml (prompting for the API key, never committing it), applies the
-    kustomization (which now includes the web stable/canary pair -- #3419),
+    Prereq checks (cluster reachable, kubectl present), builds and loads the
+    api and web images at this path's own tags (`local_image_ref`, #3956),
+    bootstraps the deployment's secret.yaml (prompting for the API key, never
+    committing it), applies the kustomization through the generated image
+    overlay (which now includes the web stable/canary pair -- #3419),
     records the install mode, brings up the in-cluster observability layer
     (#3787), and snapshots Pod/Service health. Stops at the first failing
     step, same rationale as `_install_terraform_steps`.
@@ -11083,7 +11345,7 @@ def _install_kubernetes_steps(
         ),
         ("build/load api image", lambda: _build_and_load_k8s_api_image(dev=dev)),
         ("build/load web image", lambda: _build_and_load_k8s_web_image(dev=dev)),
-        ("apply kustomization", _kubectl_apply_kustomization),
+        ("apply kustomization", lambda: _kubectl_apply_kustomization(dev)),
         ("record install mode", lambda: _record_k8s_install_mode(dev)),
         ("wait for data/LLM tier", _wait_for_k8s_data_tier),
         # The api/web Pods depend on the tier above for their readiness

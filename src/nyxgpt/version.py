@@ -35,10 +35,14 @@ CHANNEL_UNKNOWN = "unknown"
 _FINAL_RELEASE_RE = re.compile(r"^\d+(?:\.\d+)*$")
 
 #: Marks a build that came from a working tree rather than a published
-#: artifact: PEP 440's `.devN` and `+local` segments, plus the `:local` image
-#: tag the Kubernetes path builds from a checkout. Such a stack is neither rc
-#: nor stable, and reporting it as either is the mixed-tier misdirection
-#: #3982 was filed about.
+#: artifact: PEP 440's `.devN` and `+local` segments, plus the bare `local`
+#: image tag, whose live producer is Compose (`docker-compose.yml`'s
+#: `NYXGPT_WEB_IMAGE_TAG:-local` default). The Kubernetes and Terraform paths
+#: tagged `:local` too until #3956 gave each build path its own
+#: `{dev,artifact}-<version>` namespace, so the token still has to be read --
+#: a stack deployed before that, or by Compose today, reports it. Such a stack
+#: is neither rc nor stable, and reporting it as either is the mixed-tier
+#: misdirection #3982 was filed about.
 _DEV_RE = re.compile(r"\.dev\d+|\+|(?<![A-Za-z0-9])local(?![A-Za-z0-9])", re.IGNORECASE)
 
 

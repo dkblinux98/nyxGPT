@@ -200,10 +200,15 @@ ok "install --kubernetes --local completed with no checkout"
 # The manifests came from package data, not from a repository.
 [ -f "${HOME}/.nyxGPT/k8s/kustomization.yaml" ] ||
     fail "no kustomization under ~/.nyxGPT/k8s -- the manifests were not synced from package data"
-docker image inspect nyxgpt-api:local >/dev/null ||
-    fail "nyxgpt-api:local was never built"
-docker image inspect nyxgpt-web:local >/dev/null ||
-    fail "nyxgpt-web:local was never built"
+# The tags come from the product (`ops.k8s_image_refs`), not from a literal:
+# since #3956 they carry the build path and the version, so a hard-coded
+# `:local` would assert an image no install builds -- which fails this smoke
+# for the wrong reason, or passes it on a stale leftover.
+for image in $(python3 -c \
+    'from nyxgpt import ops; print(" ".join(ops.k8s_image_refs(dev=False).values()))'); do
+    log "MEASURED: the install should have built $image"
+    docker image inspect "$image" >/dev/null || fail "$image was never built"
+done
 ok "manifests synced from package data; both images built from the staged artifacts"
 
 step "7/9 The data/LLM tier is Ready and the app tier is serving"

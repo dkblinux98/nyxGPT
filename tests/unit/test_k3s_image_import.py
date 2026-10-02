@@ -7,7 +7,7 @@ SUCCESS. On k3s -- the cluster `nyxgpt cloud deploy --kubernetes` puts on the
 instance -- that is wrong in the worst available way: k3s runs its own
 containerd with its own image store, so a `docker build` on the same box
 produces an image the cluster cannot see. Every `k8s/*.yaml` Deployment pins
-`imagePullPolicy: IfNotPresent` against a `:local` tag that exists in no
+`imagePullPolicy: IfNotPresent` against a locally-built tag that exists in no
 registry, so `kubectl apply` succeeds, the Pods are created, and every one of
 them sits in `ErrImagePull`/`ImagePullBackOff` while the install reports the
 image step green and then waits out its readiness timeout.
@@ -26,6 +26,11 @@ from unittest.mock import patch
 import pytest
 
 from nyxgpt import ops
+
+# The api image's tag for this installation. Resolved rather than hard-coded:
+# since #3956 the tag carries the build path and the version
+# (`artifact-<version>`), so a literal here would pin a release.
+_K8S_API_IMAGE = ops.local_image_ref("api", dev=False)
 
 
 class CP:
@@ -125,11 +130,11 @@ def test_a_k3s_cluster_gets_the_image_imported(monkeypatch, tmp_path, k3s_calls)
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     monkeypatch.setattr(ops, "_run", _build_succeeds)
 
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert all(r.ok for r in results), [r.message for r in results]
     assert any("Imported" in r.message and "k3s" in r.message for r in results)
-    assert k3s_calls["save"] == [["docker", "save", ops.K8S_IMAGE]]
+    assert k3s_calls["save"] == [["docker", "save", _K8S_API_IMAGE]]
     assert k3s_calls["import"] == [["sudo", "-n", "k3s", "ctr", "images", "import", "-"]]
 
 
@@ -141,7 +146,7 @@ def test_the_import_is_not_reported_as_a_skipped_load(monkeypatch, tmp_path, k3s
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     monkeypatch.setattr(ops, "_run", _build_succeeds)
 
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert not any("skipped image load" in r.message for r in results)
 
@@ -161,7 +166,7 @@ def test_a_failed_import_fails_the_step(monkeypatch, tmp_path, k3s_calls):
     monkeypatch.setattr(ops, "_run", _build_succeeds)
     k3s_calls["import_rc"] = 1
 
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert not all(r.ok for r in results)
     assert any("k3s ctr images import failed" in r.message for r in results)
@@ -178,7 +183,7 @@ def test_a_failed_docker_save_names_itself(monkeypatch, tmp_path, k3s_calls):
     k3s_calls["save_rc"] = 1
     k3s_calls["save_stderr"] = "No such image: nyxgpt-api:local"
 
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert not all(r.ok for r in results)
     assert any("docker save" in r.message for r in results)
@@ -201,7 +206,7 @@ def test_docker_saves_stderr_is_a_file_not_a_second_pipe(monkeypatch, tmp_path, 
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     monkeypatch.setattr(ops, "_run", _build_succeeds)
 
-    ops._build_and_load_k8s_image()
+    ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert k3s_calls["save_kwargs"]["stderr"] is not subprocess.PIPE
     assert hasattr(k3s_calls["save_kwargs"]["stderr"], "write")
@@ -218,7 +223,7 @@ def test_the_import_is_bounded(monkeypatch, tmp_path, k3s_calls):
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     monkeypatch.setattr(ops, "_run", _build_succeeds)
 
-    ops._build_and_load_k8s_image()
+    ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert k3s_calls["import_kwargs"]["timeout"] == ops.K3S_IMAGE_IMPORT_TIMEOUT_SECONDS
 
@@ -238,7 +243,7 @@ def test_an_import_that_times_out_is_a_failure_not_a_traceback(monkeypatch, tmp_
 
     monkeypatch.setattr(subprocess, "run", boom)
 
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert not all(r.ok for r in results)
     assert any("Could not import" in r.message for r in results)
@@ -252,7 +257,7 @@ def test_root_does_not_shell_out_through_sudo(monkeypatch, tmp_path, k3s_calls):
     monkeypatch.setattr(ops, "_run", _build_succeeds)
     monkeypatch.setattr(ops.os, "geteuid", lambda: 0)
 
-    ops._build_and_load_k8s_image()
+    ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert k3s_calls["import"] == [["k3s", "ctr", "images", "import", "-"]]
 
@@ -266,7 +271,7 @@ def test_no_sudo_on_path_is_attempted_directly(monkeypatch, tmp_path, k3s_calls)
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     monkeypatch.setattr(ops, "_run", _build_succeeds)
 
-    ops._build_and_load_k8s_image()
+    ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert k3s_calls["import"] == [["k3s", "ctr", "images", "import", "-"]]
 
@@ -296,11 +301,11 @@ def test_a_kind_cluster_still_takes_the_kind_branch(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ops, "_run", fake_run)
     with patch.object(ops, "_k3s_import_image") as never:
-        results = ops._build_and_load_k8s_image()
+        results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert all(r.ok for r in results)
     assert never.call_count == 0
-    assert ["kind", "load", "docker-image", ops.K8S_IMAGE, "--name", "nyxgpt"] in run_calls
+    assert ["kind", "load", "docker-image", _K8S_API_IMAGE, "--name", "nyxgpt"] in run_calls
 
 
 @pytest.mark.unit
@@ -320,7 +325,7 @@ def test_a_cluster_with_no_k3s_still_reports_the_skip(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected: {cmd}")
 
     monkeypatch.setattr(ops, "_run", fake_run)
-    results = ops._build_and_load_k8s_image()
+    results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
 
     assert all(r.ok for r in results)
     assert any("Unrecognized cluster context" in r.message for r in results)

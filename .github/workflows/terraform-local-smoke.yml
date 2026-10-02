@@ -161,8 +161,14 @@ jobs:
             exit 1
           }
           # ...and the images terraform consumed are the ones ops built.
-          docker image inspect nyxgpt-api:local >/dev/null
-          docker image inspect nyxgpt-web:local >/dev/null
+          # Asked of the product, not written out: the dev path's tags carry the
+          # version since #3956 (`dev-<version>`), and a literal here would
+          # assert the existence of an image nothing builds any more.
+          for image in $(python -c \
+            'from nyxgpt import ops; print(" ".join(ops._terraform_dev_image_refs().values()))'); do
+            echo "MEASURED: expecting $image"
+            docker image inspect "$image" >/dev/null
+          done
 
       # The other half of #3984's acceptance: staleness is ops' job now, and
       # a rebuilt tag still has to roll the containers. Touch a fingerprinted

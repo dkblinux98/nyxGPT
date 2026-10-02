@@ -214,14 +214,10 @@ def test_install_kubernetes_honours_skip_observability() -> None:
         patch.object(
             ops, "_reconcile_k8s_canary_resting", return_value=[ops.OpsResult(True, "ok")]
         ),
-        patch.object(
-            ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]
-        ),  # pragma: allowlist secret
+        patch.object(ops, "_ensure_k8s_host_access", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_k8s_stack_health", return_value=[]),
         patch.object(ops, "_apply_k8s_observability") as apply_observability,
-        patch.object(
-            ops, "_wait_for_k8s_observability"
-        ) as wait_observability,  # pragma: allowlist secret
+        patch.object(ops, "_wait_for_k8s_observability") as wait_observability,
         patch.object(ops, "_k8s_provision_glitchtip") as provision_glitchtip,
         patch.object(ops, "_k8s_observability_health") as observability_health,
         patch.object(ops, "_record_ops_action"),
@@ -241,8 +237,8 @@ def test_install_kubernetes_honours_skip_observability() -> None:
 def test_apply_observability_bootstraps_secret_then_applies(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ops, "K8S_OBSERVABILITY_DIR", tmp_path)
     (tmp_path / "secret.example.yaml").write_text(
-        'stringData:\n  grafana-admin-password: "change-me"\n',
-        encoding="utf-8",  # pragma: allowlist secret
+        'stringData:\n  grafana-admin-password: "change-me"\n',  # pragma: allowlist secret
+        encoding="utf-8",
     )
     monkeypatch.setattr(
         ops,
@@ -264,8 +260,9 @@ def test_apply_observability_bootstraps_secret_then_applies(tmp_path, monkeypatc
 
     assert all(r.ok for r in results)
     assert (
-        'grafana-admin-password: "s3cret"' in (tmp_path / "secret.yaml").read_text()
-    )  # pragma: allowlist secret
+        'grafana-admin-password: "s3cret"'  # pragma: allowlist secret
+        in (tmp_path / "secret.yaml").read_text()
+    )
     assert applied == [["kubectl", "apply", "-k", str(tmp_path)]]
 
 
@@ -1647,7 +1644,11 @@ def test_the_placeholder_grafana_token_is_reported_not_hidden(monkeypatch) -> No
 
     result = ops._k8s_errors_flow_result()
 
-    assert ops._result_status_label(result) == ops.K8S_NO_DATA_LABEL
+    # `[ATTENTION]`, not `[NO DATA]` (#3956): the owner's 2026-08-26 cloud
+    # round hit this and it logged as `ops: install ok:`. A backend that is up
+    # and empty is a legitimate state; a placeholder credential never will be.
+    assert ops._result_status_label(result) == ops.ATTENTION_LABEL
+    assert ops._result_log_verb(result) == "attention"
     assert "placeholder" in result.message
     assert "401" in result.details
 
@@ -1696,6 +1697,11 @@ def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
     assert [m for m, label in labels.items() if label == ops.K8S_NO_DATA_LABEL] == [
         "observability traces: Jaeger has no nyxGPT spans yet",
         "observability logs: Loki has received nothing",
+    ]
+    # The GlitchTip placeholder is a misconfiguration rather than an empty
+    # backend, so it carries the louder label (#3956) -- and neither label
+    # fails the install.
+    assert [m for m, label in labels.items() if label == ops.ATTENTION_LABEL] == [
         "observability errors: Grafana's GlitchTip token is still the placeholder",
     ]
     assert all(r.ok for r in results)

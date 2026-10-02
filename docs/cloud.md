@@ -575,6 +575,27 @@ nowhere else. `--component api|web` selects the pair. There is no
 source checkout and the instance has none by construction — roll a new release
 out with `nyxgpt cloud deploy --version <release>`, which is idempotent.
 
+`canary status` reports the version each track is serving, read off the Pod's
+own image tag — `artifact-<version>` for a published release, `dev-<version>`
+for a `--dev` deploy (see [Image
+tags](kubernetes.md#image-tags-one-namespace-per-build-path)). Before #3956 all
+four build paths shared one mutable `:local` tag, so an instance running
+3.0.0rc14 reported its images as `local` and there was no way to tell from the
+deployment which build was serving.
+
+**No `KUBECONFIG` to export.** Every kubectl call nyxGPT makes names the
+kubeconfig kubectl's own default resolution would have used, so the wrapped
+commands above, `nyxgpt cloud ops doctor` and the instance's self-heal watchdog
+all find the cluster in a fresh SSH session with no environment set up. That is
+not cosmetic on this substrate: `/usr/local/bin/kubectl` on a k3s node is a
+symlink to the `k3s` binary, whose shim defaults `KUBECONFIG` to the root-only
+`/etc/rancher/k3s/k3s.yaml` — so the user-owned `~/.kube/config` the deploy
+writes was never read, and `nyxgpt cloud canary status` answered *"this process
+is currently running in native mode"* on a live cluster (owner acceptance,
+2026-08-26). A probe that cannot reach an API server now reports that it could
+not, with kubectl's own error, rather than falling back to a confident
+`native`.
+
 The substrate is recorded with the deployment, so a later bare `nyxgpt cloud
 deploy` reconciles the same Kubernetes deployment rather than installing a
 native stack beside it and fighting it for ports 8000/3000. `--no-kubernetes`
