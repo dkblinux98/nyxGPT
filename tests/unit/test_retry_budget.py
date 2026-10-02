@@ -72,7 +72,9 @@ class TestMarkerRoundTrip:
     def test_render_then_parse(self):
         marker = retry_budget.render_marker("Check if PR already exists", "abc123def456", 2)
         parsed = retry_budget.parse_markers(f"some text\n{marker}\nmore text")
-        assert parsed == [{"step": "check_if_pr_already_exists", "sig": "abc123def456", "n": 2}]  # pragma: allowlist secret
+        assert parsed == [
+            {"step": "check_if_pr_already_exists", "sig": "abc123def456", "n": 2}
+        ]  # pragma: allowlist secret
 
     def test_no_marker_returns_empty(self):
         assert retry_budget.parse_markers("just a regular comment, no marker here") == []

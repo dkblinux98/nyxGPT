@@ -290,7 +290,9 @@ def test_staged_image_override_is_used_without_building(monkeypatch):
     assert not any(cmd[:2] == ["docker", "pull"] for cmd in calls)
 
 
-def test_an_unreachable_override_fails_rather_than_falling_back(monkeypatch):  # pragma: allowlist secret
+def test_an_unreachable_override_fails_rather_than_falling_back(
+    monkeypatch,
+):  # pragma: allowlist secret
     """An operator who named an image must get that image or an error."""
     monkeypatch.setattr(ops, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setenv("NYXGPT_TF_API_IMAGE", "staged/nyxgpt-api:missing")
@@ -351,7 +353,9 @@ def test_sync_materializes_the_packaged_configuration(monkeypatch, tmp_path):
 def test_sync_preserves_tfvars_and_state(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "installed-package")
     ops.TERRAFORM_DIR.mkdir(parents=True)
-    (ops.TERRAFORM_DIR / "terraform.tfvars").write_text('auth_api_key = "keep-me"\n')  # pragma: allowlist secret
+    (ops.TERRAFORM_DIR / "terraform.tfvars").write_text(
+        'auth_api_key = "keep-me"\n'
+    )  # pragma: allowlist secret
     (ops.TERRAFORM_DIR / "terraform.tfstate").write_text('{"resources": [1]}')
 
     ops._sync_local_terraform_config()
@@ -384,7 +388,9 @@ def test_pre_3835_tfvars_is_adopted_so_the_auth_key_is_not_rotated(monkeypatch, 
     rotate a running deployment's key on its next apply."""
     repo = tmp_path / "checkout"
     (repo / "terraform").mkdir(parents=True)
-    (repo / "terraform" / "terraform.tfvars").write_text('auth_api_key = "the-operators-key"\n')  # pragma: allowlist secret
+    (repo / "terraform" / "terraform.tfvars").write_text(
+        'auth_api_key = "the-operators-key"\n'
+    )  # pragma: allowlist secret
     monkeypatch.setattr(ops, "REPO_ROOT", repo)
 
     ops._sync_local_terraform_config()
