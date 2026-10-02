@@ -78,12 +78,41 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-25}"
 # The pull's reasoning is written to PULL_EXPLAIN_FILE when the caller sets
 # one, so the dispatch comment can quote *why* this issue and not the one
 # above it. A wrong pull has to be visible to be corrected (D-004).
+#
+# The pull's stderr is NOT discarded. It used to end in `2>/dev/null || echo
+# ""`, which collapsed three different outcomes into one empty string: a
+# genuinely empty backlog, a misconfiguration, and an outright crash. The
+# caller then reported all three as "Nothing eligible to pull" -- a plausible
+# answer that happened to be wrong.
+#
+# That cost six weeks. From 2026-08-19 every dispatch died inside
+# `developer_pull_next.sh`, and the one line that said why --
+#
+#     [pull] No active sprint on field '' -- conservative stop (#3706).
+#
+# -- went to /dev/null on every run. The queue selected nothing and looked
+# merely idle. nyxGPT's own Definition of Done requires ops state to be
+# observable; a dispatcher that hides its reasoning is the inverse of that.
+#
+# So: stderr flows to the job log, and a non-zero exit is reported as a
+# non-zero exit rather than silently becoming "no candidate". The fall-through
+# behaviour is unchanged -- an empty result still means "try the next one" --
+# but it is now distinguishable from a failure.
 _select_next_candidate() {
-  local exclude="$1" sprint_scoped="$2"
+  local exclude="$1" sprint_scoped="$2" out="" rc=0
   local args=()
   if [[ "$sprint_scoped" == "1" ]]; then args+=("--sprint-scoped"); fi
   if [[ -n "${PULL_EXPLAIN_FILE:-}" ]]; then args+=("--explain" "$PULL_EXPLAIN_FILE"); fi
-  EXCLUDE_ISSUES="$exclude" "$DIR/developer_pull_next.sh" "${args[@]}" 2>/dev/null || echo ""
+
+  out="$(EXCLUDE_ISSUES="$exclude" "$DIR/developer_pull_next.sh" "${args[@]}")" || rc=$?
+
+  if (( rc != 0 )); then
+    echo "[select] developer_pull_next.sh exited ${rc} -- treating as no candidate." >&2
+    echo "[select] Its own reason is in the [pull] lines above; an empty result here" >&2
+    echo "[select] is NOT the same as an empty backlog." >&2
+    out=""
+  fi
+  printf '%s' "$out"
 }
 
 # Wraps escalation_pause_gate (lib/gh_project.sh). Split out so tests can
