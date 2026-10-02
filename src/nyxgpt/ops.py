@@ -38,6 +38,7 @@ import tomllib
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from configparser import ConfigParser
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -14676,6 +14677,347 @@ def _terraform_install_mode_issues() -> list[str]:
     ]
 
 
+# --- Which machine a `doctor` check is about (#3987) ---
+#
+# The owner's Kubernetes acceptance re-test found `ops doctor` exiting 2 on a
+# healthy cluster with:
+#
+#   Tracing is enabled ([tracing] otlp_endpoint=http://localhost:4318/v1/traces)
+#   but nothing is listening there -- spans are being silently dropped and
+#   Jaeger will stay empty. Confirm the otel-collector Compose service ...
+#
+# minutes after `curl http://localhost:16686/api/services` on the same machine
+# had returned three services with real spans behind them. Every clause of that
+# finding is false about the deployment: the Pods read `k8s/configmap.yaml`'s
+# `otlp_endpoint = http://otel-collector:4318/v1/traces`, a different endpoint
+# and a working one, and the remedy named the *Compose* collector on a
+# Kubernetes stack. The check had read THIS HOST's config.ini, probed THIS
+# HOST's port, and reported the verdict as the deployment's.
+#
+# So the rule, and the sweep that applies it to every check `doctor` runs:
+#
+#   A check whose finding is a claim about THE DEPLOYMENT THAT IS SERVING must
+#   ask the substrate that is serving. A check whose finding is a claim about
+#   THIS HOST -- its PATH, its files, its service managers, its venv -- stays
+#   host-scoped, and `doctor` says which is which out loud rather than leaving
+#   the operator to work it out from the wording of a failure.
+#
+# The shape to sweep for is the one the owner named: *reads host config, or
+# probes a host port, and then speaks about the deployment*. Exactly three
+# checks had it, and all three are branched here:
+#
+#   _tracing_wiring_issue           -> _k8s_tracing_wiring_issue
+#   _prometheus_api_scrape_issue    -> _k8s_prometheus_api_scrape_issue
+#   _error_tracking_dsn_drift_issue -> _k8s_error_tracking_dsn_drift_issue
+#
+# Branched, not merged -- the same call `required_models_status` documents. A
+# machine with both a native stack and a cluster has two of everything, and
+# answering "is this deployment wired up" out of the other one's config is the
+# whole defect. The printed scope line says which machine answered.
+#
+# Everything else `doctor` runs is host-scoped BY CONSTRUCTION and correct as
+# it stands: tools on PATH, file permissions, the launchd/systemd units this
+# machine registered, this venv's packages, this host's Docker containers and
+# Terraform state. Three more read host config but are already gated on a
+# Compose stack actually running (`_log_aggregation_wiring_issue`, the Loki
+# log-volume block, `_glitchtip_secrets_doctor_issues`), so they cannot fire
+# about a Kubernetes deployment at all. The full table is in
+# `docs/ops.md`, and `tests/unit/test_ops_doctor_substrate_scope.py` fails if
+# a check is added to `doctor` without being classified -- the next check with
+# this shape should not have to be found by an owner running the product.
+
+# The ConfigMap `k8s/configmap.yaml` ships: the api Pods mount its `config.ini`
+# key at the path a native api reads from `~/.nyxGPT`. It is the deployment's
+# config of record, and the file every cluster-scoped check below reads
+# *instead of* the host's.
+K8S_CONFIG_CONFIGMAP = "nyxgpt-config"
+K8S_CONFIG_CONFIGMAP_KEY = "config.ini"
+
+# The Secret `k8s/secret.example.yaml` ships; `K8S_ERROR_TRACKING_DSN_SECRET_KEY`
+# is the key inside it that the api and web Deployments expand into
+# NYXGPT_ERROR_TRACKING_DSN.
+K8S_APP_SECRET_NAME = "nyxgpt-secrets"  # pragma: allowlist secret
+
+
+def _k8s_configmap_entry(configmap: str, key: str) -> str | None:
+    """One key's value out of a ConfigMap in the nyxGPT namespace, or None.
+
+    `-o go-template` rather than `-o jsonpath`: the key this exists to read is
+    `config.ini`, and a dot inside a jsonpath field name is a path separator
+    unless it is escaped through two levels of quoting. `index` takes the key
+    as a plain string and cannot be misread.
+
+    None means "could not be read" -- no kubectl, no such ConfigMap, an
+    unreachable cluster. Callers treat that as "cannot tell", never as "not
+    configured" (the #3468 distinction, applied to config instead of Pods).
+    """
+    if _which("kubectl") is None:
+        return None
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "configmap",
+            configmap,
+            "-o",
+            f'go-template={{{{index .data "{key}"}}}}',
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    value = cp.stdout or ""
+    # `index` on a key the map does not carry renders as this literal rather
+    # than failing, so it has to be read as absence and not as content.
+    return None if value.strip() == "<no value>" else value
+
+
+def _k8s_deployment_config() -> ConfigParser | None:
+    """The `config.ini` the api Pods actually read, parsed; None if unreadable.
+
+    The substitute for `~/.nyxGPT/config.ini` in every doctor check that is
+    about the deployment rather than the host. They are different files with
+    different values on purpose -- `[tracing] otlp_endpoint` is
+    `http://otel-collector:4318/v1/traces` in the cluster and
+    `http://localhost:4318/v1/traces` on the workstation -- and reading the
+    wrong one is the whole of this issue's AC4 failure.
+    """
+    raw = _k8s_configmap_entry(K8S_CONFIG_CONFIGMAP, K8S_CONFIG_CONFIGMAP_KEY)
+    if not (raw or "").strip():
+        return None
+    parser = ConfigParser()
+    try:
+        parser.read_string(raw or "")
+    except configparser.Error as e:
+        logger.warning(
+            "Could not parse the %s ConfigMap's %s, skipping the cluster-scoped doctor "
+            "checks: %s",
+            K8S_CONFIG_CONFIGMAP,
+            K8S_CONFIG_CONFIGMAP_KEY,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return None
+    return parser
+
+
+def _k8s_tracing_wiring_issue() -> str | None:
+    """The Kubernetes twin of `_tracing_wiring_issue` (#3987).
+
+    Same question -- are the app's spans reaching a collector, or being
+    dropped into a socket nothing listens on? -- asked of the deployment
+    rather than of the workstation the operator typed the command on.
+
+    Reachability is read from the collector workload's readiness rather than
+    by connecting to the endpoint, and that is not a weaker answer: the
+    `otel-collector` Deployment's readiness probe is a TCP probe on its
+    otlp-http port (it exposes no health endpoint, see
+    `k8s/observability/otel-collector.yaml`), which is precisely the connect
+    `tracing.otlp_endpoint_reachable` makes natively. The alternative -- an
+    HTTP GET from inside the cluster -- cannot tell a 404 on `/v1/traces` from
+    a refused connection through busybox wget, so it would answer a different
+    question less reliably.
+
+    The loopback case is called out separately because it is a different
+    fault with a different fix: an endpoint of `localhost` inside a Pod is
+    *that Pod*, which is #3990 exactly, and no amount of collector readiness
+    makes it work.
+    """
+    parser = _k8s_deployment_config()
+    if parser is None:
+        return None
+    if not get_tracing_enabled(parser):
+        return None
+
+    endpoint = str(get_tracing_config(parser)["otlp_endpoint"])
+    try:
+        host = (httpx.URL(endpoint).host or "").lower()
+    except Exception as e:
+        logger.warning(
+            "Could not read a host out of the cluster's [tracing] otlp_endpoint, "
+            "skipping the tracing wiring check: %s: %s",
+            type(e).__name__,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return None
+
+    if host in LOOPBACK_API_HOSTS:
+        return (
+            f"The {K8S_NAMESPACE} deployment exports spans to {endpoint} ([tracing] "
+            f"otlp_endpoint in the {K8S_CONFIG_CONFIGMAP} ConfigMap), which inside a Pod "
+            "is that Pod itself -- every span is dropped into a socket nothing listens on "
+            "and Jaeger will stay empty (#3990). It should name the in-cluster collector "
+            "Service (http://otel-collector:4318/v1/traces); re-run `nyxgpt ops install "
+            "--kubernetes` to re-apply the shipped ConfigMap."
+        )
+
+    workloads = _k8s_observability_workload_state()
+    if host not in workloads:
+        # An endpoint pointing somewhere this command knows nothing about --
+        # a collector outside the namespace, say. "Cannot tell" is the honest
+        # answer; guessing is how the native check got here.
+        return None
+    state = workloads[host]
+    if _classify_k8s_observability_workload(host, state).state == K8S_STATE_READY:
+        return None
+    return (
+        f"Tracing is enabled in the {K8S_NAMESPACE} deployment ([tracing] "
+        f"otlp_endpoint={endpoint}, from the {K8S_CONFIG_CONFIGMAP} ConfigMap) but its "
+        f"collector workload {host} is "
+        f"{'not deployed' if state == 'absent' else state} -- spans are being silently "
+        "dropped and Jaeger will stay empty (run: nyxgpt ops observability --kubernetes)"
+    )
+
+
+def _k8s_prometheus_api_scrape_issue() -> str | None:
+    """The Kubernetes twin of `_prometheus_api_scrape_issue` (#3987).
+
+    The native check reads `[monitoring] prometheus_ui_url` off the host and
+    asks whatever answers there. On a Kubernetes deployment that address is
+    either nothing at all or -- worse -- an operator's `nyxgpt ops
+    port-forward --target prometheus`, in which case it reaches the cluster's
+    Prometheus and attaches the Compose-era `host-api-relay` remedy to it.
+    Neither is a statement about the deployment, so this asks the cluster's
+    Prometheus from inside the cluster, the same way `_k8s_metrics_flow_result`
+    does, and names a Kubernetes remedy.
+    """
+    if _which("kubectl") is None:
+        return None
+    ok, body = _k8s_incluster_get("http://prometheus:9090/api/v1/targets?state=active")
+    if not ok:
+        # Prometheus not answering is the observability layer's own failure,
+        # already reported by the workload lines in `ops status` -- the same
+        # rule the native twin applies to an unreachable Prometheus.
+        return None
+    try:
+        active = json.loads(body)["data"]["activeTargets"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+    api_targets = [t for t in active if t.get("labels", {}).get("job") == "nyxgpt-api"]
+    if not api_targets or any(t.get("health") == "up" for t in api_targets):
+        return None
+    last_error = next(
+        (t.get("lastError") for t in api_targets if t.get("lastError")),
+        "no error reported",
+    )
+    return (
+        f"Prometheus in the {K8S_NAMESPACE} namespace cannot scrape the API's /metrics "
+        f"endpoint (job nyxgpt-api is down: {last_error}) -- every Grafana dashboard will "
+        "render empty even though the Pods are Ready. This is the cluster's Prometheus and "
+        "the cluster's api Service, not this host's (check the api Pods with `nyxgpt ops "
+        "status`, then re-run `nyxgpt ops observability --kubernetes`)."
+    )
+
+
+def _k8s_error_tracking_dsn() -> str:
+    """The error-tracking DSN the api/web Pods were started with, or "".
+
+    Read from the Secret rather than from the host's config.ini because they
+    are different values: GlitchTip mints a per-install project key, and
+    `_k8s_provision_glitchtip` writes the cluster's into this Secret while the
+    host's config.ini carries whatever a native `glitchtip-init` wrote there.
+
+    The value never reaches a log or an argv. `kubectl get secret` returns it
+    on stdout, and `_run` logs stdout only on a NON-zero exit -- where there
+    is no value to leak. Only the DSN's public key, the half designed to be
+    embedded in clients, is ever compared or named in a finding.
+    """
+    if _which("kubectl") is None:
+        return ""
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "secret",
+            K8S_APP_SECRET_NAME,
+            "-o",
+            f'go-template={{{{index .data "{K8S_ERROR_TRACKING_DSN_SECRET_KEY}" '
+            "| base64decode}}",
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return ""
+    value = (cp.stdout or "").strip()
+    return "" if value == "<no value>" else value
+
+
+def _k8s_error_tracking_dsn_drift_issue() -> str | None:
+    """The Kubernetes twin of `_error_tracking_dsn_drift_issue` (#3987).
+
+    The native check authenticates to `[error_tracking] glitchtip_ui_url` --
+    `http://localhost:8080` -- with the token in `~/.nyxGPT/secrets`. On the
+    owner's Kubernetes machine that address was the cluster's GlitchTip
+    (reached through the install's port-forward) and the token was the host's,
+    so `doctor` reported `GET /api/0/projects/.../keys/ 401` against a
+    GlitchTip that was healthy and had zero errors. Wrong credential, wrong
+    config, right server, false finding.
+
+    This asks the in-cluster GlitchTip with the credential the cluster's own
+    consumer uses -- the token mounted into the Grafana Pod, the same one
+    `_k8s_errors_flow_result` presents -- and compares against the DSN the
+    api/web Pods actually carry. An empty DSN is not a drift (a
+    `--skip-observability` install leaves error tracking inert by design), and
+    a GlitchTip that cannot be asked is not a drift either: that is the
+    errors-flow line's finding, not this one's.
+    """
+    dsn = _k8s_error_tracking_dsn()
+    if not dsn:
+        return None
+    try:
+        configured_key = httpx.URL(dsn).username
+    except Exception:
+        return None
+    if not configured_key:
+        return None
+
+    ok, body = _k8s_incluster_get(
+        f"http://{GLITCHTIP_CONTAINER_HOST}:{GLITCHTIP_CONTAINER_PORT}"
+        f"/api/0/projects/{GLITCHTIP_ORG_SLUG}/{GLITCHTIP_PROJECT_SLUG}/keys/",
+        bearer_token_file=K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT,
+    )
+    if not ok:
+        return None
+    try:
+        keys: Any = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(keys, list):
+        return None
+
+    live_public_keys = set()
+    for key in keys:
+        key_dsn = _extract_dsn(key)
+        if not key_dsn:
+            continue
+        try:
+            live_public_keys.add(httpx.URL(key_dsn).username)
+        except Exception:
+            continue
+
+    if not live_public_keys or configured_key in live_public_keys:
+        return None
+    return (
+        f"The error-tracking DSN the {K8S_NAMESPACE} api/web Pods carry (the "
+        f"{K8S_ERROR_TRACKING_DSN_SECRET_KEY} key of the {K8S_APP_SECRET_NAME} Secret) "
+        f"matches no current GlitchTip key for {GLITCHTIP_ORG_SLUG}/"
+        f"{GLITCHTIP_PROJECT_SLUG} -- every event is being rejected (401) and silently "
+        "dropped, the same way an unreachable collector silently drops spans. The "
+        "project's key was likely re-minted since the DSN was provisioned. Fix: nyxgpt "
+        "ops glitchtip-init --kubernetes."
+    )
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
@@ -14706,6 +15048,13 @@ def doctor(_args) -> int:
     service-account token is missing or rejected, reports it as an issue
     rather than silently omitting the log volume line (#3438). Prints each
     issue found.
+
+    When a Kubernetes deployment is present, the four checks whose finding is
+    a claim about the *deployment* -- model readiness, tracing wiring, the
+    Prometheus scrape and the error-tracking DSN -- ask the cluster instead of
+    this host, and the report says so. Every other check is host-scoped by
+    construction. See "Which machine a `doctor` check is about" above
+    `_k8s_deployment_config` for the rule and the sweep behind it (#3987).
 
     Returns 0 if no issues were found, else 2.
     """
@@ -14742,8 +15091,18 @@ def doctor(_args) -> int:
         # against the right machine (#3987) -- doctor otherwise names a
         # Kubernetes install mode and then reports exclusively on this host.
         print(f"Kubernetes deployment: {k8s.summary}")
+        # Which machine answered each question, said plainly. The operator who
+        # found #3987's AC4 had no way to know that a tracing failure printed
+        # under a "14/14 pod(s) ready" line was a statement about their laptop
+        # -- so the four cluster-scoped checks are named, and everything else
+        # is declared as what it is.
         print(
-            "  Model readiness below is reported against the cluster, not this host."
+            (
+                "  Model readiness, tracing wiring, the Prometheus scrape and the "
+                "error-tracking DSN are reported against the cluster, not this host."
+                "\n  Every other check below is about this host -- its tools, files, "
+                "services and venv (docs/ops.md)."
+            )
             if k8s_deployed
             else "  The checks below report on this host."
         )
@@ -14905,15 +15264,23 @@ def doctor(_args) -> int:
     if log_issue:
         issues.append(log_issue)
 
-    tracing_issue = _tracing_wiring_issue()
+    # Substrate-branched (#3987): on a Kubernetes deployment these three read
+    # the cluster's own config and probe the cluster's own services. See the
+    # "Which machine a `doctor` check is about" block above the helpers.
+    tracing_issue = _k8s_tracing_wiring_issue() if k8s_deployed else _tracing_wiring_issue()
     if tracing_issue:
         issues.append(tracing_issue)
 
+    # Host-scoped on purpose, Kubernetes deployment or not: this is about the
+    # packages in THIS venv, which is what the native api and every `nyxgpt`
+    # command run from. An api Pod's OTel packages come from its image.
     tracing_packages_issue = _tracing_packages_doctor_issue()
     if tracing_packages_issue:
         issues.append(tracing_packages_issue)
 
-    scrape_issue = _prometheus_api_scrape_issue()
+    scrape_issue = (
+        _k8s_prometheus_api_scrape_issue() if k8s_deployed else _prometheus_api_scrape_issue()
+    )
     if scrape_issue:
         issues.append(scrape_issue)
 
@@ -14946,7 +15313,9 @@ def doctor(_args) -> int:
 
     issues += _observability_volume_doctor_issues()
     issues += _glitchtip_secrets_doctor_issues()
-    error_tracking_drift_issue = _error_tracking_dsn_drift_issue()
+    error_tracking_drift_issue = (
+        _k8s_error_tracking_dsn_drift_issue() if k8s_deployed else _error_tracking_dsn_drift_issue()
+    )
     if error_tracking_drift_issue:
         issues.append(error_tracking_drift_issue)
     issues += _stale_venv_doctor_issues()
@@ -16906,15 +17275,27 @@ def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
     mounts read-only did -- and env vars like `GF_INSTALL_PLUGINS` only take
     effect at container start. Recreating (not merely restarting) guarantees
     both are picked up on the next boot. Returns None if there's nothing to
-    do (not drifted, Docker unavailable, or grafana isn't running yet -- the
+    do (not drifted, Docker unavailable, or grafana doesn't exist yet -- the
     normal `up -d` right after this call handles first-boot).
     """
     if not _compose_available():
         return None
     if not _grafana_provisioning_drifted():
         return None
-    if _compose_stack_snapshot().get("grafana") != "running":
-        # Nothing running yet to be stale -- the normal `up -d` below will
+    # Gated on the container *existing*, not on it reading `running` -- the
+    # third site of the same mistake #4045 was filed for, and the one that
+    # would have outlived the fix. `_compose_stack_snapshot` returns raw
+    # Compose states, so a crash-looping Grafana reads `restarting`, and the
+    # intended skip ("nothing created yet; the `up -d` below makes it fresh
+    # with current provisioning") silently swallowed it. That is the worst
+    # case to skip in: a container crash-looping on *drifted* env is exactly
+    # one `--force-recreate` away from picking up the corrected value, and
+    # `up -d` alone will not do it -- Compose sees no change from its own
+    # point of view, so the operator fixes `GF_INSTALL_PLUGINS`, re-runs, and
+    # watches the same loop continue with the stale env. `up -d
+    # --force-recreate` does not care what state the container is in.
+    if _compose_stack_snapshot().get("grafana", "absent") == "absent":
+        # Nothing created yet to be stale -- the normal `up -d` below will
         # create it fresh with current provisioning/env already.
         return None
 
@@ -17161,17 +17542,24 @@ def _sync_host_relay_env(cfg_path: Path | None = None, env_path: Path | None = N
 # once the containers are *created*, which is a claim about Docker, not about
 # the software inside them: the Grafana crash loop in #3993 was created
 # successfully and then died on its own provisioning directory, over and over,
-# while the step printed "Observability stack up". Twenty seconds is bounded
-# (an install step may not hang) and is comfortably longer than Docker's
-# initial restart backoff, so a container that cannot survive its own boot is
-# observed `restarting` well inside it.
-OBSERVABILITY_SETTLE_TIMEOUT_SECONDS = 20.0
+# while the step printed "Observability stack up". Bounded, because an install
+# step may not hang.
+OBSERVABILITY_SETTLE_TIMEOUT_SECONDS = 45.0
 OBSERVABILITY_SETTLE_POLL_SECONDS = 2.0
 
-# A verdict must hold twice before the step calls the stack settled. One
-# reading taken immediately after `up -d` sees "running" for any container that
-# has not crashed *yet* -- which is every crash loop, for its first second.
-OBSERVABILITY_SETTLE_CONFIRMATIONS = 2
+# How long a container's *current run* must have lasted before the step calls
+# the stack settled.
+#
+# This replaced a count of consecutive `running` readings (#4045). Two readings
+# two seconds apart is two seconds of evidence, and the step returned on the
+# second one: real Grafana reads its provisioning directory several seconds
+# into boot, so it was `running` at both looks, the verdict came back `settled`
+# in 2.2s, and the crash loop that followed was reported by the *next* step as
+# "Could not reconcile Grafana admin credential". Fifteen seconds is longer than
+# Grafana's own boot-to-provisioning window and longer than Docker's early
+# restart backoff, so a container that cannot survive its own start has either
+# restarted or been seen `restarting` inside it.
+OBSERVABILITY_SETTLE_STABLE_SECONDS = 15.0
 
 # Number of log lines pulled from a container that failed to settle, of which
 # only the last non-empty one is quoted into the step message.
@@ -17237,6 +17625,32 @@ def _observability_failure_reason(service: str) -> str:
     return tail[:197] + "..." if len(tail) > 200 else tail
 
 
+def _container_run_age_seconds(started_at: str) -> float | None:
+    """Seconds since `started_at` (Docker's `State.StartedAt`), or None if unusable.
+
+    Docker stamps nanosecond precision (`2026-10-02T04:10:45.591030446Z`),
+    which `datetime.fromisoformat` rejects, so the fraction is truncated to
+    microseconds first. A container that has never run carries the zero time
+    (`0001-01-01T00:00:00Z`); that is reported as None rather than as an age of
+    two thousand years, because "no current run" is not "a very old run".
+    """
+    text = (started_at or "").strip()
+    if not text or text.startswith("0001-01-01"):
+        return None
+    # Truncate sub-microsecond digits; everything after them (a `Z` or a
+    # `+00:00`) is left exactly where it was.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        started = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - started).total_seconds()
+
+
 def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
     """Watch the just-started `services` for a bounded window and rule on them.
 
@@ -17249,27 +17663,47 @@ def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
 
     Answers with one of three verdicts, never collapsing them:
 
-    - **crashed** -- a service is `restarting`/`exited`/`dead`. Definite: the
-      probe ran and reported a container that is not staying up. Carries that
+    - **crashed** -- a service is `restarting`/`exited`/`dead`, *or* Docker's
+      own `RestartCount`/`StartedAt` for it moved while this window was open.
+      Definite either way: the probe ran and established that the container is
+      not the one this step started, or is not staying up. Carries that
       container's own last log line.
-    - **settled** -- every service the probe reported for this stack was
-      `running` on `OBSERVABILITY_SETTLE_CONFIRMATIONS` consecutive readings.
-      Two readings, not one: a container that dies a second after creation
-      reads `running` on the first look.
+    - **settled** -- every service the probe reported for this stack has been
+      `running`, restart-free, for `OBSERVABILITY_SETTLE_STABLE_SECONDS` --
+      either observed continuously from here, or already true of its current
+      run when this started (an idempotent re-run over a stack that has been up
+      for hours settles on the first look, and pays no window for it).
     - **undetermined** -- the probe could not run (no Docker access from here:
       `compose_probe().available` is False, see #3812), reported none of the
       started services, or the window closed with services neither running nor
       crashed (e.g. still `created`). Nothing is claimed either way; the caller
       must not turn this into a success *or* a failure.
 
+    **Why a sampled state string is not enough, and `restarting` in particular
+    is not the thing to look for (#4045).** The earlier version concluded
+    `settled` from two consecutive `running` readings two seconds apart, and
+    returned on the second one. A crash loop is `running` for part of every
+    cycle, so this answered `settled` in 2.2s for a container that had not yet
+    reached the line it dies on -- which is precisely real Grafana, several
+    seconds into a boot that ends in a provisioning error. Widening
+    `_CRASHED_CONTAINER_STATES` would not have helped: the readings said
+    `running` because the container genuinely *was* running, on its first of
+    many lives. So the evidence for "stayed up" is now the continuity of one
+    run (restart counter and start timestamp, via `self_heal.container_liveness`)
+    over a duration, and the state strings are only the fast path for a loop
+    slow enough to be caught mid-backoff.
+
     Reuses `self_heal.compose_probe()` rather than adding a second Docker hop:
     that function is already the project's "ask Docker, and say so if you
     couldn't" primitive, and duplicating it would mean two answers to one
-    question.
+    question. `container_liveness` lives beside it for the same reason.
     """
     wanted = set(services)
     deadline = time.monotonic() + OBSERVABILITY_SETTLE_TIMEOUT_SECONDS
-    confirmations = 0
+    # Per-service liveness as first seen in this window. A later reading that
+    # disagrees with it is a restart that happened while we were watching.
+    baseline: dict[str, self_heal.ContainerLiveness] = {}
+    running_since: float | None = None
     last_detail = ""
     while True:
         probe = self_heal.compose_probe()
@@ -17284,11 +17718,14 @@ def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
             name for name, s in observed.items() if s.state in _CRASHED_CONTAINER_STATES
         )
         if crashed:
-            reasons = "; ".join(
-                f"{name} ({observed[name].state}): {_observability_failure_reason(name)}"
-                for name in crashed
+            return _SettleVerdict(
+                SETTLE_STATE_CRASHED,
+                "; ".join(
+                    f"{name} ({observed[name].state}): {_observability_failure_reason(name)}"
+                    for name in crashed
+                ),
+                tuple(crashed),
             )
-            return _SettleVerdict(SETTLE_STATE_CRASHED, reasons, tuple(crashed))
         if not observed:
             return _SettleVerdict(
                 SETTLE_STATE_UNDETERMINED,
@@ -17296,23 +17733,66 @@ def _observability_settle_verdict(services: list[str]) -> _SettleVerdict:
                 "started, so nothing here establishes whether they are up",
                 tuple(sorted(wanted)),
             )
+
+        now = time.monotonic()
+        # Empty when the inspect could not run; that is "no restart evidence",
+        # never "nothing restarted", so it only costs the fast path below --
+        # the loop then falls back on watching the states for the full
+        # duration itself.
+        liveness = self_heal.container_liveness([s.container for s in observed.values()])
+        restarted: list[str] = []
+        for name, status in sorted(observed.items()):
+            live = liveness.get(status.container)
+            if live is None:
+                continue
+            seen = baseline.get(name)
+            if seen is None:
+                baseline[name] = live
+            elif live.restarts > seen.restarts or live.started_at != seen.started_at:
+                restarted.append(name)
+        if restarted:
+            return _SettleVerdict(
+                SETTLE_STATE_CRASHED,
+                "; ".join(
+                    f"{name} (restarted while settling, restart count "
+                    f"{liveness[observed[name].container].restarts}): "
+                    f"{_observability_failure_reason(name)}"
+                    for name in restarted
+                ),
+                tuple(restarted),
+            )
+
         unsettled = sorted(name for name, s in observed.items() if s.state != "running")
         if unsettled:
-            confirmations = 0
+            running_since = None
             last_detail = "still not running after the settle window: " + ", ".join(
                 f"{name} ({observed[name].state})" for name in unsettled
             )
         else:
-            confirmations += 1
-            if confirmations >= OBSERVABILITY_SETTLE_CONFIRMATIONS:
+            if running_since is None:
+                running_since = now
+            ages = [
+                _container_run_age_seconds(liveness[s.container].started_at)
+                for s in observed.values()
+                if s.container in liveness
+            ]
+            already_stable = len(ages) == len(observed) and all(
+                age is not None and age >= OBSERVABILITY_SETTLE_STABLE_SECONDS for age in ages
+            )
+            if already_stable or now - running_since >= OBSERVABILITY_SETTLE_STABLE_SECONDS:
                 return _SettleVerdict(SETTLE_STATE_SETTLED, "", tuple(sorted(observed)))
-        if time.monotonic() >= deadline:
+            last_detail = (
+                "running, but not yet for the "
+                f"{OBSERVABILITY_SETTLE_STABLE_SECONDS:.0f}s this step waits before "
+                "calling the stack settled: " + ", ".join(sorted(observed))
+            )
+        if now >= deadline:
             return _SettleVerdict(
                 SETTLE_STATE_UNDETERMINED,
                 last_detail
                 or (
                     "the settle window closed before the containers could be confirmed "
-                    "running twice"
+                    "running and restart-free"
                 ),
                 tuple(sorted(observed)),
             )
@@ -17542,18 +18022,32 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             # container stuck crash-looping (e.g. a broken alerting-
             # provisioning file) should surface here as one clear failure
             # rather than as a misleading "credential doesn't authenticate".
-            # Skipped as a no-op when Grafana isn't part of the running
-            # Compose stack at all (e.g. Docker not found) -- the
-            # credential-reconcile call below already handles that host
-            # shape on its own terms.
-            grafana_running = _compose_stack_snapshot().get("grafana") == "running"
-            if grafana_running and not _wait_for_grafana_healthy():
+            #
+            # Gated on the container *existing* in the Compose stack, not on
+            # it reading `running` (#4045). The intended skip is "Grafana is
+            # not part of this stack at all" -- a Docker-less host, or the
+            # observability profile never started -- and `_compose_stack_
+            # snapshot` reports exactly that as an absent key, including when
+            # the probe could not run (its `known=False` rows are dropped, so
+            # an unqueryable stack skips rather than inventing a failure,
+            # #3812). Asking for `== "running"` instead folded the crash loop
+            # into the same skip: `_compose_stack_snapshot` returns raw
+            # Compose states, a crash-looping Grafana is `restarting` or
+            # `exited`, so the one guard that exists to catch a Grafana that
+            # never comes up was switched off by the very condition it
+            # guards, and control fell straight through to the credential
+            # reconcile that then reported the wrong fault. This is the same
+            # absent-not-running rule `_restart_grafana_if_running` already
+            # follows for the same reason (#3588).
+            grafana_present = _compose_stack_snapshot().get("grafana", "absent") != "absent"
+            if grafana_present and not _wait_for_grafana_healthy():
                 results.append(
                     OpsResult(
                         False,
                         "Grafana never became healthy",
-                        "Check `nyxgpt ops status` (a compose service stuck `restarting` is "
-                        "the tell) and `nyxgpt ops logs grafana` for the boot error.",
+                        f"Grafana's last log line: {_observability_failure_reason('grafana')} "
+                        "-- read the full output with `nyxgpt ops logs grafana`, fix the "
+                        "cause, then re-run `nyxgpt ops observability`.",
                     )
                 )
                 return results
@@ -17614,13 +18108,22 @@ def _start_observability_stack_terraform() -> list[OpsResult]:
     # before Grafana is reachable and callers (the smoke gate, a user opening the
     # dashboard) race its startup. A container stuck crash-looping never reports
     # healthy, so this surfaces as one clear failure instead of a silent race.
-    if _compose_stack_snapshot().get("grafana") == "running" and not _wait_for_grafana_healthy():
+    #
+    # Gated on the container existing, not on it reading `running` -- the same
+    # correction as in `_reconcile_grafana_provisioning`, where the full
+    # reasoning lives (#4045). A crash-looping Grafana is `restarting`, so the
+    # old `== "running"` gate skipped the one wait that would have caught it.
+    if (
+        _compose_stack_snapshot().get("grafana", "absent") != "absent"
+        and not _wait_for_grafana_healthy()
+    ):
         results.append(
             OpsResult(
                 False,
                 "Grafana never became healthy",
-                "Check `nyxgpt ops status` (a compose service stuck `restarting` is the tell) "
-                "and `nyxgpt ops logs grafana` for the boot error.",
+                f"Grafana's last log line: {_observability_failure_reason('grafana')} "
+                "-- read the full output with `nyxgpt ops logs grafana`, fix the cause, "
+                "then re-run `nyxgpt ops install --terraform --local`.",
             )
         )
     return results

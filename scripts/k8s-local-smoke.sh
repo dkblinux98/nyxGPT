@@ -301,6 +301,99 @@ if grep -q "pull into the cluster" <<<"$DOCTOR_OUT"; then
 fi
 ok "ops doctor reports model readiness against the cluster, and finds nothing missing"
 
+# --- AC4, the #3987 re-test failure: doctor's OTHER checks (2026-08-26) ---
+#
+# The owner re-tested #3987 on a live cluster and found AC1/2/3/5 fixed and
+# AC4 not: `ops doctor` exited 2 saying "Tracing is enabled ([tracing]
+# otlp_endpoint=http://localhost:4318/v1/traces) but nothing is listening
+# there" minutes after `curl http://localhost:16686/api/services` returned
+# three services with real spans behind them, plus a GlitchTip 401 of the
+# same shape. Both read the HOST's config and probed the HOST's port.
+#
+# This runner will not reproduce that on its own -- its host config may have
+# no [tracing] section at all -- so the condition is INJECTED, both halves,
+# per CLAUDE.md/#3753. One host config.ini carrying an endpoint nothing can
+# ever answer (port 1 is IANA-reserved and never bound), and two `ops doctor`
+# runs over it differing in exactly one thing: whether the Kubernetes install
+# marker is there for doctor to see.
+#
+#   without the marker -> doctor is in native mode and MUST report it. That
+#                         is the pre-fix output, reproduced on demand, and it
+#                         is what makes the second half a real assertion.
+#   with the marker    -> doctor is reporting on the cluster and MUST NOT,
+#                         because the Pods export to http://otel-collector:4318
+#                         and that collector is up.
+#
+# HOME is redirected rather than the real config.ini edited: this step must
+# not leave the machine's own configuration altered for the twelve steps that
+# follow it. KUBECONFIG is passed through explicitly, since the redirect would
+# otherwise hide ~/.kube/config and make every run "no cluster configured".
+AC4_HOME=$(mktemp -d)
+AC4_KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
+AC4_MARKER="${HOME}/.nyxGPT/install-mode-kubernetes.json"
+mkdir -p "${AC4_HOME}/.nyxGPT"
+cat >"${AC4_HOME}/.nyxGPT/config.ini" <<'AC4EOF'
+[tracing]
+enabled = true
+otlp_endpoint = http://127.0.0.1:1/v1/traces
+AC4EOF
+AC4_NATIVE=$(HOME="${AC4_HOME}" KUBECONFIG="${AC4_KUBECONFIG}" nyxgpt ops doctor 2>&1) || true
+grep -q "127.0.0.1:1/v1/traces" <<<"$AC4_NATIVE" ||
+    fail "the injected host tracing fault was not reproduced -- without this half the \
+assertion below could not fail, whatever the code did"
+ok "pre-fix half: with no deployment in view, doctor reports the host's tracing endpoint"
+[ -f "$AC4_MARKER" ] || fail "no Kubernetes install marker at ${AC4_MARKER} to copy"
+cp "$AC4_MARKER" "${AC4_HOME}/.nyxGPT/"
+AC4_K8S=$(HOME="${AC4_HOME}" KUBECONFIG="${AC4_KUBECONFIG}" nyxgpt ops doctor 2>&1) || true
+echo "$AC4_K8S"
+rm -rf "${AC4_HOME}"
+if grep -q "127.0.0.1:1/v1/traces" <<<"$AC4_K8S"; then
+    fail "ops doctor reported the HOST's tracing endpoint on a running Kubernetes \
+deployment -- this is #3987 AC4"
+fi
+if grep -q "otel-collector Compose service" <<<"$AC4_K8S"; then
+    fail "ops doctor prescribed the Compose remedy on a Kubernetes deployment (#3987 AC4)"
+fi
+grep -q "Every other check below is about this host" <<<"$AC4_K8S" ||
+    fail "ops doctor does not say which of its checks are about the cluster and which \
+are about this host"
+ok "fixed half: the same host fault is not reported against the cluster (AC4)"
+
+# The branch must also be able to SAY something -- a cluster-scoped check that
+# is merely silent would pass every assertion above while finding nothing.
+# Scale the collector the Pods export to down to zero and require doctor to
+# report it, with the Kubernetes remedy rather than the Compose one.
+restore_collector() {
+    kubectl -n "$NAMESPACE" scale deploy/otel-collector --replicas=1 >/dev/null 2>&1 || true
+    kubectl -n "$NAMESPACE" rollout status deploy/otel-collector --timeout=300s >/dev/null 2>&1 ||
+        true
+}
+kubectl -n "$NAMESPACE" scale deploy/otel-collector --replicas=0 >/dev/null ||
+    fail "could not scale otel-collector down to inject the cluster-side tracing fault"
+AC4_DOWN=""
+for _attempt in $(seq 1 30); do
+    AC4_DOWN=$(nyxgpt ops doctor 2>&1) || true
+    if grep -q "collector workload otel-collector is" <<<"$AC4_DOWN"; then
+        break
+    fi
+    sleep 2
+done
+if ! grep -q "collector workload otel-collector is" <<<"$AC4_DOWN"; then
+    echo "$AC4_DOWN" >&2
+    restore_collector
+    fail "ops doctor did not notice the cluster's own OTLP collector was gone -- the \
+Kubernetes tracing check is silent, not substrate-aware (#3987 AC4)"
+fi
+if ! grep -q "nyxgpt ops observability --kubernetes" <<<"$AC4_DOWN"; then
+    echo "$AC4_DOWN" >&2
+    restore_collector
+    fail "ops doctor named a remedy other than the Kubernetes one for an in-cluster \
+collector that is down (#3987 AC4)"
+fi
+restore_collector
+ok "the cluster-scoped tracing check reports a real in-cluster fault, with the \
+Kubernetes remedy"
+
 step "5/19 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
 # SRE dashboard's metrics tiles and every Grafana panel read from, and it is
