@@ -18,10 +18,11 @@ permissions:
 #      set of manifests `install --kubernetes` used to apply, and assert the
 #      cluster has ZERO observability workloads (the defect, reproduced);
 #   2. the fix -- `nyxgpt ops observability --kubernetes --local`, then assert
-#      all ten workloads roll out, every UI answers through the wrapped
-#      `nyxgpt ops port-forward`, Grafana has its four provisioned datasources
-#      and the SRE Home dashboard, and promtail is really shipping Pod logs
-#      into Loki.
+#      all ten workloads roll out, every UI answers from the host with NO
+#      port-forward running (#3986: the deploy publishes them on the cluster it
+#      provisioned, and the SRE panels were all ERR_CONNECTION_REFUSED before
+#      it did), Grafana has its four provisioned datasources and the SRE Home
+#      dashboard, and promtail is really shipping Pod logs into Loki.
 #
 # The api/web images are deliberately NOT built here: the claim under test is
 # about the observability tier, the app tier's own bring-up is covered
@@ -69,7 +70,17 @@ jobs:
         # (#3596/#3724); creating it up front keeps the two halves below on one
         # cluster so half 1's "nothing here" is about the same cluster half 2
         # then fills.
-        run: kind create cluster --name nyxgpt-local --wait 120s
+        #
+        # With nyxGPT's OWN config, rendered from the code under test (#3986):
+        # a bare `kind create cluster` publishes no host ports, which would
+        # route the deploy onto its bring-your-own-cluster path and leave the
+        # published-NodePort half of the SRE reachability fix unexercised here.
+        # Rendering it means a change to `KIND_HOST_PORT_MAPPINGS` cannot drift
+        # away from what CI creates.
+        run: |
+          python -c "from nyxgpt import ops; print(ops._kind_cluster_config())" > kind-cluster.yaml
+          cat kind-cluster.yaml
+          kind create cluster --name nyxgpt-local --config kind-cluster.yaml --wait 120s
 
       - name: Reproduce the defect -- app tier only, no observability
         run: |
@@ -134,18 +145,33 @@ jobs:
           done
           kubectl -n nyxgpt rollout status ds/promtail --timeout=300s
 
-      - name: Verify the UIs answer through the wrapped port-forward
+      - name: Verify the UIs answer with NO port-forward running (#3986)
         run: |
           set -uo pipefail
           fail=0
-          # The operator-facing command -- not raw kubectl -- and the ports it
-          # publishes are the ones the admin dashboard's observability links
-          # already use (Grafana 3001, Prometheus 9090, Jaeger 16686,
+          # The ports here are the ones the admin dashboard's observability
+          # links already use (Grafana 3001, Prometheus 9090, Jaeger 16686,
           # GlitchTip 8080). If these drift, the dashboard tiles break.
-          nyxgpt ops port-forward --target observability > /tmp/port-forward.log 2>&1 &
-          pf_pid=$!
-          trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
-          sleep 15
+          #
+          # And nothing forwards them (#3986, owner re-test 2026-08-26): this
+          # step used to background `nyxgpt ops port-forward --target
+          # observability` itself, which is exactly what made it blind to the
+          # defect an operator hit -- a healthy install whose SRE panels were
+          # all ERR_CONNECTION_REFUSED until they opened a terminal. The deploy
+          # above publishes these on the host and verifies them before it
+          # returns; this asserts the same thing from outside, with no forward.
+          if nyxgpt ops port-forward --status | grep -qi 'running'; then
+            echo "::error::a managed background forward is running -- the deploy should have published the node ports on this cluster"
+            fail=1
+          fi
+          if pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
+            pgrep -af "kubectl.*port-forward"
+            echo "::error::a stray port-forward is running -- this step must prove reachability WITHOUT one"
+            fail=1
+          fi
+          docker port nyxgpt-local-control-plane || true
+          kubectl -n nyxgpt get svc grafana prometheus jaeger glitchtip \
+            -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
 
           check() { # <label> <url> <expected>
             code=000
@@ -224,7 +250,14 @@ jobs:
               kubectl -n nyxgpt logs "ds/$d" --tail 80 2>&1 || true
             echo "::endgroup::"
           done
-          cat /tmp/port-forward.log 2>/dev/null || true
+          # What the host can actually reach (#3986): the node's published
+          # ports, the Services' types, and whatever managed forward the
+          # deploy established on a cluster it could not map.
+          docker port nyxgpt-local-control-plane || true
+          kubectl -n nyxgpt get svc -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort' || true
+          nyxgpt ops port-forward --status || true
+          cat "$HOME/.nyxGPT/k8s/port-forward.log" 2>/dev/null || true
+          cat /tmp/loki-forward.log 2>/dev/null || true
 
       - name: Tear down
         if: always()

@@ -2399,11 +2399,18 @@ def cli(argv: list[str] | None = None) -> int:
     ops_port_forward.add_argument(
         "--target",
         default="web",
-        choices=list(ops_mod.K8S_PORT_FORWARD_TARGET_NAMES),
+        # Validated by `ops._port_forward_plan` rather than by argparse
+        # `choices`: a comma-separated list is accepted too, which `choices`
+        # cannot express (the install forwards exactly what the cluster does
+        # not already publish -- see #3986).
+        metavar="{" + ",".join(ops_mod.K8S_PORT_FORWARD_TARGET_NAMES) + "}",
         help=(
             "What to forward (default: web). `app` forwards web and api together; "
             "`observability` forwards Grafana, Prometheus, Jaeger and GlitchTip at once, "
-            "on the same local ports the admin dashboard's observability links already use"
+            "on the same local ports the admin dashboard's observability links already use. "
+            "A comma-separated list (e.g. `grafana,jaeger`) forwards exactly those. On a "
+            "cluster nyxgpt provisioned, the install already publishes all of these on the "
+            "host and no forward is needed"
         ),
     )
     ops_port_forward.add_argument(

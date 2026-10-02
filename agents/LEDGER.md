@@ -1887,6 +1887,47 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #4122; extends **D-043**; cites **D-047**, **D-030**, **D-006**.
 
+- **D-052** · 2026-10-02 · developer agent (#3986) — **"Reachable" is a claim
+  about every tier an operator is told to use, not about the one the issue
+  named.** #3986's first round made `nyxgpt ops install --kubernetes` leave the
+  web UI answering with no follow-up command, and was accepted on that. The
+  same install left all six observability Services `ClusterIP` and mapped only
+  `3000`/`8000` on the kind node, so every panel of the SRE dashboard was
+  `ERR_CONNECTION_REFUSED` until the operator opened a terminal — which
+  `CLAUDE.md`'s Definition of Done ("observable … **without a terminal**")
+  does not permit. The owner's re-test recorded it as a *gap rather than a
+  decision*: nothing in the code weighed the SRE tier, and the local
+  Kubernetes path was the only deployment mode where it was unreachable
+  (Compose and Terraform publish those ports; cloud k3s tunnels them through
+  a supervised unit).
+
+  Two general rules came out of it, both cheap to apply and both invisible
+  until a second tier exists:
+
+  (a) *A host-port mapping that can only be declared at creation time has to be
+  declared for everything the deployment will ever publish.* A kind node is a
+  container; its published ports cannot be added later, so a tier left out of
+  `KIND_HOST_PORT_MAPPINGS` is unreachable for the life of that cluster and the
+  fix cannot be verified on an existing one.
+
+  (b) *When capability is per-port, the check for it must be per-port too.* The
+  publish check was all-or-nothing, and a cluster created by the first round
+  publishes the app tier's two ports and nothing else — so adding four mappings
+  would have read that cluster as unpublished and started a forward onto two
+  host ports the node already holds, costing the web UI to fix the SRE tier.
+  The same reasoning made `ops port-forward` drop any target the cluster
+  already publishes instead of failing to bind it: an operator running the
+  command their notes still name must not get `address already in use` about a
+  UI that works.
+
+  The behaviours are pinned by `tests/unit/test_k8s_host_access.py` and by
+  `scripts/k8s-local-smoke.sh` steps 7-8 (published, then returned to the
+  shipped ClusterIP posture and restored through both wrapped paths), per the
+  verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #3986; cites **D-006**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
