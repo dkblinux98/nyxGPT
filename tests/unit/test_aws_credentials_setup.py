@@ -348,12 +348,12 @@ def test_cloud_reference_status_defaults_to_blank():
 
 def test_save_cloud_reference_preserves_other_config_content(tmp_path: Path):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen2.5:0.5b\n")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-small:0.5b\n")
 
     save_cloud_reference(cfg_path, "nyxgpt", "us-east-1", "profile")
 
     text = cfg_path.read_text()
-    assert "default_model = qwen2.5:0.5b" in text
+    assert "default_model = fixture-small:0.5b" in text
     assert "profile = nyxgpt" in text
 
 

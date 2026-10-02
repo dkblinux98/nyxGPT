@@ -145,7 +145,7 @@ def test_k8s_default_models_match_the_shipped_defaults():
     # Compared against what the product actually ships, not a literal. Pinning
     # the literal is what let this pass while the layers diverged: 1ece87b0
     # moved example.config.ini/config.py to qwen3.5:0.8b and left the manifests
-    # on qwen3:0.6b, so a Kubernetes install served a different model than a
+    # on fixture-prev:0.6b, so a Kubernetes install served a different model than a
     # native one -- precisely what this test's docstring says it exists to
     # prevent -- and the assertion certified it because both sides of the drift
     # were spelled out here.

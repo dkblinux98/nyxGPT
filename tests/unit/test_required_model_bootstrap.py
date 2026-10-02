@@ -24,7 +24,7 @@ from nyxgpt.config import get_default_model
 
 def _cfg(**overrides: str) -> ConfigParser:
     cfg = ConfigParser()
-    cfg["nyxgpt"] = {"default_model": overrides.get("default_model", "qwen3:0.6b")}
+    cfg["nyxgpt"] = {"default_model": overrides.get("default_model", "fixture-prev:0.6b")}
     cfg["ollama"] = {"base_url": "http://127.0.0.1:11434"}
     cfg["rag"] = {"embedding_model": overrides.get("embedding_model", "nomic-embed-text")}
     return cfg
@@ -74,14 +74,14 @@ def test_both_models_are_required_regardless_of_the_rag_toggle():
     cfg = _cfg()
     cfg["rag"]["enable_chat_context"] = "false"
     roles = {m.role: m.name for m in model_bootstrap.required_models(cfg)}
-    assert roles == {"chat": "qwen3:0.6b", "embedding": "nomic-embed-text"}
+    assert roles == {"chat": "fixture-prev:0.6b", "embedding": "nomic-embed-text"}
 
 
 @pytest.mark.unit
 def test_required_models_come_from_config_not_literals():
-    cfg = _cfg(default_model="llama3.1:8b", embedding_model="mxbai-embed-large")
+    cfg = _cfg(default_model="fixture-chat:8b", embedding_model="mxbai-embed-large")
     assert [m.name for m in model_bootstrap.required_models(cfg)] == [
-        "llama3.1:8b",
+        "fixture-chat:8b",
         "mxbai-embed-large",
     ]
 
@@ -93,7 +93,7 @@ def test_blank_embedding_model_falls_back_to_the_chat_model_and_is_listed_once()
     for the same model twice."""
     cfg = _cfg(embedding_model="")
     assert [(m.role, m.name) for m in model_bootstrap.required_models(cfg)] == [
-        ("chat", "qwen3:0.6b")
+        ("chat", "fixture-prev:0.6b")
     ]
 
 
@@ -102,7 +102,7 @@ def test_blank_embedding_model_falls_back_to_the_chat_model_and_is_listed_once()
     ("configured", "expected"),
     [
         ("nomic-embed-text", "nomic-embed-text:latest"),
-        ("qwen3:0.6b", "qwen3:0.6b"),
+        ("fixture-prev:0.6b", "fixture-prev:0.6b"),
         ("registry.example.com:5000/team/model", "registry.example.com:5000/team/model:latest"),
     ],
 )
@@ -124,14 +124,14 @@ def test_missing_models_are_pulled(monkeypatch):
 
     outcomes = model_bootstrap.ensure_required_models(cfg=_cfg())
 
-    assert [name for name, _url, _t in pulled] == ["qwen3:0.6b", "nomic-embed-text"]
+    assert [name for name, _url, _t in pulled] == ["fixture-prev:0.6b", "nomic-embed-text"]
     assert all(o.ok and not o.already_present for o in outcomes)
 
 
 @pytest.mark.unit
 def test_the_pull_is_idempotent(monkeypatch):
     """A re-install over a warm machine must download nothing."""
-    _installed(monkeypatch, ["qwen3:0.6b", "nomic-embed-text"])
+    _installed(monkeypatch, ["fixture-prev:0.6b", "nomic-embed-text"])
 
     def fail_pull(*_a, **_k):
         raise AssertionError("nothing may be downloaded when both models are present")
@@ -146,7 +146,7 @@ def test_the_pull_is_idempotent(monkeypatch):
 
 @pytest.mark.unit
 def test_only_the_missing_model_is_pulled(monkeypatch):
-    _installed(monkeypatch, ["qwen3:0.6b"])
+    _installed(monkeypatch, ["fixture-prev:0.6b"])
     pulled = _record_pulls(monkeypatch)
 
     model_bootstrap.ensure_required_models(cfg=_cfg())
@@ -201,7 +201,7 @@ def test_the_remediation_names_nyxgpt_commands_only():
     """Operational Command Wrapping: no raw `ollama pull` in user-facing text."""
     hint = model_bootstrap.missing_models_hint(model_bootstrap.required_models(_cfg()))
     assert "nyxgpt ops install" in hint
-    assert "nyxgpt models pull qwen3:0.6b" in hint
+    assert "nyxgpt models pull fixture-prev:0.6b" in hint
     assert "ollama pull" not in hint
 
 
@@ -218,7 +218,9 @@ def test_install_step_fails_when_a_model_could_not_be_pulled(monkeypatch):
         "ensure_required_models",
         lambda **_k: [
             model_bootstrap.ModelPullOutcome(
-                model=model_bootstrap.RequiredModel("chat", "qwen3:0.6b", "[nyxgpt] default_model"),
+                model=model_bootstrap.RequiredModel(
+                    "chat", "fixture-prev:0.6b", "[nyxgpt] default_model"
+                ),
                 ok=False,
                 already_present=False,
                 detail="registry timed out",
@@ -229,7 +231,7 @@ def test_install_step_fails_when_a_model_could_not_be_pulled(monkeypatch):
     results = ops._ensure_required_models()
 
     assert [r.ok for r in results] == [False]
-    assert "qwen3:0.6b" in results[0].message
+    assert "fixture-prev:0.6b" in results[0].message
     assert "registry timed out" in results[0].details
 
 
@@ -246,7 +248,7 @@ def test_install_step_reports_present_models_as_ok(monkeypatch):
                 detail=f"'{name}' already installed",
             )
             for role, name, setting in (
-                ("chat", "qwen3:0.6b", "[nyxgpt] default_model"),
+                ("chat", "fixture-prev:0.6b", "[nyxgpt] default_model"),
                 ("embedding", "nomic-embed-text", "[rag] embedding_model"),
             )
         ],
@@ -284,7 +286,7 @@ def test_terraform_install_pulls_the_same_models():
 
 @pytest.mark.unit
 def test_status_reports_each_model_and_the_fix(monkeypatch, capsys):
-    _installed(monkeypatch, ["qwen3:0.6b"])
+    _installed(monkeypatch, ["fixture-prev:0.6b"])
     monkeypatch.setattr("nyxgpt.config.load_config", lambda *_a, **_k: _cfg())
 
     info = ops.required_models_status(cfg=_cfg())
@@ -293,7 +295,7 @@ def test_status_reports_each_model_and_the_fix(monkeypatch, capsys):
     assert info["ready"] is False
     assert [m["present"] for m in info["models"]] == [True, False]
     out = capsys.readouterr().out
-    assert "chat: qwen3:0.6b -- PRESENT" in out
+    assert "chat: fixture-prev:0.6b -- PRESENT" in out
     assert "embedding: nomic-embed-text -- MISSING" in out
     assert "nyxgpt ops install" in out
 
@@ -342,10 +344,10 @@ def test_status_error_names_the_failure_class_not_the_transport_message(monkeypa
 def test_doctor_reports_a_missing_model(monkeypatch, tmp_path):
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text(
-        "[nyxgpt]\ndefault_model = qwen3:0.6b\n\n[rag]\nembedding_model = nomic-embed-text\n",
+        "[nyxgpt]\ndefault_model = fixture-prev:0.6b\n\n[rag]\nembedding_model = nomic-embed-text\n",
         encoding="utf-8",
     )
-    _installed(monkeypatch, ["qwen3:0.6b"])
+    _installed(monkeypatch, ["fixture-prev:0.6b"])
 
     issue = ops._missing_required_models_issue(cfg_path)
 
@@ -359,7 +361,7 @@ def test_doctor_stays_silent_when_ollama_is_unreachable(monkeypatch, tmp_path):
     """That is the ollama service's failure, reported elsewhere -- guessing
     "model missing" from it would misname the fault."""
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen3:0.6b\n", encoding="utf-8")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-prev:0.6b\n", encoding="utf-8")
 
     def unreachable(base_url=None):  # noqa: ARG001
         raise RuntimeError("connection refused")
@@ -395,7 +397,7 @@ def test_status_reports_defaults_instead_of_raising_when_there_is_no_config(
     # would in fact ask Ollama for. Asked of `get_default_model` rather than
     # spelled out: this test is about the no-config branch not raising, and
     # hard-coding the model name made it fail on every run from the day the
-    # default changed (`llama3.1:8b` -> `qwen3.5:0.8b`, commit 1ece87b0) for a
+    # default changed (`fixture-chat:8b` -> `qwen3.5:0.8b`, commit 1ece87b0) for a
     # reason that has nothing to do with what it tests (#4020).
     code_default = get_default_model(ConfigParser())
     assert [m["role"] for m in info["models"]] == ["chat"]
@@ -449,7 +451,7 @@ def test_env_sync_derives_the_compose_model_vars_from_config(tmp_path, monkeypat
     they must follow config.ini rather than being literals in the compose file."""
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text(
-        "[nyxgpt]\ndefault_model = llama3.1:8b\n\n"
+        "[nyxgpt]\ndefault_model = fixture-chat:8b\n\n"
         "[rag]\nembedding_model = mxbai-embed-large\n\n"
         "[auth]\nenabled = true\napi_key = secret\n",
         encoding="utf-8",
@@ -462,7 +464,7 @@ def test_env_sync_derives_the_compose_model_vars_from_config(tmp_path, monkeypat
     env = dict(
         line.split("=", 1) for line in env_path.read_text(encoding="utf-8").splitlines() if line
     )
-    assert env["NYXGPT_DEFAULT_MODEL"] == "llama3.1:8b"
+    assert env["NYXGPT_DEFAULT_MODEL"] == "fixture-chat:8b"
     assert env["NYXGPT_EMBEDDING_MODEL"] == "mxbai-embed-large"
 
 
@@ -472,15 +474,14 @@ def test_env_sync_writes_the_model_vars_even_with_no_secrets(tmp_path):
     needs to know which models to pull."""
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text(
-        "[nyxgpt]\ndefault_model = qwen3:0.6b\n\n[rag]\nembedding_model = nomic-embed-text\n\n"
+        "[nyxgpt]\ndefault_model = fixture-prev:0.6b\n\n[rag]\nembedding_model = nomic-embed-text\n\n"
         "[auth]\nenabled = false\n",
         encoding="utf-8",
     )
     env_path = tmp_path / ".env"
-
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
     assert all(r.ok for r in results)
     text = env_path.read_text(encoding="utf-8")
-    assert "NYXGPT_DEFAULT_MODEL=qwen3:0.6b" in text
+    assert "NYXGPT_DEFAULT_MODEL=fixture-prev:0.6b" in text
     assert "NYXGPT_EMBEDDING_MODEL=nomic-embed-text" in text  # pragma: allowlist secret

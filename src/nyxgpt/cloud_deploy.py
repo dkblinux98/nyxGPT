@@ -1430,7 +1430,7 @@ fi
 #     Ollama would be a second model server on the same box, holding a
 #     second copy of every pulled model in RAM, that nothing points at.
 #   * **Node/npm.** The native web service builds the Next bundle on the
-#     host with `npm ci`; in Kubernetes mode `nyxgpt-web:local` is a
+#     host with `npm ci`; in Kubernetes mode the web image is a
 #     *container* built by docker from the published `nyxgpt-web` artifact
 #     (`_build_and_load_k8s_web_image`), so the host toolchain is never
 #     used. Installing it would add a NodeSource repo and several minutes to

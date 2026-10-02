@@ -39,9 +39,9 @@ describe('ModelsPage CRUD flows', () => {
   });
 
   it('renders the model list after a successful load', async () => {
-    fetchMock.mockResolvedValueOnce(okJson({ models: ['llama3.1:8b', 'qwen2.5:7b'] }));
+    fetchMock.mockResolvedValueOnce(okJson({ models: ['fixture-chat:8b', 'qwen2.5:7b'] }));
     render(<ModelsPage />);
-    expect(await screen.findByText('llama3.1:8b')).toBeInTheDocument();
+    expect(await screen.findByText('fixture-chat:8b')).toBeInTheDocument();
     expect(screen.getByText('qwen2.5:7b')).toBeInTheDocument();
   });
 

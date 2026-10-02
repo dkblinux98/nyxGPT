@@ -403,6 +403,16 @@ touched, and a Pod that is already terminating
 (`metadata.deletionTimestamp`) is skipped -- its replacement is already on
 the way, so healing it again would only spend a restart-budget attempt.
 
+**A Pod whose ReplicaSet has been scaled to zero is skipped too** (#3956): it
+is the residue of a finished rollout, not part of the deployment. Rollouts
+happen on an ordinary install -- writing the real error-tracking DSN rolls api
+and web -- and the superseded ReplicaSet leaves its terminated Pod in the
+namespace, which would otherwise appear here as a `Failed`, unhealable
+component of a deployment whose Deployments are both fully ready. A Pod a
+*live* controller owns is reported whatever its phase, so a real failure is
+never hidden, and a ReplicaSet read that fails changes nothing: a Pod leaves
+the list only on positive evidence that its owner is finished.
+
 Until #3828 the survey selected `app=nyxgpt-api-canary-pool` alone, so web,
 Cassandra, Ollama and the entire observability tier were observed and healed
 by nothing in this mode.

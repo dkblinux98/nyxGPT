@@ -64,9 +64,9 @@ type SessionFixture = {
 };
 
 const defaultSessions: SessionFixture[] = [
-  { name: 'default', title: 'Default', messages: 2, pinned: false, tags: ['work'], model: 'llama3.1:8b' },
+  { name: 'default', title: 'Default', messages: 2, pinned: false, tags: ['work'], model: 'fixture-chat:8b' },
   { name: 'second', title: 'Second Chat', messages: 5, pinned: true, tags: ['home'], model: 'qwen2.5:7b' },
-  { name: 'third', title: 'Third Chat', messages: 1, pinned: false, tags: [], model: 'llama3.1:8b' },
+  { name: 'third', title: 'Third Chat', messages: 1, pinned: false, tags: [], model: 'fixture-chat:8b' },
 ];
 
 let sessionsPayload: SessionFixture[];

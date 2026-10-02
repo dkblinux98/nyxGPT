@@ -231,7 +231,7 @@ def test_truncate_stops_when_tiktoken_fails_mid_loop_and_at_minimal(caplog) -> N
 def _rag_cfg(tmp_path: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }
@@ -310,7 +310,7 @@ def test_rag_filters_logs_warning_on_invalid_dates(monkeypatch, tmp_path: Path, 
 def _stream_cfg(tmp_path: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }

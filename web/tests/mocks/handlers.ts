@@ -204,7 +204,7 @@ export const handlers = [
   // GET /api/models
   http.get(`${API_BASE_URL}/api/v1/models`, () => {
     return HttpResponse.json({
-      models: ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'],
+      models: ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b'],
     });
   }),
 
@@ -412,7 +412,7 @@ export const handlers = [
   // GET /api/models (relative URL for admin page)
   http.get('/api/models', () => {
     return HttpResponse.json({
-      models: ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'],
+      models: ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b'],
     });
   }),
 
@@ -430,7 +430,7 @@ export const handlers = [
     return HttpResponse.json({
       info: {
         ollama_base_url: 'http://127.0.0.1:11434',
-        default_model: 'llama3.1:8b',
+        default_model: 'fixture-chat:8b',
         rag_enabled: false,
       },
       resource_metrics: {

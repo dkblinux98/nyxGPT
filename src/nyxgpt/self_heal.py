@@ -106,9 +106,20 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.install_mode import DEV_LAUNCHD_LABELS, read_install_mode
-from nyxgpt.k8s_pod_state import PodState, classify_pod
+from nyxgpt.k8s_pod_state import (
+    PodState,
+    classify_pod,
+    parse_retired_replicasets,
+    pod_is_retired,
+    retired_replicaset_argv,
+)
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
-from nyxgpt.subprocess_bounds import bounded_argv, timeout_message, timeout_result
+from nyxgpt.subprocess_bounds import (
+    bounded_argv,
+    kubectl_env,
+    timeout_message,
+    timeout_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +500,13 @@ def _run(
     uses it, to prove a candidate hop hands this process's environment
     through.
     """
+    # The kubeconfig a `kubectl` child would have resolved by default, named
+    # explicitly (#3956): on a k3s node kubectl is k3s's shim and its default is
+    # a root-only file, so the Pod watchdog on a `cloud deploy --kubernetes`
+    # instance could not read the namespace it is supposed to heal. Applied
+    # before `env` is used, and a no-op for every non-kubectl command, so the
+    # wholesale-replacement contract above is unaffected.
+    env = kubectl_env(cmd, env)
     cmd = bounded_argv(cmd, timeout)
     try:
         result = subprocess.run(
@@ -1010,6 +1028,20 @@ def _kubernetes_pod_tier(labels: dict[str, Any]) -> str:
     return ""
 
 
+def _retired_replicasets() -> frozenset[str]:
+    """The namespace's ReplicaSets with zero desired replicas, or an empty set.
+
+    Empty on any failure, deliberately: a Pod may only be dropped from the
+    component list on positive evidence that its owner is finished, so a
+    cluster that will not answer leaves the list exactly as it was (the same
+    fail-open contract `ops._k8s_retired_replicasets` carries).
+    """
+    cp = _run(retired_replicaset_argv(K8S_NAMESPACE), timeout=15.0, expected=True)
+    if cp.returncode != 0:
+        return frozenset()
+    return parse_retired_replicasets(cp.stdout or "")
+
+
 def _list_kubernetes_component_status(already_managed: set[str]) -> list[ComponentStatus]:
     """Health-check every Kubernetes-managed nyxGPT Pod via `kubectl get pods`.
 
@@ -1034,6 +1066,18 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     skipped: its replacement is on the way, and a Pod on its way out reads as
     "Running but not Ready" -- healing it again would spend a restart-budget
     attempt on a deletion that has already happened.
+
+    So is a Pod owned by a ReplicaSet scaled to zero (`pod_is_retired`, #3956).
+    `nyxgpt ops install --kubernetes` provisions GlitchTip after the stack is
+    up, which writes the real error-tracking DSN and rolls api/web; the
+    superseded ReplicaSet leaves a terminated Pod behind, and it carries the
+    `app` label that puts it in the `core` tier. Reported, it is a component
+    that is Failed and `healable=False` forever -- on a deployment where both
+    Deployments are 1/1 -- which is the same misreading that failed the owner's
+    2026-08-26 install three lines above `nyxgpt-web-stable 1/1`. The extra
+    ReplicaSet read is taken only when some Pod is not healthy, because that is
+    the only case where it can change an answer and this runs every 15 seconds
+    (first principle 1).
 
     What each Pod's state *means* is `nyxgpt.k8s_pod_state`'s job, shared with
     `ops.py` (#3832), and two of its distinctions land here:
@@ -1073,8 +1117,8 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
         logger.warning("self-heal: failed to parse kubectl get pods output: %s", e)
         return []
 
-    statuses: list[ComponentStatus] = []
     items = data.get("items", []) if isinstance(data, dict) else []
+    ours: list[tuple[dict[str, Any], str, str, PodState]] = []
     for pod in items:
         if not isinstance(pod, dict):
             continue
@@ -1085,7 +1129,15 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
         tier = _kubernetes_pod_tier(metadata.get("labels") or {})
         if not tier:
             continue
-        pod_state = classify_pod(pod)
+        ours.append((pod, name, tier, classify_pod(pod)))
+
+    if any(not pod_state.healthy for _pod, _name, _tier, pod_state in ours):
+        retired = _retired_replicasets()
+        if retired:
+            ours = [entry for entry in ours if not pod_is_retired(entry[0], retired)]
+
+    statuses: list[ComponentStatus] = []
+    for _pod, name, tier, pod_state in ours:
         healable = pod_state.healthy or pod_state.deletion_may_recover
         statuses.append(
             ComponentStatus(

@@ -154,6 +154,21 @@ jobs:
           SPRINT_AUTOPILOT: ${{ vars.SPRINT_AUTOPILOT }}
           KICK_ACTOR: ${{ github.actor }}
           KICK_OWNER: ${{ vars.HUMAN_OWNER }}
+          # How many issues may be In Progress or In Review at once. A repo
+          # variable is not an env var on its own -- it reaches the pull only
+          # through this line, which is why the knob had no setting anywhere
+          # and sat at its built-in default of 2 from the day it was written.
+          #
+          # Unset renders empty, and `${WIP_LIMIT:-2}` in developer_pull_next.sh
+          # then restores that same default, so adding this changes nothing
+          # until the variable is set.
+          #
+          # Raising it does not raise dev parallelism on its own: the
+          # file-overlap check still defers any candidate whose files collide
+          # with in-flight work, and that is deliberate (D-011 forbids
+          # rebasing, so two agents in one file means a hand-resolved
+          # conflict). Reviews are per-PR and do parallelise freely.
+          WIP_LIMIT: ${{ vars.WIP_LIMIT }}
         run: |
           set -euo pipefail
           # Sprint-scope selection for AGENT-posted kicks while autopilot is

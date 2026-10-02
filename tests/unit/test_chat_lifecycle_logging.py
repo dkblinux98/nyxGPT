@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 def _cfg(tmp_path: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }
@@ -52,13 +52,13 @@ def test_chat_logs_start_and_completion(
     assert "Chat request started" in records
     started = records["Chat request started"]
     assert started.session == "lifecycle-test"
-    assert started.model == "llama3.1:8b"
+    assert started.model == "fixture-chat:8b"
     assert started.streaming is False
 
     assert "Chat request completed" in records
     completed = records["Chat request completed"]
     assert completed.session == "lifecycle-test"
-    assert completed.model == "llama3.1:8b"
+    assert completed.model == "fixture-chat:8b"
     assert completed.streaming is False
     assert completed.outcome == "success"
     assert isinstance(completed.duration_ms, float)

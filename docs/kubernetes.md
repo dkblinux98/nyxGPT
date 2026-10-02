@@ -83,8 +83,11 @@ directly outside of `nyxgpt ops`. Only when neither path can supply the tool
 (an unsupported platform, or no network) does the command fail, and then with
 a link to the installer.
 
-It then builds `nyxgpt-api:local` and `nyxgpt-web:local` **from the published
-artifacts** (see [Install modes](#install-modes-artifact-and---dev)) and loads
+It then builds `nyxgpt-api:artifact-<version>` and
+`nyxgpt-web:artifact-<version>` **from the published artifacts** (see [Install
+modes](#install-modes-artifact-and---dev), and [Image
+tags](#image-tags-one-namespace-per-build-path) for why the tag names the build
+path and the version) and loads
 each into the cluster's image cache (kind/minikube get an explicit load step;
 Docker Desktop's built-in cluster shares the host cache already), bootstraps
 `~/.nyxGPT/k8s/secret.yaml` from the example (prompting for the API key
@@ -156,13 +159,33 @@ Pod (with the reason for a failed one) and per observability workload, and the
 Infrastructure page in the admin dashboard badges both lists READY / PENDING
 (amber) / FAILED from the same classification.
 
+A fourth label, `[ATTENTION]`, marks a **misconfiguration the step found**: not
+a failure of the step, and not a pass either. The observability GlitchTip checks
+use it — a placeholder or rejected Grafana token means every SRE Home GlitchTip
+panel will answer `401` until an operator acts, which is nothing like the
+`[NO DATA]` of a backend that is up and has simply received nothing yet. It logs
+at WARNING with its remedy; it does not fail the install (#3956).
+
+**A Pod no live controller owns is not the deployment's state.** Pods whose
+ReplicaSet the Deployment controller has scaled to zero are dropped from every
+readout above: they are the residue of a finished rollout, and the current
+ReplicaSet's Pods are the cluster's answer about the workload. This is not a
+filter on the *phase* — a `Failed` Pod of the **current** ReplicaSet still fails,
+and says why (`Failed: OOMKilled`, `Failed: Evicted`, the container's exit code).
+The reason the distinction exists: on a cloud deploy the GlitchTip provisioning
+step writes the real error-tracking DSN, which rolls the api/web Deployments and
+leaves the pre-DSN ReplicaSet's terminated Pod in the namespace. The install
+failed on that Pod — deterministically, on the same ReplicaSet hash every time —
+three lines above `nyxgpt-web-stable 1/1`, and exited before installing the
+cloud deployment's access bridge (owner acceptance, 2026-08-26).
+
 Each image build mirrors the Homebrew reinstall-if-needed behavior (see
 [ops.md](ops.md)): it fingerprints the app source that image is built from
 (`src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`; the web tree for
 `nyxgpt-web`) and only re-runs `docker build` when that source changed since
 the image was last built, reporting `<image>: built` / `rebuilt (source changed since last
 build)` / `already up to date (skipped rebuild)` instead of always
-rebuilding. `nyxgpt-web:local`'s build bakes `NEXT_PUBLIC_API_BASE_URL` into
+rebuilding. The web image's build bakes `NEXT_PUBLIC_API_BASE_URL` into
 the browser bundle at build time (see [web/Dockerfile](../web/Dockerfile)); it
 defaults to the same host-local address the [Verify](#4-verify) section below
 publishes. Nothing under `web/src` actually reads it today — every browser call
@@ -219,10 +242,12 @@ what [Kubernetes on the cloud target](#kubernetes-on-the-cloud-target) below
 does. `--dev` on an EC2 **Mac** target (`--os macos`) is refused rather than
 ignored, as is `--os macos --kubernetes`.
 
-Switching between the modes re-rolls the app tier: both modes produce the same
-`:local` tags, so the Deployment specs are identical across a switch and
-`kubectl apply` alone would leave the Pods on the previous mode's image while
-every report claimed the new one.
+Switching between the modes re-rolls the app tier. Since #3956 the two modes
+have *different* tags (`dev-<version>` vs `artifact-<version>`), so the apply
+itself changes the Deployment spec — but the re-roll is still explicit, because
+a re-install at the same mode and version reuses its tag and `kubectl apply`
+alone would then leave the Pods on the previously built image while every report
+claimed the new one.
 
 `nyxgpt ops status` prints the mode under the Kubernetes section (and
 `nyxgpt ops doctor` as `Install mode (kubernetes): …`), separately from the
@@ -256,6 +281,46 @@ never a bring-your-own cluster -- the cluster itself too) with:
 ```bash
 nyxgpt ops down --kubernetes
 ```
+
+### Image tags: one namespace per build path (#3956)
+
+Four local build paths put nyxGPT images on one Docker daemon — Terraform dev,
+Terraform artifact, Kubernetes dev, Kubernetes artifact. Each tag names **the
+build path and the version**:
+
+| path | api tag | web tag |
+| --- | --- | --- |
+| `--kubernetes` / `--terraform` (artifact, default) | `nyxgpt-api:artifact-<version>` | `nyxgpt-web:artifact-<version>` |
+| `--kubernetes --dev` / `--terraform --dev` | `nyxgpt-api:dev-<version>` | `nyxgpt-web:dev-<version>` |
+| `nyxgpt canary deploy` | `nyxgpt-api:<version>-<git short sha>` | `nyxgpt-web:<version>-<git short sha>` |
+
+The two *substrates* deliberately share each mode's tag: at a given version and
+mode both build the same source with the same Dockerfile through the same
+staging helper, so one tag means one image rather than two paths racing for a
+name. Nothing mutable is shared — a `--dev` build cannot overwrite an artifact
+build, and neither can overwrite a canary stamp.
+
+**Why it matters beyond tidiness.** `nyxgpt canary status` and `canary promote`
+read the version a track is serving straight off the Pod's image tag. All three
+install paths used to write `nyxgpt-api:local`/`nyxgpt-web:local`, so a
+deployment of published 3.0.0rc14 reported its images as `local` — and on a
+cloud instance (owner acceptance, 2026-08-26) there was no second window to run
+`docker images` in, so an operator had no way at all to tell which build was
+serving, or whether a Pod was running the release they asked for.
+
+The tag reaches the cluster through a **generated kustomize overlay** at
+`~/.nyxGPT/k8s-images/kustomization.yaml`, which is `resources: [../k8s]` plus an
+`images:` transform. `k8s/` itself is never edited: the manifests pin image
+*names*, the overlay names the *tag*, and the manifest set the deployment
+applies stays byte-identical to the repository's copy — which is
+[#3506](../product_management/DECISION_AWS_COMPUTE_SUBSTRATE.md)'s premise and
+what `k3s-cloud-smoke.yml` asserts. It is also why the tag is in the object the
+*first* apply creates: a `kubectl set image` after the fact would roll every
+Deployment a second time on every install.
+
+The manual reference steps at the end of this document build and apply
+`nyxgpt-api:local` by hand, which is self-consistent (the committed manifests
+carry that literal tag) and is not what the wrapped command does.
 
 The rest of this document walks through what those two commands do, plus
 the canary rollout tooling that operates on top of this deployment once

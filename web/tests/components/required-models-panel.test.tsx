@@ -15,7 +15,7 @@ const READY = {
   ready: true,
   remediation: '',
   models: [
-    { role: 'chat', model: 'qwen3:0.6b', setting: '[nyxgpt] default_model', present: true },
+    { role: 'chat', model: 'fixture-prev:0.6b', setting: '[nyxgpt] default_model', present: true },
     {
       role: 'embedding',
       model: 'nomic-embed-text',
@@ -66,7 +66,7 @@ describe('RequiredModelsPanel', () => {
     mockFetch([{ json: READY }]);
     render(<RequiredModelsPanel />);
 
-    expect(await screen.findByText('qwen3:0.6b')).toBeInTheDocument();
+    expect(await screen.findByText('fixture-prev:0.6b')).toBeInTheDocument();
     expect(screen.getByText('nomic-embed-text')).toBeInTheDocument();
     expect(screen.getByText(/\[nyxgpt\] default_model/)).toBeInTheDocument();
     expect(screen.getByText(/\[rag\] embedding_model/)).toBeInTheDocument();
@@ -82,7 +82,7 @@ describe('RequiredModelsPanel', () => {
     render(<RequiredModelsPanel />);
 
     const button = await screen.findByRole('button', { name: 'Pull nomic-embed-text' });
-    expect(screen.queryByRole('button', { name: 'Pull qwen3:0.6b' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pull fixture-prev:0.6b' })).not.toBeInTheDocument();
     // The remediation names nyxgpt commands, never a raw `ollama pull`.
     expect(screen.getByText(/nyxgpt ops install/)).toBeInTheDocument();
     expect(screen.queryByText(/ollama pull/)).not.toBeInTheDocument();
@@ -122,7 +122,7 @@ describe('RequiredModelsPanel', () => {
     expect(
       screen.getByText('Failed to load model readiness: HTTP 502')
     ).toBeInTheDocument();
-    expect(screen.queryByText('qwen3:0.6b')).not.toBeInTheDocument();
+    expect(screen.queryByText('fixture-prev:0.6b')).not.toBeInTheDocument();
   });
 
   it('still reports something readable when the failure is not an Error', async () => {
@@ -175,7 +175,7 @@ describe('RequiredModelsPanel', () => {
     await waitFor(() =>
       expect(screen.queryByLabelText('Loading model readiness...')).not.toBeInTheDocument()
     );
-    expect(screen.queryByText('qwen3:0.6b')).not.toBeInTheDocument();
+    expect(screen.queryByText('fixture-prev:0.6b')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 

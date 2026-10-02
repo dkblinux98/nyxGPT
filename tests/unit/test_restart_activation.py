@@ -354,10 +354,9 @@ class TestWizardDetail:
 
     @staticmethod
     def _cfg(**auth) -> ConfigParser:
+        running = {"enabled": "true", "api_key": "old-key", **auth}  # pragma: allowlist secret
         cfg = ConfigParser()
-        cfg.read_dict(
-            {"auth": {"enabled": "true", "api_key": "old-key", **auth}}  # pragma: allowlist secret
-        )
+        cfg.read_dict({"auth": running})
         return cfg
 
     def test_records_previous_value_per_component(self):

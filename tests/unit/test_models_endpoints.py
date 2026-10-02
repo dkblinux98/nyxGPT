@@ -40,7 +40,7 @@ def test_models_required_reports_readiness_for_the_dashboard():
         "models": [
             {
                 "role": "chat",
-                "model": "qwen3:0.6b",
+                "model": "fixture-prev:0.6b",
                 "setting": "[nyxgpt] default_model",
                 "present": True,
             }
@@ -70,7 +70,7 @@ def test_models_required_does_not_502_on_an_unreachable_ollama():
         "models": [
             {
                 "role": "chat",
-                "model": "qwen3:0.6b",
+                "model": "fixture-prev:0.6b",
                 "setting": "[nyxgpt] default_model",
                 "present": None,
             }
@@ -88,7 +88,7 @@ def test_models_required_does_not_502_on_an_unreachable_ollama():
 def test_models_list_returns_names():
     ollama_response = {
         "models": [
-            {"name": "llama3.1:8b", "size": 123},
+            {"name": "fixture-chat:8b", "size": 123},
             {"name": "mistral:7b", "size": 456},
             # A malformed entry (not a dict) should be skipped, not crash.
             "not-a-dict",
@@ -101,7 +101,7 @@ def test_models_list_returns_names():
         response = client.get("/api/v1/models")
 
     assert response.status_code == 200
-    assert response.json() == {"models": ["llama3.1:8b", "mistral:7b"]}
+    assert response.json() == {"models": ["fixture-chat:8b", "mistral:7b"]}
     mock_get.assert_called_once()
 
 
@@ -157,14 +157,14 @@ def test_models_pull_non_streaming_success():
     ):
         client = TestClient(app)
         response = client.post(
-            "/api/v1/models/pull", json={"model": " llama3.1:8b ", "stream": False}
+            "/api/v1/models/pull", json={"model": " fixture-chat:8b ", "stream": False}
         )
 
     assert response.status_code == 200
     body = response.json()
-    assert body == {"ok": True, "model": "llama3.1:8b", "result": ollama_result}
+    assert body == {"ok": True, "model": "fixture-chat:8b", "result": ollama_result}
     mock_post.assert_called_once()
-    mock_record.assert_called_once_with("model.pull", "llama3.1:8b")
+    mock_record.assert_called_once_with("model.pull", "fixture-chat:8b")
 
 
 def test_models_pull_non_streaming_default_stream_is_false():
@@ -174,7 +174,7 @@ def test_models_pull_non_streaming_default_stream_is_false():
         patch("nyxgpt.app.admin_activity_module.record"),
     ):
         client = TestClient(app)
-        response = client.post("/api/v1/models/pull", json={"model": "llama3.1:8b"})
+        response = client.post("/api/v1/models/pull", json={"model": "fixture-chat:8b"})
 
     assert response.status_code == 200
 
@@ -182,7 +182,7 @@ def test_models_pull_non_streaming_default_stream_is_false():
 def test_models_pull_non_streaming_ollama_failure_returns_502():
     with patch("nyxgpt.app.post_json", side_effect=RuntimeError("ollama down")):
         client = TestClient(app)
-        response = client.post("/api/v1/models/pull", json={"model": "llama3.1:8b"})
+        response = client.post("/api/v1/models/pull", json={"model": "fixture-chat:8b"})
 
     assert response.status_code == 502
     body = response.json()
@@ -211,7 +211,7 @@ def test_models_pull_streaming_success_emits_progress_and_completion():
         TestClient(app).stream(
             "POST",
             "/api/v1/models/pull",
-            json={"model": "llama3.1:8b", "stream": True},
+            json={"model": "fixture-chat:8b", "stream": True},
         ) as response,
     ):
         assert response.status_code == 200
@@ -222,9 +222,9 @@ def test_models_pull_streaming_success_emits_progress_and_completion():
     assert '"status": "downloading"' in body or '"status":"downloading"' in body
     assert '"percent": 50.0' in body or '"percent":50.0' in body
     assert '"ok": true' in body or '"ok":true' in body
-    assert '"model": "llama3.1:8b"' in body or '"model":"llama3.1:8b"' in body
+    assert '"model": "fixture-chat:8b"' in body or '"model":"fixture-chat:8b"' in body
     mock_lines.assert_called_once()
-    mock_record.assert_called_once_with("model.pull", "llama3.1:8b")
+    mock_record.assert_called_once_with("model.pull", "fixture-chat:8b")
 
 
 def test_models_pull_streaming_error_emits_error_event():
@@ -237,7 +237,7 @@ def test_models_pull_streaming_error_emits_error_event():
         TestClient(app).stream(
             "POST",
             "/api/v1/models/pull",
-            json={"model": "llama3.1:8b", "stream": True},
+            json={"model": "fixture-chat:8b", "stream": True},
         ) as response,
     ):
         assert response.status_code == 200
@@ -262,12 +262,12 @@ def test_models_delete_success():
         patch("nyxgpt.app.admin_activity_module.record") as mock_record,
     ):
         client = TestClient(app)
-        response = client.delete("/api/v1/models/llama3.1:8b")
+        response = client.delete("/api/v1/models/fixture-chat:8b")
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "model": "llama3.1:8b"}
+    assert response.json() == {"ok": True, "model": "fixture-chat:8b"}
     mock_delete.assert_called_once()
-    mock_record.assert_called_once_with("model.delete", "llama3.1:8b")
+    mock_record.assert_called_once_with("model.delete", "fixture-chat:8b")
 
 
 def test_models_delete_invalid_name_returns_400():
@@ -275,7 +275,7 @@ def test_models_delete_invalid_name_returns_400():
         "nyxgpt.app.models.delete_model", side_effect=ValueError("Model name cannot be empty")
     ):
         client = TestClient(app)
-        response = client.delete("/api/v1/models/llama3.1:8b")
+        response = client.delete("/api/v1/models/fixture-chat:8b")
 
     assert response.status_code == 400
     assert response.json()["error"]["message"] == "Model name cannot be empty"
@@ -284,7 +284,7 @@ def test_models_delete_invalid_name_returns_400():
 def test_models_delete_ollama_failure_returns_502():
     with patch("nyxgpt.app.models.delete_model", side_effect=RuntimeError("ollama unreachable")):
         client = TestClient(app)
-        response = client.delete("/api/v1/models/llama3.1:8b")
+        response = client.delete("/api/v1/models/fixture-chat:8b")
 
     assert response.status_code == 502
     body = response.json()
@@ -299,7 +299,7 @@ def test_models_delete_ollama_failure_returns_502():
 
 def test_models_info_success():
     info = {
-        "modelfile": "FROM llama3.1:8b",
+        "modelfile": "FROM fixture-chat:8b",
         "parameters": "temperature 0.7",
         "template": "{{ .Prompt }}",
         "size": 4_700_000_000,
@@ -307,10 +307,10 @@ def test_models_info_success():
     }
     with patch("nyxgpt.app.models.show_model", return_value=info) as mock_show:
         client = TestClient(app)
-        response = client.get("/api/v1/models/llama3.1:8b/info")
+        response = client.get("/api/v1/models/fixture-chat:8b/info")
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "model": "llama3.1:8b", "info": info}
+    assert response.json() == {"ok": True, "model": "fixture-chat:8b", "info": info}
     mock_show.assert_called_once()
 
 
@@ -319,7 +319,7 @@ def test_models_info_invalid_name_returns_400():
         "nyxgpt.app.models.show_model", side_effect=ValueError("Model name cannot be empty")
     ):
         client = TestClient(app)
-        response = client.get("/api/v1/models/llama3.1:8b/info")
+        response = client.get("/api/v1/models/fixture-chat:8b/info")
 
     assert response.status_code == 400
     assert response.json()["error"]["message"] == "Model name cannot be empty"
@@ -328,7 +328,7 @@ def test_models_info_invalid_name_returns_400():
 def test_models_info_ollama_failure_returns_502():
     with patch("nyxgpt.app.models.show_model", side_effect=RuntimeError("model not found")):
         client = TestClient(app)
-        response = client.get("/api/v1/models/llama3.1:8b/info")
+        response = client.get("/api/v1/models/fixture-chat:8b/info")
 
     assert response.status_code == 502
     body = response.json()

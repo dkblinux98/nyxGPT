@@ -21,7 +21,7 @@ def test_client_hints_modern_client(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-modern-client",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={
             "Accept": "text/event-stream",
@@ -64,7 +64,7 @@ def test_client_hints_sse_only_client(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-sse-only-client",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={
             "Accept": "text/event-stream",
@@ -103,7 +103,7 @@ def test_client_hints_legacy_client(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-legacy-client",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={
             "Accept": "text/plain",
@@ -143,7 +143,7 @@ def test_client_hints_no_headers_defaults_to_sse(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-no-headers",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         # No capability headers
     ) as response:
@@ -166,7 +166,7 @@ def test_client_hints_version_header(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-version-header",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={
             "Accept": "text/event-stream",
@@ -191,7 +191,7 @@ def test_client_hints_graceful_degradation(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-graceful-degradation",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={
             "X-Client-Supports-SSE": "maybe",  # Invalid value
@@ -220,7 +220,7 @@ def test_client_hints_accept_header_priority(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-accept-header",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={
             "Accept": "text/event-stream, text/plain",

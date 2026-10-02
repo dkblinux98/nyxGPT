@@ -44,7 +44,7 @@ def test_pull_model_sends_post_to_api_pull():
     with patch(
         "urllib.request.urlopen", return_value=_mock_response(b'{"status": "success"}')
     ) as mock_urlopen:
-        models.pull_model("llama3.1:8b", base_url=BASE_URL)
+        models.pull_model("fixture-chat:8b", base_url=BASE_URL)
 
     req = mock_urlopen.call_args[0][0]
     assert req.get_method() == "POST"
@@ -53,7 +53,7 @@ def test_pull_model_sends_post_to_api_pull():
 
 def test_delete_model_sends_delete_to_api_delete():
     with patch("urllib.request.urlopen", return_value=_mock_response(b"{}")) as mock_urlopen:
-        models.delete_model("llama3.1:8b", base_url=BASE_URL)
+        models.delete_model("fixture-chat:8b", base_url=BASE_URL)
 
     req = mock_urlopen.call_args[0][0]
     assert req.get_method() == "DELETE"
@@ -64,7 +64,7 @@ def test_show_model_sends_post_to_api_show():
     with patch(
         "urllib.request.urlopen", return_value=_mock_response(b'{"modelfile": "FROM x"}')
     ) as mock_urlopen:
-        models.show_model("llama3.1:8b", base_url=BASE_URL)
+        models.show_model("fixture-chat:8b", base_url=BASE_URL)
 
     req = mock_urlopen.call_args[0][0]
     assert req.get_method() == "POST"

@@ -81,7 +81,7 @@ The deployment has the same two install modes as the native install
 | | what the `api`/`web` containers run | image tags | needs a checkout |
 | --- | --- | --- | --- |
 | default (**artifact**) | images built from the published `nyxgpt-api-<version>.tar.gz` / `nyxgpt-web-<version>.tar.gz` source tarballs | `nyxgpt-api:artifact-<version>`, `nyxgpt-web:artifact-<version>` | no |
-| `--dev` | images built from the current checkout's working tree | `nyxgpt-api:local`, `nyxgpt-web:local` | yes |
+| `--dev` | images built from the current checkout's working tree | `nyxgpt-api:dev-<version>`, `nyxgpt-web:dev-<version>` | yes |
 
 ```bash
 nyxgpt ops install --terraform          # this nyxgpt's own published release
@@ -148,7 +148,7 @@ Terraform to provision the AWS substrate, but the application stack on that
 instance is the native install, not this Terraform deployment. `--terraform`
 here means `--local`, which is why the flag requires it.
 
-`--dev` builds `nyxgpt-api:local`/`nyxgpt-web:local`, skipping the build and
+`--dev` builds `nyxgpt-api:dev-<version>`/`nyxgpt-web:dev-<version>`, skipping the build and
 reusing the current image when the app source (`src/nyxgpt/` +
 `pyproject.toml` for api, `web/` for web) hasn't changed since it was last
 built — the same reinstall-if-needed behavior the Homebrew path uses.
@@ -285,8 +285,10 @@ terraform apply -var=api_image=nyxgpt-api:artifact-3.0.0 \
                 -var=web_image=nyxgpt-web:artifact-3.0.0
 ```
 
-(name whichever tags you have — `nyxgpt-api:local`/`nyxgpt-web:local` after a
-`nyxgpt ops install --terraform --dev`, which are also the variable defaults.
+(name whichever tags you have — `nyxgpt-api:dev-<version>`/`nyxgpt-web:dev-<version>`
+after a `nyxgpt ops install --terraform --dev`. `nyxgpt ops` always passes the
+resolved refs as `-var`s, so `variables.tf`'s literal defaults are a fallback
+for a raw `terraform` run, which no supported flow uses.
 Both images must already exist locally or be pullable: this configuration has
 no `build {}` block in any mode, so `terraform apply` never builds one. Run
 `nyxgpt ops install --terraform` to produce them.)

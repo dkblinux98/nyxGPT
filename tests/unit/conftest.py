@@ -221,9 +221,11 @@ def _refuse_real_docker_builds(monkeypatch):
 
     A unit test that shells out to the machine's Docker daemon is not a unit
     test: it takes minutes on a cold cache, it depends on a daemon being
-    there at all, and it leaves `nyxgpt-api:local` / `nyxgpt-web:local`
-    behind on the developer's machine -- where the next real `nyxgpt ops
-    install` reads them, and skips or forces a rebuild accordingly.
+    there at all, and it leaves the install's own images (`nyxgpt-api` /
+    `nyxgpt-web` at whatever tag the build path resolves -- `dev-<version>`
+    or `artifact-<version>` since #3956) behind on the developer's machine --
+    where the next real `nyxgpt ops install` reads them, and skips or forces a
+    rebuild accordingly.
 
     It is easy to do by accident, because the install paths build images
     through several layers: stubbing one and not the one below it is enough.

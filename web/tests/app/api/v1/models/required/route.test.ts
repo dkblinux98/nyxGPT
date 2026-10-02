@@ -14,7 +14,7 @@ const READY = {
   ready: true,
   remediation: '',
   models: [
-    { role: 'chat', model: 'qwen3:0.6b', setting: '[nyxgpt] default_model', present: true },
+    { role: 'chat', model: 'fixture-prev:0.6b', setting: '[nyxgpt] default_model', present: true },
     {
       role: 'embedding',
       model: 'nomic-embed-text',

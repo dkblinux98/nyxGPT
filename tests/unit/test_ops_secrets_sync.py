@@ -97,7 +97,7 @@ def test_sync_missing_config_file_fails(tmp_path: Path):
 
 def test_sync_no_mapped_secrets_configured_is_a_success_noop(tmp_path: Path):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen2.5:0.5b\n")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-small:0.5b\n")
 
     with patch.object(ops, "_github_actions_client") as mock_client:
         results = ops.sync_secrets_to_github_actions(cfg_path=cfg_path)
@@ -250,7 +250,7 @@ def test_sync_partial_failure_does_not_abort_remaining_secrets(tmp_path: Path):
 
 def test_secrets_sync_cli_wrapper_returns_zero_on_success(tmp_path: Path, capsys):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen2.5:0.5b\n")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-small:0.5b\n")
     args = MagicMock(config=str(cfg_path), dry_run=False)
 
     rc = ops.secrets_sync(args)
@@ -280,7 +280,7 @@ def test_secrets_sync_cli_wrapper_never_prints_secret_values(tmp_path: Path, cap
 
 def test_secrets_sync_cli_wrapper_records_ops_lifecycle_action(tmp_path: Path):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = qwen2.5:0.5b\n")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-small:0.5b\n")
     args = MagicMock(config=str(cfg_path), dry_run=False)
 
     with patch.object(ops, "_record_ops_action") as mock_record:

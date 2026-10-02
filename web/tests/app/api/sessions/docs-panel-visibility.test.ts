@@ -54,7 +54,7 @@ function buildMockFetch({
     if (url.includes('/api/models') || url.includes('/models')) {
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+        json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
       });
     }
     if (url.includes('/metadata')) {
@@ -64,7 +64,7 @@ function buildMockFetch({
           Promise.resolve({
             rag_enabled: ragEnabled,
             title: 'Test Session',
-            model: 'llama3.1:8b',
+            model: 'fixture-chat:8b',
           }),
       });
     }

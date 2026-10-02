@@ -22,7 +22,7 @@ function mockFetch(url: string) {
     return Promise.resolve({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+      json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
     });
   }
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
