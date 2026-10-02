@@ -34,7 +34,7 @@ def test_request_id_propagates_in_streaming_response(require_ollama):
         json={
             "prompt": "Say hello",
             "session": "test-streaming-session",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
         headers={"X-Request-ID": test_request_id},
     ) as response:
@@ -66,7 +66,7 @@ def test_request_id_in_streaming_with_auto_generation(require_ollama):
         json={
             "prompt": "Say hi",
             "session": "test-streaming-auto",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
         },
     ) as response:
         # Response should have an auto-generated request ID

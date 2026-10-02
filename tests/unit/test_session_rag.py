@@ -218,7 +218,7 @@ def _make_test_cfg(tmp_path: Path) -> configparser.ConfigParser:
     """Create a minimal ConfigParser for force-include tests."""
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }

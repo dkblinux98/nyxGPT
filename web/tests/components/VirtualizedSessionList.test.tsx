@@ -39,7 +39,7 @@ describe('VirtualizedSessionList', () => {
       name: 'session-1',
       title: 'First Session',
       messages: 5,
-      model: 'llama3.1:8b',
+      model: 'fixture-chat:8b',
       pinned: false,
       tags: ['test', 'example'],
     },
@@ -55,7 +55,7 @@ describe('VirtualizedSessionList', () => {
       name: 'session-3',
       title: 'Third Session',
       messages: 3,
-      model: 'llama3.1:8b',
+      model: 'fixture-chat:8b',
       pinned: false,
       tags: ['work'],
     },
@@ -281,7 +281,7 @@ describe('VirtualizedSessionList', () => {
 
     // Check for message count and model (multiple sessions may have same model)
     expect(screen.getByText(/5 msg/)).toBeInTheDocument();
-    expect(screen.getAllByText(/llama3.1:8b/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/fixture-chat:8b/).length).toBeGreaterThan(0);
   });
 
   it('handles large lists (100+ sessions)', () => {
@@ -289,7 +289,7 @@ describe('VirtualizedSessionList', () => {
       name: `session-${i}`,
       title: `Session ${i}`,
       messages: i,
-      model: 'llama3.1:8b',
+      model: 'fixture-chat:8b',
       pinned: i % 10 === 0,
       tags: [`tag-${i % 5}`],
     }));
@@ -433,7 +433,7 @@ describe('VirtualizedSessionList', () => {
       name: `session-${i}`,
       title: `Session ${i}`,
       messages: i,
-      model: 'llama3.1:8b',
+      model: 'fixture-chat:8b',
       pinned: false,
       tags: [],
     }));

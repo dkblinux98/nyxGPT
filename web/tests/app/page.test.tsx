@@ -118,13 +118,13 @@ describe('Image Optimization', () => {
         if (url.includes('/api/models')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ models: ['llama3.1:8b'] }),
+            json: () => Promise.resolve({ models: ['fixture-chat:8b'] }),
           });
         }
         if (url.includes('/metadata')) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'llama3.1:8b' }),
+            json: () => Promise.resolve({ rag_enabled: false, title: 'Test', model: 'fixture-chat:8b' }),
           });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });

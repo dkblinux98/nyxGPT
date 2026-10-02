@@ -17,14 +17,14 @@ describe('estimateModelResourceHint', () => {
   });
 
   it('classifies sub-1B models as Small', () => {
-    expect(estimateModelResourceHint('qwen2.5:0.5b')).toMatch(/Small model/);
+    expect(estimateModelResourceHint('fixture-small:0.5b')).toMatch(/Small model/);
   });
 
-  it('classifies the llama3.1:8b boundary case as Large with a memory warning', () => {
+  it('classifies the fixture-chat:8b boundary case as Large with a memory warning', () => {
     // Regression guard: this is the exact model named in issue #3192 and in
     // docs/performance.md's table (8-16 GB) -- it must not fall into the
     // "Medium" bucket with no warning.
-    const hint = estimateModelResourceHint('llama3.1:8b');
+    const hint = estimateModelResourceHint('fixture-chat:8b');
     expect(hint).toMatch(/Large model/);
     expect(hint).toMatch(/enough free memory/);
   });
@@ -48,13 +48,13 @@ describe('ModelsPage resource hint UI', () => {
     }) as unknown as typeof fetch;
   });
 
-  it('shows a large-model warning when the user types llama3.1:8b', async () => {
+  it('shows a large-model warning when the user types fixture-chat:8b', async () => {
     render(<ModelsPage />);
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
 
     const input = screen.getByPlaceholderText(/Model name/i);
-    fireEvent.change(input, { target: { value: 'llama3.1:8b' } });
+    fireEvent.change(input, { target: { value: 'fixture-chat:8b' } });
 
     expect(await screen.findByText(/Large model/)).toBeInTheDocument();
     expect(screen.getByText(/enough free memory/)).toBeInTheDocument();

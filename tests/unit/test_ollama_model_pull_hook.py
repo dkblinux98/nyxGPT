@@ -30,7 +30,7 @@ import yaml
 
 MANIFEST = pathlib.Path(__file__).resolve().parents[2] / "k8s" / "statefulset-ollama.yaml"
 
-DEFAULT_MODEL = "qwen3:0.6b"
+DEFAULT_MODEL = "fixture-prev:0.6b"
 EMBEDDING_MODEL = "nomic-embed-text"
 
 

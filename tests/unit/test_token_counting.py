@@ -84,7 +84,7 @@ def _cfg(tmp_path: Path, *, context_window: int = 100) -> configparser.ConfigPar
     """Create test config with specified context window size."""
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }
@@ -230,7 +230,11 @@ def test_config_get_context_window_size_model_specific() -> None:
     cfg = configparser.ConfigParser()
     cfg["context"] = {
         "default_window_size": "8192",
-        "context_window_llama3_1_8b": "131072",
+        # get_context_window_size() sanitizes ':' '.' and '/' to '_' and leaves
+        # every other character alone -- so a hyphen in the model name survives
+        # into the option name. Spelled out here because the key looks like a
+        # typo otherwise.
+        "context_window_fixture-chat_8b": "131072",
     }
 
     # Default model
@@ -238,7 +242,7 @@ def test_config_get_context_window_size_model_specific() -> None:
     assert result == 8192
 
     # Model-specific override
-    result = get_context_window_size(cfg, "llama3.1:8b")
+    result = get_context_window_size(cfg, "fixture-chat:8b")
     assert result == 131072
 
 

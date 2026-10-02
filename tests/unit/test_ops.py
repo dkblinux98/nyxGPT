@@ -9875,7 +9875,7 @@ def test_resolve_admin_credentials_reads_existing(tmp_path):
 @pytest.mark.unit
 def test_persist_admin_credentials_writes_and_chmods(tmp_path):
     cfg_path = tmp_path / "config.ini"
-    cfg_path.write_text("[nyxgpt]\ndefault_model = llama3.1:8b\n", encoding="utf-8")
+    cfg_path.write_text("[nyxgpt]\ndefault_model = fixture-chat:8b\n", encoding="utf-8")
 
     ops._persist_admin_credentials(cfg_path, "admin@nyxgpt.local", "generated-pw")
 
@@ -9883,7 +9883,7 @@ def test_persist_admin_credentials_writes_and_chmods(tmp_path):
     parser.read(cfg_path)
     assert parser.get("error_tracking", "admin_email") == "admin@nyxgpt.local"
     assert parser.get("error_tracking", "admin_password") == "generated-pw"
-    assert parser.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert parser.get("nyxgpt", "default_model") == "fixture-chat:8b"
     assert oct(cfg_path.stat().st_mode)[-3:] == "600"
 
 
@@ -14647,7 +14647,7 @@ def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
     native = home / ".nyxGPT" / "config.ini"
     native.write_text(
         "[nyxgpt]\n"
-        "default_model = llama3.1:8b\n"
+        "default_model = fixture-chat:8b\n"
         "sessions_dir = ~/.nyxGPT/sessions\n"
         "vectorstore_dir = ~/.nyxGPT/vectorstore\n"
         "[logging]\n"
@@ -14700,7 +14700,7 @@ def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
     # true would reject the web's own keyless requests.
     assert parser.get("auth", "enabled") == "false"
     # preserved: user setting + browser-facing UI URL stays localhost
-    assert parser.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert parser.get("nyxgpt", "default_model") == "fixture-chat:8b"
     assert "jaeger_ui_url = http://localhost:16686" in text
     # #3565 round 5: the error-tracking DSN is host-rewritten for the
     # container network (a containerized api can't reach the native config's
@@ -14721,7 +14721,7 @@ def test_generate_compose_config_no_error_tracking_section_is_noop(tmp_path, mon
     home = tmp_path / "home"
     (home / ".nyxGPT").mkdir(parents=True)
     native = home / ".nyxGPT" / "config.ini"
-    native.write_text("[nyxgpt]\ndefault_model = llama3.1:8b\n", encoding="utf-8")
+    native.write_text("[nyxgpt]\ndefault_model = fixture-chat:8b\n", encoding="utf-8")
     out = tmp_path / "config.docker.ini"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
@@ -14749,7 +14749,7 @@ def test_generate_compose_config_malformed_native_config_degrades_gracefully(
     native = home / ".nyxGPT" / "config.ini"
     native.write_text(
         "[nyxgpt]\n"
-        "default_model = llama3.1:8b\n"
+        "default_model = fixture-chat:8b\n"
         "[error_tracking]\n"
         "enabled = true\n"
         "dsn = http://509fecaebca74ee68bcd4bd9d56dbe53@localhost:8080/1\n"

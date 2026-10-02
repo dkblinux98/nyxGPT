@@ -27,7 +27,12 @@ def test_analytics_usage_returns_summary():
         "total_tokens": 45,
         "session_count": 2,
         "by_model": [
-            {"model": "llama3.1:8b", "requests": 3, "prompt_tokens": 30, "completion_tokens": 15}
+            {
+                "model": "fixture-chat:8b",
+                "requests": 3,
+                "prompt_tokens": 30,
+                "completion_tokens": 15,
+            }
         ],
         "by_day": [
             {"date": "2026-07-14", "requests": 3, "prompt_tokens": 30, "completion_tokens": 15}

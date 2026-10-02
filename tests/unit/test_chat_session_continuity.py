@@ -55,7 +55,7 @@ def test_chat_endpoint_appends_to_named_session_with_rag_enabled(
     sessions_dir = str(tmp_path / "sessions")
 
     payload_common = {
-        "model": "llama3.1:8b",
+        "model": "fixture-chat:8b",
         "session": "default",
         "rag_enabled": True,
         "sessions_dir": sessions_dir,
@@ -134,7 +134,7 @@ def test_chat_endpoint_auto_summarize_does_not_fragment_default_session(
         json={
             "prompt": "hello",
             "session": "default",
-            "model": "llama3.1:8b",
+            "model": "fixture-chat:8b",
             "sessions_dir": str(sessions_dir_path),
         },
     )

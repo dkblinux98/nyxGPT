@@ -18,7 +18,7 @@ vi.mock('@/contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
 
-let currentModels: string[] = ['llama3.1:8b'];
+let currentModels: string[] = ['fixture-chat:8b'];
 let modelsFetchCount = 0;
 
 function mockFetch(url: string) {
@@ -60,7 +60,7 @@ function mockFetch(url: string) {
 
 describe('ChatPane model selector refresh (#3190)', () => {
   beforeEach(() => {
-    currentModels = ['llama3.1:8b'];
+    currentModels = ['fixture-chat:8b'];
     modelsFetchCount = 0;
     global.fetch = vi.fn().mockImplementation(mockFetch) as unknown as typeof fetch;
   });
@@ -75,7 +75,7 @@ describe('ChatPane model selector refresh (#3190)', () => {
     await waitFor(() => expect(modelsFetchCount).toBeGreaterThanOrEqual(1));
 
     // Simulate a model pull completing elsewhere (e.g. Manage Models page).
-    currentModels = ['llama3.1:8b', 'llama3.1:70b'];
+    currentModels = ['fixture-chat:8b', 'llama3.1:70b'];
 
     const user = userEvent.setup();
     const modelButton = screen.getByRole('button', { name: /nyxGPT/i });
@@ -91,7 +91,7 @@ describe('ChatPane model selector refresh (#3190)', () => {
     await waitFor(() => expect(modelsFetchCount).toBeGreaterThanOrEqual(1));
 
     const countBeforeFocus = modelsFetchCount;
-    currentModels = ['llama3.1:8b', 'mistral:7b'];
+    currentModels = ['fixture-chat:8b', 'mistral:7b'];
     act(() => {
       window.dispatchEvent(new Event('focus'));
     });

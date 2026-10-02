@@ -18,7 +18,7 @@ async function clickNext(times: number) {
 async function selectModelAndClickNext(times: number) {
   await waitFor(() => {
     const select = screen.getByLabelText('Default Model');
-    fireEvent.change(select, { target: { value: 'llama3.1:8b' } });
+    fireEvent.change(select, { target: { value: 'fixture-chat:8b' } });
   });
   await clickNext(times);
 }
@@ -235,7 +235,7 @@ describe('AdminPage Component', () => {
         HttpResponse.json({
           sections: {
             nyxgpt: {
-              default_model: 'llama3.1:8b',
+              default_model: 'fixture-chat:8b',
               chat_timeout_seconds: '120',
               sessions_dir: '~/.nyxGPT/sessions',
               vectorstore_dir: '~/.nyxGPT/vectorstore',
@@ -273,7 +273,7 @@ describe('AdminPage Component', () => {
 
     render(<AdminPage />);
     await waitFor(() => {
-      expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+      expect(screen.getByLabelText('Default Model')).toHaveValue('fixture-chat:8b');
     });
     await clickNext(2);
     expect(screen.getByLabelText('API Key')).toHaveAttribute(
@@ -398,7 +398,7 @@ describe('AdminPage Component', () => {
       http.get('/api/v1/config/sections', () =>
         HttpResponse.json({
           sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            nyxgpt: { default_model: 'fixture-chat:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
             logging: { level: 'INFO', dir: '' },
             ollama: { base_url: 'http://127.0.0.1:11434' },
             api: { host: '127.0.0.1', port: '8000' },
@@ -464,7 +464,7 @@ describe('AdminPage Component', () => {
           applied: capturedBody,
           sections: {
             nyxgpt: {
-              default_model: 'llama3.1:8b',
+              default_model: 'fixture-chat:8b',
               chat_timeout_seconds: '120',
               sessions_dir: '~/.nyxGPT/sessions',
               vectorstore_dir: '~/.nyxGPT/vectorstore',
@@ -506,7 +506,7 @@ describe('AdminPage Component', () => {
       expect(location.setter).toHaveBeenCalledWith('/admin/dashboard');
     });
 
-    expect(capturedBody?.nyxgpt.default_model).toBe('llama3.1:8b');
+    expect(capturedBody?.nyxgpt.default_model).toBe('fixture-chat:8b');
     expect(capturedBody?.api.port).toBe(8000);
     expect(capturedBody?.auth).not.toHaveProperty('api_key');
     expect(capturedBody?.error_tracking).not.toHaveProperty('dsn');
@@ -523,7 +523,7 @@ describe('AdminPage Component', () => {
           applied: capturedBody,
           sections: {
             nyxgpt: {
-              default_model: 'llama3.1:8b',
+              default_model: 'fixture-chat:8b',
               chat_timeout_seconds: '120',
               sessions_dir: '~/.nyxGPT/sessions',
               vectorstore_dir: '~/.nyxGPT/vectorstore',
@@ -556,7 +556,7 @@ describe('AdminPage Component', () => {
     const location = stubLocationHref();
     render(<AdminPage />);
     await waitFor(() => {
-      fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'llama3.1:8b' } });
+      fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'fixture-chat:8b' } });
     });
 
     await waitFor(() => {
@@ -567,7 +567,7 @@ describe('AdminPage Component', () => {
       expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
     });
 
-    expect(capturedBody?.nyxgpt.default_model).toBe('llama3.1:8b');
+    expect(capturedBody?.nyxgpt.default_model).toBe('fixture-chat:8b');
     // A non-final Save advances in place -- it must not also fire the
     // last-page redirect to the Admin Dashboard.
     expect(location.setter).not.toHaveBeenCalled();
@@ -651,7 +651,7 @@ describe('AdminPage Component', () => {
         return HttpResponse.json({
           applied: capturedBody,
           sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            nyxgpt: { default_model: 'fixture-chat:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
             logging: { level: 'INFO', dir: '' },
             ollama: { base_url: 'http://127.0.0.1:11434' },
             api: { host: '127.0.0.1', port: '8000' },
@@ -707,7 +707,7 @@ describe('AdminPage Component', () => {
         HttpResponse.json({
           applied: {},
           sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            nyxgpt: { default_model: 'fixture-chat:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
             logging: { level: 'INFO', dir: '' },
             ollama: { base_url: 'http://127.0.0.1:11434' },
             api: { host: '127.0.0.1', port: '9000' },
@@ -871,17 +871,17 @@ describe('AdminPage Component', () => {
   });
 
   it('re-fetches models when the window regains focus', async () => {
-    let modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'];
+    let modelsResponse = ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b'];
     server.use(
       http.get('/api/models', () => HttpResponse.json({ models: modelsResponse }))
     );
 
     render(<AdminPage />);
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'llama3.1:8b' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'fixture-chat:8b' })).toBeInTheDocument();
     });
 
-    modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
+    modelsResponse = ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
     act(() => {
       window.dispatchEvent(new Event('focus'));
     });
@@ -892,17 +892,17 @@ describe('AdminPage Component', () => {
   });
 
   it('re-fetches models when the tab becomes visible again', async () => {
-    let modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'];
+    let modelsResponse = ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b'];
     server.use(
       http.get('/api/models', () => HttpResponse.json({ models: modelsResponse }))
     );
 
     render(<AdminPage />);
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'llama3.1:8b' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'fixture-chat:8b' })).toBeInTheDocument();
     });
 
-    modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
+    modelsResponse = ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
     const visibilityStateSpy = vi
       .spyOn(document, 'visibilityState', 'get')
       .mockReturnValue('visible');
@@ -917,17 +917,17 @@ describe('AdminPage Component', () => {
   });
 
   it('does not re-fetch models when tab visibility changes to something other than visible', async () => {
-    let modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'];
+    let modelsResponse = ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b'];
     server.use(
       http.get('/api/models', () => HttpResponse.json({ models: modelsResponse }))
     );
 
     render(<AdminPage />);
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'llama3.1:8b' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'fixture-chat:8b' })).toBeInTheDocument();
     });
 
-    modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
+    modelsResponse = ['fixture-chat:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
     const visibilityStateSpy = vi
       .spyOn(document, 'visibilityState', 'get')
       .mockReturnValue('hidden');
@@ -947,7 +947,7 @@ describe('AdminPage Component', () => {
     await waitFor(() => {
       expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
     });
-    expect(screen.queryByRole('option', { name: 'llama3.1:8b' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'fixture-chat:8b' })).not.toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Select a model...' })).toBeInTheDocument();
   });
 
@@ -1091,7 +1091,7 @@ describe('AdminPage Component', () => {
         return HttpResponse.json({
           applied: capturedBody,
           sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            nyxgpt: { default_model: 'fixture-chat:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
             logging: { level: 'INFO', dir: '' },
             ollama: { base_url: 'http://127.0.0.1:11434' },
             api: { host: '127.0.0.1', port: '8000' },
@@ -1124,14 +1124,14 @@ describe('AdminPage Component', () => {
     });
     fireEvent.keyDown(window, { key: 'Enter' });
     await waitFor(() => {
-      expect(capturedBody?.nyxgpt.default_model).toBe('llama3.1:8b');
+      expect(capturedBody?.nyxgpt.default_model).toBe('fixture-chat:8b');
     });
   });
 
   it('ignores a real keydown event when the target is a select element', async () => {
     render(<AdminPage />);
     await waitFor(() => screen.getByLabelText('Default Model'));
-    fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'llama3.1:8b' } });
+    fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'fixture-chat:8b' } });
 
     fireEvent.keyDown(screen.getByLabelText('Default Model'), { key: 'ArrowRight' });
 
@@ -1149,7 +1149,7 @@ describe('AdminPage Component', () => {
    */
   const SECTIONS_WITH_DEFAULTS = {
     nyxgpt: {
-      default_model: 'llama3.1:8b',
+      default_model: 'fixture-chat:8b',
       chat_timeout_seconds: '180',
       sessions_dir: '~/.nyxGPT/sessions',
       vectorstore_dir: '~/.nyxGPT/vectorstore',
@@ -1406,7 +1406,7 @@ describe('AdminPage Component', () => {
         return HttpResponse.json({
           applied: {},
           sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            nyxgpt: { default_model: 'fixture-chat:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
             logging: { level: 'INFO', dir: '' },
             ollama: { base_url: 'http://127.0.0.1:11434' },
             api: { host: '127.0.0.1', port: '8000' },
@@ -1520,10 +1520,10 @@ describe('AdminPage Component', () => {
       render(<AdminPage />);
       await waitFor(() => screen.getByLabelText('Default Model'));
       fireEvent.change(screen.getByLabelText('Default Model'), {
-        target: { value: 'llama3.1:8b' },
+        target: { value: 'fixture-chat:8b' },
       });
       await waitFor(() => {
-        expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+        expect(screen.getByLabelText('Default Model')).toHaveValue('fixture-chat:8b');
       });
 
       const cancelLink = screen.getByRole('link', { name: /cancel/i });
@@ -1542,10 +1542,10 @@ describe('AdminPage Component', () => {
       render(<AdminPage />);
       await waitFor(() => screen.getByLabelText('Default Model'));
       fireEvent.change(screen.getByLabelText('Default Model'), {
-        target: { value: 'llama3.1:8b' },
+        target: { value: 'fixture-chat:8b' },
       });
       await waitFor(() => {
-        expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+        expect(screen.getByLabelText('Default Model')).toHaveValue('fixture-chat:8b');
       });
 
       const cancelLink = screen.getByRole('link', { name: /cancel/i });
@@ -1554,7 +1554,7 @@ describe('AdminPage Component', () => {
       expect(global.confirm).toHaveBeenCalled();
       expect(notPrevented).toBe(false);
       expect(screen.getByRole('heading', { name: 'Core & Model' })).toBeInTheDocument();
-      expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+      expect(screen.getByLabelText('Default Model')).toHaveValue('fixture-chat:8b');
     });
 
     it('disables Cancel while a save is in progress', async () => {
@@ -1565,7 +1565,7 @@ describe('AdminPage Component', () => {
             applied: {},
             sections: {
               nyxgpt: {
-                default_model: 'llama3.1:8b',
+                default_model: 'fixture-chat:8b',
                 chat_timeout_seconds: '120',
                 sessions_dir: '',
                 vectorstore_dir: '',
@@ -1700,7 +1700,7 @@ describe('AdminPage Component', () => {
             applied: {},
             sections: {
               nyxgpt: {
-                default_model: 'llama3.1:8b',
+                default_model: 'fixture-chat:8b',
                 chat_timeout_seconds: '120',
                 sessions_dir: '',
                 vectorstore_dir: '',
@@ -1786,7 +1786,7 @@ describe('AdminPage Component', () => {
     ];
 
     const SECTIONS_WITH_EXTRAS = {
-      nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+      nyxgpt: { default_model: 'fixture-chat:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
       logging: { level: 'INFO', dir: '' },
       ollama: { base_url: 'http://127.0.0.1:11434' },
       api: { host: '127.0.0.1', port: '8000' },

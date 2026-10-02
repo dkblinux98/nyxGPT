@@ -30,7 +30,7 @@ describe('AdminDashboardPage', () => {
   it('renders configuration summary with a link to the wizard', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
-      expect(screen.getAllByText('llama3.1:8b').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('fixture-chat:8b').length).toBeGreaterThan(0);
     });
     const wizardLink = screen.getByRole('link', { name: /Configuration Wizard/ });
     expect(wizardLink).toHaveAttribute('href', '/admin');
@@ -494,7 +494,7 @@ describe('AdminDashboardPage', () => {
     server.use(
       http.get('/api/v1/admin/overview', () =>
         HttpResponse.json({
-          info: { ollama_base_url: 'http://127.0.0.1:11434', default_model: 'llama3.1:8b', rag_enabled: false },
+          info: { ollama_base_url: 'http://127.0.0.1:11434', default_model: 'fixture-chat:8b', rag_enabled: false },
           resource_metrics: null,
           canary: { active: false },
           self_heal: { enabled: true, unhealthy_count: 0 },

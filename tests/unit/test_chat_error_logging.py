@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 def _cfg(tmp_path: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
-        "default_model": "llama3.1:8b",
+        "default_model": "fixture-chat:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
     }
@@ -73,7 +73,7 @@ def test_chat_stream_logs_upstream_ollama_error(
     assert error_records, "Expected chat_stream to log the upstream failure"
     record = error_records[-1]
     assert record.session == "diag-test"
-    assert record.model == "llama3.1:8b"
+    assert record.model == "fixture-chat:8b"
     assert "model runtime crashed" in record.error
     assert record.error_type == "RuntimeError"
 

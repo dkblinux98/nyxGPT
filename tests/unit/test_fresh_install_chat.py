@@ -20,7 +20,7 @@ import pytest
 
 def _fresh_install_cfg() -> ConfigParser:
     cfg = ConfigParser()
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {
         "enable_chat_context": "true",
         "cassandra_keyspace": "nyxgpt",

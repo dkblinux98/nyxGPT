@@ -36,7 +36,7 @@ def cfg(tmp_path):
 def test_record_returns_event_with_expected_fields(cfg):
     event = usage_analytics.record(
         session="default",
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
         prompt_tokens=10,
         completion_tokens=20,
         duration_s=1.5,
@@ -44,7 +44,7 @@ def test_record_returns_event_with_expected_fields(cfg):
     )
 
     assert event["session"] == "default"
-    assert event["model"] == "llama3.1:8b"
+    assert event["model"] == "fixture-chat:8b"
     assert event["prompt_tokens"] == 10
     assert event["completion_tokens"] == 20
     assert event["duration_s"] == 1.5
@@ -90,7 +90,7 @@ def test_recent_returns_empty_list_when_nothing_recorded(cfg):
 def test_summary_aggregates_totals_and_breakdowns(cfg):
     usage_analytics.record(
         session="s1",
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
         prompt_tokens=10,
         completion_tokens=5,
         duration_s=1.0,
@@ -98,7 +98,7 @@ def test_summary_aggregates_totals_and_breakdowns(cfg):
     )
     usage_analytics.record(
         session="s2",
-        model="llama3.1:8b",
+        model="fixture-chat:8b",
         prompt_tokens=8,
         completion_tokens=4,
         duration_s=1.0,
@@ -122,8 +122,8 @@ def test_summary_aggregates_totals_and_breakdowns(cfg):
     assert summary["session_count"] == 2
 
     by_model = {m["model"]: m for m in summary["by_model"]}
-    assert by_model["llama3.1:8b"]["requests"] == 2
-    assert by_model["llama3.1:8b"]["prompt_tokens"] == 18
+    assert by_model["fixture-chat:8b"]["requests"] == 2
+    assert by_model["fixture-chat:8b"]["prompt_tokens"] == 18
     assert by_model["mistral:7b"]["requests"] == 1
 
     assert len(summary["by_day"]) == 1

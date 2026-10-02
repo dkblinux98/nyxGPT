@@ -172,8 +172,8 @@ def test_tool_chat_with_model(mock_chat):
     mock_result.reply = "Response"
     mock_chat.return_value = mock_result
 
-    _tool_chat(1, {"prompt": "hi", "model": "llama3.1:8b"})
-    mock_chat.assert_called_once_with("hi", session="default", model="llama3.1:8b")
+    _tool_chat(1, {"prompt": "hi", "model": "fixture-chat:8b"})
+    mock_chat.assert_called_once_with("hi", session="default", model="fixture-chat:8b")
 
 
 @patch("nyxgpt.chat.chat")

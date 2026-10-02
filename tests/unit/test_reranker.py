@@ -15,7 +15,7 @@ def test_rerank_results_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank_results should return original results when disabled."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {"enable_reranking": "false"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
@@ -37,7 +37,7 @@ def test_rerank_results_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank_results should handle empty list."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {"enable_reranking": "true"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
@@ -53,7 +53,7 @@ def test_rerank_results_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank_results should return metrics when requested."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {
         "enable_reranking": "true",
         "rerank_top_n": "2",
@@ -91,7 +91,7 @@ def test_rerank_results_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     assert output[1]["text"] == "Result 3"  # Second highest (0.6)
 
     # Check metrics
-    assert metrics.reranker_model == "qwen2.5:0.5b"
+    assert metrics.reranker_model == "fixture-small:0.5b"
     assert metrics.num_candidates == 3
     assert metrics.num_reranked == 2
     assert metrics.reranking_time_ms > 0
@@ -104,7 +104,7 @@ def test_rerank_results_preserves_original_score(monkeypatch: pytest.MonkeyPatch
     """rerank_results should preserve original score in metadata."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {
         "enable_reranking": "true",
         "rerank_top_n": "3",
@@ -134,7 +134,7 @@ def test_rerank_results_handles_failure_gracefully(monkeypatch: pytest.MonkeyPat
     """rerank_results should handle scoring failures gracefully."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {
         "enable_reranking": "true",
         "rerank_top_n": "3",
@@ -175,7 +175,7 @@ def test_score_relevance_json_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
     """_score_relevance should parse various JSON formats."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
@@ -183,7 +183,7 @@ def test_score_relevance_json_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
 
     config = RerankerConfig(
         base_url="http://localhost:11434",
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         timeout=30,
         top_n=3,
         enabled=True,
@@ -216,7 +216,7 @@ def test_score_relevance_clamps_to_range(monkeypatch: pytest.MonkeyPatch) -> Non
     """_score_relevance should clamp scores to [0.0, 1.0]."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
@@ -224,7 +224,7 @@ def test_score_relevance_clamps_to_range(monkeypatch: pytest.MonkeyPatch) -> Non
 
     config = RerankerConfig(
         base_url="http://localhost:11434",
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         timeout=30,
         top_n=3,
         enabled=True,
@@ -257,7 +257,7 @@ def test_rerank_results_disabled_with_metrics(monkeypatch: pytest.MonkeyPatch) -
     """rerank_results should return metrics even when reranking is disabled."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {"enable_reranking": "false"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
@@ -282,7 +282,7 @@ def test_rerank_results_empty_list_with_metrics(monkeypatch: pytest.MonkeyPatch)
     """rerank_results should return metrics for an empty candidate list."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {"enable_reranking": "true"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
@@ -304,7 +304,7 @@ def test_rerank_results_skips_empty_text(monkeypatch: pytest.MonkeyPatch) -> Non
     """rerank_results should skip results whose text is empty/whitespace."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     cfg["rag"] = {"enable_reranking": "true", "rerank_top_n": "3"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
@@ -333,14 +333,18 @@ def test_score_relevance_unexpected_response_format(monkeypatch: pytest.MonkeyPa
     """_score_relevance should raise RerankError when the response lacks message.content."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     mock_response = Mock()
@@ -360,14 +364,18 @@ def test_score_relevance_invalid_score_format(monkeypatch: pytest.MonkeyPatch) -
     """_score_relevance should raise RerankError when the parsed content has no 'score' key."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     response_data = {"message": {"content": '{"not_score": 0.5}'}}
@@ -388,14 +396,18 @@ def test_score_relevance_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """_score_relevance should raise RerankError on HTTPError."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     import io
@@ -420,14 +432,18 @@ def test_score_relevance_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """_score_relevance should raise RerankError on URLError."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     error = urllib.error.URLError("connection refused")
@@ -444,14 +460,18 @@ def test_score_relevance_json_decode_error(monkeypatch: pytest.MonkeyPatch) -> N
     """_score_relevance should raise RerankError when the score content isn't valid JSON."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
 
     config = RerankerConfig(
-        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+        base_url="http://localhost:11434",
+        model="fixture-small:0.5b",
+        timeout=30,
+        top_n=3,
+        enabled=True,
     )
 
     response_data = {"message": {"content": "not valid json at all"}}
@@ -480,14 +500,14 @@ def test_reranker_does_not_let_the_model_reason(monkeypatch: pytest.MonkeyPatch)
 
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "fixture-small:0.5b"}
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     from nyxgpt.rag.reranker import RerankerConfig, _score_relevance
 
     config = RerankerConfig(
         base_url="http://localhost:11434",
-        model="qwen2.5:0.5b",
+        model="fixture-small:0.5b",
         timeout=30,
         top_n=3,
         enabled=True,

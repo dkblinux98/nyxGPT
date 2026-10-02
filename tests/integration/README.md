@@ -10,7 +10,7 @@ Integration tests require the following services to be running:
 
 1. **Ollama** (for LLM chat and streaming tests)
    - Must be running at `http://localhost:11434`
-   - Required model: `llama3.1:8b` (or update test model in test files)
+   - Required model: `fixture-chat:8b` (or update test model in test files)
 
 2. **Cassandra** (for RAG/vector store tests, if applicable)
    - Default connection: `localhost:9042`
@@ -44,7 +44,7 @@ brew install ollama
 ollama serve
 
 # Pull required model
-ollama pull llama3.1:8b
+ollama pull fixture-chat:8b
 ```
 
 #### Cassandra (for RAG tests)
@@ -119,7 +119,7 @@ Each test module checks for required services before running:
 
 3. Pull required model if missing:
    ```bash
-   ollama pull llama3.1:8b
+   ollama pull fixture-chat:8b
    ```
 
 ### Tests Hang or Timeout
