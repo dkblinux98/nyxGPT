@@ -63,6 +63,15 @@ name: Kubernetes Local Smoke
 # Required models header, models UNKNOWN) happens naturally here, so no fault
 # injection is needed for the step to fail on a revert.
 #
+# Step 14 is #3990's: does the observability tier RECEIVE anything, or merely
+# run? Since the 2026-08-26 re-test it also asserts that the answer reaches
+# `nyxgpt ops status` -- the command an operator actually runs -- and injects
+# the AC2 defect itself: it empties the live `error-tracking-dsn`, rolls the
+# api, and requires the report to call that a failure rather than a healthy
+# tier, then repairs it with `nyxgpt ops glitchtip-init --kubernetes` and
+# requires the report to go green. Both halves run against this same cluster,
+# per the D-006 rule; the pre-fix code passes neither.
+#
 # A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
 # asked: does the install tell a Pod that is merely starting apart from one
 # that will never start? See scripts/k8s-pod-state-smoke.py.

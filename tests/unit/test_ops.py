@@ -3209,6 +3209,62 @@ def test_sync_packaged_resources_is_idempotent_and_additive(monkeypatch, tmp_pat
     assert generated_config.read_text(encoding="utf-8") == "operator's generated config"
 
 
+@pytest.mark.unit
+def test_sync_never_overwrites_a_provisioned_k8s_secret(monkeypatch, tmp_path):
+    """The sync's docstring promised `k8s/secret.yaml` was safe "because it is
+    never packaged". True of an installed package, FALSE of a `--dev` checkout:
+    the packaged-resources root IS the checkout, and a checkout that ever ran a
+    repo-relative install (anything before #3834) has a gitignored
+    `k8s/secret.yaml` sitting in it. Copying that over the synced one reverts
+    the provisioned error-tracking DSN to the template's empty string, and the
+    next `kubectl apply -k` pushes the emptiness into the cluster -- one of the
+    ways an api Pod ends up reporting errors nowhere (#3990).
+    """
+    src_root = tmp_path / "checkout"
+    (src_root / "docker").mkdir(parents=True)
+    (src_root / "ops").mkdir(parents=True)
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "k8s" / "observability").mkdir(parents=True)
+    (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (src_root / ".env.example").write_text("FOO=bar\n", encoding="utf-8")
+    # What a developer's checkout carries: a stale secret.yaml, and the
+    # template it was built from.
+    (src_root / "k8s" / "secret.yaml").write_text(
+        'stringData:\n  error-tracking-dsn: ""\n', encoding="utf-8"
+    )
+    (src_root / "k8s" / "secret.example.yaml").write_text(
+        'stringData:\n  error-tracking-dsn: ""\n', encoding="utf-8"
+    )
+    (src_root / "k8s" / "observability" / "secret.yaml").write_text(
+        'stringData:\n  glitchtip-grafana-token: "UNCONFIGURED-glitchtip-token"\n',
+        encoding="utf-8",
+    )
+
+    nyxgpt_home = tmp_path / "home" / ".nyxGPT"
+    (nyxgpt_home / "k8s" / "observability").mkdir(parents=True)
+    provisioned_app = nyxgpt_home / "k8s" / "secret.yaml"
+    provisioned_app.write_text(
+        'stringData:\n  error-tracking-dsn: "http://key@glitchtip:8080/1"\n', encoding="utf-8"
+    )
+    provisioned_obs = nyxgpt_home / "k8s" / "observability" / "secret.yaml"
+    provisioned_obs.write_text(
+        'stringData:\n  glitchtip-grafana-token: "real-token"\n', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", nyxgpt_home)
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", nyxgpt_home / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
+
+    assert all(r.ok for r in ops._sync_packaged_resources())
+
+    assert "http://key@glitchtip:8080/1" in provisioned_app.read_text(encoding="utf-8")
+    assert "real-token" in provisioned_obs.read_text(encoding="utf-8")
+    # ...and the TEMPLATES are still synced: they are packaged, and keeping
+    # them current is what the sync is for.
+    assert (nyxgpt_home / "k8s" / "secret.example.yaml").exists()
+
+
 # --- _install_cassandra_launchagent ---
 
 

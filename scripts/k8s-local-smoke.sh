@@ -590,6 +590,81 @@ done
 resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
 ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
 
+# 7f. The report an OPERATOR reads. Everything above is this script driving the
+#     cluster directly; the owner's 2026-08-26 re-test found that none of it
+#     surfaced on `nyxgpt ops status`, which printed ten `1/1 ready` workloads
+#     and not one word about what any of them had received. The two error
+#     questions must also be two distinct lines: a green "Grafana can log in"
+#     printed under `errors:` is what hid an api reporting nowhere.
+nyxgpt ops status >/tmp/k8s-smoke-status-flow.txt 2>&1 ||
+    fail "nyxgpt ops status failed"
+sed -n '/Kubernetes observability/,/^$/p' /tmp/k8s-smoke-status-flow.txt
+for line in "traces:" "metrics:" "logs:" "errors:" "error reporting credentials:"; do
+    grep -q "\\] ${line}" /tmp/k8s-smoke-status-flow.txt ||
+        fail "nyxgpt ops status does not report '${line}' -- the data-flow lines are \
+install-only again (#3990 AC5)"
+done
+grep -q "\\] errors: GlitchTip holds" /tmp/k8s-smoke-status-flow.txt ||
+    fail "the errors line does not say what GlitchTip RECEIVED -- it is answering the \
+credentials question again (#3990 AC5)"
+ok "nyxgpt ops status reports data flow, with the credential question on its own line"
+
+# 7g. FAULT INJECTION for the AC2 defect itself, reproduced exactly as owner
+#     acceptance found it: a CORRECT Secret and an api Pod whose
+#     NYXGPT_ERROR_TRACKING_DSN is empty. An environment is fixed at process
+#     start, so those two coexist, and before this rework every surface
+#     reported that cluster as a healthy observability tier.
+#
+#     Injected by emptying the live Secret, rolling the api so the replacement
+#     Pod boots without a DSN, and then putting the Secret back -- which is
+#     also what makes this a gate on asking the POD: a check that read the
+#     Secret would go green here while the api still reports nowhere. Only the
+#     length of the value is ever printed, never the value: a DSN carries
+#     GlitchTip's project key.
+dsn_secret_length() {
+    kubectl -n "$NAMESPACE" get secret nyxgpt-secrets \
+        -o "jsonpath={.data['error-tracking-dsn']}" | wc -c | tr -d ' '
+}
+dsn_length_before=$(dsn_secret_length)
+[ "$dsn_length_before" -gt 0 ] ||
+    fail "the nyxgpt-secrets DSN is empty before this step even begins -- the install did \
+not provision it (#3990 AC2)"
+
+kubectl -n "$NAMESPACE" patch secret nyxgpt-secrets --type merge \
+    -p '{"stringData":{"error-tracking-dsn":""}}' >/dev/null ||
+    fail "could not empty the error-tracking DSN in the cluster"
+kubectl -n "$NAMESPACE" rollout restart deploy/nyxgpt-api-stable >/dev/null
+kubectl -n "$NAMESPACE" rollout status deploy/nyxgpt-api-stable --timeout=300s ||
+    fail "the api did not roll after the injected empty DSN"
+# ...and the Secret goes back to being right, so what is left is ONLY the Pod.
+kubectl apply -f "$HOME/.nyxGPT/k8s/secret.yaml" >/dev/null ||
+    fail "could not re-apply the deployment Secret"
+dsn_length_after=$(dsn_secret_length)
+[ "$dsn_length_after" = "$dsn_length_before" ] ||
+    fail "the injected state is not the one under test: the Secret did not come back \
+(${dsn_length_before} -> ${dsn_length_after} bytes)"
+echo "injected: nyxgpt-secrets holds ${dsn_length_after} bytes, the api Pod holds none"
+
+nyxgpt ops status >/tmp/k8s-smoke-status-nodsn.txt 2>&1 || fail "nyxgpt ops status failed"
+grep -q "\\[FAIL\\] errors: the api has no error-tracking DSN" /tmp/k8s-smoke-status-nodsn.txt ||
+    fail "an api Pod with an EMPTY error-tracking DSN still reports as a healthy \
+observability tier -- this check cannot detect the #3990 AC2 defect and is worthless as a gate"
+ok "an api reporting errors nowhere is reported as a failure, not as a healthy tier"
+
+# ...and the wrapped repair path, which also proves the rollout is driven by
+# what the running Pod has rather than by whether the DSN changed on disk.
+nyxgpt ops glitchtip-init --kubernetes ||
+    fail "nyxgpt ops glitchtip-init --kubernetes could not repair the emptied DSN"
+nyxgpt ops status >/tmp/k8s-smoke-status-redsn.txt 2>&1 || fail "nyxgpt ops status failed"
+# An `if`, not `&& fail`: a grep that finds nothing exits non-zero, which under
+# `set -e` would end the script on the PASSING path (same reason as line 320).
+if grep -q "\\[FAIL\\] errors: the api has no error-tracking DSN" \
+    /tmp/k8s-smoke-status-redsn.txt; then
+    fail "the api still has no DSN after glitchtip-init -- the repair path does not roll the \
+Pod that booted without one"
+fi
+ok "glitchtip-init re-wired the api and the report went green again"
+
 step "15/17 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so
 # consecutive requests from one browser see different sessions; the poll below

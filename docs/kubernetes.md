@@ -761,14 +761,41 @@ Notes:
   Without it Grafana authenticates with `UNCONFIGURED-glitchtip-token` and
   the SRE Home GlitchTip panels answer `401 Unauthorized`.
 - **Running is reported separately from receiving.** `nyxgpt ops install
-  --kubernetes` and `nyxgpt ops observability --kubernetes` print four extra
-  lines after the per-workload readiness ones, asking each backend what it
-  has actually received -- Jaeger's service list, Prometheus's scrape
-  targets, Loki's job labels, and whether GlitchTip accepts Grafana's token.
-  A backend that is up but empty prints `[NO DATA]`, not `[OK]`: a stack
-  nobody has chatted with legitimately has no spans, so it is not a failure
-  either. Ten `1/1 ready` workloads receiving nothing is precisely the state
-  that reached acceptance testing in #3990.
+  --kubernetes`, `nyxgpt ops observability --kubernetes` **and `nyxgpt ops
+  status`** print five extra lines after the per-workload readiness ones,
+  asking each backend what it has actually received -- Jaeger's service list,
+  Prometheus's scrape targets, Loki's job labels, GlitchTip's issue list, and
+  (on its own line) whether GlitchTip accepts Grafana's token. A backend that
+  is up but empty prints `[NO DATA]`, not `[OK]`: a stack nobody has chatted
+  with legitimately has no spans, so it is not a failure either. Ten `1/1
+  ready` workloads receiving nothing is precisely the state that reached
+  acceptance testing in #3990.
+
+  Two of those lines are deliberately kept apart, because they are two
+  questions with two remedies. `errors:` asks what GlitchTip has **received**
+  from nyxGPT, and starts by asking the running api Pod whether it has an
+  error-tracking DSN at all -- an api with `NYXGPT_ERROR_TRACKING_DSN=`
+  reports errors nowhere however healthy GlitchTip is, so that one is a
+  `[FAIL]`, not a `[NO DATA]`. `error reporting credentials:` asks whether
+  Grafana's bearer token is accepted, i.e. whether the SRE Home panels will
+  401. Collapsing the two into one `errors:` line is what let an api with no
+  DSN print green through the whole report (owner acceptance, 2026-08-26) --
+  the credential was fine and the wiring was not.
+
+  The DSN question is asked of the **Pod**, never of the Secret: an
+  environment is fixed at process start, so a Pod that booted before
+  provisioning keeps the empty DSN it started with even once `nyxgpt-secrets`
+  holds the real one. `nyxgpt ops glitchtip-init --kubernetes` rolls the api
+  and web Deployments whenever the running Pods lack it, not only when the
+  value on disk changed.
+- **A Pod the rollout already replaced is not a stack failure.** Kubernetes
+  keeps terminal Pods around for diagnosis rather than collecting them
+  immediately, so a rollout that loses an old Pod leaves one behind in phase
+  `Failed`. Those print as `[SUPERSEDED]` -- shown, because an operator
+  looking for why a Pod died needs to see it, but not counted against the
+  command, since the workload has a Ready Pod of a newer revision serving in
+  its place. A terminal Pod of the *current* revision, or one with no Ready
+  replacement, still fails.
 - **Storage is ephemeral.** Prometheus, Loki, Grafana and GlitchTip's
   Postgres use `emptyDir`, not PersistentVolumeClaims: `nyxgpt ops down
   --kubernetes` deletes the local cluster nyxgpt provisioned, so there is
