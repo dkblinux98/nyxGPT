@@ -797,7 +797,12 @@ describe('InfrastructurePage', () => {
     render(<InfrastructurePage />);
 
     expect(await screen.findByText('unrecorded')).toBeInTheDocument();
-    expect(screen.getByText(/no marker for this deployment/)).toBeInTheDocument();
+    // Both records, not just this machine's marker (#3988): the install writes
+    // one into the cluster too, so "unrecorded" now means neither answered.
+    expect(
+      screen.getByText(/neither this cluster nor the machine this dashboard runs on/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/for a working-tree build\) to record it/)).toBeInTheDocument();
   });
 
   it('degrades the Kubernetes install mode to unrecorded against an older api (#3834)', async () => {
@@ -886,6 +891,103 @@ describe('InfrastructurePage', () => {
     expect(await screen.findByText('artifact')).toBeInTheDocument();
     expect(screen.getByText(/images built from the published/)).toBeInTheDocument();
     expect(screen.queryByText('unrecorded')).not.toBeInTheDocument();
+  });
+
+  // --- "What version", and which record answered (#3988, second round) ---
+  //
+  // The owner's re-test passed detection and failed on these two: the card
+  // reported Pods, no version at all, and an `install_mode.mode` of
+  // `artifact` for a `--dev` cluster beside a `label` reading "unrecorded".
+  // Neither was a vantage-point limit -- in-cluster the api process serving
+  // this page IS this deployment's api -- so each state below is pinned, and
+  // "unrecorded" is pinned together with the *where*.
+
+  it('reports the version this Kubernetes deployment is running, and its source (#3988)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            in_cluster: true,
+            version: {
+              known: true,
+              version: '3.0.0rc1',
+              channel: 'rc',
+              source:
+                'this api process -- a Pod of this deployment, so this is the version serving now',
+            },
+            install_mode: {
+              mode: 'dev',
+              checkout: '/Users/owner/src/nyxGPT',
+              label: 'dev (images built from the working tree at /Users/owner/src/nyxGPT)',
+              recorded: true,
+              source:
+                "the cluster's own install record (configmap/nyxgpt-install-mode in namespace nyxgpt)",
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('3.0.0rc1')).toBeInTheDocument();
+    expect(screen.getByText(/\(rc channel\)/)).toBeInTheDocument();
+    expect(screen.getByText(/a Pod of this deployment/)).toBeInTheDocument();
+    // The mode is read from the cluster's record, not this machine's marker,
+    // and the card has to be able to say which -- the two vantage points
+    // keep different records, so "dev" alone does not locate the claim.
+    expect(screen.getByText(/configmap\/nyxgpt-install-mode/)).toBeInTheDocument();
+  });
+
+  it('omits an unknown channel and an unnamed source rather than inventing them (#3988)', async () => {
+    // A version read off the install record of a deployment whose channel
+    // nothing could parse. `channel: 'unknown'` must not render as a channel
+    // called "unknown", and an empty `source` must not render a dangling
+    // "from".
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            version: { known: true, version: '3.0.0', channel: 'unknown', source: '' },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('3.0.0')).toBeInTheDocument();
+    expect(screen.queryByText(/unknown channel/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/— from/)).not.toBeInTheDocument();
+  });
+
+  it('says the version is unknown when no record carries one (#3988)', async () => {
+    // `known: false` is what a deployment installed before the cluster
+    // carried a record reads back as, off-cluster. The card must say unknown
+    // -- showing a release nobody installed is the defect, one row over from
+    // the `artifact`-for-`--dev` one this issue was reopened for.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            version: { known: false, version: '', channel: 'unknown', source: '' },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText('unknown')).toBeInTheDocument();
+    expect(
+      screen.getByText(/carries no install record to read\s+a version from/)
+    ).toBeInTheDocument();
   });
 
   // --- The Terraform card's OWN install mode (#3835) -------------------

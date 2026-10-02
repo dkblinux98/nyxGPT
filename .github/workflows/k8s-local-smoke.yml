@@ -89,6 +89,12 @@ on:
       # The canary resting-state reconcile (#3991) is asserted against the
       # live cluster in steps 8-9, and `canary reset` lives here.
       - 'src/nyxgpt/canary.py'
+      # Step 13's fault injection (#3988) asserts that a deployment with no
+      # install record renders as `unrecorded` and never as the `artifact`
+      # default -- and `reported_mode()`, the one function that decides that,
+      # lives here. Without this line a change to it would skip the only job
+      # that proves the rendering against a real cluster.
+      - 'src/nyxgpt/install_mode.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
@@ -105,6 +111,12 @@ on:
       # The canary resting-state reconcile (#3991) is asserted against the
       # live cluster in steps 8-9, and `canary reset` lives here.
       - 'src/nyxgpt/canary.py'
+      # Step 13's fault injection (#3988) asserts that a deployment with no
+      # install record renders as `unrecorded` and never as the `artifact`
+      # default -- and `reported_mode()`, the one function that decides that,
+      # lives here. Without this line a change to it would skip the only job
+      # that proves the rendering against a real cluster.
+      - 'src/nyxgpt/install_mode.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
