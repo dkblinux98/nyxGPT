@@ -35,12 +35,12 @@ import tempfile
 import threading
 import time
 import tomllib
-from collections.abc import Callable, Container, Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from configparser import ConfigParser
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from nacl import public as nacl_public
@@ -93,7 +93,12 @@ from nyxgpt.install_mode import (
     read_install_mode,
     write_install_mode,
 )
-from nyxgpt.k8s_pod_state import classify_pod
+from nyxgpt.k8s_pod_state import (
+    classify_pod,
+    parse_retired_replicasets,
+    pod_is_retired,
+    retired_replicaset_argv,
+)
 from nyxgpt.logging import get_correlation_id
 
 # The vendored-source tarball builder lives in its own stdlib-only module
@@ -112,6 +117,7 @@ from nyxgpt.subprocess_bounds import (
     LOCAL_PROBE_TIMEOUT_SECONDS,
     PROBE_TIMEOUT_SECONDS,
     bounded_argv,
+    kubectl_env,
     timed_out,
     timeout_message,
     timeout_result,
@@ -436,6 +442,44 @@ def _superseded_attempts(results: list[OpsResult]) -> list[OpsResult]:
     return settled
 
 
+# The label for a result that is not a failure of its step and is not a pass
+# either: a *misconfiguration* the step found and reported, which will not fix
+# itself and which nothing downstream is waiting on (#3956).
+#
+# `_no_data` ("the backend is up and has received nothing") was the nearest
+# existing label and it is the wrong one: a stack nobody has chatted with
+# legitimately has no spans, whereas Grafana holding a placeholder GlitchTip
+# token means every SRE Home panel will answer 401 forever. Both read as
+# `ops: install ok: ...` in the log, which is how two of these reached the
+# owner's 2026-08-26 acceptance round "logged as passing steps".
+ATTENTION_LABEL = "ATTENTION"
+
+
+def _attention(message: str, details: str = "") -> OpsResult:
+    """An `[ATTENTION]` line: the step found a misconfiguration (see above).
+
+    `ok=True`, deliberately and for the same reason `_no_data` is: these are
+    conditions an operator must act on, not reasons to fail an install that
+    otherwise brought a working stack up. What changes is that the line says
+    so -- on stdout and in the log, at WARNING.
+    """
+    return OpsResult(True, message, details, status=ATTENTION_LABEL)
+
+
+def _result_log_verb(r: OpsResult) -> str:
+    """How a result's log line names its own outcome.
+
+    `ok`/`failed` lost every label the result had already classified itself
+    with, so `[NO DATA]` and `[ATTENTION]` lines -- which are precisely the
+    ones that are neither -- logged as `ok` (#3956). The printed label and the
+    logged verb now come from the same place and cannot disagree.
+    """
+    if not r.ok:
+        return "failed"
+    label = _result_status_label(r)
+    return "ok" if label == "OK" else label.lower().replace(" ", "-")
+
+
 def _emit_results(action: str, results: list[OpsResult]) -> bool:
     """Print and structured-log each OpsResult from an ops step, returning overall success.
 
@@ -450,19 +494,29 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
     bounded by `_bounded_output` (#3783). They were previously carried only in
     the structured `extra`, so the step-failure line an operator actually reads
     ("ops: install failed: Failed to pip install nyxgpt-api") named the step
-    and dropped the reason.
+    and dropped the reason. An `[ATTENTION]` result is treated the same way
+    (#3956): it is a finding an operator has to act on, so it logs at WARNING
+    with its remedy, not as `ok` with the remedy left in the structured extra.
+
+    The logged verb is the printed label (`_result_log_verb`), so no line can
+    read `[NO DATA]` on stdout and `ok` in the log.
     """
     ok = True
     for r in results:
         print(f"[{_result_status_label(r)}] {r.message}")
         if r.details:
             print(f"  {r.details}")
-        log = logger.info if r.ok else logger.warning
-        detail_excerpt = "" if r.ok else _bounded_output(r.details)
+        verb = _result_log_verb(r)
+        # An `[ATTENTION]` line is a finding, so it logs at WARNING and carries
+        # its remedy into the message: an operator reading the log of a deploy
+        # that otherwise succeeded must be able to find it (#3956).
+        attention = verb == ATTENTION_LABEL.lower()
+        log = logger.warning if (not r.ok or attention) else logger.info
+        detail_excerpt = "" if (r.ok and not attention) else _bounded_output(r.details)
         log(
             "ops: %s %s: %s",
             action,
-            "ok" if r.ok else "failed",
+            verb,
             f"{r.message}\n{detail_excerpt}" if detail_excerpt else r.message,
             extra={
                 "component": "ops",
@@ -915,7 +969,11 @@ def _run(
             check=check,
             text=True,
             input=input,
-            env=env,
+            # A `kubectl` child is handed the default kubeconfig explicitly
+            # (#3956) -- on a k3s node, kubectl's default is k3s's root-only
+            # file, not `~/.kube/config`. A no-op for every other command and
+            # for any caller that set `KUBECONFIG` itself; see `kubectl_env`.
+            env=kubectl_env(cmd, env),
             timeout=timeout,
             **output_kwargs,
         )
@@ -6897,13 +6955,62 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
 # so `brew install terraform` fails -- install from the official tap instead.
 HASHICORP_TAP = "hashicorp/tap"
 
-# Dev mode's image refs (`--terraform --dev`, #3835): built from the
-# checkout's working tree and never pushed anywhere, so the tag says so.
-# `_build_terraform_docker_images` builds them before `terraform apply`, and
-# since #3984 that is the ONLY build in the dev path -- terraform/main.tf has
-# no `build {}` block in any mode and simply consumes these tags.
-TF_API_IMAGE = "nyxgpt-api:local"
-TF_WEB_IMAGE = "nyxgpt-web:local"
+# --- One tag namespace per build path, and every one of them versioned
+# --- (#3956, extending #3985) ---
+#
+# FOUR local build paths put images on one docker daemon: Terraform dev,
+# Terraform artifact, Kubernetes dev, Kubernetes artifact. Three of them shared
+# two MUTABLE tags -- `nyxgpt-api:local` and `nyxgpt-web:local` -- so whichever
+# ran last owned them, and nothing downstream could tell what it was running.
+#
+# The owner's 2026-08-26 cloud acceptance round is the cost: an EC2 instance
+# running published 3.0.0rc14 reported its images as `local`, and `nyxgpt
+# canary status`/`promote` read the version from exactly that tag
+# (`canary.deployment_health`). Remotely this is worse than locally -- the
+# operator has no second window to run `docker images` in, so there is no way
+# at all to tell which build a Pod is serving, or whether it is the published
+# release they asked for.
+#
+# So the tag names the path AND the version:
+#
+#   nyxgpt-api:artifact-3.0.0rc14   built from the published source tarball
+#   nyxgpt-api:dev-3.0.0rc14        built from a checkout's working tree
+#
+# The two substrates deliberately SHARE each tag: at a given version and mode
+# both build the same source with the same Dockerfile through the same staging
+# helper (`_stage_artifact_build_context`, whose context directory names are
+# chosen so the build fingerprint matches across staging roots), so one tag
+# means one image rather than two paths racing for a name. What is no longer
+# shared is anything mutable: `dev-` cannot overwrite `artifact-`, and neither
+# can overwrite `nyxgpt-api:<version>-<sha>` (what `nyxgpt canary deploy`
+# stamps -- `canary._versioned_image_tag`).
+_IMAGE_MODE_PREFIXES = {True: "dev", False: "artifact"}
+
+
+def local_image_ref(component: str, *, dev: bool, version: str = "") -> str:
+    """The local tag `component`'s image is built at for this build path (see above).
+
+    `component` is "api" or "web"; `dev` picks the working-tree build over the
+    published artifact; `version` defaults to this nyxGPT's own
+    (`_native_service_version`), which is the release whose tarballs the
+    artifact path builds and the version a dev checkout declares.
+
+    Public because `canary.py` and the deployment's own manifests have to be
+    able to name the same image the install built, without re-deriving the
+    convention.
+    """
+    return f"nyxgpt-{component}:{_IMAGE_MODE_PREFIXES[bool(dev)]}-{version or _native_service_version()}"
+
+
+def _terraform_dev_image_refs() -> dict[str, str]:
+    """`{component: ref}` for the Terraform `--dev` path's two working-tree builds.
+
+    Resolved per call rather than held in a module constant (what
+    `TF_API_IMAGE`/`TF_WEB_IMAGE` were until #3956): the tag carries the
+    version now, and a constant would freeze whatever version was installed
+    when this module was first imported.
+    """
+    return {component: local_image_ref(component, dev=True) for component in ("api", "web")}
 
 
 # --- the artifact path's images (#3985) ---
@@ -6939,14 +7046,19 @@ TF_WEB_IMAGE = "nyxgpt-web:local"
 #   - the version is what lets `ops status` name the build a Terraform
 #     deployment is running (the install-mode marker records these refs, and
 #     `InstallModeState._terraform_label` prints them);
-#   - `artifact-` keeps it out of two tag namespaces already in use on the
-#     same daemon: `nyxgpt-api:local` (dev mode here, and the Kubernetes
-#     install's `K8S_IMAGE`) and `nyxgpt-api:<version>` (what `nyxgpt canary
-#     deploy` builds -- `canary.IMAGE_REPOSITORY`). Sharing a tag would let
-#     one path silently overwrite another's image.
+#   - `artifact-` keeps it out of the other tag namespaces in use on the same
+#     daemon: `dev-<version>` (a working-tree build, here or in Kubernetes
+#     mode) and `nyxgpt-api:<version>-<sha>` (what `nyxgpt canary deploy`
+#     builds -- `canary.IMAGE_REPOSITORY`). Sharing a tag would let one path
+#     silently overwrite another's image, which is what the mutable `:local`
+#     tag this comment used to name did until #3956.
 def _terraform_artifact_image_ref(component: str, version: str) -> str:
-    """The local tag the Terraform artifact path builds `component` at."""
-    return f"nyxgpt-{component}:artifact-{version}"
+    """The local tag the Terraform artifact path builds `component` at.
+
+    One line of `local_image_ref`, kept as a name because the Terraform path
+    reads as "the artifact ref for this component" at every call site.
+    """
+    return local_image_ref(component, dev=False, version=version)
 
 
 # {component: (published service artifact, staged build-context directory
@@ -7185,7 +7297,7 @@ def _terraform_image_vars(images: dict[str, str]) -> list[str]:
 
 def _terraform_init_plan_apply(images: dict[str, str] | None = None) -> list[OpsResult]:
     """Run `terraform init` -> `plan` -> `apply`, stopping at the first failure."""
-    var_args = _terraform_image_vars(images or {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE})
+    var_args = _terraform_image_vars(images or _terraform_dev_image_refs())
     chdir = f"-chdir={TERRAFORM_DIR}"
     cp = _run(["terraform", chdir, "init", "-input=false"], check=False, stream_stdout=True)
     if cp.returncode != 0:
@@ -7355,9 +7467,9 @@ def _build_terraform_docker_images() -> list[OpsResult]:
     Dev mode only (#3835): the artifact path builds the same two images from
     the published source tarballs instead (`_build_terraform_artifact_images`)
     and never needs a checkout. Runs before `terraform init/plan/apply` so
-    `docker_image.api`/`.web` in terraform/main.tf (the `local` tags, matching
-    `TF_API_IMAGE`/`TF_WEB_IMAGE` here) already exist locally when the plan
-    resolves them: unchanged source means `_docker_build_if_needed` skips the
+    `docker_image.api`/`.web` in terraform/main.tf (the `dev-<version>` tags
+    `_terraform_dev_image_refs` names, passed in as `-var`s) already exist
+    locally when the plan resolves them: unchanged source means `_docker_build_if_needed` skips the
     rebuild entirely (reported below, mirroring the Homebrew
     `_install_homebrew_api`/`_web` decision output); changed source means it
     rebuilds now, and the new image id is what the next apply rolls the
@@ -7366,30 +7478,31 @@ def _build_terraform_docker_images() -> list[OpsResult]:
     if _which("docker") is None:
         return [OpsResult(False, "docker not found on PATH -- cannot build nyxgpt-api/nyxgpt-web")]
 
+    refs = _terraform_dev_image_refs()
     results: list[OpsResult] = []
     try:
         decision = _docker_build_if_needed(
-            TF_API_IMAGE,
+            refs["api"],
             REPO_ROOT,
             fingerprint_paths=_API_IMAGE_FINGERPRINT_PATHS,
             marker_dir=DOCKER_IMAGE_MARKER_DIR,
         )
-        results.append(OpsResult(True, f"{TF_API_IMAGE}: {decision}"))
+        results.append(OpsResult(True, f"{refs['api']}: {decision}"))
     except RuntimeError as e:
-        results.append(OpsResult(False, f"docker build {TF_API_IMAGE} failed", str(e)))
+        results.append(OpsResult(False, f"docker build {refs['api']} failed", str(e)))
 
     try:
         decision = _docker_build_if_needed(
-            TF_WEB_IMAGE,
+            refs["web"],
             REPO_ROOT / "web",
             fingerprint_paths=[REPO_ROOT / "web"],
             excludes=_WEB_VENDOR_EXCLUDES,
             build_args={"NEXT_PUBLIC_API_BASE_URL": TF_WEB_API_BASE_URL_DEFAULT},
             marker_dir=DOCKER_IMAGE_MARKER_DIR,
         )
-        results.append(OpsResult(True, f"{TF_WEB_IMAGE}: {decision}"))
+        results.append(OpsResult(True, f"{refs['web']}: {decision}"))
     except RuntimeError as e:
-        results.append(OpsResult(False, f"docker build {TF_WEB_IMAGE} failed", str(e)))
+        results.append(OpsResult(False, f"docker build {refs['web']} failed", str(e)))
 
     return results
 
@@ -7545,7 +7658,7 @@ def _install_terraform_steps(api_key: str | None, dev: bool = False) -> list[Ops
     # Filled in by the image step below and read by the two steps after it.
     # A dict rather than a return value because every step in this list has
     # the same `() -> list[OpsResult]` shape.
-    images: dict[str, str] = {"api": TF_API_IMAGE, "web": TF_WEB_IMAGE} if dev else {}
+    images: dict[str, str] = _terraform_dev_image_refs() if dev else {}
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
@@ -7692,8 +7805,8 @@ def _down_terraform_steps() -> list[OpsResult]:
         results += _stop_observability_stack_terraform()
         recorded = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
         images = {
-            "api": recorded.images.get("api", TF_API_IMAGE),
-            "web": recorded.images.get("web", TF_WEB_IMAGE),
+            "api": recorded.images.get("api", _terraform_dev_image_refs()["api"]),
+            "web": recorded.images.get("web", _terraform_dev_image_refs()["web"]),
         }
         cp = _run(
             [
@@ -7781,7 +7894,17 @@ K8S_INSTALL_RECORD_CONFIGMAP = "nyxgpt-install-mode"
 # Pod-name prefixes of the two *app* workloads, as distinct from the
 # observability Pods that share the namespace (see `_k8s_app_pods_present`).
 K8S_APP_POD_PREFIXES = ("nyxgpt-api-", "nyxgpt-web-")
-K8S_IMAGE = "nyxgpt-api:local"
+
+# The image *names* (the repository part) of the two refs
+# `k8s/deployment*.yaml` pin -- those manifests carry a tag of their own
+# (`nyxgpt-api:local`, for the hand-run reference flow in docs/kubernetes.md),
+# which is why only the name is matched here. The tag the cluster actually runs
+# is resolved per install by `local_image_ref` and applied through a generated
+# kustomize overlay (`_write_k8s_image_overlay`, #3956), whose `newTag`
+# transform replaces whatever tag the manifest had -- the manifests themselves
+# stay as shipped, and `nyxgpt canary status` can finally name the version a Pod
+# is serving instead of the word `local`.
+K8S_IMAGE_NAMES: dict[str, str] = {"api": "nyxgpt-api", "web": "nyxgpt-web"}
 
 # The workload that serves this deployment's LLM, and the URL its clients use
 # (#3987). `k8s/configmap.yaml` gives the api Pods `[ollama] base_url =
@@ -7837,11 +7960,10 @@ KIND_CLUSTER_NAME = "nyxgpt-local"
 KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 
 # What the provisioned kind node publishes to the host, as
-# `host port -> Service NodePort` (#3986). These are the two NodePorts pinned
-# in `k8s/service-web.yaml` and `k8s/service.yaml`, mapped onto the same host
-# ports every other local deployment mode binds (COMPOSE_COMPONENT_PORTS), so
-# `http://127.0.0.1:3000` means the same thing in Kubernetes mode as it does
-# natively.
+# `host port -> Service NodePort` (#3986). The app tier's two NodePorts are
+# mapped onto the same host ports every other local deployment mode binds
+# (COMPOSE_COMPONENT_PORTS), so `http://127.0.0.1:3000` means the same thing in
+# Kubernetes mode as it does natively.
 #
 # This is the half of #3986 that makes an install *finish* usable. A kind
 # cluster created with no config publishes nothing at all, so the previous
@@ -7851,30 +7973,95 @@ KIND_CONTEXT = f"kind-{KIND_CLUSTER_NAME}"
 # forward died with the Pod it attached to.
 #
 # Mapping has to be declared when the cluster is created (a running kind node
-# is a container; its published ports cannot be added later), which is why the
-# NodePort numbers are pinned in the manifests rather than allocated.
-KIND_HOST_PORT_MAPPINGS: tuple[tuple[int, int], ...] = (
+# is a container; its published ports cannot be added later), which is why
+# every host port the deployment will ever want is declared here and why the
+# NodePort numbers are pinned rather than allocated.
+K8S_APP_TIER_HOST_PORT_MAPPINGS: tuple[tuple[int, int], ...] = (
     (3000, 30300),
     (8000, 30800),
 )
 
-# Which Service each mapping publishes, and on which of its ports:
-# `host port -> (Service, Service port, node port)`. Derived from
-# KIND_HOST_PORT_MAPPINGS so the cluster's mapping and the Service patch
-# cannot drift apart -- they are worthless independently.
+# ...and the SRE tier's four UIs, on the host ports the admin dashboard's
+# observability links already resolve to (`K8S_PORT_FORWARD_TARGETS` holds the
+# same numbers; `test_k8s_host_access.py` asserts the two agree).
 #
-# The NodePort is applied by `_publish_k8s_app_tier_nodeports` rather than
-# declared in `k8s/service*.yaml`, and that is a security decision, not a
-# stylistic one: those manifests are applied by the AWS k3s deployment too,
-# whose invariant is that nothing but port 22 exists on the instance (#3503,
-# docs/security.md). A NodePort in the base manifest would bind on that node's
-# interfaces as well. Patching it on only where nyxGPT created the cluster AND
-# mapped the ports to loopback keeps the base posture ClusterIP everywhere
-# else -- including a bring-your-own local cluster, where opening node ports
-# on someone else's cluster is not nyxGPT's call.
-K8S_HOST_PUBLISHED_SERVICES: dict[int, tuple[str, int, int]] = {
-    3000: ("nyxgpt-web", 3000, 30300),
-    8000: ("nyxgpt-api", 8000, 30800),
+# This is the second half of #3986, and it was a gap rather than a decision:
+# the first round published the app tier and left all six observability
+# Services ClusterIP, so a healthy local Kubernetes install answered on
+# `:3000` and gave ERR_CONNECTION_REFUSED on Grafana, Prometheus, Jaeger and
+# GlitchTip (owner re-test, 2026-08-26). `CLAUDE.md`'s Definition of Done
+# requires ops/SRE state to be observable from the dashboard **without a
+# terminal**, and a dashboard whose panels only load once the operator has
+# started `nyxgpt ops port-forward` in a spare shell does not meet it. Local
+# Kubernetes was the only deployment mode where that was true: Compose and
+# Terraform publish these ports on the host, and the cloud k3s target
+# tunnels them through a supervised `Restart=always` systemd unit.
+#
+# Node ports are in the 30000-32767 range Kubernetes reserves, so they cannot
+# simply repeat the host number (16686 is outside it); each is the host port
+# offset into that range, which keeps the pairing readable in `docker port`
+# output.
+K8S_OBSERVABILITY_HOST_PORT_MAPPINGS: tuple[tuple[int, int], ...] = (
+    (3001, 30301),  # Grafana
+    (8080, 30808),  # GlitchTip
+    (9090, 30900),  # Prometheus
+    (16686, 31668),  # Jaeger
+)
+
+KIND_HOST_PORT_MAPPINGS: tuple[tuple[int, int], ...] = (
+    *K8S_APP_TIER_HOST_PORT_MAPPINGS,
+    *K8S_OBSERVABILITY_HOST_PORT_MAPPINGS,
+)
+
+
+class K8sPublishedService(NamedTuple):
+    """One Service the provisioned cluster publishes on a host port.
+
+    `port_name` is both the Service port's name and its `targetPort`: every
+    Service in `k8s/` names its port after the container port it targets
+    (`http` everywhere except Jaeger's UI port, which is `ui`), and the patch
+    below has to repeat both or `kubectl patch` would rewrite them.
+    """
+
+    service: str
+    port: int
+    node_port: int
+    port_name: str = "http"
+
+
+# Which Service each mapping publishes, and on which of its ports. Keyed by
+# host port and cross-checked against KIND_HOST_PORT_MAPPINGS in tests, so the
+# cluster's mapping and the Service patch cannot drift apart -- they are
+# worthless independently.
+#
+# The NodePort is applied by `_publish_k8s_nodeports` rather than declared in
+# the manifests, and that is a security decision, not a stylistic one: those
+# manifests are applied by the AWS k3s deployment too, whose invariant is that
+# nothing but port 22 exists on the instance (#3503, docs/security.md). A
+# NodePort in the base manifest would bind on that node's interfaces as well.
+# Patching it on only where nyxGPT created the cluster AND mapped the ports to
+# loopback keeps the base posture ClusterIP everywhere else -- including a
+# bring-your-own local cluster, where opening node ports on someone else's
+# cluster is not nyxGPT's call.
+K8S_APP_TIER_PUBLISHED_SERVICES: dict[int, K8sPublishedService] = {
+    3000: K8sPublishedService("nyxgpt-web", 3000, 30300),
+    8000: K8sPublishedService("nyxgpt-api", 8000, 30800),
+}
+
+K8S_OBSERVABILITY_PUBLISHED_SERVICES: dict[int, K8sPublishedService] = {
+    3001: K8sPublishedService("grafana", 3000, 30301),
+    8080: K8sPublishedService("glitchtip", 8080, 30808),
+    9090: K8sPublishedService("prometheus", 9090, 30900),
+    # Jaeger's Service also carries `otlp-grpc`/`otlp-http`, which the
+    # collector exports to in-cluster. The patch merges by port number
+    # (Kubernetes' patch merge key for `spec.ports`), so publishing the UI
+    # port leaves those two exactly as the manifest declares them.
+    16686: K8sPublishedService("jaeger", 16686, 31668, port_name="ui"),
+}
+
+K8S_HOST_PUBLISHED_SERVICES: dict[int, K8sPublishedService] = {
+    **K8S_APP_TIER_PUBLISHED_SERVICES,
+    **K8S_OBSERVABILITY_PUBLISHED_SERVICES,
 }
 
 # Where the generated kind cluster config is written. Under the ops-managed
@@ -8109,8 +8296,9 @@ def _kind_cluster_config() -> str:
     """
     lines = [
         "# Generated by `nyxgpt ops install --kubernetes` -- do not edit by hand.",
-        "# Publishes the app tier's NodePorts on the host so the web UI is reachable",
-        "# with no port-forward, and stays reachable across Pod replacement (#3986).",
+        "# Publishes the app tier's and the SRE tier's NodePorts on the host, so the",
+        "# web UI and the observability UIs are reachable with no port-forward and stay",
+        "# reachable across Pod replacement (#3986).",
         "kind: Cluster",
         "apiVersion: kind.x-k8s.io/v1alpha4",
         "nodes:",
@@ -8127,6 +8315,22 @@ def _kind_cluster_config() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _host_ports_in_use(ports: Iterable[int]) -> list[int]:
+    """Which of `ports` already has something accepting TCP on loopback.
+
+    A connect probe rather than a bind probe: the thing holding the port may
+    be a container publishing it, and `bind()` on a port Docker has published
+    fails for a reason that reads like a permissions problem.
+    """
+    taken: list[int] = []
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.0)
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                taken.append(port)
+    return taken
+
+
 def _create_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
     """Create the local `kind` cluster nyxgpt provisions when no cluster is reachable.
 
@@ -8134,7 +8338,29 @@ def _create_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
     publishes no host ports, and every Service in `k8s/` used to be
     ClusterIP, so the cluster this produced had no host-reachable surface at
     all. See `KIND_HOST_PORT_MAPPINGS`.
+
+    The host ports are checked for an existing listener FIRST, because this is
+    the one step whose failure an operator cannot read: Docker refuses to
+    create the node container when a published host port is taken, and the
+    error it emits names a container and a port range rather than the stack
+    that is already running on this machine. Six mapped ports is enough
+    surface that this is a likely state -- a native or Compose deployment on
+    the same workstation holds 3000/8000, and its observability profiles hold
+    3001/8080/9090/16686.
     """
+    taken = _host_ports_in_use(host for host, _node in KIND_HOST_PORT_MAPPINGS)
+    if taken:
+        return [
+            OpsResult(
+                False,
+                f"Host port(s) {', '.join(str(p) for p in taken)} are already in use, so the "
+                f"kind cluster cannot publish them",
+                "A Kubernetes deployment publishes the same host ports as every other local "
+                "mode, so the two cannot run side by side. Stop the other deployment first "
+                "(`nyxgpt ops down` for a native/Compose stack, `nyxgpt ops down --terraform` "
+                "for Terraform), then re-run this command.",
+            )
+        ]
     try:
         KIND_CLUSTER_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         KIND_CLUSTER_CONFIG_FILE.write_text(_kind_cluster_config(), encoding="utf-8")
@@ -8162,7 +8388,7 @@ def _create_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
     )
     if cp.returncode != 0:
         return [OpsResult(False, f"kind create cluster --name {name} failed", _cp_details(cp))]
-    ports = ", ".join(str(host) for host, _node in KIND_HOST_PORT_MAPPINGS)
+    ports = ", ".join(str(host) for host, _node in sorted(KIND_HOST_PORT_MAPPINGS))
     return [
         OpsResult(
             True,
@@ -8177,8 +8403,11 @@ def _kind_node_container(name: str = KIND_CLUSTER_NAME) -> str:
     return f"{name}-control-plane"
 
 
-def _kind_cluster_publishes_host_ports(name: str = KIND_CLUSTER_NAME) -> bool:
-    """True if the running kind cluster publishes every `KIND_HOST_PORT_MAPPINGS` host port.
+def _kind_cluster_publishes_host_ports(
+    name: str = KIND_CLUSTER_NAME,
+    mappings: tuple[tuple[int, int], ...] = K8S_APP_TIER_HOST_PORT_MAPPINGS,
+) -> bool:
+    """True if the running kind cluster publishes every host port in `mappings`.
 
     Asked of the node **container**, not of the config file: an operator may
     be reusing a `nyxgpt-local` cluster created by an older nyxGPT (or by
@@ -8186,9 +8415,29 @@ def _kind_cluster_publishes_host_ports(name: str = KIND_CLUSTER_NAME) -> bool:
     changed after creation. A False here is what routes the install to the
     managed background forward instead of promising a URL that will not
     answer.
+
+    Asked **per tier** (the default is the app tier) rather than of all six
+    mappings at once, because the two tiers were published by different
+    releases: a `nyxgpt-local` created between #3986's first round and this one
+    publishes 3000/8000 and nothing else. All-or-nothing here would have read
+    that cluster as unpublished and started a forward onto the two host ports
+    the node already holds -- a bind failure, and the whole UI lost to fix the
+    SRE tier.
+    """
+    published = _kind_published_host_ports(name)
+    return all(host_port in published for host_port, _node in mappings)
+
+
+def _kind_published_host_ports(name: str = KIND_CLUSTER_NAME) -> set[int]:
+    """Which host ports the kind node container publishes, per `docker port`.
+
+    Its output is `<container port>/tcp -> <host>:<host port>` per mapping, so
+    the host port is the last colon-separated field. An empty set covers every
+    "cannot tell" case (no docker, no such container): the callers all treat
+    "not published" as the conservative answer.
     """
     if _which("docker") is None:
-        return False
+        return set()
     cp = _run(
         ["docker", "port", _kind_node_container(name)],
         check=False,
@@ -8196,9 +8445,13 @@ def _kind_cluster_publishes_host_ports(name: str = KIND_CLUSTER_NAME) -> bool:
         timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
-        return False
-    published = cp.stdout or ""
-    return all(f":{host_port}" in published for host_port, _node in KIND_HOST_PORT_MAPPINGS)
+        return set()
+    ports: set[int] = set()
+    for line in (cp.stdout or "").splitlines():
+        _, _, host = line.rpartition(":")
+        if host.strip().isdigit():
+            ports.add(int(host.strip()))
+    return ports
 
 
 def _delete_kind_cluster(name: str = KIND_CLUSTER_NAME) -> list[OpsResult]:
@@ -8327,7 +8580,7 @@ def _kubectl_context() -> str:
 
 
 def _build_and_load_k8s_image(
-    image: str = K8S_IMAGE,
+    image: str,
     *,
     context: Path = REPO_ROOT,
     fingerprint_paths: list[Path] | None = None,
@@ -8351,20 +8604,20 @@ def _build_and_load_k8s_image(
     k3s installed but is currently pointed at a kind cluster still takes the
     kind branch.
 
-    `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
-    install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` (via
-    `canary.deploy`) passes a versioned tag instead (see
+    `image` is always the caller's: the install passes `local_image_ref(...)`
+    (`dev-<version>`/`artifact-<version>`, #3956 -- it used to default to a
+    mutable `nyxgpt-api:local`), and `nyxgpt ops deploy --kubernetes` (via
+    `canary.deploy`) passes its own `<version>-<sha>` stamp (see
     `build_and_load_k8s_image` / #3409). `context`/`fingerprint_paths`/
     `excludes`/`build_args` default to the `nyxgpt-api` image's build (repo
     root, `_API_IMAGE_FINGERPRINT_PATHS`); `canary.deploy` overrides them for
     the `web` component to build `web/` with `_WEB_VENDOR_EXCLUDES` and the
     `NEXT_PUBLIC_API_BASE_URL` build arg (#3419), mirroring
     `_build_terraform_docker_images`'s web build. Either way the build
-    itself is gated by `_docker_build_if_needed` (#3414): a versioned tag is
-    always missing locally the first time (so it always builds), while the
-    repeated `:local` tag skips the rebuild once the source stops changing
-    between installs, mirroring the Homebrew reinstall-if-needed behavior
-    from #3406.
+    itself is gated by `_docker_build_if_needed` (#3414): a tag absent from
+    the daemon always builds, while a tag an earlier install already produced
+    skips the rebuild once the source stops changing between installs,
+    mirroring the Homebrew reinstall-if-needed behavior from #3406.
     """
     if _which("docker") is None:
         return [OpsResult(False, f"docker not found on PATH -- cannot build the {image} image")]
@@ -8614,12 +8867,76 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
     return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
 
 
-def _kubectl_apply_kustomization() -> list[OpsResult]:
-    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, Service)."""
-    cp = _run(["kubectl", "apply", "-k", str(K8S_DIR)], check=False)
+# Where the generated image-tag overlay lives (#3956). Beside `K8S_DIR`, never
+# inside it: `k8s/` is the manifest set the deployment applies, and #3506's
+# rationale rests on it being the repository's copy byte for byte (the
+# `k3s-cloud-smoke` job asserts exactly that). A generated file inside it would
+# make that assertion unmaintainable and leave the next reader unable to tell
+# shipped manifests from install-time output.
+K8S_IMAGE_OVERLAY_DIR = NYXGPT_HOME / "k8s-images"
+
+_K8S_IMAGE_OVERLAY_HEADER = """# GENERATED by `nyxgpt ops install --kubernetes` -- do not edit (#3956).
+#
+# The deployment's manifests pin image NAMES; this names the TAG, so the four
+# local build paths cannot overwrite one another's images and `nyxgpt canary
+# status` can report the version a Pod is actually serving. Regenerated on
+# every install from `ops.local_image_ref`; `k8s/` itself is untouched.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - {base}
+images:
+"""
+
+
+def k8s_image_refs(dev: bool) -> dict[str, str]:
+    """`{component: ref}` for the two images a Kubernetes install builds and applies."""
+    return {component: local_image_ref(component, dev=dev) for component in K8S_IMAGE_NAMES}
+
+
+def _write_k8s_image_overlay(dev: bool) -> Path:
+    """Generate the kustomize overlay that pins this install's image tags; returns its dir.
+
+    A kustomize `images:` transform rather than an edit to the Deployments or a
+    `kubectl set image` after the fact, and the difference matters twice over:
+    the manifests apply exactly as shipped (#3506), and the tag is in the
+    object the FIRST apply creates -- a post-apply patch would roll every
+    Deployment a second time on every install, which is precisely the
+    superseded-ReplicaSet churn `_k8s_retired_replicasets` exists to survive.
+    """
+    _ensure_dir(K8S_IMAGE_OVERLAY_DIR)
+    lines = [_K8S_IMAGE_OVERLAY_HEADER.format(base=os.path.relpath(K8S_DIR, K8S_IMAGE_OVERLAY_DIR))]
+    for component, name in sorted(K8S_IMAGE_NAMES.items()):
+        ref = local_image_ref(component, dev=dev)
+        lines.append(f"  - name: {name}\n    newTag: {ref.split(':', 1)[1]}\n")
+    path = K8S_IMAGE_OVERLAY_DIR / "kustomization.yaml"
+    path.write_text("".join(lines), encoding="utf-8")
+    return K8S_IMAGE_OVERLAY_DIR
+
+
+def _kubectl_apply_kustomization(dev: bool = False) -> list[OpsResult]:
+    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, Service).
+
+    Applied through the generated image overlay (`_write_k8s_image_overlay`),
+    which adds this install's image tags and nothing else -- so what reaches
+    the cluster is the shipped manifest set plus the tag of the image this very
+    run built.
+    """
+    try:
+        overlay = _write_k8s_image_overlay(dev)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Could not write the image overlay at {K8S_IMAGE_OVERLAY_DIR}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    refs = ", ".join(sorted(k8s_image_refs(dev).values()))
+    cp = _run(["kubectl", "apply", "-k", str(overlay)], check=False)
     if cp.returncode != 0:
         return [OpsResult(False, "kubectl apply -k k8s/ failed", _cp_details(cp))]
-    return [OpsResult(True, "kubectl apply -k k8s/", _cp_details(cp))]
+    return [OpsResult(True, f"kubectl apply -k k8s/ ({refs})", _cp_details(cp))]
 
 
 # --- In-cluster observability layer (#3787) ---
@@ -9044,8 +9361,63 @@ def _classify_k8s_pod(pod: dict[str, Any]) -> K8sWorkloadState:
         return K8sWorkloadState(name, K8S_STATE_READY, "Succeeded")
 
     # `Failed`, `Unknown`, and anything a future Kubernetes adds: not ready,
-    # and not something waiting resolves.
-    return K8sWorkloadState(name, K8S_STATE_FAILED, phase, str(status.get("message") or "").strip())
+    # and not something waiting resolves. The phase ALONE is not a diagnosis --
+    # `pod nyxgpt-web-stable-77c7d9c6f4-gz62g: Failed` is the line the owner
+    # had to SSH in and run kubectl by hand to make sense of (#3956) -- so the
+    # Pod's own reason (`Evicted`, `OOMKilled`, a container's exit code; see
+    # `k8s_pod_state._terminated_reason`) is named here, with the cluster's
+    # message as the detail.
+    summary = f"{phase}: {state.reason}" if state.reason else phase
+    detail = state.detail or str(status.get("message") or "").strip()
+    return K8sWorkloadState(name, K8S_STATE_FAILED, summary, detail, state.reason)
+
+
+# --- Pods no live controller owns (#3956) ---
+#
+# A ReplicaSet the Deployment controller has scaled to zero is finished: it is
+# kept only so a rollback can scale it up again, and it is NOT expected to have
+# Pods. A Pod still attached to one is the leftover of a completed rollout, and
+# the cluster's own answer about the workload is the current ReplicaSet's.
+#
+# Reading those leftovers as the deployment's state is the 2026-08-26
+# acceptance failure. `nyxgpt cloud deploy --kubernetes` applies the
+# kustomization (whose ConfigMap carries the placeholder error-tracking DSN),
+# brings the stack up, and then provisions GlitchTip -- which writes the real
+# DSN and rolls the api/web Deployments onto a new pod template. The pre-DSN
+# ReplicaSet is scaled to zero and its Pod is left behind terminated, so
+# `_k8s_stack_health` reported `pod nyxgpt-web-stable-77c7d9c6f4-gz62g: Failed`
+# and failed the install -- three lines above `nyxgpt-web-stable 1/1`, which is
+# the authoritative signal and said the opposite. The deploy then exited before
+# installing the access bridge, so a `--kubernetes` deploy could not produce a
+# reachable deployment at all.
+#
+# Deliberately NOT "ignore Pods whose phase is Failed": a Failed Pod of the
+# *current* ReplicaSet is a real failure, and phase-filtering would hide it
+# while leaving the actual defect -- consulting Pods no live controller owns --
+# in place for every other terminal state to walk back through.
+#
+# The decision itself -- which ReplicaSets are retired, and whether a given Pod
+# belongs to one -- is `k8s_pod_state`'s, shared with `self_heal.py` and
+# `canary.py` (#3956 review round 1): the first cut of this fixed only the
+# install's reading, and the same corpse then rendered on the Self-Heal
+# dashboard as a permanently Failed component of a healthy deployment. Only the
+# kubectl call is local, because the bound and the `expected=True` logging are.
+def _k8s_retired_replicasets(namespace: str) -> frozenset[str]:
+    """The namespace's ReplicaSets with zero desired replicas (see above).
+
+    An unreadable answer is an empty set, not a guess: this filter may only
+    ever *remove* a Pod from a report on positive evidence that its owner is
+    finished. Without that evidence the report is the one it has always been.
+    """
+    cp = _run(
+        retired_replicaset_argv(namespace),
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return frozenset()
+    return parse_retired_replicasets(cp.stdout or "")
 
 
 def _k8s_pod_states(
@@ -9056,6 +9428,14 @@ def _k8s_pod_states(
     `read_failure` is non-None only when the Pod list could not be read at
     all -- which is a real failure (an unreachable cluster is not "pending"),
     kept separate so callers do not have to invent a fake state for it.
+
+    Pods owned by a ReplicaSet with zero desired replicas are dropped
+    (`_k8s_retired_replicasets`, #3956): they are the residue of a finished
+    rollout, not the deployment's state. The extra read that costs is taken
+    only when at least one Pod is not READY, which is the only case where the
+    filter can change an answer -- a retired Pod that is Ready can remove a
+    line from a report but can never turn a pass into a failure, and
+    `/infra/status` polls this (first principle 1).
 
     `selector` narrows the read to one workload's Pods (`-l app=x,track=y`).
     `expected=True` for the read-only probes (`infra_status`) where an
@@ -9088,8 +9468,13 @@ def _k8s_pod_states(
         payload = json.loads(cp.stdout or "{}")
     except json.JSONDecodeError as e:
         return [], OpsResult(False, "Could not parse pod status", f"{e}\n{_cp_details(cp)}")
-    items = payload.get("items") or []
-    return [_classify_k8s_pod(p) for p in items if isinstance(p, dict)], None
+    pods = [p for p in (payload.get("items") or []) if isinstance(p, dict)]
+    states = [(p, _classify_k8s_pod(p)) for p in pods]
+    if any(state.state != K8S_STATE_READY for _pod, state in states):
+        retired = _k8s_retired_replicasets(namespace or K8S_NAMESPACE)
+        if retired:
+            states = [(pod, state) for pod, state in states if not pod_is_retired(pod, retired)]
+    return [state for _pod, state in states], None
 
 
 def _k8s_app_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
@@ -9543,6 +9928,12 @@ def _k8s_errors_flow_result() -> OpsResult:
     refused means it ran and the credential has since been invalidated (the
     Kubernetes shape of the #3565 drift `ops doctor` already checks for
     natively).
+
+    All three findings are `[ATTENTION]`, not `[NO DATA]` (#3956). The owner's
+    2026-08-26 cloud round hit two of them and both logged as `ops: install
+    ok:`, which is how a deploy reported a 401-on-every-panel deployment as a
+    clean run. Nothing here is "up but empty" -- each one is a credential that
+    is wrong and will stay wrong until an operator acts.
     """
     cp = _run(
         [
@@ -9560,13 +9951,13 @@ def _k8s_errors_flow_result() -> OpsResult:
         timeout=PROBE_TIMEOUT_SECONDS,
     )
     if cp.returncode != 0:
-        return _no_data(
+        return _attention(
             "observability errors: Grafana has no GlitchTip token mounted",
             f"{K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT} is not readable in the grafana Pod; the "
             "SRE Home GlitchTip panels cannot authenticate.",
         )
     if (cp.stdout or "").strip() == GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER:
-        return _no_data(
+        return _attention(
             "observability errors: Grafana's GlitchTip token is still the placeholder",
             "The SRE Home GlitchTip panels will answer 401 Unauthorized. Provision a real "
             "token with `nyxgpt ops glitchtip-init --kubernetes`.",
@@ -9577,7 +9968,7 @@ def _k8s_errors_flow_result() -> OpsResult:
         bearer_token_file=K8S_GRAFANA_GLITCHTIP_TOKEN_MOUNT,
     )
     if not ok:
-        return _no_data(
+        return _attention(
             "observability errors: GlitchTip rejected Grafana's token",
             "The token is not the placeholder but GlitchTip will not accept it -- its "
             "project data was probably re-minted underneath it (#3565). Re-run "
@@ -9999,13 +10390,12 @@ def _k8s_access_bridge_owns_host_ports() -> bool:
     return (_systemd_user_dir() / f"{K8S_ACCESS_BRIDGE_UNIT}.service").exists()
 
 
-def _publish_k8s_app_tier_nodeports() -> list[OpsResult]:
-    """Patch the api/web Services onto the node ports the cluster maps (#3986).
+def _publish_k8s_nodeports(published: Mapping[int, K8sPublishedService]) -> list[OpsResult]:
+    """Patch each Service in `published` onto the node port the cluster maps (#3986).
 
-    Only reached for a cluster nyxGPT provisioned and whose node publishes
-    every `KIND_HOST_PORT_MAPPINGS` host port -- see
-    `K8S_HOST_PUBLISHED_SERVICES` for why this is a patch rather than a line
-    in `k8s/service*.yaml`.
+    Only reached for a cluster nyxGPT provisioned and whose node publishes the
+    corresponding host ports -- see `K8S_HOST_PUBLISHED_SERVICES` for why this
+    is a patch rather than a line in the manifests.
 
     Idempotent, and it has to be: `kubectl apply -k` sets every field its
     config declares, so the base manifest's `type: ClusterIP` is re-asserted
@@ -10013,35 +10403,42 @@ def _publish_k8s_app_tier_nodeports() -> list[OpsResult]:
     the reason it lives in the host-access step rather than next to the apply.
     """
     results: list[OpsResult] = []
-    for _host_port, (service, port, node_port) in sorted(K8S_HOST_PUBLISHED_SERVICES.items()):
+    for _host_port, entry in sorted(published.items()):
         patch = json.dumps(
             {
                 "spec": {
                     "type": "NodePort",
                     "ports": [
                         {
-                            "name": "http",
-                            "port": port,
-                            "targetPort": "http",
-                            "nodePort": node_port,
+                            "name": entry.port_name,
+                            "port": entry.port,
+                            "targetPort": entry.port_name,
+                            "nodePort": entry.node_port,
                         }
                     ],
                 }
             }
         )
         cp = _run(
-            ["kubectl", "-n", K8S_NAMESPACE, "patch", "svc", service, "-p", patch],
+            ["kubectl", "-n", K8S_NAMESPACE, "patch", "svc", entry.service, "-p", patch],
             check=False,
         )
         if cp.returncode != 0:
             results.append(
                 OpsResult(
-                    False, f"Could not publish {service} on node port {node_port}", _cp_details(cp)
+                    False,
+                    f"Could not publish {entry.service} on node port {entry.node_port}",
+                    _cp_details(cp),
                 )
             )
             return results
-        results.append(OpsResult(True, f"{service} published on node port {node_port}"))
+        results.append(OpsResult(True, f"{entry.service} published on node port {entry.node_port}"))
     return results
+
+
+def _publish_k8s_app_tier_nodeports() -> list[OpsResult]:
+    """Publish the api/web Services on the host ports the cluster maps (#3986)."""
+    return _publish_k8s_nodeports(K8S_APP_TIER_PUBLISHED_SERVICES)
 
 
 def _ensure_k8s_host_access() -> list[OpsResult]:
@@ -10141,6 +10538,186 @@ def _ensure_k8s_host_access() -> list[OpsResult]:
     ]
 
 
+def _probe_host_urls(
+    urls: Sequence[str], budget_s: float = K8S_HOST_ACCESS_PROBE_BUDGET_S
+) -> list[tuple[str, str]]:
+    """Probe every url, sharing ONE budget; return [(url, last error)] for the silent ones.
+
+    One shared deadline rather than one budget each: these are published by
+    the same node through the same kube-proxy, and their Pods have already
+    been waited on, so the first answer is evidence about all of them. Four
+    independent budgets would turn a genuinely unreachable tier into four
+    minutes of waiting at the end of an install.
+    """
+    deadline = time.monotonic() + budget_s
+    failures: list[tuple[str, str]] = []
+    for url in urls:
+        failure = _probe_web_url(url, budget_s=max(0.0, deadline - time.monotonic()))
+        if failure is not None:
+            failures.append((url, failure))
+    return failures
+
+
+def _k8s_services_present(names: Iterable[str]) -> set[str]:
+    """Which of `names` exist as Services in the nyxgpt namespace right now.
+
+    One `kubectl get` for the whole set: a per-Service `get` would be four
+    round trips to answer "is the observability layer here", and this runs on
+    every install.
+    """
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", "-o", "name"],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return set()
+    found = {line.rsplit("/", 1)[-1].strip() for line in (cp.stdout or "").splitlines()}
+    return {name for name in names if name in found}
+
+
+def _ensure_k8s_observability_host_access() -> list[OpsResult]:
+    """Leave the SRE tier reachable from the browser too (#3986, owner re-test 2026-08-26).
+
+    The same claim as `_ensure_k8s_host_access`, for the half that was never
+    weighed. #3986's first round published the app tier on the host and left
+    all six observability Services ClusterIP, so a healthy 14/14 local
+    Kubernetes install answered on `http://127.0.0.1:3000` and gave
+    ERR_CONNECTION_REFUSED on Grafana, Prometheus, Jaeger and GlitchTip --
+    every panel of the SRE dashboard dark until the operator opened a terminal
+    and ran `nyxgpt ops port-forward --target observability`. `CLAUDE.md`'s
+    Definition of Done requires ops/SRE state to be observable **without a
+    terminal**, so that is a failure of the standard, not a missing
+    convenience.
+
+    Three paths, the same three the app tier has, and for the same reasons:
+
+    * **A cluster nyxGPT provisioned** that maps the SRE host ports gets
+      NodePorts patched onto the four UI Services. Properties of the cluster,
+      not of a process: they survive the Pod replacement a
+      `kubectl port-forward` dies with.
+    * **The cloud k3s target** already owns these ports through its supervised
+      `nyxgpt-k8s-bridge@observability` unit; starting a forward here would win
+      the bind race and leave that unit restarting forever.
+    * **Anything else** -- a bring-your-own cluster, or a `nyxgpt-local`
+      created before the SRE ports were mapped -- gets the managed background
+      forward, established BY the install rather than left as homework.
+
+    Skipped, successfully, when there is no observability layer to publish
+    (`--skip-observability`): a tier that was deliberately not deployed is not
+    an unreachable one.
+    """
+    if _which("kubectl") is None:
+        return [OpsResult(True, "Skipped SRE tier host access (kubectl not found on PATH)")]
+    if _in_cluster():
+        # `observability_kubernetes` is reachable from the SRE dashboard's own
+        # controls, served by the api Pod (#3787). A Pod has no host to publish
+        # to and its `127.0.0.1` is its own container, so both halves of this
+        # step are meaningless there -- and a forward started inside a Pod
+        # would be a child nobody can reach. The operator's machine is where
+        # the access path lives (#3988's lesson about which machine is being
+        # reported on).
+        return [
+            OpsResult(
+                True,
+                "Skipped SRE tier host access (running in-cluster -- a Pod has no host ports "
+                "to publish)",
+                "Run `nyxgpt ops observability --kubernetes` on the machine you browse from, "
+                "or reach the UIs with `nyxgpt ops port-forward --target observability`.",
+            )
+        ]
+
+    wanted = {entry.service: host for host, entry in K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()}
+    present = _k8s_services_present(wanted)
+    if not present:
+        return [
+            OpsResult(
+                True,
+                "No observability layer in the cluster -- no SRE UIs to publish",
+                "Deploy it with `nyxgpt ops observability --kubernetes`.",
+            )
+        ]
+    publishable = {
+        host: entry
+        for host, entry in K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()
+        if entry.service in present
+    }
+    urls = [f"http://127.0.0.1:{host}" for host in sorted(publishable)]
+
+    provisioned = _kubectl_context() == KIND_CONTEXT and _kind_cluster_publishes_host_ports(
+        mappings=K8S_OBSERVABILITY_HOST_PORT_MAPPINGS
+    )
+    if provisioned:
+        results = _publish_k8s_nodeports(publishable)
+        if not all(r.ok for r in results):
+            return results
+        failures = _probe_host_urls(urls)
+        if failures:
+            return results + [
+                OpsResult(
+                    False,
+                    "The cluster publishes the SRE UIs but "
+                    f"{', '.join(url for url, _e in failures)} did not answer",
+                    "\n".join(f"{url}: {error}" for url, error in failures)
+                    + "\nCheck `nyxgpt ops status` for the observability Pods; if the cluster "
+                    "was created by an older nyxGPT, `nyxgpt ops down --kubernetes` and "
+                    "re-install to recreate it with the SRE host port mappings.",
+                )
+            ]
+        return results + [
+            OpsResult(
+                True,
+                f"SRE UIs reachable at {', '.join(urls)} (NodePorts published by the cluster "
+                "-- no port-forward needed, and they survive Pod replacement)",
+            )
+        ]
+
+    if _k8s_access_bridge_owns_host_ports():
+        return [
+            OpsResult(
+                True,
+                "The SRE UIs are held by the Kubernetes access bridge on this instance, not by "
+                "a forward started here",
+                "systemd --user `nyxgpt-k8s-bridge@observability` runs the forward; reach it "
+                "from your workstation with `nyxgpt cloud tunnel`. `nyxgpt ops doctor` reports "
+                "the units' state.",
+            )
+        ]
+
+    # Exactly the Services that are there and NOT published, never a fixed
+    # group: on a `nyxgpt-local` from #3986's first round the app tier is
+    # published on the host already, and a forward that also claimed 3000/8000
+    # would fail to bind and take the web UI down to fix the SRE tier.
+    targets = ",".join(
+        name
+        for name in K8S_OBSERVABILITY_PORT_FORWARD_TARGETS
+        if K8S_PORT_FORWARD_TARGETS[name][0] in present
+    )
+    results = start_port_forward_background(targets)
+    if not all(r.ok for r in results):
+        return results
+    failures = _probe_host_urls(urls)
+    if failures:
+        return results + [
+            OpsResult(
+                False,
+                "Started a background port-forward but "
+                f"{', '.join(url for url, _e in failures)} did not answer",
+                "\n".join(f"{url}: {error}" for url, error in failures)
+                + f"\nSee {K8S_PORT_FORWARD_LOG_FILE} for what the forward reported, and "
+                "`nyxgpt ops port-forward --status`.",
+            )
+        ]
+    return results + [
+        OpsResult(
+            True,
+            f"SRE UIs reachable at {', '.join(urls)} (managed background port-forward -- "
+            "`nyxgpt ops port-forward --status` / `--stop`)",
+        )
+    ]
+
+
 # --- Checkout-free image builds for the Kubernetes path (#3834) ---
 #
 # `--kubernetes` used to build both images from `REPO_ROOT` unconditionally,
@@ -10167,14 +10744,13 @@ def _ensure_k8s_host_access() -> list[OpsResult]:
 # working tree.
 K8S_BUILD_DIR = NYXGPT_HOME / "build" / "kubernetes"
 
-# The published artifact each Kubernetes image is built from, and the
-# directory name its staged context gets -- the same two pairs the Terraform
-# artifact path uses, keyed by this path's image tags. See
-# `ARTIFACT_IMAGE_SOURCES` for why the context directory name is load-bearing.
-K8S_IMAGE_ARTIFACTS: dict[str, tuple[str, str]] = {
-    K8S_IMAGE: ARTIFACT_IMAGE_SOURCES["api"],
-    TF_WEB_IMAGE: ARTIFACT_IMAGE_SOURCES["web"],
-}
+# The published artifact each Kubernetes image is built from, and the directory
+# name its staged context gets: the same two pairs the Terraform artifact path
+# uses. Keyed by COMPONENT since #3956 -- it used to be keyed by image tag,
+# which only worked while those tags were two fixed strings.
+# See `ARTIFACT_IMAGE_SOURCES` for why the context directory name is
+# load-bearing.
+K8S_IMAGE_ARTIFACTS: dict[str, tuple[str, str]] = dict(ARTIFACT_IMAGE_SOURCES)
 
 
 def _stage_api_build_files(context: Path) -> None:
@@ -10213,9 +10789,9 @@ def _stage_api_build_files(context: Path) -> None:
     _copy_file(entrypoint, context / "docker" / "entrypoint.sh", mode=0o755)
 
 
-def _stage_k8s_artifact_context(image: str) -> Path:
-    """`_stage_artifact_build_context` for a Kubernetes `image` tag."""
-    service, context_name = K8S_IMAGE_ARTIFACTS[image]
+def _stage_k8s_artifact_context(component: str) -> Path:
+    """`_stage_artifact_build_context` for a Kubernetes image `component` ("api"/"web")."""
+    service, context_name = K8S_IMAGE_ARTIFACTS[component]
     return _stage_artifact_build_context(service, context_name, K8S_BUILD_DIR)
 
 
@@ -10270,18 +10846,19 @@ def _stage_artifact_build_context(service: str, context_name: str, root_dir: Pat
 
 
 def _build_and_load_k8s_api_image(dev: bool = False) -> list[OpsResult]:
-    """Build/load `nyxgpt-api:local` from the working tree (`dev`) or the published artifact.
+    """Build/load the api image from the working tree (`dev`) or the published artifact.
 
     Artifact mode (the default) stages the published `nyxgpt-api` tarball and
     builds that; dev mode builds the checkout exactly as every install did
-    before #3834. Both produce the same tag from the same Dockerfile -- what
-    differs is *which source* is in the image, which is why the mode is
-    recorded and reported rather than left to be guessed at.
+    before #3834. What differs is *which source* is in the image -- and since
+    #3956 the tag says which, so the two can no longer overwrite each other
+    (`local_image_ref`).
     """
+    image = local_image_ref("api", dev=dev)
     if dev:
-        return _build_and_load_k8s_image()
+        return _build_and_load_k8s_image(image)
     try:
-        context = _stage_k8s_artifact_context(K8S_IMAGE)
+        context = _stage_k8s_artifact_context("api")
     except (RuntimeError, OSError, tarfile.TarError) as e:
         return [
             OpsResult(
@@ -10291,14 +10868,14 @@ def _build_and_load_k8s_api_image(dev: bool = False) -> list[OpsResult]:
             )
         ]
     return _build_and_load_k8s_image(
-        K8S_IMAGE,
+        image,
         context=context,
         fingerprint_paths=[context / rel for rel in _API_IMAGE_FINGERPRINT_RELPATHS],
     )
 
 
 def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
-    """Build/load `nyxgpt-web:local`, the web canary pair's image (#3419).
+    """Build/load the web canary pair's image (#3419).
 
     Mirrors `_build_terraform_docker_images`'s web build: the context is the
     web tree (not the repo root), fingerprinted on that tree itself (excluding
@@ -10320,7 +10897,7 @@ def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
         context = REPO_ROOT / "web"
     else:
         try:
-            context = _stage_k8s_artifact_context(TF_WEB_IMAGE)
+            context = _stage_k8s_artifact_context("web")
         except (RuntimeError, OSError, tarfile.TarError) as e:
             return [
                 OpsResult(
@@ -10330,7 +10907,7 @@ def _build_and_load_k8s_web_image(dev: bool = False) -> list[OpsResult]:
                 )
             ]
     return _build_and_load_k8s_image(
-        TF_WEB_IMAGE,
+        local_image_ref("web", dev=dev),
         context=context,
         fingerprint_paths=[context],
         excludes=_WEB_VENDOR_EXCLUDES,
@@ -11216,10 +11793,11 @@ def _install_kubernetes_steps(
 ) -> list[OpsResult]:
     """Run the Kubernetes bring-up steps and return structured results (no printing).
 
-    Prereq checks (cluster reachable, kubectl present), builds and loads
-    `nyxgpt-api:local` and `nyxgpt-web:local`, bootstraps the deployment's
-    secret.yaml (prompting for the API key, never committing it), applies the
-    kustomization (which now includes the web stable/canary pair -- #3419),
+    Prereq checks (cluster reachable, kubectl present), builds and loads the
+    api and web images at this path's own tags (`local_image_ref`, #3956),
+    bootstraps the deployment's secret.yaml (prompting for the API key, never
+    committing it), applies the kustomization through the generated image
+    overlay (which now includes the web stable/canary pair -- #3419),
     records the install mode, brings up the in-cluster observability layer
     (#3787), and snapshots Pod/Service health. Stops at the first failing
     step, same rationale as `_install_terraform_steps`.
@@ -11290,7 +11868,7 @@ def _install_kubernetes_steps(
         ),
         ("build/load api image", lambda: _build_and_load_k8s_api_image(dev=dev)),
         ("build/load web image", lambda: _build_and_load_k8s_web_image(dev=dev)),
-        ("apply kustomization", _kubectl_apply_kustomization),
+        ("apply kustomization", lambda: _kubectl_apply_kustomization(dev)),
         ("record install mode", lambda: _record_k8s_install_mode(dev)),
         ("wait for data/LLM tier", _wait_for_k8s_data_tier),
         # The api/web Pods depend on the tier above for their readiness
@@ -11324,6 +11902,12 @@ def _install_kubernetes_steps(
         # Grafana authenticates to GlitchTip with the manifest's placeholder
         # token, which is what put `401 Unauthorized` on the SRE Home panels.
         steps.append(("glitchtip provisioning", _k8s_provision_glitchtip))
+        # LAST, and it has to be: this publishes the SRE UIs on the host and
+        # then VERIFIES they answer (#3986), and the step above deliberately
+        # rolls the DSN consumers. Probing a tier that is mid-restart would
+        # report a false negative about the one thing this step exists to
+        # prove.
+        steps.append(("SRE tier host access", _ensure_k8s_observability_host_access))
     for step_name, fn in steps:
         try:
             step_results = fn()
@@ -11401,6 +11985,12 @@ def observability_kubernetes() -> list[OpsResult]:
         # token and the api with no DSN, which is a tier that runs and
         # observes nothing.
         results += _k8s_provision_glitchtip()
+        # ...and the layer is not *reachable* until its UIs are published on
+        # the host (#3986). This command is a way to deploy the tier on its
+        # own, so it owes the same reachable-when-it-returns promise the
+        # install does -- the dashboard's observability links point at these
+        # exact ports.
+        results += _ensure_k8s_observability_host_access()
         results += _k8s_observability_health()
     return results
 
@@ -11536,13 +12126,18 @@ K8S_OBSERVABILITY_PORT_FORWARD_TARGETS = ("grafana", "prometheus", "jaeger", "gl
 # cannot map (see `_ensure_k8s_host_access`).
 K8S_APP_PORT_FORWARD_TARGETS = ("web", "api")
 
-# Every `--target` value, including the two that expand to several forwards.
-# Single source for the CLI's `choices` and for `_port_forward_plan`, so the
-# two cannot disagree about what is accepted.
+# The two values that expand to several forwards, by name.
+K8S_PORT_FORWARD_GROUPS: dict[str, tuple[str, ...]] = {
+    "app": K8S_APP_PORT_FORWARD_TARGETS,
+    "observability": K8S_OBSERVABILITY_PORT_FORWARD_TARGETS,
+}
+
+# Every `--target` value, including the two groups. Single source for the
+# CLI's help and for `_port_forward_plan`, so the two cannot disagree about
+# what is accepted.
 K8S_PORT_FORWARD_TARGET_NAMES: tuple[str, ...] = (
     *K8S_PORT_FORWARD_TARGETS,
-    "app",
-    "observability",
+    *K8S_PORT_FORWARD_GROUPS,
 )
 
 # The managed background forward's pid and plan, so `--status`/`--stop` (and
@@ -11565,6 +12160,50 @@ K8S_PORT_FORWARD_LOG_FILE = NYXGPT_HOME / "k8s" / "port-forward.log"
 # a genuinely unsatisfiable forward (port already bound) does not spin.
 K8S_PORT_FORWARD_RESTART_DELAY_S = 2.0
 
+# The one phrase that means "a managed background forward IS up", and the
+# phrase that means it is not. They are constants because the smoke scripts
+# branch on them (`scripts/k8s-local-smoke.sh`, `scripts/k8s-artifact-smoke.sh`,
+# `.github/workflows/k8s-observability-smoke.yml`), and a `grep` against prose
+# is only safe if the prose is pinned.
+#
+# Round 1 of #3986 shipped `port-forward --status | grep -qi 'running'` as that
+# predicate, which is true in BOTH states -- "No managed background port-forward
+# is running." contains the word. On a cluster where the install had published
+# every node port correctly, the observability smoke read that as "a forward is
+# running" and failed a passing build; worse, the same idiom guards the
+# ClusterIP fault injections in `k8s-local-smoke.sh`, where a false positive
+# takes the bring-your-own branch and SKIPS them with an `[OK]` -- so #3986's
+# own executed evidence was being quietly short-circuited rather than failing.
+# The sentinel is the running message's prefix and appears in no other output;
+# `tests/unit/test_port_forward_status_predicate.py` pins both halves and
+# asserts no caller has gone back to a loose match.
+PORT_FORWARD_STATUS_RUNNING_SENTINEL = "Background port-forward running"
+PORT_FORWARD_STATUS_IDLE_MESSAGE = "No managed background port-forward is running"
+
+
+def _port_forward_target_names(target: str) -> list[str] | None:
+    """Expand a `--target` value into individual target names, or None if invalid.
+
+    A comma-separated list is accepted as well as a single name or a group
+    (`app`, `observability`), because the install needs to forward *exactly
+    what the cluster does not already publish* (#3986): on a `nyxgpt-local`
+    that maps the app tier's host ports but not the SRE tier's, a forward that
+    claimed 3000/8000 as well would fail to bind and cost the web UI. A fixed
+    set of group names cannot express that; a list can.
+
+    Order follows `K8S_PORT_FORWARD_TARGETS`-ish first-seen order and
+    duplicates collapse, so `--target app,web` is `app`.
+    """
+    names: list[str] = []
+    for piece in (p.strip() for p in target.split(",")):
+        if not piece:
+            continue
+        expanded = K8S_PORT_FORWARD_GROUPS.get(piece, (piece,))
+        if any(name not in K8S_PORT_FORWARD_TARGETS for name in expanded):
+            return None
+        names += [name for name in expanded if name not in names]
+    return names or None
+
 
 def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
     """Resolve `port-forward`'s args into (target, service, local, remote) rows.
@@ -11577,24 +12216,17 @@ def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
     target = getattr(args, "target", "web") or "web"
     port_override = getattr(args, "port", None)
 
-    if target in ("observability", "app"):
-        if port_override is not None:
-            print(
-                f"ERROR: --port cannot be combined with --target {target} "
-                "(it forwards several Services; pass a single --target to override one port)",
-                file=sys.stderr,
-            )
-            return None
-        names = list(
-            K8S_APP_PORT_FORWARD_TARGETS
-            if target == "app"
-            else K8S_OBSERVABILITY_PORT_FORWARD_TARGETS
-        )
-    elif target in K8S_PORT_FORWARD_TARGETS:
-        names = [target]
-    else:
+    names = _port_forward_target_names(target)
+    if names is None:
         known = ", ".join(sorted(K8S_PORT_FORWARD_TARGET_NAMES))
         print(f"ERROR: unknown --target {target!r} (known targets: {known})", file=sys.stderr)
+        return None
+    if port_override is not None and len(names) > 1:
+        print(
+            f"ERROR: --port cannot be combined with --target {target} "
+            "(it forwards several Services; pass a single --target to override one port)",
+            file=sys.stderr,
+        )
         return None
 
     plan = []
@@ -11604,6 +12236,137 @@ def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
             local_port = port_override
         plan.append((name, service, local_port, remote_port))
     return plan
+
+
+def _k8s_service_node_ports(service: str) -> set[int]:
+    """Which node ports `service` currently carries, per the live Service.
+
+    Empty for a ClusterIP Service, a Service that does not exist, and every
+    "cannot tell" case (no cluster, kubectl error). Every caller treats an
+    empty set as "the host mapping is not being served", which is the
+    conservative answer: acting on it re-establishes the access path, while
+    assuming it is fine is the failure mode #3986 is about.
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "svc",
+            service,
+            "-o",
+            "jsonpath={.spec.ports[*].nodePort}",
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return set()
+    return {int(token) for token in (cp.stdout or "").split() if token.isdigit()}
+
+
+class _PortForwardPartition(NamedTuple):
+    """How a forward plan splits against what the provisioned cluster serves.
+
+    Three outcomes, not two, because "the node maps this host port" and "the
+    cluster is serving it" are different facts and only the second one is what
+    the operator asked for.
+    """
+
+    forward: list[tuple[str, str, int, int]]
+    """Nothing on the host holds these ports -- forward them."""
+
+    served: list[tuple[str, str, int, int]]
+    """The cluster already publishes these and is serving them."""
+
+    republish: list[tuple[int, K8sPublishedService]]
+    """(host port, Service) the node maps but whose Service lost its node port."""
+
+
+def _partition_published_targets(plan: list[tuple[str, str, int, int]]) -> _PortForwardPartition:
+    """Split a forward plan by what the provisioned cluster actually serves.
+
+    A target whose local port the provisioned cluster publishes must not be
+    forwarded: `kubectl port-forward` cannot bind a host port the kind node
+    holds, so the operator would see `address already in use` for a UI that is
+    in fact working (#3986). Only asked of a cluster nyxGPT provisioned -- on a
+    bring-your-own cluster nothing is published and the plan passes through
+    untouched.
+
+    But the node's mapping alone does not mean the UI answers, and treating it
+    as if it did was this issue's own defect in miniature. `kubectl apply -k
+    k8s/` re-asserts the shipped `type: ClusterIP` (the base posture #3503
+    needs for the AWS k3s target), which strips the node port the install
+    patched on -- and from then on the host port is held by the node container
+    with nothing behind it. The old check saw the mapping, answered "already
+    published ... no forward needed", and left the operator with a dark UI and
+    a command that said it was fine: an install reporting success over an
+    unreachable UI is the complaint #3986 opened with.
+
+    So a mapped host port is only "served" when the Service really carries the
+    node port it maps to. When it does not, forwarding cannot fix it either
+    (the bind would fail on the node's own port), so the row is classed for
+    **republishing** -- patching the node port back on, which is nyxGPT's to
+    do on a cluster it provisioned, and which survives Pod replacement as a
+    forward does not.
+    """
+    if _kubectl_context() != KIND_CONTEXT:
+        return _PortForwardPartition(plan, [], [])
+    published = _kind_published_host_ports()
+    if not published:
+        return _PortForwardPartition(plan, [], [])
+
+    forward: list[tuple[str, str, int, int]] = []
+    served: list[tuple[str, str, int, int]] = []
+    republish: list[tuple[int, K8sPublishedService]] = []
+    for row in plan:
+        local = row[2]
+        entry = K8S_HOST_PUBLISHED_SERVICES.get(local)
+        # `--port` can point a target at another target's mapped host port; the
+        # Service check below would then answer about the wrong Service, so the
+        # mapping is only this row's when both agree.
+        if local not in published or entry is None or entry.service != row[1]:
+            forward.append(row)
+        elif entry.node_port in _k8s_service_node_ports(entry.service):
+            served.append(row)
+        else:
+            republish.append((local, entry))
+    return _PortForwardPartition(forward, served, republish)
+
+
+def _republish_stale_host_ports(stale: list[tuple[int, K8sPublishedService]]) -> bool:
+    """Put back the node ports the provisioned cluster maps but is not serving (#3986).
+
+    The only recovery that can work on those host ports: they are held by the
+    kind node container, so a forward would fail to bind, and the node's
+    mappings cannot be changed on a running cluster. Patching the node port
+    back onto the Service is also the better answer -- it survives Pod
+    replacement, which is the property the whole issue turns on.
+
+    Verified rather than asserted, like every other access path this issue
+    established: the point of `nyxgpt ops port-forward` is that the UI is
+    reachable when it returns, so a URL that stays silent is a failure.
+    """
+    print(
+        "The cluster maps "
+        + ", ".join(f"http://127.0.0.1:{host}" for host, _entry in sorted(stale))
+        + " but the Service(s) behind them lost their node port "
+        "(a `kubectl apply -k k8s/` re-asserts the shipped ClusterIP) -- republishing"
+    )
+    results = _publish_k8s_nodeports(dict(stale))
+    if not all(r.ok for r in results):
+        return _emit_results("port-forward", results)
+    for host, _entry in sorted(stale):
+        url = f"http://127.0.0.1:{host}"
+        failure = _probe_web_url(url)
+        results.append(
+            OpsResult(True, f"{url} is served by the cluster again")
+            if failure is None
+            else OpsResult(False, f"Republished {url} but it did not answer", failure)
+        )
+    return _emit_results("port-forward", results)
 
 
 @dataclass
@@ -11678,7 +12441,7 @@ def stop_port_forward() -> list[OpsResult]:
     status = port_forward_status()
     if not status["running"]:
         K8S_PORT_FORWARD_STATE_FILE.unlink(missing_ok=True)
-        return [OpsResult(True, "No managed background port-forward is running")]
+        return [OpsResult(True, PORT_FORWARD_STATUS_IDLE_MESSAGE)]
     pid = int(status["pid"])
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -11779,21 +12542,39 @@ def start_port_forward_background(target: str = "app") -> list[OpsResult]:
     another process, and its output in a log file rather than on a pipe
     nobody will read.
 
-    Idempotent: an already-running forward is reported, not duplicated --
-    starting a second one would only fail on the bound local port.
+    Idempotent: an already-running forward that already covers `target` is
+    reported, not duplicated -- starting a second one would only fail on the
+    bound local port.
+
+    One running forward that covers only *some* of `target` is **extended**,
+    not reported as satisfied: the install establishes the app tier's access
+    path before the SRE tier's, so on a bring-your-own cluster the second call
+    arrives with a forward already running, and answering "already running" is
+    how the SRE tier would stay dark on exactly the deployment that cannot
+    publish node ports (#3986).
     """
     if _which("kubectl") is None:
         return [OpsResult(False, "kubectl not found on PATH -- cannot start a port-forward")]
 
+    wanted = _port_forward_target_names(target)
+    if wanted is None:
+        return [OpsResult(False, f"Unknown port-forward target {target!r}")]
+
+    results: list[OpsResult] = []
     existing = port_forward_status()
     if existing["running"]:
-        return [
-            OpsResult(
-                True,
-                f"Background port-forward already running (pid {existing['pid']})",
-                ", ".join(existing["urls"]),
-            )
-        ]
+        covered = [str(name) for name in existing["targets"]]
+        if set(wanted) <= set(covered):
+            return [
+                OpsResult(
+                    True,
+                    f"Background port-forward already running (pid {existing['pid']})",
+                    ", ".join(existing["urls"]),
+                )
+            ]
+        target = ",".join(covered + [name for name in wanted if name not in covered])
+        results += stop_port_forward()
+        results.append(OpsResult(True, f"Restarting the background port-forward to cover {target}"))
 
     plan = _port_forward_plan(_PortForwardArgs(target=target))
     if plan is None:
@@ -11803,7 +12584,7 @@ def start_port_forward_background(target: str = "app") -> list[OpsResult]:
         K8S_PORT_FORWARD_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         log = open(K8S_PORT_FORWARD_LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115
     except OSError as e:
-        return [
+        return results + [
             OpsResult(
                 False,
                 f"Could not open the port-forward log ({K8S_PORT_FORWARD_LOG_FILE})",
@@ -11828,7 +12609,7 @@ def start_port_forward_background(target: str = "app") -> list[OpsResult]:
     }
     K8S_PORT_FORWARD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     K8S_PORT_FORWARD_STATE_FILE.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    return [
+    return results + [
         OpsResult(
             True,
             f"Background port-forward started (pid {process.pid}); it is restarted "
@@ -11841,20 +12622,34 @@ def start_port_forward_background(target: str = "app") -> list[OpsResult]:
 def port_forward(args) -> int:
     """`nyxgpt ops port-forward`: forward a Kubernetes Service to localhost.
 
-    The app tier's own Services are NodePorts since #3986, and on the kind
-    cluster nyxGPT provisions those are published on the host, so reaching
-    the web UI needs no forward at all. This command remains the way to reach
-    a cluster whose host ports nyxGPT cannot map (a bring-your-own cluster,
-    or a `nyxgpt-local` created by an older nyxGPT), and the only way to
-    reach the observability UIs, whose Services stay ClusterIP. It wraps
-    `kubectl port-forward` so operators never type the raw command
-    themselves, per CLAUDE.md's Operational Command Wrapping requirement.
+    The app tier's and the SRE tier's Services are NodePorts since #3986, and
+    on the kind cluster nyxGPT provisions those are published on the host, so
+    reaching the web UI or an observability UI needs no forward at all. This
+    command remains the way to reach a cluster whose host ports nyxGPT cannot
+    map (a bring-your-own cluster, or a `nyxgpt-local` created by an older
+    nyxGPT). It wraps `kubectl port-forward` so operators never type the raw
+    command themselves, per CLAUDE.md's Operational Command Wrapping
+    requirement.
+
+    A target the cluster ALREADY SERVES is reported as reachable and dropped
+    from the plan rather than forwarded: `kubectl port-forward` would fail to
+    bind the host port the node holds, and an operator running the command
+    their notes still name would get `address already in use` for something
+    that is working. If that leaves nothing to forward, the command says so
+    and succeeds.
+
+    A target whose host port the node maps but whose Service has lost its node
+    port is **republished**, not reported: the mapping alone does not mean the
+    UI answers, and a forward cannot help on a port the node holds. See
+    `_partition_published_targets` for why this is the only recovery that
+    works there -- and the better one, since it survives Pod replacement.
 
     `--target` selects what to forward (default `web`, unchanged).
     `--target app` forwards web and api together -- the combination
     docs/kubernetes.md used to ask for while showing a command that forwarded
-    one -- and `--target observability` forwards Grafana, Prometheus, Jaeger
-    and GlitchTip at once on the ports the admin dashboard already expects.
+    one -- `--target observability` forwards Grafana, Prometheus, Jaeger
+    and GlitchTip at once on the ports the admin dashboard already expects,
+    and a comma-separated list forwards exactly those.
 
     `--background` hands the forward to a supervised, detached child instead
     (pid recorded, `--status`/`--stop` to inspect and end it), which is what
@@ -11871,11 +12666,11 @@ def port_forward(args) -> int:
         status = port_forward_status()
         if status["running"]:
             print(
-                f"Background port-forward running (pid {status['pid']}): "
+                f"{PORT_FORWARD_STATUS_RUNNING_SENTINEL} (pid {status['pid']}): "
                 + ", ".join(status["urls"])
             )
         else:
-            print("No managed background port-forward is running.")
+            print(f"{PORT_FORWARD_STATUS_IDLE_MESSAGE}.")
         return 0
     if getattr(args, "stop", False):
         return 0 if _emit_results("port-forward --stop", stop_port_forward()) else 2
@@ -11884,11 +12679,6 @@ def port_forward(args) -> int:
         print("[FAIL] kubectl not found on PATH", file=sys.stderr)
         return 2
 
-    if getattr(args, "background", False):
-        target = getattr(args, "target", "web") or "web"
-        results = start_port_forward_background(target)
-        return 0 if _emit_results("port-forward --background", results) else 2
-
     plan = _port_forward_plan(args)
     if plan is None:
         return 2
@@ -11896,8 +12686,27 @@ def port_forward(args) -> int:
     if getattr(args, "supervise", False):
         # The detached child's own mode -- keeps every forward in the plan
         # alive across Pod replacement. Not something an operator runs
-        # directly; `--background` is the surface.
+        # directly; `--background` is the surface, and it has already dropped
+        # anything the cluster publishes from the plan this child is given.
         return _supervise_port_forward(plan)
+
+    plan, served, republish = _partition_published_targets(plan)
+    for name, _svc, local, _remote in served:
+        print(
+            f"{name} is already published at http://127.0.0.1:{local} by the cluster "
+            "-- no forward needed (it survives Pod replacement, which a forward does not)"
+        )
+    if republish and not _republish_stale_host_ports(republish):
+        return 2
+    if not plan:
+        print("Nothing left to forward.")
+        return 0
+
+    if getattr(args, "background", False):
+        results = start_port_forward_background(
+            ",".join(name for name, _svc, _local, _remote in plan)
+        )
+        return 0 if _emit_results("port-forward --background", results) else 2
 
     logger.info(
         "ops: port-forward starting",

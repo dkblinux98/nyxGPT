@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud_deploy, cloud_infra, cloud_smoke
+from nyxgpt import cloud_deploy, cloud_infra, cloud_screen, cloud_smoke
 from nyxgpt.cloud import CloudCommandError
 
 MARKER = f"XYZZY-NYXGPT-CLOUD-{os.getpid()}"
@@ -32,6 +32,12 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_deploy, "DEPLOY_HISTORY_FILE", cloud_dir / "history.jsonl")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_STATE_FILE", cloud_dir / "tunnel.json")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
+    # #4121. `deploy_status()` now reports the screen path, and `cloud_screen`
+    # binds its state file from `cloud_deploy.CLOUD_DIR` at import -- so
+    # without this a status assertion reads the developer's own
+    # ~/.nyxGPT/cloud/screen.json and passes or fails per machine.
+    monkeypatch.setattr(cloud_screen, "SCREEN_STATE_FILE", cloud_dir / "screen.json")
+    monkeypatch.setattr(cloud_screen, "SCREEN_LOG_FILE", cloud_dir / "screen.log")
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", cloud_dir / "infra.json")
     # A substrate exists unless a test says otherwise: that is the state the
@@ -261,7 +267,9 @@ def test_an_explicit_api_key_beats_the_instances_own(monkeypatch):
     cloud_smoke.run_smoke(_args(api_key="from-the-flag"))  # pragma: allowlist secret
 
     assert all(
-        c["api_key"] == "from-the-flag" for c in http.calls if c["base"] == cloud_smoke.API_BASE  # pragma: allowlist secret
+        c["api_key"] == "from-the-flag"  # pragma: allowlist secret
+        for c in http.calls
+        if c["base"] == cloud_smoke.API_BASE
     )
 
 

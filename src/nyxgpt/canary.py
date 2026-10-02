@@ -57,10 +57,16 @@ from typing import Any
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
+from nyxgpt.k8s_pod_state import (
+    parse_retired_replicasets,
+    pod_is_retired,
+    retired_replicaset_argv,
+)
 from nyxgpt.ops import OpsResult as CanaryResult
 from nyxgpt.subprocess_bounds import (
     PROBE_TIMEOUT_SECONDS,
     bounded_argv,
+    kubectl_env,
     timed_out,
     timeout_message,
     timeout_result,
@@ -317,6 +323,11 @@ def _run(
             check=False,
             text=True,
             capture_output=True,
+            # The default kubeconfig, named explicitly: on a k3s node kubectl's
+            # own default is k3s's root-only file, which is how `canary status`
+            # came to report "native mode" on a running cluster (#3956). A
+            # no-op everywhere else -- see `kubectl_env`.
+            env=kubectl_env(cmd, None),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -505,6 +516,19 @@ def _join_reason(reason: Any, message: Any) -> str:
     return reason_text or message_text
 
 
+def _retired_replicasets(namespace: str) -> frozenset[str]:
+    """The namespace's ReplicaSets with zero desired replicas, or an empty set.
+
+    Fail-open like the other two readers of this (`ops`, `self_heal`): without
+    positive evidence that a Pod's owner is finished, the Pod stays in the
+    report.
+    """
+    cp = _run(retired_replicaset_argv(namespace), expected=True, timeout=PROBE_TIMEOUT_SECONDS)
+    if cp.returncode != 0:
+        return frozenset()
+    return parse_retired_replicasets(cp.stdout or "")
+
+
 def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> list[str]:
     """Ask the cluster why the Pods matching `selector` are not serving.
 
@@ -512,6 +536,13 @@ def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> li
     Pods. Best-effort by design -- an unreachable cluster, an RBAC denial or
     an unparseable response yields an empty list, so every caller degrades to
     the generic message it would have produced anyway (#3831).
+
+    A Pod owned by a ReplicaSet scaled to zero is not consulted (#3956): the
+    label selector of a track also matches the Pods the *previous* rollout left
+    behind, so a rollout that is unhealthy now could be explained by the
+    terminated remains of the one before it -- the cause an operator would then
+    chase is one Kubernetes has already finished with. The read is taken only
+    on this path, which is entered only when a track is already unhealthy.
     """
     if not selector or _which("kubectl") is None:
         return []
@@ -526,9 +557,11 @@ def pod_failure_reasons(selector: str, namespace: str = DEFAULT_NAMESPACE) -> li
         data = json.loads(cp.stdout)
     except Exception:
         return []
+    pods = [p for p in data.get("items", []) if isinstance(p, dict)]
+    retired = _retired_replicasets(namespace) if pods else frozenset()
     reasons: list[str] = []
-    for pod in data.get("items", []):
-        if not isinstance(pod, dict):
+    for pod in pods:
+        if pod_is_retired(pod, retired):
             continue
         reason = _pod_reason(pod)
         if not reason:
@@ -642,6 +675,46 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHea
     )
 
 
+# How a `cause` names the third way the mode can be unknown (#3956): the
+# kubectl probe ran, answered non-zero, and the failure was not the API server
+# saying "no such namespace". The probe's own error follows the colon --
+# `_non_kubernetes_mode_message` quotes it, because a kubeconfig this process
+# cannot read and a cluster that is refusing connections need different
+# operator responses and only kubectl can tell them apart.
+_KUBECTL_FAILED_CAUSE = "kubectl-failed"
+
+# How long a quoted probe error may be in an operator-facing line.
+_PROBE_ERROR_MAX_CHARS = 300
+
+
+def _probe_error(cp: subprocess.CompletedProcess[str]) -> str:
+    """kubectl's own words for why the probe failed, as one bounded line."""
+    text = " ".join(((cp.stderr or "") + " " + (cp.stdout or "")).split())
+    if len(text) > _PROBE_ERROR_MAX_CHARS:
+        text = text[: _PROBE_ERROR_MAX_CHARS - 3] + "..."
+    return text or f"kubectl exited {cp.returncode} with no output"
+
+
+def _apiserver_answered(cp: subprocess.CompletedProcess[str]) -> bool:
+    """True when a failed `kubectl get pods` failure came FROM the API server.
+
+    The distinction decides whether a non-zero probe is evidence about the
+    substrate. kubectl prefixes an error the API server produced with `Error
+    from server`, so `Error from server (NotFound): namespaces "nyxgpt" not
+    found` means a cluster answered and said this deployment is not on it --
+    determinate, and the fall-through to "native" below is then an honest
+    reading. Everything else -- an unreadable kubeconfig, `Unauthorized`, a
+    refused connection, an unresolvable server name -- is kubectl failing to
+    reach any API server at all, and says nothing about what this machine runs.
+
+    `NotFound` specifically, not any server-side error: `Forbidden` also comes
+    from the server, and a namespace this process may not list is precisely a
+    namespace whose contents are unknown.
+    """
+    text = ((cp.stderr or "") + (cp.stdout or "")).lower()
+    return "error from server" in text and "notfound" in text
+
+
 def _current_mode_with_reason() -> tuple[str, str]:
     """Best-effort classification of which deployment mode this process is running under.
 
@@ -653,12 +726,15 @@ def _current_mode_with_reason() -> tuple[str, str]:
     then a populated Kubernetes namespace, falling back to "native" (Homebrew
     services, no Terraform/Kubernetes stack detected). Returns `(mode, cause)`:
     mode one of "compose", "terraform", "kubernetes", "native", "unknown";
-    cause is "" for every determinate mode, else "kubectl-timeout" or
-    "docker-unreadable".
+    cause is "" for every determinate mode, else "kubectl-timeout",
+    "docker-unreadable", or "kubectl-failed: <the probe's own error>".
 
-    "unknown" has two causes (#3858, #4022): the Kubernetes probe *timed out*,
-    or Docker was unreadable so the Terraform read never happened -- and with
-    no kubectl, no probe ran at all.
+    "unknown" has three causes (#3858, #4022, #3956): the Kubernetes probe
+    *timed out*; Docker was unreadable so the Terraform read never happened
+    (and with no kubectl, no probe ran at all); or the probe ran and failed
+    without reaching an API server, which #3956 added after a probe that could
+    not read its kubeconfig was reported as a confident "native" on a box
+    running k3s.
     Falling back to "native" there would be an assertion about the substrate
     that nothing checked -- a cluster that is configured but not answering is
     precisely the case where "you are not running Kubernetes" is most likely
@@ -699,6 +775,13 @@ def _current_mode_with_reason() -> tuple[str, str]:
             return "unknown", "kubectl-timeout"
         if cp.returncode == 0 and (cp.stdout or "").strip():
             return "kubernetes", ""
+        if cp.returncode != 0 and not _apiserver_answered(cp):
+            # The probe did not fail to *find* a deployment -- it failed to
+            # ASK. Only the docstring's rule survives here: a failed read is
+            # not evidence about the substrate. See `_apiserver_answered` for
+            # the discriminator, and #3956 for what reading it as "native"
+            # cost on a live k3s cluster.
+            return "unknown", f"{_KUBECTL_FAILED_CAUSE}: {_probe_error(cp)}"
     # Only now: nothing positively identified the substrate, and the Terraform
     # read never happened. "native" would be a confident answer built on a
     # probe that failed, which is what D-027 forbids for this function.
@@ -728,9 +811,11 @@ def _mode_message(mode: str, cause: str = "") -> str | None:
 def _non_kubernetes_mode_message(mode: str, cause: str = "") -> str:
     """The reason canary state is unavailable in `mode`, for a caller that knows it isn't Kubernetes.
 
-    `cause` distinguishes the two ways the mode can be unknown. They need
-    opposite operator responses, and naming the wrong one sends the reader to
-    kubeconfig when the actual fault is a Docker group they are not in.
+    `cause` distinguishes the three ways the mode can be unknown. They need
+    different operator responses, and naming the wrong one sends the reader to
+    kubeconfig when the actual fault is a Docker group they are not in -- or,
+    for the `kubectl-failed` case (#3956), hides the one line that says what
+    is actually wrong behind a generic "the cluster did not respond".
     """
     if mode == "unknown" and cause == "docker-unreadable":
         return (
@@ -739,6 +824,15 @@ def _non_kubernetes_mode_message(mode: str, cause: str = "") -> str:
             "Kubernetes probe was run. Add yourself to the docker group "
             "(`sudo usermod -aG docker $USER`, then `sudo loginctl terminate-user $USER` "
             "or reboot) and re-run."
+        )
+    if mode == "unknown" and cause.startswith(_KUBECTL_FAILED_CAUSE):
+        _, _, detail = cause.partition(": ")
+        return (
+            "Could not determine the deployment mode: the Kubernetes probe could not reach "
+            "an API server, so whether this machine is running a cluster is unknown. kubectl "
+            f"said: {detail or 'nothing'}. Canary state cannot be read until that is fixed -- "
+            "a kubeconfig this process cannot read is the usual cause on a single-node "
+            "cluster (`nyxgpt cloud ops doctor` reports it for a cloud deployment)."
         )
     if mode == "unknown":
         return (

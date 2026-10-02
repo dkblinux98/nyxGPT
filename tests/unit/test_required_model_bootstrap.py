@@ -218,7 +218,9 @@ def test_install_step_fails_when_a_model_could_not_be_pulled(monkeypatch):
         "ensure_required_models",
         lambda **_k: [
             model_bootstrap.ModelPullOutcome(
-                model=model_bootstrap.RequiredModel("chat", "fixture-prev:0.6b", "[nyxgpt] default_model"),
+                model=model_bootstrap.RequiredModel(
+                    "chat", "fixture-prev:0.6b", "[nyxgpt] default_model"
+                ),
                 ok=False,
                 already_present=False,
                 detail="registry timed out",
@@ -477,7 +479,6 @@ def test_env_sync_writes_the_model_vars_even_with_no_secrets(tmp_path):
         encoding="utf-8",
     )
     env_path = tmp_path / ".env"
-  # pragma: allowlist secret
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
     assert all(r.ok for r in results)

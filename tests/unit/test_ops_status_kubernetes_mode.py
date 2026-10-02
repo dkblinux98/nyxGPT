@@ -113,7 +113,9 @@ def test_the_in_cluster_read_reports_missing_models_as_missing(monkeypatch):
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda *_a, **_k: _CP(stdout="NAME    ID    SIZE    MODIFIED\nfixture-prev:0.6b  a  1 GB  now\n"),
+        lambda *_a, **_k: _CP(
+            stdout="NAME    ID    SIZE    MODIFIED\nfixture-prev:0.6b  a  1 GB  now\n"
+        ),
     )
 
     info = ops.required_models_status(cfg=_cfg(), kubernetes=True)
@@ -391,7 +393,9 @@ def test_doctor_checks_the_in_cluster_ollama_when_the_deployment_is_kubernetes(
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda *_a, **_k: _CP(stdout="NAME    ID    SIZE    MODIFIED\nfixture-prev:0.6b  a  1 GB  now\n"),
+        lambda *_a, **_k: _CP(
+            stdout="NAME    ID    SIZE    MODIFIED\nfixture-prev:0.6b  a  1 GB  now\n"
+        ),
     )
 
     issue = ops._missing_required_models_issue(cfg_path, kubernetes=True)

@@ -142,7 +142,7 @@ def staged_artifacts(monkeypatch, tmp_path):
 
 
 def test_staged_api_context_carries_the_dockerfile_and_entrypoint(staged_artifacts):
-    context = ops._stage_k8s_artifact_context(ops.K8S_IMAGE)
+    context = ops._stage_k8s_artifact_context("api")
 
     # What the api Dockerfile COPYs, all present without a checkout.
     assert (context / "pyproject.toml").is_file()
@@ -155,7 +155,7 @@ def test_staged_api_context_carries_the_dockerfile_and_entrypoint(staged_artifac
 
 
 def test_staged_web_context_uses_the_artifacts_own_dockerfile(staged_artifacts):
-    context = ops._stage_k8s_artifact_context(ops.TF_WEB_IMAGE)
+    context = ops._stage_k8s_artifact_context("web")
     assert (context / "Dockerfile").read_text(encoding="utf-8") == "FROM node:20-alpine\n"
     assert (context / "package.json").is_file()
     # Named `web`, so an unchanged tree fingerprints identically in either
@@ -164,9 +164,9 @@ def test_staged_web_context_uses_the_artifacts_own_dockerfile(staged_artifacts):
 
 
 def test_staging_rebuilds_the_context_from_the_artifact_every_time(staged_artifacts):
-    context = ops._stage_k8s_artifact_context(ops.K8S_IMAGE)
+    context = ops._stage_k8s_artifact_context("api")
     (context / "leftover.txt").write_text("hand-edited", encoding="utf-8")
-    context = ops._stage_k8s_artifact_context(ops.K8S_IMAGE)
+    context = ops._stage_k8s_artifact_context("api")
     assert not (context / "leftover.txt").exists()
 
 

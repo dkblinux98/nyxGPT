@@ -886,6 +886,9 @@ restart command returns, so allow for a full cold start.
     "api": { "keys": ["api.port", "rag.cassandra_hosts"], "since": 1743000000.123 },
     "web": { "keys": ["auth.api_key"], "since": 1743000042.456 }
   },
+  "attempts": {
+    "api": { "status": "failed", "message": "Refused to act on invalid service name", "at": 1743000100.5 }
+  },
   "restart_command": "nyxgpt ops restart api && nyxgpt ops restart web",
   "session_disrupting": ["web"]
 }
@@ -898,6 +901,17 @@ page -- the UI warns before restarting those instead of appearing to hang.
 `restart_command` is always a wrapped `nyxgpt ops` command, never a raw
 `docker`/`brew`/`kubectl` one.
 
+`attempts` reports what happened to the last restart **driven for** each
+still-pending component: `status` is `running` (accepted and under way),
+`failed` (it did not happen -- `message` carries the mechanism's own reason),
+or `succeeded`. A component with no attempt recorded is absent. This is the
+signal that distinguishes a restart still coming back from one that was
+refused: the pending flag alone reads the same for both, which is why a
+refused restart used to present as a button that hung and then reappeared
+(#4043). The record is dropped when the component's pending keys change (a
+new save supersedes the old attempt) and retired with the pending entry
+itself when the restart finally lands.
+
 ### `POST /api/v1/infra/restart-required`
 
 Restarts whichever component(s) `restart-status` reports as pending, or a
@@ -907,8 +921,12 @@ running native, Docker Compose, Terraform-, or Kubernetes-managed (reusing
 it the matching way -- the same dispatcher backing self-heal's manual "Heal
 Now" button -- so the caller never needs to know or send a raw command.
 Runs off-thread (restarting `api` kills the process handling the request
-once the underlying command lands), so the response reports `"running"`;
-poll `restart-status` to learn when the pending flag clears. `api` is always
+once the underlying command lands), so the response reports only what the
+request established -- `"scheduled"`, not `"running"`: it answers before
+anything has been attempted, and claiming progress there made a refused
+restart indistinguishable from one in flight (#4043). Poll `restart-status`
+for both halves of the answer: the pending flag clearing is success, and
+`attempts[component]` reports `running`/`failed` with the reason. `api` is always
 restarted **last** when several components are pending, because the kill ends
 the loop -- restarting it first would strand the others. Each restart is
 recorded as an ops lifecycle action (`nyxgpt_ops_actions_total`, #3390),
@@ -927,7 +945,7 @@ is pending at all with no `target` given.
 **Response:**
 
 ```json
-{ "targets": ["api"], "status": "running" }
+{ "targets": ["api"], "status": "scheduled" }
 ```
 
 ---

@@ -19,7 +19,7 @@
 # hand-maintained approximation of a bootstrap is evidence about the
 # approximation (the #3860 lesson).
 #
-# Seven steps, and three of them carry fault injections -- a job that only runs
+# Ten steps, and five of them carry fault injections -- a job that only runs
 # the happy path passes on every machine that fails to reproduce the bug
 # (#3753):
 #
@@ -50,7 +50,27 @@
 #      forwards to.
 #   6  FAULT INJECTION: stop the bridge and prove 127.0.0.1:8000 goes dead --
 #      i.e. that step 5 measured the bridge and not something else.
-#   7  The `--no-kubernetes` transition, against the live cluster and bridge
+#   7  FAULT INJECTION: a real rollout's leftover Pod. This is the 2026-08-26
+#      acceptance blocker (#3956): the GlitchTip DSN write rolls api/web, and
+#      the retired ReplicaSet's terminated Pod failed the whole install three
+#      lines above `nyxgpt-web-stable 1/1` -- before the access bridge was
+#      installed, so the feature could not produce a reachable deployment. Both
+#      halves: the unfiltered reading must fail on the corpse, the product's
+#      must not, and a Failed Pod of the CURRENT ReplicaSet must still fail
+#      (the narrow fix the owner ruled out). All THREE readers of a Pod list
+#      are measured against the same live corpse -- the install, self-heal's
+#      component list (where it rendered as a permanently Failed component of a
+#      healthy deployment) and canary's per-track reason enrichment.
+#   8  FAULT INJECTION: `kubectl` on a k3s node is a symlink to `k3s`, whose
+#      shim defaults KUBECONFIG to a root-only file -- which is why `cloud
+#      canary status` reported "native mode" on a live cluster. The shim is
+#      injected against the real root-only kubeconfig, and the product must
+#      still read `kubernetes`; a probe that cannot reach an API server must
+#      report `unknown` rather than a confident `native`.
+#   9  The applied image tags: per-build-path and versioned, through a generated
+#      kustomize overlay that kubectl's embedded kustomize has to accept and the
+#      API server has to admit -- with `k8s/` still byte-identical.
+#  10  The `--no-kubernetes` transition, against the live cluster and bridge
 #      the steps above built: the native section really stops and removes the
 #      bridge, frees 8000, uninstalls k3s and frees 6443 -- and a second pass
 #      on a box with none of them is a no-op, which every first deploy runs.
@@ -128,7 +148,7 @@ if ! systemctl --user status >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-step "1/7  Execute the deploy's own k3s bootstrap"
+step "1/10  Execute the deploy's own k3s bootstrap"
 # ---------------------------------------------------------------------------
 python3 - > "$WORK/k3s-bootstrap.sh" <<'PY'
 from nyxgpt.cloud_deploy import render_k3s_bootstrap
@@ -199,7 +219,7 @@ NODE_IP="$(awk -F'[/:]+' '/server:/ {print $3; exit}' "$KUBECONFIG")"
 log "MEASURED: the kubeconfig points at https://${NODE_IP}:6443"
 
 # ---------------------------------------------------------------------------
-step "2/7  The access surface: #3503 says nothing but TCP 22"
+step "2/10  The access surface: #3503 says nothing but TCP 22"
 # ---------------------------------------------------------------------------
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
@@ -263,7 +283,17 @@ log "PASS: no ingress controller and no LoadBalancer implementation are installe
 # The networks the RUNNING cluster actually cut, not the flags it was asked
 # for: `--cluster-cidr` accepted and silently overridden would read identical
 # in the unit tests and be the same outage (#3956).
-POD_CIDR="$(kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}')"
+#
+# Bounded wait, not an instant read: `node.spec.podCIDR` is filled in by the
+# controller-manager's node-ipam controller AFTER the node registers, so a read
+# taken the moment the node reports Ready is a race the bootstrap cannot be
+# blamed for (measured unset on k3s v1.36.5 here, seconds after Ready).
+POD_CIDR=""
+for _ in $(seq 1 30); do
+  POD_CIDR="$(kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}')"
+  [[ -n "$POD_CIDR" ]] && break
+  sleep 2
+done
 log "MEASURED: the node's pod CIDR is ${POD_CIDR:-<unset>}"
 python3 - "$POD_CIDR" "$K3S_CLUSTER_CIDR" <<'PY'
 import ipaddress
@@ -324,7 +354,7 @@ fi
 log "PASS: CoreDNS is Available with 0 restarts and no resolver loop"
 
 # ---------------------------------------------------------------------------
-step "3/7  k8s/*.yaml applies to k3s UNCHANGED"
+step "3/10  k8s/*.yaml applies to k3s UNCHANGED"
 # ---------------------------------------------------------------------------
 # Through the product's own resource sync and secret bootstrap, not a
 # hand-rolled copy: what a deploy applies is the PACKAGED manifests under
@@ -390,7 +420,7 @@ fi
 log "PASS: every Service is ClusterIP"
 
 # ---------------------------------------------------------------------------
-step "4/7  FAULT INJECTION: a docker-built image is invisible to k3s"
+step "4/10  FAULT INJECTION: a docker-built image is invisible to k3s"
 # ---------------------------------------------------------------------------
 # k3s runs its own containerd with its own image store, and every Deployment in
 # k8s/ pins `imagePullPolicy: IfNotPresent` against a `:local` tag that exists
@@ -469,7 +499,7 @@ kubectl -n "$NAMESPACE" wait --for=condition=Ready pod/import-probe-after --time
 log "PASS (fix proven): after _k3s_import_image the same Pod runs"
 
 # ---------------------------------------------------------------------------
-step "5/7  The access bridge, end to end"
+step "5/10  The access bridge, end to end"
 # ---------------------------------------------------------------------------
 # `k8s/`'s Services are ClusterIP-only, so nothing binds 127.0.0.1:8000 on the
 # instance the way the native services do -- and the SSH tunnel forwards to
@@ -513,7 +543,7 @@ log "MEASURED: 127.0.0.1:8000/health -> $bridged"
 log "PASS: systemd --user unit -> nyxgpt ops port-forward -> ClusterIP Service -> Pod"
 
 # ---------------------------------------------------------------------------
-step "6/7  FAULT INJECTION: the bridge is what was measured"
+step "6/10  FAULT INJECTION: the bridge is what was measured"
 # ---------------------------------------------------------------------------
 # Without this, step 5 would pass on any runner where something else happened
 # to be listening on 8000.
@@ -526,7 +556,378 @@ fi
 log "PASS: with the bridge stopped, 127.0.0.1:8000 is dead"
 
 # ---------------------------------------------------------------------------
-step "7/7  The --no-kubernetes transition actually moves the box"
+step "7/10  FAULT INJECTION: a corpse from a finished rollout fails the install"
+# ---------------------------------------------------------------------------
+# The 2026-08-26 acceptance blocker (#3956). A `--kubernetes` deploy applies
+# `k8s/` (whose ConfigMap carries the placeholder error-tracking DSN), brings
+# the stack up, then provisions GlitchTip -- which writes the real DSN and rolls
+# api/web onto a new pod template. The pre-DSN ReplicaSet is scaled to zero and
+# a terminated Pod of its is left in the namespace, and `_k8s_stack_health`
+# failed the whole install on it, three lines above `nyxgpt-web-stable 1/1`.
+# The deploy then exited before installing the access bridge, so the feature
+# could not produce a reachable deployment at all.
+#
+# A unit test can assert the reading; only a real cluster can show that the
+# state exists and that Kubernetes leaves it there. So this builds it for real:
+# a Deployment, a rollout that supersedes its ReplicaSet, and a Failed Pod
+# adopted by the retired one.
+#
+# The Pod label is a REAL core one (`self_heal.K8S_CORE_POD_APPS`) rather than
+# the Deployment's own name, because three readers have to be shown dropping
+# this Pod and one of them selects by that label: the first cut of this fix
+# covered the install alone, and the same corpse went on rendering on the
+# Self-Heal dashboard as a Failed, unhealable component of a healthy
+# deployment. A stand-in label would have exercised the filter while skipping
+# the tier classification that puts the Pod on that page at all.
+ROLLOUT=smoke-rollout
+ROLLOUT_LABEL=nyxgpt-web-canary-pool
+cat <<YAML | kubectl apply -f - >/dev/null
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $ROLLOUT
+  namespace: $NAMESPACE
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $ROLLOUT_LABEL
+  template:
+    metadata:
+      labels:
+        app: $ROLLOUT_LABEL
+    spec:
+      containers:
+        - name: probe
+          image: $PROBE_IMAGE
+          imagePullPolicy: IfNotPresent
+YAML
+kubectl -n "$NAMESPACE" rollout status "deploy/$ROLLOUT" --timeout=120s | sed 's/^/    | /'
+OLD_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT_LABEL" \
+  -o jsonpath='{.items[0].metadata.name}')"
+OLD_RS_UID="$(kubectl -n "$NAMESPACE" get "rs/$OLD_RS" -o jsonpath='{.metadata.uid}')"
+
+# The rollout the DSN write performs, in the one way that matters here: a new
+# pod template, so a new ReplicaSet, so the old one is scaled to zero.
+kubectl -n "$NAMESPACE" set env "deploy/$ROLLOUT" ROLLED=1 >/dev/null
+kubectl -n "$NAMESPACE" rollout status "deploy/$ROLLOUT" --timeout=120s | sed 's/^/    | /'
+retired="$(kubectl -n "$NAMESPACE" get "rs/$OLD_RS" -o jsonpath='{.spec.replicas}')"
+[[ "$retired" == "0" ]] \
+  || fail "the superseded ReplicaSet $OLD_RS still wants $retired replica(s) -- this step
+           is not reproducing a finished rollout"
+log "MEASURED: $OLD_RS is retired (0 desired) after the rollout"
+
+# The corpse. Created WITHOUT the owner reference and patched once it is already
+# terminal, deliberately: a ReplicaSet scaled to zero deletes any *active* Pod
+# it owns, and only ignores the terminal ones -- which is exactly why these
+# survive on a real deployment, and exactly what would make this step flaky if
+# the Pod were adopted while still starting.
+cat <<YAML | kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $ROLLOUT-corpse
+  namespace: $NAMESPACE
+  labels:
+    app: $ROLLOUT_LABEL
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: $PROBE_IMAGE
+      imagePullPolicy: IfNotPresent
+      command: ["false"]
+YAML
+corpse_phase=""
+for _ in $(seq 1 24); do
+  corpse_phase="$(kubectl -n "$NAMESPACE" get "pod/$ROLLOUT-corpse" \
+    -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  [[ "$corpse_phase" == "Failed" ]] && break
+  sleep 5
+done
+[[ "$corpse_phase" == "Failed" ]] \
+  || fail "the corpse Pod never reached phase Failed (got '${corpse_phase:-none}') -- without
+           it this step proves nothing"
+kubectl -n "$NAMESPACE" patch "pod/$ROLLOUT-corpse" --type=merge -p "$(cat <<JSON
+{"metadata":{"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet",
+"name":"$OLD_RS","uid":"$OLD_RS_UID"}]}}
+JSON
+)" >/dev/null
+log "MEASURED: a Failed Pod owned by the retired $OLD_RS, as the owner found it"
+
+python3 - <<PY
+import json
+import sys
+
+from nyxgpt import ops
+
+namespace = "$NAMESPACE"
+corpse = "$ROLLOUT-corpse"
+raw = json.loads(
+    ops._run(["kubectl", "-n", namespace, "get", "pods", "-o", "json"], check=False).stdout
+)
+
+# --- the pre-#3956 reading: every Pod in the namespace, owner ignored. This is
+# --- literally the old body of _k8s_pod_states.
+before = [ops._classify_k8s_pod(p) for p in raw["items"]]
+failed_before = [s.name for s in before if not s.ok]
+print(f"    | without the fix, FAILED pods: {failed_before}")
+if corpse not in failed_before:
+    sys.exit(
+        "FAULT INJECTION FAILED: the unfiltered reading does not fail on the corpse, so "
+        "this step cannot prove the filter does anything"
+    )
+
+# --- the product's reading.
+states, read_failure = ops._k8s_pod_states(namespace)
+assert read_failure is None, read_failure
+names = [s.name for s in states]
+print(f"    | with the fix, pods considered: {names}")
+if corpse in names:
+    sys.exit(f"{corpse} is still part of the deployment's state")
+if any(s.name == corpse for s in ops._k8s_blocked_pods(namespace, selector="app=$ROLLOUT_LABEL")):
+    sys.exit("the rollout wait would still fast-fail on the corpse")
+
+# ...and the Pod that IS current is still reported, so the filter did not just
+# empty the report.
+if not any(n.startswith("$ROLLOUT-") and n != corpse for n in names):
+    sys.exit("the current ReplicaSet's Pod went missing too -- the filter is too wide")
+
+print("    | the retired ReplicaSet's Pod is out, the current one's Pod is in")
+PY
+
+# The same corpse, read by the OTHER two readers of a Pod list. The install was
+# the only one fixed in the first cut of this, and this Pod then rendered on the
+# Self-Heal dashboard as a Failed, `healable=False` component of a deployment
+# whose Deployments are both 1/1 -- so each reader is measured here, against the
+# cluster state the step above built, rather than trusted to the shared helper.
+python3 - <<PY
+import sys
+
+from nyxgpt import canary, self_heal
+
+corpse = "$ROLLOUT-corpse"
+
+# The injection: the rule switched off, which is exactly the reading self-heal
+# had before this round (the filter is the only difference in that function).
+real_rule = self_heal.pod_is_retired
+self_heal.pod_is_retired = lambda *_a, **_k: False
+before = self_heal._list_kubernetes_component_status(set())
+print(f"    | without the rule, self-heal reports: {[(c.service, c.state, c.healable) for c in before]}")
+if not any(c.service == corpse and not c.healthy for c in before):
+    sys.exit(
+        "FAULT INJECTION FAILED: the unfiltered self-heal reading does not report the corpse, "
+        "so this step cannot prove the filter does anything there"
+    )
+self_heal.pod_is_retired = real_rule
+
+after = self_heal._list_kubernetes_component_status(set())
+names = [c.service for c in after]
+print(f"    | with the rule, self-heal reports: {names}")
+if corpse in names:
+    sys.exit(
+        "the Self-Heal dashboard still shows the corpse as a component of a healthy deployment"
+    )
+if not names:
+    sys.exit("every component vanished -- the filter is too wide")
+
+# canary's per-track reason enrichment selects by the same label the corpse
+# carries, so an unhealthy track could be 'explained' by the rollout before it.
+# Injected the same way, so an empty list below is evidence rather than a Pod
+# that simply had nothing to say.
+real_rule = canary.pod_is_retired
+canary.pod_is_retired = lambda *_a, **_k: False
+unfiltered = canary.pod_failure_reasons("app=$ROLLOUT_LABEL", "$NAMESPACE")
+print(f"    | without the rule, canary's reasons: {unfiltered}")
+if not any(corpse in r for r in unfiltered):
+    sys.exit(
+        "FAULT INJECTION FAILED: the unfiltered canary reading does not blame the corpse, so "
+        "this step cannot prove the filter does anything there"
+    )
+canary.pod_is_retired = real_rule
+
+reasons = canary.pod_failure_reasons("app=$ROLLOUT_LABEL", "$NAMESPACE")
+print(f"    | with the rule, canary's reasons: {reasons}")
+if any(corpse in r for r in reasons):
+    sys.exit("the corpse is still offered as the reason the track is unhealthy")
+PY
+
+# Same question, asked of the live cluster through the real patch rather than in
+# Python: adopt the corpse onto the CURRENT ReplicaSet and the reading must fail
+# again. Nothing about the phase changed; only its owner did.
+CURRENT_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT_LABEL" \
+  -o jsonpath='{range .items[*]}{.metadata.name}={.spec.replicas}{"\n"}{end}' \
+  | awk -F= '$2 != "0" {print $1; exit}')"
+CURRENT_RS_UID="$(kubectl -n "$NAMESPACE" get "rs/$CURRENT_RS" -o jsonpath='{.metadata.uid}')"
+kubectl -n "$NAMESPACE" patch "pod/$ROLLOUT-corpse" --type=merge -p "$(cat <<JSON
+{"metadata":{"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet",
+"name":"$CURRENT_RS","uid":"$CURRENT_RS_UID"}]}}
+JSON
+)" >/dev/null
+python3 - <<PY
+import sys
+
+from nyxgpt import ops
+
+states, _ = ops._k8s_pod_states("$NAMESPACE")
+failing = [s.name for s in states if not s.ok]
+print(f"    | owned by the CURRENT ReplicaSet, FAILED pods: {failing}")
+if "$ROLLOUT-corpse" not in failing:
+    sys.exit(
+        "a Failed Pod of the current ReplicaSet was filtered out -- the fix would be "
+        "hiding real failures, which is the narrow fix #3956 ruled out"
+    )
+# ...and it says WHY, which a bare 'pod NAME: Failed' line did not (the
+# owner's second non-blocking note).
+state = next(s for s in states if s.name == "$ROLLOUT-corpse")
+print(f"    | and it reports: {state.summary}")
+if state.summary.strip() == "Failed":
+    sys.exit("the Failed line still carries no reason at all")
+PY
+kubectl -n "$NAMESPACE" delete "pod/$ROLLOUT-corpse" --now >/dev/null
+kubectl -n "$NAMESPACE" delete "deploy/$ROLLOUT" --now >/dev/null
+log "PASS: a Pod no live ReplicaSet owns is not the deployment's state, for the install,"
+log "      self-heal and canary alike -- and one the current ReplicaSet owns still fails,"
+log "      with its reason"
+
+# ---------------------------------------------------------------------------
+step "8/10  FAULT INJECTION: kubectl on a k3s node is not kubectl"
+# ---------------------------------------------------------------------------
+# The second 2026-08-26 blocker. `/usr/local/bin/kubectl` on a k3s node is a
+# symlink to the `k3s` binary, whose shim defaults KUBECONFIG to the root-only
+# /etc/rancher/k3s/k3s.yaml -- so the user-owned ~/.kube/config the deploy
+# writes was never read, and `nyxgpt cloud canary status` reported "running in
+# native mode" on a live cluster, telling the operator to install the thing that
+# was already running.
+#
+# A hosted runner ships its own kubectl, so k3s's installer leaves it alone and
+# the condition does not arise here by itself. It is INJECTED with a shim that
+# does exactly what k3s's does -- against the real root-only kubeconfig this
+# cluster really has.
+[[ -f /etc/rancher/k3s/k3s.yaml ]] || fail "k3s wrote no kubeconfig to default to"
+[[ -f "$HOME/.kube/config" ]] \
+  || fail "the bootstrap did not write \$HOME/.kube/config -- the fix has nothing to find"
+
+REAL_KUBECTL="$(command -v kubectl)"
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/kubectl" <<SHIM
+#!/bin/sh
+# k3s's own kubectl shim, in one line: default KUBECONFIG to k3s's file.
+KUBECONFIG="\${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}" export KUBECONFIG
+exec "$REAL_KUBECTL" "\$@"
+SHIM
+chmod +x "$WORK/bin/kubectl"
+
+if [[ $EUID -eq 0 ]]; then
+  log "SKIPPED (running as root): /etc/rancher/k3s/k3s.yaml is readable here, so the"
+  log "        permission-denied half cannot be reproduced. The fix is still asserted."
+else
+  if [[ -r /etc/rancher/k3s/k3s.yaml ]]; then
+    fail "/etc/rancher/k3s/k3s.yaml is readable by $(whoami) -- the injection cannot
+          reproduce the owner's condition"
+  fi
+  set +e
+  shim_out="$(PATH="$WORK/bin:$PATH" env -u KUBECONFIG kubectl -n "$NAMESPACE" get pods 2>&1)"
+  shim_rc=$?
+  set -e
+  [[ $shim_rc -ne 0 ]] \
+    || fail "the k3s-style shim reached the cluster without KUBECONFIG -- the injection
+             proves nothing"
+  log "MEASURED (defect reproduced): kubectl's own default fails -- ${shim_out##*$'\n'}"
+fi
+
+# The fix: nyxGPT's own kubectl calls name the kubeconfig kubectl *would* have
+# used, so they no longer depend on an environment variable nothing exports.
+mode="$(PATH="$WORK/bin:$PATH" env -u KUBECONFIG python3 -c \
+  'from nyxgpt import canary; print(canary.current_mode())')"
+log "MEASURED: canary.current_mode() with no KUBECONFIG exported -> $mode"
+[[ "$mode" == "kubernetes" ]] \
+  || fail "the deployment mode reads as '$mode' on a box running k3s -- canary rollout,
+           the capability #3506 chose this substrate for, would report itself absent"
+
+# ...and the other half: a probe that genuinely cannot reach an API server must
+# say so, not fall back to a confident "native".
+cat > "$WORK/broken-kubeconfig.yaml" <<'KUBECONFIG'
+apiVersion: v1
+kind: Config
+clusters:
+  - name: nowhere
+    cluster:
+      server: https://127.0.0.1:1
+contexts:
+  - name: nowhere
+    context:
+      cluster: nowhere
+      user: nobody
+current-context: nowhere
+users:
+  - name: nobody
+    user:
+      token: smoke-not-a-real-token  # pragma: allowlist secret
+KUBECONFIG
+broken="$(KUBECONFIG="$WORK/broken-kubeconfig.yaml" python3 -c \
+  'from nyxgpt import canary; print("|".join(canary._current_mode_with_reason()))')"
+log "MEASURED: with an unreachable cluster configured -> $broken"
+[[ "${broken%%|*}" == "unknown" ]] \
+  || fail "a failed probe still reports '${broken%%|*}' -- an assertion about the substrate
+           that nothing checked"
+log "PASS: the product finds the kubeconfig kubectl would have, and a probe that could"
+log "      not ask never answers 'native'"
+
+# ---------------------------------------------------------------------------
+step "9/10  The applied image tags name the build and the version"
+# ---------------------------------------------------------------------------
+# The third 2026-08-26 blocker: four build paths shared `nyxgpt-api:local` /
+# `nyxgpt-web:local`, so an instance running published 3.0.0rc14 reported its
+# images as `local` and `nyxgpt canary status` -- which reads the version
+# straight off the Pod's image tag -- could not name the release. The tags are
+# now per-path and versioned, applied through a generated kustomize overlay.
+#
+# Only a real cluster can answer the part that matters here: that kubectl's
+# EMBEDDED kustomize accepts the overlay and that the API server admits the
+# whole set through it.
+OVERLAY="$(python3 -c \
+  'from nyxgpt import ops; print(ops._write_k8s_image_overlay(dev=False))')"
+log "MEASURED: generated overlay at $OVERLAY"
+sed 's/^/    | /' "$OVERLAY/kustomization.yaml"
+
+EXPECTED_API_TAG="$(python3 -c \
+  'from nyxgpt import ops; print(ops.k8s_image_refs(dev=False)["api"])')"
+EXPECTED_WEB_TAG="$(python3 -c \
+  'from nyxgpt import ops; print(ops.k8s_image_refs(dev=False)["web"])')"
+case "$EXPECTED_API_TAG" in
+  *:local) fail "the api image tag is still the mutable ':local' this step exists to retire" ;;
+esac
+
+kubectl kustomize "$OVERLAY" > "$WORK/rendered.yaml"
+grep -q "image: $EXPECTED_API_TAG" "$WORK/rendered.yaml" \
+  || fail "the rendered manifests do not carry $EXPECTED_API_TAG"
+grep -q "image: $EXPECTED_WEB_TAG" "$WORK/rendered.yaml" \
+  || fail "the rendered manifests do not carry $EXPECTED_WEB_TAG"
+if grep -qE 'image: nyxgpt-(api|web):local' "$WORK/rendered.yaml"; then
+  fail "a ':local' image survived the overlay -- canary status would report 'local' again"
+fi
+log "MEASURED: rendered image tags:"
+grep -E '^ *image: nyxgpt-' "$WORK/rendered.yaml" | sort -u | sed 's/^/    | /'
+
+# The real apply path, server-side validated: the overlay is what a deploy
+# applies, so it has to be admissible, not merely renderable.
+kubectl apply -k "$OVERLAY" --dry-run=server -o name | sed 's/^/    | /'
+log "PASS: every object is admitted through the overlay, carrying the versioned tags"
+
+# And the overlay must not have been bought by editing the manifests: #3506's
+# rationale rests on `k8s/` being the repository's copy, byte for byte.
+[[ "$OVERLAY" != "$K8S_DIR" && "$OVERLAY" != "$K8S_DIR"/* ]] \
+  || fail "the generated overlay was written inside $K8S_DIR"
+git -C "$CHECKOUT" diff --exit-code -- k8s/ \
+  || fail "k8s/ was modified to make the image tags work -- that is a finding about
+           #3506's premise, not a quiet diff"
+diff -r --exclude=secret.yaml "$CHECKOUT/k8s" "$K8S_DIR" \
+  || fail "the manifests the deploy applies differ from the repository's k8s/"
+log "PASS: the manifests are still byte-identical to k8s/ (secret.yaml aside)"
+
+# ---------------------------------------------------------------------------
+step "10/10  The --no-kubernetes transition actually moves the box"
 # ---------------------------------------------------------------------------
 # `--no-kubernetes` is documented as moving a deployment back to the native
 # substrate. The failure this proves against is silent in the worst available
@@ -602,8 +1003,10 @@ log "PASS (idempotence): a second teardown on a box with neither is a no-op"
 
 echo
 log "ALL PASS -- the k3s substrate a --kubernetes cloud deploy creates works, the"
-log "manifests apply to it unchanged, nothing listens on the public interface, the"
-log "--no-kubernetes transition really retires it, and both fault injections"
-log "reproduced the failures they guard against."
+log "manifests apply to it unchanged (with the image tags pinned from outside them),"
+log "nothing listens on the public interface, the product finds the cluster with no"
+log "KUBECONFIG exported, a finished rollout's leftover Pod no longer fails the"
+log "install, the --no-kubernetes transition really retires it -- and all five fault"
+log "injections reproduced the failures they guard against."
 log "NOT covered here, by construction: a real EC2 instance, a real AWS security"
 log "group, and IMDSv2 -- see docs/live-verification-ci.md."
