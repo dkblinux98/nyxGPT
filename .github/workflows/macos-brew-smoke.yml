@@ -1893,6 +1893,38 @@ jobs:
           print(json.dumps({"resolved": resolved, "ok": result.ok, "message": result.message}))
           PY
 
+          cat > /tmp/brew_state.py <<'PY'
+          """Brew's own state for one service, read the way the product reads it.
+
+          NEVER compare the Status column as a raw string here. D-032(f)
+          measured, in this same workflow, that `brew services list` colours
+          its Status tokens and that the escapes survive a pipe -- `ESC[39mnone
+          ESC[0m` through `cat -v` (run 32233162053) and `ESC[31merror` through
+          `awk` (run 32228088507). A coloured `none` compares unequal to
+          `"none"`, so a literal `[ "$STATE" != "none" ]` passes in exactly the
+          state it exists to catch. `brew_services.parse_services_list` strips
+          the escapes and is the one chokepoint every state read in the product
+          goes through, so this step reads through it too.
+          """
+          import subprocess
+          import sys
+
+          from nyxgpt import brew_services
+
+          out = subprocess.run(
+              ["brew", "services", "list"], capture_output=True, text=True, check=True
+          ).stdout
+          print(brew_services.parse_services_list(out).get(sys.argv[1], "<absent>"))
+          PY
+
+          # Registration is a launchd fact, not a state word: D-032(d). The
+          # plist is the file launchd reloads at the next login, and it is what
+          # `registered()` in the #3861 step below asserts on for the same
+          # reason. Both signals are captured before the restart as well as
+          # after, so a guard that cannot move is visible as one instead of
+          # passing as evidence.
+          PLIST="$HOME/Library/LaunchAgents/homebrew.mxcl.$KEG.plist"
+
           echo
           echo "=== half one: the pre-#4043 barrier, injected into the installed keg ==="
           python3 - "$BS" "$SH" <<'INJECT'
@@ -1940,6 +1972,15 @@ jobs:
           echo "=== half two: the shipped barrier ==="
           cp /tmp/brew_services.shipped.py "$BS"
           cp /tmp/self_heal.shipped.py "$SH"
+          # What brew reports for the keg BEFORE the restart. The injection
+          # above never touched `parse_services_list`, so this reads the same
+          # way either side of the restore.
+          STATE_BEFORE="$("$PY" /tmp/brew_state.py "$KEG")"
+          # `if`, not `test ... && VAR=`: under `set -e` a failing left-hand
+          # side of an `&&` list aborts the step.
+          PLIST_BEFORE=absent
+          if [ -e "$PLIST" ]; then PLIST_BEFORE=present; fi
+          echo "before the restart: state=$STATE_BEFORE plist=$PLIST_BEFORE"
           "$PY" /tmp/heal_driver.py > after.json
           cat after.json
           brew services list
@@ -1957,19 +1998,42 @@ jobs:
           print("restarted:", d["message"])
           CHECK
           # brew has to have acted, not just been asked: a formula it knows
-          # about with no service loaded reads `none`, so the state has to
-          # have moved off it.
-          STATE="$(brew services list | awk -v k="$KEG" '$1 == k {print $2}')"
-          echo "brew reports $KEG as: ${STATE:-<absent>}"
-          test -n "$STATE" && [ "$STATE" != "none" ] || {
-            echo "::error::self-heal reported a successful restart but brew still has no service loaded for $KEG"
+          # about with no service loaded reads `none` and has no plist, so both
+          # signals have to have moved.
+          STATE_AFTER="$("$PY" /tmp/brew_state.py "$KEG")"
+          PLIST_AFTER=absent
+          if [ -e "$PLIST" ]; then PLIST_AFTER=present; fi
+          echo "after the restart:  state=$STATE_AFTER plist=$PLIST_AFTER"
+          # Non-vacuity of the two assertions below, which is the whole point
+          # of capturing the before: if the keg was ALREADY registered and
+          # already off `none` before the restart, neither of them can fail and
+          # they say nothing about whether this restart did anything. Say so
+          # rather than letting the step pass as evidence it is not.
+          if [ "$PLIST_BEFORE" = present ] && [ "$STATE_BEFORE" != none ]; then
+            echo "::error::brew already reported $KEG as registered ($PLIST_BEFORE) and '$STATE_BEFORE' BEFORE the restart -- the assertions below cannot fail, so this half proves nothing; find what started the service earlier in the job"
+            exit 1
+          fi
+          test "$PLIST_AFTER" = present || {
+            echo "::error::self-heal reported a successful restart but launchd has no plist for $KEG -- nothing is registered, so nothing was restarted (D-032(d): the plist is the registration, not the Status column)"
+            exit 1
+          }
+          [ "$STATE_AFTER" != none ] && [ "$STATE_AFTER" != "<absent>" ] || {
+            echo "::error::self-heal reported a successful restart but brew still reports $KEG as '$STATE_AFTER'"
             exit 1
           }
 
           # Leave the machine as the next step expects it: a running service
           # on :8000 is not what "install the stable onto an installed
-          # candidate" is measuring.
+          # candidate" is measuring. The candidate reached this step
+          # registered-never-started (asserted above), and `brew services stop`
+          # de-registers (D-032(d)), so check that it did rather than assuming
+          # it -- this step now mutates state the steps below read, and the
+          # #3861 step registers both service sets from a clean slate.
           brew services stop "$KEG" 2>&1 | tail -5 || true
+          test ! -e "$PLIST" || {
+            echo "::error::$KEG is still registered with launchd after 'brew services stop' -- this step has left a service behind for the steps below (D-032(d))"
+            exit 1
+          }
 
       - name: The other direction -- the stable onto an installed candidate
         # Beyond AC4, which names only the direction above. This is the order

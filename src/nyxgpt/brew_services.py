@@ -322,6 +322,15 @@ def is_safe_formula_spec(spec: str) -> bool:
     of a candidate-channel service (`dkblinux98/nyxgpt/nyxgpt-api@3.0.0rc`)
     is accepted as readily as the bare `nyxgpt-api` -- see `SEGMENT_PATTERN`
     for why that is not a relaxation of the injection barrier (#4043).
+
+    The suffix is admitted on the owner and tap segments too, so
+    `owner@1/tap@2/name` passes a form Homebrew's tap syntax never produces.
+    That is wider than the legitimate grammar and no weaker as a barrier --
+    identical character class, no metacharacter reachable either way -- and
+    scoping the `@` group to the final segment would be tighter. Noted rather
+    than narrowed: this function's job is to decide whether a string is safe to
+    hand to a subprocess, not to validate Homebrew's grammar, and brew itself
+    rejects a spec it cannot name (#4043 review, Minor).
     """
     parts = spec.split("/")
     if len(parts) not in (1, 3):
