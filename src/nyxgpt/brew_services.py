@@ -45,10 +45,13 @@ checked for the same shape:
   **Kubernetes (`K8S_CORE_POD_APPS`)** -- not affected. Those names are
   chosen by nyxGPT at `docker run --name` / in `k8s/*.yaml`; the image tag
   carries the version, and the name does not.
-* **Homebrew launchd labels** -- already correct, and for this exact reason:
-  `ops._brew_service_launchd_labels` matches `homebrew.mxcl.nyxgpt*` by
-  prefix rather than against a known formula list, so a teardown reaches a
-  release line the running build has never heard of (#3859).
+* **Homebrew launchd labels** -- correct about the *version*, for this exact
+  reason: `ops._brew_service_launchd_labels` matches `*nyxgpt*` by prefix
+  rather than against a known formula list, so a teardown reaches a release
+  line the running build has never heard of (#3859). It matches both label
+  schemes Homebrew has used (`ops._BREW_SERVICE_LABEL_PREFIXES`), which is a
+  separate axis: current Homebrew writes `sh.brew.<formula>` where it used to
+  write `homebrew.mxcl.<formula>`.
 * **Log paths** -- unaffected by design: both channels' formulas declare
   `log_path var/"log/nyxgpt-api.log"`, so `nyxgpt ops logs api` needs no
   channel-specific path.

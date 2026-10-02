@@ -125,6 +125,16 @@ from nyxgpt.subprocess_bounds import (
     timeout_result,
 )
 
+# The running stack's own version, reported by the same two functions
+# `/api/v1/info` and the web header use (#3982) so no two surfaces can
+# disagree about which build is serving. Used by the Infrastructure page's
+# Kubernetes card (#3988): served from a Pod, the api process *is* the
+# deployment's api, and its own version is the most direct answer to the
+# Definition of Done's "what version". Note the channel vocabulary here is
+# `version`'s (`stable`/`rc`/`dev`/`unknown`), not `install_mode`'s
+# `CHANNEL_CANDIDATE` spelling imported above.
+from nyxgpt.version import UNKNOWN_VERSION, running_version, version_channel
+
 logger = logging.getLogger(__name__)
 
 # Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root.
@@ -1551,6 +1561,47 @@ def _resolved_brew_service(component: str, snapshot: Mapping[str, str] | None = 
     return brew_services.resolve(component, NATIVE_BREW_SERVICES[component], snapshot)
 
 
+# Homebrew's launchd label scheme, and there is more than one of it.
+#
+# `homebrew.mxcl.<formula>` was the only label for years and is what every
+# plist on a machine installed under an older Homebrew still carries. Current
+# Homebrew writes `sh.brew.<formula>`. This is measured, not assumed:
+# `macos-brew-smoke.yml` run 36996645910 logged brew's own File column on
+# macos-15/arm64 as `~/Library/LaunchAgents/sh.brew.nyxgpt-api@3.0.0rc.plist`
+# for a service brew had just started, while that job asserted on the
+# `homebrew.mxcl.` path and therefore read a running, registered service as
+# "nothing is registered".
+#
+# BOTH are matched everywhere a label is *guessed* rather than read back from
+# brew. A machine that has been upgraded carries plists under the old label
+# beside anything brew has written since, so knowing only one of the two is
+# how `nyxgpt ops uninstall` leaves a service registered that launchd starts
+# again at the next login (D-032(d)) -- the exact failure that path exists to
+# prevent. Where brew names the file itself (`_brew_service_registration`
+# reads the File column) that answer still wins over any guess: the scheme is
+# Homebrew's to change again.
+_BREW_SERVICE_LABEL_PREFIXES = ("homebrew.mxcl.", "sh.brew.")
+
+
+def _brew_service_plist_candidates(name: str) -> list[Path]:
+    """Every path brew might have written the LaunchAgent for `name` to."""
+    la_dir = _launchagents_dir()
+    return [la_dir / f"{prefix}{name}.plist" for prefix in _BREW_SERVICE_LABEL_PREFIXES]
+
+
+def _brew_service_plist_exists(name: str) -> bool:
+    """Whether a brew LaunchAgent for `name` is on disk under either label."""
+    return any(path.exists() for path in _brew_service_plist_candidates(name))
+
+
+def _brew_label_formula(label: str) -> str:
+    """The formula name inside a brew launchd label, whichever scheme it uses."""
+    for prefix in _BREW_SERVICE_LABEL_PREFIXES:
+        if label.startswith(prefix):
+            return label[len(prefix) :]
+    return label
+
+
 def _brew_service_registration(name: str) -> tuple[str, Path | None]:
     """Return `(state, plist)` for brew service `name` from `brew services list`.
 
@@ -1621,42 +1672,52 @@ def _brew_service_will_restart(name: str, plist: Path | None = None) -> bool:
     one) where the exit code cost a false success.
 
     `plist` may be passed when the caller already has brew's File column, to
-    honour a label scheme other than `homebrew.mxcl.<name>` without paying a
-    second `brew services list`.
+    honour a label scheme neither of `_BREW_SERVICE_LABEL_PREFIXES` covers
+    without paying a second `brew services list`.
     """
-    for candidate in (plist, _launchagents_dir() / f"homebrew.mxcl.{name}.plist"):
+    for candidate in [plist, *_brew_service_plist_candidates(name)]:
         if candidate is not None and candidate.exists():
             return True
     if not _is_macos() or _which("launchctl") is None:
         # `brew services` drives systemd --user on Linux, where there is no
         # plist and no gui domain to ask; the systemd path answers there.
         return False
-    label = plist.stem if plist is not None else f"homebrew.mxcl.{name}"
-    try:
-        cp = _run(
-            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
-            check=False,
-            expected=True,
-            timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
-        )
-    except Exception:
-        # A probe that cannot run has not found a registration. Reporting one
-        # here would fail a retire that succeeded.
-        return False
-    return cp.returncode == 0
+    if plist is not None:
+        labels = [plist.stem]
+    else:
+        # No file on disk under either scheme and brew named none, so ask
+        # launchd about both labels: a job can be loaded with its plist already
+        # unlinked, and which label it was bootstrapped under is not knowable
+        # from here.
+        labels = [f"{prefix}{name}" for prefix in _BREW_SERVICE_LABEL_PREFIXES]
+    for label in labels:
+        try:
+            cp = _run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                check=False,
+                expected=True,
+                timeout=LOCAL_PROBE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # A probe that cannot run has not found a registration. Reporting
+            # one here would fail a retire that succeeded.
+            return False
+        if cp.returncode == 0:
+            return True
+    return False
 
 
 def _brew_service_is_registered(name: str) -> bool:
     """Whether brew service `name` will still be started by launchd.
 
-    The plist at brew's conventional path settles it without asking brew
-    anything -- a file that exists is a registration, and this is the cheap
-    check. Only when it is absent is brew asked which path it actually chose,
-    since the label scheme is brew's to change; see
+    The plist at either of brew's conventional paths settles it without asking
+    brew anything -- a file that exists is a registration, and this is the
+    cheap check. Only when both are absent is brew asked which path it actually
+    chose, since the label scheme is brew's to change; see
     `_brew_service_will_restart` for why the Status column is not the signal
     in either case.
     """
-    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+    if _brew_service_plist_exists(name):
         return True
     _state, plist = _brew_service_registration(name)
     return _brew_service_will_restart(name, plist)
@@ -5274,7 +5335,7 @@ def _brew_row_is_a_live_registration(name: str, state: str) -> bool:
     """
     if state == "started":
         return True
-    if (_launchagents_dir() / f"homebrew.mxcl.{name}.plist").exists():
+    if _brew_service_plist_exists(name):
         return True
     if state == "none":
         return False
@@ -7906,6 +7967,19 @@ def _down_terraform(_args) -> int:
 # a place an API key belongs.
 K8S_DIR = NYXGPT_HOME / "k8s"
 K8S_NAMESPACE = "nyxgpt"
+
+# The cluster's own copy of its install record (#3988). The marker file
+# `install-mode-kubernetes.json` lives in the `~/.nyxGPT` of whichever machine
+# ran `ops install --kubernetes` -- which is precisely the machine an
+# in-cluster api Pod cannot see. Served from that Pod, the Infrastructure page
+# read its own container's empty home and reported the owner's `--dev` cluster
+# as `unrecorded`, while `nyxgpt ops status` on the host said `dev`: the
+# product knew the answer and the dashboard did not. A ConfigMap in the
+# deployment's own namespace is readable from both vantage points, and
+# `kubectl delete -k k8s/` takes the namespace (and so this record) with it,
+# so it cannot outlive the deployment it describes -- the stale-marker failure
+# `clear_install_mode` exists to prevent.
+K8S_INSTALL_RECORD_CONFIGMAP = "nyxgpt-install-mode"
 
 # Pod-name prefixes of the two *app* workloads, as distinct from the
 # observability Pods that share the namespace (see `_k8s_app_pods_present`).
@@ -11837,6 +11911,179 @@ def _k8s_access_bridge_issues() -> list[str]:
     return issues
 
 
+def _write_k8s_install_record(mode: str, checkout: Path | str | None) -> OpsResult:
+    """Record this deployment's mode and version *in the cluster* (#3988).
+
+    The companion to the local marker, not a replacement for it: the marker is
+    what `ops status`/`doctor` and the native service manager read on this
+    machine, and this is what anything looking at the *deployment* can read --
+    including the api Pod serving the Infrastructure page, which has no access
+    to the installing machine's `~/.nyxGPT` at all.
+
+    `version` is the nyxgpt that built the images, so the card can answer "what
+    version" from the host too, and not only from inside the cluster.
+    """
+    version = _reportable_version(running_version())
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": K8S_INSTALL_RECORD_CONFIGMAP,
+            "namespace": K8S_NAMESPACE,
+            "labels": {"app": "nyxgpt", "component": "install-record"},
+        },
+        "data": {
+            "mode": mode,
+            "checkout": str(checkout) if checkout else "",
+            "version": version,
+            # A `--dev` deployment runs a working tree, which is not any
+            # published channel whatever the checkout's version string says
+            # (#3982) -- reporting it as `rc` would send an operator hunting
+            # for a candidate that was never published.
+            "channel": CHANNEL_DEV if mode == INSTALL_MODE_DEV else version_channel(version),
+        },
+    }
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "apply", "-f", "-"],
+        check=False,
+        input=json.dumps(manifest),
+    )
+    if cp.returncode != 0:
+        return OpsResult(
+            False,
+            "Could not record the install mode in the cluster -- the Infrastructure page "
+            "will report this deployment's install mode as unrecorded",
+            _cp_details(cp),
+        )
+    return OpsResult(
+        True,
+        f"Recorded the install mode in the cluster (configmap/{K8S_INSTALL_RECORD_CONFIGMAP})",
+        f"mode={mode} version={version or 'unknown'}",
+    )
+
+
+def _read_k8s_install_record() -> dict[str, str]:
+    """The install record the cluster carries, or `{}` when there is none (#3988).
+
+    Never raises and never distinguishes "no record" from "could not read
+    one": both mean the caller has nothing recorded to report, and the caller
+    reports that as unknown rather than as a mode. A cluster whose namespace
+    is gone, an RBAC refusal and a deployment made before #3988 all land here.
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "configmap",
+            K8S_INSTALL_RECORD_CONFIGMAP,
+            "-o",
+            "json",
+        ],
+        check=False,
+        expected=True,
+        # `/infra/status` polls this; same bound as the Pod read beside it.
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if timed_out(cp) or cp.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(cp.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _reportable_version(value: str) -> str:
+    """`value`, or "" when nothing resolved a version.
+
+    `UNKNOWN_VERSION` is the deliberately-implausible `0.0.0` sentinel
+    (`nyxgpt.version`); passing it on to a dashboard would render an unknown
+    as a determinate release, which is the shape of defect this issue is
+    about. Empty means unknown, and every caller says so in those words.
+    """
+    return "" if not value or value == UNKNOWN_VERSION else value
+
+
+def _k8s_recorded_install_state(
+    record: Mapping[str, str], *, in_cluster: bool
+) -> tuple[InstallModeState, str]:
+    """`(state, source)` for a Kubernetes deployment's install mode (#3988).
+
+    The cluster's own record wins when there is one: it describes *this*
+    deployment, and it is the only one of the two an api Pod can read. The
+    local marker is the fallback for a deployment installed before #3988 --
+    and only off-cluster, because inside a Pod that path resolves to the
+    container's own home, which is the `/root/.nyxGPT` this issue's report
+    caught being surveyed as if it were the operator's machine.
+
+    `source` names where the answer came from, or is empty when there is no
+    answer; a card that says "unrecorded" has to be able to say unrecorded
+    *where*, since the two vantage points keep different records.
+    """
+    mode = record.get("mode")
+    if mode in (INSTALL_MODE_DEV, INSTALL_MODE_ARTIFACT):
+        state = InstallModeState(
+            mode=mode,
+            checkout=record.get("checkout") or None,
+            substrate=SUBSTRATE_KUBERNETES,
+            recorded=True,
+        )
+        return state, (
+            f"the cluster's own install record (configmap/{K8S_INSTALL_RECORD_CONFIGMAP} "
+            f"in namespace {K8S_NAMESPACE})"
+        )
+    if in_cluster:
+        return InstallModeState(substrate=SUBSTRATE_KUBERNETES), ""
+    marker_state = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
+    source = (
+        f"the install-mode marker on this machine ({install_mode_file(SUBSTRATE_KUBERNETES)})"
+        if marker_state.recorded
+        else ""
+    )
+    return marker_state, source
+
+
+def _k8s_version_report(record: Mapping[str, str], *, in_cluster: bool) -> dict[str, Any]:
+    """Which nyxGPT this Kubernetes deployment is running, and how that is known.
+
+    The Definition of Done's "what version ... without a terminal" (#3988): the
+    card reported Pods and no version at all, which was never a vantage-point
+    limit -- in-cluster the api process *is* this deployment's api, so its own
+    `running_version()` is the version serving right now, and off-cluster the
+    install record carries the version that built the images. `known: False`
+    is the honest third answer for a deployment that predates the record, and
+    the card renders it as unknown rather than as a release nobody installed.
+    """
+    version = _reportable_version(running_version()) if in_cluster else ""
+    source = (
+        "this api process -- a Pod of this deployment, so this is the version serving now"
+        if version
+        else ""
+    )
+    if not version:
+        version = _reportable_version(record.get("version", ""))
+        source = (
+            f"the cluster's own install record (configmap/{K8S_INSTALL_RECORD_CONFIGMAP})"
+            if version
+            else ""
+        )
+    # The recorded channel is preferred over re-deriving one: a `--dev`
+    # deployment's channel is `dev` whatever its checkout's version string
+    # parses as, and the install is what knows that.
+    channel = record.get("channel") or version_channel(version)
+    return {
+        "known": bool(version),
+        "version": version,
+        "channel": channel if version else version_channel(""),
+        "source": source,
+    }
+
+
 def _record_k8s_install_mode(dev: bool) -> list[OpsResult]:
     """Record the mode the Kubernetes deployment was just built in (#3834).
 
@@ -11850,8 +12097,18 @@ def _record_k8s_install_mode(dev: bool) -> list[OpsResult]:
     dev install and a Kubernetes artifact deployment at the same time, and one
     machine-wide answer is what made `ops status` report a native `dev` mode
     for a pure-Kubernetes deployment.
+
+    Written twice, to two different readers (#3988): the local marker for this
+    machine's `ops status`/`doctor`, and a ConfigMap in the deployment's own
+    namespace for anything reading the *deployment* -- see
+    `_write_k8s_install_record`.
     """
-    previous = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
+    # The cluster's record, not just this machine's marker (#3988): a
+    # deployment installed from another machine has no marker here, and
+    # `kubectl apply` on an unchanged `:local` image tag does not roll the
+    # Pods -- so without this the app tier would keep serving the previous
+    # mode's images while both records claimed the new one.
+    previous, _source = _k8s_recorded_install_state(_read_k8s_install_record(), in_cluster=False)
     target = INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT
     checkout = _dev_checkout_root() if dev else None
     results: list[OpsResult] = []
@@ -11872,6 +12129,7 @@ def _record_k8s_install_mode(dev: bool) -> list[OpsResult]:
     )
     marker = write_install_mode(target, checkout, substrate=SUBSTRATE_KUBERNETES)
     results.append(OpsResult(True, f"Kubernetes install mode: {state.label()}", str(marker)))
+    results.append(_write_k8s_install_record(target, checkout))
     return results
 
 
@@ -12890,6 +13148,20 @@ def infra_status() -> dict[str, Any]:
     identity are then reported as **out of scope** rather than answered from
     the container's own filesystem.
 
+    The same vantage-point rule governs what the `kubernetes` section says
+    about the *build* it is running (#3988, second round). Detection alone was
+    not the whole of "what is running, what version": the card reported Pods,
+    no `version` at all, and an `install_mode.mode` of `artifact` for a
+    deployment the operator had installed with `--dev` -- because the only
+    record it consulted was a marker file in the installing machine's
+    `~/.nyxGPT`, which inside a Pod is the container's empty home. So the
+    install now records the mode **in the cluster**
+    (`K8S_INSTALL_RECORD_CONFIGMAP`); that record is preferred over the local
+    marker whenever the cluster answers; `version` reports the api process's
+    own `running_version()` in-cluster and the record's version off-cluster;
+    and `mode` says `unrecorded` rather than `artifact` when nothing recorded
+    one. See `_k8s_recorded_install_state` and `_k8s_version_report`.
+
     `compose_probe_available` extends the same "can't determine" distinction
     to the `compose` section (#3588): `False` means `docker compose ps`
     couldn't be queried from this vantage point at all, so an empty `compose`
@@ -12942,7 +13214,11 @@ def infra_status() -> dict[str, Any]:
         "deployed": tf_deployed,
         "containers": tf_state,
         "install_mode": {
-            "mode": tf_install_mode_state.mode,
+            # Unrecorded reads as `unrecorded`, not as the artifact default
+            # (#3988): the page already derives that tri-state itself from
+            # `recorded`/`deployed`, and `mode` contradicting it is how the
+            # Kubernetes card next door ended up carrying both answers.
+            "mode": tf_install_mode_state.reported_mode(deployed=tf_deployed),
             "checkout": tf_install_mode_state.checkout,
             # The label is the deployment-aware one: a running stack with no
             # marker is reported as unrecorded, never as the artifact default
@@ -13006,7 +13282,17 @@ def infra_status() -> dict[str, Any]:
     observability_workloads: dict[str, str] = {}
     if kubernetes_configured and kubernetes_probe_available:
         observability_workloads = _k8s_observability_workload_state()
-    k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
+    # Which build this *deployment* runs, read from the cluster when the
+    # cluster is answering (#3988). The local marker is no longer the only
+    # source: inside a Pod it is the container's own home -- empty -- which is
+    # how a `--dev` cluster came back `unrecorded` on the page while
+    # `nyxgpt ops status` on the host said `dev`.
+    k8s_record = (
+        _read_k8s_install_record() if kubernetes_configured and kubernetes_probe_available else {}
+    )
+    k8s_install_mode, k8s_install_mode_source = _k8s_recorded_install_state(
+        k8s_record, in_cluster=in_cluster
+    )
     kubernetes = {
         "available": kubectl_available,
         "configured": kubernetes_configured,
@@ -13035,17 +13321,29 @@ def infra_status() -> dict[str, Any]:
         # (#3988). The page uses it to say so, and to scope the rows below
         # that a Pod cannot honestly answer.
         "in_cluster": in_cluster,
+        # Which nyxGPT this deployment is running (#3988). The Definition of
+        # Done asks the dashboard for "what version ... without a terminal",
+        # and this card answered Pods but no version at all.
+        "version": _k8s_version_report(k8s_record, in_cluster=in_cluster),
         # What the two images in this cluster were built from (#3834): the
         # published artifacts, or a checkout's working tree via
-        # `--dev`. `recorded: False` means no marker -- deployed before nyxGPT
-        # recorded one, or from another machine -- which the page must show as
-        # unknown rather than as the artifact default, since here that default
-        # would be a guess about someone else's deployment.
+        # `--dev`. `recorded: False` means neither the cluster's own record
+        # nor this machine's marker holds one -- deployed before nyxGPT
+        # recorded either -- which the page must show as unknown rather than
+        # as the artifact default, since here that default would be a guess
+        # about someone else's deployment. `mode` says `unrecorded` then too
+        # (#3988): it used to answer `artifact` beside a `label` that said
+        # unrecorded, so one payload carried the honest answer and the wrong
+        # one at once.
         "install_mode": {
-            "mode": k8s_install_mode.mode,
+            "mode": k8s_install_mode.reported_mode(),
             "checkout": k8s_install_mode.checkout,
             "label": k8s_install_mode.label(),
             "recorded": k8s_install_mode.recorded,
+            # Which of the two records answered -- or, when neither did, the
+            # empty string. The two vantage points keep different records, so
+            # "unrecorded" is only meaningful with the *where* beside it.
+            "source": k8s_install_mode_source,
         },
         "observability": {
             "probe_available": kubernetes_probe_available,
@@ -13987,8 +14285,14 @@ def status(_args) -> int:
             )
             # The deployment's OWN install mode (#3834) -- what the two images
             # in this cluster were built from, not what the native services on
-            # this host were installed from.
-            k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
+            # this host were installed from. Read from the cluster's own record
+            # first and this machine's marker second (#3988), so the CLI and
+            # the Infrastructure page cannot give one operator two answers;
+            # the cluster is already answering here (its Pods were just read),
+            # so the extra read costs one `kubectl get configmap`.
+            k8s_install_mode, _k8s_mode_source = _k8s_recorded_install_state(
+                _read_k8s_install_record(), in_cluster=_in_cluster()
+            )
             print(f"  Install mode: {k8s_install_mode.label()}")
             if not _k8s_app_pods_present(pod_states):
                 # Same distinction the native and Terraform lines draw
@@ -15636,24 +15940,38 @@ def _force_deregister_brew_service(name: str) -> list[OpsResult]:
     """
     if not _is_macos():
         return []
-    _, plist = _brew_service_registration(name)
-    if plist is None:
-        # brew named no file (it reports none for an unregistered service),
-        # so fall back to the label brew has used for its service plists.
-        plist = _launchagents_dir() / f"homebrew.mxcl.{name}.plist"
-    results = _stop_launchagent(plist.stem)
-    if plist.exists():
-        try:
-            plist.unlink()
-            results.append(OpsResult(True, f"Removed brew service plist: {name}", str(plist)))
-        except OSError as e:
-            results.append(
-                OpsResult(
-                    False,
-                    f"Failed to remove brew service plist: {name}",
-                    f"{plist}: {type(e).__name__}: {e}",
+    _, named = _brew_service_registration(name)
+    # Every plist that is really there: brew's own File column when it gave
+    # one, plus any file under either of Homebrew's label schemes. A machine
+    # upgraded across Homebrew's `homebrew.mxcl.` -> `sh.brew.` rename can
+    # carry one under each, and the one left behind is reinstated at the next
+    # login -- so this is a list, not a single path.
+    plists: list[Path] = []
+    for candidate in [named, *_brew_service_plist_candidates(name)]:
+        if candidate is not None and candidate.exists() and candidate not in plists:
+            plists.append(candidate)
+    if not plists:
+        # Nothing on disk under any name. The job can still be loaded with its
+        # plist already unlinked (that is the state `brew services stop` leaves
+        # when it half-worked), and which label it was bootstrapped under is
+        # not knowable from here, so bootout both. `_stop_launchagent` reports
+        # "not loaded" as success, so the wrong guess costs a no-op.
+        plists = [named] if named is not None else _brew_service_plist_candidates(name)
+    results: list[OpsResult] = []
+    for plist in plists:
+        results.extend(_stop_launchagent(plist.stem))
+        if plist.exists():
+            try:
+                plist.unlink()
+                results.append(OpsResult(True, f"Removed brew service plist: {name}", str(plist)))
+            except OSError as e:
+                results.append(
+                    OpsResult(
+                        False,
+                        f"Failed to remove brew service plist: {name}",
+                        f"{plist}: {type(e).__name__}: {e}",
+                    )
                 )
-            )
     return results
 
 
@@ -16320,7 +16638,10 @@ def down(args) -> int:
 #
 # Three populations, only one of which Homebrew has ever known about:
 #
-#   brew services   `homebrew.mxcl.nyxgpt-api@X.Y.Zrc` and its web twin.
+#   brew services   `nyxgpt-api@X.Y.Zrc` and its web twin, under either of
+#                   `_BREW_SERVICE_LABEL_PREFIXES` (Homebrew renamed its
+#                   launchd labels from `homebrew.mxcl.` to `sh.brew.`, and an
+#                   upgraded machine carries both).
 #                   Stopped through `brew services stop` where brew can still
 #                   resolve the formula, and through launchd directly where it
 #                   cannot -- which is the state an operator reaches by
@@ -16335,8 +16656,6 @@ def down(args) -> int:
 # Removal, not just unloading, for everything with a plist or unit file on
 # disk: launchd and systemd --user both reinstate a registered job at the next
 # login.
-
-_BREW_SERVICE_LABEL_PREFIX = "homebrew.mxcl."
 
 
 def _loaded_launchd_labels(prefix: str) -> list[str]:
@@ -16368,7 +16687,7 @@ def _loaded_launchd_labels(prefix: str) -> list[str]:
 
 
 def _brew_service_launchd_labels() -> list[str]:
-    """Every `homebrew.mxcl.nyxgpt*` launchd label this machine still carries.
+    """Every brew-managed `*nyxgpt*` launchd label this machine still carries.
 
     The union of what is on disk and what is loaded, because either outlives
     the other: `brew services stop` removes the plist while an already-booted
@@ -16378,14 +16697,22 @@ def _brew_service_launchd_labels() -> list[str]:
     candidate channel's services are named after their formula
     (`nyxgpt-api@3.0.0rc`), and a release line this build has never heard of
     is exactly the leftover a teardown is for.
+
+    Both of `_BREW_SERVICE_LABEL_PREFIXES`, for the same reason: a teardown
+    that knows only the older `homebrew.mxcl.` label finds nothing at all on a
+    current Homebrew, reports "no Homebrew-managed nyxgpt services left
+    registered" and leaves the service for launchd to start again.
     """
     labels: set[str] = set()
-    try:
-        for plist in _launchagents_dir().glob(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt*.plist"):
-            labels.add(plist.name[: -len(".plist")])
-    except OSError as e:
-        logger.warning("Could not list %s: %s", _launchagents_dir(), e, extra={"component": "ops"})
-    labels.update(_loaded_launchd_labels(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt"))
+    for prefix in _BREW_SERVICE_LABEL_PREFIXES:
+        try:
+            for plist in _launchagents_dir().glob(f"{prefix}nyxgpt*.plist"):
+                labels.add(plist.name[: -len(".plist")])
+        except OSError as e:
+            logger.warning(
+                "Could not list %s: %s", _launchagents_dir(), e, extra={"component": "ops"}
+            )
+        labels.update(_loaded_launchd_labels(f"{prefix}nyxgpt"))
     return sorted(labels)
 
 
@@ -16406,7 +16733,7 @@ def _remove_brew_service_launchd_jobs() -> list[OpsResult]:
     la_dir = _launchagents_dir()
     results: list[OpsResult] = []
     for label in labels:
-        formula = label[len(_BREW_SERVICE_LABEL_PREFIX) :]
+        formula = _brew_label_formula(label)
         if brew is not None:
             cp = _run(
                 ["brew", "services", "stop", _brew_formula_spec(formula)],
@@ -16694,7 +17021,11 @@ def _report_orphaned_launchd_jobs() -> list[OpsResult]:
     """
     if not _is_macos():
         return []
-    loaded = _loaded_launchd_labels(f"{_BREW_SERVICE_LABEL_PREFIX}nyxgpt")
+    loaded = [
+        label
+        for prefix in _BREW_SERVICE_LABEL_PREFIXES
+        for label in _loaded_launchd_labels(f"{prefix}nyxgpt")
+    ]
     loaded += [
         label
         for label in sorted(set(DEV_LAUNCHD_LABELS.values()) | set(SUPPORT_LAUNCHD_LABELS.values()))

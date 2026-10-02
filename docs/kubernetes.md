@@ -1137,10 +1137,32 @@ capacity: what the stack reserves](#node-capacity-what-the-stack-reserves)).
 
 The card also names this deployment's own **install mode** (#3834) — what the
 two images in the cluster were built from, per [Install
-modes](#install-modes-artifact-and---dev) — or `unrecorded` when there is no
-marker for it on the machine the dashboard is running on, which is never
-presented as the artifact default: that default would be a guess about someone
-else's deployment.
+modes](#install-modes-artifact-and---dev) — and the **version** it is running,
+which is what the Definition of Done asks this page for.
+
+Both are answered from a record the *cluster* carries (#3988, second round):
+`nyxgpt ops install --kubernetes` writes a `nyxgpt-install-mode` ConfigMap into
+the `nyxgpt` namespace alongside the marker it writes into `~/.nyxGPT`, and the
+page prefers that ConfigMap whenever the cluster answers. The marker alone was
+not enough: it lives in the `~/.nyxGPT` of whichever machine ran the install,
+which inside a Pod is the container's own empty home — so a `--dev` cluster was
+reported as `unrecorded` on the page while `nyxgpt ops status` on the host said
+`dev`. The Role in `k8s/rbac.yaml` grants `get` on that one ConfigMap **by
+name**; the namespace's other ConfigMaps and its Secret stay unreadable through
+it. `nyxgpt ops down --kubernetes` deletes the namespace, and the record with
+it, so the record cannot outlive the deployment it describes.
+
+The version is reported from the api process's own `running_version()` when the
+page is served in-cluster — there the process *is* this deployment's api, so
+that is the version serving right now — and from the install record otherwise.
+`version.source` on the payload names which of the two answered.
+
+Where nothing recorded a mode, the card says `unrecorded` and
+`install_mode.mode` says `unrecorded` too — never the artifact default, which
+here would be a guess about someone else's deployment. A two-value `mode` that
+answered `artifact` beside a label reading "unrecorded" was the second half of
+#3988: one payload carrying both the honest answer and the wrong one (the same
+shape as D-032/#3861).
 
 The same card carries an **In-cluster observability** section (#3787):
 per-workload readiness for the components in [Observability in the

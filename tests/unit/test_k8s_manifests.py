@@ -24,6 +24,7 @@ scripts/k8s-local-smoke.sh / .github/workflows/k8s-local-smoke.yml.
 from __future__ import annotations
 
 import configparser
+import re
 from pathlib import Path
 from typing import Any
 
@@ -231,3 +232,88 @@ def test_ops_waits_for_exactly_these_workloads():
         for m in ("statefulset-cassandra.yaml", "statefulset-ollama.yaml")
     }
     assert waited == deployed
+
+
+# ---------------------------------------------------------------------------
+# Required Secret keys (the gap that made `canary-track-metrics-smoke` red on
+# v3.0.0 itself, run 36955341840)
+#
+# A `secretKeyRef` without `optional: true` is a HARD requirement: kubelet
+# refuses to create the container and the Pod sits in
+# CreateContainerConfigError until the key appears. #3990 added
+# `error-tracking-dsn` to all four app Deployments and updated
+# k8s/secret.example.yaml, but `scripts/canary-track-metrics-smoke.sh` builds
+# its Secret by hand from `--from-literal` and still passed only `api-key` --
+# so every api Pod in that job failed to start, the rollout wait timed out
+# after five minutes, and a required check went red for every PR touching the
+# canary layer or `k8s/rbac.yaml`.
+#
+# Discovering that cost a 40-minute kind run. These two tests cost
+# milliseconds and fail on the manifest change itself, before the next
+# required key can repeat it.
+
+
+def _required_secret_keys(secret_name: str) -> set[str]:
+    """Every key `secret_name` must carry for the app manifests to start.
+
+    Only non-optional refs count: `optional: true` means kubelet leaves the
+    variable unset and starts the container anyway, which is a missing feature
+    rather than a broken Pod.
+    """
+    keys: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            ref = node.get("secretKeyRef")
+            if (
+                isinstance(ref, dict)
+                and ref.get("name") == secret_name
+                and not ref.get("optional", False)
+            ):
+                keys.add(ref["key"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for path in sorted(K8S_DIR.rglob("*.yaml")):
+        with path.open(encoding="utf-8") as fh:
+            for document in yaml.safe_load_all(fh):
+                walk(document)
+    return keys
+
+
+@pytest.mark.unit
+def test_the_secret_template_carries_every_required_app_key():
+    """k8s/secret.example.yaml is what an operator copies, and what
+    `canary-rollout-smoke.sh` applies verbatim. A required key missing from it
+    is a deployment that cannot start."""
+    required = _required_secret_keys("nyxgpt-secrets")
+    # Non-vacuity: a refactor that renames the Secret must break this test
+    # rather than make it assert nothing.
+    assert "api-key" in required and "error-tracking-dsn" in required
+    template = yaml.safe_load((K8S_DIR / "secret.example.yaml").read_text(encoding="utf-8"))
+    assert required <= set(template["stringData"]), (
+        "k8s/secret.example.yaml is missing required secretKeyRef keys: "
+        f"{sorted(required - set(template['stringData']))}"
+    )
+
+
+@pytest.mark.unit
+def test_hand_rolled_smoke_secrets_carry_every_required_app_key():
+    """Smoke scripts that build the Secret from `--from-literal` instead of
+    applying the template have to track the manifests too."""
+    required = _required_secret_keys("nyxgpt-secrets")
+    script = REPO_ROOT / "scripts" / "canary-track-metrics-smoke.sh"
+    text = script.read_text(encoding="utf-8")
+    assert "create secret generic nyxgpt-secrets" in text, (
+        f"{script.name} no longer hand-rolls the Secret -- if it now applies "
+        "k8s/secret.example.yaml, delete this test instead of weakening it"
+    )
+    literals = set(re.findall(r"--from-literal=([A-Za-z0-9._-]+)=", text))
+    assert required <= literals, (
+        f"{script.name} creates nyxgpt-secrets without "
+        f"{sorted(required - literals)} -- every app Pod it brings up will sit "
+        "in CreateContainerConfigError"
+    )

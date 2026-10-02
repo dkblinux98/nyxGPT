@@ -105,7 +105,12 @@ type InfraStatus = {
     // default -- and when something IS deployed with no marker, say so
     // instead (see `terraformImageMode`).
     install_mode?: {
-      mode: 'artifact' | 'dev';
+      // 'unrecorded' since #3988: a two-value field cannot express "nothing
+      // wrote this down", and `mode: 'artifact'` beside a `label` that said
+      // unrecorded is one payload carrying both the honest answer and the
+      // wrong one. `terraformImageMode` already derived the tri-state from
+      // `recorded`/`deployed`; the api now agrees with it.
+      mode: 'artifact' | 'dev' | 'unrecorded';
       checkout: string | null;
       label: string;
       images: Record<string, string>;
@@ -145,10 +150,31 @@ type InfraStatus = {
     // deployment. Optional so the page still renders against an api process
     // from before #3834.
     install_mode?: {
-      mode: 'artifact' | 'dev';
+      // 'unrecorded' is a real value of `mode` since #3988's second round:
+      // the owner's `--dev` cluster was reported as `mode: 'artifact'` with
+      // `label: 'unrecorded ...'` beside it, so a reader of either field was
+      // told something the other denied. `source` names which record
+      // answered -- the cluster's own ConfigMap, or this machine's marker --
+      // because "unrecorded" only means something with the *where* beside it.
+      mode: 'artifact' | 'dev' | 'unrecorded';
       checkout: string | null;
       label: string;
       recorded: boolean;
+      source?: string;
+    };
+    // Which nyxGPT this deployment is running (#3988, second round). The
+    // Definition of Done asks this page for "what version ... without a
+    // terminal" and the card answered Pods and nothing else -- never a
+    // vantage-point limit, since in-cluster the api process serving this page
+    // IS this deployment's api. `known: false` is the honest answer for a
+    // deployment installed before the cluster carried a record; the card says
+    // unknown rather than showing a release nobody installed. Optional so the
+    // page still renders against an api process from before this field.
+    version?: {
+      known: boolean;
+      version: string;
+      channel: string;
+      source: string;
     };
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
     // the Compose observability profiles, so it deploys its own. Optional on
@@ -968,6 +994,32 @@ export default function InfrastructurePage() {
                       ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
                       : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
                 </p>
+                {/* What version this deployment is running (#3988). The Definition
+                    of Done asks this page for it directly, and the card used to
+                    answer Pods and stop -- while the api process serving the page
+                    knew its own version all along. */}
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  Version:{' '}
+                  {status.kubernetes.version?.known ? (
+                    <>
+                      <strong>{status.kubernetes.version.version}</strong>
+                      {status.kubernetes.version.channel &&
+                      status.kubernetes.version.channel !== 'unknown'
+                        ? ` (${status.kubernetes.version.channel} channel)`
+                        : ''}
+                      {status.kubernetes.version.source
+                        ? ` — from ${status.kubernetes.version.source}.`
+                        : ''}
+                    </>
+                  ) : (
+                    <>
+                      <strong>unknown</strong> — this deployment carries no install record to read
+                      a version from, and this dashboard is not being served from inside it.
+                      Re-run <code>nyxgpt ops install --kubernetes</code> to record one, or ask
+                      the host with <code>nyxgpt ops status</code>.
+                    </>
+                  )}
+                </p>
                 {/* The deployment's own install mode (#3834) -- what the images in
                     THIS cluster were built from. Never the native marker: a host
                     can run a native dev install and a Kubernetes artifact
@@ -977,9 +1029,11 @@ export default function InfrastructurePage() {
                   Install mode:{' '}
                   {!status.kubernetes.install_mode?.recorded ? (
                     <>
-                      <strong>unrecorded</strong> — no marker for this deployment on the machine
-                      this dashboard runs on. It was deployed before nyxGPT recorded one, or from
-                      another machine.
+                      <strong>unrecorded</strong> — neither this cluster nor the machine this
+                      dashboard runs on holds an install record for this deployment. It was
+                      deployed before nyxGPT recorded one in the cluster. Re-run{' '}
+                      <code>nyxgpt ops install --kubernetes</code> (add <code>--dev</code> for a
+                      working-tree build) to record it.
                     </>
                   ) : status.kubernetes.install_mode.mode === 'dev' ? (
                     <>
@@ -996,6 +1050,10 @@ export default function InfrastructurePage() {
                       involved).
                     </>
                   )}
+                  {status.kubernetes.install_mode?.recorded &&
+                  status.kubernetes.install_mode.source
+                    ? ` Read from ${status.kubernetes.install_mode.source}.`
+                    : ''}
                 </p>
                 {status.kubernetes.pod_states && status.kubernetes.pod_states.length > 0 ? (
                   /* Three states, not two (#3827): a Pod that is still pulling its

@@ -140,8 +140,21 @@ kind load docker-image "$IMAGE" --name "$CLUSTER"
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
 kubectl apply -f k8s/configmap.yaml
+# Every key the app Deployments reference through a non-optional
+# `secretKeyRef`, not just the one this job reads. `error-tracking-dsn` is
+# #3990's, and it is EMPTY on purpose -- GlitchTip mints a DSN per install and
+# this job deliberately runs no observability tier. The key still has to exist:
+# a `secretKeyRef` with no `optional: true` leaves every api Pod in
+# CreateContainerConfigError, which is how this job went red on v3.0.0 itself
+# (run 36955341840: `couldn't find key error-tracking-dsn in Secret
+# nyxgpt/nyxgpt-secrets`, both tracks, for the whole 5-minute rollout wait).
+# k8s/secret.example.yaml documents the same requirement; the set is pinned
+# against the manifests by tests/unit/test_k8s_manifests.py so the next
+# required key cannot cost another 40-minute cluster run to discover.
 kubectl -n "$NAMESPACE" create secret generic nyxgpt-secrets \
-    --from-literal=api-key="$API_KEY" --dry-run=client -o yaml | kubectl apply -f -
+    --from-literal=api-key="$API_KEY" \
+    --from-literal=error-tracking-dsn="" \
+    --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f k8s/service.yaml -f k8s/service-canary.yaml
 kubectl apply -f k8s/deployment-stable.yaml -f k8s/deployment-canary.yaml
 

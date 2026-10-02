@@ -13545,6 +13545,11 @@ def test_install_kubernetes_waits_for_the_app_tier_before_reading_health():
         patch.object(ops, "_k8s_stack_health", side_effect=record("health")),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops, "_record_ops_action"),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         results = ops._install_kubernetes_steps(None)
 
@@ -13660,6 +13665,11 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         # Its rollout wait (#3826) shells out to kubectl for real otherwise.
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
@@ -13700,6 +13710,11 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
@@ -13981,6 +13996,11 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         # Its rollout wait (#3826) shells out to kubectl for real otherwise.
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)

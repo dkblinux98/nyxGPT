@@ -698,8 +698,66 @@ assert data["install_mode"]["in_scope"] is False, "the native card is not scoped
 pod_count = len(k8s["pods"])
 context = k8s["context"]
 print(f"[OK] in-cluster: {pod_count} Pods, context={context!r}")
+
+# The second round of #3988: detection alone was not "what is running, what
+# version". The card reported Pods, no version at all, and an install mode of
+# "artifact" for a deployment installed with --dev -- because the only record
+# it read was a marker file in the ~/.nyxGPT of the installing machine, which
+# inside a Pod is the empty home of the container. Both assertions below fail
+# on a revert with no fault injection: pre-fix there is no "version" key at
+# all, and install_mode.recorded is false from in here.
+version = k8s.get("version") or {}
+assert version.get("known") is True, f"no version reported from inside the cluster: {version}"
+assert version.get("version"), f"version reported as known but empty: {version}"
+assert version.get("source"), "a reported version must say where it came from"
+
+install = k8s["install_mode"]
+mode = install["mode"]
+source = install.get("source") or ""
+assert install["recorded"] is True, f"install mode unrecorded from inside the deployment: {install}"
+# This smoke installs without --dev, so the recorded mode is artifact.
+assert mode == "artifact", f"wrong install mode reported: {install}"
+assert "configmap/nyxgpt-install-mode" in source, f"mode not read from the cluster record: {source}"
+reported = version["version"]
+channel = version["channel"]
+print(f"[OK] version {reported} ({channel}), install mode {mode}")
 ' || fail "the Infrastructure payload served from inside the cluster is wrong (#3988)"
 ok "the page served by the api Pod reports the deployment it is running in"
+
+# The RBAC half of the AC, proven with the Pod's OWN ServiceAccount rather
+# than by reading the manifest: the install record is readable, and the Role's
+# promise that nothing else in the namespace is stays true.
+kubectl -n "$NAMESPACE" exec "$api_pod" -- \
+    kubectl -n "$NAMESPACE" get configmap nyxgpt-install-mode -o name >/dev/null ||
+    fail "the api Pod cannot read its own install record -- k8s/rbac.yaml does not grant it (#3988)"
+if kubectl -n "$NAMESPACE" exec "$api_pod" -- \
+    kubectl -n "$NAMESPACE" get configmap nyxgpt-config -o name >/dev/null 2>&1; then
+    fail "the api ServiceAccount can read nyxgpt-config -- the configmaps grant is not scoped to \
+the install record by name, which is what k8s/rbac.yaml promises"
+fi
+ok "the install record is readable by the Pod's ServiceAccount, and no other ConfigMap is"
+
+# FAULT INJECTION for the mode assertion: with the record gone, the page must
+# say `unrecorded` -- never the `artifact` default, which here would be a
+# guess about someone else's deployment (D-032, #3861). Backed up first and
+# restored after, so the rest of the run sees the cluster it expects.
+kubectl -n "$NAMESPACE" get configmap nyxgpt-install-mode -o yaml >/tmp/k8s-install-record.yaml
+kubectl -n "$NAMESPACE" delete configmap nyxgpt-install-mode >/dev/null
+kubectl -n "$NAMESPACE" exec "$api_pod" -- \
+    curl -fsS -H "X-API-Key: ${API_KEY}" http://127.0.0.1:8000/api/v1/infra/status |
+    python3 -c '
+import json, sys
+install = json.load(sys.stdin)["kubernetes"]["install_mode"]
+mode = install["mode"]
+assert install["recorded"] is False, f"a deleted record still reads as recorded: {install}"
+assert mode == "unrecorded", (
+    f"an unknown install mode rendered as the determinate value {mode!r} -- that is the "
+    "defect #3988 was re-opened for (D-032)"
+)
+print("[OK] no record -> unrecorded, not artifact")
+' || fail "with no install record the page does not report an honest unknown (#3988)"
+kubectl -n "$NAMESPACE" apply -f /tmp/k8s-install-record.yaml >/dev/null
+ok "a missing install record reads as unrecorded, never as the artifact default"
 
 step "14/19 The user path works: sessions list, via the web Service"
 wait_for_web
