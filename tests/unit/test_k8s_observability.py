@@ -1075,6 +1075,157 @@ def test_a_crashlooping_old_pod_is_not_excused_as_superseded(monkeypatch) -> Non
     assert "CrashLoopBackOff" in crashing.message
 
 
+# --- ...and it is the SECOND of two rollout-residue rules -------------------
+#
+# #3956's `pod_is_retired` landed on `v3.0.0` while this one was in review, and
+# both live in `_k8s_pod_states`. They are not interchangeable and neither is
+# redundant: the retired rule asks the ReplicaSets (a second `kubectl`) and
+# DROPS what no live controller owns, for ops, self-heal and canary alike;
+# SUPERSEDED asks only the Pods already in hand and RE-LABELS, which is all
+# there is to go on for a Pod no ReplicaSet owns or on a run where that extra
+# call failed. A later session that deletes either one re-opens a defect the
+# other cannot cover, so the composition is pinned here rather than left to the
+# two rules' separate tests.
+
+
+def test_both_rollout_residue_rules_apply_to_one_pod_list(monkeypatch) -> None:
+    """One read, one namespace, each rule answering for what the other cannot see."""
+
+    def fake_run(cmd, **_kwargs):
+        if "pods" in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            # The retired rule's population: a ReplicaSet the
+                            # Deployment controller has scaled to zero.
+                            {
+                                "metadata": {
+                                    "name": "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                                    "labels": {
+                                        "app": "nyxgpt-web",
+                                        "pod-template-hash": "77c7d9c6f4",
+                                    },
+                                    "ownerReferences": [
+                                        {"kind": "ReplicaSet", "name": "nyxgpt-web-stable-77c7"}
+                                    ],
+                                },
+                                "status": {"phase": "Failed"},
+                            },
+                            _revision_pod(
+                                "nyxgpt-web-stable-69b45dd5db-live",
+                                "Running",
+                                app="nyxgpt-web",
+                                revision="69b45dd5db",
+                                conditions=[{"type": "Ready", "status": "True"}],
+                            ),
+                            # SUPERSEDED's population: a StatefulSet's rolled
+                            # Pod, which no ReplicaSet owns, so the retired
+                            # rule has nothing to say about it.
+                            {
+                                "metadata": {
+                                    "name": "cassandra-0",
+                                    "labels": {
+                                        "app": "cassandra",
+                                        "controller-revision-hash": "cassandra-5f6",
+                                    },
+                                },
+                                "status": {"phase": "Failed"},
+                            },
+                            {
+                                "metadata": {
+                                    "name": "cassandra-1",
+                                    "labels": {
+                                        "app": "cassandra",
+                                        "controller-revision-hash": "cassandra-7a9",
+                                    },
+                                },
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [{"type": "Ready", "status": "True"}],
+                                },
+                            },
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        if "rs" in cmd:
+            return MagicMock(returncode=0, stdout="nyxgpt-web-stable-77c7=0;", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    states, read_failure = ops._k8s_pod_states()
+
+    assert read_failure is None
+    # Dropped by the retired rule -- it is not in the list at all.
+    assert "nyxgpt-web-stable-77c7d9c6f4-gz62g" not in [s.name for s in states]
+    # Kept by it (no ReplicaSet), and re-labelled by this one.
+    rolled = next(s for s in states if s.name == "cassandra-0")
+    assert rolled.state == ops.K8S_STATE_SUPERSEDED
+    assert rolled.ok
+    # Neither rule touched what is actually serving.
+    assert {s.name for s in states if s.state == ops.K8S_STATE_READY} == {
+        "nyxgpt-web-stable-69b45dd5db-live",
+        "cassandra-1",
+    }
+
+
+def test_the_superseded_rule_still_answers_when_the_replicaset_read_fails(monkeypatch) -> None:
+    """The run that most needs an answer is the one where the extra call failed.
+
+    `_k8s_retired_replicasets` returns an empty set on a non-zero exit -- it may
+    only drop a Pod on positive evidence (#3956) -- and a node under the
+    pressure that leaves residue behind is exactly where a `kubectl get rs` is
+    apt to time out. Without this second rule that run fails the install on a
+    corpse again.
+    """
+
+    def fake_run(cmd, **_kwargs):
+        if "pods" in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "name": "nyxgpt-web-stable-77c7d9c6f4-gz62g",
+                                    "labels": {
+                                        "app": "nyxgpt-web",
+                                        "pod-template-hash": "77c7d9c6f4",
+                                    },
+                                    "ownerReferences": [
+                                        {"kind": "ReplicaSet", "name": "nyxgpt-web-stable-77c7"}
+                                    ],
+                                },
+                                "status": {"phase": "Failed"},
+                            },
+                            _revision_pod(
+                                "nyxgpt-web-stable-69b45dd5db-live",
+                                "Running",
+                                app="nyxgpt-web",
+                                revision="69b45dd5db",
+                                conditions=[{"type": "Ready", "status": "True"}],
+                            ),
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        if "rs" in cmd:
+            return MagicMock(returncode=1, stdout="", stderr="timed out")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    states, _ = ops._k8s_pod_states()
+    corpse = next(s for s in states if s.name == "nyxgpt-web-stable-77c7d9c6f4-gz62g")
+
+    assert corpse.state == ops.K8S_STATE_SUPERSEDED
+    assert corpse.ok, "an unreadable ReplicaSet list must not re-fail the install on a corpse"
+
+
 def test_k8s_stack_health_and_observability_health_agree_on_zero_ready(monkeypatch) -> None:
     """The contradiction #3827 was filed for: one command printed `[FAIL] pod
     grafana-x: Pending` and `[OK] observability grafana: 0/1 ready` about the
