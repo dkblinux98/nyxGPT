@@ -412,13 +412,19 @@ commands must restore it"
 # port number -- so Jaeger keeps the otlp ports the collector exports to
 # instead of being cut down to its UI port.
 #
-# Both access paths are exercised on the way back: the managed background
-# forward (the bring-your-own answer) and then the published NodePorts, which
-# is the pair #3986's acceptance criteria name.
-if managed_forward_running; then
-    ok "this cluster uses the managed background forward, not NodePorts -- \
-the Service-type injection does not apply, skipping"
-else
+# TWO wrapped ways back are exercised, and both of them republish rather than
+# forward. That is not a shortcut: on a cluster nyxGPT provisioned, the four
+# host ports are held by the kind node container (extraPortMappings are fixed
+# at cluster creation and cannot be withdrawn from a running node), so
+# `kubectl port-forward` physically cannot bind them -- `address already in
+# use` is the only thing a forward can produce here. The managed background
+# forward is the bring-your-own-cluster answer and is asserted on the branch
+# above, where it is the path the install actually took.
+#
+# What `nyxgpt ops port-forward` must NOT do is believe the node's mapping and
+# report the UI as reachable: that is the shape of the original defect (an
+# install reporting success over a dark UI), and it is what this leg guards.
+inject_clusterip_sre() {
     while read -r svc port; do
         kubectl -n "$NAMESPACE" patch svc "$svc" \
             -p "{\"spec\":{\"type\":\"ClusterIP\",\"ports\":[{\"port\":${port},\"nodePort\":null}]}}" \
@@ -428,7 +434,7 @@ for entry in ops.K8S_OBSERVABILITY_PUBLISHED_SERVICES.values():
     print(entry.service, entry.port)')
     kubectl -n "$NAMESPACE" get svc grafana prometheus jaeger glitchtip \
         -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
-    still_reachable=""
+    local still_reachable="" probe
     for probe in "${SRE_UI_PROBES[@]}"; do
         # Five attempts, not thirty: this is waiting for a port to STOP
         # answering, and kube-proxy withdraws the node port in seconds.
@@ -437,21 +443,32 @@ for entry in ops.K8S_OBSERVABILITY_PUBLISHED_SERVICES.values():
     [ -z "$still_reachable" ] ||
         fail "the SRE UIs were still reachable with the shipped ClusterIP Services \
 (${still_reachable# }) -- step 7 is vacuous and cannot detect the #3986 regression"
+}
+if managed_forward_running; then
+    ok "this cluster uses the managed background forward, not NodePorts -- \
+the Service-type injection does not apply, skipping"
+else
+    inject_clusterip_sre
     ok "the shipped ClusterIP Services leave every SRE UI unreachable -- step 7 is load-bearing"
 
-    # The bring-your-own-cluster answer, on a cluster that is momentarily in
-    # that shape: the wrapped forward, supervised and backgrounded.
+    # Way back 1: the command an operator's notes still name. It must repair
+    # the access path, not report the dead mapping as "already published".
     nyxgpt ops port-forward --target observability --background ||
-        fail "the wrapped background forward would not start"
+        fail "the wrapped port-forward command would not restore the SRE tier"
+    if managed_forward_running; then
+        fail "a forward was started onto host ports the kind node holds -- that bind \
+cannot succeed; the node ports are what has to come back"
+    fi
     for probe in "${SRE_UI_PROBES[@]}"; do
         sre_ui_answers "${probe#*=}" ||
-            fail "${probe%%=*} did not answer through the managed background forward"
+            fail "${probe%%=*} did not come back after the wrapped port-forward command -- \
+it reported on the node's mapping instead of on what the cluster is serving (#3986)"
     done
-    ok "the managed background forward reaches all four SRE UIs"
-    nyxgpt ops port-forward --stop || fail "the wrapped --stop did not succeed"
+    ok "the wrapped port-forward command republished every SRE UI it found dark"
 
-    # ...and the answer for a cluster nyxGPT provisioned: re-run the wrapped
-    # command an operator would, and assert it republishes them.
+    # Way back 2: the wrapped install command for the SRE tier, from the same
+    # injected state -- the path `ops install` itself takes.
+    inject_clusterip_sre
     nyxgpt ops observability --kubernetes --local >/dev/null ||
         fail "nyxgpt ops observability --kubernetes did not complete after the injection"
     if managed_forward_running; then

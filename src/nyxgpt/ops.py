@@ -12031,25 +12031,135 @@ def _port_forward_plan(args) -> list[tuple[str, str, int, int]] | None:
     return plan
 
 
-def _partition_published_targets(
-    plan: list[tuple[str, str, int, int]],
-) -> tuple[list[tuple[str, str, int, int]], list[tuple[str, str, int, int]]]:
-    """Split a forward plan into (still needs forwarding, already published).
+def _k8s_service_node_ports(service: str) -> set[int]:
+    """Which node ports `service` currently carries, per the live Service.
 
-    A target whose local port the provisioned cluster already publishes must
-    not be forwarded: `kubectl port-forward` cannot bind a host port the kind
-    node holds, so the operator would see `address already in use` for a UI
-    that is in fact working (#3986). Only asked of a cluster nyxGPT
-    provisioned -- on a bring-your-own cluster nothing is published and the
-    plan passes through untouched.
+    Empty for a ClusterIP Service, a Service that does not exist, and every
+    "cannot tell" case (no cluster, kubectl error). Every caller treats an
+    empty set as "the host mapping is not being served", which is the
+    conservative answer: acting on it re-establishes the access path, while
+    assuming it is fine is the failure mode #3986 is about.
+    """
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "svc",
+            service,
+            "-o",
+            "jsonpath={.spec.ports[*].nodePort}",
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return set()
+    return {int(token) for token in (cp.stdout or "").split() if token.isdigit()}
+
+
+class _PortForwardPartition(NamedTuple):
+    """How a forward plan splits against what the provisioned cluster serves.
+
+    Three outcomes, not two, because "the node maps this host port" and "the
+    cluster is serving it" are different facts and only the second one is what
+    the operator asked for.
+    """
+
+    forward: list[tuple[str, str, int, int]]
+    """Nothing on the host holds these ports -- forward them."""
+
+    served: list[tuple[str, str, int, int]]
+    """The cluster already publishes these and is serving them."""
+
+    republish: list[tuple[int, K8sPublishedService]]
+    """(host port, Service) the node maps but whose Service lost its node port."""
+
+
+def _partition_published_targets(plan: list[tuple[str, str, int, int]]) -> _PortForwardPartition:
+    """Split a forward plan by what the provisioned cluster actually serves.
+
+    A target whose local port the provisioned cluster publishes must not be
+    forwarded: `kubectl port-forward` cannot bind a host port the kind node
+    holds, so the operator would see `address already in use` for a UI that is
+    in fact working (#3986). Only asked of a cluster nyxGPT provisioned -- on a
+    bring-your-own cluster nothing is published and the plan passes through
+    untouched.
+
+    But the node's mapping alone does not mean the UI answers, and treating it
+    as if it did was this issue's own defect in miniature. `kubectl apply -k
+    k8s/` re-asserts the shipped `type: ClusterIP` (the base posture #3503
+    needs for the AWS k3s target), which strips the node port the install
+    patched on -- and from then on the host port is held by the node container
+    with nothing behind it. The old check saw the mapping, answered "already
+    published ... no forward needed", and left the operator with a dark UI and
+    a command that said it was fine: an install reporting success over an
+    unreachable UI is the complaint #3986 opened with.
+
+    So a mapped host port is only "served" when the Service really carries the
+    node port it maps to. When it does not, forwarding cannot fix it either
+    (the bind would fail on the node's own port), so the row is classed for
+    **republishing** -- patching the node port back on, which is nyxGPT's to
+    do on a cluster it provisioned, and which survives Pod replacement as a
+    forward does not.
     """
     if _kubectl_context() != KIND_CONTEXT:
-        return plan, []
+        return _PortForwardPartition(plan, [], [])
     published = _kind_published_host_ports()
     if not published:
-        return plan, []
-    forward = [row for row in plan if row[2] not in published]
-    return forward, [row for row in plan if row[2] in published]
+        return _PortForwardPartition(plan, [], [])
+
+    forward: list[tuple[str, str, int, int]] = []
+    served: list[tuple[str, str, int, int]] = []
+    republish: list[tuple[int, K8sPublishedService]] = []
+    for row in plan:
+        local = row[2]
+        entry = K8S_HOST_PUBLISHED_SERVICES.get(local)
+        # `--port` can point a target at another target's mapped host port; the
+        # Service check below would then answer about the wrong Service, so the
+        # mapping is only this row's when both agree.
+        if local not in published or entry is None or entry.service != row[1]:
+            forward.append(row)
+        elif entry.node_port in _k8s_service_node_ports(entry.service):
+            served.append(row)
+        else:
+            republish.append((local, entry))
+    return _PortForwardPartition(forward, served, republish)
+
+
+def _republish_stale_host_ports(stale: list[tuple[int, K8sPublishedService]]) -> bool:
+    """Put back the node ports the provisioned cluster maps but is not serving (#3986).
+
+    The only recovery that can work on those host ports: they are held by the
+    kind node container, so a forward would fail to bind, and the node's
+    mappings cannot be changed on a running cluster. Patching the node port
+    back onto the Service is also the better answer -- it survives Pod
+    replacement, which is the property the whole issue turns on.
+
+    Verified rather than asserted, like every other access path this issue
+    established: the point of `nyxgpt ops port-forward` is that the UI is
+    reachable when it returns, so a URL that stays silent is a failure.
+    """
+    print(
+        "The cluster maps "
+        + ", ".join(f"http://127.0.0.1:{host}" for host, _entry in sorted(stale))
+        + " but the Service(s) behind them lost their node port "
+        "(a `kubectl apply -k k8s/` re-asserts the shipped ClusterIP) -- republishing"
+    )
+    results = _publish_k8s_nodeports(dict(stale))
+    if not all(r.ok for r in results):
+        return _emit_results("port-forward", results)
+    for host, _entry in sorted(stale):
+        url = f"http://127.0.0.1:{host}"
+        failure = _probe_web_url(url)
+        results.append(
+            OpsResult(True, f"{url} is served by the cluster again")
+            if failure is None
+            else OpsResult(False, f"Republished {url} but it did not answer", failure)
+        )
+    return _emit_results("port-forward", results)
 
 
 @dataclass
@@ -12314,12 +12424,18 @@ def port_forward(args) -> int:
     command themselves, per CLAUDE.md's Operational Command Wrapping
     requirement.
 
-    A target the cluster ALREADY publishes is reported as reachable and
-    dropped from the plan rather than forwarded: `kubectl port-forward` would
-    fail to bind the host port the node holds, and an operator running the
-    command their notes still name would get `address already in use` for
-    something that is working. If that leaves nothing to forward, the command
-    says so and succeeds.
+    A target the cluster ALREADY SERVES is reported as reachable and dropped
+    from the plan rather than forwarded: `kubectl port-forward` would fail to
+    bind the host port the node holds, and an operator running the command
+    their notes still name would get `address already in use` for something
+    that is working. If that leaves nothing to forward, the command says so
+    and succeeds.
+
+    A target whose host port the node maps but whose Service has lost its node
+    port is **republished**, not reported: the mapping alone does not mean the
+    UI answers, and a forward cannot help on a port the node holds. See
+    `_partition_published_targets` for why this is the only recovery that
+    works there -- and the better one, since it survives Pod replacement.
 
     `--target` selects what to forward (default `web`, unchanged).
     `--target app` forwards web and api together -- the combination
@@ -12367,12 +12483,14 @@ def port_forward(args) -> int:
         # anything the cluster publishes from the plan this child is given.
         return _supervise_port_forward(plan)
 
-    plan, published = _partition_published_targets(plan)
-    for name, _svc, local, _remote in published:
+    plan, served, republish = _partition_published_targets(plan)
+    for name, _svc, local, _remote in served:
         print(
             f"{name} is already published at http://127.0.0.1:{local} by the cluster "
             "-- no forward needed (it survives Pod replacement, which a forward does not)"
         )
+    if republish and not _republish_stale_host_ports(republish):
+        return 2
     if not plan:
         print("Nothing left to forward.")
         return 0

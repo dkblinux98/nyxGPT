@@ -712,6 +712,24 @@ its call — and is reached through the managed background forward below.
 `nyxgpt up --kubernetes` prints the URL once the stack reports healthy, and the
 install verifies it before it returns.
 
+Because the node port is patched on rather than declared, anything that
+re-asserts the shipped manifests strips it off again, and the host port is then
+held by the node container with nothing behind it — mapped, but dark. Either
+wrapped command puts it back, and both *verify* the URL rather than reporting
+the mapping:
+
+```bash
+nyxgpt ops install --kubernetes        # the app tier
+nyxgpt ops observability --kubernetes  # the SRE tier
+nyxgpt ops port-forward --target observability   # repairs what it finds dark
+```
+
+`ops port-forward` republishes here instead of forwarding, deliberately: the
+host port is already held by the node container, so a forward could only
+produce `address already in use`, and the node's mappings are fixed at cluster
+creation. Republishing is also the better answer — it survives Pod replacement,
+which a forward does not.
+
 ### Reaching a bring-your-own cluster
 
 On a cluster nyxGPT did not create, mapping a host port is not nyxGPT's to

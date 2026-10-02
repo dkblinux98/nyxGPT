@@ -45,6 +45,19 @@ def _doc(name: str) -> dict:
     return yaml.safe_load((K8S_DIR / name).read_text())
 
 
+def _node_ports_as_published(service):
+    """`_k8s_service_node_ports` for a cluster where every patch stuck.
+
+    Reads the product's own table so a test cannot disagree with it about
+    which node port belongs to which Service.
+    """
+    return {
+        entry.node_port
+        for entry in ops.K8S_HOST_PUBLISHED_SERVICES.values()
+        if entry.service == service
+    }
+
+
 def _port_forward_args(**overrides):
     """An argparse Namespace shaped like the `ops port-forward` parser."""
     args = argparse.Namespace(
@@ -596,6 +609,9 @@ def test_port_forward_does_not_fight_the_cluster_for_a_port_it_publishes(monkeyp
     monkeypatch.setattr(
         ops, "_kind_published_host_ports", lambda *_a, **_k: {3000, 8000, 3001, 8080, 9090, 16686}
     )
+    # Every Service really carries the node port its mapping points at, so the
+    # mapped host ports are being served and there is nothing to repair.
+    monkeypatch.setattr(ops, "_k8s_service_node_ports", _node_ports_as_published)
     monkeypatch.setattr(
         ops.subprocess, "Popen", lambda *_a, **_k: pytest.fail("must not forward a published port")
     )
@@ -621,6 +637,147 @@ def test_port_forward_does_not_fight_the_cluster_for_a_port_it_publishes(monkeyp
     assert ops.port_forward(_port_forward_args(target="app,grafana")) == 0
     assert len(forwarded) == 1
     assert "svc/grafana" in forwarded[0]
+
+
+def _published_but_clusterip(monkeypatch, probe=lambda _url, **_kw: None):
+    """A provisioned cluster that maps all six host ports and serves none of them.
+
+    The state a `kubectl apply -k k8s/` leaves behind: the node container still
+    publishes every mapping (they are fixed at cluster creation and cannot be
+    changed on a running node), while the shipped `type: ClusterIP` has
+    stripped every node port back off the Services. Returns the recorded
+    `kubectl` argv list.
+    """
+    monkeypatch.setattr(ops, "_which", lambda _p: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_kubectl_context", lambda: ops.KIND_CONTEXT)
+    monkeypatch.setattr(
+        ops, "_kind_published_host_ports", lambda *_a, **_k: {3000, 8000, 3001, 8080, 9090, 16686}
+    )
+    monkeypatch.setattr(ops, "_k8s_service_node_ports", lambda _svc: set())
+    monkeypatch.setattr(ops, "_probe_web_url", probe)
+    monkeypatch.setattr(
+        ops.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("cannot bind a host port the kind node holds"),
+    )
+    ran: list[list[str]] = []
+
+    def fake_run(cmd, check=True, **_kw):
+        ran.append([str(c) for c in cmd])
+        return SimpleNamespace(returncode=0, stdout="patched", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    return ran
+
+
+def test_port_forward_republishes_a_mapped_port_the_service_stopped_serving(monkeypatch, capsys):
+    """A mapped host port with no node port behind it is dark, not "already published".
+
+    The owner's re-test failure in miniature, and the defect this guards: the
+    partition used to read the node's mapping alone, so after anything that
+    re-asserts the shipped ClusterIP Services (`kubectl apply -k k8s/`, a
+    re-run of the observability apply) `nyxgpt ops port-forward` answered
+    "already published ... no forward needed" about four UIs that were
+    answering ERR_CONNECTION_REFUSED -- a command reporting success over an
+    unreachable UI, which is the complaint #3986 opened with.
+
+    A forward cannot fix it either: those host ports are held by the kind node
+    container, so the bind would fail. Republishing the node port is the only
+    recovery that works there, and it is the one that survives Pod replacement.
+    """
+    patched = _published_but_clusterip(monkeypatch)
+
+    assert ops.port_forward(_port_forward_args(target="observability")) == 0
+
+    out = capsys.readouterr().out
+    assert "already published at http://127.0.0.1:3001" not in out
+    assert "lost their node port" in out
+    assert "http://127.0.0.1:3001 is served by the cluster again" in out
+
+    # One patch per SRE Service, onto the node port the cluster maps -- read
+    # from the product's table so the test cannot drift from the mapping.
+    assert [cmd[cmd.index("svc") + 1] for cmd in patched if "patch" in cmd] == [
+        entry.service for _host, entry in sorted(ops.K8S_OBSERVABILITY_PUBLISHED_SERVICES.items())
+    ]
+    for host, entry in sorted(ops.K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()):
+        assert any(
+            entry.service in cmd and f'"nodePort": {entry.node_port}' in cmd[-1] for cmd in patched
+        ), f"{host} was not republished on node port {entry.node_port}"
+
+
+def test_port_forward_fails_when_a_republished_url_stays_silent(monkeypatch, capsys):
+    """Verified, not asserted -- the same standard every other access path here meets.
+
+    `ops port-forward`'s promise is that the UI is reachable when it returns.
+    A republished node port that never answers means something else is wrong
+    (the Pods, kube-proxy), and saying so beats a green line over a dark UI.
+    """
+    _published_but_clusterip(monkeypatch, probe=lambda _url, **_kw: "ConnectError: refused")
+
+    assert ops.port_forward(_port_forward_args(target="grafana")) == 2
+
+    out = capsys.readouterr().out
+    assert "[FAIL] Republished http://127.0.0.1:3001 but it did not answer" in out
+
+
+def test_no_mapped_host_port_is_ever_routed_to_a_forward(monkeypatch):
+    """Whatever the Services look like, a mapped port is never handed to kubectl.
+
+    The structural fact behind the partition: `kubectl port-forward` cannot
+    bind a host port the kind node container publishes, so routing one to a
+    forward is a guaranteed `address already in use`. Holds in both
+    directions -- Services serving their node ports, and Services back to
+    ClusterIP.
+    """
+    monkeypatch.setattr(ops, "_kubectl_context", lambda: ops.KIND_CONTEXT)
+    mapped = {host for host, _node in ops.KIND_HOST_PORT_MAPPINGS}
+    monkeypatch.setattr(ops, "_kind_published_host_ports", lambda *_a, **_k: mapped)
+
+    for node_ports in (_node_ports_as_published, lambda _svc: set()):
+        monkeypatch.setattr(ops, "_k8s_service_node_ports", node_ports)
+        plan = ops._port_forward_plan(ops._PortForwardArgs(target="app,observability"))
+        assert plan is not None
+        partition = ops._partition_published_targets(plan)
+        assert not [row for row in partition.forward if row[2] in mapped]
+        # ...and nothing is dropped on the floor: every row is accounted for.
+        assert len(partition.forward) + len(partition.served) + len(partition.republish) == len(
+            plan
+        )
+
+    # A bring-your-own cluster publishes nothing, so the plan passes through
+    # untouched and there is nothing for nyxGPT to republish on it.
+    monkeypatch.setattr(ops, "_kubectl_context", lambda: "docker-desktop")
+    plan = ops._port_forward_plan(ops._PortForwardArgs(target="observability"))
+    assert ops._partition_published_targets(plan) == ops._PortForwardPartition(plan, [], [])
+
+
+def test_service_node_ports_reads_the_live_service(monkeypatch):
+    """Empty for ClusterIP, a missing Service, and any kubectl failure."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check=True, **_kw):
+        calls.append([str(c) for c in cmd])
+        return SimpleNamespace(returncode=0, stdout="31668 4317 4318\n", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    assert ops._k8s_service_node_ports("jaeger") == {31668, 4317, 4318}
+    assert calls[0][-1] == "jsonpath={.spec.ports[*].nodePort}"
+    assert "jaeger" in calls[0]
+
+    # ClusterIP: the jsonpath selects nothing and kubectl prints an empty string.
+    monkeypatch.setattr(
+        ops, "_run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="", stderr="")
+    )
+    assert ops._k8s_service_node_ports("grafana") == set()
+
+    # No such Service / no cluster: "not serving" is the conservative answer,
+    # and acting on it re-establishes the access path.
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="", stderr="NotFound"),
+    )
+    assert ops._k8s_service_node_ports("grafana") == set()
 
 
 def test_the_sre_tier_is_published_after_glitchtip_provisioning():
