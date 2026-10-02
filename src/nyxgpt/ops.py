@@ -16107,15 +16107,27 @@ def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
     mounts read-only did -- and env vars like `GF_INSTALL_PLUGINS` only take
     effect at container start. Recreating (not merely restarting) guarantees
     both are picked up on the next boot. Returns None if there's nothing to
-    do (not drifted, Docker unavailable, or grafana isn't running yet -- the
+    do (not drifted, Docker unavailable, or grafana doesn't exist yet -- the
     normal `up -d` right after this call handles first-boot).
     """
     if not _compose_available():
         return None
     if not _grafana_provisioning_drifted():
         return None
-    if _compose_stack_snapshot().get("grafana") != "running":
-        # Nothing running yet to be stale -- the normal `up -d` below will
+    # Gated on the container *existing*, not on it reading `running` -- the
+    # third site of the same mistake #4045 was filed for, and the one that
+    # would have outlived the fix. `_compose_stack_snapshot` returns raw
+    # Compose states, so a crash-looping Grafana reads `restarting`, and the
+    # intended skip ("nothing created yet; the `up -d` below makes it fresh
+    # with current provisioning") silently swallowed it. That is the worst
+    # case to skip in: a container crash-looping on *drifted* env is exactly
+    # one `--force-recreate` away from picking up the corrected value, and
+    # `up -d` alone will not do it -- Compose sees no change from its own
+    # point of view, so the operator fixes `GF_INSTALL_PLUGINS`, re-runs, and
+    # watches the same loop continue with the stale env. `up -d
+    # --force-recreate` does not care what state the container is in.
+    if _compose_stack_snapshot().get("grafana", "absent") == "absent":
+        # Nothing created yet to be stale -- the normal `up -d` below will
         # create it fresh with current provisioning/env already.
         return None
 

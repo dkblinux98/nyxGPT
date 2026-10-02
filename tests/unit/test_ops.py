@@ -7266,13 +7266,57 @@ def test_recreate_grafana_skipped_when_not_drifted(monkeypatch):
 
 
 @pytest.mark.unit
-def test_recreate_grafana_skipped_when_not_yet_running(monkeypatch):
-    """Nothing stale to recreate if grafana was never up -- the caller's own
-    `up -d` creates it fresh with current provisioning already."""
+def test_recreate_grafana_skipped_when_container_does_not_exist(monkeypatch):
+    """Nothing stale to recreate if grafana was never created -- the caller's own
+    `up -d` creates it fresh with current provisioning already.
+
+    `absent` and a missing key are the same answer here; both are "not created",
+    which is the only case this skip is for (#4045).
+    """
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+
+    def no_docker_calls(cmd, **_k):
+        raise AssertionError(f"nothing should be recreated for an absent container: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", no_docker_calls)
+
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"prometheus": "running"})
     assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "absent"})
+    assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["restarting", "exited", "dead", "created", "paused"])
+def test_recreate_grafana_recreates_a_container_that_is_not_running(monkeypatch, state):
+    """A crash-looping or stopped Grafana is the case that most needs the recreate.
+
+    This gate used to read `!= "running"` and skip (#4045's third site). A
+    container crash-looping on *drifted* env is one `--force-recreate` away from
+    picking up the corrected value, and plain `up -d` will not do it: Compose
+    sees no change from its own point of view, so it merely starts the existing
+    container with its original env. Skipping here meant the operator fixed the
+    cause, re-ran, and watched the identical loop continue.
+    """
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": state})
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops._recreate_grafana_if_provisioning_drifted()
+
+    assert result is not None and result.ok is True
+    assert len(calls) == 1
+    assert "--force-recreate" in calls[0]
+    assert calls[0][-1] == "grafana"
 
 
 @pytest.mark.unit
