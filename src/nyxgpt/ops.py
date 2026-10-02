@@ -11953,6 +11953,26 @@ K8S_PORT_FORWARD_LOG_FILE = NYXGPT_HOME / "k8s" / "port-forward.log"
 # a genuinely unsatisfiable forward (port already bound) does not spin.
 K8S_PORT_FORWARD_RESTART_DELAY_S = 2.0
 
+# The one phrase that means "a managed background forward IS up", and the
+# phrase that means it is not. They are constants because the smoke scripts
+# branch on them (`scripts/k8s-local-smoke.sh`, `scripts/k8s-artifact-smoke.sh`,
+# `.github/workflows/k8s-observability-smoke.yml`), and a `grep` against prose
+# is only safe if the prose is pinned.
+#
+# Round 1 of #3986 shipped `port-forward --status | grep -qi 'running'` as that
+# predicate, which is true in BOTH states -- "No managed background port-forward
+# is running." contains the word. On a cluster where the install had published
+# every node port correctly, the observability smoke read that as "a forward is
+# running" and failed a passing build; worse, the same idiom guards the
+# ClusterIP fault injections in `k8s-local-smoke.sh`, where a false positive
+# takes the bring-your-own branch and SKIPS them with an `[OK]` -- so #3986's
+# own executed evidence was being quietly short-circuited rather than failing.
+# The sentinel is the running message's prefix and appears in no other output;
+# `tests/unit/test_port_forward_status_predicate.py` pins both halves and
+# asserts no caller has gone back to a loose match.
+PORT_FORWARD_STATUS_RUNNING_SENTINEL = "Background port-forward running"
+PORT_FORWARD_STATUS_IDLE_MESSAGE = "No managed background port-forward is running"
+
 
 def _port_forward_target_names(target: str) -> list[str] | None:
     """Expand a `--target` value into individual target names, or None if invalid.
@@ -12104,7 +12124,7 @@ def stop_port_forward() -> list[OpsResult]:
     status = port_forward_status()
     if not status["running"]:
         K8S_PORT_FORWARD_STATE_FILE.unlink(missing_ok=True)
-        return [OpsResult(True, "No managed background port-forward is running")]
+        return [OpsResult(True, PORT_FORWARD_STATUS_IDLE_MESSAGE)]
     pid = int(status["pid"])
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -12323,11 +12343,11 @@ def port_forward(args) -> int:
         status = port_forward_status()
         if status["running"]:
             print(
-                f"Background port-forward running (pid {status['pid']}): "
+                f"{PORT_FORWARD_STATUS_RUNNING_SENTINEL} (pid {status['pid']}): "
                 + ", ".join(status["urls"])
             )
         else:
-            print("No managed background port-forward is running.")
+            print(f"{PORT_FORWARD_STATUS_IDLE_MESSAGE}.")
         return 0
     if getattr(args, "stop", False):
         return 0 if _emit_results("port-forward --stop", stop_port_forward()) else 2

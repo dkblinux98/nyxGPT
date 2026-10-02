@@ -2021,6 +2021,26 @@ rather than mechanism, and nothing can enforce them.
   point these move there rather than being deleted.
   Source: owner in session, 2026-08-20; `example.config.ini` §`[github]`.
 
+- **P-005** · 2026-10-02 · developer-agent — Moving the web tier's Node
+  baseline from **20 to 22** is parked. `web/Dockerfile` (all three stages) and
+  every workflow that runs npm in `web/` stay on Node 20, and a web dependency
+  requiring a newer major is pinned back rather than accommodated — which is
+  what `undici` was, from `^8.11.2` to `^6.29.0`, on this branch.
+  Reason: Node 20 is past its maintenance window, so the move is coming; it is
+  not a dependency pin. It needs `@types/node` off `^20` (vitest 5 already
+  wants `^22.0.0 || >=24.0.0`), a re-type-check of the whole web tier, and
+  all three Dockerfile stages plus seven workflows moved together — the same
+  reasoning the owner gave on `b3a358db` for reverting the vitest 5 drag
+  instead of completing it: "a @types/node major is a type-checking change
+  across the whole web tier. That is daylight work with its own verification."
+  Doing it mid-release, from an unrelated issue, ahead of acceptance, is not.
+  Revisit when: v3.0.0 has shipped, as its own issue — and note that
+  `vitest 5` is waiting on the same `@types/node` bump, so the two belong in
+  one piece of work.
+  Source: this branch (#3986); `tests/unit/test_web_node_engines.py` is the
+  guard that makes a silent re-bump fail at `pytest` rather than in fifteen
+  smoke jobs.
+
 ## Open questions
 
 - **Q-001** · 2026-08-14 · developer-agent (#3774) — Should the ledger be

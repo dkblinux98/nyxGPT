@@ -56,6 +56,15 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK] $*"; }
 step() { echo; echo "=== $* ==="; }
 
+# True only when a managed background forward really is up. Anchored on the
+# running message's prefix rather than on the word "running", which the
+# "No managed background port-forward is running." message also contains --
+# see the same helper in scripts/k8s-local-smoke.sh and
+# `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`.
+managed_forward_running() {
+    nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
+}
+
 cleanup() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -232,7 +241,7 @@ step "8/9 A user can actually chat -- with no port-forward of our own (#3986)"
 # assertion here, not setup.
 # An `if`, not `x && fail`: a compound whose overall status is non-zero exits
 # the script under `set -e`, which would make this guard a hang-up of its own.
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     echo "[info] the install established a managed background forward (bring-your-own path)."
 elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
     pgrep -af "kubectl.*port-forward" >&2 || true

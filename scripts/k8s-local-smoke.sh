@@ -99,6 +99,20 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK] $*"; }
 step() { echo; echo "=== $* ==="; }
 
+# True only when a managed background forward really is up.
+#
+# Anchored on the running message's own prefix, NOT on the word "running":
+# `--status` says "No managed background port-forward is running." when there
+# is none, so the `grep -qi 'running'` this script shipped with was true in
+# both states. That made every guard below take the bring-your-own branch on a
+# cluster with correctly published node ports -- skipping the ClusterIP fault
+# injections with an `[OK]` and leaving #3986's executed evidence vacuous.
+# The sentinel is `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`, pinned by
+# tests/unit/test_port_forward_status_predicate.py.
+managed_forward_running() {
+    nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
+}
+
 cleanup() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -318,7 +332,7 @@ step "6/19 The web UI is reachable from the host with NO port-forward (#3986)"
 # terminal before the product could be used at all.
 # `x && fail` would be an errexit trap of its own (a compound whose overall
 # status is non-zero exits the script under `set -e`), so this is an `if`.
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     echo "[info] this cluster uses the managed background forward (the bring-your-own path)."
     echo "       The install established it; the operator still ran no second command."
 elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
@@ -345,7 +359,7 @@ step "7/19 The SRE UIs are reachable from the host with NO port-forward (#3986)"
 # Asserted the same way as the web UI above, and for the same reason: nothing
 # in this script forwards anything, so an answer here is the install's own
 # doing.
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     echo "[info] this cluster uses the managed background forward (the bring-your-own path)."
     echo "       The install established it; the operator still ran no second command."
 elif pgrep -f "kubectl.*port-forward" >/dev/null 2>&1; then
@@ -401,7 +415,7 @@ commands must restore it"
 # Both access paths are exercised on the way back: the managed background
 # forward (the bring-your-own answer) and then the published NodePorts, which
 # is the pair #3986's acceptance criteria name.
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     ok "this cluster uses the managed background forward, not NodePorts -- \
 the Service-type injection does not apply, skipping"
 else
@@ -440,7 +454,7 @@ for entry in ops.K8S_OBSERVABILITY_PUBLISHED_SERVICES.values():
     # command an operator would, and assert it republishes them.
     nyxgpt ops observability --kubernetes --local >/dev/null ||
         fail "nyxgpt ops observability --kubernetes did not complete after the injection"
-    if nyxgpt ops port-forward --status | grep -qi 'running'; then
+    if managed_forward_running; then
         fail "the re-run started a forward instead of republishing the node ports"
     fi
     for probe in "${SRE_UI_PROBES[@]}"; do
@@ -458,7 +472,7 @@ step "9/19 Fault injection: the shipped ClusterIP Service must break that reacha
 # port the install patched on. The address must stop answering, and the same
 # wrapped install must then restore it.
 INJECTED_CLUSTERIP=0
-if nyxgpt ops port-forward --status | grep -qi 'running'; then
+if managed_forward_running; then
     ok "this cluster uses the managed background forward, not a NodePort -- \
 the Service-type injection does not apply, skipping"
 else

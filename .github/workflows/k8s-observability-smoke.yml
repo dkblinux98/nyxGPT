@@ -160,7 +160,15 @@ jobs:
           # all ERR_CONNECTION_REFUSED until they opened a terminal. The deploy
           # above publishes these on the host and verifies them before it
           # returns; this asserts the same thing from outside, with no forward.
-          if nyxgpt ops port-forward --status | grep -qi 'running'; then
+          #
+          # Matched on the running message's own prefix, NOT on the word
+          # "running": the negative answer is "No managed background
+          # port-forward is running.", so the `grep -qi 'running'` this step
+          # shipped with was true in both states and failed a run whose six
+          # node ports were published and whose four SRE UIs all answered 200.
+          # The sentinel is `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`, pinned
+          # by tests/unit/test_port_forward_status_predicate.py.
+          if nyxgpt ops port-forward --status | grep -q 'Background port-forward running'; then
             echo "::error::a managed background forward is running -- the deploy should have published the node ports on this cluster"
             fail=1
           fi
