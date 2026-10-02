@@ -14,17 +14,20 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import PendingRestartNotice, {
   fetchRestartStatus,
+  failedAttemptText,
   type RestartStatus,
 } from '../../src/components/PendingRestartNotice';
 
 const WEB_PENDING: RestartStatus = {
   pending: { web: { keys: ['auth.api_key'], since: Math.floor(Date.now() / 1000) } },
+  attempts: {},
   restart_command: 'nyxgpt ops restart web',
   session_disrupting: ['web'],
 };
 
 const API_PENDING: RestartStatus = {
   pending: { api: { keys: ['api.port'], since: Math.floor(Date.now() / 1000) } },
+  attempts: {},
   restart_command: 'nyxgpt ops restart api',
   session_disrupting: [],
 };
@@ -37,7 +40,7 @@ describe('PendingRestartNotice', () => {
   it('renders nothing when nothing is pending', () => {
     const { container } = render(
       <PendingRestartNotice
-        status={{ pending: {}, restart_command: null, session_disrupting: [] }}
+        status={{ pending: {}, attempts: {}, restart_command: null, session_disrupting: [] }}
         onStatusChange={vi.fn()}
       />
     );
@@ -92,7 +95,7 @@ describe('PendingRestartNotice', () => {
       global.confirm = confirmSpy;
       server.use(
         http.post('/api/v1/infra/restart-required', () =>
-          HttpResponse.json({ targets: ['web'], status: 'running' })
+          HttpResponse.json({ targets: ['web'], status: 'scheduled' })
         )
       );
 
@@ -106,7 +109,7 @@ describe('PendingRestartNotice', () => {
 
     it('does not restart when the user declines the warning', async () => {
       global.confirm = vi.fn().mockReturnValue(false);
-      const post = vi.fn(() => HttpResponse.json({ targets: ['web'], status: 'running' }));
+      const post = vi.fn(() => HttpResponse.json({ targets: ['web'], status: 'scheduled' }));
       server.use(http.post('/api/v1/infra/restart-required', post));
 
       render(<PendingRestartNotice status={WEB_PENDING} onStatusChange={vi.fn()} />);
@@ -123,7 +126,7 @@ describe('PendingRestartNotice', () => {
       global.confirm = confirmSpy;
       server.use(
         http.post('/api/v1/infra/restart-required', () =>
-          HttpResponse.json({ targets: ['api'], status: 'running' })
+          HttpResponse.json({ targets: ['api'], status: 'scheduled' })
         )
       );
 
@@ -143,7 +146,7 @@ describe('PendingRestartNotice', () => {
     try {
       server.use(
         http.post('/api/v1/infra/restart-required', () =>
-          HttpResponse.json({ targets: ['api'], status: 'running' })
+          HttpResponse.json({ targets: ['api'], status: 'scheduled' })
         ),
         http.get('/api/v1/infra/restart-status', () =>
           HttpResponse.json({ pending: {}, restart_command: null, session_disrupting: [] })
@@ -176,7 +179,7 @@ describe('PendingRestartNotice', () => {
       let attempts = 0;
       server.use(
         http.post('/api/v1/infra/restart-required', () =>
-          HttpResponse.json({ targets: ['api'], status: 'running' })
+          HttpResponse.json({ targets: ['api'], status: 'scheduled' })
         ),
         http.get('/api/v1/infra/restart-status', () => {
           attempts += 1;
@@ -219,6 +222,124 @@ describe('PendingRestartNotice', () => {
     // The underlying condition is still pending, so the notice stays up.
     expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
   });
+
+  /**
+   * The #4043 acceptance failure, from this component's side.
+   *
+   * The backend refused the restart (`nyxgpt-api@3.0.0rc` failed an injection
+   * barrier with no `@` in it) and correctly left the pending flag standing.
+   * But the flag standing is *also* what a restart still coming back looks
+   * like, and the pending set was the only thing polled here -- so the button
+   * said "Restarting…" for ninety seconds and then blamed the clock for a
+   * restart that had never been attempted. The attempt outcome is now part of
+   * restart-status, and these pin that this component reads it.
+   */
+  describe('a restart the backend reports as failed', () => {
+    const REFUSAL = "Refused to act on invalid service name: 'nyxgpt-api@3.0.0rc'";
+
+    const failedStatus = {
+      pending: { api: { keys: ['api.port'], since: Math.floor(Date.now() / 1000) } },
+      attempts: { api: { status: 'failed', message: REFUSAL, at: Date.now() / 1000 } },
+      restart_command: 'nyxgpt ops restart api',
+      session_disrupting: [],
+    };
+
+    it('ends the poll with the reason instead of waiting out the timeout', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        server.use(
+          http.post('/api/v1/infra/restart-required', () =>
+            HttpResponse.json({ targets: ['api'], status: 'scheduled' })
+          ),
+          http.get('/api/v1/infra/restart-status', () => HttpResponse.json(failedStatus))
+        );
+
+        render(<PendingRestartNotice status={API_PENDING} onStatusChange={vi.fn()} />);
+        fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+
+        // One poll interval is enough: the answer is in the first response.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1500);
+        });
+
+        await waitFor(() =>
+          expect(screen.getByText(/did not happen/i)).toBeInTheDocument()
+        );
+        expect(screen.getByText(new RegExp(REFUSAL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))))
+          .toBeInTheDocument();
+        // Not the clock's fault, and not a 90-second wait to say so.
+        expect(screen.queryByText(/did not report finished in time/i)).not.toBeInTheDocument();
+        // Retryable, and the notice stays: the settings are still pending.
+        expect(screen.getByRole('button', { name: /restart now/i })).not.toBeDisabled();
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('points at the wrapped CLI command, never a raw brew/docker/kubectl one', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        server.use(
+          http.post('/api/v1/infra/restart-required', () =>
+            HttpResponse.json({ targets: ['api'], status: 'scheduled' })
+          ),
+          http.get('/api/v1/infra/restart-status', () => HttpResponse.json(failedStatus))
+        );
+
+        render(<PendingRestartNotice status={API_PENDING} onStatusChange={vi.fn()} />);
+        fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1500);
+        });
+
+        await waitFor(() => expect(screen.getByText(/did not happen/i)).toBeInTheDocument());
+        expect(document.body.textContent).toMatch(/nyxgpt ops restart api/);
+        expect(document.body.textContent).toMatch(/nyxgpt self-heal status/);
+        expect(document.body.textContent).not.toMatch(/docker compose|brew services|kubectl/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shows a failure recorded before this page loaded', () => {
+      // The notice outlives the page that started the restart (that is the
+      // whole point of it being server state), so its explanation has to too:
+      // a user who reloads after a refusal must not be shown a bare notice
+      // and a button that already failed silently once.
+      render(<PendingRestartNotice status={failedStatus as RestartStatus} onStatusChange={vi.fn()} />);
+      expect(screen.getByText(/last restart attempt did not happen/i)).toBeInTheDocument();
+      expect(screen.getByText(new RegExp('nyxgpt-api@3\\.0\\.0rc'))).toBeInTheDocument();
+    });
+
+    it('ignores an attempt recorded for a component that is no longer pending', () => {
+      // A stale record must not conjure an error onto a notice about something
+      // else -- the backend drops it on a new save for the same reason.
+      render(
+        <PendingRestartNotice
+          status={{
+            ...API_PENDING,
+            attempts: { web: { status: 'failed', message: 'an old failure', at: 1 } },
+          }}
+          onStatusChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/did not happen/i)).not.toBeInTheDocument();
+    });
+
+    it('does not treat a running attempt as a failure', () => {
+      render(
+        <PendingRestartNotice
+          status={{
+            ...API_PENDING,
+            attempts: { api: { status: 'running', message: '', at: 1 } },
+          }}
+          onStatusChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/did not happen/i)).not.toBeInTheDocument();
+    });
+  });
 });
 
 describe('fetchRestartStatus', () => {
@@ -250,6 +371,7 @@ describe('fetchRestartStatus', () => {
 describe('the age of a pending change', () => {
   const secondsAgo = (seconds: number): RestartStatus => ({
     pending: { web: { keys: ['auth.api_key'], since: Math.floor(Date.now() / 1000) - seconds } },
+    attempts: {},
     restart_command: 'nyxgpt ops restart web',
     session_disrupting: ['web'],
   });
@@ -272,5 +394,103 @@ describe('the age of a pending change', () => {
     // -3 minutes ago" would read as a bug in the notice itself.
     render(<PendingRestartNotice status={secondsAgo(-3600)} onStatusChange={vi.fn()} />);
     expect(screen.getByText('(changed just now)')).toBeInTheDocument();
+  });
+});
+
+/**
+ * `failedAttemptText` (PendingRestartNotice.tsx:116-124).
+ *
+ * The comparator on :120 only runs when there are at least TWO failed
+ * attempts, so a single-failure test leaves it uncovered -- which is how it
+ * reached the release branch untested. Ordering matters here for a plain
+ * reason: the notice is read by someone deciding what to fix first, and a set
+ * of failures that reorders itself between renders is harder to act on than
+ * one that does not.
+ */
+/**
+ * `next.restart_command ?? 'nyxgpt ops restart'` (:207).
+ *
+ * When a restart fails, the notice tells the user what to run by hand. The
+ * sibling case -- a status that names its own command -- is already covered;
+ * this is the other side: a status that carries none must still name a command,
+ * because "the restart did not happen" with no next step is precisely the
+ * dead end this notice exists to avoid. Unwrapped commands stay out of it
+ * either way (the 2026-07-15 wrapping rule).
+ */
+describe('failed restart whose status names no command', () => {
+  it('falls back to the generic wrapped restart command', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const noCommand = {
+        pending: { api: { keys: ['api.port'], since: Math.floor(Date.now() / 1000) } },
+        attempts: { api: { status: 'failed', message: 'unit not loaded', at: Date.now() / 1000 } },
+        restart_command: null,
+        session_disrupting: [],
+      };
+      server.use(
+        http.post('/api/v1/infra/restart-required', () =>
+          HttpResponse.json({ targets: ['api'], status: 'scheduled' })
+        ),
+        http.get('/api/v1/infra/restart-status', () => HttpResponse.json(noCommand))
+      );
+
+      render(<PendingRestartNotice status={API_PENDING} onStatusChange={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      await waitFor(() => expect(screen.getByText(/did not happen/i)).toBeInTheDocument());
+      // The bare wrapper, with no service argument to append.
+      expect(document.body.textContent).toMatch(/nyxgpt ops restart[^ ]/);
+      expect(document.body.textContent).not.toMatch(/docker compose|brew services|kubectl/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('failedAttemptText', () => {
+  const status = (attempts: Record<string, { status: string; message?: string }>, pending: Record<string, unknown>) =>
+    ({ attempts, pending }) as never;
+
+  it('returns null without a status at all', () => {
+    expect(failedAttemptText(null)).toBeNull();
+  });
+
+  it('returns null when nothing failed', () => {
+    expect(failedAttemptText(status({ api: { status: 'ok' } }, { api: true }))).toBeNull();
+  });
+
+  it('names a single failure with its own message', () => {
+    expect(
+      failedAttemptText(status({ api: { status: 'failed', message: 'Refused to act on invalid service name' } }, { api: true }))
+    ).toBe('api: Refused to act on invalid service name');
+  });
+
+  it('orders several failures by component, whatever order they arrived in', () => {
+    const text = failedAttemptText(
+      status(
+        {
+          web: { status: 'failed', message: 'port 3000 busy' },
+          api: { status: 'failed', message: 'unit not loaded' },
+          ollama: { status: 'failed', message: 'not installed' },
+        },
+        { web: true, api: true, ollama: true }
+      )
+    );
+    expect(text).toBe('api: unit not loaded\nollama: not installed\nweb: port 3000 busy');
+  });
+
+  it('falls back to a plain sentence when a failure carries no message', () => {
+    expect(
+      failedAttemptText(status({ api: { status: 'failed', message: '' }, web: { status: 'failed' } }, { api: true, web: true }))
+    ).toBe('api: the restart did not happen\nweb: the restart did not happen');
+  });
+
+  it('ignores a failed attempt for a component that is no longer pending', () => {
+    expect(
+      failedAttemptText(status({ api: { status: 'failed', message: 'stale' } }, { web: true }))
+    ).toBeNull();
   });
 });

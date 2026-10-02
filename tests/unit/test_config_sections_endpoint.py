@@ -364,7 +364,12 @@ def test_restart_status_empty_with_no_pending_restart(_isolated_config):
     client = TestClient(app)
     resp = client.get("/api/v1/infra/restart-status")
     assert resp.status_code == 200
-    assert resp.json() == {"pending": {}, "restart_command": None, "session_disrupting": []}
+    assert resp.json() == {
+        "pending": {},
+        "attempts": {},
+        "restart_command": None,
+        "session_disrupting": [],
+    }
 
 
 def test_restart_status_reports_the_wrapped_command_and_session_impact(_isolated_config):
@@ -424,12 +429,132 @@ def test_restart_required_endpoint_schedules_and_returns_immediately(
     with patch("nyxgpt.app.self_heal_module.heal_now") as mock_heal_now:
         resp = client.post("/api/v1/infra/restart-required", json={})
         assert resp.status_code == 200
-        assert resp.json() == {"targets": ["api"], "status": "running"}
+        # "scheduled", not "running": nothing has been attempted yet when this
+        # answers, and claiming otherwise made a refusal and a success
+        # indistinguishable to the caller (#4043).
+        assert resp.json() == {"targets": ["api"], "status": "scheduled"}
         # Deferred via threading.Timer, not called inline -- and captured, so
         # it can't fire live against a real self-heal later (see captured_timers).
         mock_heal_now.assert_not_called()
 
     assert captured_timers == [(0.5, app_module._do_restart_required, (["api"],))]
+    # The request records that an attempt is under way, so the caller's first
+    # poll cannot read a stale record for a restart it was just told was taken.
+    assert restart_state_module.attempts()["api"]["status"] == "running"
+
+
+def test_restart_status_reports_a_refused_attempt(_isolated_config):
+    """#4043's repro, from the UI's side: the refusal must be visible to the poller.
+
+    The self-heal barrier refused `nyxgpt-api@3.0.0rc` and `_do_restart_required`
+    correctly declined to clear the pending flag -- but the only thing
+    `restart-status` reported was that flag, which looks identical to a restart
+    that is still coming back. So the button polled for 90 seconds and then
+    blamed the clock for a restart that had never been attempted.
+    """
+    client = TestClient(app)
+    client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
+    restart_state_module.mark_attempt_started("api")
+
+    with (
+        patch(
+            "nyxgpt.app.self_heal_module.heal_now",
+            return_value={
+                "checked": [],
+                "healed": [
+                    {
+                        "service": "api",
+                        "ok": False,
+                        "message": "Refused to act on invalid service name: "
+                        "'nyxgpt-api@3.0.0rc'",
+                    }
+                ],
+            },
+        ),
+        patch("nyxgpt.app.ops_module.record_manual_restart"),
+    ):
+        app_module._do_restart_required(["api"])
+
+    data = client.get("/api/v1/infra/restart-status").json()
+    assert "api" in data["pending"], "a refused restart must not retire the notice"
+    assert data["attempts"]["api"]["status"] == "failed"
+    assert "nyxgpt-api@3.0.0rc" in data["attempts"]["api"]["message"]
+
+
+def test_a_silent_no_op_is_reported_as_a_failure(_isolated_config):
+    """`heal_now` returning no events at all is the original #4043 observation.
+
+    It raised nothing and healed nothing, so every downstream check passed and
+    the user was told `{"status": "running"}`. "Took no action" is a failure to
+    restart, and has to be reported as one.
+    """
+    restart_state_module.mark_pending("web", {"web.port": "3000"})
+    restart_state_module.mark_attempt_started("web")
+
+    with patch(
+        "nyxgpt.app.self_heal_module.heal_now",
+        return_value={"checked": [], "healed": []},
+    ):
+        app_module._do_restart_required(["web"])
+
+    attempt = restart_state_module.attempts()["web"]
+    assert attempt["status"] == "failed"
+    assert attempt["message"] == "self-heal took no action on this component"
+
+
+def test_a_declined_dispatch_reports_the_dispatcher_s_own_reason(_isolated_config):
+    """`heal_now`'s `error` key (unknown/not-running component) is the reason, verbatim."""
+    restart_state_module.mark_pending("web", {"web.port": "3000"})
+
+    with patch(
+        "nyxgpt.app.self_heal_module.heal_now",
+        return_value={
+            "checked": [],
+            "healed": [],
+            "error": "Unknown or not-running component: web",
+        },
+    ):
+        app_module._do_restart_required(["web"])
+
+    assert (
+        restart_state_module.attempts()["web"]["message"] == "Unknown or not-running component: web"
+    )
+
+
+def test_an_exception_in_the_dispatcher_is_reported_too(_isolated_config):
+    """Swallowing the exception kept the flag standing but explained nothing."""
+    restart_state_module.mark_pending("web", {"web.port": "3000"})
+
+    with patch(
+        "nyxgpt.app.self_heal_module.heal_now",
+        side_effect=RuntimeError("brew went away"),
+    ):
+        app_module._do_restart_required(["web"])
+
+    attempt = restart_state_module.attempts()["web"]
+    assert attempt["status"] == "failed"
+    assert attempt["message"] == "RuntimeError: brew went away"
+
+
+def test_a_successful_restart_leaves_no_failure_behind(_isolated_config):
+    """The success signal stays "the notice is gone" -- no stale failure under it."""
+    restart_state_module.mark_pending("web", {"web.port": "3000"})
+    restart_state_module.mark_attempt_started("web")
+
+    with (
+        patch(
+            "nyxgpt.app.self_heal_module.heal_now",
+            return_value={
+                "checked": [],
+                "healed": [{"service": "web", "ok": True, "message": "Restarted nyxgpt-web"}],
+            },
+        ),
+        patch("nyxgpt.app.ops_module.record_manual_restart"),
+    ):
+        app_module._do_restart_required(["web"])
+
+    assert restart_state_module.snapshot() == {}
+    assert restart_state_module.attempts() == {}
 
 
 def test_do_restart_required_clears_pending_on_success(_isolated_config):

@@ -193,6 +193,12 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # deliberately inlined at each guard rather than precompiled -- CodeQL's
 # barrier-guard analysis recognizes the `re.fullmatch(...)` call form but
 # NOT the `.fullmatch` method of a precompiled `re.Pattern`.
+#
+# One guard takes a *Homebrew formula* name rather than a component/container
+# name and admits a trailing `@<version>` on top of that class
+# (`_restart_brew_service`, #4043): see `brew_services.SEGMENT_PATTERN`, which
+# is the authority for that form and explains why the wider class forbids
+# everything the narrower one does.
 
 # Maps a core native component to the *stable* Homebrew formula its service
 # is named after, for native/local-first mode health-checks/heals.
@@ -1987,8 +1993,25 @@ def _bring_up_compose_service(service: str) -> HealResult:
 
 
 def _restart_brew_service(name: str) -> HealResult:
-    """Restart Homebrew service `name` via `brew services restart` (native mode)."""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
+    """Restart Homebrew service `name` via `brew services restart` (native mode).
+
+    `name` is a *formula* name, not a logical component name, and is the one
+    value in this module that legitimately carries Homebrew's `@<version>`
+    suffix: `restart_native_component` resolves `api` against what `brew
+    services list` actually reports, which on a candidate install is
+    `nyxgpt-api@3.0.0rc` (#3853). The barrier below therefore admits that
+    suffix -- without it, every self-heal restart of `api`/`web` on an rc
+    install was refused as an invalid name while `nyxgpt ops restart api`
+    succeeded on the same machine (#4043). The other guarded sinks in this
+    module take Compose service names, Docker container names, launchd labels
+    and Pod names, none of which can contain `@`, so they keep the narrower
+    class.
+    """
+    # Inline barrier (CodeQL #4, py/command-line-injection) -- the literal is
+    # `brew_services.SEGMENT_PATTERN`, repeated here rather than referenced
+    # because the query recognizes the `re.fullmatch(r"...", x)` call form and
+    # not a module constant or a helper. A test pins the two identical.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", name):
         return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")

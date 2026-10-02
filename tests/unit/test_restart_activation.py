@@ -220,7 +220,7 @@ class TestPendingState:
     """Pending-restart state is durable, cross-process, and self-retiring."""
 
     def test_mark_and_snapshot(self):
-        restart_state.mark_pending("web", {"auth.api_key": "old-key"})
+        restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
         snap = restart_state.snapshot()
         assert snap["web"]["keys"] == ["auth.api_key"]
         assert snap["web"]["since"] > 0
@@ -240,7 +240,7 @@ class TestPendingState:
         """
         state_file = tmp_path / "cross-process.json"
         monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(state_file))
-        restart_state.mark_pending("web", {"auth.api_key": "old-key"})
+        restart_state.mark_pending("web", {"auth.api_key": "old-key"})  # pragma: allowlist secret
 
         result = subprocess.run(
             [
@@ -306,6 +306,108 @@ class TestPendingState:
         assert restart_state.snapshot() == {}
 
 
+class TestAttemptOutcome:
+    """The outcome of a driven restart, recorded next to its pending keys (#4043).
+
+    The pending set alone cannot answer "did the restart happen?" -- it is
+    identical for a restart still coming back and one refused before it
+    started. #4043 is what that cost: the self-heal barrier refused
+    `nyxgpt-api@3.0.0rc`, the refusal was recorded in `self_heal_state.json`
+    and reported by `nyxgpt self-heal status`, and the notice that asked for
+    the restart polled the pending set and spun until it timed out.
+    """
+
+    def test_an_accepted_restart_is_recorded_as_running(self):
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.mark_attempt_started("api")
+        assert restart_state.attempts()["api"]["status"] == "running"
+        assert restart_state.attempts()["api"]["at"] > 0
+
+    def test_a_failure_carries_the_mechanism_s_own_reason(self):
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed(
+            "api", "Refused to act on invalid service name: 'nyxgpt-api@3.0.0rc'"
+        )
+        attempt = restart_state.attempts()["api"]
+        assert attempt["status"] == "failed"
+        assert "nyxgpt-api@3.0.0rc" in attempt["message"]
+
+    def test_a_failure_never_retires_the_notice(self):
+        """The restart did not happen, so the divergence it describes is still real."""
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed("api", "brew not found")
+        assert restart_state.snapshot()["api"]["keys"] == ["api.port"]
+
+    def test_the_record_is_retired_with_the_pending_entry(self):
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed("api", "brew not found")
+        restart_state.clear_pending("api")
+        assert restart_state.attempts() == {}
+
+    def test_a_restarted_process_retires_the_record_too(self):
+        """`clear_started` is the `api` completion signal; it must not leave a failure."""
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed("api", "an earlier attempt failed")
+        restart_state.clear_started("api", ["api.port"])
+        assert restart_state.attempts() == {}
+
+    def test_a_new_save_supersedes_an_earlier_attempt(self):
+        """A failure against the old pending set does not describe the new one.
+
+        Without this, saving another restart-required key would show the user a
+        failure notice for a restart they had not yet asked for.
+        """
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed("api", "brew not found")
+        restart_state.mark_pending("api", {"rag.cassandra_port": "9042"})
+        assert restart_state.attempts() == {}
+
+    def test_recording_against_nothing_pending_is_a_no_op(self):
+        """No notice to qualify -- and inventing an entry here would resurrect one."""
+        restart_state.record_attempt_failed("api", "brew not found")
+        restart_state.mark_attempt_started("api")
+        assert restart_state.snapshot() == {}
+        assert restart_state.attempts() == {}
+
+    def test_the_record_is_visible_to_another_process(self, tmp_path, monkeypatch):
+        """Same cross-process property as the pending set: the CLI and API share it."""
+        state_file = tmp_path / "attempt.json"
+        monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(state_file))
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed("api", "brew not found")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from nyxgpt import restart_state; import json; "
+                "print(json.dumps(restart_state.attempts()))",
+            ],
+            capture_output=True,
+            text=True,
+            env={
+                "NYXGPT_PENDING_RESTART_PATH": str(state_file),
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": str(REPO_ROOT / "src"),
+            },
+            check=True,
+        )
+        assert json.loads(result.stdout)["api"]["message"] == "brew not found"
+
+    def test_a_corrupt_attempt_record_is_ignored_not_fatal(self, tmp_path, monkeypatch):
+        """Advisory state: a bad `attempt` must not take the pending set with it."""
+        state_file = tmp_path / "half-bad.json"
+        state_file.write_text(
+            json.dumps(
+                {"api": {"keys": {"api.port": "8000"}, "since": 1.0, "attempt": "not-a-dict"}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("NYXGPT_PENDING_RESTART_PATH", str(state_file))
+        assert restart_state.snapshot()["api"]["keys"] == ["api.port"]
+        assert restart_state.attempts() == {}
+
+
 class TestSelfRestartCompletionSignal:
     """The flag a component cannot clear from inside the process it kills (#3806).
 
@@ -354,26 +456,29 @@ class TestWizardDetail:
 
     @staticmethod
     def _cfg(**auth) -> ConfigParser:
+        running = {"enabled": "true", "api_key": "old-key", **auth}  # pragma: allowlist secret
         cfg = ConfigParser()
-        cfg.read_dict({"auth": {"enabled": "true", "api_key": "old-key", **auth}})
+        cfg.read_dict({"auth": running})
         return cfg
 
     def test_records_previous_value_per_component(self):
         detail = config_wizard.restart_required_detail(
             {"auth": {"api_key": "new-key"}}, self._cfg()  # pragma: allowlist secret
         )
-        assert detail == {"web": {"auth.api_key": "old-key"}}
+        assert detail == {"web": {"auth.api_key": "old-key"}}  # pragma: allowlist secret
 
     def test_unchanged_value_is_not_pending(self):
         assert (
-            config_wizard.restart_required_detail({"auth": {"api_key": "old-key"}}, self._cfg())
+            config_wizard.restart_required_detail(
+                {"auth": {"api_key": "old-key"}}, self._cfg()  # pragma: allowlist secret
+            )  # pragma: allowlist secret
             == {}
         )
 
     def test_saved_map_covers_unchanged_keys_too(self):
         """`reconcile_saved` needs the new value of every restart-required key in the payload."""
         saved = config_wizard.restart_activation_saved({"auth": {"api_key": "old-key"}})
-        assert saved == {"web": {"auth.api_key": "old-key"}}
+        assert saved == {"web": {"auth.api_key": "old-key"}}  # pragma: allowlist secret
 
 
 class TestSurfaces:
@@ -415,3 +520,26 @@ class TestSurfaces:
         secrets_setup.write_secret(cfg_path, spec, "old-key")
 
         assert restart_state.snapshot() == {}
+
+    def test_the_cli_summary_names_a_failed_restart_attempt(self, capsys, monkeypatch):
+        """A refusal recorded elsewhere has to reach the CLI surface too (#4043).
+
+        The attempt may have been made from the dashboard, in another process.
+        Without this the closing summary says "RESTART REQUIRED" and nothing
+        about the restart that was already tried and refused, which reads as a
+        notice that is simply stuck.
+        """
+        restart_state.mark_pending("api", {"api.port": "8000"})
+        restart_state.record_attempt_failed(
+            "api", "Refused to act on invalid service name: 'nyxgpt-api@3.0.0rc'"
+        )
+        # Skip the interactive prompts; the closing summary is what is under test.
+        monkeypatch.setattr(secrets_setup, "GUIDED_SECRETS", ())
+        monkeypatch.setattr("builtins.input", lambda *_a: "")
+
+        assert secrets_setup.run_secrets_setup(cfg_path=None) == 0
+
+        out = capsys.readouterr().out
+        assert "RESTART REQUIRED" in out
+        assert "last restart attempt FAILED" in out
+        assert "nyxgpt-api@3.0.0rc" in out

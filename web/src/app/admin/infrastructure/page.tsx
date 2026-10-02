@@ -321,6 +321,24 @@ type CloudDeployStatus = {
   connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
+  // The EC2 Mac's screen path (#4121). Two independent facts, because they are
+  // independently true: `running` is whether the SSH forward is up on the
+  // operator's machine right now, and `configured` is whether nyxGPT ever
+  // enabled Screen Sharing on that Mac -- which outlives any one tunnel. The
+  // credential is deliberately NOT in this payload; it lives in
+  // ~/.nyxGPT/secrets and `password_file` names the path, never the secret
+  // (#3458/#3466's rule for the HTTP API).
+  screen?: {
+    running: boolean;
+    pid: number;
+    local_port: number;
+    url: string;
+    configured: boolean;
+    configured_at: string;
+    password_file: string;
+    command: string;
+    stop_command: string;
+  };
   health: DeployHealth;
   history: DeployHistoryEntry[];
   urls: Record<string, string>;
@@ -1354,6 +1372,24 @@ export default function InfrastructurePage() {
                   }
                 />
                 <Row label="Stack health" value={healthLabel(cloud.health)} />
+                {/* #4121, macOS only. There is no screen to share on a Linux
+                    instance, so a row claiming one is closed would answer a
+                    question that does not apply. Observed, never operated
+                    (D-017): the row reports the path and names the command,
+                    and this page has no button that opens it -- a UI cannot
+                    safely drive access to the substrate serving it. */}
+                {cloud.os_family === 'macos' && !cloud.on_instance && (
+                  <Row
+                    label="Mac screen path"
+                    value={
+                      cloud.screen?.running
+                        ? `open at ${cloud.screen.url} (pid ${cloud.screen.pid}) — close it with \`${cloud.screen.stop_command}\``
+                        : cloud.screen?.configured
+                          ? `Screen Sharing is enabled on the Mac (loopback only) but no tunnel is open — \`${cloud.screen.command}\` re-opens it`
+                          : `not set up — \`${cloud.screen?.command ?? 'nyxgpt cloud screen'}\` opens one`
+                    }
+                  />
+                )}
               </ul>
 
               {/* The connection target (#3813). Reported, not offered: this
@@ -1603,6 +1639,16 @@ export default function InfrastructurePage() {
               ['Show this state from a terminal', cloud?.commands?.status ?? 'nyxgpt cloud status'],
               ['Open the access tunnel', cloud?.commands?.tunnel ?? 'nyxgpt cloud tunnel'],
               ['Close it again', cloud?.commands?.tunnel_stop ?? 'nyxgpt cloud tunnel --stop'],
+              // #4121. Only on a macOS deployment: naming it on a Linux one
+              // would advertise a capability that box has not got.
+              ...(cloud?.os_family === 'macos'
+                ? ([
+                    [
+                      'Open the Mac’s screen',
+                      cloud?.commands?.screen ?? 'nyxgpt cloud screen',
+                    ],
+                  ] as Array<[string, string]>)
+                : []),
               [
                 'Inspect the containers running on the instance',
                 cloud?.commands?.ops_status ?? 'nyxgpt cloud ops status',

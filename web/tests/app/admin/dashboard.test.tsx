@@ -550,7 +550,9 @@ describe('AdminDashboardPage', () => {
             });
           }),
           http.post('/api/v1/infra/restart-required', () =>
-            HttpResponse.json({ targets: ['api'], status: 'running' })
+            // `scheduled` since #4043 -- the endpoint reports only what the
+            // request established, never a restart it has not attempted.
+            HttpResponse.json({ targets: ['api'], status: 'scheduled' })
           )
         );
 
@@ -584,7 +586,9 @@ describe('AdminDashboardPage', () => {
             HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } })
           ),
           http.post('/api/v1/infra/restart-required', () =>
-            HttpResponse.json({ targets: ['api'], status: 'running' })
+            // `scheduled` since #4043 -- the endpoint reports only what the
+            // request established, never a restart it has not attempted.
+            HttpResponse.json({ targets: ['api'], status: 'scheduled' })
           )
         );
 
@@ -740,7 +744,9 @@ describe('AdminDashboardPage', () => {
             return HttpResponse.json({});
           }),
           http.post('/api/v1/infra/restart-required', () =>
-            HttpResponse.json({ targets: ['api'], status: 'running' })
+            // `scheduled` since #4043 -- the endpoint reports only what the
+            // request established, never a restart it has not attempted.
+            HttpResponse.json({ targets: ['api'], status: 'scheduled' })
           )
         );
 

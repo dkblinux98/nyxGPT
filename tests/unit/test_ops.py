@@ -1899,7 +1899,11 @@ def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path):
 @pytest.mark.unit
 def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")
+    _write_config(
+        cfg_path,
+        api_key="cli-api-key",  # pragma: allowlist secret
+        grafana_password="cli-grafana-pw",  # pragma: allowlist secret
+    )
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -6169,7 +6173,7 @@ def test_detect_deployment_mode_logs_conflict_at_warning(caplog, monkeypatch):
 @pytest.mark.unit
 def test_env_sync_logs_summary(caplog, tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")
+    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
     compose_cfg = tmp_path / "config.docker.ini"
     compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
@@ -15088,7 +15092,7 @@ def test_env_sync_survives_malformed_native_config(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".nyxGPT").mkdir(parents=True)
     native = home / ".nyxGPT" / "config.ini"
-    _write_config(native, api_key="cli-api-key")
+    _write_config(native, api_key="cli-api-key")  # pragma: allowlist secret
     with native.open("a", encoding="utf-8") as f:
         f.write(
             "[error_tracking]\ndsn = http://one@localhost:8080/1\n"
@@ -15132,7 +15136,7 @@ def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".nyxGPT").mkdir(parents=True)
     cfg_path = home / ".nyxGPT" / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")
+    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
     out = tmp_path / "config.docker.ini"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
@@ -15433,7 +15437,7 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
 @pytest.mark.unit
 def test_ops_env_sync_quiet_flag_suppresses_step_announcements(tmp_path, capsys):
     cfg_path = tmp_path / "config.ini"
-    _write_config(cfg_path, api_key="cli-api-key")
+    _write_config(cfg_path, api_key="cli-api-key")  # pragma: allowlist secret
     env_path = tmp_path / ".env"
 
     args = SimpleNamespace(config=str(cfg_path), env_file=str(env_path), quiet=True)

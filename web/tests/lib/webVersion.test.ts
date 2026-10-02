@@ -10,7 +10,7 @@
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebVersion } from '@/lib/webVersion';
 
 describe('resolveWebVersion (#3982)', () => {
@@ -97,6 +97,39 @@ describe('resolveWebVersion (#3982)', () => {
       process.chdir(build);
 
       expect(resolveWebVersion({})).toEqual({ version: '3.0.0rc13', source: 'native-build' });
+    });
+  });
+});
+
+/**
+ * The two defensive branches in the signature itself (webVersion.ts:71, :76).
+ *
+ * Neither is reachable through normal use, which is exactly why they were the
+ * last uncovered lines in the file: the default `cwd` asks whether `process`
+ * exists, and the body then asks whether what it got is null. Both guards are
+ * there because this module is imported by code that renders on the server and
+ * in the browser, and a missing `process` must degrade to "I cannot tell" --
+ * not throw inside a version row.
+ */
+describe('resolveWebVersion, where there is no process to ask', () => {
+  it('reports unknown rather than throwing when `process` is not defined', () => {
+    const real = globalThis.process;
+    try {
+      // `typeof process !== 'undefined'` is false here, so the default cwd
+      // becomes ''. env has to be passed, since its own default would read
+      // process.env.
+      vi.stubGlobal('process', undefined);
+      expect(resolveWebVersion({})).toEqual({ version: null, source: 'unknown' });
+    } finally {
+      vi.stubGlobal('process', real);
+    }
+  });
+
+  it('treats a null cwd as no path at all', () => {
+    // `cwd ?? ''`: TypeScript forbids this, a JS caller does not.
+    expect(resolveWebVersion({}, null as unknown as string)).toEqual({
+      version: null,
+      source: 'unknown',
     });
   });
 });

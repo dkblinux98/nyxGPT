@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud_deploy, cloud_infra, cloud_mac
+from nyxgpt import cloud_deploy, cloud_infra, cloud_mac, cloud_screen
 from nyxgpt.cloud import CloudCommandError
 
 
@@ -32,6 +32,12 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_deploy, "DEPLOY_HISTORY_FILE", cloud_dir / "history.jsonl")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_STATE_FILE", cloud_dir / "tunnel.json")
     monkeypatch.setattr(cloud_deploy, "TUNNEL_LOG_FILE", cloud_dir / "tunnel.log")
+    # #4121. `deploy_status()` now reports the screen path, and `cloud_screen`
+    # binds its state file from `cloud_deploy.CLOUD_DIR` at import -- so
+    # without this a status assertion reads the developer's own
+    # ~/.nyxGPT/cloud/screen.json and passes or fails per machine.
+    monkeypatch.setattr(cloud_screen, "SCREEN_STATE_FILE", cloud_dir / "screen.json")
+    monkeypatch.setattr(cloud_screen, "SCREEN_LOG_FILE", cloud_dir / "screen.log")
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", cloud_dir / "infra.json")
     # #3995's EC2 Mac roots keep state of their own, and their module-level

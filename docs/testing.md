@@ -286,7 +286,7 @@ agent produces it
 
 | Workflow | Runs on | What it proves | Triggers |
 | --- | --- | --- | --- |
-| [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) | `macos-15` | The working tree's Homebrew formulas install into a real keg, and the published tap installs what the owner actually types | PR (paths: `homebrew/**`, artifact/tarball scripts), dispatch, called after an rc cut |
+| [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) | `macos-15` | The working tree's Homebrew formulas install into a real keg, and the published tap installs what the owner actually types. Its `stable-over-candidate` job also answers two questions that need the two-channel machine it builds: does an install *reconcile* the channel it replaces (#3861), and — since #4043 — can self-heal restart a service registered under a versioned formula name (`nyxgpt-api@3.0.0rc`), which the injection barrier refused until that fix, leaving the watchdog unable to heal `api`/`web` on any rc install. That step reverts the barrier in the installed keg and requires the refusal before restoring it and requiring the restart, so it cannot pass on a machine that fails to reproduce the bug | PR (paths: `homebrew/**`, artifact/tarball scripts, `src/nyxgpt/brew_services.py`), dispatch, called after an rc cut |
 | [`linux-native-smoke.yml`](../.github/workflows/linux-native-smoke.yml) | `ubuntu-latest` | Questions about the Linux ops path, one job each: `nyxgpt ops install` on a real systemd userland (every unit active, api/web responding, diagnostics, `nyxgpt ops down`); a failed ops subprocess reporting its own output; a service venv built on a Python that satisfies `requires-python` even when `python3` on PATH is a real 3.9; the observability stack coming up on a plain Linux engine; the host relay bridging container -> host loopback; an unqueryable Compose probe reporting unknown rather than absent (#3812); and a crash-looping container failing the observability step with its own last log line rather than being reported up — both one that crashes instantly and one that runs for several seconds first, so every Compose reading says `running` and only the restart counter gives it away (#3993, #4045, `observability-settle`). **Scope boundary:** it installs *editable from the checkout* on a machine whose Python and Node were installed by setup actions, so it cannot see first-boot/artifact-install defects — that is `cloud-artifact-smoke.yml`'s job | PR/push (paths: `src/nyxgpt/ops.py`, `self_heal.py`, `ops/systemd/**`, the smoke scripts) |
 | [`cloud-artifact-smoke.yml`](../.github/workflows/cloud-artifact-smoke.yml) | `ubuntu-latest`, inside a bare `amazonlinux:2023` container | The **artifact** install path on the real target distro: AL2023's Python 3.9, no node, no docker, no git, the real rendered EC2 user-data bootstrap, then api/web/ollama serving. Injects `old-python` in a second job so a green run is not green by luck ([cloud-artifact-smoke.md](cloud-artifact-smoke.md)) | PR/push (paths: `src/nyxgpt/ops.py`, `cloud_provision.py`, `cloud_artifact_smoke.py`, `scripts/cloud/**`), dispatch (pin an rc) |
 | [`terraform-local-smoke.yml`](../.github/workflows/terraform-local-smoke.yml) | `ubuntu-latest` | The Terraform path applies locally end-to-end | PR/push (paths: `terraform/**`) |
@@ -337,6 +337,18 @@ above it. The job installs a real Python 3.9, puts it on PATH as `python3`,
 and proves both directions with the real sdist — a venv built by resolving
 bare `python3` is one pip refuses the artifact into, and the selection logic
 picks a qualifying interpreter over it and installs cleanly.
+
+The third variant is injecting a *past version of the product* rather than a
+broken environment. `macos-brew-smoke.yml`'s "Self-heal can restart the
+candidate's own service" step (#4043) reverts the barrier in the **installed
+keg's** copies of `brew_services.py`/`self_heal.py` to its pre-fix form,
+requires the refusal it caused, then restores them and requires the restart.
+Worth copying when the fix is a *predicate* rather than a code path: the
+runner's own state is already the state the bug needs (a candidate keg
+registering `nyxgpt-api@3.0.0rc`), so there is nothing about the machine to
+inject — only the old logic. The injection asserts that its own edit landed,
+because a no-op sed would make the "fails without the fix" half pass by
+accidentally running the fix.
 
 ### What still cannot be executed in CI
 

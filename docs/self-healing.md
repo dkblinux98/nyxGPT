@@ -245,6 +245,17 @@ A component is only reported once it's actually installed/created (a brew
 service never set up via `nyxgpt ops install`, or a not-yet-created
 Cassandra container, is out of scope rather than "down").
 
+The formula named in each `brew services restart` above is the one the
+machine actually registered, not the stable name: a candidate-channel
+install registers `nyxgpt-api@3.0.0rc`, and self-heal resolves against what
+`brew services list` reports (#3853) and qualifies it with its owning tap
+(#3861). Homebrew's `@<version>` syntax is part of a valid formula name for
+the injection barrier these names pass through, which is what #4043 fixed:
+while it was not, every heal of `api`/`web` on an rc install was refused as
+an "invalid service name" — the automated recovery path could not run on the
+one channel release candidates are tested on, even though `nyxgpt ops
+restart api` on the same machine worked.
+
 ### Restarting Cassandra is enough — the API recovers on its own
 
 Restarting the container is self-heal's *only* Cassandra remedy, and that is

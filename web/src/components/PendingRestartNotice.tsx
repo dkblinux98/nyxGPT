@@ -31,8 +31,25 @@ import { apiErrorText, errorMessage } from '../lib/apiError';
 /** `{component: {keys, since}}` -- what is pending for each `nyxgpt ops restart` target. */
 export type RestartPending = Record<string, { keys: string[]; since: number }>;
 
+/**
+ * The outcome of the last restart driven for a component (#4043).
+ *
+ * `failed` is the state this notice had no way to see before: a self-heal
+ * refusal was recorded on the backend and reported by `nyxgpt self-heal
+ * status`, while the only thing polled here was the pending set -- in which a
+ * refused restart and a slow one are the same observation. So the button
+ * span until its 90s timeout and then said the service "may still be coming
+ * back" about a restart that had never been attempted.
+ */
+export type RestartAttempts = Record<
+  string,
+  { status: 'running' | 'failed' | 'succeeded'; message: string; at: number }
+>;
+
 export interface RestartStatus {
   pending: RestartPending;
+  /** Per-component outcome of the last driven restart; see `RestartAttempts`. */
+  attempts: RestartAttempts;
   /** The wrapped CLI command that applies everything pending, or null when nothing is. */
   restart_command: string | null;
   /** Pending components whose restart drops this browser session (i.e. `web`). */
@@ -59,6 +76,7 @@ export async function fetchRestartStatus(): Promise<RestartStatus | null> {
     const data = await res.json();
     return {
       pending: (data.pending || {}) as RestartPending,
+      attempts: (data.attempts || {}) as RestartAttempts,
       restart_command: data.restart_command ?? null,
       session_disrupting: (data.session_disrupting || []) as string[],
     };
@@ -87,6 +105,25 @@ export interface PendingRestartNoticeProps {
   onStatusChange: (status: RestartStatus) => void;
 }
 
+/**
+ * The reason text for any component whose last driven restart failed, or null.
+ *
+ * Named per component because a notice can list several: "one of them was
+ * refused" is not actionable, "api: Refused to act on invalid service name"
+ * is. Reading it out of the status means it survives a reload like the rest
+ * of the notice -- a failure the user walked away from is still a failure.
+ */
+export function failedAttemptText(status: RestartStatus | null): string | null {
+  if (!status) return null;
+  const failed = Object.entries(status.attempts)
+    .filter(([component, a]) => a.status === 'failed' && component in status.pending)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (failed.length === 0) return null;
+  return failed
+    .map(([component, a]) => `${component}: ${a.message || 'the restart did not happen'}`)
+    .join('\n');
+}
+
 export default function PendingRestartNotice({
   status,
   onStatusChange,
@@ -96,6 +133,11 @@ export default function PendingRestartNotice({
 
   const components = status ? Object.keys(status.pending).sort() : [];
   const sessionDisrupting = status?.session_disrupting ?? [];
+  // A refusal recorded by a *previous* visit's restart attempt, or by the
+  // `nyxgpt ops`/self-heal side. Shown even when this component never ran a
+  // restart itself, so the user is not left with a notice that cannot explain
+  // why pressing the button changed nothing (#4043).
+  const backendFailure = failedAttemptText(status);
 
   // A restart that succeeded leaves nothing pending, which unmounts this
   // notice -- so 'running' must be reset if the notice is re-shown later.
@@ -151,6 +193,20 @@ export default function PendingRestartNotice({
         onStatusChange(next);
         if (Object.keys(next.pending).length === 0) {
           setAction('idle');
+          return;
+        }
+        // The backend has reported the attempt failed -- stop here rather
+        // than polling out the remaining attempts and then blaming the clock
+        // for something it already knows the reason for (#4043).
+        const failure = failedAttemptText(next);
+        if (failure) {
+          setAction('failed');
+          setActionError(
+            `The restart did not happen:\n${failure}\n\n` +
+              'The settings are still saved and still pending. Try ' +
+              `\`${next.restart_command ?? 'nyxgpt ops restart'}\` from a terminal, ` +
+              'or `nyxgpt self-heal status` for the full record.'
+          );
           return;
         }
       }
@@ -233,7 +289,32 @@ export default function PendingRestartNotice({
       </div>
 
       {action === 'failed' && actionError && (
-        <div style={{ color: 'var(--error-text)', fontSize: 13, marginTop: 8 }}>{actionError}</div>
+        <div
+          style={{
+            color: 'var(--error-text)',
+            fontSize: 13,
+            marginTop: 8,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {actionError}
+        </div>
+      )}
+
+      {/* A failure recorded by an earlier attempt (this notice outlives the
+          page that started it, so the explanation has to as well). Suppressed
+          while a restart is in flight or already reported above. */}
+      {action === 'idle' && backendFailure && (
+        <div
+          style={{
+            color: 'var(--error-text)',
+            fontSize: 13,
+            marginTop: 8,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {`The last restart attempt did not happen:\n${backendFailure}`}
+        </div>
       )}
     </div>
   );

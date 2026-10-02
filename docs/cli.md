@@ -25,7 +25,10 @@ documentation are linked out to instead of duplicated here:
   deployed and how to reach it, including a Dedicated Host still billing after
   the deployment is gone), `nyxgpt cloud ops` (read-only inspections
   run on the instance), `nyxgpt cloud canary` (canary rollout against a
-  Kubernetes cloud deployment), tunnel, destroy, the end-to-end
+  Kubernetes cloud deployment), `nyxgpt cloud screen` (the EC2 Mac's screen,
+  over a loopback-only SSH forward — see
+  [Reaching the Mac's screen](cloud.md#reaching-the-macs-screen-4121)),
+  tunnel, destroy, the end-to-end
   `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see
   [Cloud (AWS)](cloud.md)
 - Cloud artifact smoke (`nyxgpt cloud smoke --container`) — the artifact
