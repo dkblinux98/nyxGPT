@@ -368,7 +368,7 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `conflict_owner_escalation.yml` | `issue_comment`(created) | issues write, `REVIEW_AGENT_TOKEN`; assigns the owner + Slack DM | commenter ∈ `{DEV_AGENT, REVIEW_AGENT, HUMAN_OWNER}` on the `comment_gate` job + the shared anchored comment-token gate (#3790/V-011) | Added by #3801 — the single route from a merge conflict to the owner; follows the `handle_acceptance_failure.yml` reference pattern (actor + token tests both on `comment_gate`, whose verdict the privileged job requires) |
 | `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
 | `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A). No fast-follow issue has been filed for this yet — file one before relying on this row as a tracked follow-up. |
-| `admin_label_rename.yml`, `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml`, `security-scan.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path. `security-scan.yml` (#3501, pending owner hand-carry per `docs/security-scanning-ci.md`) has no write permissions block and calls no `gh`/write APIs -- `pull_request`/`push` triggered but out of scope for this table's actor-gate requirement per §3b's "read-only automation is exempt." |
+| `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml`, `security-scan.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path. `security-scan.yml` (#3501, pending owner hand-carry per `docs/security-scanning-ci.md`) has no write permissions block and calls no `gh`/write APIs -- `pull_request`/`push` triggered but out of scope for this table's actor-gate requirement per §3b's "read-only automation is exempt." |
 
 **Verification.** Each new `if:` condition was hand-traced against
 representative actors:
@@ -570,19 +570,19 @@ problems, and the pipeline needed a way to see across issues.
   anomaly resolves.
 - **No hidden state.** The tracking record is a comment marker on
   `RELEASE_ISSUE_NUMBER`, re-derived fresh from the live comment thread on
-  every check -- the same level-triggered shape as `escalation_pause_gate`
-  (#3687, above). Detection deliberately does NOT use
+  every check -- the same level-triggered shape as the escalation-cause
+  registry (#4134, below). Detection deliberately does NOT use
   `gh api search/issues` (the endpoint that caused the incident) -- it uses
   plain issue-comment REST calls, so detection itself can't be taken out by
   the same class of fault. It self-expires after the window elapses, or
   closes early on an OWNER-authored `RESOLVE_ANOMALY` comment.
 - **Dispatch pause.** `cross_issue_anomaly_pause_gate`
-  (`scripts/agents/lib/gh_project.sh`) composes with the #3687
-  `escalation_pause_gate` in `scrummaster_dispatch_next.sh`: new dispatch
-  pauses while any step has an open tracking record, with its own loud
-  report on the release tracking issue, and resumes automatically once the
-  anomaly resolves or expires. See `agents/runbooks/scrummaster-runbook.md`
-  for the dispatch-side detail.
+  (`scripts/agents/lib/gh_project.sh`) is now the ONLY dispatch-wide pause
+  (#4134 retired the #3687 escalation count): new dispatch pauses while any
+  step has an open tracking record, with its own loud report on the release
+  tracking issue, and resumes automatically once the anomaly resolves or
+  expires. See `agents/runbooks/scrummaster-runbook.md` for the dispatch-side
+  detail.
 - **Replay criterion.** The 2026-08-09 scenario (5 issues x the same failed
   step within the window) now yields one diagnosis (the origin issue's
   Phase 1-3) and a dispatch pause, not five independent loops.

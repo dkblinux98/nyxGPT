@@ -18,9 +18,15 @@ name: Admin - Ensure Support Label
 # rather than trusting the create call's exit status, so a silent no-op is a
 # red run instead of a ticket that leaks into the agent loop.
 #
-# Label creation is otherwise forbidden to agents (CLAUDE.md); the owner
-# authorized this one specifically on #3745, which is why this workflow is
-# scoped to a single hard-coded label name.
+# WHY IT NO LONGER CREATES OR EDITS THE LABEL (#4134). It ran `gh label create
+# --force`, which creates when absent and OVERWRITES the colour and
+# description when present -- so every scheduled run rewrote whatever the
+# owner had set on their own label, daily. Labels are the owner's (CLAUDE.md
+# §Tooling): agents do not create, edit or delete them, and `--force` is an
+# edit. The guarantee this workflow exists to provide survives intact, because
+# the guarantee was never the create call -- it was the VERIFY step, which is
+# what actually fails when the label is missing. That step is now the whole
+# workflow.
 
 on:
   workflow_dispatch:
@@ -45,31 +51,17 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
       LABEL: Support
-      COLOR: "0e8a16"
-      DESC: >-
-        User-filed support report (web UI -> Support -> File an Issue).
-        Routed to the nyxGPT Support project; skipped by the agent loop.
     steps:
-      - name: Create or update the Support label
+      - name: Verify the label exists
         shell: bash
-        run: |
-          set -euo pipefail
-          echo "Ensuring label '$LABEL' in ${{ github.repository }}"
-          # --force makes this idempotent: creates when absent, updates the
-          # colour/description when already present.
-          gh label create "$LABEL" \
-            --repo "${{ github.repository }}" \
-            --color "$COLOR" \
-            --description "$DESC" \
-            --force
-
-      - name: Verify the label now exists
-        shell: bash
-        # The create step exiting 0 is not evidence the label is there: this
-        # is the check that fails if it is absent (#3811 acceptance
-        # criterion). Exact-match on the name -- `gh label list --search` is
-        # fuzzy, and "Support" matching some other label's description would
-        # be exactly the false assurance that let #3810 through.
+        # Exact-match on the name -- `gh label list --search` is fuzzy, and
+        # "Support" matching some other label's description would be exactly
+        # the false assurance that let #3810 through.
+        #
+        # A red run here is the alert, and it is the only thing this workflow
+        # does (#4134): nothing creates or edits the label, so the owner's
+        # colour and description are theirs. Daily + on any change to the
+        # intake form, so the exposure window stays bounded to a day.
         run: |
           set -euo pipefail
           if gh label list --repo "${{ github.repository }}" --limit 200 \
@@ -77,8 +69,10 @@ jobs:
             echo "✅ Label '$LABEL' exists in ${{ github.repository }}"
             exit 0
           fi
-          echo "::error::Label '$LABEL' does NOT exist in ${{ github.repository }} after the create step."
+          echo "::error::Label '$LABEL' does NOT exist in ${{ github.repository }}."
           echo "::error::Every support ticket filed in this state lands unlabeled: the agent-loop skip"
           echo "::error::(assign_backlog.yml, ensure_project_hygiene.yml) does not fire and the Support"
           echo "::error::project's auto-add never matches it. This is the #3810 leak. Do not ignore."
+          echo "::error::FIX: the repo OWNER re-creates the label (agents never create labels, CLAUDE.md"
+          echo "::error::§Tooling). Name 'Support'; it is declared by .github/ISSUE_TEMPLATE/support.yml."
           exit 1

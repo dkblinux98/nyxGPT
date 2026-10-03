@@ -48,41 +48,104 @@ groomed here, and the pull sets Status and assigns itself.
 The plan lands as a PR (`scrummaster_groom_sprint.yml`); merging it is the
 owner's go-ahead to dispatch against that order.
 
-## Unresolved-escalation dispatch pause backstop (owner-ratified 2026-08-09, #3687)
+## Escalation: one step, recorded on the issue (owner decisions 2026-10-03, #4134)
 
-Before dispatching, `scrummaster_dispatch_next.sh` checks
-`escalation_pause_gate` (`scripts/agents/lib/gh_project.sh`):
-"unresolved escalation" = an open issue currently assigned to
-`HUMAN_OWNER`, **excluding the release tracking issue**
-(`RELEASE_ISSUE_NUMBER`), which is owner-assigned by design for the whole
-life of a release and would otherwise inflate the count by one forever,
-dropping the effective pause threshold from 2 to 1 (#3868 -- the same
-exemption the drain gate applies). Purely derived from live
-issue state, no hidden counter to drift out of sync. Both escalation paths
-(the review agent's 3-cycle breaker, and the huddle's type-(c)/deadlock
-escalation, see below) end in exactly that state.
+**An escalation is a single call: `escalate_to_owner`**
+(`scripts/agents/lib/gh_project.sh`). It
 
-- **0 or 1 unresolved escalations:** dispatch proceeds unconditionally --
-  one escalated item is normal traffic.
-- **2 or more unresolved escalations:** new dispatch **pauses**. A loud
-  report (listing the escalated issues) is posted, or updated in place if
-  already posted, on the release tracking issue. `developer_pull_next_issue.yml`
-  posts a matching notice on the release tracking issue instead of its usual
-  "nothing eligible to pull"/"pulled nothing" comments.
-- **Resuming:** automatic, the next time dispatch runs, once the count
-  drops below 2 -- there is no separate "resume" action. Clearing the
-  escalations (the owner is already needed for them) is what reopens the
-  gate; the stale release-issue report is updated to say so rather than
-  left dangling.
+1. investigates the blast radius (below) and writes the findings into the
+   escalation comment;
+2. **replaces** the issue's single label with **`Escalation`**, recording in
+   the comment which label it replaced;
+3. assigns `HUMAN_OWNER`, verified by re-query;
+4. sends the Slack DM (`notify_human_escalation`), deduped on the **cause**;
+5. registers the cause on the release tracking issue, if it is the first
+   escalation for it.
 
-Both this pause and the "every eligible Backlog candidate was unclaimable"
-queue-blocked case (`scrummaster_dispatch_next.sh`'s fall-through loop
-exhausting `MAX_ATTEMPTS`) are head-of-line blocks on the whole queue, so
-`scrummaster_dispatch_next.sh` also sends a Slack DM to the owner for each
-(`notify_human_escalation`, `scripts/agents/lib/gh_project.sh`, #3695),
-attached to and deduped against `RELEASE_ISSUE_NUMBER` -- the same
-dispatch-wide target the release-issue report above and
-`sprint_autopilot_kick` already use. Skipped silently if
+It **does not touch the Status lane.** The issue stays exactly where the work
+had got to; the owner tracks escalations on their own board.
+
+**The owner restores the original label themselves.** Nothing in automation
+removes `Escalation` or puts the old label back. That removal is what returns
+the issue to the loop -- and what closes its cause.
+
+An issue carrying `Escalation` is **never dispatched, selected, planned into a
+sprint, auto-resumed, released by the drain gate, submitted for review or
+promoted.** The enforcement points are `classify_backlog_claim_state`
+(`escalated`), `summarize_backlog_page.py` / `board_pull_state.py` /
+`groom_sprint.sh`, `parked_resume.py`, `drain_gate_release`,
+`developer_submit_for_review.sh`, `promote_accepted_features.sh`, and the
+`developer_auto_implement.yml` / `assign_backlog.yml` job conditions.
+
+Because the type label is replaced, the consumers that READ an issue's type
+(`acceptance_role`, the promotion sweep, the retrospective) go through
+`issue_effective_labels_json`, which substitutes the recorded prior label back
+in. That is the only reason the replaced label is written down.
+
+### Blast radius: investigate before escalating
+
+**Precondition, not a courtesy.** Before escalating, look past the issue in
+front of you and answer four questions in the escalation comment:
+
+1. **Is the release branch head red?** If it is, every issue building on it is
+   affected and this is not your issue's defect.
+2. **Is other open work failing with the same signature?** The release
+   tracking issue's registries (#3694 anomaly markers, #4134 escalation-cause
+   markers) are the record.
+3. **Has an escalation already gone out for the same cause?** If so, link to
+   it. Do not diagnose it again.
+4. **What recent change is the likely common cause?** Name the commits.
+
+`blast_radius_report` gathers all four and `blast_radius.py` renders them; a
+question whose fact could not be read prints as **"not checked"** rather than
+disappearing, so the owner can tell a skipped investigation from an empty one.
+
+**A systemic cause produces ONE escalation for the cause, not one per
+affected issue.** Pass a **cause key** that names the fault rather than the
+issue (`red-head:<check names>`, `developer-failure:<step>`,
+`conflict:<pr>`) -- two issues broken by one fault must pass the same key. The
+second issue to hit a live cause is labelled and assigned (so it is paused
+too) but links to the origin escalation and sends no second DM.
+
+**Starting work, check first.** If you are about to diagnose a failure, look
+for an open escalation on the same cause before reasoning from scratch: the
+registry lives on the release tracking issue and `escalation_cause_origin`
+reads it. Rediscovering a cause three issues in a row is the waste this
+mechanism exists to remove.
+
+### What this replaced
+
+The **#3687 unresolved-escalation dispatch pause is retired.** It inferred
+"escalated" from "open, assigned to `HUMAN_OWNER`, not in an exempt lane" and
+paused ALL dispatch at a count of two. The guess was wrong twice -- #3868 (the
+release tracking issue counted forever) and 2026-08-19 (ordinary merges
+tripped it; the queue sat idle ~10 hours while three claimable issues went
+unworked) -- with a third gap still open (an issue the owner assigned to
+themselves in Backlog or In Progress).
+
+What the count was really protecting against was escalations piling up while
+nothing was done about the cause. That is now addressed where the defect is:
+the blast-radius investigation, and one escalation per cause. Only the
+affected issues pause -- they carry `Escalation` -- and unrelated work keeps
+dispatching, which is precisely what the count destroyed.
+
+### Dispatch-wide blocks are NOTIFICATIONS, not escalations
+
+The #3694 cross-issue-anomaly pause and the "every eligible Backlog candidate
+was unclaimable" queue-blocked case (`scrummaster_dispatch_next.sh`'s
+fall-through loop exhausting `MAX_ATTEMPTS`) are head-of-line blocks on the
+whole queue, so `scrummaster_dispatch_next.sh` sends a Slack DM to the owner
+for each (`notify_human_escalation`, `scripts/agents/lib/gh_project.sh`,
+#3695), attached to and deduped against `RELEASE_ISSUE_NUMBER` -- the same
+dispatch-wide target the release-issue report and
+`sprint_autopilot_kick` already use.
+
+Both go through `notify_human_escalation`, **not** `escalate_to_owner`
+(reviewed under #4134): they are about the QUEUE rather than about any one
+issue, nothing changes hands, both states clear on their own, and the release
+tracking issue's own label is load-bearing for the ceremony and the gates --
+replacing it with `Escalation` would break the machinery in order to report
+that the machinery is stuck. Skipped silently if
 `RELEASE_ISSUE_NUMBER` is not configured, and never blocks the dispatch
 loop itself on a Slack failure (same graceful-degradation contract as
 every other `notify_human_escalation` caller).

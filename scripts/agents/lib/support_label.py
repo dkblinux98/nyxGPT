@@ -11,9 +11,13 @@ that carry nothing -- which makes every guard below inert at once, because
 they all test the same absent name. That is #3810: filed unlabeled, assigned
 to the scrummaster seven seconds later, caught by a human five minutes after
 that. The label is therefore guaranteed rather than assumed --
-`admin_ensure_support_label.yml` re-asserts and verifies it on a schedule,
-and `support_intake_guard.yml` fails loudly on any ticket that slips through
-without it (#3811).
+`admin_ensure_support_label.yml` VERIFIES it on a schedule -- reading the
+label list back and failing the run when it is absent -- and
+`support_intake_guard.yml` fails loudly on any ticket that slips through
+without it (#3811). Neither creates it: only the owner creates labels
+(#4134), and the `gh label create --force` both used to run also overwrote
+the owner's colour and description on every scheduled run. The read-back was
+always the part that was load-bearing.
 
 That label is a boundary, not a category. A `Support`-labeled issue:
 

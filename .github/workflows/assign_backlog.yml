@@ -11,9 +11,14 @@ jobs:
   assign:
     # Never assign a user support report to the scrummaster (#3745) --
     # `Support` issues are invisible to the agent loop by construction.
+    #
+    # And never take an escalated issue off the owner (#4134): this fires on
+    # `reopened` too, so without the guard an owner reopening an escalated
+    # issue would have the scrummaster assigned over them seconds later.
     if: >-
       vars.AGENTS_ENABLED == 'true'
       && !contains(github.event.issue.labels.*.name, 'Support')
+      && !contains(github.event.issue.labels.*.name, 'Escalation')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7

@@ -1,14 +1,28 @@
 name: Usage Limit Auto-Retry
 
 # Self-healing companion to developer_auto_implement.yml's usage-limit
-# detection (Phase 0). When a developer run dies because the Claude usage
-# window is exhausted, the failure handler labels the issue
-# "usage-limit-retry" and records a retry-after timestamp in a marker
-# comment. This cron re-fires the developer agent (via the proven
-# unassign/re-assign trigger) once that timestamp has passed.
+# detection (Phase 0) and claude-code-review.yml's equivalent. When a run dies
+# because the Claude usage window is exhausted, the failure handler queues the
+# issue or PR for retry and records the retry-after timestamp. This cron
+# re-fires the agent (via the proven unassign/re-assign and un-request/
+# re-request triggers) once that timestamp has passed.
 #
-# Runs under SCRUMMASTER_AGENT_TOKEN per the identity policy
-# (administrative actions are performed by myGPT-scrummaster-agent).
+# THE QUEUE IS NOT A LABEL ANY MORE (#4134). It used to be `usage-limit-retry`,
+# created by `gh label create` in the two detection workflows -- a label agents
+# are not permitted to create (CLAUDE.md §Tooling), that the owner kept
+# deleting and that kept coming back, and that broke the one-label invariant on
+# every issue it touched (worked around by excluding it from
+# `real_label_names`, and it still deadlocked PR submission once, #3360).
+#
+# The queue is now marker comments on the RELEASE TRACKING ISSUE, re-derived
+# from the live thread on every poll -- the same shape #3694 uses for
+# cross-issue anomalies, and deliberately NOT `gh api search/issues`, whose
+# deterministic failure caused that incident. The decision logic is pure and
+# unit-tested in scripts/agents/lib/usage_limit_retry.py; this workflow only
+# reads the thread and performs the re-fire.
+#
+# Runs under SCRUMMASTER_AGENT_TOKEN per the identity policy (administrative
+# actions are performed by myGPT-scrummaster-agent).
 
 on:
   schedule:
@@ -16,7 +30,9 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   retry:
@@ -27,39 +43,67 @@ jobs:
       REPO: ${{ github.repository }}
       DEV_AGENT: ${{ vars.DEV_AGENT }}
       REVIEW_AGENT: ${{ vars.REVIEW_AGENT }}
+      RELEASE_ISSUE: ${{ vars.RELEASE_ISSUE_NUMBER }}
     steps:
-      - name: Retry usage-limited issues
+      # The queue lives in the repository now (the decision logic does), so
+      # the cron needs a checkout it did not need when a label was the queue.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read the retry queue
+        id: queue
         shell: bash
+        # A read failure must not look like an empty queue. The old label
+        # query ended in `|| true` and reported "No issues pending" on any
+        # error -- a usage-limited issue would then sit unretried forever with
+        # a green run to say everything was fine.
         run: |
           set -euo pipefail
-          NOW=$(date +%s)
+          if [ -z "${RELEASE_ISSUE:-}" ]; then
+            echo "::error::RELEASE_ISSUE_NUMBER is not configured — the retry queue lives on that issue, so nothing can be read or retried."
+            exit 1
+          fi
+          # --jq runs once per fetched page: stream the bodies, then slurp
+          # (see AGENTS.md).
+          BODIES=$(gh api "repos/$REPO/issues/$RELEASE_ISSUE/comments" --paginate \
+            --jq '[.[] | .body // ""]' | jq -s 'add // []')
+          DUE=$(printf '%s' "$BODIES" \
+            | python3 scripts/agents/lib/usage_limit_retry.py due "$(date +%s)")
+          PENDING=$(printf '%s' "$BODIES" \
+            | python3 scripts/agents/lib/usage_limit_retry.py queue)
+          echo "Queue: $PENDING"
+          echo "Due now: $DUE"
+          echo "due=$DUE" >> "$GITHUB_OUTPUT"
 
-          ISSUES=$(gh api "repos/$REPO/issues?labels=usage-limit-retry&state=open&per_page=100" \
-            --paginate --jq '.[] | select(has("pull_request") | not) | .number' || true)
-
-          if [ -z "$ISSUES" ]; then
-            echo "No issues pending usage-limit retry."
+      - name: Re-fire the due issues
+        shell: bash
+        env:
+          DUE: ${{ steps.queue.outputs.due }}
+        run: |
+          set -euo pipefail
+          TARGETS=$(printf '%s' "$DUE" | jq -r '.[] | select(.kind == "issue") | .target')
+          if [ -z "$TARGETS" ]; then
+            echo "No issues due for usage-limit retry."
             exit 0
           fi
 
-          for ISSUE in $ISSUES; do
+          for ISSUE in $TARGETS; do
             echo "::group::Issue #$ISSUE"
 
-            # --jq runs once per fetched page -- stream matches across all
-            # pages first, then slurp+last (see AGENTS.md).
-            RETRY_AFTER=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-              --jq '.[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t' 2>/dev/null \
-              | jq -s -r 'last // empty' || true)
-
-            if [ -n "$RETRY_AFTER" ] && [ "$NOW" -lt "$RETRY_AFTER" ]; then
-              echo "Not yet: retry scheduled for epoch $RETRY_AFTER (now $NOW)."
+            # An escalated issue is never auto-kicked (#4134): the owner holds
+            # it, and re-assigning the developer agent would take it back off
+            # them. Left queued, not retired -- the retry becomes due again
+            # the moment the owner restores the issue's real label.
+            LABELS=$(gh api "repos/$REPO/issues/$ISSUE" --jq '[.labels[]?.name]')
+            if [ "$(printf '%s' "$LABELS" | python3 scripts/agents/lib/escalation_label.py is-escalated)" = "true" ]; then
+              echo "#$ISSUE is escalated to the owner — not re-firing. Still queued."
               echo "::endgroup::"
               continue
             fi
 
             echo "Retry window reached — re-firing developer agent."
-            gh issue edit "$ISSUE" --repo "$REPO" --remove-label "usage-limit-retry"
-            gh issue comment "$ISSUE" --repo "$REPO" --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-assigning @$DEV_AGENT to resume implementation."
+            gh issue comment "$ISSUE" --repo "$REPO" \
+              --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-assigning @$DEV_AGENT to resume implementation."
 
             # Clear the assignee list, then set it back to the developer
             # agent: that emits the 'assigned' event developer_auto_implement
@@ -79,41 +123,36 @@ jobs:
             gh api -X PATCH "repos/$REPO/issues/$ISSUE" \
               -f "assignees[]=$DEV_AGENT" >/dev/null
 
+            # The `done` marker is posted only AFTER the re-fire landed. If
+            # any step above fails, `set -e` stops here with the entry still
+            # queued, and the next poll retries it -- retiring it first would
+            # drop the issue out of the queue on a transient API failure and
+            # leave it unretried forever.
+            DONE=$(python3 scripts/agents/lib/usage_limit_retry.py done-marker "$ISSUE")
+            gh issue comment "$RELEASE_ISSUE" --repo "$REPO" \
+              --body "$(printf '🔁 **Usage-limit retry fired** for #%s — re-assigned @%s.\n\n%s' "$ISSUE" "$DEV_AGENT" "$DONE")"
+
             echo "::endgroup::"
           done
 
-      - name: Retry usage-limited PR reviews
+      - name: Re-fire the due PR reviews
         shell: bash
+        env:
+          DUE: ${{ steps.queue.outputs.due }}
         run: |
           set -euo pipefail
-          NOW=$(date +%s)
-
-          PRS=$(gh api "repos/$REPO/issues?labels=usage-limit-retry&state=open&per_page=100" \
-            --paginate --jq '.[] | select(has("pull_request")) | .number' || true)
-
-          if [ -z "$PRS" ]; then
-            echo "No PRs pending usage-limit review retry."
+          TARGETS=$(printf '%s' "$DUE" | jq -r '.[] | select(.kind == "pr") | .target')
+          if [ -z "$TARGETS" ]; then
+            echo "No PRs due for usage-limit review retry."
             exit 0
           fi
 
-          for PR in $PRS; do
+          for PR in $TARGETS; do
             echo "::group::PR #$PR"
-
-            # --jq runs once per fetched page -- stream matches across all
-            # pages first, then slurp+last (see AGENTS.md).
-            RETRY_AFTER=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-              --jq '.[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t' 2>/dev/null \
-              | jq -s -r 'last // empty' || true)
-
-            if [ -n "$RETRY_AFTER" ] && [ "$NOW" -lt "$RETRY_AFTER" ]; then
-              echo "Not yet: retry scheduled for epoch $RETRY_AFTER (now $NOW)."
-              echo "::endgroup::"
-              continue
-            fi
-
             echo "Retry window reached — re-requesting review."
-            gh pr edit "$PR" --repo "$REPO" --remove-label "usage-limit-retry"
-            gh pr comment "$PR" --repo "$REPO" --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-requesting review from @$REVIEW_AGENT."
+
+            gh pr comment "$PR" --repo "$REPO" \
+              --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-requesting review from @$REVIEW_AGENT."
 
             # Un-request then re-request to emit the 'review_requested' event
             # that triggers claude-code-review.yml.
@@ -122,6 +161,12 @@ jobs:
             sleep 3
             gh api -X POST "repos/$REPO/pulls/$PR/requested_reviewers" \
               -f "reviewers[]=$REVIEW_AGENT" >/dev/null
+
+            # Retired only after the re-request landed -- same reasoning as
+            # the issue loop above.
+            DONE=$(python3 scripts/agents/lib/usage_limit_retry.py done-marker "$PR")
+            gh issue comment "$RELEASE_ISSUE" --repo "$REPO" \
+              --body "$(printf '🔁 **Usage-limit retry fired** for PR #%s — re-requested @%s.\n\n%s' "$PR" "$REVIEW_AGENT" "$DONE")"
 
             echo "::endgroup::"
           done

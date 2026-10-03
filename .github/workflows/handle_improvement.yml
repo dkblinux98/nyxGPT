@@ -353,6 +353,11 @@ jobs:
           issue_comment "$COMMENTED" "$(cat "$BODY_FILE")" \
             || _warn "could not post the handler-failure comment on #${COMMENTED}"
 
+          # A NOTIFICATION, not an escalation (#4134 review of every
+          # owner-facing path) -- same reasoning as the identical path in
+          # handle_acceptance_failure.yml: the HANDLER failed, the issue did
+          # not, nothing was filed, and relabelling a healthy issue
+          # `Escalation` over a handler bug would destroy its type label.
           notify_human_escalation "$COMMENTED" "improvement handler FAILED" \
             "The @improvement handler exited non-zero on #${COMMENTED}: nothing filed, no edge written." \
             "Read ${RUN_URL}, fix the cause, then re-issue @improvement on #${COMMENTED} (${COMMENT_URL})." \

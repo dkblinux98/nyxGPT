@@ -123,13 +123,19 @@ ${ESCALATED_MARKER}"
         || _die "Could not comment the red-head escalation on PR #${PR}"
 
       if [[ -n "$ISSUE" && -n "$HUMAN" ]]; then
-        assign_issue_verified "$ISSUE" "$HUMAN" \
-          || _warn "Could not verify issue #${ISSUE} assigned to @${HUMAN}"
-        notify_human_escalation "$ISSUE" "red-head" \
+        # ONE escalation step (#4134). The cause key is the FAILING CHECK
+        # NAMES, not the issue: a required check that is broken for everyone
+        # breaks every PR that runs it, and the owner should get one
+        # escalation for the check rather than one per issue that tripped
+        # over it. `blast_radius_report` then answers whether the release
+        # head is red and which other work the registry already records
+        # hitting the same signature.
+        escalate_to_owner "$ISSUE" "red-head" \
           "Required check(s) ${NAMES} are failing on PR #${PR} head ${SHA}, and the head is unchanged since the developer round was handed it." \
           "Fix the failing check(s) on PR #${PR}, or re-submit with a verifiable --ci-override reason." \
-          "${ISSUE}:red_head" \
-          || _warn "Slack notification for the red-head escalation failed (comment stands)"
+          "red-head:${NAMES}" \
+          "$(printf '[Red head on PR #%s](https://github.com/%s/pull/%s)' "$PR" "$REPO" "$PR")" \
+          || _warn "Red-head escalation for #${ISSUE} could not be fully verified (the PR comment stands)"
       fi
       echo "[gate] PR #${PR}: red head escalated to @${HUMAN}" >&2
       exit 0
@@ -160,6 +166,12 @@ ${TIMEOUT_MARKER}"
 
     ISSUE="$(pr_linked_issue "$PR" 2>/dev/null || true)"
     if [[ -n "$ISSUE" ]]; then
+      # A NOTIFICATION, not an escalation (#4134 review of every owner-facing
+      # path). Nothing changed hands: no verdict was posted, nothing was
+      # rejected, and the review restarts with `@review` once the checks
+      # finish -- by anyone, including the agents. Labelling the issue
+      # `Escalation` would take it off the loop over a pending check and
+      # oblige the owner to hand it back, which is heavier than the situation.
       notify_human_escalation "$ISSUE" "ci-stuck" \
         "Required check(s) ${NAMES} on PR #${PR} head ${SHA} had not concluded when the review gate's wait expired." \
         "Check whether CI is stuck; comment @review on PR #${PR} to start the review once they finish." \

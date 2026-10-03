@@ -125,6 +125,12 @@ kicks the loop again.
 
 - Parked issues whose blockers are still open are reported in a **"waiting
   on gates"** line in the park note and the continue kick -- never dropped.
+- An issue carrying the `Escalation` label is **never auto-resumed** (#4134):
+  the owner holds it, and re-assigning the developer agent would take it back
+  off them. It is reported in its own **"escalated to the owner"** line rather
+  than dropped from the scan, and it becomes resumable again only when the
+  owner restores its real label. Checked before the parked test, because an
+  escalated issue is the owner's whether or not an agent left a PR open on it.
 - Auto-resumes are bounded by the #3689 retry cap, counted from
   `<!-- nyxgpt-autoresume: ... -->` markers in the issue's own thread and
   reset only by an owner comment. Out-of-budget issues are reported as

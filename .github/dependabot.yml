@@ -1,0 +1,54 @@
+# Dependabot configuration — and specifically: Dependabot applies NO labels.
+#
+# Labels in this repository are the owner's. Agents and integrations do not
+# create, edit or delete them (CLAUDE.md §Tooling), and an unconfigured
+# Dependabot breaks that rule: with no `.github/dependabot.yml` present,
+# GitHub applies its OWN default labels to Dependabot pull requests --
+# `dependencies` plus an ecosystem label such as `javascript` -- and RECREATES
+# them every time, so deleting them has no lasting effect. PR #4124
+# (2026-10-01) is the observed instance.
+#
+# `labels: []` is the documented way to turn that off per update config.
+#
+# CAVEAT, stated rather than assumed (#4134 acceptance criterion): GitHub's
+# documentation is explicit that `labels` applies to the pull requests
+# Dependabot *raises for version updates*, and SECURITY updates are raised by
+# a separate path that this file does not configure version-by-version. PR
+# #4124 was a security update. So the honest claim is: this removes the
+# default labels from every version-update PR, and it is UNVERIFIED whether
+# security-update PRs respect it until the next one arrives.
+#
+# If a future security-update PR still arrives carrying `dependencies` /
+# `javascript`, the alternative -- and the only one that does not involve an
+# agent deleting labels, which is itself forbidden -- is for the OWNER to
+# either adopt those two labels as owner-created (they then stop being
+# agent-created, and the rule is satisfied by ownership rather than absence)
+# or disable Dependabot security updates for this repository in Settings ->
+# Code security. Both are owner decisions; neither is something automation
+# here may take.
+#
+# The `tests/unit/test_no_agent_created_labels.py` guard pins `labels: []` on
+# every update config in this file, so a later edit cannot quietly drop it.
+
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: []
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+    labels: []
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: []
+    open-pull-requests-limit: 5

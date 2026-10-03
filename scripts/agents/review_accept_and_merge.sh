@@ -404,9 +404,29 @@ if [[ "${#open_blockers[@]}" -gt 0 ]]; then
     _warn "Failed to post park comment. PR is merged and issue parked, but comment missing."
   fi
 else
-  # Set issue status to Acceptance Testing (owner acceptance gate, 2026-07-31)
-  echo "[review] Setting issue #${ISSUE} status to '${STATUS_ACCEPTANCE_TESTING}'..." >&2
-  if ! set_issue_status "$ISSUE" "$STATUS_ACCEPTANCE_TESTING" 2>&1; then
+  # Which lane does a merged issue land in? Normally `Acceptance Testing`:
+  # the owner tests it in the next release candidate (owner acceptance gate,
+  # 2026-07-31).
+  #
+  # EXCEPT agent-process work (owner decision 2026-10-03, #4134). An `Agent`-
+  # labeled issue is nyxAGENT-side -- it ships no nyxGPT product surface, so
+  # there is nothing for the owner to acceptance-test in an rc, and it must
+  # not require or trigger one. Parking it in `Acceptance Testing` would do
+  # both: the lane is what the drain gate waits on, so an agent-process merge
+  # would block the gate until the owner "tested" it, and the autopilot's park
+  # transition is what dispatches a candidate. It goes straight to
+  # `For Release` and rides the ceremony with everything else.
+  #
+  # Same rule, same implementation as the drain-gate bypass: the question
+  # "is this agent-process work?" has exactly one answer, in drain_gate.py.
+  ACCEPT_LANE="$STATUS_ACCEPTANCE_TESTING"
+  if issue_bypasses_drain_gate "$ISSUE"; then
+    ACCEPT_LANE="${STATUS_FOR_RELEASE:-For Release}"
+    echo "[review] Issue #${ISSUE} is agent-process work (#4134) -- Status -> '${ACCEPT_LANE}', not '${STATUS_ACCEPTANCE_TESTING}': no rc acceptance round applies to it." >&2
+  fi
+
+  echo "[review] Setting issue #${ISSUE} status to '${ACCEPT_LANE}'..." >&2
+  if ! set_issue_status "$ISSUE" "$ACCEPT_LANE" 2>&1; then
     _warn "Failed to set issue status. PR is merged but project status may be incorrect. Continuing..."
   fi
 
@@ -425,7 +445,7 @@ else
 
   # Post final comment
   echo "[review] Posting completion comment..." >&2
-  if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_ACCEPTANCE_TESTING}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
+  if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${ACCEPT_LANE}. Assigned -> @${HUMAN_OWNER}.$([[ "$ACCEPT_LANE" == "$STATUS_ACCEPTANCE_TESTING" ]] || printf '\n\nThis is agent-process work (`Agent`, #4134): it ships no nyxGPT product surface, so it does not require or trigger a release candidate and is not held for rc acceptance testing.')" 2>&1; then
     _warn "Failed to post comment. PR is merged and issue updated, but comment missing."
   fi
 fi

@@ -733,8 +733,13 @@ jobs:
                - **descope** -- state the specific descope (a named test dropped, a
                  follow-up split off) that resolves the disagreement.
                - **escalate** -- only the owner can resolve this (spec ambiguity or a
-                 real deadlock). If and ONLY if you choose escalate, also run:
-                 `bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && assign_issue_verified '${{ steps.context.outputs.issue_number }}' \"\$HUMAN_OWNER\" && gh pr edit ${{ env.PR_NUMBER }} --add-assignee \"\$HUMAN_OWNER\" && sprint_autopilot_kick '${{ steps.context.outputs.issue_number }}' escalated"`
+                 real deadlock). If and ONLY if you choose escalate, also run the ONE
+                 escalation step (#4134) -- it replaces the issue's label with
+                 `Escalation`, records what it replaced, assigns and verifies the owner,
+                 writes the blast-radius investigation into the comment and sends the
+                 Slack DM, leaving the Status lane alone. Do not assign the owner by
+                 hand instead; a half-escalation is what #4134 removed:
+                 `bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && escalate_to_owner '${{ steps.context.outputs.issue_number }}' 'huddle-escalation' 'The review huddle on PR #${{ env.PR_NUMBER }} deadlocked: only the owner can resolve it.' 'Read the huddle decision on PR #${{ env.PR_NUMBER }} and decide the scope or approach.' 'huddle-deadlock:${{ steps.context.outputs.issue_number }}' && gh pr edit ${{ env.PR_NUMBER }} --add-assignee \"\$HUMAN_OWNER\" && sprint_autopilot_kick '${{ steps.context.outputs.issue_number }}' escalated"`
             4. Write the decision to `${{ env.HUDDLE_DIR }}/90-decision.md`, structured as:
 
                ## Huddle Decision

@@ -115,6 +115,7 @@ items="$(
   python3 - "$pages" <<'PY'
 import json, os, sys
 sys.path.insert(0, "scripts/agents/lib")
+from escalation_label import is_escalated
 from support_label import is_support_issue
 
 sprint_field = os.environ["SPRINT_FIELD"]
@@ -136,6 +137,10 @@ with open(sys.argv[1], encoding="utf-8") as handle:
             if release_issue and str(content.get("number")) == str(release_issue):
                 continue
             if is_support_issue((content.get("labels") or {}).get("nodes")):
+                continue
+            # An escalated issue is the owner's (#4134): never selected,
+            # never planned into a sprint, never pulled.
+            if is_escalated((content.get("labels") or {}).get("nodes")):
                 continue
             fields = {}
             in_sprint = False

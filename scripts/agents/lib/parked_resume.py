@@ -124,22 +124,30 @@ def classify_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
     Each candidate is what gh_project.sh could observe for one In Progress
     issue: `issue`, `parked` (no open PR and no in-flight developer run),
-    `open_blockers` (blocker issue numbers still open), `budget_exhausted`.
+    `open_blockers` (blocker issue numbers still open), `budget_exhausted`,
+    `escalated` (carries the `Escalation` label, #4134).
     Non-parked issues are *active* -- something is already working them, so
     the loop must not poke them.
 
     Returns `resumable` (parked, no open blockers, budget left),
     `waiting` (parked but gated -- reported, never silently dropped),
-    `exhausted` (parked and ungated but out of auto-resume budget), and
-    `active`.
+    `exhausted` (parked and ungated but out of auto-resume budget),
+    `escalated` (handed to the owner; never resumed), and `active`.
     """
     resumable: list[dict[str, Any]] = []
     waiting: list[dict[str, Any]] = []
     exhausted: list[dict[str, Any]] = []
+    escalated: list[int] = []
     active: list[int] = []
 
     for cand in sorted(candidates, key=lambda c: int(c["issue"])):
         issue = int(cand["issue"])
+        # Checked before `parked`: an escalated issue is the owner's, whether
+        # or not an agent left a PR open on it, and the loop must not poke it
+        # either way (owner decision, 2026-10-03).
+        if cand.get("escalated"):
+            escalated.append(issue)
+            continue
         if not cand.get("parked"):
             active.append(issue)
             continue
@@ -156,6 +164,7 @@ def classify_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         "resumable": resumable,
         "waiting": waiting,
         "exhausted": exhausted,
+        "escalated": escalated,
         "active": active,
     }
 
@@ -182,6 +191,7 @@ def build_gate_lines(scan: dict[str, Any], resumed: int | None = None) -> list[s
     lines: list[str] = []
     waiting = scan.get("waiting") or []
     exhausted = scan.get("exhausted") or []
+    escalated = scan.get("escalated") or []
     active = scan.get("active") or []
 
     if resumed is not None:
@@ -200,6 +210,12 @@ def build_gate_lines(scan: dict[str, Any], resumed: int | None = None) -> list[s
         lines.append(
             f"- **Auto-resume budget exhausted** (needs an owner comment to reset, "
             f"#3689): {rendered}."
+        )
+    if escalated:
+        rendered = ", ".join(f"#{n}" for n in escalated)
+        lines.append(
+            f"- **Escalated to the owner** (carries `Escalation`; never auto-resumed, "
+            f"#4134): {rendered}."
         )
     if active:
         rendered = ", ".join(f"#{n}" for n in active)

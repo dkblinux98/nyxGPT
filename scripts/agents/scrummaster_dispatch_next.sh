@@ -33,22 +33,29 @@ the developer agent's context, which is where the decision belongs.
 Bounded by MAX_ATTEMPTS (default 25) so a systemic problem fails loudly
 instead of looping forever.
 
-Before selecting, checks two dispatch-pause backstops, either of which
-skips dispatch entirely (paused=true) rather than selecting a candidate:
-  - #3687 unresolved-escalation pause backstop (escalation_pause_gate,
-    lib/gh_project.sh): with >=2 unresolved escalated issues. Resumes
-    automatically on a later run once the count drops below 2.
+Before selecting, checks the dispatch-pause backstop, which skips dispatch
+entirely (paused=true) rather than selecting a candidate:
   - #3694 cross-issue infrastructure-anomaly pause backstop
     (cross_issue_anomaly_pause_gate, lib/gh_project.sh): while an open,
     unresolved cross-issue anomaly tracking record exists on the release
     issue. Resumes once it is resolved (OWNER `RESOLVE_ANOMALY` comment) or
     its detection window elapses.
-Either gate posts/updates its own loud report on the release tracking
-issue; pause_reason distinguishes which one fired.
+It posts/updates its own loud report on the release tracking issue.
+
+The #3687 unresolved-escalation pause (>=2 inferred escalations stopped ALL
+dispatch) is RETIRED (#4134). It inferred "escalated" from "open, assigned to
+the owner, not in an exempt lane" and was wrong twice; on 2026-08-19 ordinary
+merges tripped it and the queue sat idle ~10 hours while three claimable
+issues went unworked. Escalation is now explicit -- an escalated issue carries
+the `Escalation` label and is skipped here by the start guard
+(classify_backlog_claim_state -> `escalated`), so the affected work is paused
+and unrelated work keeps dispatching. What the count really stood in for,
+escalations piling up with nothing done about the cause, is now addressed by
+the blast-radius investigation every escalation performs.
 
 Prints, in $GITHUB_OUTPUT format (`key=value` / `key<<EOF ... EOF`):
-  paused=<true if either pause backstop skipped dispatch, else false>
-  pause_reason=<"escalation" | "cross_issue_anomaly" | empty when not paused>
+  paused=<true if the pause backstop skipped dispatch, else false>
+  pause_reason=<"cross_issue_anomaly" | empty when not paused>
   next_issue=<issue number, or empty if nothing started>
   tried<<NYXGPT_TRIED_EOF
   <newline-separated "SKIPPED #<n> reason=<reason>..." lines, may be empty>
@@ -115,13 +122,6 @@ _select_next_candidate() {
   printf '%s' "$out"
 }
 
-# Wraps escalation_pause_gate (lib/gh_project.sh). Split out so tests can
-# stub it without a real gh round trip. Returns 0 if dispatch may proceed,
-# 1 if paused.
-_escalation_pause_check() {
-  escalation_pause_gate
-}
-
 # Wraps cross_issue_anomaly_pause_gate (lib/gh_project.sh, #3694). Split out
 # so tests can stub it without a real gh round trip. Returns 0 if dispatch
 # may proceed, 1 if paused.
@@ -132,31 +132,19 @@ _cross_issue_anomaly_check() {
 # Runs the fall-through loop described above and prints paused=/next_issue=/
 # tried to stdout in $GITHUB_OUTPUT format. Split out from the script's
 # direct-execution guard so tests can source this file and call it directly
-# with stubbed _escalation_pause_check/_select_next_candidate/
+# with stubbed _cross_issue_anomaly_check/_select_next_candidate/
 # scrummaster_attempt_start.
 scrummaster_dispatch_next() {
   local sprint_scoped="${1:-0}"
   local exclude="" tried="" started=""
   local i next_issue output rc reason
 
-  if ! _escalation_pause_check; then
-    echo "paused=true"
-    echo "pause_reason=escalation"
-    echo "next_issue="
-    printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
-    _notify_dispatch_block "dispatch-paused" \
-      "Scrummaster dispatch paused -- 2 or more unresolved escalations (open issues assigned to the owner, excluding the release tracking issue)." \
-      "Resolve the unresolved escalations reported on the release tracking issue; dispatch resumes automatically once the count drops below 2."
-    return 0
-  fi
   if ! _cross_issue_anomaly_check; then
     echo "paused=true"
     echo "pause_reason=cross_issue_anomaly"
     echo "next_issue="
     printf 'tried<<NYXGPT_TRIED_EOF\n%sNYXGPT_TRIED_EOF\n' ""
-    # Distinct state from the escalation pause's "dispatch-paused": the
-    # message must name the actual cause (#3694 accuracy requirement), and
-    # the two backstops must not de-duplicate against each other.
+    # Names the actual cause (#3694 accuracy requirement).
     _notify_dispatch_block "anomaly-paused" \
       "Scrummaster dispatch paused -- an unresolved cross-issue infrastructure anomaly is open on the release tracking issue (#3694)." \
       "Resolve the anomaly (owner comment RESOLVE_ANOMALY on the release tracking issue, or let its detection window elapse); dispatch resumes automatically."
@@ -197,15 +185,18 @@ scrummaster_dispatch_next() {
 }
 
 # #3695: human-channel (Slack DM) notification for the dispatch-wide
-# terminal outcomes above (escalation-pause backstop, cross-issue-anomaly
-# pause backstop (#3694), queue fully blocked)
-# -- all are head-of-line blocks on the whole sprint-autopilot queue, not
+# terminal outcomes above (cross-issue-anomaly pause backstop (#3694),
+# queue fully blocked)
+# -- both are head-of-line blocks on the whole sprint-autopilot queue, not
 # tied to any single issue, so they are attached to (and de-duplicated
-# against) RELEASE_ISSUE_NUMBER, the same target sprint_autopilot_kick and
-# escalation_pause_gate already report to. Silently skipped if
-# RELEASE_ISSUE_NUMBER is not configured -- same conservative default as
-# escalation_pause_gate's own reporting. Best-effort: never fails the
-# caller's dispatch loop.
+# against) RELEASE_ISSUE_NUMBER, the same target sprint_autopilot_kick
+# reports to. Silently skipped if RELEASE_ISSUE_NUMBER is not configured.
+#
+# NOTIFICATIONS, not escalations (#4134 reviewed every owner-facing path):
+# they are about the QUEUE, not about any issue, and the release tracking
+# issue's own label is load-bearing for the ceremony and the gates. Nothing
+# changes hands -- both states clear on their own -- so there is nothing to
+# relabel or reassign. Best-effort: never fails the caller's dispatch loop.
 _notify_dispatch_block() {
   local state="$1" diagnosis="$2" action="$3"
   [[ -n "${RELEASE_ISSUE_NUMBER:-}" ]] || return 0

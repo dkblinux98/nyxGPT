@@ -27,6 +27,7 @@ import json
 import os
 import sys
 
+from escalation_label import is_escalated
 from support_label import is_support_issue
 
 
@@ -69,6 +70,10 @@ def board_state(pages: list[dict]) -> dict:
             if release_issue and str(number) == str(release_issue):
                 continue
             if is_support_issue((content.get("labels") or {}).get("nodes")):
+                continue
+            # An escalated issue is the owner's (#4134): never selected,
+            # never planned into a sprint, never pulled.
+            if is_escalated((content.get("labels") or {}).get("nodes")):
                 continue
 
             status, sprint_title = _field_values(item, status_field, sprint_field)

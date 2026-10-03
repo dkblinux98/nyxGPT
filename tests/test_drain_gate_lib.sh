@@ -129,6 +129,22 @@ gh() {
     for n in ${ISSUE_BLOCKED_BY[$num]:-}; do echo "$n"; done
     return 0
   fi
+  # `issue_labels_json` asks for the same issue with a `--jq` that projects
+  # just the label NAMES, and it rejects any answer that is not a JSON array.
+  # Honour that shape: without it this stub hands back the whole object, the
+  # projection is rejected, and the escalation state comes out "unknown" --
+  # so the release-path fixtures below were silently exercising the
+  # unreadable-labels branch rather than "a readable, non-escalated issue"
+  # (#4134 review). The escalation-specific tests still override
+  # `issue_labels_json` directly to pin the yes/unknown cases.
+  # Matched on the ARRAY projection specifically: the `acceptance_role` and
+  # rework-exemption reads project an OBJECT (`{body, labels}`, `{number,
+  # body, labels}`) off the same endpoint and must still get one.
+  if [[ "$ref" == *"--jq [.labels[]?"* ]]; then
+    jq -cn --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
+      '$l | split(",") | map(select(length > 0))'
+    return 0
+  fi
   jq -cn --arg b "${ISSUE_BODIES[$num]:-}" --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
     '{body: $b, labels: ($l | split(",") | map(select(length > 0)))}'
 }
@@ -451,6 +467,31 @@ _assert_eq "DRY_RUN still reports what it would release" "[3700]" "$(jq -c '.rel
 _assert_eq "DRY_RUN moves nothing" "" "$(cat "$STATUS_FILE")"
 _assert_eq "DRY_RUN posts nothing" "" "$(cat "$COMMENT_FILE")"
 
+# --- Test 6b: the drain never releases an issue the owner holds (#4134) ---
+# Same fixture as Test 6, which releases #3700 -- only the label read varies.
+# The release path and the start path must fail the SAME way on an unreadable
+# label list: releasing an escalated issue puts it back in front of the
+# dispatcher the escalation took it away from, while holding a
+# non-escalated issue for one drain costs nothing because the next drain
+# re-reads it. Only an affirmative "no" releases.
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
+issue_labels_json() { echo '["Escalation"]'; }
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "an escalated held issue is not released" "[]" "$(jq -c '.released' <<<"$result")"
+_assert_eq "and it is never moved to Backlog" "" "$(cat "$STATUS_FILE")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
+issue_labels_json() { return 1; }
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "an unreadable label list holds the issue, not releases it" \
+  "[]" "$(jq -c '.released' <<<"$result")"
+_assert_eq "the unknown case moves nothing either" "" "$(cat "$STATUS_FILE")"
+unset -f issue_labels_json
+
 # --- Test 7: drain_gate_hold parks an issue in the holding lane ---
 : >"$STATUS_FILE"
 : >"$COMMENT_FILE"
@@ -485,6 +526,11 @@ DEV_AGENT="myGPT-developer-agent"
 HUMAN_OWNER="dkblinux98"
 gh() { echo "OPEN"; }
 _issue_assignee_logins() { echo ""; }
+# The claim state consults the `Escalation` label before the lane (#4134):
+# an escalated issue stays in whatever lane the work had reached, so the lane
+# says nothing about it. Default to "not escalated" here; the escalated case
+# is asserted below.
+issue_labels_json() { echo '["Acceptance Failure"]'; }
 
 issue_status() { echo "Acceptance Failed"; }
 _assert_eq "an issue in the holding lane classifies as drain_gate_held" \
@@ -504,6 +550,29 @@ _assert_eq "a held issue is never moved to In Progress" "" "$(cat "$STATUS_FILE"
 issue_status() { echo "Backlog"; }
 _assert_eq "a Backlog issue is still claimable once released" \
   "claimable" "$(classify_backlog_claim_state 3700)"
+
+# --- Test 10: an ESCALATED issue is never started, in any lane (#4134) ---
+# The explicit form of the `human_hold` state, which had to infer the hold
+# from the assignee. The lane is Backlog here on purpose: an escalation does
+# not move the Status lane, so a claimable-looking lane must not be enough.
+issue_labels_json() { echo '["Escalation"]'; }
+_assert_eq "an escalated Backlog issue classifies as escalated" \
+  "escalated" "$(classify_backlog_claim_state 3700)"
+
+: >"$STATUS_FILE"
+rc=0
+out="$(scrummaster_attempt_start 3700)" || rc=$?
+_assert_eq "starting an escalated issue is a quiet skip" "10" "$rc"
+_assert_contains "the skip names the escalation" "$out" "reason=escalated"
+_assert_eq "an escalated issue is never moved to In Progress" "" "$(cat "$STATUS_FILE")"
+
+# An unreadable label list is treated as escalated, deliberately: starting
+# work on an issue the owner may be holding creates a PR and a review round
+# that have to be undone, while skipping it costs one dispatch attempt and
+# the fall-through loop tries the next candidate immediately.
+issue_labels_json() { return 1; }
+_assert_eq "an unreadable label list is treated as escalated, not claimable" \
+  "escalated" "$(classify_backlog_claim_state 3700)"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
