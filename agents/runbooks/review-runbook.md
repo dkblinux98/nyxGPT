@@ -770,27 +770,51 @@ dispatch-mode backstop so the two can never disagree):
   the escalation is gone (it made every escalation arrive as a pair, and two
   pairs when the trigger paths raced).
 
-## 6c) Unresolved-escalation dispatch pause backstop (#3687)
+## 6c) Escalating: one step, and investigate first (#4134)
 
-Escalations (§6's 3-cycle limit, or §6b's type-(c)/type-(b)-deadlock
-escalate) must not silently accumulate: one escalated item is normal
-traffic, but two or more open at once usually signals something systemic
-(bad base commit, poisoned suite, review-prompt regression). "Unresolved
-escalation" = an open issue currently assigned to `HUMAN_OWNER`, **excluding
-the release tracking issue** (`RELEASE_ISSUE_NUMBER`), which is owner-assigned
-by design for the whole life of a release and would otherwise inflate the count
-by one forever, dropping the effective pause threshold from 2 to 1 (#3868 — the
-same exemption the drain gate applies)
-(`count_unresolved_escalations`/`escalation_pause_gate`,
-`scripts/agents/lib/gh_project.sh`) — purely derived from live issue state,
-no hidden counter. `scrummaster_dispatch_next.sh` checks this gate before
-selecting a Backlog candidate: with 0 or 1 unresolved, dispatch proceeds
-unconditionally; with 2+, new dispatch pauses and a loud report (listing
-the escalated issues) is posted/updated on the release tracking issue.
-Dispatch resumes automatically the next time it's checked once the count
-drops below 2 — clearing the escalations is the only action needed, there
-is no separate "resume" step. See `agents/runbooks/scrummaster-runbook.md`
-for the dispatch-side detail.
+Escalations (§6's 3-cycle limit, §6b's type-(c)/type-(b)-deadlock escalate,
+and the red-head gate's second arrival on an unchanged head) all go through
+**one** function: `escalate_to_owner` (`scripts/agents/lib/gh_project.sh`).
+
+It replaces the issue's single label with **`Escalation`** (recording which
+label it replaced), assigns `HUMAN_OWNER` verified, writes the blast-radius
+investigation into the escalation comment, and sends the Slack DM deduped on
+the **cause**. It leaves the **Status lane alone** -- the issue stays in
+`In Review`, which is where the work had got to.
+
+Do not hand-roll any part of that. The defect #4134 fixed was that about a
+dozen sites each did a different subset: some assigned and DM'd, some only
+DM'd, some only assigned, and nothing on the issue recorded that it had been
+escalated at all.
+
+**The owner restores the original label.** Automation never removes
+`Escalation`, never puts the old label back, and never dispatches, resumes,
+releases, submits or promotes an issue that carries it.
+
+### Investigate before escalating
+
+Four questions, answered in the comment (`blast_radius_report` gathers them;
+an unanswerable one prints as "not checked", never as nothing):
+
+1. is the release branch head red?
+2. is other open work failing with the same signature?
+3. has an escalation already gone out for the same cause?
+4. what recent change is the likely common cause?
+
+Pass a **cause key** naming the fault, not the issue -- `red-head:<checks>`,
+`review-cycle-limit:<issue>`, `spec-ambiguity:<issue>`. A cause that is
+genuinely about one issue's spec is keyed on that issue; a cause that is
+about a broken check is keyed on the check, so every PR it breaks collapses
+into one escalation instead of one each. Before diagnosing a failure, check
+`escalation_cause_origin` for an open escalation on the same cause rather
+than rediscovering it.
+
+**The #3687 count-of-2 dispatch pause is retired.** It inferred "escalated"
+from assignee-plus-lane, was wrong twice (#3868; 2026-08-19, when ordinary
+merges paused the queue for ~10 hours), and stopped unrelated work for a
+problem it could not even identify. What it stood in for -- escalations piling
+up with nothing done about the cause -- is now the blast-radius precondition
+above. See `agents/runbooks/scrummaster-runbook.md` for the dispatch side.
 
 ## 7) Merge criteria
 - All tests and linters passing

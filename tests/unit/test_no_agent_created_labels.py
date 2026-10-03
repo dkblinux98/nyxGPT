@@ -182,9 +182,7 @@ class TestNothingWritesTheLabelRegistry:
                     continue
                 for name in _LITERAL_LABEL_ARG.findall(line):
                     if name not in OWNER_LABELS:
-                        offenders.append(
-                            f"{path.relative_to(ROOT)}:{number}: label '{name}'"
-                        )
+                        offenders.append(f"{path.relative_to(ROOT)}:{number}: label '{name}'")
         assert not offenders, (
             f"these apply a label that is not one of the owner's: {offenders}. "
             f"Known owner labels: {sorted(OWNER_LABELS)}. Adding to that set means "
@@ -249,8 +247,8 @@ class TestHygieneTreatsEveryLabelAsReal:
         lib = (SCRIPTS / "agents" / "lib" / "gh_project.sh").read_text(encoding="utf-8")
         body = lib[lib.index("real_label_names() {") :]
         body = body[: body.index("\n}\n")]
-        assert "jq -r '.[].name'" in body, (
-            "real_label_names must report every label name, with no exemption list"
-        )
+        assert (
+            "jq -r '.[].name'" in body
+        ), "real_label_names must report every label name, with no exemption list"
         hygiene = (SCRIPTS / "agents" / "ensure_issue_hygiene.sh").read_text(encoding="utf-8")
         assert "real_label_names" in hygiene

@@ -47,6 +47,7 @@ fails if it drifts. Do not hand-edit.
 | `developer_auto_implement.yml` | issues | Developer Agent Auto-Implement |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
 | `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |
+| `escalation-label-smoke.yml` | push, pull_request, workflow_dispatch | Escalation and Label Smoke |
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
 | `github-script-injection-smoke.yml` | push, pull_request, workflow_dispatch | GitHub-Script Injection Smoke |

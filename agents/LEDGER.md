@@ -2076,6 +2076,69 @@ rather than mechanism, and nothing can enforce them.
   Source: #4121; cites **D-006**;
   `product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md`.
 
+- **D-056** · 2026-10-03 · owner — **Escalation is explicit, labels belong to
+  the owner, and `Agent` marks agent-process work.** Three decisions settled
+  in one session:
+
+  (a) *Escalation is one step, recorded on the issue.* An escalation
+  **replaces** the issue's single label with the owner-created **`Escalation`**
+  label, assigns the owner, and sends the Slack DM. The issue **stays in its
+  current Status lane** — the owner tracks escalations on their own board, and
+  moving the lane would destroy the record of where the work had got to.
+  **The owner restores the original label themselves**; no automation removes
+  `Escalation` or puts the old label back. One function does all of it
+  (`escalate_to_owner`, `scripts/agents/lib/gh_project.sh`), and every site
+  that hands work to the owner calls it — about a dozen sites previously did
+  different subsets (some assigned and DM'd, some only DM'd, some only
+  assigned), which is why the #3687 dispatch pause had to *infer* escalation
+  from "open, assigned to the owner, not in an exempt lane". That guess was
+  wrong twice (#3868; 2026-08-19, when ordinary merges paused the queue for
+  ~10 hours) and is **retired** — see **S-009**. Because the type label is
+  replaced, the comment records what it replaced and every consumer that reads
+  an issue's TYPE (`acceptance_role`, `promote_accepted_features.sh`, the
+  retrospective) resolves it through `issue_effective_labels_json`.
+
+  (b) *A blast-radius investigation is a precondition of escalating.* The
+  count of 2 was standing in for missing investigation: agents escalate from
+  the tunnel vision of one issue, so one root cause surfaced as several
+  separate escalations and other agents rediscovered it from scratch. Every
+  escalation now answers four questions in its comment — is the release head
+  red; is other open work failing with the same signature; has an escalation
+  already gone out for this cause; what recent change is the likely common
+  cause — and an unanswerable one prints "not checked" rather than
+  disappearing. A **cause key** names the fault rather than the issue, so one
+  systemic cause produces **one** escalation; the affected issues are paused
+  by carrying `Escalation` and unrelated work keeps dispatching.
+
+  (c) *Only the owner creates labels, and nothing in automation creates, edits
+  or deletes one.* Labels are sacrosanct; the owner kept deleting labels that
+  came back. Removed: `gh label create` for `usage-limit-retry` (the retry
+  queue is now marker comments on the release tracking issue — it was never
+  anything but a queue, and it broke the one-label rule on every issue it
+  touched, #3360), `gh label create --force` for `Support` in two workflows
+  (`--force` overwrote the owner's colour and description daily), and
+  `admin_label_rename.yml` entirely. `Support` and `Agent` are owner-created
+  and stay; the workflows that need `Support` assume it exists and fail loudly
+  if it does not. Dependabot's default labels are turned off with
+  `.github/dependabot.yml` (`labels: []`) — **unverified for security
+  updates** until the next one arrives, with the fallback named in that file.
+  `WORKFLOW_CONTROL_LABELS_JSON` is retired, so no label is exempt from the
+  one-label count and `Escalation` needs no special case in hygiene. Enforced
+  by `tests/unit/test_no_agent_created_labels.py`, which also refuses the REST
+  "add labels" endpoint (it silently creates a missing label; `gh issue edit
+  --add-label` refuses).
+
+  (d) *`Agent` marks nyxAGENT-side work.* It bypasses the drain gate — the
+  DEFAULT of `DRAIN_GATE_BYPASS_LABELS` in `drain_gate.py`, not an env var each
+  caller has to remember, because that is exactly what failed before — and an
+  `Agent` issue merges to **For Release** rather than `Acceptance Testing`: it
+  ships no product surface, so it neither requires nor triggers a release
+  candidate.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0`. IDs are never reused.
+  Source: #4134; supersedes the pause in #3687/#3868; builds on #3694's
+  cross-issue collapse and **D-001**'s drain gate.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -2378,3 +2441,16 @@ them.
   the project-fields dispatch 404s" — superseded by **D-050** (2026-09-17): a
   stale input is refused by the build exactly like a missing one, and every
   input is produced by `retro_data_refresh.yml`, never by the session.
+
+- **S-009** — ~~"Two or more unresolved escalations should pause all
+  dispatch, where 'unresolved escalation' means an open issue assigned to the
+  owner outside an exempt lane."~~ (#3687, 2026-08-09; narrowed by #3868 and
+  again on 2026-08-19.) Superseded 2026-10-03 by **D-056** — escalation is now
+  recorded with the `Escalation` label rather than inferred from assignee and
+  lane, so there is nothing to count: the escalated issues are paused by the
+  label and unrelated work keeps dispatching.
+  `escalation_pause_gate`, `unresolved_escalation_issues` and
+  `count_unresolved_escalations` are deleted. The thing the count stood in for
+  is the blast-radius investigation (**D-056** (b)). The #3694 cross-issue
+  anomaly pause is unaffected and remains the only dispatch-wide pause — it is
+  about live infrastructure, not about a count of escalations.

@@ -1,0 +1,164 @@
+name: Escalation and Label Smoke
+
+# Which questions does this job answer? (#3775 executed verification, D-006)
+#
+#   1. "Does an escalation actually replace the label, record what it
+#       replaced, assign the owner and leave the Status lane alone -- when
+#       RUN, not when read?"
+#   2. "Does the guard that forbids agent-created labels actually FAIL when a
+#       label write is planted, or is it green by luck?"
+#   3. "Does the usage-limit retry queue that replaced the
+#      `usage-limit-retry` label actually enqueue, fire once and retire?"
+#
+# Question 1 is executed by tests/test_gh_project_lib.sh against a stubbed
+# `gh`: the escalation step is a shell function precisely so it can be run
+# rather than inspected, and the subset-of-the-steps defect #4134 fixed (some
+# sites assigned, some DM'd, some did both) is invisible to inspection because
+# every individual call reads correctly.
+#
+# Question 2 is the half that matters most and the half a naive job skips. A
+# guard that only ever sees a clean tree passes on a tree it would not
+# protect -- the #3753 lesson, where the rc5 candidate passed CI and died on
+# the owner's Mac. So the guard is run against a PLANTED `gh label create`
+# and must reject it, and then against the real tree and must accept it.
+# Both directions, same shape as macos-brew-smoke.yml's fault injection.
+#
+# What this cannot cover, and does not pretend to: Slack actually delivering
+# the DM (docs/live-verification-ci.md), GitHub refusing `--add-label` for a
+# label that does not exist (that needs the live repository and the owner to
+# delete a label), and whether Dependabot SECURITY updates honour
+# `labels: []` -- which .github/dependabot.yml states as unverified, with the
+# owner-side fallback named, rather than claiming it works.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/lib/escalation_label.py"
+      - "scripts/agents/lib/blast_radius.py"
+      - "scripts/agents/lib/usage_limit_retry.py"
+      - "scripts/agents/lib/drain_gate.py"
+      - "scripts/agents/lib/parked_resume.py"
+      - "tests/test_gh_project_lib.sh"
+      - "tests/test_drain_gate_lib.sh"
+      - "tests/unit/test_escalation_label.py"
+      - "tests/unit/test_usage_limit_retry_queue.py"
+      - "tests/unit/test_no_agent_created_labels.py"
+      - ".github/dependabot.yml"
+      - ".github/workflows/escalation-label-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/lib/escalation_label.py"
+      - "scripts/agents/lib/blast_radius.py"
+      - "scripts/agents/lib/usage_limit_retry.py"
+      - "scripts/agents/lib/drain_gate.py"
+      - "scripts/agents/lib/parked_resume.py"
+      - "tests/test_gh_project_lib.sh"
+      - "tests/test_drain_gate_lib.sh"
+      - "tests/unit/test_escalation_label.py"
+      - "tests/unit/test_usage_limit_retry_queue.py"
+      - "tests/unit/test_no_agent_created_labels.py"
+      - ".github/dependabot.yml"
+      - ".github/workflows/escalation-label-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  escalation-step:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The escalation step, executed against a stubbed gh
+        shell: bash
+        # Covers: the label is ADDED before the old one is removed (so a
+        # deleted `Escalation` label cannot leave an issue bare), the replaced
+        # label is recorded in the comment, the owner assignment is verified,
+        # the Status lane is never written, the DM is deduped on the CAUSE,
+        # and a second issue on the same live cause links instead of being
+        # diagnosed again.
+        run: bash tests/test_gh_project_lib.sh
+
+      - name: An escalated issue is never started, in any lane
+        shell: bash
+        # The lane is deliberately Backlog in that fixture: an escalation does
+        # not move the Status lane, so a claimable-looking lane must not be
+        # enough to start work on an issue the owner holds.
+        run: bash tests/test_drain_gate_lib.sh
+
+      - name: The pure decisions
+        shell: bash
+        run: |
+          python -m pip install --quiet pytest pyyaml
+          python -m pytest -q -p no:cacheprovider \
+            --no-header --rootdir . -c /dev/null \
+            tests/unit/test_escalation_label.py \
+            tests/unit/test_usage_limit_retry_queue.py
+
+  label-guard-fails-when-it-should:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the guard's dependencies
+        shell: bash
+        run: python -m pip install --quiet pytest pyyaml
+
+      - name: Prove it REJECTS a planted label write
+        shell: bash
+        # Three plants, one per spelling the guard claims to catch:
+        #   * `gh label create` (what #4134 removed from four workflows);
+        #   * the REST "add labels to an issue" endpoint, which SILENTLY
+        #     creates a missing label -- the side door that would reintroduce
+        #     agent-created labels with no `gh label create` to grep for;
+        #   * a literal label name that is not one of the owner's.
+        # Each is planted, the guard is run, and a PASS is the failure.
+        run: |
+          set -uo pipefail
+          plant() {
+            local file="$1" line="$2" label="$3"
+            cp "$file" "$file.orig"
+            printf '%s\n' "$line" >> "$file"
+            if python -m pytest -q -p no:cacheprovider --no-header \
+                 --rootdir . -c /dev/null \
+                 tests/unit/test_no_agent_created_labels.py >/dev/null 2>&1; then
+              mv "$file.orig" "$file"
+              echo "::error::the label guard PASSED with a planted ${label}."
+              echo "::error::It is green by luck, not because the tree is clean (#3753)."
+              exit 1
+            fi
+            mv "$file.orig" "$file"
+            echo "OK: the guard rejects a planted ${label}"
+          }
+
+          plant scripts/agents/drain_gate.sh \
+            'gh label create "planted-by-ci" --color ffffff' \
+            "gh label create"
+          plant scripts/agents/drain_gate.sh \
+            'gh api -X POST "repos/$REPO/issues/1/labels" -f "labels[]=planted"' \
+            "REST label add"
+          plant scripts/agents/drain_gate.sh \
+            'gh issue edit 1 --add-label "planted-by-ci"' \
+            "non-owner label name"
+
+      - name: And ACCEPTS the real tree
+        shell: bash
+        run: |
+          python -m pytest -q -p no:cacheprovider --no-header \
+            --rootdir . -c /dev/null \
+            tests/unit/test_no_agent_created_labels.py

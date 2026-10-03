@@ -37,6 +37,25 @@ All of the following MUST pass before commit:
 
 Developer keeps working until all checks pass (like a human developer would).
 
+## Escalating to the owner (#4134)
+An escalation is ONE call, `escalate_to_owner`
+(`scripts/agents/lib/gh_project.sh`): it replaces the issue's label with
+`Escalation` (recording what it replaced), assigns the owner verified, writes
+the blast-radius findings into the comment, and DMs the owner -- leaving the
+Status lane alone. Never hand-roll a subset of that.
+
+**Investigate before escalating.** Answer, in the escalation comment: is the
+release branch head red; is other open work failing with the same signature;
+has an escalation already gone out for the same cause; what recent change is
+the likely common cause. Pass a **cause key** that names the fault rather than
+the issue, so one systemic cause yields one escalation instead of one per
+affected issue -- and before diagnosing anything, check whether an escalation
+for the same cause is already open rather than rediscovering it.
+
+May NOT: remove the `Escalation` label, restore the label it replaced, or act
+on an issue that carries it. The owner takes it back by restoring the real
+label.
+
 ## Handoff
 When all validation passes and PR is ready:
 - Move issue to In Review

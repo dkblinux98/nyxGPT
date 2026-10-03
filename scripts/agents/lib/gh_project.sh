@@ -2719,7 +2719,7 @@ escalate_to_owner() {
 # taken out by the same class of fault. The single tracking record is a
 # marker comment on RELEASE_ISSUE_NUMBER, re-derived fresh from the live
 # comment thread on every check -- same level-triggered shape as
-# escalation_pause_gate above, no hidden counter to drift out of sync. It
+# escalation-cause registry above (#4134), no hidden counter to drift. It
 # self-expires after CROSS_ISSUE_ANOMALY_WINDOW_MINUTES and can be cleared
 # early by an OWNER-authored `RESOLVE_ANOMALY` comment.
 CROSS_ISSUE_ANOMALY_WINDOW_MINUTES="${CROSS_ISSUE_ANOMALY_WINDOW_MINUTES:-60}"
@@ -2779,12 +2779,17 @@ open_cross_issue_anomaly() {
     || _warn "open_cross_issue_anomaly: failed to post tracking record on #${release_issue}"
 }
 
-# Dispatch gate composing with escalation_pause_gate (#3687): dispatch
-# pauses while ANY step currently has an open, unresolved cross-issue
-# anomaly marker on RELEASE_ISSUE_NUMBER (cleared by an OWNER
+# The ONLY dispatch-wide pause since #4134 retired the #3687 escalation
+# count: dispatch pauses while ANY step currently has an open, unresolved
+# cross-issue anomaly marker on RELEASE_ISSUE_NUMBER (cleared by an OWNER
 # `RESOLVE_ANOMALY` comment, or by the detection window elapsing). Returns 0
-# if dispatch may proceed, 1 if paused; posts/updates a loud report exactly
-# like escalation_pause_gate.
+# if dispatch may proceed, 1 if paused; posts/updates a loud report.
+#
+# This one survived #4134's review because it is about INFRASTRUCTURE, not
+# about escalation: while a shared fault is live, every issue dispatched into
+# it fails the same way, so pausing the queue is the cheap answer. The
+# retired gate paused the queue over a COUNT of inferred escalations, which
+# said nothing about whether the next issue would succeed.
 cross_issue_anomaly_pause_gate() {
   local release_issue="${RELEASE_ISSUE_NUMBER:-}"
   [[ -z "$release_issue" ]] && return 0

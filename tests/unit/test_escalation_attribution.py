@@ -141,9 +141,15 @@ class TestRoleOwnedScriptsCarryTheirOwnIdentity:
     def test_every_escalating_script_declares_its_role(self):
         for name, role in ROLE_OWNED_SCRIPTS.items():
             script = (REPO_ROOT / "scripts" / "agents" / name).read_text()
-            assert "notify_human_escalation" in script, (
-                f"{name} no longer escalates -- drop it from ROLE_OWNED_SCRIPTS "
-                "rather than leaving a guard that pins nothing"
+            # Either verb. `escalate_to_owner` (#4134) is the escalation step
+            # and calls `notify_human_escalation` itself; the bare
+            # notification is still correct for the owner-facing messages that
+            # are NOT escalations of a specific issue (queue stalls, ceremony
+            # failures). Both sign the DM with `AGENT_ROLE`, which is what
+            # this test is about.
+            assert "escalate_to_owner" in script or "notify_human_escalation" in script, (
+                f"{name} no longer escalates or notifies -- drop it from "
+                "ROLE_OWNED_SCRIPTS rather than leaving a guard that pins nothing"
             )
             expected = f'export AGENT_ROLE="${{AGENT_ROLE:-{role}}}"'
             assert expected in script, f"{name} must declare `{expected}`"

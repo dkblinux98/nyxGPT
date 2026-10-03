@@ -570,19 +570,19 @@ problems, and the pipeline needed a way to see across issues.
   anomaly resolves.
 - **No hidden state.** The tracking record is a comment marker on
   `RELEASE_ISSUE_NUMBER`, re-derived fresh from the live comment thread on
-  every check -- the same level-triggered shape as `escalation_pause_gate`
-  (#3687, above). Detection deliberately does NOT use
+  every check -- the same level-triggered shape as the escalation-cause
+  registry (#4134, below). Detection deliberately does NOT use
   `gh api search/issues` (the endpoint that caused the incident) -- it uses
   plain issue-comment REST calls, so detection itself can't be taken out by
   the same class of fault. It self-expires after the window elapses, or
   closes early on an OWNER-authored `RESOLVE_ANOMALY` comment.
 - **Dispatch pause.** `cross_issue_anomaly_pause_gate`
-  (`scripts/agents/lib/gh_project.sh`) composes with the #3687
-  `escalation_pause_gate` in `scrummaster_dispatch_next.sh`: new dispatch
-  pauses while any step has an open tracking record, with its own loud
-  report on the release tracking issue, and resumes automatically once the
-  anomaly resolves or expires. See `agents/runbooks/scrummaster-runbook.md`
-  for the dispatch-side detail.
+  (`scripts/agents/lib/gh_project.sh`) is now the ONLY dispatch-wide pause
+  (#4134 retired the #3687 escalation count): new dispatch pauses while any
+  step has an open tracking record, with its own loud report on the release
+  tracking issue, and resumes automatically once the anomaly resolves or
+  expires. See `agents/runbooks/scrummaster-runbook.md` for the dispatch-side
+  detail.
 - **Replay criterion.** The 2026-08-09 scenario (5 issues x the same failed
   step within the window) now yields one diagnosis (the origin issue's
   Phase 1-3) and a dispatch pause, not five independent loops.

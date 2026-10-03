@@ -168,13 +168,32 @@ issue with the full list); GitHub's *add* verbs — `POST /issues/{n}/assignees`
 and `issues.addAssignees` — append, and are refused by
 `tests/unit/test_one_assignee_one_label.py`.
 
-**Exactly one label.** An issue carries exactly one real label
-(`Feature`, `Acceptance Failure`, `Improvement`, `Agent`, `Documentation`,
-`Release Management`, `Production Defect`, …). Workflow-control labels such as
-`usage-limit-retry` do not count — `real_label_names` is the one definition,
-shared by project hygiene and `developer_submit_for_review.sh`, which fails
-outright on a second label. Hygiene stamps `Feature` only on an issue with no
-real label at all.
+**Exactly one label.** An issue carries exactly one label (`Feature`,
+`Acceptance Failure`, `Improvement`, `Agent`, `Escalation`, `Documentation`,
+`Release Management`, `Production Defect`, `Support`). Every label counts:
+the "workflow-control" exemption existed for one name, `usage-limit-retry`,
+and both it and the label are retired (#4134). `real_label_names` is the one
+definition, shared by project hygiene and `developer_submit_for_review.sh`,
+which fails outright on a second label. Hygiene stamps `Feature` only on an
+issue with no label at all — a name-blind count, which is what guarantees it
+never stamps `Feature` beside `Escalation`.
+
+**Only the owner creates labels**, and nothing in automation creates, edits
+or deletes one — not `gh label create|edit|delete`, not a REST write to
+`/labels`, and not the REST "add labels to an issue" endpoint, which silently
+creates a label that does not exist (use `gh issue edit --add-label`, which
+refuses). `tests/unit/test_no_agent_created_labels.py` fails the build on any
+of those, and on applying a literal label name that is not one of the
+owner's. #4134 removed four violations and `.github/dependabot.yml` sets
+`labels: []` so GitHub stops reapplying its own.
+
+**Escalation is explicit.** Handing an issue to the owner is one call,
+`escalate_to_owner`: it replaces the issue's label with `Escalation`,
+recording what it replaced, assigns the owner verified, writes a blast-radius
+investigation into the comment and DMs the owner — and leaves the Status lane
+alone. An issue carrying `Escalation` is never dispatched, resumed, kicked,
+released, submitted or promoted. **The owner restores the original label
+themselves**; nothing in automation removes `Escalation`.
 
 Both rules are old and both drifted anyway, which is why they are now checked
 rather than written down: an issue showing two agents makes "who owns this?"
