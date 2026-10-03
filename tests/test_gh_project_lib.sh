@@ -1200,8 +1200,9 @@ SLACK_USER_TOKEN_SCRUM=""
 # --- Test 18: _release_issue_comments_json (#3694) -- exercises the REAL ---
 # --- gh api + jq pipeline (only `gh` is stubbed) across two pages, the ---
 # --- same --paginate-without-slurp pitfall coverage as Test 14b above, ---
-# --- plus the `id` field cross_issue_anomaly_pause_gate needs that ---
-# --- unresolved_escalation_issues' equivalent fetch doesn't carry. ---
+# --- plus the `id` field cross_issue_anomaly_pause_gate needs. (The ---
+# --- contrast used to be with unresolved_escalation_issues' fetch; #4134 ---
+# --- deleted that function along with the rest of the #3687 pause.) ---
 gh() {
   if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
     cat <<JSON

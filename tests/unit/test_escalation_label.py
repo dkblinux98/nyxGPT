@@ -122,8 +122,30 @@ class TestBlastRadiusReport:
         that asked and found nothing."""
         text = blast_radius.report(self._findings())
         assert "not checked" in text
-        assert text.count("not checked") == 3  # head, other work, recent changes
-        assert "no open escalation found for this cause" in text
+        # All FOUR questions, the prior-escalation one included: its registry
+        # lives on the release tracking issue, so it is just as unanswerable
+        # when that cannot be read (#4134 review).
+        assert text.count("not checked") == 4
+        assert "no open escalation found for this cause" not in text
+
+    def test_an_unchecked_prior_escalation_is_not_reported_as_none_found(self):
+        """`None`/absent is "could not look", `False` is "looked, found
+        nothing" -- collapsing them invents a clean answer out of a failed
+        check, which is exactly what the other three questions avoid."""
+        unchecked = blast_radius.report(self._findings())
+        assert "Already escalated for this cause?** not checked." in unchecked
+        assert "no open escalation found" not in unchecked
+
+        none_found = blast_radius.report(self._findings(prior_escalation=False))
+        assert "no open escalation found for this cause" in none_found
+        assert "Already escalated for this cause?** not checked." not in none_found
+
+    def test_a_checked_but_empty_registry_is_not_systemic(self):
+        """`False` must not read as a prior escalation the way any non-None
+        value used to."""
+        assert not blast_radius.is_systemic(self._findings(prior_escalation=False))
+        assert not blast_radius.is_systemic(self._findings())
+        assert blast_radius.is_systemic(self._findings(prior_escalation=4100))
 
     def test_a_red_head_names_the_checks(self):
         text = blast_radius.report(

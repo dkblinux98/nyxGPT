@@ -107,7 +107,10 @@ def is_systemic(findings: dict[str, Any]) -> bool:
         return True
     if findings.get("same_signature"):
         return True
-    return findings.get("prior_escalation") is not None
+    # Truthiness, not `is not None`: `false` is the caller's "checked, no open
+    # escalation for this cause", and `None`/absent is "could not check" --
+    # neither is evidence of a prior escalation (#4134 review).
+    return bool(findings.get("prior_escalation"))
 
 
 def report(findings: dict[str, Any]) -> str:
@@ -122,7 +125,9 @@ def report(findings: dict[str, Any]) -> str:
       release_head_red   True / False / None (not checked)
       red_checks         names of the failing required checks
       same_signature     ["#123 Review Fix failed on the same step", ...]
-      prior_escalation   issue number of an open escalation for this cause
+      prior_escalation   issue number of an open escalation for this cause,
+                         `False` for checked-and-none-found, absent/None for
+                         not checked (the registry could not be read)
       recent_commits     ["<sha> <subject>", ...], newest first
     """
     lines = ["### Blast radius (investigated before escalating, #4134)", ""]
@@ -165,6 +170,13 @@ def report(findings: dict[str, Any]) -> str:
 
     prior = findings.get("prior_escalation")
     if prior is None:
+        # Not the same as "none found": the registry lives on the release
+        # tracking issue, so this question is unanswerable when there is no
+        # release issue or its thread could not be read. Saying "no open
+        # escalation" there would invent a clean answer out of a failed check
+        # (#4134 review) -- the caller sends `false` for a real none-found.
+        lines.append(_bullet("Already escalated for this cause?", "not checked."))
+    elif not prior:
         lines.append(
             _bullet(
                 "Already escalated for this cause?",

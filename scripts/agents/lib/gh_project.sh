@@ -1499,8 +1499,20 @@ drain_gate_release() {
     # moving it to Backlog would put it back in front of the dispatcher the
     # escalation took it away from. Reported, never silently dropped -- same
     # rule as the owner-parked items above.
-    if [[ "$(issue_escalation_state "$issue")" == "yes" ]]; then
-      echo "[drain-gate] Not released: #${issue} is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134). It returns to the queue when the owner restores its real label." >&2
+    # Fail-safe on `unknown`, matching `classify_backlog_claim_state`: only an
+    # affirmative "no" releases. A transient label-read failure here would
+    # otherwise move an escalated issue back to Backlog in front of the
+    # dispatcher (#4134 review). Holding a non-escalated issue for one drain
+    # costs nothing -- the next drain re-reads it -- while releasing an
+    # escalated one undoes the owner's hold.
+    local escalation_state
+    escalation_state="$(issue_escalation_state "$issue")"
+    if [[ "$escalation_state" != "no" ]]; then
+      if [[ "$escalation_state" == "yes" ]]; then
+        echo "[drain-gate] Not released: #${issue} is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134). It returns to the queue when the owner restores its real label." >&2
+      else
+        echo "[drain-gate] Not released: #${issue}'s labels could not be read, so whether it is escalated is unknown (#4134). Held for this drain; the next one re-reads it." >&2
+      fi
       continue
     fi
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -2492,7 +2504,7 @@ blast_radius_report() {
   require_cmd jq
   require_cmd python3
 
-  local branch findings checks commits release_issue same prior
+  local branch findings checks commits release_issue same
   branch="$(get_release_branch 2>/dev/null || echo "")"
   findings="$(jq -n -c --arg c "$cause" --arg s "$signature" --arg b "$branch" \
     '{cause: $c, signature: $s, release_branch: $b}')"
@@ -2518,11 +2530,42 @@ blast_radius_report() {
         findings="$(jq -c --argjson s "$same" \
           '. + {same_signature: [$s[] | "#\(.) records the same signature"]}' <<<"$findings")"
       fi
+
+      # Q3 reads the registry out of the thread Q2 just read, and parses it
+      # directly for the same reason Q2 does rather than calling
+      # `escalation_cause_origin`: that function prints nothing both when the
+      # cause is genuinely new AND when it could not look (no release issue,
+      # unreadable thread, parser failure). That is fine for a lookup whose
+      # only question is "is there one to link to", but the REPORT must not
+      # turn "could not look" into "this cause is new" -- the whole point of
+      # the four questions is that an unanswerable one says so (#4134 review).
+      # `false` means checked-and-none-found; the key stays ABSENT whenever
+      # the answer could not be established, and renders as "not checked".
+      local origin
+      if [[ -n "$cause" ]] && origin="$(printf '%s' "$comments" \
+            | python3 "${_LIB_DIR}/escalation_label.py" cause-origin "$cause" 2>/dev/null)"; then
+        if [[ -z "$origin" ]]; then
+          findings="$(jq -c '. + {prior_escalation: false}' <<<"$findings")"
+        else
+          case "$(issue_escalation_state "$origin")" in
+            yes)
+              findings="$(jq -c --argjson p "$origin" \
+                '. + {prior_escalation: $p}' <<<"$findings")"
+              ;;
+            no)
+              # The registry names it, but that issue is no longer escalated
+              # (the owner restored its label), so the cause is closed.
+              findings="$(jq -c '. + {prior_escalation: false}' <<<"$findings")"
+              ;;
+            *)
+              # Labels unreadable: a registry entry exists but whether it is
+              # still open is unknown. Key left absent -> "not checked".
+              :
+              ;;
+          esac
+        fi
+      fi
     fi
-  fi
-  prior="$(escalation_cause_origin "$cause")"
-  if [[ -n "$prior" ]]; then
-    findings="$(jq -c --argjson p "$prior" '. + {prior_escalation: $p}' <<<"$findings")"
   fi
 
   # Q4: what recent change is the likely common cause?
@@ -2659,8 +2702,8 @@ escalate_to_owner() {
   fi
 
   if [[ -n "$linked_to" ]]; then
-    body="$(printf '🚨 **Escalated to @%s** — same cause as #%s\n\n**Diagnosis:** %s\n\n**Recommended action:** %s\n%s\nThis is the same cause (`%s`) as the open escalation on #%s, so it is NOT diagnosed again and no second Slack DM was sent (#4134). Answer #%s and this issue clears with it.\n\nStatus lane unchanged — this issue stays exactly where the work had got to.' \
-      "$owner" "$linked_to" "$diagnosis" "$action" "$replaced_note" "$cause" "$linked_to" "$linked_to")"
+    body="$(printf '🚨 **Escalated to @%s** — same cause as #%s\n\n**Diagnosis:** %s\n\n**Recommended action:** %s\n%s\nThis is the same cause (`%s`) as the open escalation on #%s, so it is NOT diagnosed again (#4134). The Slack DM is deduped on the cause over a %s-minute window, so you are not paged twice for a cause that is still live — a recurrence after that window pages you again, deliberately. Answer #%s and this issue clears with it.\n\nStatus lane unchanged — this issue stays exactly where the work had got to.' \
+      "$owner" "$linked_to" "$diagnosis" "$action" "$replaced_note" "$cause" "$linked_to" "$window" "$linked_to")"
   else
     body="$(printf '🚨 **Escalated to @%s**\n\n**Diagnosis:** %s\n\n**Recommended action:** %s\n%s\n%s\n\nStatus lane unchanged — this issue stays exactly where the work had got to. Nothing is dispatched, resumed or re-kicked against it while it carries `%s`.' \
       "$owner" "$diagnosis" "$action" "$replaced_note" "$report" "$ESCALATION_LABEL")"
@@ -2687,7 +2730,11 @@ escalate_to_owner() {
 
   # One DM per CAUSE, not per issue. The linked case passes the same dedup key
   # the origin used, so notify_human_escalation's own window suppresses it --
-  # the same collapse #3694 applies to cross-issue anomalies.
+  # the same collapse #3694 applies to cross-issue anomalies. Note the dedup is
+  # that ROLLING WINDOW (default 60 min), not "forever": a cause that is still
+  # breaking issues hours later pages the owner again, which is the right
+  # behaviour for a fault nobody has answered. The comment body says so rather
+  # than promising silence it cannot deliver (#4134 review).
   notify_human_escalation "$issue" "$state" "$diagnosis" "$action" \
     "escalation:${cause}" "$window" \
     || _warn "escalate_to_owner: Slack notification failed for #${issue} -- the comment and the label stand."

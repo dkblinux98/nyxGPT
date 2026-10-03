@@ -129,6 +129,22 @@ gh() {
     for n in ${ISSUE_BLOCKED_BY[$num]:-}; do echo "$n"; done
     return 0
   fi
+  # `issue_labels_json` asks for the same issue with a `--jq` that projects
+  # just the label NAMES, and it rejects any answer that is not a JSON array.
+  # Honour that shape: without it this stub hands back the whole object, the
+  # projection is rejected, and the escalation state comes out "unknown" --
+  # so the release-path fixtures below were silently exercising the
+  # unreadable-labels branch rather than "a readable, non-escalated issue"
+  # (#4134 review). The escalation-specific tests still override
+  # `issue_labels_json` directly to pin the yes/unknown cases.
+  # Matched on the ARRAY projection specifically: the `acceptance_role` and
+  # rework-exemption reads project an OBJECT (`{body, labels}`, `{number,
+  # body, labels}`) off the same endpoint and must still get one.
+  if [[ "$ref" == *"--jq [.labels[]?"* ]]; then
+    jq -cn --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
+      '$l | split(",") | map(select(length > 0))'
+    return 0
+  fi
   jq -cn --arg b "${ISSUE_BODIES[$num]:-}" --arg l "${ISSUE_LABELS[$num]:-Acceptance Failure}" \
     '{body: $b, labels: ($l | split(",") | map(select(length > 0)))}'
 }
@@ -450,6 +466,31 @@ result="$(DRY_RUN=1 drain_gate_release 2>/dev/null)"
 _assert_eq "DRY_RUN still reports what it would release" "[3700]" "$(jq -c '.released' <<<"$result")"
 _assert_eq "DRY_RUN moves nothing" "" "$(cat "$STATUS_FILE")"
 _assert_eq "DRY_RUN posts nothing" "" "$(cat "$COMMENT_FILE")"
+
+# --- Test 6b: the drain never releases an issue the owner holds (#4134) ---
+# Same fixture as Test 6, which releases #3700 -- only the label read varies.
+# The release path and the start path must fail the SAME way on an unreadable
+# label list: releasing an escalated issue puts it back in front of the
+# dispatcher the escalation took it away from, while holding a
+# non-escalated issue for one drain costs nothing because the next drain
+# re-reads it. Only an affirmative "no" releases.
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
+issue_labels_json() { echo '["Escalation"]'; }
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "an escalated held issue is not released" "[]" "$(jq -c '.released' <<<"$result")"
+_assert_eq "and it is never moved to Backlog" "" "$(cat "$STATUS_FILE")"
+
+: >"$STATUS_FILE"
+: >"$COMMENT_FILE"
+: >"$DISPATCH_FILE"
+issue_labels_json() { return 1; }
+result="$(drain_gate_release 2>/dev/null)"
+_assert_eq "an unreadable label list holds the issue, not releases it" \
+  "[]" "$(jq -c '.released' <<<"$result")"
+_assert_eq "the unknown case moves nothing either" "" "$(cat "$STATUS_FILE")"
+unset -f issue_labels_json
 
 # --- Test 7: drain_gate_hold parks an issue in the holding lane ---
 : >"$STATUS_FILE"

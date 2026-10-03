@@ -95,11 +95,18 @@ jobs:
         # enough to start work on an issue the owner holds.
         run: bash tests/test_drain_gate_lib.sh
 
+      # `--noconftest` so this job costs a two-package install instead of the
+      # whole editable package: `tests/conftest.py` imports psutil and
+      # `nyxgpt.config`, so WITHOUT the flag collection dies at exit 4 before a
+      # single test runs -- which is how this job was first written, and what
+      # the #4134 review caught. None of these files uses a fixture from that
+      # conftest. If one ever does, drop the flag and install `-e ".[dev]"`
+      # here. Same trade as huddle-session-smoke.yml.
       - name: The pure decisions
         shell: bash
         run: |
           python -m pip install --quiet pytest pyyaml
-          python -m pytest -q -p no:cacheprovider \
+          python -m pytest -q -p no:cacheprovider --noconftest \
             --no-header --rootdir . -c /dev/null \
             tests/unit/test_escalation_label.py \
             tests/unit/test_usage_limit_retry_queue.py
@@ -130,20 +137,57 @@ jobs:
         # Each is planted, the guard is run, and a PASS is the failure.
         run: |
           set -uo pipefail
+          # A nonzero pytest exit is NOT evidence the guard rejected anything.
+          # The first cut of this job accepted any nonzero status, and the
+          # conftest ImportError above exits 4 -- so all three plants reported
+          # OK while the guard never ran, and the job's whole purpose
+          # evaporated silently. So a rejection must now prove itself three
+          # ways: pytest exits exactly 1 (tests ran and one FAILED -- 2/3/4/5
+          # are interrupt/internal/usage/nothing-collected, i.e. the guard did
+          # not get to speak), the guard's own assertion names the file the
+          # plant went into, and the planted line's text appears in the
+          # failure. Anything else is a broken harness, reported as such
+          # rather than counted as a pass.
           plant() {
             local file="$1" line="$2" label="$3"
+            local out status
             cp "$file" "$file.orig"
             printf '%s\n' "$line" >> "$file"
-            if python -m pytest -q -p no:cacheprovider --no-header \
-                 --rootdir . -c /dev/null \
-                 tests/unit/test_no_agent_created_labels.py >/dev/null 2>&1; then
-              mv "$file.orig" "$file"
+            out="$(python -m pytest -q -p no:cacheprovider --noconftest \
+                     --no-header --rootdir . -c /dev/null \
+                     tests/unit/test_no_agent_created_labels.py 2>&1)" \
+              && status=0 || status=$?
+            mv "$file.orig" "$file"
+
+            if [ "$status" -eq 0 ]; then
               echo "::error::the label guard PASSED with a planted ${label}."
               echo "::error::It is green by luck, not because the tree is clean (#3753)."
+              printf '%s\n' "$out"
               exit 1
             fi
-            mv "$file.orig" "$file"
-            echo "OK: the guard rejects a planted ${label}"
+            if [ "$status" -ne 1 ]; then
+              echo "::error::pytest exited ${status}, not 1, on the planted ${label}."
+              echo "::error::That is a harness failure (collection/usage error), NOT the"
+              echo "::error::guard rejecting the plant -- this job proves nothing until it"
+              echo "::error::is fixed. Exit 4 here is the #4134 conftest-ImportError defect."
+              printf '%s\n' "$out"
+              exit 1
+            fi
+            if ! printf '%s\n' "$out" | grep -qF "$file"; then
+              echo "::error::the guard failed on the planted ${label}, but its output never"
+              echo "::error::names ${file} -- so it failed for some OTHER reason and the"
+              echo "::error::plant was not actually caught."
+              printf '%s\n' "$out"
+              exit 1
+            fi
+            if ! printf '%s\n' "$out" | grep -qF "planted"; then
+              echo "::error::the guard failed on the planted ${label} and named ${file}, but"
+              echo "::error::its output does not quote the planted line. Confirm the guard is"
+              echo "::error::reporting the offender it found, not an unrelated assertion."
+              printf '%s\n' "$out"
+              exit 1
+            fi
+            echo "OK: the guard rejects a planted ${label} (exit 1, naming ${file})"
           }
 
           plant scripts/agents/drain_gate.sh \
@@ -159,6 +203,6 @@ jobs:
       - name: And ACCEPTS the real tree
         shell: bash
         run: |
-          python -m pytest -q -p no:cacheprovider --no-header \
+          python -m pytest -q -p no:cacheprovider --noconftest --no-header \
             --rootdir . -c /dev/null \
             tests/unit/test_no_agent_created_labels.py
