@@ -17,7 +17,6 @@ fails if it drifts. Do not hand-edit.
 | `acceptance_plan.yml` | issues | Acceptance Plan Actions |
 | `add-to-release-issue-on-milestone.yml` | issues | Add issue to release issue on milestone assignment |
 | `admin_ensure_support_label.yml` | workflow_dispatch, schedule, push | Admin - Ensure Support Label |
-| `admin_label_rename.yml` | workflow_dispatch | Admin - Rename Label |
 | `admin_set_fields.yml` | workflow_dispatch | Admin Set Item Fields |
 | `assign_backlog.yml` | issues | Assign Backlog Issues to scrummaster-agent |
 | `assignment-dispatch-smoke.yml` | push, pull_request, workflow_dispatch | Assignment Dispatch Smoke |

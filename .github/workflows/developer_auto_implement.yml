@@ -2094,18 +2094,37 @@ jobs:
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });
 
-      - name: Clear stale usage-limit-retry label
+      - name: Clear a stale usage-limit retry schedule
         if: success()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          RELEASE_ISSUE: ${{ vars.RELEASE_ISSUE_NUMBER }}
         run: |
+          set -euo pipefail
           # Once a run gets all the way past PR submission / review request,
-          # any leftover usage-limit-retry label (from an earlier misfire, or
-          # a manual re-assign that raced the retry cron's removal) no longer
-          # reflects reality and must not linger to trip the one-label
-          # invariant on a future run (#3360). Idempotent no-op if absent.
-          gh issue edit "${{ github.event.issue.number }}" --remove-label "usage-limit-retry" 2>/dev/null || true
+          # an outstanding retry schedule (from an earlier misfire, or a
+          # manual re-assign that raced the cron) no longer reflects reality
+          # and must not fire a pointless retry later (#3360).
+          #
+          # This used to remove the `usage-limit-retry` LABEL. The queue is
+          # now marker comments on the release tracking issue (#4134), so the
+          # equivalent is a `done` marker -- posted only when a schedule is
+          # actually outstanding, so a normal successful run adds no comment.
+          [ -n "${RELEASE_ISSUE:-}" ] || exit 0
+          BODIES=$(gh api "repos/$REPO/issues/$RELEASE_ISSUE/comments" --paginate \
+            --jq '[.[] | .body // ""]' | jq -s 'add // []')
+          PENDING=$(printf '%s' "$BODIES" \
+            | python3 scripts/agents/lib/usage_limit_retry.py queue \
+            | jq --argjson t "$ISSUE" 'any(.[]; .target == $t)')
+          if [ "$PENDING" != "true" ]; then
+            echo "No usage-limit retry outstanding for #$ISSUE — nothing to clear."
+            exit 0
+          fi
+          MARKER=$(python3 scripts/agents/lib/usage_limit_retry.py done-marker "$ISSUE")
+          gh issue comment "$RELEASE_ISSUE" --repo "$REPO" --body "$(printf '✅ **Usage-limit retry cleared** for #%s — the run completed, so the scheduled retry is retired.\n\n%s' "$ISSUE" "$MARKER")"
 
       - name: Detect usage-limit signature (Phase 0 - self-heal)
         # #3689: never enter the self-heal chain for a policy-gate stop
@@ -2122,14 +2141,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           ISSUE: ${{ github.event.issue.number }}
+          RELEASE_ISSUE: ${{ vars.RELEASE_ISSUE_NUMBER }}
         run: |
           set +e
           # Usage-limit exhaustion signature: a Claude implementation/fix step
           # "completes" in seconds because every model call fails immediately.
           # Observed 1-17s vs 4-25 min for real work (runs 28810049590,
           # 28909002900, 29220860744). When detected, schedule a delayed
-          # retry via the usage-limit-retry label + cron workflow instead of
-          # escalating "unknown fatal - manual intervention".
+          # retry on the release tracking issue's retry queue (#4134) for the
+          # cron workflow to pick up, instead of escalating "unknown fatal -
+          # manual intervention".
           #
           # count_fast_claude_steps requires the matching Claude step's own
           # conclusion to be "failure" (require_failure=true) and excludes
@@ -2160,22 +2181,33 @@ jobs:
             | jq -s 'length' || echo 0)
           if [ "${ATTEMPTS:-0}" -ge 8 ]; then
             gh issue comment "$ISSUE" --body "🛑 **Developer Agent**: Usage-limit auto-retry gave up after $ATTEMPTS attempts. The Claude usage window does not appear to be recovering — manual investigation needed (check the CLAUDE_CODE_OAUTH_TOKEN account's limits). Re-assign @${{ vars.DEV_AGENT }} to try again."
-            gh issue edit "$ISSUE" --remove-label "usage-limit-retry" 2>/dev/null || true
+            if [ -n "${RELEASE_ISSUE:-}" ]; then
+              DONE=$(python3 scripts/agents/lib/usage_limit_retry.py done-marker "$ISSUE")
+              gh issue comment "$RELEASE_ISSUE" --body "$(printf '🛑 **Usage-limit retry abandoned** for #%s after %s attempts — removed from the retry queue.\n\n%s' "$ISSUE" "$ATTEMPTS" "$DONE")"
+            fi
             echo "handled=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Ensure the label exists (idempotent), then schedule the retry.
-          gh label create "usage-limit-retry" \
-            --description "Auto-retry pending: run hit Claude usage limits; cron retries after the window resets" \
-            --color "C5DEF5" 2>/dev/null || true
-
+          # Schedule the retry. The queue is marker comments on the release
+          # tracking issue (#4134) -- it used to be the agent-created
+          # `usage-limit-retry` label, which agents are not allowed to create
+          # (CLAUDE.md §Tooling), which the owner kept deleting, and which
+          # broke the one-label invariant on every issue it touched.
+          #
           # Owner-confirmed: the Claude usage window takes ~5 hours to reset.
           RETRY_AFTER=$(( $(date +%s) + 18000 ))
           RETRY_AT_UTC=$(date -u -d "@$RETRY_AFTER" '+%H:%M UTC' 2>/dev/null || echo "in ~5h")
-          gh issue edit "$ISSUE" --add-label "usage-limit-retry"
-          gh issue comment "$ISSUE" --body "⏳ **Developer Agent**: This run hit the Claude usage limit (model calls terminating in ~1s). **Auto-retry $((ATTEMPTS + 1))/8 scheduled** for ~$RETRY_AT_UTC — the retry cron will re-assign @${{ vars.DEV_AGENT }} automatically once the window has had time to reset. No manual action needed unless retries keep failing.
-          <!-- usage-limit-retry-after: $RETRY_AFTER -->"
+          # The per-issue comment is unchanged: it is what a human reads, and
+          # counting these comments is still how ATTEMPTS above is derived.
+          gh issue comment "$ISSUE" --body "$(printf '⏳ **Developer Agent**: This run hit the Claude usage limit (model calls terminating in ~1s). **Auto-retry %s/8 scheduled** for ~%s — the retry cron will re-assign @%s automatically once the window has had time to reset. No manual action needed unless retries keep failing.\n\n<!-- usage-limit-retry-after: %s -->' "$((ATTEMPTS + 1))" "$RETRY_AT_UTC" "${{ vars.DEV_AGENT }}" "$RETRY_AFTER")"
+
+          if [ -n "${RELEASE_ISSUE:-}" ]; then
+            MARKER=$(python3 scripts/agents/lib/usage_limit_retry.py schedule-marker "$ISSUE" issue "$RETRY_AFTER")
+            gh issue comment "$RELEASE_ISSUE" --body "$(printf '⏳ **Usage-limit retry queued**: issue #%s, retry after ~%s (attempt %s/8).\n\nThe `Usage Limit Auto-Retry` cron reads this queue and re-assigns @%s once the window has reset.\n\n%s' "$ISSUE" "$RETRY_AT_UTC" "$((ATTEMPTS + 1))" "${{ vars.DEV_AGENT }}" "$MARKER")"
+          else
+            echo "::warning::RELEASE_ISSUE_NUMBER is not configured — the usage-limit retry for #$ISSUE was NOT queued and will not fire. Re-assign @${{ vars.DEV_AGENT }} by hand once the window resets."
+          fi
 
           echo "handled=true" >> "$GITHUB_OUTPUT"
           exit 0

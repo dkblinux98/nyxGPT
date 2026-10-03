@@ -50,19 +50,26 @@ jobs:
     steps:
       - name: Restore the missing label
         shell: bash
-        # Create-then-apply, in that order: the overwhelmingly likely reason
-        # the template applied nothing is that the label does not exist, and
-        # applying it to this ticket would fail the same way. `--force` is
-        # idempotent, so this is a no-op when the label was merely dropped
-        # for some other reason.
+        # It used to create the label first, on the reasoning that the
+        # overwhelmingly likely cause of an unlabeled ticket is a missing
+        # label. Agents do not create labels (CLAUDE.md §Tooling, #4134), so
+        # this now ASSUMES the label exists and fails loudly if it does not.
+        #
+        # `gh issue edit --add-label` is the right verb for that, and
+        # deliberately not the REST "add labels to an issue" endpoint: REST
+        # silently CREATES a missing label, which would reintroduce exactly
+        # what was removed, while `gh` refuses. So the one failure mode this
+        # workflow cannot repair is also the one it reports accurately.
         run: |
           set -euo pipefail
-          gh label create "$LABEL" \
-            --repo "$REPO" \
-            --color "0e8a16" \
-            --description "User-filed support report (web UI -> Support -> File an Issue). Routed to the nyxGPT Support project; skipped by the agent loop." \
-            --force
-          gh issue edit "$ISSUE" --repo "$REPO" --add-label "$LABEL"
+          if ! gh issue edit "$ISSUE" --repo "$REPO" --add-label "$LABEL"; then
+            echo "::error::Could not apply '$LABEL' to #$ISSUE — the label does not exist in $REPO."
+            echo "::error::That is also why the ticket arrived unlabeled: GitHub drops a"
+            echo "::error::template-declared label that does not exist, silently (#3810)."
+            echo "::error::FIX: the repo OWNER re-creates the '$LABEL' label. Agents never create"
+            echo "::error::labels (CLAUDE.md §Tooling), so this cannot be self-healed."
+            exit 1
+          fi
           echo "Applied '$LABEL' to #$ISSUE"
 
       - name: Take the agent loop off the ticket
