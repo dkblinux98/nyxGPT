@@ -56,6 +56,7 @@ import os
 import re
 import sys
 
+from escalation_label import is_escalated
 from support_label import is_support_issue
 
 
@@ -136,6 +137,14 @@ def summarize(page: dict) -> dict:
             continue
 
         open_issues += 1
+
+        # An escalated issue is the owner's and is never selected (#4134).
+        # Unlike the support guard above this sits BELOW `open_issues`: an
+        # escalated issue is real work the loop will do again once the owner
+        # restores its label, so it still counts as open work -- it is only
+        # un-pullable right now.
+        if is_escalated((c.get("labels") or {}).get("nodes")):
+            continue
 
         if status != status_backlog:
             continue
