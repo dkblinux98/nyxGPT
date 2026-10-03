@@ -56,6 +56,13 @@ validate-web
 # a red one is a real defect on the head, which is precisely what the developer
 # round must fix rather than the reviewer relay.
 claim-decision
+# escalation-label-smoke.yml (#4134). Required, deliberately: the first job is
+# the executed evidence that an escalation really relabels, records, assigns
+# and leaves the lane alone, and the second is the only thing standing between
+# the tree and another agent-created label. A red one means the handoff to the
+# owner, or the rule the owner set about labels, is broken on this head.
+escalation-step
+label-guard-fails-when-it-should
 The guard refuses the branch that holds the only copy
 A merge that cannot be verified does not close its issue
 A failed verification continues the work, it does not restart it

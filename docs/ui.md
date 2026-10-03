@@ -764,11 +764,16 @@ template-declared label that does not, without erroring, and the form goes on
 accepting tickets that route nowhere and read to every guard as ordinary work.
 That is how #3810 was assigned to the scrummaster seven seconds after a user
 filed it. Two mechanisms now stand behind the label:
-`admin_ensure_support_label.yml` re-asserts it on a schedule and on any push
-touching the form, then verifies it by reading the label list back; and
-`support_intake_guard.yml` catches a support-shaped issue that arrives without
-it, relabels the ticket, removes any agent assignee, and fails the run on
-purpose so the degraded path is never quiet.
+`admin_ensure_support_label.yml` verifies it on a schedule and on any push
+touching the form, by reading the label list back and failing the run if the
+label is absent; and `support_intake_guard.yml` catches a support-shaped issue
+that arrives without it, relabels the ticket, removes any agent assignee, and
+fails the run on purpose so the degraded path is never quiet.
+
+Neither one CREATES the label. Only the owner creates labels (#4134): the
+scheduled job used to run `gh label create --force`, which also overwrote the
+owner's own colour and description on every run. The guarantee was never the
+create call — it was the read-back, and that is what both of these are now.
 
 ---
 

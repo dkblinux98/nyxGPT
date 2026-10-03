@@ -509,8 +509,29 @@ def test_improvement_filed_during_acceptance_is_gated():
     assert drain_gate.bypass(issue) is False
 
 
-def test_label_rule_is_off_until_configured():
+def test_the_agent_label_bypasses_by_default():
+    """Owner decision 2026-10-03 (#4134): `Agent` marks nyxAGENT-side work.
+
+    A DEFAULT, not an env var each workflow has to remember -- which is
+    exactly what went wrong before. The rule was wired and documented,
+    `DRAIN_GATE_BYPASS_LABELS` defaulted to empty "until the owner adds a
+    label", the owner added `Agent`, and no workflow passed it. An `Agent`
+    issue was still held for a product acceptance round it has no part in.
+    """
+    issue = {"title": "fix: agent process work", "body": "no marker", "labels": ["Agent"]}
+    assert drain_gate.bypass(issue) is True
+
+
+def test_an_unknown_label_still_does_not_bypass():
     issue = {"title": "process work", "body": "no marker", "labels": [{"name": "Process"}]}
+    assert drain_gate.bypass(issue) is False
+
+
+def test_the_label_rule_can_be_turned_off_explicitly(monkeypatch):
+    """An empty setting is distinguishable from an absent one: absent means
+    "use the default", empty means "no label bypasses"."""
+    monkeypatch.setenv("DRAIN_GATE_BYPASS_LABELS", "")
+    issue = {"title": "fix: agent process work", "body": "no marker", "labels": ["Agent"]}
     assert drain_gate.bypass(issue) is False
 
 
