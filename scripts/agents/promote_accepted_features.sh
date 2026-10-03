@@ -62,7 +62,14 @@ log() { echo "[promote] $*" >&2; }
 # labels are swept because both commands now record a blocking relationship
 # (owner decision 2026-08-12) -- an improvement filed against an issue holds
 # its acceptance exactly like a failure does.
-candidates="$(for label in "Acceptance%20Failure" "Improvement"; do
+#
+# `Escalation` is swept too (#4134). An escalation REPLACES the issue's label,
+# so an escalated acceptance failure carries `Escalation` and nothing else --
+# it would drop straight out of a label query over the other two, and the
+# issue it blocks would then never be promoted. It is swept here and
+# `issue_acceptance_role` substitutes the recorded prior label back in, so
+# such a candidate classifies as the rework it still is.
+candidates="$(for label in "Acceptance%20Failure" "Improvement" "Escalation"; do
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues?labels=${label}&state=all&per_page=100" --paginate \
     --jq '.[] | select(has("pull_request") | not) | {number, body: (.body // "")}'
 done | jq -s -c 'unique_by(.number)')"
@@ -103,6 +110,16 @@ while IFS= read -r feature; do
       log "[warn] Could not mark #$blocker as blocking #$feature"
     fi
   done
+
+  # An escalated issue is the owner's (#4134). Promoting it to For Release
+  # and closing it -- which is what this sweep does to a reopened original --
+  # would answer a question the owner is still holding. It becomes a
+  # candidate again the moment they restore its real label, and the sweep is
+  # a cron, so nothing is lost by waiting.
+  if [[ "$(issue_escalation_state "$feature")" == "yes" ]]; then
+    log "#$feature is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134) -- not promoted. It returns to this sweep when the owner restores its real label."
+    continue
+  fi
 
   fstatus="$(issue_status "$feature")"
   parked_lane=0

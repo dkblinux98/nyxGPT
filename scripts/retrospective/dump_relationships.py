@@ -15,8 +15,8 @@ Writes `data/relationships.json`:
     }
 
 Only issues that can carry an acceptance relationship are walked -- those
-labeled `Acceptance Failure` or `Improvement` -- so this costs one extra API
-call per such issue rather than one per issue in the repo. Everything they
+labeled `Acceptance Failure`, `Improvement` or `Escalation` -- so this costs
+one extra API call per such issue rather than one per issue in the repo. Everything they
 block is recorded in the same file (inverted into `blocked_by`), which is all
 `build_dashboard.py` needs.
 
@@ -39,7 +39,11 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 DEFAULT_REPO = "dkblinux98/nyxGPT"
-RELATIONSHIP_LABELS = ("Acceptance Failure", "Improvement")
+# `Escalation` is included (#4134): an escalation REPLACES the issue's label,
+# so an escalated acceptance failure carries `Escalation` and nothing else and
+# would drop out of this dump entirely -- taking its relationship, and the
+# `native` attribution it contributes, with it.
+RELATIONSHIP_LABELS = ("Acceptance Failure", "Improvement", "Escalation")
 
 
 def _gh_json(path: str, paginate: bool = False) -> object:
