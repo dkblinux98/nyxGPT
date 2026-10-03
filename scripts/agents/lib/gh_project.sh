@@ -2351,10 +2351,15 @@ ESCALATION_LABEL="Escalation"
 # unescalated and dispatched.
 issue_labels_json() {
   local issue="$1"
+  require_cmd jq
   local out
   out="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
     --jq '[.labels[]? | if type == "object" then .name else . end]' 2>/dev/null)" || return 1
-  [[ -n "$out" ]] || return 1
+  # A JSON ARRAY, or nothing. Anything else is an answer this function did
+  # not ask for -- an error body, a truncated response -- and passing it on
+  # would have every caller downstream reading label names out of whatever
+  # keys it happened to have.
+  jq -e 'type == "array"' <<<"${out:-null}" >/dev/null 2>&1 || return 1
   printf '%s' "$out"
 }
 
@@ -2645,7 +2650,10 @@ escalate_to_owner() {
 
   local body replaced_note=""
   if [[ -n "$replaced" ]]; then
-    replaced_note="$(printf '\n**Label replaced:** \`%s\` -> \`%s\`. Restore \`%s\` yourself when you hand it back -- no automation puts it back, and nothing removes \`%s\`.\n%s\n' \
+    # Backticks are NOT escaped here: the format string is single-quoted, so
+    # the shell never sees them as command substitution and a `\`` would put a
+    # literal backslash into the comment.
+    replaced_note="$(printf '\n**Label replaced:** `%s` -> `%s`. Restore `%s` yourself when you hand it back -- no automation puts it back, and nothing removes `%s`.\n%s\n' \
       "$replaced" "$ESCALATION_LABEL" "$replaced" "$ESCALATION_LABEL" \
       "$(python3 "${_LIB_DIR}/escalation_label.py" replaced-marker "$replaced")")"
   fi

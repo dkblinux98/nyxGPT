@@ -116,6 +116,23 @@ def due(comment_bodies: Iterable[str] | None, now: int) -> list[dict[str, Any]]:
     return [entry for entry in queue(comment_bodies) if int(now) >= entry["after"]]
 
 
+def _stdin_json(default: Any) -> Any:
+    """Parsed stdin, or `default` when there is nothing parseable there.
+
+    The queue reader must not die on an empty thread fetch -- but note that
+    the CRON does not rely on this: it checks the fetch itself and fails the
+    run, because "the queue looks empty" and "I could not read the queue" are
+    the same output here and only one of them is safe to act on.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(
@@ -141,13 +158,13 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "queue":
         # stdin: JSON array of the release issue's comment bodies.
-        print(json.dumps(queue(json.load(sys.stdin))))
+        print(json.dumps(queue(_stdin_json([]))))
         return 0
     if cmd == "due":
         if len(argv) < 2:
             print("usage: due <now_epoch>  # comment bodies JSON on stdin", file=sys.stderr)
             return 2
-        print(json.dumps(due(json.load(sys.stdin), int(argv[1]))))
+        print(json.dumps(due(_stdin_json([]), int(argv[1]))))
         return 0
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)

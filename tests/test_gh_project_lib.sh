@@ -224,19 +224,28 @@ JOBS_LONG_RUNNING='{"jobs":[{"steps":[
 _assert_eq "a genuinely long-running successful Claude step is not flagged" \
   "0" "$(count_fast_claude_steps "$JOBS_LONG_RUNNING" "$CLAUDE_STEP_PATTERN" false)"
 
-# --- Test 8: real_label_names filters workflow-control labels so an issue ---
-# --- carrying "usage-limit-retry" can still pass the one-label invariant ---
-# --- enforced before PR submission (the #3360 deadlock) ---
-LABELS_WITH_RETRY_MARKER='[{"name":"Acceptance Failure"},{"name":"usage-limit-retry"}]'
-REAL_LABELS="$(real_label_names "$LABELS_WITH_RETRY_MARKER")"
-_assert_eq "usage-limit-retry is filtered out of the real label list" \
-  "Acceptance Failure" "$REAL_LABELS"
-_assert_eq "exactly one real label remains, satisfying the one-label invariant" \
-  "1" "$(printf '%s\n' "$REAL_LABELS" | grep -c . || true)"
+# --- Test 8: real_label_names reports EVERY label (#4134). The ---
+# --- "workflow-control" class it used to filter existed for exactly one ---
+# --- name, `usage-limit-retry`, which only existed because two workflows ---
+# --- created it -- and the exemption was the hiding place the next invented ---
+# --- label would have used. Both are retired; the one-label invariant is ---
+# --- now enforced over a name-blind count. ---
+LABELS_TWO='[{"name":"Acceptance Failure"},{"name":"usage-limit-retry"}]'
+REAL_LABELS="$(real_label_names "$LABELS_TWO")"
+_assert_eq "nothing is exempt from the count any more" \
+  "2" "$(printf '%s\n' "$REAL_LABELS" | grep -c . || true)"
+_assert_contains "both names are reported" "$REAL_LABELS" "usage-limit-retry"
 
 LABELS_NORMAL='[{"name":"Feature"}]'
 _assert_eq "a normal single-label issue is unaffected" \
   "Feature" "$(real_label_names "$LABELS_NORMAL")"
+
+# `Escalation` is a label like any other here, which is what guarantees
+# hygiene never stamps `Feature` beside it: hygiene asks "how many labels?",
+# and a name-blind count cannot get that wrong for a name it has never heard
+# of (#3390/#3413/#3415, and #4134's hygiene criterion).
+_assert_eq "an escalated issue reads as having exactly one label" \
+  "Escalation" "$(real_label_names '[{"name":"Escalation"}]')"
 
 # --- Test 9: assign_and_trigger_developer on a fresh (unassigned) issue ---
 # --- just assigns -- no unassign dance, no fallback comment (the plain ---
@@ -412,6 +421,12 @@ gh() {
 SCRUM_AGENT="myGPT-scrummaster-agent"
 DEV_AGENT="myGPT-developer-agent"
 HUMAN_OWNER="dkblinux98"
+
+# The matrix consults the `Escalation` label first (#4134) -- an escalated
+# issue is skipped in every lane, because an escalation does not move the
+# lane. Default to "not escalated" so each case below states only the
+# assignee it is actually varying; the escalated case is asserted at the end.
+issue_labels_json() { echo '["Feature"]'; }
 
 ISSUE_STATE_STUB="OPEN"
 _issue_assignee_logins() { echo ""; }
@@ -711,219 +726,241 @@ _assert_eq "project_field_value reads a text field's value" \
 _assert_eq "project_field_value returns empty for a field the item has no value for" \
   "" "$(project_field_value "item-x" "Priority")"
 
-# --- Test 13: unresolved_escalation_issues (#3687) -- filters the raw open- ---
-# --- issues-assigned-to-owner fetch down to issues only (excludes PRs, ---
-# --- which the same REST endpoint also returns for an assignee) ---
+# --- Test 13: issue_labels_json (#4134) -- the one read every escalation ---
+# --- gate depends on. It must answer with a JSON ARRAY or refuse: a ---
+# --- caller that cannot tell "no labels" from "could not ask" treats an ---
+# --- unreadable issue as unescalated and dispatches work the owner holds. ---
 REPO_OWNER="test-owner"
 REPO_NAME="test-repo"
 HUMAN_OWNER="dkblinux98"
 
-_open_issues_assigned_to() {
-  [[ "$1" == "dkblinux98" ]] || { echo "[test] unexpected owner: $1" >&2; return 1; }
-  cat <<'JSON'
-[
-  {"number": 201, "title": "spec ambiguity on auth flow", "pull_request": null},
-  {"number": 202, "title": "some PR also assigned to owner", "pull_request": {"url": "x"}},
-  {"number": 203, "title": "flaky suite escalation", "pull_request": null}
-]
-JSON
+# Test 11 above stubs issue_labels_json to isolate the claim matrix from the
+# label read; this test IS the label read, so put the real one back.
+unset -f issue_labels_json
+# shellcheck source=/dev/null
+source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
+
+gh() { echo '["Feature"]'; }
+_assert_eq "issue_labels_json passes a JSON array through" \
+  '["Feature"]' "$(issue_labels_json 4134)"
+
+gh() { echo '{"message":"Not Found"}'; }
+rc=0
+issue_labels_json 4134 >/dev/null 2>&1 || rc=$?
+_assert_eq "issue_labels_json refuses a non-array answer" "1" "$rc"
+
+gh() { return 1; }
+rc=0
+issue_labels_json 4134 >/dev/null 2>&1 || rc=$?
+_assert_eq "issue_labels_json refuses a failed fetch" "1" "$rc"
+
+# --- Test 13b: issue_escalation_state (#4134) -- three answers, because ---
+# --- each of them authorizes something different ---
+issue_labels_json() { echo '["Escalation"]'; }
+_assert_eq "an Escalation-labeled issue reads yes" "yes" "$(issue_escalation_state 4134)"
+issue_labels_json() { echo '["Feature"]'; }
+_assert_eq "an ordinary issue reads no" "no" "$(issue_escalation_state 4134)"
+issue_labels_json() { return 1; }
+_assert_eq "an unreadable issue reads unknown, never no" \
+  "unknown" "$(issue_escalation_state 4134)"
+
+# --- Test 13c: issue_effective_labels_json (#4134) -- an escalated issue ---
+# --- still reads as its REAL type. Without this an escalated Acceptance ---
+# --- Failure classifies as an `original`: the drain gate would park it ---
+# --- forever and the promotion sweep would close it as accepted. ---
+issue_labels_json() { echo '["Escalation"]'; }
+_issue_comment_bodies_json() {
+  jq -cn '["🚨 Escalated\n\n<!-- escalation-replaced-label: Acceptance Failure -->"]'
 }
+_assert_eq "the recorded prior label is substituted back in" \
+  '["Acceptance Failure"]' "$(issue_effective_labels_json 4134)"
 
-# The counter is lane-aware now: default every candidate to a lane the
-# agents were driving, so these cases keep asserting what they always did.
-issue_status() { echo "In Review"; }
+# No comment thread fetch at all on the normal path: the labels already
+# answer the question, and an extra paginated read per held issue is a cost
+# the gate pays on every sweep.
+issue_labels_json() { echo '["Feature"]'; }
+_issue_comment_bodies_json() { echo "[test] must not be called" >&2; return 1; }
+_assert_eq "an unescalated issue is passed through untouched" \
+  '["Feature"]' "$(issue_effective_labels_json 4134)"
 
-ISSUES_OUT="$(unresolved_escalation_issues)"
-_assert_eq "unresolved_escalation_issues excludes PRs and lists both open issues" \
-  "#201 spec ambiguity on auth flow
-#203 flaky suite escalation" "$ISSUES_OUT"
-
-_open_issues_assigned_to() { echo "[]"; }
-_assert_eq "unresolved_escalation_issues is empty when nothing is assigned to the owner" \
-  "" "$(unresolved_escalation_issues)"
-
-# The release tracking issue is owner-assigned for the whole life of a
-# release; counting it would permanently drop the pause gate's effective
-# threshold from 2 to 1 (#3868 -- exactly how the 2026-08-18 post-acceptance
-# drain deadlocked on one real parked issue plus the tracker).
-_open_issues_assigned_to() {
-  cat <<'JSON'
-[
-  {"number": 3521, "title": "Release v3.0.0", "pull_request": null},
-  {"number": 201, "title": "spec ambiguity on auth flow", "pull_request": null}
-]
-JSON
-}
+# --- Test 14: escalation_cause_origin (#4134) -- one cause, one ---
+# --- escalation. A registry entry alone is NOT enough: the cause is open ---
+# --- only while its origin issue still carries `Escalation`, which is ---
+# --- what makes "the owner restores the label" the resolution and needs ---
+# --- no automation to ever touch that label. ---
 RELEASE_ISSUE_NUMBER="3521"
-_assert_eq "unresolved_escalation_issues excludes the release tracking issue" \
-  "#201 spec ambiguity on auth flow" "$(unresolved_escalation_issues)"
+_issue_comment_bodies_json() {
+  if [[ "$1" == "3521" ]]; then
+    jq -cn '["🚨 Escalation raised on #4100\n\n<!-- escalation-cause: red-head:ci origin=4100 -->"]'
+  else
+    echo '[]'
+  fi
+}
+issue_escalation_state() { [[ "$1" == "4100" ]] && echo "yes" || echo "no"; }
+_assert_eq "a registered cause whose origin is still escalated reports the origin" \
+  "4100" "$(escalation_cause_origin "red-head:ci")"
+_assert_eq "a different cause reports nothing" \
+  "" "$(escalation_cause_origin "conflict:99")"
+
+# The owner answered #4100 and restored its label -> the cause is closed,
+# and the next issue to hit it escalates properly instead of being linked to
+# a resolved escalation forever.
+issue_escalation_state() { echo "no"; }
+_assert_eq "a cause whose origin is no longer escalated is closed" \
+  "" "$(escalation_cause_origin "red-head:ci")"
 
 RELEASE_ISSUE_NUMBER=""
-_assert_eq "unresolved_escalation_issues keeps every issue when no release issue is configured" \
-  "#3521 Release v3.0.0
-#201 spec ambiguity on auth flow" "$(unresolved_escalation_issues)"
+_assert_eq "no release issue configured: no cause registry, no crash" \
+  "" "$(escalation_cause_origin "red-head:ci")"
+
+# --- Test 15: _escalation_replace_label (#4134) -- ADD FIRST, THEN ---
+# --- REMOVE. `gh issue edit --add-label` refuses to create a label that ---
+# --- does not exist, so if the owner has deleted `Escalation` the add ---
+# --- fails and the issue must keep its real label rather than be left ---
+# --- bare. This is the ordering the whole function exists for. ---
 RELEASE_ISSUE_NUMBER="3521"
-
-# --- Test 13b: the escalation count is by LANE, not by assignee alone ---
-#
-# The first cut counted every open owner-assigned issue. But the pipeline
-# itself assigns the owner on every successful merge (Status -> Acceptance
-# Testing, assignee -> HUMAN_OWNER), so the gate tripped as a function of
-# throughput: two accepted-and-unclosed items -- a normal healthy state --
-# stopped all dispatch. Observed 2026-08-19, ~10 hours of stall on #3910
-# (owner's own scheduled work) and #3814 (in For Release, i.e. done).
-_open_issues_assigned_to() {
-  cat <<'JSON'
-[
-  {"number": 301, "title": "accepted, awaiting owner test", "pull_request": null},
-  {"number": 302, "title": "done, awaiting the release ceremony", "pull_request": null},
-  {"number": 303, "title": "held by the drain gate", "pull_request": null},
-  {"number": 304, "title": "a real escalation", "pull_request": null}
-]
-JSON
-}
-issue_status() {
-  case "$1" in
-    301) echo "Acceptance Testing" ;;
-    302) echo "For Release" ;;
-    303) echo "Acceptance Failed" ;;
-    *)   echo "In Review" ;;
-  esac
-}
-_assert_eq "lanes that legitimately hold owner-assigned work are not escalations" \
-  "#304 a real escalation" "$(unresolved_escalation_issues)"
-_assert_eq "and the count reflects it -- one, not four" \
-  "1" "$(count_unresolved_escalations)"
-
-# A Status that cannot be read must FAIL OPEN. Over-counting stalls the whole
-# pipeline; under-counting dispatches a few issues while the owner has a
-# queue. The first is what actually cost a day, so an unreadable lane is not
-# an escalation.
-issue_status() { return 1; }
-_assert_eq "an unreadable Status does not count as an escalation (fails open)" \
-  "" "$(unresolved_escalation_issues 2>/dev/null)"
-
-# The release tracking issue stays exempt without needing a Status read --
-# it is filtered before the lane lookup, so the gate costs nothing for it.
-RELEASE_ISSUE_NUMBER=304
-issue_status() { echo "In Review"; }
-_assert_eq "the release issue is still exempt, and nothing else is dropped" \
-  "" "$(RELEASE_ISSUE_NUMBER=304 unresolved_escalation_issues | grep -F '#304' || true)"
-unset RELEASE_ISSUE_NUMBER
-
-# --- Test 14: count_unresolved_escalations (#3687) -- always echoes a ---
-# --- number, including zero (grep -c's exit-1-on-no-match must not leak) ---
-unresolved_escalation_issues() { echo ""; }
-_assert_eq "count_unresolved_escalations is 0 when nothing is unresolved" \
-  "0" "$(count_unresolved_escalations)"
-
-unresolved_escalation_issues() { printf '#201 a\n#203 b\n'; }
-_assert_eq "count_unresolved_escalations counts each listed issue" \
-  "2" "$(count_unresolved_escalations)"
-
-# --- Test 14b: _escalation_pause_comment_id (#3687) -- exercises the REAL ---
-# --- gh api + jq pipeline (only `gh` is stubbed, unlike the escalation_pause_gate ---
-# --- tests below which stub this function out entirely) so a regression in ---
-# --- the gh/jq invocation itself -- e.g. the Critical `gh api --jq --arg` ---
-# --- bug this fixes -- is caught. Two pages are returned to also cover the ---
-# --- --paginate-without-slurp pitfall (AGENTS.md): the matching comments ---
-# --- are split across pages with a later, non-matching comment on page 1, ---
-# --- so a per-page (unslurped) sort_by/last would pick the wrong id. ---
+# A FILE, not an array: `_escalation_replace_label` is called inside a
+# command substitution (it prints the replaced label), so anything the stub
+# appends to a shell array dies with the subshell.
+LABEL_LOG="$(mktemp)"
+_label_calls() { grep -c . "$LABEL_LOG" || true; }
 gh() {
-  if [[ "$1" == "api" && "$2" == "repos/test-owner/test-repo/issues/3521/comments" && "$3" == "--paginate" ]]; then
-    cat <<JSON
-[{"id": 111, "created_at": "2026-08-03T00:00:00Z", "body": "unrelated, newer than the page-2 comments"}]
-[{"id": 222, "created_at": "2026-08-01T00:00:00Z", "body": "old pause report $_ESCALATION_PAUSE_MARKER"}, {"id": 333, "created_at": "2026-08-02T00:00:00Z", "body": "newest pause report $_ESCALATION_PAUSE_MARKER"}]
-JSON
+  if [[ "$1" == "issue" && "$2" == "edit" ]]; then
+    printf '%s\n' "$*" >>"$LABEL_LOG"
     return 0
   fi
   echo "[test] unexpected gh invocation: $*" >&2
   return 1
 }
-_assert_eq "_escalation_pause_comment_id picks the latest matching comment across pages" \
-  "333" "$(_escalation_pause_comment_id 3521)"
+issue_labels_json() { echo '["Escalation"]'; }   # the post-add verification read
+REPLACED="$(_escalation_replace_label 4134 '["Acceptance Failure"]')"
+_assert_eq "the replaced label is reported back to the caller" \
+  "Acceptance Failure" "$REPLACED"
+_assert_contains "Escalation is added first" "$(sed -n 1p "$LABEL_LOG")" "--add-label Escalation"
+_assert_contains "the prior label is removed after" "$(sed -n 2p "$LABEL_LOG")" "--remove-label Acceptance Failure"
+_assert_eq "exactly one add and one remove" "2" "$(_label_calls)"
 
-gh() { echo "[]"; }
-_assert_eq "_escalation_pause_comment_id is empty when no comment matches the marker" \
-  "" "$(_escalation_pause_comment_id 3521)"
+# The owner deleted `Escalation`: the add fails, and NOTHING is removed.
+: >"$LABEL_LOG"
+gh() {
+  if [[ "$1" == "issue" && "$2" == "edit" ]]; then
+    printf '%s\n' "$*" >>"$LABEL_LOG"
+    [[ "$*" == *"--add-label"* ]] && return 1
+    return 0
+  fi
+  return 1
+}
+rc=0
+_escalation_replace_label 4134 '["Acceptance Failure"]' >/dev/null 2>&1 || rc=$?
+_assert_eq "a failed add is reported as a failure" "1" "$rc"
+_assert_eq "a failed add removes nothing" "1" "$(_label_calls)"
 
-# --- Test 15: escalation_pause_gate (#3687) -- the dispatch-pause decision ---
-# --- itself: 0 or 1 unresolved escalations never pauses (even without a ---
-# --- release issue configured); >=2 pauses and posts/updates a loud report ---
-# --- on RELEASE_ISSUE_NUMBER; dropping back below 2 clears/updates it ---
-RELEASE_ISSUE_NUMBER=""
-unresolved_escalation_issues() { echo ""; }
-if escalation_pause_gate; then
-  echo "[ok] zero unresolved escalations: gate stays open"
-else
-  echo "[FAIL] zero unresolved escalations: gate should stay open" >&2
-  FAILURES=$((FAILURES + 1))
-fi
+# The add reported success but the label is not there (a silent no-op, the
+# failure mode assign_issue_verified exists for). Still refuses to strip.
+: >"$LABEL_LOG"
+gh() {
+  if [[ "$1" == "issue" && "$2" == "edit" ]]; then printf '%s\n' "$*" >>"$LABEL_LOG"; return 0; fi
+  return 1
+}
+issue_labels_json() { echo '["Acceptance Failure"]'; }
+rc=0
+_escalation_replace_label 4134 '["Acceptance Failure"]' >/dev/null 2>&1 || rc=$?
+_assert_eq "an unverified add is reported as a failure" "1" "$rc"
+_assert_eq "an unverified add removes nothing" "1" "$(_label_calls)"
+rm -f "$LABEL_LOG"
 
-unresolved_escalation_issues() { echo "#201 only one"; }
-if escalation_pause_gate; then
-  echo "[ok] exactly one unresolved escalation: gate stays open (normal traffic)"
-else
-  echo "[FAIL] exactly one unresolved escalation: gate should stay open" >&2
-  FAILURES=$((FAILURES + 1))
-fi
-
-RELEASE_ISSUE_NUMBER="3521"
-unresolved_escalation_issues() { printf '#201 first\n#203 second\n'; }
-_escalation_pause_comment_id() { echo ""; }
+# --- Test 15b: escalate_to_owner (#4134) -- THE escalation step. One ---
+# --- call must do all of it: relabel (recording what it replaced), ---
+# --- assign the owner VERIFIED, comment with the blast radius, DM once ---
+# --- per CAUSE -- and leave the Status lane alone. ---
+LANE_WRITES=()
+set_issue_status() { LANE_WRITES+=("$*"); }
+ASSIGNED=()
+assign_issue_verified() { ASSIGNED+=("$1 -> $2"); return 0; }
+NOTIFIED=()
+notify_human_escalation() { NOTIFIED+=("$*"); return 0; }
 POSTED_ISSUES=()
 POSTED_BODIES=()
 issue_comment() { POSTED_ISSUES+=("$1"); POSTED_BODIES+=("$2"); }
-PATCH_CALLS=()
-gh() {
-  if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
-    PATCH_CALLS+=("$*")
-    return 0
-  fi
-  echo "[test] unexpected gh invocation: $*" >&2
-  return 1
-}
+blast_radius_report() { echo "### Blast radius (stub for #$1, cause $2)"; }
+issue_labels_json() { echo '["Acceptance Failure"]'; }
+_escalation_replace_label() { echo "Acceptance Failure"; }
+_issue_comment_bodies_json() { echo '[]'; }
 
-if escalation_pause_gate; then
-  echo "[FAIL] two unresolved escalations: gate should pause" >&2
-  FAILURES=$((FAILURES + 1))
-else
-  echo "[ok] two unresolved escalations: gate pauses"
-fi
-_assert_eq "pausing posts exactly one report (no prior comment to update)" "1" "${#POSTED_ISSUES[@]}"
-_assert_eq "the report is posted on the release tracking issue" "3521" "${POSTED_ISSUES[0]}"
-_assert_contains "the report lists both escalated issues" "${POSTED_BODIES[0]}" "#201 first"
-_assert_contains "the report lists both escalated issues" "${POSTED_BODIES[0]}" "#203 second"
-_assert_eq "pausing does not PATCH (no existing comment)" "0" "${#PATCH_CALLS[@]}"
+rc=0
+escalate_to_owner 4134 "review-escalation" "three cycles, still red" \
+  "merge, guide or close PR #4200" "review-cycle-limit:4134" "extra detail" || rc=$?
+_assert_eq "escalate_to_owner succeeds when the assignment verifies" "0" "$rc"
+_assert_eq "the Status lane is NEVER touched" "0" "${#LANE_WRITES[@]}"
+_assert_eq "the owner is assigned, verified" "4134 -> dkblinux98" "${ASSIGNED[0]}"
+_assert_contains "the DM is deduped on the CAUSE, not the issue" \
+  "${NOTIFIED[0]}" "escalation:review-cycle-limit:4134"
+_assert_contains "the comment records the replaced label" \
+  "${POSTED_BODIES[0]}" "escalation-replaced-label: Acceptance Failure"
+_assert_contains "the comment tells the owner to restore it themselves" \
+  "${POSTED_BODIES[0]}" "Restore \`Acceptance Failure\` yourself"
+_assert_contains "the comment carries the blast radius" \
+  "${POSTED_BODIES[0]}" "Blast radius"
+_assert_contains "the caller's own detail is included" \
+  "${POSTED_BODIES[0]}" "extra detail"
+_assert_contains "the cause is registered on the release tracking issue" \
+  "${POSTED_BODIES[1]}" "escalation-cause: review-cycle-limit:4134 origin=4134"
+_assert_eq "the cause registration lands on the release issue" "3521" "${POSTED_ISSUES[1]}"
 
-# Already paused with an existing report comment -- update in place, don't
-# post a second comment.
-_escalation_pause_comment_id() { echo "999"; }
-POSTED_ISSUES=()
+# An issue that is ALREADY escalated is not escalated again: re-recording a
+# replaced label would overwrite the FIRST record, which is the one the owner
+# has yet to restore.
+POSTED_ISSUES=(); POSTED_BODIES=(); ASSIGNED=(); NOTIFIED=()
+issue_labels_json() { echo '["Escalation"]'; }
+rc=0
+escalate_to_owner 4134 "review-escalation" "d" "a" "c" >/dev/null 2>&1 || rc=$?
+_assert_eq "re-escalating an escalated issue is a no-op success" "0" "$rc"
+_assert_eq "nothing is commented" "0" "${#POSTED_BODIES[@]}"
+_assert_eq "nothing is reassigned" "0" "${#ASSIGNED[@]}"
+_assert_eq "nothing is re-notified" "0" "${#NOTIFIED[@]}"
+
+# A SECOND issue broken by the SAME cause: labelled and assigned (so it is
+# paused too), linked to the origin, and NOT diagnosed again. This is the
+# collapse that replaces the retired count-of-2 pause -- one escalation per
+# cause, and unrelated work keeps dispatching because nothing touches it.
+POSTED_ISSUES=(); POSTED_BODIES=(); ASSIGNED=(); NOTIFIED=()
+issue_labels_json() { echo '["Feature"]'; }
+escalation_cause_origin() { echo "4100"; }
+BLAST_CALLS=0
+blast_radius_report() { BLAST_CALLS=$((BLAST_CALLS + 1)); echo "### Blast radius"; }
+rc=0
+escalate_to_owner 4200 "red-head" "same broken check" "fix the check" "red-head:ci" || rc=$?
+_assert_eq "the linked escalation succeeds" "0" "$rc"
+_assert_eq "the second issue is NOT diagnosed again" "0" "$BLAST_CALLS"
+_assert_contains "it points at the origin escalation" "${POSTED_BODIES[0]}" "same cause as #4100"
+_assert_eq "it is still assigned to the owner (so it is paused too)" \
+  "4200 -> dkblinux98" "${ASSIGNED[0]}"
+_assert_eq "the cause is not re-registered" "1" "${#POSTED_BODIES[@]}"
+_assert_contains "the DM dedup key is the cause, so no second DM is sent" \
+  "${NOTIFIED[0]}" "escalation:red-head:ci"
+
+# A failed owner assignment is reported as a failure -- the whole point of
+# escalating is that someone finds out (#3332) -- while the label and the
+# comment still stand.
 POSTED_BODIES=()
-PATCH_CALLS=()
-if escalation_pause_gate; then
-  echo "[FAIL] still >=2 unresolved with an existing report: gate should stay paused" >&2
-  FAILURES=$((FAILURES + 1))
-else
-  echo "[ok] still >=2 unresolved with an existing report: gate stays paused"
-fi
-_assert_eq "an existing report is updated, not duplicated" "0" "${#POSTED_ISSUES[@]}"
-_assert_eq "updating the existing report PATCHes it once" "1" "${#PATCH_CALLS[@]}"
-_assert_contains "the PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
+escalation_cause_origin() { echo ""; }
+assign_issue_verified() { return 1; }
+rc=0
+escalate_to_owner 4300 "red-head" "d" "a" "cause-x" >/dev/null 2>&1 || rc=$?
+_assert_eq "an unverified owner assignment fails the escalation call" "1" "$rc"
 
-# Count drops back below 2 with a stale report comment present -- the gate
-# reopens and the stale report is updated to say so (not left dangling).
-unresolved_escalation_issues() { echo "#201 first"; }
-PATCH_CALLS=()
-if escalation_pause_gate; then
-  echo "[ok] dropping below 2 with a stale report: gate reopens"
-else
-  echo "[FAIL] dropping below 2 with a stale report: gate should reopen" >&2
-  FAILURES=$((FAILURES + 1))
-fi
-_assert_eq "reopening updates the stale report exactly once" "1" "${#PATCH_CALLS[@]}"
-_assert_contains "the reopen PATCH targets the existing comment id" "${PATCH_CALLS[0]}" "issues/comments/999"
+# No owner configured: refuses rather than silently labelling an issue
+# nobody was handed.
+HUMAN_OWNER=""
+rc=0
+escalate_to_owner 4300 "s" "d" "a" "c" >/dev/null 2>&1 || rc=$?
+_assert_eq "no HUMAN_OWNER configured: escalate_to_owner refuses" "1" "$rc"
+HUMAN_OWNER="dkblinux98"
+
+unset -f set_issue_status assign_issue_verified notify_human_escalation \
+  issue_comment blast_radius_report issue_labels_json _escalation_replace_label \
+  _issue_comment_bodies_json escalation_cause_origin issue_escalation_state
+source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
 
 # --- Test 16: _slack_notify_recent (#3695) -- exercises the REAL gh api + ---
 # --- jq + python3 cutoff pipeline (only `gh` is stubbed) so a regression ---

@@ -485,6 +485,11 @@ DEV_AGENT="myGPT-developer-agent"
 HUMAN_OWNER="dkblinux98"
 gh() { echo "OPEN"; }
 _issue_assignee_logins() { echo ""; }
+# The claim state consults the `Escalation` label before the lane (#4134):
+# an escalated issue stays in whatever lane the work had reached, so the lane
+# says nothing about it. Default to "not escalated" here; the escalated case
+# is asserted below.
+issue_labels_json() { echo '["Acceptance Failure"]'; }
 
 issue_status() { echo "Acceptance Failed"; }
 _assert_eq "an issue in the holding lane classifies as drain_gate_held" \
@@ -504,6 +509,29 @@ _assert_eq "a held issue is never moved to In Progress" "" "$(cat "$STATUS_FILE"
 issue_status() { echo "Backlog"; }
 _assert_eq "a Backlog issue is still claimable once released" \
   "claimable" "$(classify_backlog_claim_state 3700)"
+
+# --- Test 10: an ESCALATED issue is never started, in any lane (#4134) ---
+# The explicit form of the `human_hold` state, which had to infer the hold
+# from the assignee. The lane is Backlog here on purpose: an escalation does
+# not move the Status lane, so a claimable-looking lane must not be enough.
+issue_labels_json() { echo '["Escalation"]'; }
+_assert_eq "an escalated Backlog issue classifies as escalated" \
+  "escalated" "$(classify_backlog_claim_state 3700)"
+
+: >"$STATUS_FILE"
+rc=0
+out="$(scrummaster_attempt_start 3700)" || rc=$?
+_assert_eq "starting an escalated issue is a quiet skip" "10" "$rc"
+_assert_contains "the skip names the escalation" "$out" "reason=escalated"
+_assert_eq "an escalated issue is never moved to In Progress" "" "$(cat "$STATUS_FILE")"
+
+# An unreadable label list is treated as escalated, deliberately: starting
+# work on an issue the owner may be holding creates a PR and a review round
+# that have to be undone, while skipping it costs one dispatch attempt and
+# the fall-through loop tries the next candidate immediately.
+issue_labels_json() { return 1; }
+_assert_eq "an unreadable label list is treated as escalated, not claimable" \
+  "escalated" "$(classify_backlog_claim_state 3700)"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

@@ -171,6 +171,23 @@ def cause_origin(comment_bodies: Iterable[str] | None, cause: str) -> int | None
     return found
 
 
+def _stdin_json(default: Any) -> Any:
+    """Parsed stdin, or `default` when there is nothing parseable there.
+
+    Every caller is a shell function that has already decided what "could not
+    read it" means; a Python traceback in the middle of their pipeline just
+    replaces that decision with noise. Empty stdin is the common case (a `gh`
+    call that failed under `2>/dev/null`), so it is not an error here.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
 def _usage() -> int:
     print(
         "usage: escalation_label.py "
@@ -188,17 +205,17 @@ def main(argv: list[str]) -> int:
 
     if cmd == "is-escalated":
         # stdin: the issue's `.labels` (objects or strings).
-        print("true" if is_escalated(json.load(sys.stdin)) else "false")
+        print("true" if is_escalated(_stdin_json([])) else "false")
         return 0
     if cmd == "replaced-label":
         # stdin: JSON array of comment bodies, chronological.
-        print(replaced_label(json.load(sys.stdin)))
+        print(replaced_label(_stdin_json([])))
         return 0
     if cmd == "effective-labels":
         # stdin: {"labels": [...], "comments": ["body", ...]} -> JSON array of
         # names. One call does the whole translation so the shell never has to
         # know the substitution rule.
-        payload = json.load(sys.stdin)
+        payload = _stdin_json({})
         print(
             json.dumps(
                 effective_labels(payload.get("labels"), replaced_label(payload.get("comments")))
@@ -219,7 +236,7 @@ def main(argv: list[str]) -> int:
         if len(argv) < 2:
             return _usage()
         # stdin: JSON array of the release issue's comment bodies.
-        origin = cause_origin(json.load(sys.stdin), argv[1])
+        origin = cause_origin(_stdin_json([]), argv[1])
         print("" if origin is None else origin)
         return 0
 

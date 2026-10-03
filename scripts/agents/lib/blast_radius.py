@@ -204,6 +204,23 @@ def report(findings: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _stdin_json(default: Any) -> Any:
+    """Parsed stdin, or `default` when there is nothing parseable there.
+
+    Same reasoning as escalation_label._stdin_json: this runs inside a shell
+    pipeline whose caller has already decided what an unreadable input means,
+    and a traceback there replaces that decision with noise. A failed
+    investigation must never swallow the escalation it accompanies.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
 def main(argv: list[str]) -> int:
     if not argv or argv[0] not in {"report", "systemic", "same-signature"}:
         print(
@@ -218,9 +235,9 @@ def main(argv: list[str]) -> int:
             return 2
         exclude = [int(argv[2])] if len(argv) > 2 and argv[2].isdigit() else []
         # stdin: JSON array of the release issue's comment bodies.
-        print(json.dumps(same_signature_refs(json.load(sys.stdin), argv[1], exclude)))
+        print(json.dumps(same_signature_refs(_stdin_json([]), argv[1], exclude)))
         return 0
-    findings = json.load(sys.stdin)
+    findings = _stdin_json({})
     if argv[0] == "report":
         print(report(findings))
     else:
