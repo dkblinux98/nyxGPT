@@ -524,7 +524,7 @@ jobs:
       - name: Run Claude Code to fix acceptance failure
         if: steps.acceptance_failure.conclusion == 'success'
         id: claude_acceptance_fix
-        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
+        uses: anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104 # v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -726,7 +726,7 @@ jobs:
       - name: Run Claude Code to fix review issues (Review Fix)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
         id: claude_review_fix
-        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
+        uses: anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104 # v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -952,7 +952,7 @@ jobs:
       - name: Run Claude Code to implement issue (Initial)
         if: steps.check_pr.outputs.pr_exists == 'false'
         id: claude_initial
-        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
+        uses: anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104 # v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1493,7 +1493,7 @@ jobs:
           steps.verify1.outputs.verification_passed == 'false' &&
           steps.work_branch.outputs.name != ''
         id: claude_fix2
-        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
+        uses: anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104 # v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -1680,7 +1680,7 @@ jobs:
           steps.verify2.outputs.verification_passed == 'false' &&
           steps.work_branch.outputs.name != ''
         id: claude_fix3
-        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
+        uses: anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104 # v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -2497,7 +2497,7 @@ jobs:
             steps.classify_error.outputs.error_class == 'unknown'
           )
         id: claude_analysis
-        uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
+        uses: anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104 # v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
