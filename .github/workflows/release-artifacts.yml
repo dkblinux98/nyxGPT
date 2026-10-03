@@ -120,7 +120,7 @@ jobs:
       # `released` event or an explicit dispatch, and the alternative
       # (shipping an image half the target platforms cannot run) is not one.
       - name: Build and push nyxgpt-api
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -130,7 +130,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/nyxgpt-api:latest
 
       - name: Build and push nyxgpt-web
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./web
           push: true
