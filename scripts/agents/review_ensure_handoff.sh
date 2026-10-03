@@ -186,18 +186,19 @@ case "$action" in
     ;;
 
   escalate)
-    ASSIGN_OK=1
-    assign_issue_verified "$ISSUE" "$HUMAN_OWNER" || ASSIGN_OK=0
-    gh pr edit "$PR" --add-assignee "$HUMAN_OWNER" || true
-
     if [[ "$escalate_reason" == "spec_ambiguity" ]]; then
       HEADLINE="⚠️ **Review Agent**: Escalated immediately — spec ambiguity (#3687 huddle protocol, type c)"
       DETAIL="@${HUMAN_OWNER} The review agent classified this REQUEST_CHANGES round as a spec ambiguity: the issue itself is unclear, or resolving it needs owner authority no agent conversation can supply. Escalating at cycle zero rather than looping."
       NOTIFY_DIAGNOSIS="Review agent classified a REQUEST_CHANGES round on PR #${PR} as spec ambiguity -- the issue is unclear, or needs owner authority no agent conversation can supply."
+      # The cause is the ISSUE's own unclear spec, so it is unique to it --
+      # two issues are never ambiguous for "the same reason" in a way another
+      # agent could reuse. Keying on the issue keeps that honest.
+      CAUSE="spec-ambiguity:${ISSUE}"
     else
       HEADLINE="⚠️ **Review Agent**: Escalated after 3 review cycles"
       DETAIL="@${HUMAN_OWNER} This PR has gone through 3 review cycles with requested changes, but issues persist."
       NOTIFY_DIAGNOSIS="PR #${PR} has gone through 3 review cycles with requested changes and issues still remain."
+      CAUSE="review-cycle-limit:${ISSUE}"
     fi
 
     BODY="$(printf '%s\n\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s' \
@@ -209,19 +210,27 @@ case "$action" in
       "[View all review comments](https://github.com/${REPO}/pull/${PR})" \
       "$BACKSTOP_NOTE")"
     gh pr comment "$PR" --body "$BODY"
+    gh pr edit "$PR" --add-assignee "$HUMAN_OWNER" || true
 
-    # Best-effort, exactly as on the primary escalation path: neither the
-    # autopilot kick nor the Slack DM failing may block the escalation.
-    # shellcheck disable=SC2015  # deliberate: any failure in the chain logs
-    # a warning and the escalation itself still stands.
+    # ONE escalation step (#4134): label replaced with `Escalation`, owner
+    # assigned and verified, blast radius investigated, Slack DM sent. The
+    # Status lane is deliberately NOT touched -- the issue stays in In Review,
+    # which is where the work had got to.
+    ESCALATE_OK=1
+    escalate_to_owner "$ISSUE" 'review-escalation' "$NOTIFY_DIAGNOSIS" \
+      "Review PR #${PR}: merge if acceptable, give the developer specific guidance, or close it." \
+      "$CAUSE" \
+      "$(printf '[Review thread](https://github.com/%s/pull/%s) · %s' "$REPO" "$PR" "$BACKSTOP_NOTE")" \
+      || ESCALATE_OK=0
+
+    # Best-effort, exactly as on the primary escalation path: the autopilot
+    # kick frees the queue for other work and its failure cannot block the
+    # escalation that has already been recorded.
     sprint_autopilot_kick "$ISSUE" escalated \
-      && notify_human_escalation "$ISSUE" 'review-escalation' "$NOTIFY_DIAGNOSIS" \
-           "Review PR #${PR}: merge if acceptable, give the developer specific guidance, or close it." \
-           "${ISSUE}:review_escalation" \
-      || log "WARNING: autopilot kick / human notification failed for issue #${ISSUE} -- escalation itself is unaffected"
+      || log "WARNING: autopilot kick failed for issue #${ISSUE} -- escalation itself is unaffected"
 
-    if [[ "$ASSIGN_OK" != "1" ]]; then
-      echo "::error::Escalation comment posted for issue #${ISSUE}, but the assignment to @${HUMAN_OWNER} could not be verified" >&2
+    if [[ "$ESCALATE_OK" != "1" ]]; then
+      echo "::error::Issue #${ISSUE} was escalated but the handover could not be fully verified -- see the errors above" >&2
       exit 1
     fi
     log "✓ Issue #${ISSUE} escalated to @${HUMAN_OWNER} (${escalate_reason})"

@@ -573,26 +573,10 @@ jobs:
             exit 0
           fi
 
-          # Keep issue in "In Review" status and assign to human owner.
-          # Verified + retried (not a bare issue_assign_only call) because
-          # escalation exists specifically to hand off to the human — a
-          # silently-failed assignment here means nobody ever finds out the
-          # PR needs attention (#3332).
-          ASSIGN_OK=1
-          bash -lc "cd '$GITHUB_WORKSPACE' && \
-            source scripts/agents/lib/gh_project.sh && \
-            load_config && \
-            require_gh_auth && \
-            assign_issue_verified '$ISSUE' \"\$HUMAN_OWNER\"" || ASSIGN_OK=0
-
-          if [[ "$ASSIGN_OK" != "1" ]]; then
-            echo "::error::Could not verify issue #${ISSUE} was assigned to" \
-              "@${{ vars.HUMAN_OWNER }} on escalation ($REASON) — it may still show" \
-              "@${{ vars.REVIEW_AGENT }} as assignee. Manual fix:" \
-              "gh issue edit ${ISSUE} --add-assignee ${{ vars.HUMAN_OWNER }}"
-          fi
-
-          # Assign PR to human owner
+          # Assign PR to human owner. The ISSUE side of the handover is the
+          # one escalation step below (#4134) -- this step used to assign the
+          # owner here and send the Slack DM 60 lines further down, which is
+          # how "escalated" came to mean two different things in two places.
           gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
 
           # Post escalation comment. Wording depends on why (#3687): the
@@ -629,39 +613,62 @@ jobs:
           fi
           gh pr comment "$PR" --body "$BODY"
 
-          # #3695: human-visible channel outside GitHub threads for this
-          # terminal outcome -- the GitHub comment above already carries the
-          # full escalation, this is additive (Slack DM, best-effort).
           if [[ "$REASON" == "spec_ambiguity" ]]; then
             NOTIFY_DIAGNOSIS="Review agent classified a REQUEST_CHANGES round on PR #$PR as spec ambiguity -- the issue is unclear, or needs owner authority no agent conversation can supply."
+            CAUSE="spec-ambiguity:${ISSUE}"
           else
             NOTIFY_DIAGNOSIS="PR #$PR has gone through 3 review cycles with requested changes and issues still remain."
+            CAUSE="review-cycle-limit:${ISSUE}"
           fi
           NOTIFY_ACTION="Review PR #$PR: merge if acceptable, give the developer specific guidance, or close it."
+
+          # THE escalation step (#4134), replacing the assign-here-and-DM-60-
+          # lines-later pair: it replaces the issue's label with `Escalation`,
+          # records what it replaced so the owner knows what to restore,
+          # assigns and VERIFIES the owner (#3332), investigates the blast
+          # radius into the comment, and sends the Slack DM (#3695) deduped on
+          # the cause. It does NOT move the Status lane -- the issue stays in
+          # In Review, which is where the work had got to.
+          #
+          # Arguments go through the environment, not through an interpolated
+          # single-quoted string: a diagnosis containing an apostrophe used to
+          # break the command it was pasted into.
+          ESCALATE_OK=1
+          NYXGPT_ESC_ISSUE="$ISSUE" \
+          NYXGPT_ESC_DIAGNOSIS="$NOTIFY_DIAGNOSIS" \
+          NYXGPT_ESC_ACTION="$NOTIFY_ACTION" \
+          NYXGPT_ESC_CAUSE="$CAUSE" \
+          NYXGPT_ESC_DETAIL="[Review thread](https://github.com/${REPO}/pull/${PR})" \
+          bash -lc 'cd "$GITHUB_WORKSPACE" \
+            && source scripts/agents/lib/gh_project.sh \
+            && load_config \
+            && require_gh_auth \
+            && escalate_to_owner "$NYXGPT_ESC_ISSUE" "review-escalation" \
+                 "$NYXGPT_ESC_DIAGNOSIS" "$NYXGPT_ESC_ACTION" \
+                 "$NYXGPT_ESC_CAUSE" "$NYXGPT_ESC_DETAIL"' || ESCALATE_OK=0
 
           # Sprint-autopilot continuation kick: only merges used to send the
           # continue signal, so an escalation starved dispatch even
           # though nothing was blocked. The reviewer has handed this PR to
           # the owner — post the same gated kick a merge posts (identical
           # SPRINT_AUTOPILOT / pause / release-drained checks) so the queue
-          # continues with other work. Best-effort: neither the kick nor the
-          # notification failing blocks the escalation itself.
+          # continues with other work. Best-effort: a kick failure never
+          # blocks the escalation that is already recorded.
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            sprint_autopilot_kick '$ISSUE' escalated && \
-            notify_human_escalation '$ISSUE' 'review-escalation' '$NOTIFY_DIAGNOSIS' '$NOTIFY_ACTION' '$ISSUE:review_escalation'" \
-            || echo "::warning::Sprint-autopilot kick / human notification after escalation failed for issue #${ISSUE} — escalation itself is unaffected."
+            sprint_autopilot_kick '$ISSUE' escalated" \
+            || echo "::warning::Sprint-autopilot kick after escalation failed for issue #${ISSUE} — escalation itself is unaffected."
 
           echo "::endgroup::"
 
-          if [[ "$ASSIGN_OK" != "1" ]]; then
-            echo "✗ Escalation comment posted, but issue assignment could not be verified — see ::error:: above"
+          if [[ "$ESCALATE_OK" != "1" ]]; then
+            echo "✗ Escalation comment posted, but the handover could not be fully verified — see ::error:: above"
             exit 1
           fi
 
-          echo "✓ Escalation complete - issue kept in 'In Review', assigned to human"
+          echo "✓ Escalation complete - issue kept in 'In Review', labeled 'Escalation', assigned to human"
           exit 0
 
       - name: Return to developer (if changes requested and not escalated or huddling)

@@ -35,9 +35,15 @@ jobs:
     # The only trigger: DEV_AGENT was assigned. Who may assign is checked in
     # the claim step below (it needs the board state, which an `if:` cannot
     # read), so an unpermitted assigner leaves the issue untouched.
+    #
+    # An escalated issue never starts a run (#4134): the owner holds it, and
+    # the label is the whole signal. Evaluated by GitHub rather than on a
+    # runner, so an `Escalation`-labeled issue that somehow gets the developer
+    # assigned costs nothing at all.
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
-          && github.event.assignee.login == vars.DEV_AGENT }}
+          && github.event.assignee.login == vars.DEV_AGENT
+          && !contains(github.event.issue.labels.*.name, 'Escalation') }}
     runs-on: ubuntu-latest
     # Serialize runs per-issue: a rework hand-back unassigns and reassigns to
     # force the event, and an unrelated burst of assignment activity on the
@@ -3066,9 +3072,16 @@ jobs:
           ISSUE="${{ github.event.issue.number }}"
 
           if [[ "$STATE_ANOMALY" == "true" ]]; then
-            # #3694: distinct verb -- this issue was not escalated to the
+            # #3694: distinct verb -- this issue was NOT escalated to the
             # owner and no review cycles occurred; it hit a cross-issue
             # infrastructure anomaly another issue already diagnosed.
+            #
+            # Reviewed under #4134 and deliberately left a NOTIFICATION, not
+            # an escalation: nothing changed hands. The issue is not the
+            # owner's, it resumes on its own when the anomaly clears, and the
+            # one escalation for this cause (if there is one) belongs on the
+            # origin issue. Labelling every affected issue `Escalation` would
+            # be exactly the one-per-issue flood #3694 exists to collapse.
             sprint_autopilot_kick "$ISSUE" anomaly
             STATE="cross-issue-anomaly"
             DIAGNOSIS="Step '${ANOMALY_STEP}' failing here matches the unresolved cross-issue infrastructure anomaly tracked on #${ANOMALY_ORIGIN} (#3694) -- redundant diagnosis skipped."
@@ -3076,27 +3089,43 @@ jobs:
             # Dedup on the ORIGIN issue, not this one: one infrastructure
             # event should produce one Slack DM total, not one per affected
             # issue (the same collapse #3694 applies to diagnosis).
-            DEDUP_KEY="${ANOMALY_ORIGIN}:developer:${STATE}"
-          else
-            sprint_autopilot_kick "$ISSUE" escalated
-            if [[ "$STATE_FATAL" == "true" ]]; then
-              STATE="FATAL"
-              DIAGNOSIS="$DIAG_FATAL"
-              ACTION="$ACTION_FATAL"
-            elif [[ "$STATE_REQUIRES_MERGE" == "true" ]]; then
-              STATE="FIXED_REQUIRES_MERGE"
-              DIAGNOSIS="$DIAG_REQUIRES_MERGE"
-              ACTION="$ACTION_REQUIRES_MERGE"
-            else
-              STATE="retry-budget-exhausted"
-              DIAGNOSIS="$DIAG_RETRY_EXHAUSTED"
-              ACTION="$ACTION_RETRY_EXHAUSTED"
-            fi
-            DEDUP_KEY="${ISSUE}:developer:${STATE}"
+            notify_human_escalation "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" \
+              "${ANOMALY_ORIGIN}:developer:${STATE}" \
+              || echo "::warning::Human-channel notification failed for issue #${ISSUE} — the anomaly link itself is unaffected."
+            exit 0
           fi
 
-          notify_human_escalation "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" "$DEDUP_KEY" \
-            || echo "::warning::Human-channel notification failed for issue #${ISSUE} — escalation itself is unaffected."
+          sprint_autopilot_kick "$ISSUE" escalated
+          if [[ "$STATE_FATAL" == "true" ]]; then
+            STATE="FATAL"
+            DIAGNOSIS="$DIAG_FATAL"
+            ACTION="$ACTION_FATAL"
+          elif [[ "$STATE_REQUIRES_MERGE" == "true" ]]; then
+            STATE="FIXED_REQUIRES_MERGE"
+            DIAGNOSIS="$DIAG_REQUIRES_MERGE"
+            ACTION="$ACTION_REQUIRES_MERGE"
+          else
+            STATE="retry-budget-exhausted"
+            DIAGNOSIS="$DIAG_RETRY_EXHAUSTED"
+            ACTION="$ACTION_RETRY_EXHAUSTED"
+          fi
+
+          # ONE escalation step (#4134): label replaced with `Escalation`,
+          # owner assigned and verified, blast radius investigated, Slack DM
+          # sent, Status lane untouched. Before this the developer path only
+          # sent the DM -- it never assigned the owner -- so the dispatch
+          # pause that inferred escalation from the assignee could not see a
+          # developer escalation at all.
+          #
+          # The cause key is the FAILED STEP, not the issue: a step that is
+          # broken for everyone breaks every issue that reaches it, and the
+          # owner gets one escalation for the step instead of one per issue.
+          # That is the same collapse as the anomaly path above, applied to
+          # the terminal case where the work really does change hands.
+          escalate_to_owner "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" \
+            "developer-failure:${ANOMALY_STEP:-unknown-step}" \
+            "[Failed run](${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" \
+            || echo "::error::Issue #${ISSUE} was escalated but the handover could not be fully verified — see the errors above."
 
       # ---------------------------------------------------------------
       # #3862: no branch reaches the remote without a pull request.

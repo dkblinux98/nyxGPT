@@ -26,6 +26,16 @@ set -uo pipefail
 # Any failure alerts the owner on the existing Slack DM channel (#3695) in
 # addition to a loud comment on the release issue.
 #
+# Those alerts are NOTIFICATIONS, not escalations (#4134 reviewed every
+# owner-facing path and classified each one). All three are about the ceremony
+# rather than about a piece of work, and all three are attached to the RELEASE
+# TRACKING ISSUE -- owner-assigned by design for the whole life of a release,
+# and carrying a `Release Management` label the ceremony, the drain gate and
+# the promotion sweep all read. Replacing that label with `Escalation` would
+# break the release machinery in order to report that the release machinery is
+# broken. Nothing changes hands here: the ceremony stops and the next poll
+# retries, so `escalate_to_owner` is not the right verb.
+#
 # Usage:
 #   scripts/agents/release_ceremony_watch.sh [--check-only]
 #
