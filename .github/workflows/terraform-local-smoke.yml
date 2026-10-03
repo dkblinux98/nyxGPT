@@ -81,7 +81,7 @@ jobs:
           python-version: '3.11'
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.5'
 
@@ -277,7 +277,7 @@ jobs:
           python-version: '3.11'
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.5'
 
