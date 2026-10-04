@@ -95,6 +95,7 @@ fails if it drifts. Do not hand-edit.
 | `security-scan.yml` | pull_request, push | Security Scan |
 | `self-heal-unschedulable-smoke.yml` | pull_request, push, workflow_dispatch | Self-Heal Unschedulable Pod Smoke |
 | `slack-huddle-smoke.yml` | workflow_dispatch | Slack Huddle Smoke |
+| `stranded_residue_sweep.yml` | workflow_dispatch | Stranded Residue Sweep |
 | `support-intake-smoke.yml` | push, pull_request, workflow_dispatch | Support Intake Smoke |
 | `support_intake_guard.yml` | issues | Support Intake Guard |
 | `sweep_parked_blocked_issues.yml` | schedule, workflow_dispatch | Sweep Parked Blocked Issues |
@@ -141,5 +142,6 @@ fails if it drifts. Do not hand-edit.
 | `scrummaster_start_issue.sh` | For a claimable Backlog issue (unassigned, or assigned only to the |
 | `snapshot_safe_add.sh` | Stages uncommitted work for the developer workflow's "Snapshot uncommitted implementation work" step without a blanket `git add -A |
 | `sweep_parked_blocked_issues.sh` | Batch-promotes merged-but-blocked issues parked in "In Review" (owner process rule, 2026-08-04, #3631): review_accept_and_merge.sh |
+| `sweep_stranded_residue.sh` | The one-off, repo-wide answer to "is any branch carrying work that was pushed |
 | `validate-web-routes.sh` | Validate that web proxy routes exist for all frontend API calls |
 | `verify_phase6_fields.sh` | Verify (and optionally repair) the project fields of the Phase 6 issue set (#3500-#3516, filed 2026-07-31 by create_phase6.sh via |
