@@ -257,10 +257,18 @@ and screenshots make verifiable in the review loop:
   shows data rather than a permanent placeholder is a browser question:
   `nyxgpt ops verify`'s Playwright screenshots cover it for the Compose
   stack, and for the brew path it stays owner acceptance.
-- **Ollama model pulls and anything needing a GPU** -- the hosted runners have
-  neither the disk budget nor the hardware. The `ollama` *service* is
-  installed and started on the user path; pulling a model and generating from
-  it is owner acceptance.
+- **LLM answer quality, and anything needing a GPU** -- the hosted runners
+  have no accelerator, so whether a model produces a *good* answer is owner
+  acceptance. Installing Ollama, starting it and pulling the configured models
+  is **not** on this list any more (#4150):
+  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)'s
+  `mac-model-backend` job runs `brew install ollama`,
+  `brew services start ollama` and `nyxgpt ops required-models` on a real
+  `macos-15` runner and asserts `:11434/api/tags` lists every configured model.
+  The shipped default is small enough for a hosted runner's disk, and the
+  claim being tested is about *installation*, not inference. The exclusion as
+  previously written is what let the EC2 Mac bootstrap ship with no model
+  backend at all and no job that could have noticed.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,
@@ -280,7 +288,12 @@ and screenshots make verifiable in the review loop:
   proves `nyxgpt cloud deploy --os macos` delivers that bootstrap itself over a
   real SSH connection (#3867), and
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
-  the same formulas from the same remote tap on a real `macos-15` runner. What
+  the same formulas from the same remote tap on a real `macos-15` runner --
+  and, since #4150, its `mac-model-backend` job executes that bootstrap's
+  whole model-backend sequence there (`brew install ollama`,
+  `brew services start ollama`, `nyxgpt ops required-models`), with the
+  install-without-pull near-miss measured in between so the job cannot pass by
+  running on a machine that fails to reproduce the defect. What
   remains owner acceptance is only that a Mac *instance* runs them -- notably
   whether `brew services start` finds a launchd session for the login user.
 

@@ -125,6 +125,24 @@ round-state-rules-hold
 # The owner's acceptance-failure standard (#3999). Path-filtered, so it is
 # free on the PRs it does not run for -- absent is not pending.
 acceptance-standard
+# macos-brew-smoke.yml's `mac-model-backend` job (#4150): `brew install
+# ollama`, `brew services start ollama` and `nyxgpt ops required-models`
+# executed on a real macos-15 runner, with the install-without-pull near-miss
+# measured in between.
+#
+# REQUIRED, unlike its `keg-install` sibling below, and the difference is
+# deliberate. That job was demoted for failing somewhere new on every run --
+# it was measuring itself. This one is path-filtered to four cold files (the
+# two user-data templates, `model_bootstrap.py`, this workflow), so it is
+# absent -- and therefore free -- on essentially every PR, and when it does
+# run it is measuring the one thing the change touched.
+#
+# And it is required because the whole of #4150 is that nothing executed this
+# path: an EC2 Mac deploy exited 0 onto a machine that could not answer a chat
+# message, through green CI, because no job installed the model backend. A
+# guard against that filed as advisory is the same gap with a job attached to
+# it.
+The model backend, installed and pulled on real macOS
 
 [not-required]
 # macos-brew-smoke.yml's `keg-install` job. Owner decision, 2026-08-24: this

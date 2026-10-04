@@ -281,9 +281,16 @@ def missing_models_hint(missing: list[RequiredModel]) -> str:
     """
     names = ", ".join(f"'{m.name}' ({m.role})" for m in missing)
     pulls = " && ".join(f"nyxgpt models pull {m.name}" for m in missing)
+    # `ops required-models` first, `ops install` second (#4150). They run the
+    # same step, but `ops install` also reconciles a Docker engine, the
+    # nyxgpt-cassandra container and the observability Compose stack -- so on a
+    # target where none of those can exist (an EC2 Mac has no nested
+    # virtualization) the broader command is not a usable remedy, and naming
+    # only it is what left the macOS cloud bootstrap with no way to pull at all.
     return (
         f"Ollama is missing required model(s): {names}. "
-        f"Re-run `nyxgpt ops install` (it pulls them), or pull directly: {pulls}."
+        f"Run `nyxgpt ops required-models` (it pulls exactly these; `nyxgpt ops install` "
+        f"does it too, as one of its steps), or pull them one at a time: {pulls}."
     )
 
 
