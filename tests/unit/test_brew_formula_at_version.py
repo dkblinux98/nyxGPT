@@ -42,6 +42,17 @@ def _cp(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(["x"], returncode, stdout=stdout, stderr=stderr)
 
 
+@pytest.fixture
+def macos(monkeypatch):
+    """Pin the platform, because the restart command differs by it (#4043).
+
+    Without this the heal tests below assert whatever the *runner* is, which
+    is green on Linux CI and red on the macOS laptop the behaviour is about.
+    """
+    monkeypatch.setattr(self_heal, "_is_macos", lambda: True)
+    monkeypatch.setattr(self_heal, "_is_linux", lambda: False)
+
+
 # --- The names the candidate channel actually produces --------------------
 
 
@@ -93,8 +104,12 @@ def test_unsafe_specs_are_still_refused(bad):
     assert not brew_services.is_safe_formula_spec(bad), f"unsafe spec admitted: {bad!r}"
 
 
-def test_the_inline_barrier_matches_the_shared_pattern():
-    """`_restart_brew_service`'s inline literal must stay identical to the authority.
+@pytest.mark.parametrize(
+    "guard",
+    [self_heal._restart_brew_service, self_heal.kickstart_brew_service],
+)
+def test_the_inline_barrier_matches_the_shared_pattern(guard):
+    """Every inline literal for a Homebrew name must stay identical to the authority.
 
     The guard cannot *call* `brew_services.SEGMENT_PATTERN`: CodeQL's
     barrier-guard analysis recognizes the `re.fullmatch(r"...", x)` call form
@@ -102,12 +117,44 @@ def test_the_inline_barrier_matches_the_shared_pattern():
     duplicated at all. A duplicate with no test is how one of the two gets
     widened and the other does not -- the exact failure mode #3861's first
     fix had, where ops' sites were repaired and self_heal's was not.
+
+    Parametrized rather than asserted on one function because #4043's second
+    round added a *second* Homebrew sink (the launchd label built from the
+    formula name), and a test that pins only the first would have let the new
+    copy drift from day one.
     """
-    source = inspect.getsource(self_heal._restart_brew_service)
+    source = inspect.getsource(guard)
     assert f'r"{brew_services.SEGMENT_PATTERN}"' in source, (
-        "the inline barrier in self_heal._restart_brew_service has drifted from "
+        f"the inline barrier in self_heal.{guard.__name__} has drifted from "
         f"brew_services.SEGMENT_PATTERN ({brew_services.SEGMENT_PATTERN!r})"
     )
+
+
+def test_the_launchd_label_of_a_candidate_service_passes_the_barrier():
+    """`sh.brew.nyxgpt-api@3.0.0rc` is the real label, and it has to be admitted.
+
+    The narrow class would refuse it for the same reason it refused the
+    formula name itself, which would have reintroduced #4043's defect one
+    layer further in: a refusal instead of a restart, on the one channel
+    acceptance testing uses.
+    """
+    segment = re.compile(brew_services.SEGMENT_PATTERN)
+    labels = brew_services.launchd_labels("nyxgpt-api@3.0.0rc")
+    assert labels == ["homebrew.mxcl.nyxgpt-api@3.0.0rc", "sh.brew.nyxgpt-api@3.0.0rc"]
+    for label in labels:
+        assert segment.fullmatch(label), f"a real Homebrew label is refused: {label!r}"
+
+
+def test_ops_reads_the_label_prefixes_from_the_shared_module():
+    """One definition of Homebrew's label schemes, not two (D-022).
+
+    `ops.py` guessed these labels first and `self_heal.py` now needs the same
+    guess; a second copy is how #3861 repaired the manual path and left the
+    automated one broken.
+    """
+    from nyxgpt import ops
+
+    assert ops._BREW_SERVICE_LABEL_PREFIXES is brew_services.LAUNCHD_LABEL_PREFIXES
 
 
 def test_the_segment_pattern_anchors_and_excludes_metacharacters():
@@ -127,12 +174,14 @@ def test_the_segment_pattern_anchors_and_excludes_metacharacters():
 # --- End to end: the heal reaches brew with the versioned name ------------
 
 
-def test_heal_of_a_candidate_api_reaches_brew_services_restart(monkeypatch):
+def test_heal_of_a_candidate_api_reaches_the_real_service_name(monkeypatch, macos):
     """The acceptance-failure repro: heal `api` on an rc install.
 
-    Before the fix this returned `ok=False` with "Refused to act on invalid
-    service name: 'nyxgpt-api@3.0.0rc'" and issued no command at all -- the
-    silent no-op the Restart button reported as `{"status": "running"}`.
+    Before the first fix this returned `ok=False` with "Refused to act on
+    invalid service name: 'nyxgpt-api@3.0.0rc'" and issued no command at all
+    -- the silent no-op the Restart button reported as
+    `{"status": "running"}`. What matters here is the *name*: the command the
+    resolved name reaches is pinned by `test_api_self_restart.py`.
     """
     monkeypatch.setattr(self_heal, "_which", lambda tool: f"/opt/homebrew/bin/{tool}")
     monkeypatch.setattr(self_heal, "_is_linux", lambda: False)
@@ -151,11 +200,17 @@ def test_heal_of_a_candidate_api_reaches_brew_services_restart(monkeypatch):
     result = self_heal.restart_native_component("api")
 
     assert result.ok is True, result.message
-    assert seen == [["brew", "services", "restart", "nyxgpt-api@3.0.0rc"]]
+    assert seen, "the heal issued no command at all"
+    assert any(
+        "nyxgpt-api@3.0.0rc" in arg for arg in seen[0]
+    ), f"the heal did not act on the candidate's own service name: {seen[0]}"
 
 
-def test_a_crafted_versioned_name_still_never_reaches_a_subprocess(monkeypatch):
-    monkeypatch.setattr(self_heal, "_which", lambda tool: "/opt/homebrew/bin/brew")
+@pytest.mark.parametrize("on_macos", [True, False])
+def test_a_crafted_versioned_name_still_never_reaches_a_subprocess(monkeypatch, on_macos):
+    """Checked on both platforms, since each takes a different command path."""
+    monkeypatch.setattr(self_heal, "_is_macos", lambda: on_macos)
+    monkeypatch.setattr(self_heal, "_which", lambda tool: f"/opt/homebrew/bin/{tool}")
     seen: list[list[str]] = []
     monkeypatch.setattr(self_heal, "_run", lambda cmd, **_k: seen.append(cmd) or _cp())
 

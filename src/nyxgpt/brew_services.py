@@ -49,9 +49,9 @@ checked for the same shape:
   reason: `ops._brew_service_launchd_labels` matches `*nyxgpt*` by prefix
   rather than against a known formula list, so a teardown reaches a release
   line the running build has never heard of (#3859). It matches both label
-  schemes Homebrew has used (`ops._BREW_SERVICE_LABEL_PREFIXES`), which is a
-  separate axis: current Homebrew writes `sh.brew.<formula>` where it used to
-  write `homebrew.mxcl.<formula>`.
+  schemes Homebrew has used (`LAUNCHD_LABEL_PREFIXES` below, which `ops.py`
+  aliases), which is a separate axis: current Homebrew writes
+  `sh.brew.<formula>` where it used to write `homebrew.mxcl.<formula>`.
 * **Log paths** -- unaffected by design: both channels' formulas declare
   `log_path var/"log/nyxgpt-api.log"`, so `nyxgpt ops logs api` needs no
   channel-specific path.
@@ -70,11 +70,13 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 __all__ = [
+    "LAUNCHD_LABEL_PREFIXES",
     "LIVE_STATES",
     "NATIVE_BREW_SERVICES",
     "VERSIONED_COMPONENTS",
     "format_variants",
     "is_variant_of",
+    "launchd_labels",
     "parse_services_list",
     "resolve",
     "resolve_all",
@@ -293,9 +295,11 @@ def unique(names: Iterable[str]) -> list[str]:
 # recovery path still failed where the manual one had been repaired.
 
 # A single path segment brew will accept, as a pattern string so the inline
-# barrier `self_heal._restart_brew_service` must carry (CodeQL #4 recognizes
-# the `re.fullmatch(r"...", x)` call form, not a precompiled pattern or a
-# helper) has one authority to be identical to -- pinned by
+# barriers `self_heal._restart_brew_service` (the formula name) and
+# `self_heal.kickstart_brew_service` (the launchd label built from it) must
+# each carry (CodeQL #4 recognizes the `re.fullmatch(r"...", x)` call form,
+# not a precompiled pattern or a helper) have one authority to be identical
+# to -- pinned for every copy by
 # `test_brew_formula_at_version.py::test_the_inline_barrier_matches_the_shared_pattern`.
 #
 # The trailing `@<version>` group is Homebrew's versioned-formula syntax, and
@@ -339,6 +343,38 @@ def is_safe_formula_spec(spec: str) -> bool:
     if len(parts) not in (1, 3):
         return False
     return all(_SEGMENT.fullmatch(part) for part in parts)
+
+
+# ---- Homebrew's launchd labels (#4043) -------------------------------------
+#
+# Homebrew has used two label schemes: `homebrew.mxcl.<formula>` for years, and
+# `sh.brew.<formula>` on current versions. Both are matched wherever a label is
+# *guessed* rather than read back from brew's own File column -- a machine
+# upgraded part-way through carries plists under the old label beside anything
+# brew has written since, and knowing only one of the two is how a teardown
+# leaves a service registered that launchd starts again at the next login
+# (D-032(d)).
+#
+# The list lives here rather than in `ops.py` for the D-022 reason the rest of
+# this module exists for: `self_heal.py` needs it too (to hand a restart to
+# launchd rather than to a child that will not survive it), `ops.py` imports
+# `self_heal.py`, so a copy in `ops.py` could not be shared -- and two modules
+# guessing a launchd label independently is how #3861's first fix repaired the
+# manual path and left the automated one broken. `ops._BREW_SERVICE_LABEL_
+# PREFIXES` is now an alias for this tuple.
+LAUNCHD_LABEL_PREFIXES: tuple[str, ...] = ("homebrew.mxcl.", "sh.brew.")
+
+
+def launchd_labels(name: str) -> list[str]:
+    """Every launchd label Homebrew might have registered service `name` under.
+
+    Ordered oldest-scheme-first, matching `LAUNCHD_LABEL_PREFIXES`, so a
+    caller trying each in turn behaves identically to the plist lookups in
+    `ops.py` that share the same list. Nothing here asks launchd whether a
+    label is real: a caller that needs to know either looks for the plist or
+    issues the command and reads the exit code.
+    """
+    return [f"{prefix}{name}" for prefix in LAUNCHD_LABEL_PREFIXES]
 
 
 def cellar(which: Callable[[str], str | None] | None = None) -> Path | None:

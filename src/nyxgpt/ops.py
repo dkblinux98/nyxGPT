@@ -1595,7 +1595,13 @@ def _resolved_brew_service(component: str, snapshot: Mapping[str, str] | None = 
 # prevent. Where brew names the file itself (`_brew_service_registration`
 # reads the File column) that answer still wins over any guess: the scheme is
 # Homebrew's to change again.
-_BREW_SERVICE_LABEL_PREFIXES = ("homebrew.mxcl.", "sh.brew.")
+#
+# The list itself moved to `brew_services` for #4043: `self_heal.py` now names
+# these labels too (it hands an api restart to launchd instead of to a child
+# that the restart kills), `ops.py` imports `self_heal.py`, so the only place
+# both can read one definition from is the module that already sits below them
+# (D-022). This name stays as the alias its seven call sites here use.
+_BREW_SERVICE_LABEL_PREFIXES = brew_services.LAUNCHD_LABEL_PREFIXES
 
 
 def _brew_service_plist_candidates(name: str) -> list[Path]:
@@ -6115,7 +6121,26 @@ def _dev_launchd_label(component: str) -> str | None:
 
 
 def _restart_registered_native_service(component: str) -> list[OpsResult]:
-    """Restart whatever service manager this OS registered `component` under."""
+    """Restart whatever service manager this OS registered `component` under.
+
+    On macOS the restart is handed to launchd as one operation
+    (`self_heal.kickstart_brew_service`), with `brew services restart` as the
+    fallback for a job launchd does not have loaded. This path is reachable
+    from **inside the api process** -- `POST /api/v1/config/restart` schedules
+    `ops.restart()` on a timer -- where `brew services restart` cannot work:
+    it boots the launchd job out and then bootstraps it again, and the
+    boot-out takes the `brew` issuing it down with the rest of the job's
+    process tree, so the api is stopped by a command that cannot survive to
+    start it (#4043). The CLI is unaffected either way (its `brew` is a child
+    of the terminal), but the mechanism cannot tell which caller it has, and
+    the hand-off is correct for both.
+
+    Deliberately **not** applied to `_restart_brew_service`'s other call
+    sites: those follow an install or upgrade, where the point of `brew
+    services restart` is that it rewrites and re-bootstraps the plist for the
+    keg that was just built. A kickstart would restart the already-loaded job
+    definition.
+    """
     if _is_macos():
         label = _dev_launchd_label(component)
         if label is not None:
@@ -6123,7 +6148,13 @@ def _restart_registered_native_service(component: str) -> list[OpsResult]:
         # Resolved, not indexed: on a candidate install the running service
         # is `nyxgpt-api@<line>rc` and restarting `nyxgpt-api` would act on
         # something else entirely -- an older release's keg, or nothing (#3853).
-        return _restart_brew_service(_resolved_brew_service(component))
+        service = _resolved_brew_service(component)
+        handed_off = self_heal.kickstart_brew_service(service)
+        if handed_off is not None:
+            return [
+                OpsResult(handed_off.ok, handed_off.message, (handed_off.details or "").strip())
+            ]
+        return _restart_brew_service(service)
     if _is_linux():
         return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
     return _unsupported_os_result(f"restart {component}")

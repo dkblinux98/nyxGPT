@@ -48,8 +48,10 @@ from a mode you've since switched away from).
      services have one). Anything unhealthy runs `docker compose restart
      <service>`.
 2. **Native/local-first**: `api`/`web`/`ollama` are checked via `brew
-   services list` (**healthy** when their state is `started`) and healed
-   via `brew services restart <name>`; `cassandra` (the one Docker-managed
+   services list` (**healthy** when their state is `started`) and healed by
+   asking launchd to restart the service (`launchctl kickstart -k`, with
+   `brew services restart <name>` as the fallback — see [Restarting the api
+   from the api](#restarting-the-api-from-the-api)); `cassandra` (the one Docker-managed
    piece of a native install) is checked via `docker ps` (**healthy** when
    `running`) and healed via `docker restart nyxgpt-cassandra` — the same
    mechanisms `nyxgpt ops restart` uses, so the user never needs a raw
@@ -198,7 +200,7 @@ had no way to tell that apart from a crash: a plain `ops down` stopped
 `nyxgpt-cassandra` (`docker stop`), all of which stay *installed*, just
 stopped — exactly what a crash looks like from the outside. The very next
 heal pass would see them unhealthy and restart them right back
-(`brew services restart`/`docker restart`), undoing the teardown; worse,
+(restarting the service / `docker restart`), undoing the teardown; worse,
 the re-occupied ports then made a subsequent `nyxgpt ops install --terraform`
 fail with a spurious port collision.
 
@@ -236,25 +238,71 @@ components outside a Compose deployment (#3348). `src/nyxgpt/self_heal.py`
 now checks these directly, in addition to whatever `docker compose ps`
 reports:
 
-- `api` → `brew services restart nyxgpt-api`
-- `web` → `brew services restart nyxgpt-web`
-- `ollama` → `brew services restart ollama`
+- `api` → `launchctl kickstart -k gui/<uid>/sh.brew.nyxgpt-api`
+- `web` → `launchctl kickstart -k gui/<uid>/sh.brew.nyxgpt-web`
+- `ollama` → `launchctl kickstart -k gui/<uid>/sh.brew.ollama`
 - `cassandra` → `docker restart nyxgpt-cassandra`
+
+On Linux, where `brew services` drives `systemd --user` and there is no gui
+domain to ask, the row is `systemctl --user restart nyxgpt-<component>`.
+
+Both of Homebrew's label schemes are tried, oldest first: `homebrew.mxcl.`
+for years, `sh.brew.` on current versions. A machine upgraded part-way
+through carries plists under the old label beside anything brew has written
+since, so knowing only one of the two reads a running, registered service as
+absent.
 
 A component is only reported once it's actually installed/created (a brew
 service never set up via `nyxgpt ops install`, or a not-yet-created
 Cassandra container, is out of scope rather than "down").
 
-The formula named in each `brew services restart` above is the one the
-machine actually registered, not the stable name: a candidate-channel
-install registers `nyxgpt-api@3.0.0rc`, and self-heal resolves against what
-`brew services list` reports (#3853) and qualifies it with its owning tap
-(#3861). Homebrew's `@<version>` syntax is part of a valid formula name for
-the injection barrier these names pass through, which is what #4043 fixed:
+The formula named in each label above is the one the machine actually
+registered, not the stable name: a candidate-channel install registers
+`nyxgpt-api@3.0.0rc`, and self-heal resolves against what `brew services
+list` reports (#3853) and qualifies it with its owning tap (#3861).
+Homebrew's `@<version>` syntax is part of a valid formula name for the
+injection barrier these names pass through, which is what #4043 fixed:
 while it was not, every heal of `api`/`web` on an rc install was refused as
 an "invalid service name" — the automated recovery path could not run on the
 one channel release candidates are tested on, even though `nyxgpt ops
 restart api` on the same machine worked.
+
+### Restarting the api from the api
+
+The `api` row above is a single launchd operation and not `brew services
+restart`, and the difference is the whole of #4043's second acceptance
+round. `brew services restart` is **two** launchd operations with a `brew`
+process in between — boot the job out, then bootstrap it again. When the api
+is the service being restarted, that `brew` is a child of the launchd job
+being booted out, so launchd takes it down with the rest of the job's
+process tree and it never reaches the start half. The owner's machine was
+left with the api stopped, `brew services list` reporting `none`, no
+`launchctl` entry, and the web UI answering HTTP 502 until `nyxgpt ops
+restart api` was run from a shell. The CLI worked on the same machine for
+one reason only: its `brew` is a child of the terminal, not of the service
+being restarted.
+
+`launchctl kickstart -k gui/<uid>/<label>` is one operation, and launchd
+performs it, so nothing has to outlive the teardown. Three consequences:
+
+- The restart stays **synchronous and observable**, so `web`, `ollama` and
+  `cassandra` restarts — which *are* driven from a process that lives
+  through them — still clear their own pending-restart flags on the strength
+  of the result (see [Option 3: Web Configuration
+  Wizard](configuration.md#option-3-web-configuration-wizard-edit-an-existing-install)
+  for the notice those flags raise).
+- The job stays **registered**: there is no boot-out, so the plist is never
+  unlinked and the formula's `keep_alive true` is never removed.
+- A refusal is **reportable**. launchd refuses an unknown label having killed
+  nothing, so the api is still alive to record the failure against itself —
+  which is what makes "the restart could not be launched" visible in `GET
+  /api/v1/infra/restart-status` instead of a notice that spins until it
+  times out.
+
+`brew services restart` remains the path where launchd cannot be asked
+(Linuxbrew) or knows no loaded job under either label. That is also the only
+case where it cannot self-kill: a job that is not loaded is not hosting the
+process issuing the command.
 
 ### Restarting Cassandra is enough — the API recovers on its own
 
@@ -277,8 +325,8 @@ entirely on the client side.
 
 ### Dev mode healing
 
-The `brew services` rows above describe an **artifact-path** install, which
-is the default and what every machine runs unless it opted into dev mode.
+The `sh.brew.*` rows above describe an **artifact-path** install, which is
+the default and what every machine runs unless it opted into dev mode.
 On macOS, a dev-mode machine (`nyxgpt up --dev`, see
 [`--dev`](ops.md#--dev-run-the-current-checkout-without-an-artifact-build)
 in ops.md) has no api/web keg for `brew services` to attach to, so
@@ -291,8 +339,10 @@ in ops.md) has no api/web keg for `brew services` to attach to, so
 recorded mode (`~/.nyxGPT/install-mode.json`, written by
 `nyxgpt ops install` as one field of the
 [install identity](ops.md#the-install-identity)) rather than guessing:
-healing a dev machine with `brew services restart` would start the *old
-keg's* api onto the port the dev process is already holding. On Linux both modes drive the same
+healing a dev machine through the keg's own service would start the *old
+keg's* api onto the port the dev process is already holding. The dev rows
+were always a single `launchctl kickstart`, which is the shape #4043 brought
+to the artifact path as well. On Linux both modes drive the same
 `nyxgpt-api`/`nyxgpt-web` systemd --user units -- only the wrapper those
 units exec differs -- so nothing about healing changes there.
 

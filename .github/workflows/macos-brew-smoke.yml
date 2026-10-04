@@ -34,6 +34,17 @@ name: macOS Brew Smoke
 #                against an older candidate, whose formulas predate the
 #                caveats, and a gate that fails on correct history is a gate
 #                people learn to ignore.
+#                Since #4043's second acceptance round it answers one more:
+#                when the api is asked -- through its own HTTP endpoint, by a
+#                process inside its own launchd job -- to restart itself, does
+#                anything start it again? `brew services restart` is a
+#                boot-out and a *separate* bootstrap, and the boot-out takes
+#                the `brew` issuing it down with the rest of the job's process
+#                tree, so the api was stopped by a command that could not
+#                survive to restart it. That step starts the real service,
+#                drives the real endpoint, and injects the pre-fix keg first
+#                so the runner has to reproduce the dead-and-de-registered
+#                service before the fixed half is allowed to mean anything.
 #   published-tap  Does what the owner actually types work? `brew tap` +
 #                `brew install` against the real published tap, and then --
 #                since #3860 -- the whole user path after it:
@@ -145,13 +156,19 @@ on:
       # -- but this file is small, focused, and its readers are the health
       # gate and the retire.
       #
-      # `self_heal.py` is not here either, and that is not an oversight: it
-      # carries a copy of that pattern inline (CodeQL #4 recognizes the
-      # `re.fullmatch(r"...", x)` call form, not a constant), and the copy is
-      # pinned to this file's by a unit test that runs on every PR
-      # (test_brew_formula_at_version.py). A change that narrows the copy
-      # fails there, cheaply, rather than needing a macOS runner.
       - 'src/nyxgpt/brew_services.py'
+      # `self_heal.py` IS here since #4043's second round, and the reason it
+      # was excluded before has been overtaken. The old reason was sound: the
+      # only thing it carried that this workflow measured was an inline copy
+      # of the pattern above, and a unit test pins that on every PR for free.
+      # What it carries now is *which command restarts a brew service* --
+      # whether the restart is one launchd operation or a stop and a separate
+      # start -- and that is a launchd fact about a running service, which no
+      # unit test can reach: the pre-fix code passed the whole unit suite and
+      # failed owner acceptance twice. ~40 commits in two months against
+      # `ops.py`'s ~214, so this is not the every-PR cost that keeps `ops.py`
+      # out.
+      - 'src/nyxgpt/self_heal.py'
       # The web tier's own version, derived from the directory the keg's
       # wrapper `cd`s into (#3982). This is a claim about a Homebrew keg on
       # macOS, so it is asserted here rather than only in vitest -- a unit
@@ -1749,6 +1766,379 @@ jobs:
           command -v nyxgpt || { echo "::error::no nyxgpt on PATH after the injection"; exit 1; }
           nyxgpt --version
 
+      - name: "The api restarts itself when the UI asks it to (#4043)"
+        # Executed evidence for #4043's SECOND acceptance round, and the one
+        # thing its first round's evidence could not be: the restart is driven
+        # from INSIDE the service being restarted.
+        #
+        # The question. `brew services restart` is two launchd operations with
+        # a `brew` process in between -- boot the job out, then bootstrap it
+        # again. When the api restarts itself that `brew` is a child of the
+        # job being booted out, so launchd takes it down with the rest of the
+        # job's process tree and it never reaches the start half. The owner's
+        # rc17 log is the whole mechanism: `POST
+        # /api/v1/infra/restart-required` 200, `Shutting down`, `Finished
+        # server process`, and then nothing -- with `brew services list`
+        # reporting `none`, `launchctl list` carrying no entry, and the web UI
+        # 502ing until `nyxgpt ops restart api` was run from a shell.
+        #
+        # Why the existing `stable-over-candidate` step (same issue number)
+        # could not see it, which is the lesson worth keeping: it drives
+        # `restart_native_component("api")` from a CLI child of the runner's
+        # shell. That process is not inside the launchd job, so the boot-out
+        # never reaches it, the restart completes, and the step is green --
+        # the D-051(a) shape, where executed verification existed for the
+        # path, passed, and certified the defect. Parentage is the variable,
+        # so the driver has to be the api itself, and the only way in is the
+        # real endpoint. That also makes this the acceptance scenario rather
+        # than a model of it: endpoint -> `_do_restart_required` ->
+        # `heal_now` -> `restart_native_component` -> the service manager, and
+        # the returning process retiring its own notice.
+        #
+        # Both halves, because a job that only runs the fixed code is green on
+        # any machine that fails to reproduce the bug (the rc5 lesson, #3753).
+        # Half one reverts the hand-off in the *installed keg's* copy and
+        # requires the api to end up dead and de-registered; half two restores
+        # it and requires the api to answer again, under a new pid, with the
+        # notice gone. The injection asserts its own edit landed, and the step
+        # restores every piece of `$HOME` state it touched.
+        #
+        # Only `self_heal.py`'s hand-off is injected, because that is the one
+        # this endpoint routes through. `ops._restart_native_service` carries
+        # the same hand-off for `POST /api/v1/config/restart` (which reaches
+        # `ops.restart()` from inside the api the same way) and calls the same
+        # shared function, so a regression there fails the unit test that pins
+        # it rather than needing a second macOS reproduction.
+        run: |
+          set -euo pipefail
+
+          KEG_NAME=nyxgpt-api@3.0.0rc
+          SPEC="nyxgpt/brew-smoke/$KEG_NAME"
+          API="http://127.0.0.1:8000"
+          PY="$(brew --prefix "$KEG_NAME")/libexec/venv/bin/python3"
+          test -x "$PY" || { echo "::error::no venv python in $KEG_NAME"; exit 1; }
+          SH="$("$PY" -c 'import nyxgpt.self_heal as m; print(m.__file__)')"
+          echo "driver: $PY"
+          echo "keg self_heal: $SH"
+          cp "$SH" "$RUNNER_TEMP/self_heal.shipped.py"
+
+          CFG="$HOME/.nyxGPT/config.ini"
+          PENDING="$HOME/.nyxGPT/pending-restart.json"
+          mkdir -p "$HOME/.nyxGPT"
+          # `if`, not `test ... &&`: under `set -e` a failing left-hand side of
+          # an `&&` list aborts the step (the trap this file already documents
+          # at the stable-over-candidate heal step).
+          HAD_CFG=0
+          if [ -f "$CFG" ]; then HAD_CFG=1; cp "$CFG" "$RUNNER_TEMP/config.ini.orig"; fi
+          HAD_PENDING=0
+          if [ -f "$PENDING" ]; then HAD_PENDING=1; cp "$PENDING" "$RUNNER_TEMP/pending.orig"; fi
+
+          cleanup() {
+            cp "$RUNNER_TEMP/self_heal.shipped.py" "$SH" 2>/dev/null || true
+            brew services stop "$SPEC" >/dev/null 2>&1 || true
+            if [ "$HAD_CFG" = 1 ]; then cp "$RUNNER_TEMP/config.ini.orig" "$CFG"; else rm -f "$CFG"; fi
+            if [ "$HAD_PENDING" = 1 ]; then cp "$RUNNER_TEMP/pending.orig" "$PENDING"; else rm -f "$PENDING"; fi
+          }
+          trap cleanup EXIT
+
+          # The api needs a config.ini and will not start without one. The
+          # PACKAGED example is used, read through importlib.resources the way
+          # the product reads it, so this cannot seed settings the shipped
+          # defaults do not have. It ships `[auth] enabled = false` (so the
+          # POST below needs no key), `[self_heal] enabled = false` (so the
+          # watchdog cannot restart anything behind this step's back),
+          # `[nyxgpt] session_backend = file` (no Cassandra, which this runner
+          # has no Docker for) and `[rate_limit] enabled = false` -- the field
+          # the owner's own reproduction flagged as restart-required.
+          export PYTHONDONTWRITEBYTECODE=1
+          "$PY" - <<'PY'
+          import importlib.resources
+          import pathlib
+
+          text = (
+              importlib.resources.files("nyxgpt.resources")
+              .joinpath("example.config.ini")
+              .read_text(encoding="utf-8")
+          )
+          dst = pathlib.Path.home() / ".nyxGPT" / "config.ini"
+          dst.parent.mkdir(parents=True, exist_ok=True)
+          dst.write_text(text, encoding="utf-8")
+          print(f"seeded {dst} from the packaged example ({len(text)} bytes)")
+          PY
+
+          # Registration is a launchd fact, not a state word (D-032(d)), and
+          # Homebrew has used two label schemes -- `homebrew.mxcl.<formula>`
+          # for years, `sh.brew.<formula>` now. Asking only one is how an
+          # earlier step here read a running service as unregistered (run
+          # 36996645910). `brew_services.LAUNCHD_LABEL_PREFIXES` is the
+          # product's copy of this same pair.
+          label() {
+            local prefix
+            for prefix in homebrew.mxcl. sh.brew.; do
+              if launchctl list "${prefix}${KEG_NAME}" >/dev/null 2>&1; then
+                printf '%s' "${prefix}${KEG_NAME}"
+                return 0
+              fi
+            done
+            return 1
+          }
+          plist_path() {
+            local prefix
+            for prefix in homebrew.mxcl. sh.brew.; do
+              if [ -e "$HOME/Library/LaunchAgents/${prefix}${KEG_NAME}.plist" ]; then
+                printf '%s' "$HOME/Library/LaunchAgents/${prefix}${KEG_NAME}.plist"
+                return 0
+              fi
+            done
+            return 1
+          }
+          api_pid() {
+            local lbl
+            lbl="$(label || true)"
+            [ -n "$lbl" ] || return 1
+            launchctl list "$lbl" 2>/dev/null | awk -F'= ' '/"PID"/ {gsub(/[^0-9]/, "", $2); print $2}'
+          }
+          # Brew's own state, read through the product's parser: brew colours
+          # the Status column and the escapes survive a pipe, so a raw
+          # comparison against `none` passes in exactly the state it exists to
+          # catch (D-032(f)).
+          cat > "$RUNNER_TEMP/brew_state.py" <<'PY'
+          import subprocess
+          import sys
+
+          from nyxgpt import brew_services
+
+          out = subprocess.run(
+              ["brew", "services", "list"], capture_output=True, text=True, check=True
+          ).stdout
+          print(brew_services.parse_services_list(out).get(sys.argv[1], "<absent>"))
+          PY
+          brew_state() { "$PY" "$RUNNER_TEMP/brew_state.py" "$KEG_NAME"; }
+
+          up() {  # up <seconds> -- is the api answering?
+            local deadline=$(( SECONDS + $1 ))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              if curl -fsS --max-time 5 "$API/health" >/dev/null 2>&1; then return 0; fi
+              sleep 2
+            done
+            return 1
+          }
+          down() {  # down <seconds> -- has the api stopped answering?
+            local deadline=$(( SECONDS + $1 ))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              if ! curl -fsS --max-time 5 "$API/health" >/dev/null 2>&1; then return 0; fi
+              sleep 2
+            done
+            return 1
+          }
+          err_log() {
+            echo "--- nyxgpt-api.err.log (tail) ---"
+            tail -40 "$(brew --prefix)/var/log/nyxgpt-api.err.log" 2>/dev/null || true
+            echo "--- brew services list ---"
+            brew services list || true
+            echo "--- launchctl ---"
+            launchctl list | grep -i nyxgpt || echo "(no nyxgpt job loaded)"
+          }
+          # One pending `api` key, written by the product's own writer rather
+          # than by hand -- `mark_pending` is what the Configuration Wizard
+          # calls, and the state file is the documented cross-process contract
+          # (`restart_state`). The api re-reads it per request, so no restart
+          # is needed for it to see this.
+          cat > "$RUNNER_TEMP/pend.py" <<'PY'
+          """Raise one pending `api` restart, the way a wizard save does."""
+          import json
+
+          from nyxgpt import restart_state
+
+          restart_state.mark_pending("api", {"rate_limit.enabled": "false"})
+          print("pending:", json.dumps(restart_state.snapshot()))
+          PY
+          pend() { "$PY" "$RUNNER_TEMP/pend.py"; }
+
+          start_api() {
+            brew services start "$SPEC" 2>&1 | tail -5
+            up 180 || {
+              echo "::error::the api keg did not answer $API/health after brew services start"
+              err_log; exit 1
+            }
+            PLIST="$(plist_path || true)"
+            test -n "$PLIST" || {
+              echo "::error::the api is answering but launchd has no plist for $KEG_NAME --"
+              echo "::error::nothing below could measure a registration"
+              err_log; exit 1
+            }
+            echo "api up: pid=$(api_pid) label=$(label) state=$(brew_state) plist=$PLIST"
+          }
+
+          # Non-vacuity, before anything is measured: if brew cannot run a
+          # service for this keg at all, neither half below is about anything.
+          echo "=== bring the candidate's api service up under launchd ==="
+          start_api
+
+          echo
+          echo "=== half one: the pre-#4043 keg -- the restart handed to a doomed child ==="
+          python3 - "$SH" <<'INJECT'
+          import sys
+
+          # Built line by line rather than as a triple-quoted block: every
+          # line of a YAML `run: |` scalar must carry at least the block's own
+          # indentation, and a literal copy of this (Python-indented) source
+          # would dedent below it and break the workflow file itself.
+          HANDOFF = "\n".join(
+              [
+                  "    if _is_macos():",
+                  "        handed_off = kickstart_brew_service(name)",
+                  "        if handed_off is not None:",
+                  "            return handed_off",
+                  "",
+              ]
+          )
+          path = sys.argv[1]
+          text = open(path, encoding="utf-8").read()
+          if HANDOFF not in text:
+              sys.exit(
+                  f"::error::{path} does not carry #4043's launchd hand-off; the injection is a "
+                  "no-op and half one would pass by looking like half two"
+              )
+          open(path, "w", encoding="utf-8").write(text.replace(HANDOFF, "", 1))
+          print(f"reverted the hand-off in {path} -- this keg now restarts via brew services")
+          INJECT
+          # The running api already imported the module, so it has to be
+          # replaced by a process that is NOT inside the job (this shell is a
+          # child of the runner, which is the whole difference being measured).
+          brew services restart "$SPEC" 2>&1 | tail -5
+          up 180 || { echo "::error::the api did not come back after the injection"; err_log; exit 1; }
+          PID_BEFORE="$(api_pid)"
+          pend
+          echo "pre-fix api pid=$PID_BEFORE state=$(brew_state)"
+          CODE="$(curl -s -o "$RUNNER_TEMP/pre.json" -w '%{http_code}' --max-time 20 \
+            -X POST -H 'Content-Type: application/json' -d '{"target":"api"}' \
+            "$API/api/v1/infra/restart-required" || true)"
+          echo "POST /infra/restart-required -> $CODE $(cat "$RUNNER_TEMP/pre.json" 2>/dev/null || true)"
+          test "$CODE" = "200" || {
+            echo "::error::the endpoint did not accept the restart request (got $CODE)"
+            err_log; exit 1
+          }
+          down 60 || {
+            echo "::error::the pre-fix keg never even stopped the api -- this is not"
+            echo "::error::reproducing #4043, so half two would prove nothing"
+            err_log; exit 1
+          }
+          echo "the api stopped. the question is whether anything starts it again."
+          if up 120; then
+            echo "::error::the api came back on the PRE-FIX keg, so this runner does not"
+            echo "::error::reproduce #4043 and half two below would prove nothing. Expected:"
+            echo "::error::launchd boots the job out, taking the 'brew services restart' child"
+            echo "::error::with it, and nothing performs the start half."
+            err_log
+            exit 1
+          fi
+          STATE_PRE="$(brew_state)"
+          PLIST_PRE=absent
+          if plist_path >/dev/null; then PLIST_PRE=present; fi
+          echo "reproduced: api down, brew state='$STATE_PRE', plist=$PLIST_PRE"
+          err_log
+          # The owner's exact readings, asserted rather than just printed: the
+          # boot-out de-registers the job, which is what removes the formula's
+          # own `keep_alive true` safety net along with it.
+          test "$PLIST_PRE" = absent || {
+            echo "::error::the api is down but the job is still registered -- that is not"
+            echo "::error::the failure #4043 describes (service left 'none'/unloaded), so the"
+            echo "::error::mechanism here is something else"
+            exit 1
+          }
+
+          echo
+          echo "=== half two: the shipped keg -- the restart handed to launchd ==="
+          cp "$RUNNER_TEMP/self_heal.shipped.py" "$SH"
+          start_api
+          PID_BEFORE="$(api_pid)"
+          pend
+          echo "shipped api pid=$PID_BEFORE state=$(brew_state)"
+          CODE="$(curl -s -o "$RUNNER_TEMP/post.json" -w '%{http_code}' --max-time 20 \
+            -X POST -H 'Content-Type: application/json' -d '{"target":"api"}' \
+            "$API/api/v1/infra/restart-required" || true)"
+          echo "POST /infra/restart-required -> $CODE $(cat "$RUNNER_TEMP/post.json" 2>/dev/null || true)"
+          test "$CODE" = "200" || {
+            echo "::error::the endpoint did not accept the restart request (got $CODE)"
+            err_log; exit 1
+          }
+          # AC1: the api answers again, with no CLI intervention. Nothing
+          # between here and the assertion runs a `nyxgpt ops` or `brew`
+          # command -- that is the point.
+          up 180 || {
+            echo "::error::the api did not answer again after the restart it was asked for -- #4043 is NOT fixed"
+            err_log
+            exit 1
+          }
+          PID_AFTER="$(api_pid)"
+          STATE_AFTER="$(brew_state)"
+          PLIST_AFTER="$(plist_path || true)"
+          echo "after: pid=$PID_AFTER (was $PID_BEFORE) state=$STATE_AFTER plist=${PLIST_AFTER:-absent}"
+          err_log
+          fail=0
+          # A restart, not a survival: an api that merely never went down
+          # would answer /health throughout and prove nothing.
+          if [ -z "$PID_AFTER" ] || [ "$PID_AFTER" = "$PID_BEFORE" ]; then
+            echo "::error::the api's pid did not change ($PID_BEFORE -> ${PID_AFTER:-<none>})"
+            echo "::error::-- it answered without having restarted"
+            fail=1
+          fi
+          # AC3: brew reports it started and launchd holds the job.
+          if [ "$STATE_AFTER" = none ] || [ "$STATE_AFTER" = "<absent>" ]; then
+            echo "::error::brew reports $KEG_NAME as '$STATE_AFTER' after the restart"
+            fail=1
+          fi
+          if [ -z "$PLIST_AFTER" ]; then
+            echo "::error::launchd has no plist for $KEG_NAME after the restart -- the job"
+            echo "::error::was de-registered, which is what left the owner's machine"
+            echo "::error::unrecoverable (D-032(d))"
+            fail=1
+          fi
+          # AC2 and AC4: the notice retires itself, and stays retired on a
+          # fresh read -- `restart_state.clear_started`, called by the process
+          # that came back, is the only actor that can report a self-restart.
+          # `attempts` must not carry a failure for `api` either: a refusal
+          # and a success were indistinguishable before #4043's first round,
+          # and a stale `failed` here would be the same defect inverted.
+          curl -fsS --max-time 10 "$API/api/v1/infra/restart-status" > "$RUNNER_TEMP/status.json"
+          cat "$RUNNER_TEMP/status.json"; echo
+          "$PY" - "$RUNNER_TEMP/status.json" <<'PY' || fail=1
+          import json
+          import sys
+
+          status = json.load(open(sys.argv[1], encoding="utf-8"))
+          problems = []
+          if "api" in status.get("pending", {}):
+              problems.append(
+                  "the pending-restart notice is still raised for `api` after a restart that "
+                  f"worked: {status['pending']['api']}"
+              )
+          attempt = status.get("attempts", {}).get("api")
+          if attempt and attempt.get("status") == "failed":
+              problems.append(f"a failed attempt is recorded for `api`: {attempt}")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+          [ "$fail" -eq 0 ] || exit 1
+          echo "good: the api restarted itself, came back under a new pid, stayed"
+          echo "      registered, and retired its own notice"
+
+          # Leave the machine as the steps below expect it: no listener on
+          # :8000 and no service registered. The teardown step further down
+          # registers the services it tears down from a clean slate, and
+          # `brew services stop` de-registers (D-032(d)) -- checked rather
+          # than assumed, since this step started a service the earlier ones
+          # did not.
+          brew services stop "$SPEC" 2>&1 | tail -5 || true
+          ! plist_path >/dev/null || {
+            echo "::error::$KEG_NAME is still registered with launchd after 'brew services"
+            echo "::error::stop' -- this step has left a service behind for the steps below"
+            echo "::error::(D-032(d))"
+            exit 1
+          }
+
       - name: "Stop: prove `nyxgpt ops stop ollama-logs` boots out the ollama log watcher"
         # Executed evidence for #4033. The owner found `follow-ollama-logs.sh`
         # and its `tail -F` still running with no `nyxgpt` command able to stop
@@ -2248,9 +2638,10 @@ jobs:
           # this assertion looked only for `homebrew.mxcl.` and reported
           # "launchd has no plist ... nothing was restarted". Homebrew renamed
           # its service labels from `homebrew.mxcl.<formula>` to
-          # `sh.brew.<formula>`; `ops._BREW_SERVICE_LABEL_PREFIXES` is the
-          # product's copy of this same list, and the registration is a plist
-          # under EITHER (D-032(d)).
+          # `sh.brew.<formula>`; `brew_services.LAUNCHD_LABEL_PREFIXES` is the
+          # product's copy of this same list (aliased by `ops.py`, and read by
+          # `self_heal.py` since #4043), and the registration is a plist under
+          # EITHER (D-032(d)).
           plist_path() {
             local svc="$1" prefix
             for prefix in homebrew.mxcl. sh.brew.; do

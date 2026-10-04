@@ -865,6 +865,13 @@ nyxgpt ops restart observability
 ### Behavior
 
 - Services are stopped and started cleanly
+- On macOS, a native service restart is **one launchd operation**
+  (`launchctl kickstart -k`), with `brew services restart` as the fallback
+  for a formula whose launchd job is not loaded. The stop and the start are
+  performed by launchd rather than by two commands, which is what lets the
+  same code path restart the `api` when it is driven *from* the api — see
+  [Restarting the api from the
+  api](self-healing.md#restarting-the-api-from-the-api)
 - Docker containers are **not recreated** unless missing
 - Persistent volumes are preserved
 - Log-follower agents are reloaded if installed (LaunchAgents on macOS,

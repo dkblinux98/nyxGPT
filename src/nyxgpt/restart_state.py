@@ -48,6 +48,16 @@ actor that asked for it:
   see that function for why a newly started process is entitled to retire its
   own pending keys, and for what it deliberately does not retire.
 
+  That rests on a successor process existing at all, which is a property of
+  *who performs the restart* and not of this module. Until #4043's second
+  round the api ran `brew services restart` as its own child; launchd's
+  boot-out took that child down with the rest of the job, nothing ever ran
+  the start half, and the flag stood forever against a "restart" that had
+  stopped the service and never started it. A self-restart is handed to the
+  service manager as a single operation now
+  (`self_heal.kickstart_brew_service`), so the actor performing it is one the
+  api's own death cannot interrupt.
+
 Alongside the pending keys, each component carries the outcome of the last
 restart *driven on its behalf* (`mark_attempt_started`,
 `record_attempt_failed`, `attempts`). The pending set alone cannot distinguish
