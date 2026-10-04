@@ -88,6 +88,17 @@ prs = raw.get("prs", raw) if isinstance(raw, dict) and "prs" in raw else raw
 pt.write_text(json.dumps({"generated_at": now, "prs": prs}))
 PY
 
+# The restamped spend/churn are kept aside, because the cases below put them
+# BACK and the restamp is the only thing keeping staleness out of this test.
+# Restoring the checked-in blobs instead made this suite rot on a clock: the
+# data dumps are refreshed every few days, so the build exited 3 ("spend.json
+# is 3.76 days behind this build") and `a complete build exits 0` failed on
+# `v3.0.0` itself from 2026-10-03, on every PR that touched the retrospective.
+# Nothing about absent inputs had changed -- the suite was asserting the
+# freshness of checked-in data it does not own.
+mkdir -p "$WORK/landed"
+cp "$WORK/data/spend.json" "$WORK/data/churn.json" "$WORK/landed/"
+
 echo "== the failing case: neither dump has ever landed"
 rm -f "$WORK/data/spend.json" "$WORK/data/churn.json"
 status=0
@@ -131,7 +142,7 @@ check "the provenance table marks the file absent" \
   "$(field "$rendered" "d['provenancerows']")" "file absent — section unavailable"
 
 echo "== the same assertions with both dumps landed: nothing may be flagged"
-cp "$RETRO/data/spend.json" "$RETRO/data/churn.json" "$WORK/data/"
+cp "$WORK/landed/spend.json" "$WORK/landed/churn.json" "$WORK/data/"
 status=0
 python3 "$RETRO/build_dashboard.py" \
   --data-dir "$WORK/data" --template "$RETRO/retro_template.html" --out "$WORK/present.html" \

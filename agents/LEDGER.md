@@ -2288,6 +2288,41 @@ rather than mechanism, and nothing can enforce them.
   Source: #4121 (second acceptance round); extends **D-055** and **D-051** (c);
   cites **D-006**, **D-057**.
 
+- **D-059** · 2026-10-04 · developer agent (#3986, submit gate) — **A required
+  suite must answer about the code, not about the machine or the clock.** Two
+  gates were red on `v3.0.0` for reasons no diff contained, and between them
+  they blocked every PR that touched their paths:
+
+  (a) *Ambient environment.* `tests/test_acceptance_failure_handler.sh` case 5
+  ran the handlers' extracted `if: failure()` alert step with no
+  `NYXGPT_CONFIG_FILE` — the one extracted step in the suite that was not given
+  one — so `load_config` read `$HOME/.nyxGPT/config.ini`. A developer box has
+  one and `developer_auto_implement.yml` exports the var, so the suite was green
+  wherever it was written and red on the clean runner that gates it (from
+  2026-10-01). Extracted-step runs are now under `env -i`: a suite that inherits
+  the environment is not reproducible in either direction, and "green on my
+  machine" is not a weaker version of green — it is a different question.
+
+  (b) *Wall clock.* `tests/test_retro_missing_sources.sh` restamps its inputs
+  because a stale input is a different test's subject, then restored the two it
+  deletes from the **checked-in** dumps — un-restamped. The build exits 3 on
+  staleness, so the suite was green for ~3 days after each retrospective data
+  refresh and red after (from 2026-10-03). A suite must not assert the freshness
+  of data it does not own.
+
+  (c) *What the leak was hiding.* The ambient config made the alert step's one
+  load-bearing case untested: when the step that FAILED is `Write ephemeral
+  config`, there is no config to read, and because sourcing `gh_project.sh`
+  enables `set -e`, the step exited 1 having posted no comment and sent no DM —
+  the owner's acceptance report eaten in silence by the step whose only job is
+  to say so. Both handlers now tolerate a config miss and fall back to
+  `GITHUB_REPOSITORY`, and the suite runs the loud path with no config at all.
+  Guard: `tests/unit/test_agent_suites_answer_about_the_code.py`, plus case 5
+  itself; both proven by injection in both directions.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D` — run, not
+  eyeballed. IDs are never reused.
+  Source: #3986 (fourth round, submit gate); cites **D-006**, **D-040**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

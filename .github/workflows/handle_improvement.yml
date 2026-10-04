@@ -329,7 +329,17 @@ jobs:
         run: |
           set -uo pipefail
           source scripts/agents/lib/gh_project.sh
-          load_config
+
+          # `set +e` and the GITHUB_REPOSITORY fallback: see the same step in
+          # handle_acceptance_failure.yml. Sourcing the library enables
+          # `set -e`, and the failure this step most needs to report is the
+          # config step, after which load_config has nothing to read.
+          set +e
+          load_config \
+            || _warn "no usable config (${NYXGPT_CONFIG_FILE:-unset}) -- falling back to GITHUB_REPOSITORY"
+          _repo="${GITHUB_REPOSITORY:-}"   # :- , not bare: `set -u` would exit here
+          : "${REPO_OWNER:=${_repo%%/*}}"
+          : "${REPO_NAME:=${_repo##*/}}"
 
           # Body via a file, not a heredoc inside "$( … )" -- see the same
           # step in handle_acceptance_failure.yml for why.
