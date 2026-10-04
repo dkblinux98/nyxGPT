@@ -295,9 +295,11 @@ def unique(names: Iterable[str]) -> list[str]:
 # recovery path still failed where the manual one had been repaired.
 
 # A single path segment brew will accept, as a pattern string so the inline
-# barrier `self_heal._restart_brew_service` must carry (CodeQL #4 recognizes
-# the `re.fullmatch(r"...", x)` call form, not a precompiled pattern or a
-# helper) has one authority to be identical to -- pinned by
+# barriers `self_heal._restart_brew_service` (the formula name) and
+# `self_heal._kickstart_brew_service` (the launchd label built from it) must
+# each carry (CodeQL #4 recognizes the `re.fullmatch(r"...", x)` call form,
+# not a precompiled pattern or a helper) have one authority to be identical
+# to -- pinned for every copy by
 # `test_brew_formula_at_version.py::test_the_inline_barrier_matches_the_shared_pattern`.
 #
 # The trailing `@<version>` group is Homebrew's versioned-formula syntax, and

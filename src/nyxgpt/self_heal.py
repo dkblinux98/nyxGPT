@@ -13,10 +13,14 @@ Four deployment modes are covered:
 - **Native/local-first** (the default local deployment -- see
   `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services on
   macOS or systemd --user units on Linux (#3508), and `cassandra` runs as
-  the plain (non-Compose) `nyxgpt-cassandra` Docker container. Healed via
-  `brew services restart <name>` / `systemctl --user restart <unit>` /
-  `docker restart <container>` -- the same mechanisms `nyxgpt ops restart`
-  uses.
+  the plain (non-Compose) `nyxgpt-cassandra` Docker container. Healed by
+  asking the service manager itself (`launchctl kickstart -k` on macOS,
+  `systemctl --user restart <unit>` on Linux) or `docker restart
+  <container>` -- the same mechanisms `nyxgpt ops restart` uses. On macOS
+  `brew services restart <name>` is the fallback for a formula whose launchd
+  job is not loaded, and *only* that: it is a stop and a separate start, and
+  the api cannot survive its own stop long enough to issue the second half
+  (#4043, see `_kickstart_brew_service`).
 - **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
   `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
   Docker containers defined in `terraform/main.tf`. Checked/healed directly
@@ -2231,12 +2235,15 @@ def _cassandra_active_elsewhere() -> str | None:
 def restart_native_component(component: str) -> HealResult:
     """Restart a native/local-first core component.
 
-    `api`/`web`/`ollama` restart via `brew services restart <name>` on
-    macOS or `systemctl --user restart <unit>` on Linux (#3508);
-    `cassandra` (the one Docker-managed piece of a native install) restarts
-    via `docker restart <container>` -- the same mechanisms `nyxgpt ops
-    restart` uses, so the user never needs a raw `brew`/`systemctl`/`docker`
-    command.
+    `api`/`web`/`ollama` restart through the service manager itself --
+    `launchctl kickstart -k` on macOS (with `brew services restart <name>`
+    as the fallback for a formula whose job launchd does not have loaded;
+    see `_kickstart_brew_service` for why that order is load-bearing when
+    the api is the service being restarted) or `systemctl --user restart
+    <unit>` on Linux (#3508); `cassandra` (the one Docker-managed piece of a
+    native install) restarts via `docker restart <container>` -- the same
+    mechanisms `nyxgpt ops restart` uses, so the user never needs a raw
+    `brew`/`launchctl`/`systemctl`/`docker` command.
 
     Refuses (rather than silently skipping) to touch the native Cassandra
     container if `_cassandra_active_elsewhere` finds Terraform or Compose
