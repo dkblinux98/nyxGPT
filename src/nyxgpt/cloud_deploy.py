@@ -3268,14 +3268,28 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     if str(plan.get("os_family") or OS_FAMILY_LINUX) == OS_FAMILY_MACOS:
         # Say plainly what a Mac deploy did and did not do, rather than
         # letting the Linux wording below imply parity it does not have
-        # (#3867): its bootstrap installs the two Homebrew formulas and starts
-        # them, and runs neither the observability profiles nor the self-heal
-        # watchdog that `ops install` brings with it on Linux.
+        # (#3867).
+        #
+        # The caveat covers the CONTAINER TIER and nothing else (#4150). It
+        # used to say "that bootstrap does not run `nyxgpt ops install`" and
+        # leave the reader to work out what that cost -- which filed the
+        # *missing model backend* under the same heading as Grafana. It did
+        # not merely under-describe the omission; it made it look intentional
+        # and bounded when it was neither, and the owner paid a Dedicated
+        # Host's 24-hour minimum to find a Mac that could not answer a chat
+        # message. The bootstrap now installs Ollama and pulls the configured
+        # models, so the first line can say the core stack is complete and the
+        # second can be specific about what is actually absent.
         print(
-            "Target OS: macOS (EC2 Mac) -- installed from the remote Homebrew tap and "
-            "started with `brew services`.\n"
-            "No observability stack and no self-heal watchdog: that bootstrap does not run "
-            "`nyxgpt ops install`. See docs/cloud.md, 'EC2 Mac targets'."
+            "Target OS: macOS (EC2 Mac) -- api, web and the Ollama model backend "
+            "installed from the remote Homebrew tap and started with `brew services`, "
+            "with the configured chat and embedding models pulled.\n"
+            "Absent on this target, and only this: the observability stack "
+            "(Grafana/Loki/Tempo/GlitchTip) and the `nyxgpt-cassandra` container, so "
+            "the self-heal watchdog here has only the native services to heal. All of "
+            "it is Docker-based, and an EC2 Mac supports no nested virtualization, so "
+            "no Docker daemon can exist on it. Chat, RAG and the web UI are "
+            "unaffected. See docs/cloud.md, 'EC2 Mac targets'."
         )
         # The single most expensive thing about this deploy, said at the end
         # where the operator is actually looking (#3995). A Dedicated Host is

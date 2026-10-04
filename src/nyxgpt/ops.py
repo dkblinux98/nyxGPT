@@ -5603,7 +5603,13 @@ def _ensure_required_models(
                     outcome.detail
                     + "\nThe stack cannot serve "
                     + ("chat" if model.role == model_bootstrap.CHAT_ROLE else "RAG")
-                    + " without it -- fix the cause and re-run `nyxgpt ops install`.",
+                    # `ops required-models` named first (#4150): it is this step
+                    # on its own, and it is the only one of the two that works on
+                    # a target with no Docker engine -- where re-running the
+                    # whole of `ops install` is not a remedy an operator can
+                    # follow.
+                    + " without it -- fix the cause and re-run `nyxgpt ops required-models` "
+                    "(or `nyxgpt ops install`, which includes this step).",
                 )
             )
         elif outcome.already_present:

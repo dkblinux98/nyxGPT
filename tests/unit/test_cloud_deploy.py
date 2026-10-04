@@ -1761,6 +1761,45 @@ def test_deploy_summary_points_at_the_status_command(stubbed_deploy, capsys):
     assert "nyxgpt cloud ops status" in out
 
 
+def test_the_macos_caveat_covers_the_container_tier_and_not_the_model_backend(capsys):
+    """What the deploy says it skipped must be what it actually skipped (#4150).
+
+    The old wording was "No observability stack and no self-heal watchdog: that
+    bootstrap does not run `nyxgpt ops install`." Every word of it was true and
+    the net effect was a lie of omission: the same sentence that disclaimed
+    Grafana silently covered the *model backend*, which `ops install` also
+    brought. So the omission read as intentional and bounded when it was
+    neither, and the owner paid a Dedicated Host's non-refundable 24-hour
+    minimum to discover a Mac that could not answer a chat message.
+    """
+    cloud_deploy._print_deploy_summary(
+        {
+            "target": {"instance_id": "i-0abc", "host": "203.0.113.5"},
+            "plan": {"version": "3.0.0", "os_family": cloud_deploy.OS_FAMILY_MACOS},
+            "steps": [],
+            "tunnel": {"running": False},
+            "urls": {},
+        }
+    )
+
+    out = capsys.readouterr().out
+
+    # The model backend is named as installed, not as skipped.
+    assert "Ollama model backend" in out
+    assert "chat and embedding models pulled" in out
+
+    # The caveat is explicit about its own scope, and names the constraint
+    # rather than the command that was not run -- "does not run `ops install`"
+    # is an implementation note, not a statement of what the operator lost.
+    assert "and only this" in out
+    assert "observability stack" in out
+    assert "nested virtualization" in out
+    assert "Chat, RAG and the web UI are unaffected" in out
+
+    # And the sentence that used to absorb the model backend is gone.
+    assert "No observability stack and no self-heal watchdog" not in out
+
+
 def test_deploy_status_flag_still_emits_json_and_names_its_replacement(monkeypatch, capsys):
     monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
 
