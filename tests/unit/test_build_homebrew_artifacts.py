@@ -912,8 +912,10 @@ def test_the_known_callers_are_still_the_only_callers():
     formulas into a throwaway tap so a broken recipe fails on the PR that
     wrote it. The fourth is that workflow's `stable-over-candidate` job
     (#3860), which stamps *both* channels so `conflicts_with` is exercised
-    against a stable formula that is really present. Both are held to the same
-    bar as the two publishing jobs by
+    against a stable formula that is really present. The fifth is that same
+    workflow's `candidate-upgrade` job (#4133), which stamps two *versions* of
+    one candidate formula so `brew upgrade` is a real upgrade. All of them are
+    held to the same bar as the two publishing jobs by
     `test_jobs_running_the_build_script_provide_what_it_imports` below, which
     iterates whatever this function finds.
     """
@@ -924,6 +926,7 @@ def test_the_known_callers_are_still_the_only_callers():
         ("release-publish-pypi.yml", "homebrew-tap-rc"),
         ("macos-brew-smoke.yml", "keg-install"),
         ("macos-brew-smoke.yml", "stable-over-candidate"),
+        ("macos-brew-smoke.yml", "candidate-upgrade"),
     }
 
 
@@ -1131,10 +1134,19 @@ def test_the_keg_pip_never_performs_an_install(which):
     """
     recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
 
-    keg_pip = [line for line in recipe if 'system python, "-m", "pip"' in line]
+    keg_pip = [line for line in recipe if re.search(r'\bsystem python, "-m", "pip"', line)]
     assert len(keg_pip) == 1, recipe
     assert '"download"' in keg_pip[0]
     assert '"install"' not in keg_pip[0]
+    # The rule is about the subcommand, not about how many times the keg's pip
+    # is started: `quiet_system` starts the same pip, so a capability probe or
+    # anything else spelled that way is held to it too. No such line exists
+    # today, which is the point -- one added with `install` fails here.
+    for line in recipe:
+        if "quiet_system python" not in line:
+            continue
+        assert '"download"' in line, line
+        assert '"install"' not in line, line
     # The exact rc11 line the owner's install died on.
     assert _PIP_INSTALL_VIA_KEG_PIP not in recipe
     # `pip --python` re-execs the keg's pip in another interpreter; it is the

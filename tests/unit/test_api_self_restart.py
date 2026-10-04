@@ -315,11 +315,19 @@ def test_ops_restart_also_hands_the_api_off_to_launchd(monkeypatch):
     The sweep for this fault class (runbook 3, "name the fault as a class")
     found a second reachable instance: `app.config_restart` schedules
     `ops.restart(...)` on a timer, which dispatches through
-    `ops._restart_native_service` -- so the self-kill was reachable by that
-    route too, and fixing only `self_heal` would have left the trap for the
-    next session (first principle 2). Both call the *same* function rather
-    than keeping a copy each, which is the D-045 shape: two implementations of
-    one policy diverged on the answer they existed to give identically.
+    `ops._restart_native_service` -> `_restart_registered_native_service` --
+    so the self-kill was reachable by that route too, and fixing only
+    `self_heal` would have left the trap for the next session (first principle
+    2). Both call the *same* function rather than keeping a copy each, which is
+    the D-045 shape: two implementations of one policy diverged on the answer
+    they existed to give identically.
+
+    Driven through the outer `_restart_native_service` deliberately, not the
+    inner helper: #4133 inserted its stale-build repair between the route and
+    the hand-off, and this asserts the whole route still reaches launchd. The
+    unit conftest's autouse stub leaves nothing answering :8000, so the drift
+    is "could not tell" and falls through to the registered restart -- which is
+    what the owner's healthy machine does too.
     """
     from nyxgpt import ops
 

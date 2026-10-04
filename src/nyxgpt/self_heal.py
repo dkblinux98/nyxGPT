@@ -204,7 +204,7 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # `_restart_brew_service` and the launchd label built from it in
 # `kickstart_brew_service` (#4043). See `brew_services.SEGMENT_PATTERN`, which
 # is the authority for that form and explains why the wider class forbids
-# everything the narrower one does, and ledger D-058 for why the remaining
+# everything the narrower one does, and ledger D-059 for why the remaining
 # eight guards keep the narrow class rather than being "finished off".
 
 # Maps a core native component to the *stable* Homebrew formula its service
@@ -2022,7 +2022,8 @@ def _bring_up_compose_service(service: str) -> HealResult:
 def kickstart_brew_service(name: str) -> HealResult | None:
     """Restart Homebrew service `name` by asking launchd to, or `None` to fall through.
 
-    Public because `ops._restart_native_service` needs the same mechanism --
+    Public because `ops._restart_registered_native_service` needs the same
+    mechanism --
     `POST /api/v1/config/restart` reaches `ops.restart()` from inside the api
     process, so the self-kill below is reachable by that route too, and two
     copies of this policy would be the **D-045** shape (one implementation
@@ -2096,7 +2097,7 @@ def kickstart_brew_service(name: str) -> HealResult | None:
         # `sh.brew.nyxgpt-api@3.0.0rc`, and the narrow class would refuse the
         # real label on the one channel acceptance testing uses. This is the
         # *second* sink in this module that legitimately takes an `@` -- see
-        # D-054(b), which recorded that only one did, and D-058, which records
+        # D-054(b), which recorded that only one did, and D-059, which records
         # that this one joined it and why the remaining eight still must not.
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", label):
             return HealResult(False, f"Refused to act on invalid launchd label: {label!r}")

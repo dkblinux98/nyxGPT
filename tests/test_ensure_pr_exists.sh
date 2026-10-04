@@ -244,32 +244,15 @@ _assert_not_contains "no PR is opened on an unreadable PR list" "$LOG" "gh pr cr
 # its own path).
 ln -sfn "$ROOT_DIR/scripts/agents/lib" "$TMP/lib"
 
-python3 - "$ENSURE" "$TMP/retired_ensure.sh" <<'PY'
-import re
-import sys
-
-src, out = sys.argv[1:3]
-text = open(src).read()
-
-fixed = re.search(
-    r'if ! pr_pages=.*?\nfi\n(if ! pr_count=.*?\nfi\n)',
-    text,
-    re.S,
-)
-assert fixed, "could not locate the PR-count guard to replace"
-
-retired = (
-    'pr_count="$(gh api "repos/${REPO}/pulls?head=${REPO_OWNER}:${BRANCH}'
-    '&state=all&per_page=100" \\\n'
-    '    --paginate 2>/dev/null | jq -s \'[.[][]] | length\' || echo "unknown")"\n'
-    'if [[ "$pr_count" == "unknown" ]]; then\n'
-    '  _warn "Could not list PRs for ${BRANCH}; leaving it alone rather than '
-    'opening a duplicate."\n'
-    '  exit 0\n'
-    'fi\n'
-)
-open(out, "w").write(text[: fixed.start()] + retired + text[fixed.end() :])
-PY
+# The retired form is restored by tests/inject_retired_pr_guard.py, which cuts
+# the sentinel-delimited disposition block out of the real script and puts the
+# old PR counter back. Since #4151 that counter is retired for a second reason
+# as well -- "does a PR exist" is the wrong question, because a merged PR plus
+# a later push answers it "yes" -- so one helper restores it for both suites
+# rather than each describing the old code its own way.
+# tests/test_stranded_residue.sh runs the same injected form against a
+# merged-PR-with-residue fixture.
+python3 "$ROOT_DIR/tests/inject_retired_pr_guard.py" "$ENSURE" "$TMP/retired_ensure.sh"
 
 : > "$TMP/gh.log"
 RETIRED_OUT="$(bash "$TMP/retired_ensure.sh" 9201 claude/issue-9201-stranded 2>&1)"

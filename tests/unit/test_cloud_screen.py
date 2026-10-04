@@ -148,12 +148,82 @@ def test_the_rendered_script_binds_nothing_to_a_non_loopback_address():
     assert "allow-ip" not in script
 
 
-def test_the_rendered_script_never_sets_an_account_password():
-    """`sudo passwd ec2-user` is the hand-rolled step this command retires."""
+def test_one_credential_serves_apples_client_and_a_third_party_one():
+    """#4121's acceptance failure: a VNC-only password is one Apple's own
+    Screen Sharing.app structurally cannot use, because it offers security
+    types 30/33 first and both authenticate against the ACCOUNT password. The
+    command's own output names `vnc://...`, which macOS hands to that client,
+    so the operator was given a credential their client would always reject."""
     script = cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h")
-    assert "passwd" not in script
+
+    # The account half, which is what makes `open vnc://...` work...
+    assert 'dscl . -passwd "/Users/$TARGET_USER" "$NYXGPT_VNC_PASSWORD"' in script
+    # ...verified rather than assumed, in the same step...
+    assert 'dscl . -authonly "$TARGET_USER" "$NYXGPT_VNC_PASSWORD"' in script
+    # ...and the VNC half, so one secret covers both clients.
     assert "-setvnclegacy -vnclegacy yes" in script
     assert "-setvncpw -vncpw" in script
+    # One secret, not two: the same shell variable feeds all three.
+    assert script.count("$NYXGPT_VNC_PASSWORD") == 3
+
+
+def _commands_only(script: str) -> str:
+    """`script` with its comment lines removed.
+
+    An absence assertion has to be made against what the Mac will *run*: the
+    rendered scripts carry long comments naming the APIs that were tried and
+    rejected, so a plain `"sysadminctl" not in script` fails on the paragraph
+    explaining why `sysadminctl` is not used.
+    """
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_the_account_password_is_set_with_dscl_not_sysadminctl():
+    """`sysadminctl -resetPasswordFor` is the obvious API and it fails on an
+    EC2 Mac: "Operation is not permitted without secure token unlock"."""
+    commands = _commands_only(cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h"))
+    assert "sysadminctl" not in commands
+    assert "-resetPasswordFor" not in commands
+    # And not the interactive tool the hand-rolled flow used, which no wrapped
+    # command can answer a prompt for.
+    assert "sudo passwd" not in commands
+    assert "\npasswd " not in commands
+
+
+def test_the_credential_is_written_before_anything_listens():
+    """A listener already running when the credential is written never loads
+    it -- on the owner's host `screensharingd` started 4m21s BEFORE the VNC
+    password was written, and the password was rejected for that reason."""
+    script = cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h")
+
+    account = script.index("dscl . -passwd")
+    vnc_password = script.index("-setvncpw -vncpw")
+    activate = script.index("-activate -configure -access -on")
+    restart = script.index("launchctl kickstart -k system/com.apple.screensharing")
+    assert account < vnc_password < activate < restart
+
+
+def test_the_listener_is_restarted_not_the_ard_agent():
+    """`kickstart -restart -agent` cycles ARDAgent; the pid on 5900 was 7927
+    before and 7927 after. `screensharingd` is the process that authenticates,
+    and it belongs to the `com.apple.screensharing` launchd job."""
+    script = cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h")
+    assert "launchctl kickstart -k system/com.apple.screensharing" in script
+    assert "-restart -agent" not in _commands_only(script)
+
+
+def test_the_script_measures_the_ordering_rather_than_asserting_it():
+    """The script's own line order is not evidence about two processes: the
+    listener may predate the script. So it reads the times off the machine and
+    fails closed if the listener is the older of the two."""
+    script = cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h")
+    assert 'CREDENTIAL_WRITTEN_AT="$(date +%s)"' in script
+    assert "lsof -nP -iTCP:" in script
+    assert "ps -o lstart= -p" in script
+    assert '[ "$LISTENER_STARTED_AT" -lt "$CREDENTIAL_WRITTEN_AT" ]' in script
+    # And it is the comparison that aborts, not a log line about it.
+    verdict = script[script.index('[ "$LISTENER_STARTED_AT" -lt') :]
+    assert "exit 1" in verdict.split("fi")[0]
 
 
 def test_the_rendered_script_installs_nothing_on_the_mac():
@@ -295,8 +365,85 @@ def test_the_tunnel_forwards_only_5900_and_only_to_loopback():
     target = cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user")
     argv = cloud_screen.screen_argv(target)
     assert "-N" in argv
-    assert argv[argv.index("-L") + 1] == "5900:127.0.0.1:5900"
+    assert argv[argv.index("-L") + 1] == "5901:127.0.0.1:5900"
     assert argv[-1] == "ec2-user@198.51.100.10"
+
+
+def test_the_local_port_defaults_away_from_5900():
+    """#4121's acceptance failure. The remote 5900 cannot move -- macOS binds
+    it and the launchd job is SIP-protected -- but as a LOCAL default it is
+    unusable: `vnc://localhost:5900` is the operator's own Mac's Screen
+    Sharing, so Apple's client refuses with "you can't control your own
+    screen" inside the client, before the forward is consulted and before
+    nyxGPT's own message about the port is ever read. macOS is the operator
+    platform this feature exists for, so the default was always wrong exactly
+    where it is always used."""
+    assert cloud_screen.SCREEN_PORT == 5900
+    assert cloud_screen.DEFAULT_LOCAL_SCREEN_PORT == 5901
+    assert cloud_screen.DEFAULT_LOCAL_SCREEN_PORT != cloud_screen.SCREEN_PORT
+    # Every local-side default is the new one, and the printed URL follows it.
+    target = cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user")
+    assert "5901:127.0.0.1:5900" in cloud_screen.screen_invocation(target)
+    assert cloud_screen.screen_status()["local_port"] == 5901
+
+
+def test_a_request_for_a_different_local_port_is_not_answered_with_the_open_one(monkeypatch):
+    """#4121: with a path alive on 5900, `--local-port 5901` reported 5900 and
+    opened nothing, which made the flag look inert. The open path does not
+    satisfy a request for a different one."""
+    target = cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user")
+    cloud_deploy._write_json(
+        cloud_screen.SCREEN_STATE_FILE,
+        {"pid": 4242, "host": "198.51.100.10", "user": "ec2-user", "local_port": 5900},
+    )
+    monkeypatch.setattr(cloud_deploy, "_process_alive", lambda _pid: True)
+    killed: list[int] = []
+    monkeypatch.setattr(cloud_screen.os, "kill", lambda pid, _sig: killed.append(pid))
+    monkeypatch.setattr(cloud_screen.time, "sleep", lambda _s: None)
+
+    class _Alive:
+        pid = 5151
+
+        def poll(self):
+            return None
+
+    opened: list[list[str]] = []
+
+    def _popen(argv, **_kwargs):
+        opened.append(argv)
+        return _Alive()
+
+    monkeypatch.setattr(cloud_screen.subprocess, "Popen", _popen)
+
+    result = cloud_screen.start_screen_tunnel(target, 5901)
+
+    # The old forward was closed rather than leaked, and the new one is on the
+    # port that was asked for.
+    assert killed == [4242]
+    assert result["already_running"] is False
+    assert result["replaced_local_port"] == 5900
+    assert result["local_port"] == 5901
+    assert result["url"] == "vnc://localhost:5901"
+    assert "5901:127.0.0.1:5900" in " ".join(opened[0])
+
+
+def test_an_open_path_on_the_requested_port_is_reported_not_duplicated(monkeypatch):
+    """The other half: asking for the port that is already open is a no-op."""
+    target = cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user")
+    cloud_deploy._write_json(
+        cloud_screen.SCREEN_STATE_FILE,
+        {"pid": 4242, "host": "198.51.100.10", "user": "ec2-user", "local_port": 5901},
+    )
+    monkeypatch.setattr(cloud_deploy, "_process_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        cloud_screen.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("a second ssh forward was spawned for an open path"),
+    )
+
+    result = cloud_screen.start_screen_tunnel(target, 5901)
+    assert result["already_running"] is True
+    assert result["pid"] == 4242
 
 
 def test_a_local_port_collision_names_the_flag_that_moves_it(monkeypatch):

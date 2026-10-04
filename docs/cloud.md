@@ -292,7 +292,8 @@ structurally cannot reproduce (EC2 Mac hardware is on the short list in
 ```bash
 nyxgpt cloud screen                   # enable Screen Sharing + open the forward
 nyxgpt cloud screen --status          # is the path open, and what is enabled?
-nyxgpt cloud screen --status --show-password   # print the VNC credential
+nyxgpt cloud screen --status --show-password   # print the credential
+nyxgpt cloud screen --local-port 5902 # forward from a different local port
 nyxgpt cloud screen --stop            # close the forward
 nyxgpt cloud screen --disable         # close it and turn Screen Sharing off
 ```
@@ -302,8 +303,16 @@ The command does three things and asks you to type none of them:
 1. Enables macOS Screen Sharing on the Mac over the same wrapped SSH path
    every other remote step uses.
 2. Makes it **loopback-only before it listens** (see below).
-3. Forwards `localhost:5900` to the Mac's `127.0.0.1:5900`, and prints the
-   `vnc://localhost:5900` address to point a VNC client at.
+3. Forwards `localhost:5901` to the Mac's `127.0.0.1:5900`, and prints the
+   `vnc://localhost:5901` address and the account to sign in as.
+
+The local port is **5901 by default, not 5900** — and that is deliberate. On a
+macOS workstation `vnc://localhost:5900` is your *own* Screen Sharing, so
+Apple's client resolves the address to your machine and refuses with "you can't
+control your own screen" before the forward is ever consulted. `--local-port N`
+moves it; asking for a port other than the open one closes the open path and
+re-opens on the one you asked for, rather than reporting the old port as though
+it had satisfied the request.
 
 **Nothing is listening on a non-loopback address, and no port is opened.** This
 is [`DECISION_PRIVATE_ACCESS_MECHANISM.md`](../product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md)
@@ -322,22 +331,38 @@ nyxGPT's to change. What nyxGPT changes instead is the Mac's own packet filter
 | --- | --- |
 | Write and load a `pf` anchor that passes port 5900 on `lo0` and **drops it everywhere else** | Activating the agent first would leave a window, however short, with a network-reachable listener |
 | Read the anchor back and check the block rule is in it | `pfctl -f` exits 0 on a ruleset it only warned about, so a zero exit is not evidence |
+| Write the credential and verify it with `dscl . -authonly` | A listener that is already running when the credential is written never loads it |
 | **Only then** activate the Screen Sharing agent | If the rule did not load, the command fails here with nothing enabled and nothing listening |
+| Restart `system/com.apple.screensharing`, and read the new listener's start time back | `kickstart -restart -agent` cycles *ARDAgent*, not the process that authenticates on 5900 — measured, the listener's pid was unchanged across one |
 
 `--disable` turns the agent off and deliberately **leaves the `pf` rule
 loaded**: it blocks a port nothing is listening on, so it costs nothing, and it
 closes the window for any later run that fails between the two steps.
 
-**The credential.** A VNC password is generated on first use and stored in
+**The credential.** One password is generated on first use and stored in
 `~/.nyxGPT/secrets/cloud-mac-vnc-password` (mode 0600), the same place every
 other ops-managed secret on your machine lives. It is never prompted for, never
 printed unless you ask with `--show-password`, never in any `ssh` argv or shell
 history (the configuration script travels on the connection's stdin), and never
 in the `--json` payload or the HTTP API. `--rotate-password` replaces it.
 
-Because Apple's legacy VNC authentication uses that password alone, **no account
-password is ever set on the Mac** — the hand-rolled version of this flow needed
-a `passwd` on the login user, and this one does not.
+That one password is set as **both** the login account's password (with
+`dscl . -passwd`, verified with `dscl . -authonly` in the same step) and the
+Mac's legacy VNC password. Both, because the two clients authenticate against
+different things: Apple's own Screen Sharing.app — the client macOS hands
+`vnc://...` to — offers security types 30 and 33 first and prefers them, and
+both check a real **account** password, while a third-party VNC client takes
+the legacy VNC password. A VNC-only credential is therefore one Apple's client
+structurally cannot use, which is how `open vnc://localhost:5901` came back
+"`ec2-user` and password rejected" in #4121's acceptance round. Sign in as the
+deploy's SSH user (`ec2-user` unless you changed it); the command prints the
+account name next to the address.
+
+`dscl . -passwd` and not `sysadminctl -resetPasswordFor`, which is the obvious
+API and fails on an EC2 Mac with "Operation is not permitted without secure
+token unlock". Setting an account password does not weaken anything here: 5900
+stays loopback-only, the security group stays TCP 22 from your `/32`, and the
+account is reachable only through your own authenticated SSH forward.
 
 **Where it will refuse, and why.** Both refusals are scoped the way
 `nyxgpt cloud allow-ip` is — to machines nyxGPT configured:

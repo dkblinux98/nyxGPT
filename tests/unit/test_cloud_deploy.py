@@ -10,6 +10,7 @@ repo-less guarantee on the provisioning script.
 import argparse
 import io
 import json
+import pathlib
 import re
 import subprocess
 from pathlib import Path
@@ -480,6 +481,81 @@ def test_provision_failure_quotes_the_first_error_not_the_tail():
     # The lines immediately before the error are context an operator needs to
     # know what was being attempted.
     assert "pip install --upgrade pip" in detail
+
+
+def test_provision_failure_steps_over_the_benign_error_every_mac_deploy_emits():
+    """#4121. The window around the first *recognizable* error pointed at a
+    line the bootstrap produces on purpose, on 100% of Mac deploy failures.
+
+    `brew tap-trust <tap> || brew trust <tap> || true` (#3770) asks for
+    whole-tap trust in both spellings Homebrew has used and tolerates the one
+    this Homebrew lacks, so `Error: Invalid usage: Unknown command: brew
+    tap-trust` is *guaranteed* to appear near the top of the log, immediately
+    followed by the other spelling succeeding. On the owner's 2026-10-03 run
+    the diagnostic quoted that line and the real failure sat ~340 lines later.
+    """
+    output = [
+        "+ brew tap dkblinux98/nyxgpt",
+        "==> Tapped",
+        "Error: Invalid usage: Unknown command: brew tap-trust",
+        "+ brew trust dkblinux98/nyxgpt",
+        "Trusted tap dkblinux98/nyxgpt",
+        *[f"==> downloading bottle {i}" for i in range(200)],
+        "+ python3.12 -m pip download pip",
+        "WARNING: Retrying after connection broken by "
+        "'SSLError(SSLCertVerificationError('OSStatus -26276'))': /simple/pip/",
+        "ERROR: No matching distribution found for pip",
+        "Error: dkblinux98/nyxgpt/nyxgpt-api@3.0.0rc: Failure while executing",
+    ]
+
+    detail = cloud_deploy._provision_failure_detail(output)
+
+    # The real failure, not the tolerated one.
+    assert "OSStatus -26276" in detail
+    assert "No matching distribution found for pip" in detail
+    assert "Unknown command: brew tap-trust" not in detail
+    # Skipped, not silently dropped: a line wrongly on the benign list has to
+    # be visible from the diagnostic itself.
+    assert "Skipped 1 earlier error line(s)" in detail
+
+
+def test_the_benign_list_only_covers_lines_the_bootstrap_tolerates():
+    """A benign marker that matched a real failure would hide it completely."""
+    assert cloud_deploy._is_benign_error_line(
+        "Error: Invalid usage: Unknown command: brew tap-trust"
+    )
+    assert not cloud_deploy._is_benign_error_line(
+        "Error: dkblinux98/nyxgpt/nyxgpt-api@3.0.0rc: Failure while executing"
+    )
+    # And every marker on the list is one the macOS bootstrap really tolerates:
+    # it asks for whole-tap trust in both spellings Homebrew has used and lets
+    # the missing one fail, which is #3770's fix and the reason the error line
+    # is guaranteed rather than incidental.
+    bootstrap = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "cloud"
+        / "ec2-user-data-macos.sh.tmpl"
+    ).read_text(encoding="utf-8")
+    assert "tap-trust dkblinux98/nyxgpt" in bootstrap
+    assert re.search(r"tap-trust \S+ \\\n\s*\|\|.*\btrust \S+", bootstrap), (
+        "the benign marker is only benign because the bootstrap has a fallback "
+        "spelling; without one, that error line IS the failure"
+    )
+
+
+def test_provision_failure_falls_back_to_the_tail_when_only_benign_errors_appear():
+    """A run whose only recognizable error is a tolerated one has not named its
+    failure, so the tail is the honest window -- and it says what it skipped."""
+    output = [
+        "Error: Invalid usage: Unknown command: brew tap-trust",
+        *[f"line {i}" for i in range(40)],
+    ]
+
+    detail = cloud_deploy._provision_failure_detail(output)
+
+    assert "no recognizable error line" in detail
+    assert "Skipped 1 earlier error line(s)" in detail
 
 
 def test_provision_failure_prefers_ops_fail_lines_over_the_first_error():

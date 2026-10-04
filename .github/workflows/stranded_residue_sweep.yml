@@ -1,0 +1,102 @@
+name: Stranded Residue Sweep
+
+# The question this job answers by RUNNING, on demand: is any branch on origin
+# carrying work that was pushed AFTER its own pull request merged, and is
+# therefore on the release branch in no form at all? (#4151)
+#
+# developer_ensure_pr_exists.sh now detects that at the end of the run which
+# causes it, so every future occurrence is covered at the event. This workflow
+# exists for the ones already on the remote when that guard landed -- there was
+# at least one: `fix/3986-*` held 579 insertions pushed 19 minutes after PR
+# #4126 merged, implementing the one acceptance criterion the owner could not
+# test, while #3986 sat closed in `For Release` reading as accepted.
+#
+# `workflow_dispatch` ONLY, and deliberately not scheduled: branch hygiene is
+# event-driven (ledger D-013) and the event now has a guard on it, so a timer
+# here would be a watch armed over a process that is idle by design (first
+# principle 1). It is a workflow rather than a terminal command so the question
+# can be answered from the Actions tab -- per CLAUDE.md, ops state is
+# observable without a terminal.
+#
+# Report-only by default. `open_prs: true` opens the same draft residue PR and
+# loud issue comment the per-run guard opens.
+
+on:
+  workflow_dispatch:
+    inputs:
+      open_prs:
+        description: 'true = open a draft PR for each stranded branch, false = report only'
+        required: true
+        default: 'false'
+      base_branch:
+        description: 'Base branch to compare against (blank = configured RELEASE_BRANCH)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stranded-residue-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Branches carrying work behind a merged PR
+    runs-on: ubuntu-latest
+    env:
+      # Needs to be able to open a PR and comment on an issue in --open-prs
+      # mode; the same token the per-run guard uses.
+      GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          # FULL history, not the default depth 1: the whole detection is
+          # `git rev-list origin/<base>..origin/<branch>` plus a blob-level
+          # content comparison, and neither can be computed from a shallow
+          # clone. A shallow checkout here would report "nothing stranded"
+          # because it cannot see, which is the misreading this sweep exists
+          # to end.
+          fetch-depth: 0
+
+      - name: Write config
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: Sweep for post-merge residue
+        env:
+          OPEN_PRS: ${{ inputs.open_prs }}
+          BASE_BRANCH_INPUT: ${{ inputs.base_branch }}
+        run: |
+          # `if` blocks, not `[[ … ]] && …`: the step runs under `bash -e`, so
+          # a false test as a statement would exit the step before the sweep
+          # ever ran.
+          cmd=(bash scripts/agents/sweep_stranded_residue.sh)
+          if [[ "$OPEN_PRS" == "true" ]]; then
+            cmd+=(--open-prs)
+          fi
+          if [[ -n "$BASE_BRANCH_INPUT" ]]; then
+            cmd+=("$BASE_BRANCH_INPUT")
+          fi
+          "${cmd[@]}"

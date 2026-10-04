@@ -66,6 +66,11 @@ INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_install_native_web",
     "_ensure_native_ollama_service",
     "_cleanup_stale_log_symlinks",
+    # #4133. Machine-facing twice over: it probes the host's :8000 and, on a
+    # confirmed mismatch, SIGTERMs the process it finds there and restarts a
+    # service. A unit test that left this real would reach out of the suite in
+    # the most direct way anything on this list can.
+    "_reconcile_running_api_build",
     "sync_env_from_config",
     "_generate_compose_config",
     "_ensure_required_models",

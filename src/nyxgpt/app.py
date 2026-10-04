@@ -100,6 +100,7 @@ from nyxgpt.api_models import (
     ReindexCollectionResponse,
     RenameRequest,
     ResourceMetricsResponse,
+    RuntimeBuildInfo,
     SessionDocumentsResponse,
     SessionsListResponse,
     TagsRequest,
@@ -153,6 +154,7 @@ from nyxgpt.rag.rag import (
 )
 from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
+from nyxgpt.running_build import local_runtime_build
 from nyxgpt.token_counter import count_tokens as _count_usage_tokens
 from nyxgpt.tracing import current_trace_id
 from nyxgpt.version import running_version, version_channel
@@ -1312,9 +1314,20 @@ def info(request: Request) -> InfoResponse:
     every client independently without them drifting apart, and an operator
     running acceptance kegs needs the answer to "is this a candidate or a
     release?" from the same place the version came from (#3982).
+
+    `runtime` is the half neither of those can supply (#4133): which *build*
+    this process is executing, read from its own `sys.prefix`. Every other
+    version surface is derived from what is installed on disk, and a process
+    outlives the build it was started from -- a `brew upgrade` during v3.0.0
+    acceptance left this endpoint reporting a plausible `release_version`
+    while the interpreter serving it came from a venv the upgrade had
+    deleted. `nyxgpt ops install`/`status`/`doctor` read this field and
+    compare it to the venv the installed service execs; see
+    `nyxgpt.running_build`.
     """
     cfg = _req_cfg(request)
     version_running = running_version()
+    runtime = local_runtime_build()
     return InfoResponse(
         ollama_base_url=get_ollama_base_url(cfg),
         default_model=get_default_model(cfg),
@@ -1322,6 +1335,7 @@ def info(request: Request) -> InfoResponse:
         release_version=version_running,
         release_branch=cfg.get("github", "RELEASE_BRANCH", fallback=None),
         release_channel=version_channel(version_running),
+        runtime=RuntimeBuildInfo(**runtime.to_dict()),
     )
 
 

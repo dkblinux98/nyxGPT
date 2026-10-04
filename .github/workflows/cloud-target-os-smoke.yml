@@ -69,6 +69,19 @@ name: Cloud Target OS Smoke
 #                          ports. 5c asserts a Linux deployment is refused and
 #                          never advertised a screen.
 #
+#                          The owner's 2026-10-04 retest added two more things
+#                          to 5b/5d, both found by connecting rather than by
+#                          reading. 5b now asserts the delivered ORDERING of
+#                          the credential -- the account password (`dscl .
+#                          -passwd`, verified with `dscl . -authonly`) and the
+#                          VNC password are written before the agent is
+#                          activated, and `system/com.apple.screensharing` is
+#                          what gets restarted afterwards rather than ARDAgent,
+#                          whose restart leaves the listener's pid unchanged.
+#                          5d asserts that `--local-port N` against a path
+#                          already open on another port replaces it instead of
+#                          reporting the old port as satisfying the request.
+#
 # What it does NOT cover: a real EC2 Mac executing the bootstrap. GitHub
 # Actions has no macOS EC2 runner and Apple's licensing does not permit macOS
 # in a container, so EC2 Mac hardware stays on the short list in
