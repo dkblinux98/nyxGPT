@@ -983,9 +983,8 @@ count_sprint_backlog_open() {
   echo "$total"
 }
 
-# Release wall helpers. The release tracking issue's title carries the
-# release version ("Release v2.0.0"), and the owner's milestone naming
-# carries it too ("Phase 5.5: ... (v2.0.0)", "Phase 6 — ... (v3.0.0)").
+# Release wall helpers. The release version is RELEASE_BRANCH itself, and the
+# owner's milestone naming carries it too ("Phase 6 — ... (v3.0.0)").
 # Matching the two is the OUTER boundary the loop must never cross: agents
 # merge to RELEASE_BRANCH, so next-release work would land on the wrong
 # branch. It opens via the release ceremony -- pointing RELEASE_ISSUE_NUMBER
@@ -1002,12 +1001,15 @@ count_sprint_backlog_open() {
 # traceable source (issue number or owner comment link); an uncited claim is
 # agent rationale, not policy.
 
-# Prints the vX.Y.Z version parsed from the release tracking issue's title,
-# or nothing if the issue/title has no version.
-release_version_from_issue() {
-  local release_issue="$1"
-  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}" \
-    --jq '.title' 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
+# Prints the vX.Y.Z release version, which is RELEASE_BRANCH (owner direction
+# 2026-10-03): the branch agents merge to is the value the wall protects, so
+# it is read directly rather than parsed out of the release tracking issue's
+# title, a second copy that could drift or fail to parse. Prints nothing if
+# RELEASE_BRANCH is not a vX.Y.Z version; callers treat that as a stop.
+release_version() {
+  if [[ "${RELEASE_BRANCH:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$RELEASE_BRANCH"
+  fi
 }
 
 # Buckets the release's open Backlog issues by Sprint iteration title and
@@ -1995,10 +1997,10 @@ ${AUTOPILOT_INFO_MARKER}" \
     sprint_field="${SPRINT_FIELD:-Sprint}"
     active_sprint="$(iteration_active_title "$sprint_field" 2>/dev/null || echo "")"
     [[ "$active_sprint" != "null" ]] || active_sprint=""
-    release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+    release_version="$(release_version)"
 
     if [[ -z "$release_version" ]]; then
-      _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
+      _warn "Autopilot: RELEASE_BRANCH '${RELEASE_BRANCH:-}' is not a vX.Y.Z version -- no auto-kick (conservative stop)."
     elif [[ -z "$active_sprint" ]]; then
       # No iteration's window contains today: there is no sprint to work,
       # so park rather than falling back to release-wide selection.
