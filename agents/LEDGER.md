@@ -1920,6 +1920,11 @@ rather than mechanism, and nothing can enforce them.
   names, Docker container names, launchd labels and Pod names, none of which
   can carry `@`, and widening them would admit names those tools cannot have.
   **Do not "finish the job" by widening the rest.**
+  (*Amended 2026-10-04 by **D-059**: a **second** sink now takes an `@` name
+  -- the launchd label built from the formula name -- because the fix for this
+  issue's second acceptance round hands the restart to launchd. The count of
+  one is history; the rule it illustrates is unchanged, and the remaining
+  eight still keep the narrow class.*)
 
   (c) *A duplicated guard needs a drift test, not a convention.* #3861's
   first fix qualified ops' sites and left self_heal's bare, and the automated
@@ -2288,7 +2293,96 @@ rather than mechanism, and nothing can enforce them.
   Source: #4121 (second acceptance round); extends **D-055** and **D-051** (c);
   cites **D-006**, **D-057**.
 
-- **D-059** · 2026-10-04 · developer agent (#3986, submit gate) — **A required
+- **D-059** · 2026-10-04 · developer-agent (owner acceptance #3806, via
+  #4043's second round) — **A process does not restart its own service by
+  spawning a command that the restart kills. The restart is handed to the
+  service manager as ONE operation, and the service manager performs it.**
+
+  `brew services restart` is two launchd operations with a `brew` process in
+  between: boot the job out, then bootstrap it again. When the api restarts
+  itself that `brew` is a child of the launchd job being booted out, so
+  launchd takes it down with the rest of the job's process tree and it never
+  reaches the start half. The service was stopped by a command that could not
+  survive to start it, and the formula's own `keep_alive true` went with the
+  boot-out, so nothing brought it back either: the owner's rc17 machine was
+  left with `brew services list` reporting `none`, no `launchctl` entry and
+  the web UI 502ing until `nyxgpt ops restart api` was run from a shell. The
+  CLI worked on the same machine for one reason only — its `brew` is a child
+  of the terminal, not of the service being restarted. **Parentage was the
+  variable, and no inspection of the command can see it.**
+
+  Four parts, in descending generality:
+
+  (a) *Hand it to the manager, do not detach the child.* The other candidate
+  was spawning the same command with `start_new_session=True` and not waiting.
+  It rests on setsid escaping launchd's job membership, which was never
+  established; it discards the exit code for **every** component to fix one
+  (`web`/`ollama`/`cassandra` restarts legitimately *are* observed from inside
+  the api, and `app._do_restart_required` clears their pending flags on the
+  strength of what it reads); and it would need a per-component branch to
+  avoid that. `launchctl kickstart -k gui/<uid>/<label>` needs neither: it is
+  still synchronous and still observable, and the actor performing the restart
+  is launchd, which the caller's death cannot interrupt.
+
+  (b) *A refusal is only reportable if nothing has been killed yet.* The old
+  command killed the job and then discovered it could not start it, so "the
+  restart could not be launched" was structurally unobtainable by the only
+  actor obliged to report it — which is why the notice waited out its 90
+  polls and blamed the clock. launchd refuses an unknown label having killed
+  nothing, so a refusal arrives as a return value and
+  `restart_state.record_attempt_failed` records it. **Order the operations so
+  the failure path still has a reporter.**
+
+  (c) *The fallback is kept for exactly the case where it is safe.* `brew
+  services restart` remains the path when launchd cannot be asked (Linuxbrew)
+  or knows no job under either label — and that is also the case where it
+  cannot self-kill, because a job that is not loaded is not hosting this
+  process. Only `brew services` writes and bootstraps the plist, so removing
+  it would break the never-registered case.
+
+  (d) *Linux was never affected, and that is the same rule, not an
+  exception.* `systemctl --user restart` hands the stop and the start to
+  systemd as one job; killing the client that asked does not cancel it. Dev
+  mode was unaffected for the same reason — `_restart_launchagent` has always
+  been a `launchctl kickstart -k`. One path in the very module that broke
+  already did the right thing.
+
+  (e) *The class sweep found a second reachable instance, and fixing one
+  would have left the trap.* `POST /api/v1/config/restart` schedules
+  `ops.restart()` on a timer from inside the api, so `ops._restart_native_
+  service` self-killed identically. Both now call the **same** function
+  (`self_heal.kickstart_brew_service`, public for that reason — `ops.py`
+  already imports `self_heal`, and `brew_services.py` runs no subprocesses);
+  two copies of one policy is the **D-045** shape. `_restart_brew_service`
+  itself is deliberately *not* widened: its other call sites follow an
+  install or upgrade, where the point of `brew services restart` is that it
+  rewrites and re-bootstraps the plist for the keg just built, and a
+  kickstart would restart the already-loaded job definition.
+
+  **The evidence lesson, which is the part worth re-reading.** #4043's first
+  round shipped executed verification for this exact function
+  (`macos-brew-smoke.yml` → `stable-over-candidate`) and it could not see
+  this defect, because it drives `restart_native_component("api")` from a CLI
+  child of the runner's shell — outside the launchd job, where the boot-out
+  never reaches it. Green, on the real platform, certifying the defect: the
+  **D-051(a)** shape. A harness that stands outside the condition cannot
+  measure it; the new step starts the real brew service and drives the real
+  `POST /api/v1/infra/restart-required`, so the driver is the api itself.
+
+  The behaviours are not recorded here — they are pinned by
+  `tests/unit/test_api_self_restart.py` and by `macos-brew-smoke.yml` →
+  `keg-install` → "The api restarts itself when the UI asks it to (#4043)",
+  which reverts the hand-off in the installed keg and requires a dead,
+  de-registered service before the fixed half is allowed to mean anything.
+  Amends **D-054**(b): the `@`-bearing sinks in `self_heal.py` are now two,
+  not one (the formula name and the launchd label built from it), and the
+  remaining eight still keep the narrow class.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4043; amends **D-054**; cites **D-006**, **D-032**(d), **D-051**;
+  `docs/self-healing.md` §Restarting the api from the api.
+
+- **D-060** · 2026-10-04 · developer agent (#3986, submit gate) — **A required
   suite must answer about the code, not about the machine or the clock.** Two
   gates were red on `v3.0.0` for reasons no diff contained, and between them
   they blocked every PR that touched their paths:
@@ -2319,8 +2413,11 @@ rather than mechanism, and nothing can enforce them.
   `GITHUB_REPOSITORY`, and the suite runs the loud path with no config at all.
   Guard: `tests/unit/test_agent_suites_answer_about_the_code.py`, plus case 5
   itself; both proven by injection in both directions.
-  Number from `python3 scripts/agents/lib/ledger_ids.py next D` — run, not
-  eyeballed. IDs are never reused.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. Allocated as **D-059** against a base
+  that did not yet carry the mainline's own D-059 (#4043), which is the
+  collision `ledger_ids.py` documents as created at merge by neither branch
+  alone; **renumbered here**, both entries kept. IDs are never reused.
   Source: #3986 (fourth round, submit gate); cites **D-006**, **D-040**.
 
 ## Parked

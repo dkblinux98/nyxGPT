@@ -802,6 +802,15 @@ def test_restart_component_no_docker(monkeypatch):
 
 @pytest.mark.unit
 def test_restart_native_component_brew_service_success(monkeypatch):
+    """The restart is handed to launchd as one operation, not run via brew (#4043).
+
+    This asserted `brew services restart` until #4043's second acceptance
+    round. That command is a boot-out plus a *separate* bootstrap, and when
+    the api restarts itself the boot-out takes the `brew` issuing it down with
+    the rest of the launchd job -- so the service was stopped by a command
+    that could not survive to start it. See `test_api_self_restart.py` for the
+    full set, including the `brew services` fallback and the label schemes.
+    """
     run_mock = MagicMock(return_value=CP(returncode=0))
     monkeypatch.setattr(self_heal, "_run", run_mock)
 
@@ -810,7 +819,12 @@ def test_restart_native_component_brew_service_success(monkeypatch):
     assert result.ok
     assert "Restarted brew service: nyxgpt-api" in result.message
     cmd = run_mock.call_args[0][0]
-    assert cmd == ["brew", "services", "restart", "nyxgpt-api"]
+    assert cmd == [
+        "launchctl",
+        "kickstart",
+        "-k",
+        f"gui/{os.getuid()}/homebrew.mxcl.nyxgpt-api",
+    ]
 
 
 @pytest.mark.unit
@@ -839,8 +853,20 @@ def test_restart_native_component_brew_service_run_raises(monkeypatch):
 
 @pytest.mark.unit
 def test_restart_native_component_no_brew(monkeypatch):
+    """With launchd unable to answer and no brew either, say so rather than silently failing.
+
+    `launchctl` is asked first since #4043, so the refusal has to be stubbed
+    for this to reach the brew branch at all -- and that it *reaches* it is
+    the point: a launchd refusal kills nothing, so the caller is still alive
+    to report why no restart happened.
+    """
     monkeypatch.setattr(
-        self_heal, "_which", lambda prog: None if prog == "brew" else "/usr/bin/docker"
+        self_heal, "_which", lambda prog: None if prog == "brew" else "/usr/bin/launchctl"
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(returncode=113, stderr="Could not find service"),
     )
     result = self_heal.restart_native_component("ollama")
     assert not result.ok
