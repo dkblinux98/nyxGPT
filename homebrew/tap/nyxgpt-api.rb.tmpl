@@ -433,6 +433,32 @@ class NyxgptApi < Formula
     # block for why this is a symlink rather than another bash wrapper.
     bin.install_symlink venv/"bin/nyxgpt"
 
+    # Its own file, not a `<<'PY'` nested in the wrapper's heredoc: a nested
+    # body has to start at column 0, Ruby's `<<~` then strips nothing, and the
+    # wrapper gets written with an indented shebang -- which Homebrew's Cleaner
+    # reads as a non-executable text file and re-stamps 0444, undoing the
+    # `chmod 0755` below (#4043). See ../nyxgpt-api.rb's install block.
+    (libexec/"read-api-address.py").write <<~'PY'
+      """Print the api's configured listen host and port, tab-separated.
+
+      `bin/nyxgpt-api` runs this with /usr/bin/python3, so it must import
+      nothing outside the standard library.
+      """
+      import configparser
+      import os
+
+      cfg = configparser.ConfigParser()
+      cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+      host = cfg.get('api', 'host', fallback='127.0.0.1')
+      try:
+          port = str(cfg.getint('api', 'port', fallback=8000))
+      except Exception:
+          port = '8000'
+
+      print(f"{host}\t{port}")
+    PY
+
     (bin/"nyxgpt-api").write <<~EOS
       #!/bin/bash
       set -euo pipefail
@@ -452,22 +478,7 @@ class NyxgptApi < Formula
       PORT="8000"
 
       if [ -f "$CONFIG_FILE" ]; then
-        IFS=$'\t' read -r HOST PORT < <("$SYS_PY" - <<'PY'
-import configparser
-import os
-
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
-
-host = cfg.get('api', 'host', fallback='127.0.0.1')
-try:
-    port = str(cfg.getint('api', 'port', fallback=8000))
-except Exception:
-    port = '8000'
-
-print(f"{host}\t{port}")
-PY
-)
+        IFS=$'\t' read -r HOST PORT < <("$SYS_PY" "#{libexec}/read-api-address.py")
       fi
 
       echo "nyxgpt-api starting (self-contained Cellar venv)" >&2

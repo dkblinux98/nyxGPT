@@ -2427,6 +2427,26 @@ rather than mechanism, and nothing can enforce them.
   guard that makes a silent re-bump fail at `pytest` rather than in fifteen
   smoke jobs.
 
+- **P-006** · 2026-10-04 · developer-agent (#4043's third round) — The
+  `acceptance-standard` red on #4043's head is **not fixed on that branch**,
+  deliberately. It is a mainline red — `v3.0.0` itself fails it identically
+  ([run 37190887144](https://github.com/dkblinux98/nyxGPT/actions/runs/37190887144),
+  head `0bb6193f`) — and the fix is already in flight on **#4159** (`13578526`:
+  `test_acceptance_failure_handler.sh` case 5 ran the extracted alert step with
+  no `NYXGPT_CONFIG_FILE`, so `load_config` read a file that exists on a dev box
+  and not on the runner).
+  Reason: duplicating it would put two copies of one fix in the tree and
+  allocate a third colliding `D-059`/`D-060` in as many rounds — the exact
+  shape the renumbering rule exists to clean up, created on purpose. A red a
+  branch did not cause is not that branch's to fix (`--ci-override` is the
+  sanctioned route, and the reviewer verifies the reason).
+  Revisit when: #4159 merges — then `v3.0.0` carries the fix and #4043's next
+  merge of the base takes it. If #4159 is closed without merging, this red
+  needs an owner of its own; it blocks every PR, not just #4043.
+  Source: #4043 round 3; the two **brew** reds on the same head *were* fixed
+  there (the keg wrapper's indented shebang), because #4043's own executed
+  evidence sits in the job they kill.
+
 ## Open questions
 
 - **Q-001** · 2026-08-14 · developer-agent (#3774) — Should the ledger be
