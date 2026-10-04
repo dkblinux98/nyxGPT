@@ -525,16 +525,27 @@ markers.**
   sentence: consumers read the link, never the prose (owner rule, 2026-08-19).
   A PR with no issue behind it is legitimate and rare — on approval it merges
   and skips the issue-side bookkeeping, rather than jamming the pipeline.
-- **One exception, and it is not a submission (#3862):**
-  `developer_ensure_pr_exists.sh` runs `if: always()` at the end of every
-  developer run and opens a **draft** PR for a branch that reached `origin`
-  without one — the run died before the submit step, so its work would
-  otherwise sit unreviewed, unmerged and invisible. That body carries
+- **Two exceptions, and neither is a submission.** Both come from the one
+  backstop — `developer_ensure_pr_exists.sh`, run `if: always()` at the end of
+  every developer run — and both open a **draft** whose body carries
   `Refs #ISSUE`, deliberately: `Refs` creates **no** closing link, so an
-  unfinished draft cannot close its issue if someone merges it. It becomes a
-  submission only when a continuation run passes verification, at which point
-  the link is made closing and the PR is taken out of draft. No other path may
-  create a PR.
+  unfinished draft cannot close its issue if someone merges it.
+  1. **A branch that reached `origin` with no PR at all (#3862).** The run died
+     before the submit step, so its work would otherwise sit unreviewed,
+     unmerged and invisible. It becomes a submission only when a continuation
+     run passes verification, at which point the link is made closing and the
+     PR is taken out of draft.
+  2. **A branch that received commits AFTER its own PR merged (#4151).** Work
+     pushed by a run still in flight when its PR merged is on the release
+     branch in no form, and nothing looks at it again: the review path has
+     nothing to review, the issue is closed, and the board reads
+     `For Release`. The residue draft puts it back in front of review and the
+     guard says so on the originating issue. "A PR exists" is not "the work
+     landed" — a merged PR is evidence about the commits it contained, not
+     about every commit the branch will ever hold.
+
+  The two carry different markers (`rescue-pr` vs `residue-pr`) and must not be
+  handled as each other. No other path may create a PR.
 - Issues close only on merge — and only on a merge whose content is verified
   onto the release branch (`review_accept_and_merge.sh`, #3862). "The merge
   command exited 0" is a report, not evidence.

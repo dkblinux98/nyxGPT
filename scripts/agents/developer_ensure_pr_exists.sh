@@ -81,6 +81,19 @@ Without that loop the rescue would trade one accumulation mode for a worse
 one -- an orphan branch at least gets deleted once its content lands, while a
 stranded draft PR shields its head branch from every cleanup there is.
 
+WHY NOT REFUSE THE PUSH INSTEAD (#4151 asks this explicitly). Failing earlier
+is usually cheaper, but not here. The pushes a developer run makes come from
+`claude-code-action`'s own `git-push.sh` and from the workflow's "Snapshot
+uncommitted implementation work" step, and that snapshot exists precisely so a
+run which hits its turn limit does not take the work down with the runner. A
+refusal at that moment leaves the commits on an ephemeral runner only -- it
+converts "the work is on origin where nothing looks at it" into "the work is
+gone", which is strictly worse than the defect. Pushing to some other branch
+instead means inventing a destination mid-run for work whose issue is already
+closed, with its own new failure modes. So the push is allowed to land and the
+residue is ROUTED here, at the one place in the run that already inspects every
+branch the run touched.
+
 Never fails the caller: a rescue that breaks the job it is rescuing is worse
 than the orphan it was preventing.
 EOF
