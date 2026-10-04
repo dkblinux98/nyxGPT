@@ -55,7 +55,7 @@ actor that asked for it:
   the start half, and the flag stood forever against a "restart" that had
   stopped the service and never started it. A self-restart is handed to the
   service manager as a single operation now
-  (`self_heal._kickstart_brew_service`), so the actor performing it is one the
+  (`self_heal.kickstart_brew_service`), so the actor performing it is one the
   api's own death cannot interrupt.
 
 Alongside the pending keys, each component carries the outcome of the last

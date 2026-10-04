@@ -846,7 +846,11 @@ native-mode target directly.
 
 `target` is one of `api`, `web`, `ollama`, `cassandra`, `observability`,
 `all` (default `all`). The restart is scheduled a moment after the response
-is sent, since the target may be this very API process.
+is sent, since the target may be this very API process — and because it may
+be, the native restart behind it is handed to the service manager as a single
+operation rather than run as a child of the api, the same way
+`/infra/restart-required` is (#4043; see [Restarting the api from the
+api](self-healing.md#restarting-the-api-from-the-api)).
 
 **Response:**
 

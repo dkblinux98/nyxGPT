@@ -1500,6 +1500,13 @@ jobs:
         # it and requires the api to answer again, under a new pid, with the
         # notice gone. The injection asserts its own edit landed, and the step
         # restores every piece of `$HOME` state it touched.
+        #
+        # Only `self_heal.py`'s hand-off is injected, because that is the one
+        # this endpoint routes through. `ops._restart_native_service` carries
+        # the same hand-off for `POST /api/v1/config/restart` (which reaches
+        # `ops.restart()` from inside the api the same way) and calls the same
+        # shared function, so a regression there fails the unit test that pins
+        # it rather than needing a second macOS reproduction.
         run: |
           set -euo pipefail
 
@@ -1678,7 +1685,7 @@ jobs:
           HANDOFF = "\n".join(
               [
                   "    if _is_macos():",
-                  "        handed_off = _kickstart_brew_service(name)",
+                  "        handed_off = kickstart_brew_service(name)",
                   "        if handed_off is not None:",
                   "            return handed_off",
                   "",

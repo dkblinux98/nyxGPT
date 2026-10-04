@@ -106,7 +106,7 @@ def test_unsafe_specs_are_still_refused(bad):
 
 @pytest.mark.parametrize(
     "guard",
-    [self_heal._restart_brew_service, self_heal._kickstart_brew_service],
+    [self_heal._restart_brew_service, self_heal.kickstart_brew_service],
 )
 def test_the_inline_barrier_matches_the_shared_pattern(guard):
     """Every inline literal for a Homebrew name must stay identical to the authority.

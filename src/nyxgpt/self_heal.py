@@ -20,7 +20,7 @@ Four deployment modes are covered:
   `brew services restart <name>` is the fallback for a formula whose launchd
   job is not loaded, and *only* that: it is a stop and a separate start, and
   the api cannot survive its own stop long enough to issue the second half
-  (#4043, see `_kickstart_brew_service`).
+  (#4043, see `kickstart_brew_service`).
 - **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
   `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
   Docker containers defined in `terraform/main.tf`. Checked/healed directly
@@ -202,7 +202,7 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # Two guards take a *Homebrew* name rather than a component/container name and
 # admit a trailing `@<version>` on top of that class: the formula name in
 # `_restart_brew_service` and the launchd label built from it in
-# `_kickstart_brew_service` (#4043). See `brew_services.SEGMENT_PATTERN`, which
+# `kickstart_brew_service` (#4043). See `brew_services.SEGMENT_PATTERN`, which
 # is the authority for that form and explains why the wider class forbids
 # everything the narrower one does, and ledger D-057 for why the remaining
 # eight guards keep the narrow class rather than being "finished off".
@@ -2019,8 +2019,17 @@ def _bring_up_compose_service(service: str) -> HealResult:
     return HealResult(True, f"Started {service}")
 
 
-def _kickstart_brew_service(name: str) -> HealResult | None:
+def kickstart_brew_service(name: str) -> HealResult | None:
     """Restart Homebrew service `name` by asking launchd to, or `None` to fall through.
+
+    Public because `ops._restart_native_service` needs the same mechanism --
+    `POST /api/v1/config/restart` reaches `ops.restart()` from inside the api
+    process, so the self-kill below is reachable by that route too, and two
+    copies of this policy would be the **D-045** shape (one implementation
+    retried, the other did not, and they disagreed about the answer they
+    existed to give identically). `ops.py` already imports this module;
+    `brew_services.py` cannot host it, since it deliberately runs no
+    subprocesses. The caller shapes the result into its own type.
 
     **This is the fix for #4043's second round, and the reason it is a
     different command rather than a detached one.** `brew services restart` is
@@ -2133,7 +2142,7 @@ def _restart_brew_service(name: str) -> HealResult:
     succeeded on the same machine (#4043, first round).
 
     On macOS the restart is handed to launchd as a single operation
-    (`_kickstart_brew_service`), because `brew services restart` is a stop and
+    (`kickstart_brew_service`), because `brew services restart` is a stop and
     a *separate* start and the api cannot survive its own stop long enough to
     issue the second half -- #4043's second round. `brew services restart`
     remains the path for everything launchd will not answer for: Linuxbrew,
@@ -2146,7 +2155,7 @@ def _restart_brew_service(name: str) -> HealResult:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", name):
         return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _is_macos():
-        handed_off = _kickstart_brew_service(name)
+        handed_off = kickstart_brew_service(name)
         if handed_off is not None:
             return handed_off
     if _which("brew") is None:
@@ -2238,7 +2247,7 @@ def restart_native_component(component: str) -> HealResult:
     `api`/`web`/`ollama` restart through the service manager itself --
     `launchctl kickstart -k` on macOS (with `brew services restart <name>`
     as the fallback for a formula whose job launchd does not have loaded;
-    see `_kickstart_brew_service` for why that order is load-bearing when
+    see `kickstart_brew_service` for why that order is load-bearing when
     the api is the service being restarted) or `systemctl --user restart
     <unit>` on Linux (#3508); `cassandra` (the one Docker-managed piece of a
     native install) restarts via `docker restart <container>` -- the same

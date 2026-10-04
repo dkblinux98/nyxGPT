@@ -2198,6 +2198,18 @@ rather than mechanism, and nothing can enforce them.
   been a `launchctl kickstart -k`. One path in the very module that broke
   already did the right thing.
 
+  (e) *The class sweep found a second reachable instance, and fixing one
+  would have left the trap.* `POST /api/v1/config/restart` schedules
+  `ops.restart()` on a timer from inside the api, so `ops._restart_native_
+  service` self-killed identically. Both now call the **same** function
+  (`self_heal.kickstart_brew_service`, public for that reason — `ops.py`
+  already imports `self_heal`, and `brew_services.py` runs no subprocesses);
+  two copies of one policy is the **D-045** shape. `_restart_brew_service`
+  itself is deliberately *not* widened: its other call sites follow an
+  install or upgrade, where the point of `brew services restart` is that it
+  rewrites and re-bootstraps the plist for the keg just built, and a
+  kickstart would restart the already-loaded job definition.
+
   **The evidence lesson, which is the part worth re-reading.** #4043's first
   round shipped executed verification for this exact function
   (`macos-brew-smoke.yml` → `stable-over-candidate`) and it could not see

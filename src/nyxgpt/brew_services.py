@@ -296,7 +296,7 @@ def unique(names: Iterable[str]) -> list[str]:
 
 # A single path segment brew will accept, as a pattern string so the inline
 # barriers `self_heal._restart_brew_service` (the formula name) and
-# `self_heal._kickstart_brew_service` (the launchd label built from it) must
+# `self_heal.kickstart_brew_service` (the launchd label built from it) must
 # each carry (CodeQL #4 recognizes the `re.fullmatch(r"...", x)` call form,
 # not a precompiled pattern or a helper) have one authority to be identical
 # to -- pinned for every copy by

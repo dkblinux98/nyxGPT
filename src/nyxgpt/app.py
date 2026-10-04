@@ -1974,7 +1974,7 @@ def _do_restart_required(targets: list[str]) -> None:
       stopped by a command that could not survive to start it, and the notice
       waited out its poll for a process that was never launched. The restart
       is handed to the service manager as one operation now
-      (`self_heal._kickstart_brew_service`); the actor that performs it is
+      (`self_heal.kickstart_brew_service`); the actor that performs it is
       launchd, which this process's death cannot interrupt.
 
     Every way of *not* restarting records why, against the component, where

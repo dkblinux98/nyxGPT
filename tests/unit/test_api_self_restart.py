@@ -304,3 +304,86 @@ def test_dev_mode_api_is_unchanged(macos, monkeypatch):
 
     assert result.ok is True, result.message
     assert run.commands == [f"launchctl kickstart -k gui/{UID}/com.nyxgpt.api"]
+
+
+# --- The same fault class on the other route into the api process -----------
+
+
+def test_ops_restart_also_hands_the_api_off_to_launchd(monkeypatch):
+    """`POST /api/v1/config/restart` reaches `ops.restart()` from inside the api.
+
+    The sweep for this fault class (runbook 3, "name the fault as a class")
+    found a second reachable instance: `app.config_restart` schedules
+    `ops.restart(...)` on a timer, which dispatches through
+    `ops._restart_native_service` -- so the self-kill was reachable by that
+    route too, and fixing only `self_heal` would have left the trap for the
+    next session (first principle 2). Both call the *same* function rather
+    than keeping a copy each, which is the D-045 shape: two implementations of
+    one policy diverged on the answer they existed to give identically.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.setattr(ops, "_is_macos", lambda: True)
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(ops, "_dev_launchd_label", lambda component: None)
+    monkeypatch.setattr(ops, "_resolved_brew_service", lambda component: CANDIDATE)
+    monkeypatch.setattr(self_heal, "_is_macos", lambda: True)
+    monkeypatch.setattr(self_heal, "_which", lambda tool: f"/opt/homebrew/bin/{tool}")
+    run = _Recorder()
+    monkeypatch.setattr(self_heal, "_run", run)
+    # If the hand-off were skipped this would be the command, and the
+    # assertion below would catch it.
+    monkeypatch.setattr(
+        ops, "_run", lambda *a, **k: pytest.fail(f"ops ran its own restart command: {a}")
+    )
+
+    results = ops._restart_native_service("api")
+
+    assert [r.ok for r in results] == [True], [r.message for r in results]
+    assert run.commands == [f"launchctl kickstart -k gui/{UID}/homebrew.mxcl.{CANDIDATE}"]
+
+
+def test_ops_restart_falls_back_to_brew_when_launchd_knows_no_job(monkeypatch):
+    """The fallback is shared too -- an unloaded job still needs `brew services`."""
+    from nyxgpt import ops
+
+    monkeypatch.setattr(ops, "_is_macos", lambda: True)
+    monkeypatch.setattr(ops, "_is_linux", lambda: False)
+    monkeypatch.setattr(ops, "_dev_launchd_label", lambda component: None)
+    monkeypatch.setattr(ops, "_resolved_brew_service", lambda component: CANDIDATE)
+    monkeypatch.setattr(ops, "_which", lambda tool: f"/opt/homebrew/bin/{tool}")
+    monkeypatch.setattr(ops, "_brew_formula_spec", lambda name: name)
+    monkeypatch.setattr(self_heal, "_is_macos", lambda: True)
+    monkeypatch.setattr(self_heal, "_which", lambda tool: f"/opt/homebrew/bin/{tool}")
+    monkeypatch.setattr(
+        self_heal, "_run", _Recorder({"launchctl": _cp(113, stderr="Could not find service")})
+    )
+    ops_run = _Recorder()
+    monkeypatch.setattr(ops, "_run", ops_run)
+
+    results = ops._restart_native_service("api")
+
+    assert [r.ok for r in results] == [True], [r.message for r in results]
+    assert ops_run.commands == [f"brew services restart {CANDIDATE}"]
+
+
+def test_the_install_time_restart_still_rewrites_the_plist(monkeypatch):
+    """`_restart_brew_service` itself is untouched, and that is deliberate.
+
+    Its other call sites follow an install or an upgrade, where the point of
+    `brew services restart` is that it rewrites and re-bootstraps the plist
+    for the keg just built. A kickstart would restart the already-loaded job
+    definition, so widening the fix to that helper would trade one defect for
+    another.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.setattr(ops, "_which", lambda tool: f"/opt/homebrew/bin/{tool}")
+    monkeypatch.setattr(ops, "_brew_formula_spec", lambda name: name)
+    run = _Recorder()
+    monkeypatch.setattr(ops, "_run", run)
+
+    results = ops._restart_brew_service(CANDIDATE)
+
+    assert [r.ok for r in results] == [True]
+    assert run.commands == [f"brew services restart {CANDIDATE}"]
