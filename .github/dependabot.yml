@@ -29,6 +29,14 @@
 #
 # The `tests/unit/test_no_agent_created_labels.py` guard pins `labels: []` on
 # every update config in this file, so a later edit cannot quietly drop it.
+#
+# VERSION UPDATES ARE OFF (owner direction 2026-10-03). This file exists only
+# to stop the labels. The first cut of it also scheduled weekly version
+# updates (limit 5 per ecosystem), which Dependabot never ran here before and
+# which opened ten PRs within two hours (#4140-#4149) -- out of scope.
+# `open-pull-requests-limit: 0` disables version updates per ecosystem;
+# security updates are unaffected. Turning version updates on is the owner's
+# decision, not a side effect of this file.
 
 version: 2
 updates:
@@ -37,18 +45,18 @@ updates:
     schedule:
       interval: weekly
     labels: []
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   - package-ecosystem: npm
     directory: "/web"
     schedule:
       interval: weekly
     labels: []
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     labels: []
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
