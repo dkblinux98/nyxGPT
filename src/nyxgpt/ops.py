@@ -5242,6 +5242,11 @@ _RUNNING_BUILD_REMEDIATION = "nyxgpt ops restart api"
 # this long it is not serving, which is itself the answer this probe wants.
 _RUNNING_BUILD_PROBE_TIMEOUT = 5.0
 
+# How long `_reconcile_running_api_build` waits for the service it restarted to
+# come up and report the installed build. Not the probe timeout above: that one
+# bounds a single HTTP read, this one bounds "the api is booting".
+_RUNNING_BUILD_REPAIR_BUDGET_S = 120.0
+
 
 def _expected_native_api_venv() -> tuple[str, str]:
     """`(venv root, how it was derived)` for the venv the installed api service execs.
@@ -5527,7 +5532,12 @@ def _reconcile_running_api_build() -> list[OpsResult]:
     ]
     results.extend(_stop_stale_api_process(drift))
     results.extend(_restart_native_service("api"))
-    deadline = time.time() + 60.0
+    # The restarted service has to boot before the re-probe can see it, and a
+    # budget tighter than the api's own start-up would report the repair as
+    # having failed while it was still working. Sized against the same
+    # observation `_wait_for_stack_healthy` is sized against: a cold api on a
+    # loaded machine answers in tens of seconds, not hundreds.
+    deadline = time.time() + _RUNNING_BUILD_REPAIR_BUDGET_S
     recheck = drift
     while time.time() < deadline:
         recheck = _native_api_build_drift()
