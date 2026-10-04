@@ -8,6 +8,8 @@ stale `v1.0.0` while 3.0.0 was installed).
 
 from __future__ import annotations
 
+import os
+import sys
 import tomllib
 from configparser import ConfigParser
 from importlib.metadata import PackageNotFoundError
@@ -18,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nyxgpt.app import app
+from nyxgpt.running_build import RuntimeBuild
 from nyxgpt.version import UNKNOWN_VERSION, running_version
 
 pytestmark = pytest.mark.unit
@@ -104,3 +107,55 @@ class TestInfoEndpointVersion:
         data = response.json()
         assert data["release_version"] == "3.0.0"
         assert data["release_branch"] is None
+
+
+class TestInfoEndpointRuntimeBuild:
+    """GET /api/v1/info reports which BUILD the serving process is executing (#4133).
+
+    `release_version` above answers "which version is installed" -- it reads
+    package metadata. It cannot answer "is this process running that
+    install", and during v3.0.0 acceptance those diverged: a `brew upgrade`
+    left the api serving from a python3.11 venv the upgrade had deleted while
+    this endpoint reported a plausible version. `runtime` is the serving
+    process describing itself, which is what `nyxgpt ops` compares against
+    the installed service's venv.
+    """
+
+    def test_runtime_reports_this_process_not_the_installed_metadata(self):
+        with (
+            patch("nyxgpt.app.running_version", return_value="3.0.0"),
+            patch("nyxgpt.app.load_config", return_value=ConfigParser()),
+        ):
+            response = TestClient(app).get("/api/v1/info")
+
+        runtime = response.json()["runtime"]
+        assert runtime["prefix"] == sys.prefix
+        assert runtime["executable"] == sys.executable
+        assert runtime["pid"] == os.getpid()
+        assert runtime["python"] == ".".join(str(n) for n in sys.version_info[:3])
+        assert runtime["prefix_exists"] is True
+
+    def test_runtime_version_is_the_processes_own_not_the_patched_report(self):
+        """`release_version` is mockable per-request; `runtime.version` is read
+        from the process. A stale process reports a plausible version, so the
+        two fields must not be the same read."""
+        with (
+            patch("nyxgpt.app.running_version", return_value="9.9.9"),
+            patch("nyxgpt.app.load_config", return_value=ConfigParser()),
+        ):
+            data = TestClient(app).get("/api/v1/info").json()
+
+        assert data["release_version"] == "9.9.9"
+        assert data["runtime"]["version"] == running_version()
+
+    def test_runtime_is_parseable_by_the_ops_side_reader(self):
+        """The two halves must agree: `app` serialises it, `ops` parses it."""
+        with (
+            patch("nyxgpt.app.running_version", return_value="3.0.0"),
+            patch("nyxgpt.app.load_config", return_value=ConfigParser()),
+        ):
+            payload = TestClient(app).get("/api/v1/info").json()
+
+        build = RuntimeBuild.from_dict(payload["runtime"])
+        assert build is not None
+        assert build.prefix == sys.prefix

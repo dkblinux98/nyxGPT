@@ -107,6 +107,18 @@ self-heal-probe-honesty
 observability-settle
 Install the candidate onto a machine that already has the stable
 Install the published candidate from the real tap
+# macos-brew-smoke.yml's `candidate-upgrade` job (#4133). Required, and
+# deliberately on a different footing from `Install the working tree's
+# formulas` below: that one is advisory because it was red somewhere new on
+# every run, which is a gate measuring itself. This one answers a single
+# question with two measured halves -- with the comparison reverted the
+# surfaces report [OK] over a process running a deleted venv, and restored
+# they name it and repair it -- so a red run is a statement about the head,
+# not about the runner. It is the executed evidence (D-006) that a candidate
+# upgrade on a running stack leaves the api on the new keg's interpreter,
+# which is the whole of #4133; advisory, it would prove nothing on the PR
+# that broke it.
+Upgrade one candidate to the next with the stack running
 no-clobber
 Collections list/create on an empty Cassandra
 restart-activation-smoke

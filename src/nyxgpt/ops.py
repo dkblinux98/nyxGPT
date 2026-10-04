@@ -115,6 +115,21 @@ from nyxgpt.release_tarball import (  # noqa: F401
     _vendor_tree,
     build_release_dist_tarball,
 )
+
+# Which build the process that is actually serving is executing (#4133). Kept
+# in its own module, below both callers, for the same reason `brew_services`
+# is: `app.py` reports it about itself on `/api/v1/info` and `ops` compares
+# that report to the venv the installed service execs, and two modules that
+# must agree about what is running cannot each keep a copy of the answer.
+from nyxgpt.running_build import (
+    BUILD_MATCH,
+    BUILD_NOT_APPLICABLE,
+    BUILD_UNDETERMINED,
+    BuildDrift,
+    RuntimeBuild,
+    local_runtime_build,
+)
+from nyxgpt.running_build import classify as classify_build_drift
 from nyxgpt.subprocess_bounds import (
     LOCAL_PROBE_TIMEOUT_SECONDS,
     PROBE_TIMEOUT_SECONDS,
@@ -5215,6 +5230,398 @@ def _native_artifact_service_name(name: str) -> str:
     return _remote_tap_formula(name, _native_service_version())
 
 
+# The one command that repairs a running-build mismatch, named identically by
+# `install`, `status`, `doctor` and the Infrastructure page. A single literal
+# because four surfaces offering an operator four commands for one state is
+# how #4133 cost a diagnosis session: nothing available to the operator
+# distinguished a stale process from a correct one, let alone named the fix.
+_RUNNING_BUILD_REMEDIATION = "nyxgpt ops restart api"
+
+# How long to give the local api to answer `/api/v1/info`. A local loopback
+# read of an endpoint that touches no backend -- if it has not answered in
+# this long it is not serving, which is itself the answer this probe wants.
+_RUNNING_BUILD_PROBE_TIMEOUT = 5.0
+
+# How long `_reconcile_running_api_build` waits for the service it restarted to
+# come up and report the installed build. Not the probe timeout above: that one
+# bounds a single HTTP read, this one bounds "the api is booting".
+_RUNNING_BUILD_REPAIR_BUDGET_S = 120.0
+
+
+def _expected_native_api_venv() -> tuple[str, str]:
+    """`(venv root, how it was derived)` for the venv the installed api service execs.
+
+    Three layouts, routed by the same predicates the install itself branches
+    on rather than re-derived -- a comparison against a path no install ever
+    used would be worse than no comparison, since it reports drift on a
+    correct machine (`_native_install_identity` records the same reasoning
+    for service *names*):
+
+    * **macOS artifact** -- a Homebrew keg, self-contained since #3789: the
+      wrapper `bin/nyxgpt-api` execs `libexec/venv/bin/python3` directly.
+      Read through `<brew prefix>/opt/<formula>`, which is the symlink the
+      service's plist resolves at every start, so an upgrade moves this
+      answer the moment the keg is relinked. Falls back to the Cellar
+      directory for the installed version when the `opt` link is missing,
+      the same two-step `_installed_keg_version` takes and for the same
+      reason: with two taps carrying one formula name the Cellar layout is
+      never ambiguous.
+    * **macOS dev** -- `~/.nyxGPT/opt/nyxgpt-api/venv`, the editable venv the
+      `com.nyxgpt.api` LaunchAgent's wrapper execs.
+    * **Linux, both modes** -- the same `~/.nyxGPT/opt/nyxgpt-api/venv`; the
+      systemd unit is a template nyxGPT renders identically in either mode.
+
+    Returns `("", reason)` when the question has no answer on this machine --
+    no brew, no keg, no ops-managed venv, an unsupported OS. Every branch
+    requires the venv to EXIST, which is what makes an empty answer mean "no
+    native api is installed here" rather than "here is a path that might be
+    one". `_native_api_build_drift` uses exactly that to scope itself: a
+    Compose-only or Kubernetes-only host has no native api venv, so no
+    comparison is attempted against the container that is answering.
+    """
+    if _is_linux() or read_install_mode().is_dev:
+        venv = _native_install_root("nyxgpt-api") / "venv"
+        if not venv.is_dir():
+            return "", f"no native api venv on this machine ({venv} does not exist)"
+        return str(venv), "the venv the native api service's wrapper execs"
+    if not _is_macos():
+        return "", f"no native api service manager on {platform.system() or 'this OS'}"
+    formula = _native_artifact_service_name(NATIVE_BREW_SERVICES["api"])
+    prefix = _brew_path("--prefix")
+    if prefix is not None:
+        opt_venv = prefix / "opt" / formula / "libexec" / "venv"
+        if opt_venv.is_dir():
+            return str(opt_venv), f"the {formula} keg's venv, via {prefix / 'opt' / formula}"
+    cellar = _brew_path("--cellar")
+    version = _installed_keg_version(formula)
+    if cellar is not None and version:
+        keg_venv = cellar / formula / version / "libexec" / "venv"
+        if keg_venv.is_dir():
+            return str(keg_venv), f"the {formula} {version} keg's venv"
+    if _which("brew") is None:
+        return "", "Homebrew not found, so no keg venv can be located"
+    return "", f"no installed {formula} keg carrying a libexec/venv was found"
+
+
+def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
+    """Ask the api serving this host what IT is executing. `(build, why-not)`.
+
+    The authoritative read, and the reason the whole mechanism exists: every
+    other answer ops can give is derived from what is on disk, and #4133 is
+    precisely the case where disk and process disagree. Only the process can
+    say what the process is running, so it is asked.
+
+    `/api/v1/info` is behind the API-key middleware when `[auth] enabled`, so
+    the configured key is sent -- an operator who hardened their install must
+    not lose this check as a side effect. Any failure to get an answer
+    returns `None` plus the reason, which is reported as "could not
+    determine": a probe that cannot reach the api has learned nothing about
+    which build is running, and reporting that as a match is the defect.
+    """
+    from nyxgpt.config import get_api_port, get_auth_api_key
+
+    try:
+        cfg = load_config()
+    except Exception as e:  # pragma: no cover - unreadable config is its own report
+        return None, f"could not read config to find the api port ({type(e).__name__}: {e})"
+    port = get_api_port(cfg)
+    url = f"http://127.0.0.1:{port}/api/v1/info"
+    headers: dict[str, str] = {}
+    try:
+        if cfg.getboolean("auth", "enabled", fallback=False):
+            headers[cfg.get("auth", "header", fallback="X-API-Key")] = get_auth_api_key(cfg)
+    except Exception as e:  # pragma: no cover - malformed [auth] is its own report
+        return None, f"could not read [auth] to authenticate the probe ({type(e).__name__}: {e})"
+    try:
+        resp = httpx.get(url, headers=headers, timeout=_RUNNING_BUILD_PROBE_TIMEOUT)
+    except Exception as e:
+        return None, f"{url} did not answer ({type(e).__name__}: {e})"
+    if resp.status_code != 200:
+        return None, f"{url} answered HTTP {resp.status_code}"
+    try:
+        payload = resp.json()
+    except Exception as e:
+        return None, f"{url} answered with no JSON body ({type(e).__name__}: {e})"
+    build = RuntimeBuild.from_dict(payload.get("runtime") if isinstance(payload, dict) else None)
+    if build is None:
+        # A candidate predating this field. Said plainly rather than treated
+        # as a pass: the operator's machine genuinely cannot answer the
+        # question, and an upgrade is what makes it able to.
+        return None, (
+            f"{url} answered but reported no runtime block -- that api predates the "
+            "running-build check, so what it is executing cannot be read from it"
+        )
+    return build, ""
+
+
+def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
+    """Is the api answering on this host running the build the installed service execs?
+
+    Gated on the vantage point, which is the one way this check could produce
+    a false accusation: an api inside a Compose container, a Terraform
+    container or a Kubernetes Pod has a `sys.prefix` from that image, and
+    comparing it to a host keg path would report drift on a correctly deployed
+    stack. Each of those is reported `not_applicable` with the reason -- the
+    same scope statement `infra_status` makes for a Compose survey run from
+    inside a Pod (#3988).
+
+    Note what it is deliberately NOT gated on: whether the native service is
+    currently *running*. "The registered service is stopped" is precisely the
+    state a surviving pre-upgrade process produces -- it is why `brew services
+    list` could not see the owner's api -- so skipping the comparison there
+    would blind the check in the one case it exists for. The gate is "is a
+    native api INSTALLED here", answered by `_expected_native_api_venv`
+    finding a venv on disk.
+
+    The probe runs FIRST, and that ordering is a cost decision as much as a
+    logical one (first principle 1). If nothing is answering there is no
+    running build to compare, so the answer is already settled -- and settling
+    it with one 5s loopback read is far cheaper than the work the gates below
+    need: `detect_deployment_mode` runs `docker compose ps`, and the macOS
+    expectation costs two `brew` calls. `status`, `install` and `doctor` all
+    call this, so on a machine with the api down it now costs one refused
+    connection apiece. One consequence is named in `docs/ops.md` rather than
+    hidden: a Compose/Kubernetes host with nothing answering :8000 reports
+    "could not determine" instead of "not applicable", because the cheap read
+    settles it before the scoping gates are consulted.
+
+    `mode` lets a caller that has already surveyed this host pass its own
+    `DeploymentMode` in rather than paying for a second `docker compose ps`
+    (`status` holds one). Omitted, the survey is taken here -- and only if the
+    probe got an answer, so the usual cost is zero.
+    """
+    build, why_not = _probe_running_api_runtime()
+    if build is None:
+        return BuildDrift(
+            state=BUILD_UNDETERMINED,
+            running=None,
+            expected_prefix="",
+            expected_source="",
+            detail=why_not,
+            remediation=_RUNNING_BUILD_REMEDIATION,
+        )
+    expected, source = _expected_native_api_venv()
+    if not expected:
+        # No native api venv on this machine, so whatever answers :8000 is not
+        # one and there is nothing to compare it to.
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=build,
+            expected_prefix="",
+            expected_source="",
+            detail=source or "there is no native api service on this machine",
+            remediation="",
+        )
+    survey = mode if mode is not None else detect_deployment_mode()
+    # Scoped to the api, which is the component this check is about. Asking
+    # "is ANY core component containerised" would mark a native api
+    # not_applicable because web or Cassandra happens to be Compose-managed,
+    # and silence is the one outcome this check must not reach by accident.
+    container_api = "api" in compose_core_components(survey) or _container_deployed(
+        survey.terraform.get("api", "absent")
+    )
+    if container_api or _k8s_access_bridge_owns_host_ports():
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=build,
+            expected_prefix=expected,
+            expected_source=source,
+            detail=(
+                "the api port on this host is held by a container/cluster deployment, whose "
+                "interpreter lives in its image -- a native keg/venv comparison does not apply"
+            ),
+            remediation="",
+        )
+    return classify_build_drift(
+        build,
+        expected,
+        expected_source=source,
+        remediation=_RUNNING_BUILD_REMEDIATION,
+        undetermined_detail=why_not,
+    )
+
+
+def _stop_stale_api_process(drift: BuildDrift) -> list[OpsResult]:
+    """Stop the process behind a confirmed mismatch, by PID, so the service can take :8000.
+
+    Narrow by construction, because killing a process is the strongest action
+    in this module. Every one of these has to hold: the comparison said
+    `mismatch` (not "could not tell"), the process identified ITSELF as a
+    nyxGPT api by answering `/api/v1/info` with a runtime block, the PID it
+    reported is a real one, and it is not this process. A stale api is
+    otherwise unreachable: it is no longer in any service manager's
+    population -- that is what made it invisible to
+    `_retire_previous_identity`'s discovery sweep in the first place -- so
+    there is no `brew services stop` or `launchctl bootout` that names it.
+
+    SIGTERM first, which uvicorn handles as a graceful shutdown, then SIGKILL
+    only if it is still there. A stale process whose venv has been deleted
+    can fail partway through its own shutdown path, and leaving it holding
+    :8000 after reporting that it was stopped would be a worse report than
+    not having tried.
+    """
+    pid = drift.running.pid if drift.running is not None else 0
+    if not drift.mismatched or pid <= 0 or pid == os.getpid():
+        return []
+    label = f"pid {pid} ({drift.running_prefix})"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return [OpsResult(True, f"The stale api process had already exited: {label}")]
+    except PermissionError as e:
+        return [
+            OpsResult(
+                False,
+                f"Not permitted to stop the stale api process: {label}",
+                f"{type(e).__name__}: {e}. Stop it by hand, then run "
+                f"`{_RUNNING_BUILD_REMEDIATION}`.",
+            )
+        ]
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Failed to stop the stale api process: {label}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    deadline = time.time() + 15.0
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return [OpsResult(True, f"Stopped the stale api process: {label}")]
+        time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"The stale api process did not exit and could not be killed: {label}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    return [
+        OpsResult(
+            True,
+            f"Killed the stale api process after it ignored SIGTERM: {label}",
+            "A process whose own venv has been deleted can fail partway through its "
+            "shutdown path; leaving it holding the api port is not an option.",
+        )
+    ]
+
+
+def _repair_running_api_build(drift: BuildDrift) -> list[OpsResult]:
+    """Make the registered service be what serves :8000, given a confirmed mismatch.
+
+    The repair itself, shared by the two entry points that must not be able
+    to disagree about what repairing means (#4133, review of #4155): the
+    install step (`_reconcile_running_api_build`) and the command every
+    surface *names* as the fix (`_RUNNING_BUILD_REMEDIATION`, which routes
+    here through `_restart_native_service`). It was one of those before the
+    review, and that was the defect: the printed remediation could not repair
+    the state it was printed for.
+
+    Three parts, in this order and for this reason:
+
+    1. **Stop the stale process by PID.** No service manager accounts for it
+       -- that is the defining property of the state, and why
+       `_retire_previous_identity`'s sweep could not see it -- so there is no
+       `brew services stop` that names it. Skipping this is what made a bare
+       restart a no-op against the survivor: launchd starts the new build, it
+       cannot bind the port the survivor still holds (`[Errno 48]`, #3853's
+       restart-loop shape), and the old build keeps serving.
+    2. **Restart the registered service**, which is now able to take :8000.
+       Passed `repair_stale_build=False` so the restart does not re-probe for
+       a mismatch this function has already acted on.
+    3. **Verify, by probing again.** "The restart command exited 0" is a
+       report, not evidence -- `brew services restart` exits 0 whether or not
+       uvicorn binds. Only a second probe can say the live build moved.
+
+    A failure here names `nyxgpt ops down` + `nyxgpt up` rather than
+    `_RUNNING_BUILD_REMEDIATION`: this function *is* what that command does,
+    so prescribing it after it has just failed would send the operator in a
+    circle.
+    """
+    results = _stop_stale_api_process(drift)
+    results.extend(_restart_native_service("api", repair_stale_build=False))
+    # The restarted service has to boot before the re-probe can see it, and a
+    # budget tighter than the api's own start-up would report the repair as
+    # having failed while it was still working. Sized against the same
+    # observation `_wait_for_stack_healthy` is sized against: a cold api on a
+    # loaded machine answers in tens of seconds, not hundreds.
+    deadline = time.time() + _RUNNING_BUILD_REPAIR_BUDGET_S
+    recheck = drift
+    while time.time() < deadline:
+        recheck = _native_api_build_drift()
+        if recheck.state == BUILD_MATCH:
+            results.append(
+                OpsResult(True, "The api now executes the installed build", recheck.detail)
+            )
+            return results
+        time.sleep(2.0)
+    results.append(
+        OpsResult(
+            False,
+            "The running api is still not executing the installed build",
+            f"{recheck.summary()}. `nyxgpt ops down` then `nyxgpt up` replaces every "
+            "running process, including one no service manager accounts for.",
+        )
+    )
+    return results
+
+
+def _reconcile_running_api_build() -> list[OpsResult]:
+    """Install step: make the process serving :8000 be the build just installed (#4133).
+
+    The step that was missing. `nyxgpt ops install` reported 56/56 `[OK]`
+    over an api running a deleted python3.11 venv, because every step above
+    it reports on what it *did* -- the keg it installed, the service it
+    restarted -- and none of them asks what is answering afterwards.
+
+    Order matters: this runs last among the api's steps, after the service
+    restart, so "the service was restarted" and "the restarted service is
+    what is serving" are two separate claims and the second is measured.
+
+    It does not merely report. Acceptance criterion 2 allows either
+    behaviour and repairing is strictly better, so a confirmed mismatch is
+    handed to `_repair_running_api_build`. The result is `[OK]` only if the
+    re-probe matches; otherwise the step FAILS. An install that cannot make
+    the running build be the installed build must not report success over it,
+    which is the whole of this issue.
+    """
+    drift = _native_api_build_drift()
+    if drift.state == BUILD_NOT_APPLICABLE:
+        return [OpsResult(True, "Running api build: not applicable here", drift.detail)]
+    if drift.state == BUILD_MATCH:
+        return [OpsResult(True, "The running api is executing the installed build", drift.detail)]
+    if drift.state == BUILD_UNDETERMINED:
+        # Not a pass and not a failure. The api may simply not be up yet on a
+        # first install -- `up`'s health wait is what covers that -- and
+        # failing the install here would red-flag every fresh machine. Said
+        # out loud so it cannot be read as a verified match.
+        return [
+            OpsResult(
+                True,
+                "Could not verify which build the running api is executing",
+                f"{drift.detail}. Re-check with `nyxgpt ops status`.",
+                status="WARN",
+            )
+        ]
+
+    results = [
+        OpsResult(
+            True,
+            "The running api is NOT executing the installed build -- repairing",
+            drift.detail,
+            status="WARN",
+        )
+    ]
+    results.extend(_repair_running_api_build(drift))
+    return results
+
+
 def _native_install_identity(dev: bool) -> InstallIdentity:
     """The identity `install(dev=...)` is about to put on this machine (#3861).
 
@@ -5707,8 +6114,8 @@ def _dev_launchd_label(component: str) -> str | None:
     return DEV_LAUNCHD_LABELS[component]
 
 
-def _restart_native_service(component: str) -> list[OpsResult]:
-    """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+def _restart_registered_native_service(component: str) -> list[OpsResult]:
+    """Restart whatever service manager this OS registered `component` under."""
     if _is_macos():
         label = _dev_launchd_label(component)
         if label is not None:
@@ -5720,6 +6127,50 @@ def _restart_native_service(component: str) -> list[OpsResult]:
     if _is_linux():
         return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
     return _unsupported_os_result(f"restart {component}")
+
+
+def _restart_native_service(component: str, *, repair_stale_build: bool = True) -> list[OpsResult]:
+    """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama").
+
+    For the **api** this is also the command every #4133 surface names as the
+    repair (`_RUNNING_BUILD_REMEDIATION`), so it has to actually perform one.
+    A bare `brew services restart`/`systemctl --user restart` acts only on the
+    **registered** service, and the state being repaired is defined by the
+    stale process being registered nowhere: `brew services list` could not see
+    the owner's api, which is why `_retire_previous_identity` could not
+    either. Restarting the registration alone starts the new build onto a port
+    the survivor still holds, uvicorn cannot bind it (`[Errno 48]`, #3853's
+    restart-loop shape), launchd keep-alives it in a loop, and the command
+    exits `[OK]` over a mismatch that never moved -- `[OK]`-over-a-mismatch
+    one command along from the one this issue was filed about.
+
+    So a confirmed mismatch routes through `_repair_running_api_build`, the
+    same stop-by-PID-then-restart-then-verify the install step uses. The gate
+    is `drift.mismatched`: a match, a probe that could not tell, and a
+    Compose/Kubernetes vantage point all fall through to the plain restart
+    below, unchanged. The cost is one loopback probe per api restart, which is
+    the cheapest read in the function.
+
+    `repair_stale_build=False` is for `_repair_running_api_build` itself,
+    whose restart must not re-enter the probe it has already acted on.
+    """
+    if component != "api" or not repair_stale_build:
+        return _restart_registered_native_service(component)
+    drift = _native_api_build_drift()
+    if not drift.mismatched:
+        return _restart_registered_native_service(component)
+    results = [
+        OpsResult(
+            True,
+            "An api that no service manager accounts for is holding the api port -- "
+            "stopping it before the restart",
+            f"{drift.summary()}. Restarting only the registered service would leave that "
+            "process on the port and the new one unable to bind it.",
+            status="WARN",
+        )
+    ]
+    results.extend(_repair_running_api_build(drift))
+    return results
 
 
 def _stop_native_service(component: str) -> list[OpsResult]:
@@ -13452,6 +13903,18 @@ def infra_status() -> dict[str, Any]:
         install_mode["in_scope"] = True
         install_mode["out_of_scope_reason"] = ""
 
+    # Which build THIS process is executing, versus the one the installed
+    # native api service execs (#4133). No probe: this function is only ever
+    # served from the api itself (`app.infra_status`), so the process that
+    # may be stale is the one answering, and `local_runtime_build()` is its
+    # own `sys.prefix`. That makes this the most direct evidence the page can
+    # carry -- and it is the Definition-of-Done surface for the fix, since
+    # "what version is running" was answerable from the Cellar while the
+    # answer was wrong.
+    install_mode["running_build"] = _infra_running_build(
+        in_cluster=in_cluster, running_mode=running_mode
+    ).to_dict()
+
     return {
         "mode": running_mode,
         # Where this answer was computed (#3988). `in_cluster` means the page
@@ -13475,6 +13938,66 @@ def infra_status() -> dict[str, Any]:
         "kubernetes": kubernetes,
         "serving": _serving_status(running_mode),
     }
+
+
+def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
+    """The Infrastructure page's running-build comparison, from the api's own process.
+
+    Scoped the same way the rest of that page is (#3988, #4022): the question
+    "is the serving process the installed keg's venv?" only has an answer
+    where the serving process IS a native one. Inside a Pod or a Compose
+    container the interpreter lives in the image and a host keg path is not
+    the thing it should equal, so those answer `not_applicable` with the
+    reason rather than reporting drift on a correct deployment.
+
+    `running_mode` is the page's own verdict about what is serving, reused
+    here rather than re-derived, so the card cannot contradict the mode
+    banner above it.
+
+    `"none"` is in scope alongside `"native"`, which is not a redundancy:
+    `running_mode` is `"native"` only when some native service is
+    *brew/systemd-reported started*, and a surviving pre-upgrade process is
+    registered nowhere -- so #4133's own state surveys as `"none"` while this
+    very function is being served by that process. Treating `"none"` as out of
+    scope rendered nothing on the one machine the card exists for, and made
+    the page disagree with `ops status`, which is deliberately not gated on
+    the registration either (`_native_api_build_drift`). Everything with a
+    real other subject (`compose`/`terraform`/`kubernetes`) stays out of
+    scope.
+    """
+    if in_cluster:
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=local_runtime_build(),
+            expected_prefix="",
+            expected_source="",
+            detail=(
+                "Not in scope from here: this api runs inside a Kubernetes Pod, whose "
+                "interpreter lives in the deployed image. The Kubernetes card above "
+                "reports that deployment's build."
+            ),
+            remediation="",
+        )
+    if running_mode not in ("native", "none"):
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=local_runtime_build(),
+            expected_prefix="",
+            expected_source="",
+            detail=(
+                f"Not in scope from here: the serving deployment is `{running_mode}`, not a "
+                "native install, so there is no keg/venv for this process to match."
+            ),
+            remediation="",
+        )
+    expected, source = _expected_native_api_venv()
+    return classify_build_drift(
+        local_runtime_build(),
+        expected or None,
+        expected_source=source,
+        remediation=_RUNNING_BUILD_REMEDIATION,
+        undetermined_detail=source,
+    )
 
 
 def _serving_status(running_mode: str) -> dict[str, Any]:
@@ -13667,6 +14190,13 @@ def install(args) -> int:
         # first message failed (#3824).
         ("required models", _ensure_required_models),
         ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
+        # Must run AFTER the native api step, which is what makes it worth
+        # having (#4133): that step reports the keg it installed and the
+        # service it restarted, and neither claim is evidence about what is
+        # answering on :8000 afterwards. A `brew upgrade` on a host with the
+        # stack running left a pre-upgrade process serving from a venv the
+        # upgrade had deleted, and the install reported 56/56 [OK] over it.
+        ("running api build", _reconcile_running_api_build),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
     ]
@@ -13985,6 +14515,43 @@ def _print_required_models_status(
             )
 
 
+def _print_running_api_build(drift: BuildDrift) -> None:
+    """Print the running-build block `status` shows under its install-mode lines (#4133).
+
+    Three renderings, and the point of all three is that none of them is a
+    bare version string. The acceptance criterion is explicit: `status` must
+    not report `version 3.0.0rcNN` for a process running some other version's
+    venv, so a mismatch names both paths, says plainly that the version lines
+    above describe the *installed* build rather than the running one, and
+    names the command that repairs it.
+
+    `not_applicable` prints nothing at all -- on a Compose/Kubernetes host or
+    one with no native install there is no question here, and a line saying
+    so on every such machine is noise that teaches operators to skip the
+    block that matters.
+    """
+    if drift.state == BUILD_NOT_APPLICABLE:
+        return
+    print("\nRunning api build (read from the process, not the keg):")
+    if drift.state == BUILD_MATCH:
+        print(f"  OK -- executing {drift.expected_prefix}")
+        if drift.expected_source:
+            print(f"      ({drift.expected_source})")
+        return
+    if drift.state == BUILD_UNDETERMINED:
+        print(f"  CANNOT DETERMINE -- {drift.detail}")
+        return
+    print("  MISMATCH -- the api answering on this host is NOT the installed build.")
+    print(f"      running:   {drift.running_prefix}")
+    print(f"      installed: {drift.expected_prefix}")
+    print(f"      {drift.detail}")
+    print(
+        "      The install-mode and version lines above describe what is INSTALLED. "
+        "They are not a statement about this process."
+    )
+    print(f"      Repair: {drift.remediation or _RUNNING_BUILD_REMEDIATION}")
+
+
 def status(_args) -> int:
     """CLI entrypoint for `nyxgpt ops status`.
 
@@ -13994,6 +14561,15 @@ def status(_args) -> int:
     whether the ops-managed Cassandra Docker container is running, and (in
     Kubernetes mode, when pods are present) each canary-capable component's
     stable/canary rollout state via `_serving_status` (see #3419).
+
+    Since #4133 it also reports which build the api is **actually
+    executing**, read from that process's own `sys.prefix` rather than from
+    the Cellar (`_print_running_api_build`). Every other line here is derived
+    from what is installed on disk, and a process outlives the build it was
+    started from: after a `brew upgrade` on a running stack this command
+    reported the new keg's version for an api serving from a venv the upgrade
+    had deleted, and nothing in its output distinguished that from a correct
+    install.
 
     Where a Kubernetes deployment is present it is named in the "Deployment
     mode" block and the required-model check is asked of the *in-cluster*
@@ -14056,6 +14632,16 @@ def status(_args) -> int:
             "restart a service to pick up new code. Artifact-path behavior "
             "(published tap/tarball) is NOT what is being exercised here."
         )
+
+    # Which build the api is ACTUALLY executing, read from the process rather
+    # than from the Cellar (#4133). Printed directly under the install-mode
+    # lines because that is where it is read in context: those lines describe
+    # what the last install put on disk, and this one says whether the
+    # process answering on :8000 is running it. An install mode and a keg
+    # version are both compatible with a pre-upgrade process serving from a
+    # deleted venv, which is the state no surface could distinguish from a
+    # correct one.
+    _print_running_api_build(_native_api_build_drift(mode))
 
     terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
@@ -15555,6 +16141,7 @@ def doctor(_args) -> int:
 
     issues += _foreign_native_service_issues(install_mode.identity)
     issues += _terraform_install_mode_issues()
+    issues += _running_api_build_doctor_issues()
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
     if not cfg.exists():
@@ -20070,6 +20657,33 @@ def _requirement_distribution_name(requirement: str) -> str:
     without_marker = requirement.split(";", 1)[0].strip()
     match = re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*", without_marker)
     return match.group(0) if match else without_marker
+
+
+def _running_api_build_doctor_issues() -> list[str]:
+    """`doctor` finding for an api serving from some build other than the installed one.
+
+    The sibling of `_stale_venv_doctor_issues` below, one layer out: that one
+    catches a venv missing a dependency it should carry, this one catches a
+    *process* running a venv that is no longer the installed service's --
+    #4133, where the venv in question had been deleted entirely and the
+    `ModuleNotFoundError` was deferred to whenever something next restarted
+    the api.
+
+    Only the confirmed mismatch is a finding. "Could not determine" is not:
+    `doctor` runs on machines whose api is deliberately down, and a finding
+    there would train operators to ignore the list. `status` is where the
+    undetermined state is reported, because that command is a description of
+    the machine rather than a list of things to fix.
+    """
+    drift = _native_api_build_drift()
+    if not drift.mismatched:
+        return []
+    return [
+        f"The api answering on this host is not running the installed build: "
+        f"{drift.detail}. Every version surface (`nyxgpt ops status`, the web header, "
+        f"/api/v1/info's release_version) describes the installed build, not this "
+        f"process. Fix: {drift.remediation or _RUNNING_BUILD_REMEDIATION}"
+    ]
 
 
 def _stale_venv_doctor_issues() -> list[str]:
