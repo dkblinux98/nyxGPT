@@ -83,23 +83,36 @@ class TestExpectedNativeApiVenv:
 
     def test_linux_answers_the_ops_managed_venv(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+        venv = tmp_path / ".nyxGPT" / "opt" / "nyxgpt-api" / "venv"
+        venv.mkdir(parents=True)
         with patch.object(ops.platform, "system", return_value="Linux"):
             prefix, source = ops._expected_native_api_venv()
-        assert prefix == str(tmp_path / ".nyxGPT" / "opt" / "nyxgpt-api" / "venv")
+        assert prefix == str(venv)
         assert source
+
+    def test_linux_without_the_venv_answers_empty(self, tmp_path, monkeypatch):
+        """An absent venv means no native api is installed here, which is what
+        scopes the whole check away from Compose/Kubernetes-only hosts."""
+        monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+        with patch.object(ops.platform, "system", return_value="Linux"):
+            prefix, source = ops._expected_native_api_venv()
+        assert prefix == ""
+        assert "does not exist" in source
 
     def test_macos_dev_mode_answers_the_ops_managed_venv(self, tmp_path, monkeypatch):
         """Dev mode's LaunchAgent wrapper execs the editable venv, not a keg --
         and `~/.nyxGPT/opt/nyxgpt-api/venv` is the exact path #4133's stale
         process was running from."""
         monkeypatch.setattr(ops.Path, "home", classmethod(lambda cls: tmp_path))
+        venv = tmp_path / ".nyxGPT" / "opt" / "nyxgpt-api" / "venv"
+        venv.mkdir(parents=True)
         with (
             patch.object(ops.platform, "system", return_value="Darwin"),
             patch.object(ops, "read_install_mode") as read_mode,
         ):
             read_mode.return_value.is_dev = True
             prefix, _ = ops._expected_native_api_venv()
-        assert prefix == str(tmp_path / ".nyxGPT" / "opt" / "nyxgpt-api" / "venv")
+        assert prefix == str(venv)
 
     def test_macos_artifact_answers_the_kegs_libexec_venv_via_opt(self, tmp_path, monkeypatch):
         """Read through `<prefix>/opt/<formula>` -- the symlink the service's
@@ -284,38 +297,78 @@ class TestNativeApiBuildDrift:
             terraform_conflicts=set(),
         )
 
-    def test_no_native_api_is_not_applicable(self):
-        with patch.object(
-            ops, "detect_deployment_mode", return_value=self._mode(native_api="none")
+    def test_no_native_api_venv_is_not_applicable(self):
+        with (
+            patch.object(ops, "_expected_native_api_venv", return_value=("", "no venv here")),
+            patch.object(ops, "detect_deployment_mode") as mode,
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_NOT_APPLICABLE
-        assert "no native api service" in drift.detail
+        assert "no venv here" in drift.detail
+        # Nothing is surveyed once there is no native install: the question
+        # has no subject, and the survey costs a `docker compose ps`.
+        mode.assert_not_called()
 
     def test_a_containerised_api_is_not_applicable(self):
         """A Compose api's `sys.prefix` lives in its image; comparing it to a
         host keg path would report drift on a correct deployment."""
         mode = self._mode(native_api="none", compose={"api": "running", "web": "running"})
         with (
+            patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=mode),
             patch.object(ops, "compose_core_components", return_value=["api"]),
+            patch.object(ops, "_probe_running_api_runtime") as probe,
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_NOT_APPLICABLE
-        assert "container" in drift.detail
+        assert "container/cluster" in drift.detail
+        probe.assert_not_called()
+
+    def test_a_kubernetes_host_access_bridge_is_not_applicable(self):
+        """The k3s bridge binds :8000 on the host, so the api answering there
+        is a Pod's -- not the native keg this host may also carry."""
+        with (
+            patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
+            patch.object(ops, "detect_deployment_mode", return_value=self._mode()),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=True),
+            patch.object(ops, "_probe_running_api_runtime") as probe,
+        ):
+            drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_NOT_APPLICABLE
+        probe.assert_not_called()
 
     def test_a_native_api_is_compared(self):
         with (
             patch.object(ops, "detect_deployment_mode", return_value=self._mode()),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/keg/venv"), "")),
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_MATCH
 
+    def test_a_stopped_native_service_is_still_compared(self):
+        """Deliberately NOT gated on the service running: a surviving
+        pre-upgrade process is exactly why `brew services list` could not see
+        the owner's api, so skipping the comparison there would blind the
+        check in the one case it exists for."""
+        with (
+            patch.object(ops, "detect_deployment_mode", return_value=self._mode(native_api="none")),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
+            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/old/venv"), "")),
+        ):
+            drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_MISMATCH
+
     def test_a_native_api_on_another_venv_is_a_mismatch(self):
         with (
             patch.object(ops, "detect_deployment_mode", return_value=self._mode()),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
             patch.object(
                 ops,
@@ -330,6 +383,8 @@ class TestNativeApiBuildDrift:
     def test_an_unreachable_api_is_undetermined(self):
         with (
             patch.object(ops, "detect_deployment_mode", return_value=self._mode()),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
             patch.object(ops, "_probe_running_api_runtime", return_value=(None, "did not answer")),
         ):

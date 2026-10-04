@@ -5267,13 +5267,18 @@ def _expected_native_api_venv() -> tuple[str, str]:
       systemd unit is a template nyxGPT renders identically in either mode.
 
     Returns `("", reason)` when the question has no answer on this machine --
-    no brew, no keg, an unsupported OS. `classify()` renders that as
-    undetermined, never as a mismatch.
+    no brew, no keg, no ops-managed venv, an unsupported OS. Every branch
+    requires the venv to EXIST, which is what makes an empty answer mean "no
+    native api is installed here" rather than "here is a path that might be
+    one". `_native_api_build_drift` uses exactly that to scope itself: a
+    Compose-only or Kubernetes-only host has no native api venv, so no
+    comparison is attempted against the container that is answering.
     """
     if _is_linux() or read_install_mode().is_dev:
-        return str(_native_install_root("nyxgpt-api") / "venv"), (
-            "the venv the native api service's wrapper execs"
-        )
+        venv = _native_install_root("nyxgpt-api") / "venv"
+        if not venv.is_dir():
+            return "", f"no native api venv on this machine ({venv} does not exist)"
+        return str(venv), "the venv the native api service's wrapper execs"
     if not _is_macos():
         return "", f"no native api service manager on {platform.system() or 'this OS'}"
     formula = _native_artifact_service_name(NATIVE_BREW_SERVICES["api"])
@@ -5347,45 +5352,57 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
 def _native_api_build_drift() -> BuildDrift:
     """Is the api answering on this host running the build the installed service execs?
 
-    Gated on the vantage point, which is the one way this check can produce a
-    false accusation: an api inside a Compose container or a Kubernetes Pod
-    has a `sys.prefix` from that image, and comparing it to a host keg path
-    would report drift on a correctly deployed stack. Those modes are
-    reported `not_applicable` with the reason, the same scope statement
-    `infra_status` makes for a Compose survey run from inside a Pod (#3988).
+    Gated on the vantage point, which is the one way this check could produce
+    a false accusation: an api inside a Compose container, a Terraform
+    container or a Kubernetes Pod has a `sys.prefix` from that image, and
+    comparing it to a host keg path would report drift on a correctly deployed
+    stack. Each of those is reported `not_applicable` with the reason -- the
+    same scope statement `infra_status` makes for a Compose survey run from
+    inside a Pod (#3988).
+
+    Note what it is deliberately NOT gated on: whether the native service is
+    currently *running*. "The registered service is stopped" is precisely the
+    state a surviving pre-upgrade process produces -- it is why `brew services
+    list` could not see the owner's api -- so skipping the comparison there
+    would blind the check in the one case it exists for. The gate is "is a
+    native api INSTALLED here", answered by `_expected_native_api_venv`
+    finding a venv on disk.
     """
-    mode = detect_deployment_mode()
-    if mode.native.get("api", "none") == "none":
-        if compose_core_components(mode) or any(
-            _container_deployed(state) for state in mode.terraform.values()
-        ):
-            return BuildDrift(
-                state=BUILD_NOT_APPLICABLE,
-                running=None,
-                expected_prefix="",
-                expected_source="",
-                detail=(
-                    "the api on this host runs in a container, whose interpreter lives in "
-                    "its image -- a native keg/venv comparison does not apply"
-                ),
-                remediation="",
-            )
+    expected, source = _expected_native_api_venv()
+    if not expected:
+        # No native api venv on this machine, so whatever answers :8000 is not
+        # one and there is nothing to compare it to.
         return BuildDrift(
             state=BUILD_NOT_APPLICABLE,
             running=None,
             expected_prefix="",
             expected_source="",
-            detail="there is no native api service on this machine",
+            detail=source or "there is no native api service on this machine",
             remediation="",
         )
-    expected, source = _expected_native_api_venv()
+    mode = detect_deployment_mode()
+    container_api = compose_core_components(mode) or any(
+        _container_deployed(state) for state in mode.terraform.values()
+    )
+    if container_api or _k8s_access_bridge_owns_host_ports():
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=None,
+            expected_prefix=expected,
+            expected_source=source,
+            detail=(
+                "the api port on this host is held by a container/cluster deployment, whose "
+                "interpreter lives in its image -- a native keg/venv comparison does not apply"
+            ),
+            remediation="",
+        )
     build, why_not = _probe_running_api_runtime()
     return classify_build_drift(
         build,
-        expected or None,
+        expected,
         expected_source=source,
         remediation=_RUNNING_BUILD_REMEDIATION,
-        undetermined_detail=why_not or source,
+        undetermined_detail=why_not,
     )
 
 
