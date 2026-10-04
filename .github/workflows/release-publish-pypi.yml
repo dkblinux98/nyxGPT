@@ -636,10 +636,28 @@ jobs:
     # here therefore reports a broken candidate; it cannot un-publish one, and
     # deliberately does not gate the tap push.
     needs: [publish, homebrew-tap-rc]
-    if: >-
-      ${{ needs.publish.outputs.publish == 'true'
-          && needs.publish.outputs.channel == 'rc'
-          && !inputs.dry_run }}
+    # DISABLED, deliberately and reversibly (owner decision, 2026-10-04).
+    #
+    # This job has failed on EVERY run since 2026-08-16 -- including both
+    # 2026-10-02 runs that produced the usable 3.0.0rc17 -- while `publish` and
+    # `homebrew-tap-rc` succeeded each time. A check that is red 100% of the
+    # time carries no signal about the candidate, and this one did active harm:
+    # it made every rc publish report `failure`, which on 2026-10-04 was read
+    # as "no rc was cut" and cost an acceptance round most of a day. Its own
+    # header already says a failure here "cannot un-publish" a candidate, so
+    # gating the workflow's conclusion on it was never the intent.
+    #
+    # What this gives up, named rather than quietly dropped: this was the only
+    # thing that installed the PUBLISHED rc from the PUBLISHED tap on a real
+    # Mac -- the #4122 defect class (macOS install failing from the artifact)
+    # reached owner acceptance twice. That risk now sits with owner acceptance
+    # testing on real hardware, which is where EC2 Mac behaviour already lives
+    # (`docs/live-verification-ci.md:268`, a documented D-006 exception).
+    #
+    # The job, its inputs and `macos-brew-smoke.yml` itself are all left
+    # intact: restore the three-line condition below to re-enable, and fix the
+    # standing failure (the runner's python@3.12 preflight refusal) first.
+    if: false
     uses: ./.github/workflows/macos-brew-smoke.yml
     with:
       formula_version: ${{ needs.publish.outputs.version }}
