@@ -1801,7 +1801,14 @@ def test_remote_ops_runs_the_instances_own_command_over_ssh(monkeypatch):
 
     assert code == 0
     assert seen["command"].endswith("ops status")
+    # Resolved on the instance rather than assumed at one path (#4150). Each
+    # provisioning layout puts the CLI somewhere different, and the macOS one
+    # has no `~/.nyxGPT/venv` at all -- which is why every remote inspection
+    # against an EC2 Mac used to die with exit 127.
     assert "/.nyxGPT/venv/bin/nyxgpt" in seen["command"]
+    assert "/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt" in seen["command"]
+    assert "/opt/homebrew/bin/nyxgpt" in seen["command"]
+    assert '"$NYXGPT_BIN" ops status' in seen["command"]
     # Streamed, so a long remote status is not a silent wait -- and never a
     # raw `docker compose` typed by the operator.
     assert seen["stream"] is True
@@ -1841,6 +1848,113 @@ def test_remote_ops_reports_an_instance_without_nyxgpt_installed(monkeypatch):
 
     with pytest.raises(CloudCommandError, match="nyxgpt cloud deploy"):
         cloud_deploy.remote_ops(cloud_deploy.DeployTarget(host="h"), "status")
+
+
+# --- The instance's own nyxgpt is found, not assumed (#4150) ---------------
+
+
+def test_the_remote_cli_resolver_covers_every_provisioning_layout():
+    """One list of candidate locations, and it must cover all three layouts.
+
+    `nyxgpt cloud ops status` is the wrapped way to ask an instance what it is
+    running -- including, after #4150, whether its Ollama is up. It used to run
+    a hardcoded `~/.nyxGPT/venv/bin/nyxgpt`, which exists only on an SSH-driven
+    Linux deploy: a first-boot Linux bootstrap puts the CLI under
+    `~/.nyxGPT/opt/nyxgpt-cli/bin` and a macOS one lets the `nyxgpt-api` keg
+    symlink it into Homebrew's `bin`. So on an EC2 Mac every remote inspection
+    exited 127 and told the operator to run the deploy that had just succeeded.
+    """
+    resolver = cloud_deploy.REMOTE_NYXGPT_RESOLVER
+
+    # The layouts documented in docs/cloud.md's "If you SSH in yourself" table.
+    assert '"$HOME/.nyxGPT/venv/bin/nyxgpt"' in resolver
+    assert '"$HOME/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt"' in resolver
+    assert "/opt/homebrew/bin/nyxgpt" in resolver
+    # Intel macOS Homebrew prefix.
+    assert "/usr/local/bin/nyxgpt" in resolver
+
+    # `command -v` is the LAST resort, not the first: `ssh host '<command>'` is
+    # not a login shell, so PATH there is sshd's default and need not include
+    # Homebrew's bin at all. Explicit paths first is what makes this work.
+    assert resolver.index("command -v nyxgpt") > resolver.index("/opt/homebrew/bin/nyxgpt")
+
+    # Nothing found still exits 127, so the callers' own error path stays the
+    # one that reports it.
+    assert "exit 127" in resolver
+
+
+def test_the_not_installed_error_names_everywhere_it_looked():
+    """The 127 message lists the searched locations rather than inventing one.
+
+    The old message named a single path, so on a Mac it reported the absence of
+    a file that was never supposed to be there -- true, and useless.
+    """
+    error = cloud_deploy._no_remote_nyxgpt_error(cloud_deploy.DeployTarget(host="mac.example"))
+
+    text = str(error)
+    assert "mac.example" in text
+    for candidate in cloud_deploy.REMOTE_NYXGPT_CANDIDATES:
+        assert candidate in text
+    assert "nyxgpt cloud deploy" in text
+
+
+@pytest.mark.parametrize("inspection", sorted(cloud_deploy.REMOTE_OPS_COMMANDS))
+def test_every_remote_inspection_resolves_the_cli_the_same_way(inspection, monkeypatch):
+    """No inspection may go back to a hardcoded path on its own."""
+    seen = {}
+
+    def fake_remote(target, command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cloud_deploy, "run_remote", fake_remote)
+    cloud_deploy.remote_ops(cloud_deploy.DeployTarget(host="h"), inspection)
+
+    assert seen["command"].startswith(cloud_deploy.REMOTE_NYXGPT_RESOLVER)
+    assert seen["command"].endswith(f'"$NYXGPT_BIN" {cloud_deploy.REMOTE_OPS_COMMANDS[inspection]}')
+
+
+def test_the_resolver_is_valid_shell_and_picks_the_first_path_that_exists(tmp_path):
+    """Executed, not just inspected: the resolver is shell, so run it.
+
+    It is spliced ahead of every remote command, so a syntax error in it breaks
+    all of `nyxgpt cloud ops`, `credentials` and `canary` at once -- and it only
+    ever runs on a remote host, where nothing in this suite would see it fail.
+    """
+    first = tmp_path / ".nyxGPT" / "opt" / "nyxgpt-cli" / "bin"
+    first.mkdir(parents=True)
+    (first / "nyxgpt").write_text("#!/bin/sh\necho resolved\n", encoding="utf-8")
+    (first / "nyxgpt").chmod(0o755)
+
+    script = f'{cloud_deploy.REMOTE_NYXGPT_RESOLVER}echo "$NYXGPT_BIN"'
+    completed = subprocess.run(
+        ["/bin/sh", "-c", script],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == str(first / "nyxgpt")
+
+
+def test_the_resolver_exits_127_when_the_instance_has_no_nyxgpt(tmp_path):
+    """The other half, executed: an empty machine must produce exactly 127.
+
+    127 is what the callers key their "no nyxGPT installed" error off, so the
+    resolver returning anything else would turn a missing install into an
+    unexplained failure of whatever command was being run.
+    """
+    script = f'{cloud_deploy.REMOTE_NYXGPT_RESOLVER}echo "$NYXGPT_BIN"'
+    completed = subprocess.run(
+        ["/bin/sh", "-c", script],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(tmp_path), "PATH": str(tmp_path / "empty")},
+    )
+
+    assert completed.returncode == 127
+    assert completed.stdout.strip() == ""
 
 
 def test_ops_command_names_the_instance_and_the_remote_command(

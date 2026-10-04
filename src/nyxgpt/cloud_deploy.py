@@ -2846,6 +2846,61 @@ REMOTE_OPS_COMMANDS: dict[str, str] = {
 }
 
 
+# Where the instance's own `nyxgpt` lives -- resolved ON the instance, because
+# it depends on how that instance was provisioned and nothing on the
+# workstation knows (#4150):
+#
+#   ~/.nyxGPT/venv/bin/nyxgpt              SSH-driven `nyxgpt cloud deploy` (Linux)
+#   ~/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt    `cloud user-data --os linux` first-boot
+#   <brew prefix>/bin/nyxgpt               `--os macos` -- the api keg symlinks it
+#
+# The three wrapped remote entry points used to hardcode the first one. On a
+# macOS target that path does not exist, so every remote inspection died with
+# exit 127 and the error told the operator to run the deploy that had just
+# succeeded. `nyxgpt cloud ops status` is how an operator checks that the model
+# backend is running on an EC2 Mac without SSHing in, which is the acceptance
+# criterion #4150 was filed against -- so it has to resolve, not guess.
+#
+# `command -v` is tried LAST rather than first on purpose: a login shell on a
+# Mac has Homebrew's bin on PATH, but `ssh host '<command>'` is not a login
+# shell, so PATH there is the sshd default and may name none of these. The
+# explicit paths are what make this work over a non-interactive channel; the
+# PATH lookup is the fallback for a layout this list does not know.
+REMOTE_NYXGPT_RESOLVER = (
+    'NYXGPT_BIN=""; '
+    'for c in "$HOME/.nyxGPT/venv/bin/nyxgpt" "$HOME/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt" '
+    "/opt/homebrew/bin/nyxgpt /usr/local/bin/nyxgpt; do "
+    'if [ -x "$c" ]; then NYXGPT_BIN="$c"; break; fi; done; '
+    'if [ -z "$NYXGPT_BIN" ]; then NYXGPT_BIN="$(command -v nyxgpt 2>/dev/null)"; fi; '
+    'if [ -z "$NYXGPT_BIN" ]; then exit 127; fi; '
+)
+
+#: Every location `REMOTE_NYXGPT_RESOLVER` looks in, for the error message that
+#: reports failing to find any of them. One list, so the message cannot drift
+#: from what was actually searched.
+REMOTE_NYXGPT_CANDIDATES: tuple[str, ...] = (
+    "~/.nyxGPT/venv/bin/nyxgpt",
+    "~/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt",
+    "/opt/homebrew/bin/nyxgpt",
+    "/usr/local/bin/nyxgpt",
+    "anything named `nyxgpt` on the non-login PATH",
+)
+
+
+def _remote_nyxgpt(command: str) -> str:
+    """Wrap `command` so it runs the instance's own `nyxgpt`, wherever that is."""
+    return f'{REMOTE_NYXGPT_RESOLVER}"$NYXGPT_BIN" {command}'
+
+
+def _no_remote_nyxgpt_error(target: DeployTarget) -> CloudCommandError:
+    """The error for an instance where no `nyxgpt` could be found at all."""
+    searched = "\n".join(f"  {c}" for c in REMOTE_NYXGPT_CANDIDATES)
+    return CloudCommandError(
+        f"{target.host} has no nyxGPT installed. Searched:\n{searched}\n"
+        f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
+    )
+
+
 # `nyxgpt cloud canary <subcommand>` -- the capability #3506 was choosing a
 # substrate FOR, reachable on the cloud target (#3956).
 #
@@ -3708,9 +3763,7 @@ def remote_credentials(target: DeployTarget, service: str = "all") -> list[dict[
     per-service `remediation` text says what to run -- so only an unparseable
     or transport-level failure raises here.
     """
-    remote = (
-        f'"$HOME/.nyxGPT/venv/bin/nyxgpt" ops credentials --json --service {shlex.quote(service)}'
-    )
+    remote = _remote_nyxgpt(f"ops credentials --json --service {shlex.quote(service)}")
     completed = run_remote(target, remote, timeout=120)
     stdout = completed.stdout or ""
     try:
@@ -3773,7 +3826,7 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
     failure of the transport itself raises: ssh's own 255, or a shell that
     could not find the instance's `nyxgpt` at all.
     """
-    remote = f'"$HOME/.nyxGPT/venv/bin/nyxgpt" {REMOTE_OPS_COMMANDS[inspection]}'
+    remote = _remote_nyxgpt(REMOTE_OPS_COMMANDS[inspection])
     completed = run_remote(target, remote, stream=True, timeout=300)
     stderr = (completed.stderr or "").strip()
     if completed.returncode == 255:
@@ -3782,10 +3835,7 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
             f"If your public IP has changed, run `{LIFECYCLE_COMMANDS['allow_ip']}`."
         )
     if completed.returncode == 127:
-        raise CloudCommandError(
-            f"{target.host} has no nyxGPT installed at ~/.nyxGPT/venv/bin/nyxgpt. "
-            f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
-        )
+        raise _no_remote_nyxgpt_error(target)
     if stderr:
         print(stderr, file=sys.stderr)
     return completed.returncode
@@ -3828,7 +3878,7 @@ def remote_canary(target: DeployTarget, argv: list[str]) -> int:
     the answer (`canary evaluate` exits 2 on a failing canary, which is a
     result, not an error), and only a transport failure raises.
     """
-    remote = " ".join(['"$HOME/.nyxGPT/venv/bin/nyxgpt"', *(shlex.quote(part) for part in argv)])
+    remote = _remote_nyxgpt(" ".join(shlex.quote(part) for part in argv))
     completed = run_remote(target, remote, stream=True, timeout=600)
     stderr = (completed.stderr or "").strip()
     if completed.returncode == 255:
@@ -3837,10 +3887,7 @@ def remote_canary(target: DeployTarget, argv: list[str]) -> int:
             f"If your public IP has changed, run `{LIFECYCLE_COMMANDS['allow_ip']}`."
         )
     if completed.returncode == 127:
-        raise CloudCommandError(
-            f"{target.host} has no nyxGPT installed at ~/.nyxGPT/venv/bin/nyxgpt. "
-            f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
-        )
+        raise _no_remote_nyxgpt_error(target)
     if stderr:
         print(stderr, file=sys.stderr)
     return completed.returncode
