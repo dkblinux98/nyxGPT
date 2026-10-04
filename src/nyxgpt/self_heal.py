@@ -204,7 +204,7 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # `_restart_brew_service` and the launchd label built from it in
 # `kickstart_brew_service` (#4043). See `brew_services.SEGMENT_PATTERN`, which
 # is the authority for that form and explains why the wider class forbids
-# everything the narrower one does, and ledger D-057 for why the remaining
+# everything the narrower one does, and ledger D-058 for why the remaining
 # eight guards keep the narrow class rather than being "finished off".
 
 # Maps a core native component to the *stable* Homebrew formula its service
@@ -2096,7 +2096,7 @@ def kickstart_brew_service(name: str) -> HealResult | None:
         # `sh.brew.nyxgpt-api@3.0.0rc`, and the narrow class would refuse the
         # real label on the one channel acceptance testing uses. This is the
         # *second* sink in this module that legitimately takes an `@` -- see
-        # D-054(b), which recorded that only one did, and D-057, which records
+        # D-054(b), which recorded that only one did, and D-058, which records
         # that this one joined it and why the remaining eight still must not.
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", label):
             return HealResult(False, f"Refused to act on invalid launchd label: {label!r}")

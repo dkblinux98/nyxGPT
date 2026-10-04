@@ -2356,6 +2356,30 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
+    # `ops required-models` (#4150): `ops install`'s model-backend step on its
+    # own, for the targets that cannot run the whole of `ops install`. An EC2
+    # Mac is the motivating one -- `ops install` reconciles a Docker engine and
+    # EC2 Mac supports no nested virtualization, so the macOS cloud bootstrap
+    # skipped that command and skipped the model pull with it, shipping a Mac
+    # whose api and web were healthy and whose chat could not work at all.
+    ops_required_models = ops_sub.add_parser(
+        "required-models",
+        help=(
+            "Pull the configured chat and embedding models into Ollama -- the model "
+            "step of `nyxgpt ops install`, runnable on its own"
+        ),
+    )
+    ops_required_models.add_argument(
+        "--wait",
+        type=float,
+        default=180.0,
+        help=(
+            "Seconds to wait for Ollama to start answering before giving up "
+            "(default: 180; a service just started is not yet accepting requests)"
+        ),
+    )
+    _add_quiet_flag(ops_required_models)
+
     ops_observability = ops_sub.add_parser(
         "observability",
         help=(
@@ -3776,6 +3800,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.glitchtip_init(args)
         if args.ops_cmd == "alert-test":
             return ops_mod.alert_test(args)
+        if args.ops_cmd == "required-models":
+            return ops_mod.required_models_command(args)
         if args.ops_cmd == "observability":
             return ops_mod.observability(args)
         if args.ops_cmd == "migrate-volumes":

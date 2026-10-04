@@ -257,10 +257,18 @@ and screenshots make verifiable in the review loop:
   shows data rather than a permanent placeholder is a browser question:
   `nyxgpt ops verify`'s Playwright screenshots cover it for the Compose
   stack, and for the brew path it stays owner acceptance.
-- **Ollama model pulls and anything needing a GPU** -- the hosted runners have
-  neither the disk budget nor the hardware. The `ollama` *service* is
-  installed and started on the user path; pulling a model and generating from
-  it is owner acceptance.
+- **LLM answer quality, and anything needing a GPU** -- the hosted runners
+  have no accelerator, so whether a model produces a *good* answer is owner
+  acceptance. Installing Ollama, starting it and pulling the configured models
+  is **not** on this list any more (#4150):
+  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)'s
+  `mac-model-backend` job runs `brew install ollama`,
+  `brew services start ollama` and `nyxgpt ops required-models` on a real
+  `macos-15` runner and asserts `:11434/api/tags` lists every configured model.
+  The shipped default is small enough for a hosted runner's disk, and the
+  claim being tested is about *installation*, not inference. The exclusion as
+  previously written is what let the EC2 Mac bootstrap ship with no model
+  backend at all and no job that could have noticed.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,
@@ -280,7 +288,12 @@ and screenshots make verifiable in the review loop:
   proves `nyxgpt cloud deploy --os macos` delivers that bootstrap itself over a
   real SSH connection (#3867), and
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
-  the same formulas from the same remote tap on a real `macos-15` runner. What
+  the same formulas from the same remote tap on a real `macos-15` runner --
+  and, since #4150, its `mac-model-backend` job executes that bootstrap's
+  whole model-backend sequence there (`brew install ollama`,
+  `brew services start ollama`, `nyxgpt ops required-models`), with the
+  install-without-pull near-miss measured in between so the job cannot pass by
+  running on a machine that fails to reproduce the defect. What
   remains owner acceptance is only that a Mac *instance* runs them -- notably
   whether `brew services start` finds a launchd session for the login user.
 
@@ -303,6 +316,29 @@ and screenshots make verifiable in the review loop:
   list is not a licence for the job that surrounds it to assert a command
   string.** Where the claim is "the right thing is installed", assert the
   installed *artifact*, not the instruction that was meant to install it.
+
+  **A second correction, from #4122's second acceptance round.** The exception
+  above covers the *hardware*. It does not cover a condition that happens to
+  surface on that hardware and can be reproduced anywhere -- and the one that
+  broke every macOS install was exactly that. Homebrew builds under
+  `sandbox-exec` with `(deny mach-lookup)`; Security.framework's trust
+  evaluation needs a service that is not allowlisted, so it cannot be
+  performed and pip is refused with `SSLCertVerificationError('OSStatus
+  -26276')` -- `errSecInternal`, not a named certificate rejection.
+  Deterministic on every Mac at any time after boot. `macos-15` does not
+  reproduce it (the sandbox profile is the same on both; the difference is
+  macOS 27's Security stack), so **no amount of running the plain install on
+  the hosted runner will ever catch it** -- which is the #3753/#3788
+  green-by-luck shape, not a reason to ship it unverified. `macos-brew-smoke.yml`
+  therefore *injects* the denied trust evaluation and asserts both halves: the
+  pre-fix call fails with the owner's verbatim transcript (`Could not fetch URL
+  https://pypi.org/simple/pip/`), and the recipe's own sequence succeeds. It
+  also asserts the second half separately, because the first one alone is not a
+  fix: `pip install <source tree>` spawns a build-backend fetch in a child pip
+  that inherits none of the parent's flags, so flagging only the visible calls
+  moved the failure to `.../simple/setuptools/`. What remains owner acceptance
+  is the macOS 27 end-to-end run on real `mac2.metal` hardware; what does not
+  is whether the recipe survives a sandbox that denies the trust evaluation.
 
   **The screen path, #4121, read the same narrow way.** `nyxgpt cloud screen`
   enables macOS Screen Sharing on an EC2 Mac and forwards 5900 over SSH, and no

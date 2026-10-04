@@ -1383,6 +1383,56 @@ every deployment mode selects one.
 
 ---
 
+## `nyxgpt ops required-models`
+
+Pulls the models this install requires into Ollama — the configured chat model
+(`[nyxgpt] default_model`) and the configured embedding model
+(`[rag] embedding_model`). It is `nyxgpt ops install`'s model step, runnable on
+its own (#4150).
+
+```bash
+nyxgpt ops required-models             # wait for Ollama, then pull what's missing
+nyxgpt ops required-models --wait 300  # allow longer for a just-started Ollama
+```
+
+**Why this exists as its own command.** `nyxgpt ops install` pulls these models
+as one of its steps, and for a long time it was the *only* thing that did. But
+`ops install` cannot run everywhere nyxGPT runs: it also reconciles a Docker
+engine, the `nyxgpt-cassandra` container and the observability Compose stack,
+and an EC2 Mac supports no nested virtualization, so no Docker daemon can exist
+on that target. The macOS cloud bootstrap therefore skipped `ops install` — and
+skipped the model pull along with the container tier it was actually opting out
+of, producing an instance with a healthy api, a healthy web, and no engine
+behind them. The half that was unreachable now has a command.
+
+It is also the right command to reach for on a machine where
+`nyxgpt ops status` reports a required model missing: a config that named a new
+model after the last install, a model deleted by hand, or an Ollama pointed at
+a different store.
+
+- **The models come from configuration, never from a literal.** Changing
+  `[nyxgpt] default_model` changes what this pulls, with no code or template
+  edit. Both models are pulled regardless of whether RAG is currently on —
+  `rag_enabled` is a per-session toggle a user can flip at any moment, and the
+  first RAG-enabled message must not block on a download.
+- **It waits for Ollama first** (`--wait`, default 180s). `brew services start`
+  and `systemctl --user start` both return as soon as the service manager
+  accepts the job, well before `ollama serve` is accepting requests.
+- **It pulls over HTTP, through the running server.** So the models land in
+  whatever store that server reads, and an `OLLAMA_MODELS` mismatch cannot make
+  the pull and the serve disagree about which store holds the model.
+- **Idempotent.** A model already in the store is reported present and nothing
+  is downloaded, so a re-run over a warm machine costs one `/api/tags` request.
+- Exits 0 when every required model is in place, 2 otherwise — which is what
+  makes a provisioning script's `set -e` abort a deploy that cannot serve chat,
+  rather than reporting success onto a broken machine.
+
+The same models are reported by [`nyxgpt ops status`](#nyxgpt-ops-status) and
+by the SRE/admin dashboard's model-readiness panel
+(`GET /api/v1/models/required`).
+
+---
+
 ## `nyxgpt ops secrets-sync`
 
 Pushes a declared subset of `~/.nyxGPT/config.ini`'s write-once secrets

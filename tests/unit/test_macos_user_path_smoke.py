@@ -1190,3 +1190,89 @@ def test_the_soft_failure_step_restores_the_runner_it_broke() -> None:
         "the step no longer restores the link it planted a file over, so every "
         "later step in `keg-install` runs on a machine this one broke"
     )
+
+
+#: Every word Homebrew can print in the Status column of `brew services list`.
+#: Each one is ANSI-wrapped on these runners, so each one compares unequal to
+#: its own literal (D-032(f)).
+_BREW_STATE_WORDS = ("started", "stopped", "scheduled", "error", "none", "unknown")
+
+#: `brew services list` piped straight into something that matches a state
+#: word. The one shape this guard detects, because it is the shape that keeps
+#: coming back -- and the shape that `brew_services.parse_services_list`
+#: exists to replace.
+_RAW_STATE_READ = re.compile(
+    r"brew\s+services\s+list[^\n]*\|[^\n]*\b(" + "|".join(_BREW_STATE_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+#: The line this guard was written for: `mac-model-backend`'s registration
+#: assertion as it was first written (#4150's review). Kept so the guard can
+#: be shown to detect something -- a pattern that matches no text is not a
+#: guard, and three of the defects this file is about were exactly that.
+_THE_LINE_THIS_GUARD_WAS_WRITTEN_FOR = (
+    "brew services list | grep -E '^ollama\\s+(started|scheduled)'"
+)
+
+
+def _uncommented(script: str) -> str:
+    """`script` with `#` comment lines removed.
+
+    This workflow discusses the forbidden read at length -- it has to, since
+    the reasoning is the only thing that stops it coming back -- so a guard
+    that matched comments would flag the documentation of the fix.
+    """
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_no_step_reads_brew_services_states_off_the_raw_column() -> None:
+    """A state read goes through the parser, never through grep (D-032(f)).
+
+    `brew services list` colours its Status tokens and the escapes survive a
+    pipe: run 32233162053 captured `ESC[39mnoneESC[0m` through `cat -v` and run
+    32228088507 caught `ESC[31merror` through `awk`, both in this workflow. So
+    a coloured `started` matches no literal, and a raw
+    `grep -E '^svc\\s+(started|scheduled)'` can fail on a machine where the
+    service is registered and running -- a gate measuring its own parsing
+    instead of the machine. `brew_services.parse_services_list` strips the
+    escapes and is the one chokepoint the product reads state through.
+
+    The fault was fixed at that parser once. It then reappeared at a new call
+    site -- a *required* job added by #4150, inside the very file whose
+    `/tmp/brew_state.py` helper opens with "NEVER compare the Status column as
+    a raw string here". Fixing the one occurrence again would leave the class
+    open, so this is the guard that closes it: the next person to reach for
+    `brew services list | grep started` fails the build instead of CI.
+
+    Matching the *name* column is fine and is left alone -- only the Status
+    words are coloured, and `brew services list | grep "$KEG"` asks whether
+    brew knows a formula, not what state it is in.
+    """
+    workflow = _uncommented(WORKFLOW.read_text(encoding="utf-8"))
+
+    offenders = sorted({match.group(0).strip() for match in _RAW_STATE_READ.finditer(workflow)})
+
+    assert not offenders, (
+        "a step reads a `brew services list` state word off the raw column, which "
+        "D-032(f) measured ANSI-wrapped on these runners -- read it through "
+        "`brew_services.parse_services_list`, or assert registration on the launchd "
+        "plist pair per D-032(d):\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_that_guard_detects_the_read_it_was_written_for() -> None:
+    """The pattern above is proven against the line, not just asserted.
+
+    Without this, `_RAW_STATE_READ` could be quietly wrong -- a typo in the
+    alternation, an escape that never matches -- and the test above would pass
+    forever on a workflow full of raw column reads. Same reason the smoke jobs
+    inject their conditions (#3753): a guard that has never been seen to fail
+    is not evidence.
+    """
+    assert _RAW_STATE_READ.search(_THE_LINE_THIS_GUARD_WAS_WRITTEN_FOR), (
+        "`_RAW_STATE_READ` no longer matches the read it was written for, so "
+        "`test_no_step_reads_brew_services_states_off_the_raw_column` is measuring "
+        "nothing"
+    )
+    # And it leaves the legitimate name-column read alone.
+    assert not _RAW_STATE_READ.search('brew services list | grep "$KEG"')

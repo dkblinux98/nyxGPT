@@ -738,7 +738,11 @@ def test_canary_runs_the_instances_own_nyxgpt_over_the_wrapped_ssh_path(
     )
     assert cloud_deploy.deploy_command(args) == 0
     assert seen["target"] == "ec2-user@198.51.100.10"
-    assert seen["command"] == ('"$HOME/.nyxGPT/venv/bin/nyxgpt" canary status --component api')
+    # The instance's own `nyxgpt` is resolved on the instance, not assumed at
+    # one path (#4150): `$NYXGPT_BIN` is whichever of the provisioning layouts'
+    # locations exists there.
+    assert seen["command"].endswith('"$NYXGPT_BIN" canary status --component api')
+    assert seen["command"].startswith(cloud_deploy.REMOTE_NYXGPT_RESOLVER)
 
 
 def test_a_failing_canary_evaluation_is_an_answer_not_a_transport_error(

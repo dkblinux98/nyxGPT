@@ -20,7 +20,11 @@
 # path is NOT used here: that path builds a *local* tap from a repo
 # checkout (see src/nyxgpt/ops.py's `_install_homebrew_api`), which doesn't
 # exist on a fresh instance -- the documented remote-tap flow below is the
-# one already proven repo-less (docs/homebrew.md#remote-tap).
+# one already proven repo-less (docs/homebrew.md#remote-tap). What this script
+# does NOT get from skipping `ops install` is the container tier (the
+# observability Compose stack, GlitchTip, the nyxgpt-cassandra container),
+# which EC2 Mac cannot host at all. The *model backend* is not in that set and
+# is installed here explicitly -- see the Ollama block below and #4150.
 #
 # Rendered by `nyxgpt cloud user-data --os macos` and by `nyxgpt cloud deploy
 # --os macos` (src/nyxgpt/cloud_provision.py's render_user_data, called by
@@ -169,10 +173,73 @@ fi
 # value actually changes.
 sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_CLI" ops session-backend "$NYXGPT_SESSION_BACKEND_CHOICE"
 
+# --- The model backend: Ollama, and the models it must hold (#4150) ---------
+#
+# Ollama is a CORE service. It is the process that answers every chat message,
+# and it is NOT part of the observability tier this bootstrap deliberately
+# skips -- conflating the two is the defect this block closes. Before it, an
+# `nyxgpt cloud deploy --os macos` exited 0, reported the release deployed, and
+# left a machine whose api and web were both healthy with no engine behind
+# them: `GET /api/v1/models` returned 502 on `[Errno 61] Connection refused` to
+# 127.0.0.1:11434, the admin Manage Models page said "Failed to load models",
+# and chat could not work at all. The Linux bootstrap had been getting Ollama
+# right the whole time (`ec2-user-data-linux.sh.tmpl`), via `nyxgpt ops
+# install`, which this script does not and cannot run -- that command
+# reconciles a Docker engine, the `nyxgpt-cassandra` container and the
+# observability Compose stack, and an EC2 Mac supports no nested virtualization
+# so no Docker daemon can exist on it (docs/cloud.md, "EC2 Mac targets"). So
+# the two templates have to agree about this component explicitly;
+# tests/unit/test_cloud_user_data_template_parity.py now fails the build if
+# they stop agreeing.
+#
+# The Homebrew formula, not Ollama's official installer (which is what Linux
+# uses): ollama ships an arm64 bottle, so this is a download-and-link with no
+# source build, and it therefore does not touch the pip/TLS sandbox failure
+# that blocks source installs on macOS 27 (#4121).
+if ! sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" list ollama >/dev/null 2>&1; then
+  sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install ollama
+fi
+# Asked of the machine, not inferred from the exit status above -- the same
+# reason the two kegs are checked rather than trusted (D-047).
+if [ ! -x "$BREW_PREFIX/bin/ollama" ]; then
+  echo "ec2-user-data-macos: ollama did not install -- there is no binary at $BREW_PREFIX/bin/ollama. nyxGPT cannot answer a single chat message without it; scroll up for the FIRST error in the brew output, not the last." >&2
+  exit 1
+fi
+# Started exactly the way api and web are below, in the same launchd domain.
+# brew warns `running through sudo, using user/* instead of gui/* domain` for
+# all three; that domain is what `brew services` will look in on the next boot,
+# so a service started in a *different* domain from its siblings is one that
+# works until the instance restarts and is then silently gone.
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start ollama
+
+# Installing Ollama is not the fix on its own. An Ollama with an empty model
+# store answers `/api/tags` with `[]`, so `GET /api/v1/models` returns 200 and
+# an empty list and chat still fails -- the same defect with a different
+# symptom. The pull is a separate step, and on Linux it lives inside `ops
+# install` rather than beside the Ollama install, which is why mirroring only
+# the install block would not have been enough.
+#
+# `ops required-models` is that step on its own (#4150). Three properties
+# matter here:
+#   * The model names come from configuration -- `[nyxgpt] default_model` and
+#     `[rag] embedding_model`, resolved by `nyxgpt.model_bootstrap` -- never
+#     from a literal in this script. A hardcoded name is how this breaks
+#     silently the next time the shipped default changes.
+#   * It waits for :11434 to answer before pulling. `brew services start`
+#     returns as soon as launchd accepts the job, well before `ollama serve` is
+#     accepting requests.
+#   * It pulls over HTTP through the server started above, so the models land
+#     in whatever store that server reads. Pulling with the `ollama` CLI
+#     instead would reintroduce the `OLLAMA_MODELS` question and let the pull
+#     and the serve disagree about which store holds the model.
+# Run before api/web start, so the API's first request already has a model
+# behind it rather than 502ing until a download finishes.
+sudo -u "$NYXGPT_TARGET_USER" -H "$NYXGPT_CLI" ops required-models
+
 # The service names are the formula names: a candidate keg's brew service is
 # `nyxgpt-api@3.0.0rc`, and asking for `nyxgpt-api` would report nothing
 # running while the stack was in fact up (D-030).
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start "$NYXGPT_BREW_API_FORMULA"
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" services start "$NYXGPT_BREW_WEB_FORMULA"
 
-echo "ec2-user-data-macos: nyxGPT ${NYXGPT_VERSION:-(tap stable)} installed and started for user '$NYXGPT_TARGET_USER' from $NYXGPT_BREW_FORMULAS"
+echo "ec2-user-data-macos: nyxGPT ${NYXGPT_VERSION:-(tap stable)} installed and started for user '$NYXGPT_TARGET_USER' from $NYXGPT_BREW_FORMULAS (api, web, and ollama holding the configured models)"

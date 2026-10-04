@@ -5609,7 +5609,13 @@ def _ensure_required_models(
                     outcome.detail
                     + "\nThe stack cannot serve "
                     + ("chat" if model.role == model_bootstrap.CHAT_ROLE else "RAG")
-                    + " without it -- fix the cause and re-run `nyxgpt ops install`.",
+                    # `ops required-models` named first (#4150): it is this step
+                    # on its own, and it is the only one of the two that works on
+                    # a target with no Docker engine -- where re-running the
+                    # whole of `ops install` is not a remedy an operator can
+                    # follow.
+                    + " without it -- fix the cause and re-run `nyxgpt ops required-models` "
+                    "(or `nyxgpt ops install`, which includes this step).",
                 )
             )
         elif outcome.already_present:
@@ -19054,6 +19060,53 @@ def session_backend(args: Any) -> int:
     )
     results = set_session_backend(requested, cfg_path=cfg_path)
     return 0 if _emit_results("session-backend", results) else 2
+
+
+def required_models_command(args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops required-models` (#4150).
+
+    `ops install`'s model-backend step on its own: wait for Ollama to answer,
+    then pull the configured chat and embedding models into it
+    (`_ensure_required_models`, the same function the install list runs -- not a
+    second copy of it).
+
+    Why it exists as its own command. Until #4150 the only thing in the product
+    that pulled the configured models was `nyxgpt ops install`, and that command
+    cannot run on every target nyxGPT supports: it reconciles a Docker engine,
+    the `nyxgpt-cassandra` container and the observability Compose stack, and an
+    EC2 Mac has no nested virtualization, so no Docker daemon can exist there
+    (docs/cloud.md, "EC2 Mac targets"). The macOS cloud bootstrap therefore
+    skipped `ops install` -- and skipped the model pull along with the container
+    tier it was actually opting out of. The result was an EC2 Mac running a
+    healthy api and web with no engine behind them: `GET /api/v1/models` 502'd
+    on a connection refused to :11434 and chat was structurally broken on a
+    deploy that exited 0. Installing Ollama alone does not fix that either; an
+    Ollama with an empty store answers `/api/tags` with `[]`, which is the same
+    defect wearing a different symptom. Both halves are required, so the half
+    that was unreachable got a command.
+
+    The model names come from configuration, never from a literal -- see
+    `nyxgpt.model_bootstrap.required_models`. The pull goes over HTTP to the
+    running server, so the models land in whatever store that server reads and
+    an `OLLAMA_MODELS` mismatch cannot make the pull and the serve disagree.
+
+    Idempotent: a model already in the store is reported present and nothing is
+    downloaded.
+
+    Returns 0 if every required model is in place, else 2.
+    """
+    wait_s = float(getattr(args, "wait", 180.0) or 180.0)
+    quiet = bool(getattr(args, "quiet", False))
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("required models", lambda: _ensure_required_models(wait_for_server_s=wait_s))
+    ]
+    results, slow_steps = _run_steps("required-models", steps, quiet=quiet)
+    ok = all(r.ok for r in results)
+    if not quiet:
+        _print_slow_steps_summary(slow_steps)
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("required-models", "ollama", result, message)
+    return 0 if ok else 2
 
 
 # --- Optional extras on a packaged install (#4122) ---------------------
