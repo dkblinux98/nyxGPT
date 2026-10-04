@@ -6,6 +6,16 @@ and `npm audit` (web dependency vulnerabilities, via `audit-ci` for its
 allowlist support), failing on high-severity findings not already accepted
 in a suppression file.
 
+> **This is a point-in-time record of #3501, not a live reference.** Every
+> *count* of findings below ("4 currently-accepted high findings", "exit 0,
+> 4 findings allowlisted") describes the dependency graph as it stood on
+> 2026-08-03 and has since gone stale more than once without any code
+> change — #3644 emptied the allowlist, and #4150 repopulated it with the
+> `braces` advisory that has no patched release. For what is allowlisted
+> **now**, and the reasoning per entry, read `web/audit-ci.jsonc`;
+> `security/README.md` is the live overview. The mechanism described here
+> is still accurate; only the numbers are historical.
+
 ## What ships in this change
 
 Everything that is **not** a `.github/workflows/*` file ships directly in
