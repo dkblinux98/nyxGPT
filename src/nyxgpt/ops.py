@@ -1580,7 +1580,13 @@ def _resolved_brew_service(component: str, snapshot: Mapping[str, str] | None = 
 # prevent. Where brew names the file itself (`_brew_service_registration`
 # reads the File column) that answer still wins over any guess: the scheme is
 # Homebrew's to change again.
-_BREW_SERVICE_LABEL_PREFIXES = ("homebrew.mxcl.", "sh.brew.")
+#
+# The list itself moved to `brew_services` for #4043: `self_heal.py` now names
+# these labels too (it hands an api restart to launchd instead of to a child
+# that the restart kills), `ops.py` imports `self_heal.py`, so the only place
+# both can read one definition from is the module that already sits below them
+# (D-022). This name stays as the alias its seven call sites here use.
+_BREW_SERVICE_LABEL_PREFIXES = brew_services.LAUNCHD_LABEL_PREFIXES
 
 
 def _brew_service_plist_candidates(name: str) -> list[Path]:

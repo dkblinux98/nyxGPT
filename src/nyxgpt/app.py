@@ -1949,23 +1949,33 @@ def _do_restart_required(targets: list[str]) -> None:
     native/Compose/Terraform/Kubernetes restart behavior to match whatever's
     actually running, bypassing the health check so a healthy-but-stale
     component still restarts. Restarting `api` kills this very process once
-    the underlying `brew services restart`/`docker restart`/`kubectl delete
-    pod` command lands -- deferred a moment so the triggering HTTP response
-    can be sent first, same as `config_restart` above.
+    the underlying restart lands -- deferred a moment so the triggering HTTP
+    response can be sent first, same as `config_restart` above.
 
-    Two consequences of `api` being *this* process, both #3806:
+    Three consequences of `api` being *this* process:
 
-    * **`api` is restarted last.** The kill ends this loop wherever it is, so
-      restarting `api` first would silently strand every other pending
+    * **`api` is restarted last** (#3806). The kill ends this loop wherever it
+      is, so restarting `api` first would silently strand every other pending
       component -- the user would press one button, lose the API, and come
       back to a `web` entry that never restarted and a notice that never
       cleared.
-    * **`api` does not clear its own flag here.** `clear_pending` below never
-      runs for it: the process is gone before `heal_now` returns. The
-      completion signal for `api` is `restart_state.clear_started`, called by
-      the API process that comes back up (see `lifespan`). Leaving the call
+    * **`api` does not clear its own flag here** (#3806). `clear_pending`
+      below never runs for it: the process is gone before `heal_now` returns.
+      The completion signal for `api` is `restart_state.clear_started`, called
+      by the API process that comes back up (see `lifespan`). Leaving the call
       in place for the other components is not redundant with that -- nothing
       else observes a `web`/`ollama`/`cassandra` restart from inside.
+    * **Whatever restarts `api` has to be something other than a child of
+      `api`** (#4043, second round). The point above is only true if a
+      successor process actually gets created, and until this issue nothing
+      made sure of it: `brew services restart` boots the launchd job out and
+      then bootstraps it again, and the boot-out takes down the `brew` process
+      issuing it along with the rest of the job's tree -- so the api was
+      stopped by a command that could not survive to start it, and the notice
+      waited out its poll for a process that was never launched. The restart
+      is handed to the service manager as one operation now
+      (`self_heal._kickstart_brew_service`); the actor that performs it is
+      launchd, which this process's death cannot interrupt.
 
     Every way of *not* restarting records why, against the component, where
     the caller polling `GET /infra/restart-status` will see it (#4043). The

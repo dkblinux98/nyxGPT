@@ -878,6 +878,15 @@ completion signal (#3806). One consequence worth knowing when polling this
 endpoint: an `api` entry disappears when the new process is *up*, not when the
 restart command returns, so allow for a full cold start.
 
+That only works if a successor process is actually created, which is a
+property of **who performs the restart**: an `api` restart is handed to the
+service manager as a single operation (`launchctl kickstart -k` on macOS,
+`systemctl --user restart` on Linux) rather than run as a child of the api.
+A stop and a separate start cannot work from inside — the stop takes down
+the process issuing the second half, so the service stayed stopped and this
+endpoint reported an `api` entry that nothing would ever clear (#4043). See
+[Restarting the api from the api](self-healing.md#restarting-the-api-from-the-api).
+
 **Response:**
 
 ```json

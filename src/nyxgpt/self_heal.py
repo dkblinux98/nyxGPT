@@ -195,11 +195,13 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # barrier-guard analysis recognizes the `re.fullmatch(...)` call form but
 # NOT the `.fullmatch` method of a precompiled `re.Pattern`.
 #
-# One guard takes a *Homebrew formula* name rather than a component/container
-# name and admits a trailing `@<version>` on top of that class
-# (`_restart_brew_service`, #4043): see `brew_services.SEGMENT_PATTERN`, which
+# Two guards take a *Homebrew* name rather than a component/container name and
+# admit a trailing `@<version>` on top of that class: the formula name in
+# `_restart_brew_service` and the launchd label built from it in
+# `_kickstart_brew_service` (#4043). See `brew_services.SEGMENT_PATTERN`, which
 # is the authority for that form and explains why the wider class forbids
-# everything the narrower one does.
+# everything the narrower one does, and ledger D-057 for why the remaining
+# eight guards keep the narrow class rather than being "finished off".
 
 # Maps a core native component to the *stable* Homebrew formula its service
 # is named after, for native/local-first mode health-checks/heals.
@@ -2013,8 +2015,109 @@ def _bring_up_compose_service(service: str) -> HealResult:
     return HealResult(True, f"Started {service}")
 
 
+def _kickstart_brew_service(name: str) -> HealResult | None:
+    """Restart Homebrew service `name` by asking launchd to, or `None` to fall through.
+
+    **This is the fix for #4043's second round, and the reason it is a
+    different command rather than a detached one.** `brew services restart` is
+    two launchd operations with a `brew` process in between: boot the job out,
+    then bootstrap it again. When the *api* restarts itself that `brew` is a
+    child of the launchd job being booted out, so launchd tears it down with
+    the rest of the job's process tree and it never reaches the start half.
+    The owner's rc17 log is the whole mechanism in five lines -- `POST
+    /api/v1/infra/restart-required` 200, `Shutting down`, `Finished server
+    process`, and then nothing, with `brew services list` reporting `none` and
+    `launchctl list` carrying no entry at all. The service was stopped by a
+    command that could not survive to restart it.
+
+    `launchctl kickstart -k <domain>/<label>` is **one** launchd operation:
+    launchd kills the running instance and starts it again itself. Nothing has
+    to outlive the teardown, because the actor performing the restart is
+    launchd and not a process inside the job. Three properties follow, and all
+    three are why this is preferred over spawning the old command detached
+    (`start_new_session=True`), which was the other candidate:
+
+    * *It is still synchronous and still observable.* `web`, `ollama` and a
+      Terraform/Compose Cassandra are restarted from a process that lives
+      through it, and `app._do_restart_required` legitimately clears their
+      pending flags on the strength of the exit code it reads here. A detached
+      spawn would have thrown that away for every component to fix one, and
+      would have needed a per-component branch to avoid it.
+    * *The job stays registered.* No bootout, so the plist is never unlinked
+      and the formula's `keep_alive true` is never removed -- launchd would
+      bring the process back even if the start half of the kickstart failed.
+      The pre-fix path removed exactly that safety net on its way past.
+    * *A refusal is reportable.* If launchd does not know the label it answers
+      non-zero having killed nothing, so this process is still alive to say so
+      -- which is what makes "the restart could not be launched" a recordable
+      outcome (`restart_state.record_attempt_failed`) rather than a silence.
+      Under `brew services restart` the kill came first, so that answer was
+      structurally unobtainable by the only actor that had to report it.
+
+    Returns `None` -- *fall through to `brew services restart`* -- when
+    launchd cannot be asked at all or knows neither label. That is the
+    not-currently-loaded case, and it is the case where the old command is
+    both necessary (only `brew services` writes and bootstraps the plist) and
+    safe (a job that is not loaded is not hosting this process, so there is no
+    tree for a bootout to take down with it).
+    """
+    if _which("launchctl") is None:
+        return None
+    # Both of Homebrew's label schemes, in `brew_services.LAUNCHD_LABEL_PREFIXES`
+    # order: `homebrew.mxcl.<formula>` for years, `sh.brew.<formula>` on
+    # current brew. Which one this machine's brew wrote is not knowable from
+    # here, and asking the wrong one alone is how a step in
+    # `macos-brew-smoke.yml` read a running service as unregistered
+    # (D-032(d), run 36996645910). Trying each costs one refused launchctl
+    # call on an older machine.
+    attempts: list[str] = []
+    for label in brew_services.launchd_labels(name):
+        # Inline barrier (CodeQL #4, py/command-line-injection) -- the literal
+        # is `brew_services.SEGMENT_PATTERN`, repeated here rather than
+        # referenced because the query recognizes the `re.fullmatch(r"...", x)`
+        # call form and not a module constant or a helper. A test pins every
+        # copy in this module identical to it.
+        #
+        # The wider class (the trailing `@<version>`) is required here for the
+        # same reason it is below: a candidate-channel install registers
+        # `sh.brew.nyxgpt-api@3.0.0rc`, and the narrow class would refuse the
+        # real label on the one channel acceptance testing uses. This is the
+        # *second* sink in this module that legitimately takes an `@` -- see
+        # D-054(b), which recorded that only one did, and D-057, which records
+        # that this one joined it and why the remaining eight still must not.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", label):
+            return HealResult(False, f"Refused to act on invalid launchd label: {label!r}")
+        target = f"gui/{os.getuid()}/{label}"
+        # Logged *before* the call, not after: when `name` is this process's
+        # own service there is no "after" to log from, and the owner's
+        # diagnosis had to be made from a log whose last line was the
+        # shutdown. This line names what was handed to launchd and is the
+        # thing a reader looks for next (#3415 gap 5 / runbook 3a).
+        logger.info(
+            "self-heal: handing the restart of %s to launchd (%s)",
+            name,
+            target,
+            extra={"component": "self_heal", "service": name, "launchd_target": target},
+        )
+        try:
+            cp = _run(["launchctl", "kickstart", "-k", target], timeout=60.0)
+        except Exception as e:
+            return HealResult(False, f"Failed to restart {name}", f"{type(e).__name__}: {e}")
+        if cp.returncode == 0:
+            return HealResult(True, f"Restarted brew service: {name}", f"launchd: {target}")
+        details = ((cp.stderr or "") + (cp.stdout or "")).strip().replace("\n", " ")
+        attempts.append(f"{target} -> rc={cp.returncode} {details}".strip())
+    logger.info(
+        "self-heal: launchd knows no loaded job for %s (%s); falling back to brew services",
+        name,
+        "; ".join(attempts),
+        extra={"component": "self_heal", "service": name},
+    )
+    return None
+
+
 def _restart_brew_service(name: str) -> HealResult:
-    """Restart Homebrew service `name` via `brew services restart` (native mode).
+    """Restart Homebrew service `name` (native mode), via launchd where it can.
 
     `name` is a *formula* name, not a logical component name, and is the one
     value in this module that legitimately carries Homebrew's `@<version>`
@@ -2023,10 +2126,14 @@ def _restart_brew_service(name: str) -> HealResult:
     `nyxgpt-api@3.0.0rc` (#3853). The barrier below therefore admits that
     suffix -- without it, every self-heal restart of `api`/`web` on an rc
     install was refused as an invalid name while `nyxgpt ops restart api`
-    succeeded on the same machine (#4043). The other guarded sinks in this
-    module take Compose service names, Docker container names, launchd labels
-    and Pod names, none of which can contain `@`, so they keep the narrower
-    class.
+    succeeded on the same machine (#4043, first round).
+
+    On macOS the restart is handed to launchd as a single operation
+    (`_kickstart_brew_service`), because `brew services restart` is a stop and
+    a *separate* start and the api cannot survive its own stop long enough to
+    issue the second half -- #4043's second round. `brew services restart`
+    remains the path for everything launchd will not answer for: Linuxbrew,
+    and a formula whose job is not currently loaded.
     """
     # Inline barrier (CodeQL #4, py/command-line-injection) -- the literal is
     # `brew_services.SEGMENT_PATTERN`, repeated here rather than referenced
@@ -2034,6 +2141,10 @@ def _restart_brew_service(name: str) -> HealResult:
     # not a module constant or a helper. A test pins the two identical.
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", name):
         return HealResult(False, f"Refused to act on invalid service name: {name!r}")
+    if _is_macos():
+        handed_off = _kickstart_brew_service(name)
+        if handed_off is not None:
+            return handed_off
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")
     # #3861 reaches here too (#4018 review). A bare name is refused outright by
