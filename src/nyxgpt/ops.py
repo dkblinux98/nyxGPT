@@ -22221,6 +22221,118 @@ def _k8s_error_tracking_dsn_wired() -> OpsResult:
     return OpsResult(True, f"The api Pod reports errors to {target or 'the in-cluster GlitchTip'}")
 
 
+def _k8s_app_tier_deployed() -> bool | None:
+    """Does this cluster carry the app tier the error-tracking DSN is *for*?
+
+    `True`/`False` are answers; `None` is "could not tell" -- no kubectl, an
+    unreachable cluster, a `kubectl get` that failed for its own reasons. The
+    three are kept apart because the only caller acts on `False` by SKIPPING a
+    step, and reading "cannot tell" as "absent" is how a skip comes to hide a
+    real misconfiguration (the #3468 distinction, applied to a Deployment set
+    rather than to a Pod).
+
+    Asked of `K8S_DSN_CONSUMER_DEPLOYMENTS` -- the Deployments the DSN is
+    written for and that `_restart_k8s_dsn_consumers` rolls -- so the question
+    and the thing it gates cannot drift apart. `--ignore-not-found` is what
+    makes an absent Deployment exit 0 with no output instead of exit 1, so a
+    missing app tier is distinguishable from a broken kubectl.
+    """
+    if _which("kubectl") is None:
+        return None
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "deploy",
+            *K8S_DSN_CONSUMER_DEPLOYMENTS,
+            "--ignore-not-found",
+            "-o",
+            "name",
+        ],
+        check=False,
+        # An observability-only cluster answering "none of those exist" is a
+        # normal answer for a probe, not something to warn about in the log.
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    return bool((cp.stdout or "").strip())
+
+
+def _k8s_wire_app_tier_dsn(dsn: str) -> list[OpsResult]:
+    """Put the minted DSN where the api and web Pods will read it, and prove
+    the running api actually carries it.
+
+    Skips -- successfully, with the remedy named -- when there is no app tier
+    on this cluster to wire. `k8s/secret.yaml` is gitignored and bootstrapped
+    by `install --kubernetes` (`_ensure_k8s_secret`), so an
+    observability-only deployment has no file to write into and no Pod to
+    write into it *for*: the DSN would be a value nothing reads. Failing there
+    made `nyxgpt ops observability --kubernetes` exit non-zero on a
+    bring-your-own cluster where every single thing it was asked to do had
+    worked, the SRE access path included -- a command reporting failure over a
+    working stack, which is the inverse of the defect #3986 opened with and
+    just as misleading. It is also what kept `k8s-observability-byo-smoke`,
+    AC4's only executed evidence, from ever reaching its assertions.
+
+    The skip is taken only on a DEFINITE "no app tier" (`is False`). A missing
+    file on a cluster that does carry the app tier, or one we could not ask,
+    stays a hard failure: that is a deployment whose api really would report
+    errors nowhere, and it has to stay loud.
+    """
+    app_secret = K8S_DIR / "secret.yaml"
+    if not app_secret.exists() and _k8s_app_tier_deployed() is False:
+        return [
+            OpsResult(
+                True,
+                "Skipped wiring the api/web error-tracking DSN (no app tier on this cluster)",
+                f"{app_secret} is bootstrapped by `nyxgpt ops install --kubernetes`, which "
+                "wires the DSN as part of the install. An observability-only deployment has "
+                "nothing to write it into.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    # GlitchTip mints the DSN from its own GLITCHTIP_DOMAIN (a browser-facing
+    # localhost URL). Inside a Pod that resolves to the Pod itself, so it is
+    # rewritten to the in-cluster Service -- the same host and port the
+    # Compose path rewrites it to, since the Service and the Compose alias
+    # are deliberately both named `glitchtip`.
+    dsn_changed, dsn_result = _write_k8s_secret_value(
+        app_secret, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
+    )
+    results.append(dsn_result)
+    if not dsn_result.ok:
+        return results
+
+    applied = _apply_k8s_secret_file(app_secret)
+    results.append(applied)
+    if not applied.ok:
+        return results
+
+    # Rolled when the value changed, and ALSO when the running api Pod
+    # turns out not to have it -- a re-run that mints the same DSN
+    # must still be able to repair a Pod that booted without one,
+    # which `dsn_changed` alone could never do (it is False on exactly
+    # that re-run).
+    if dsn_changed or _k8s_error_tracking_dsn_state()[0] == _K8S_DSN_UNSET:
+        results += _restart_k8s_dsn_consumers()
+    # Verified against the RUNNING Pod, not against the Secret this
+    # function just wrote (owner acceptance, 2026-08-26): the Secret
+    # was correct on that cluster and the api Pod's
+    # NYXGPT_ERROR_TRACKING_DSN was still empty, because an
+    # environment is fixed at process start and the Pod predated
+    # provisioning. Asserting what we wrote would have reported that
+    # state green -- "the plumbing was added and the value was never
+    # populated", invisible on every surface. This is the one check
+    # that cannot be satisfied by writing a file.
+    results.append(_k8s_error_tracking_dsn_wired())
+    return results
+
+
 def _k8s_provision_glitchtip() -> list[OpsResult]:
     """Provision the in-cluster GlitchTip and wire both halves of it up (#3990).
 
@@ -22237,10 +22349,12 @@ def _k8s_provision_glitchtip() -> list[OpsResult]:
     the placeholder that made the SRE Home panels 401).
 
     Skips -- successfully, with the remedy named -- when there is nothing to
-    provision against: no kubectl, a GlitchTip that is not ready yet, or no
-    native config.ini to persist the admin credentials in. A skip must not
-    fail an install: the app tier works without error tracking, and the
-    operator can run the command again once the missing piece is there.
+    provision against: no kubectl, a GlitchTip that is not ready yet, no
+    native config.ini to persist the admin credentials in, or (in
+    `_k8s_wire_app_tier_dsn`) no app tier on the cluster to hand the DSN to.
+    A skip must not fail an install: the app tier works without error
+    tracking, and the operator can run the command again once the missing
+    piece is there.
     """
     if _which("kubectl") is None:
         return [OpsResult(True, "Skipped GlitchTip provisioning (kubectl not found)")]
@@ -22343,37 +22457,7 @@ def _k8s_provision_glitchtip() -> list[OpsResult]:
     if dsn is None:
         return results
 
-    # GlitchTip mints the DSN from its own GLITCHTIP_DOMAIN (a browser-facing
-    # localhost URL). Inside a Pod that resolves to the Pod itself, so it is
-    # rewritten to the in-cluster Service -- the same host and port the
-    # Compose path rewrites it to, since the Service and the Compose alias
-    # are deliberately both named `glitchtip`.
-    app_secret = K8S_DIR / "secret.yaml"
-    dsn_changed, dsn_result = _write_k8s_secret_value(
-        app_secret, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
-    )
-    results.append(dsn_result)
-    if dsn_result.ok:
-        applied = _apply_k8s_secret_file(app_secret)
-        results.append(applied)
-        if applied.ok:
-            # Rolled when the value changed, and ALSO when the running api Pod
-            # turns out not to have it -- a re-run that mints the same DSN
-            # must still be able to repair a Pod that booted without one,
-            # which `dsn_changed` alone could never do (it is False on exactly
-            # that re-run).
-            if dsn_changed or _k8s_error_tracking_dsn_state()[0] == _K8S_DSN_UNSET:
-                results += _restart_k8s_dsn_consumers()
-            # Verified against the RUNNING Pod, not against the Secret this
-            # function just wrote (owner acceptance, 2026-08-26): the Secret
-            # was correct on that cluster and the api Pod's
-            # NYXGPT_ERROR_TRACKING_DSN was still empty, because an
-            # environment is fixed at process start and the Pod predated
-            # provisioning. Asserting what we wrote would have reported that
-            # state green -- "the plumbing was added and the value was never
-            # populated", invisible on every surface. This is the one check
-            # that cannot be satisfied by writing a file.
-            results.append(_k8s_error_tracking_dsn_wired())
+    results += _k8s_wire_app_tier_dsn(dsn)
 
     observability_secret = K8S_OBSERVABILITY_DIR / "secret.yaml"
     token_changed, token_write_result = _write_k8s_secret_value(
