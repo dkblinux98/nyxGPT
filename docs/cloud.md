@@ -244,8 +244,8 @@ for one you named with `--host`:
   Mac that could not answer a chat message. **Ollama is not observability.** If
   you are reading this to work out what a Mac deploy gives up, the answer is
   the next bullet and nothing else.
-- Enables **no** observability stack and **no** `nyxgpt-cassandra` container,
-  so the self-heal watchdog here has only the native services to heal. This is
+- Enables **no** observability stack, **no** `nyxgpt-cassandra` container, and
+  **no** self-heal watchdog. This is
   a platform constraint, not a revisitable scoping choice: everything the
   bootstrap skips is Docker-container-based (the observability Compose stack,
   GlitchTip, the `nyxgpt-cassandra` container), every way of running Docker on

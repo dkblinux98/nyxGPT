@@ -1795,6 +1795,9 @@ def test_the_macos_caveat_covers_the_container_tier_and_not_the_model_backend(ca
     assert "observability stack" in out
     assert "nested virtualization" in out
     assert "Chat, RAG and the web UI are unaffected" in out
+    # The self-heal watchdog stays in the caveat, matching what the deploy
+    # record actually reports (`self_heal_enabled` is False for macOS).
+    assert "self-heal watchdog is not enabled" in out
 
     # And the sentence that used to absorb the model backend is gone.
     assert "No observability stack and no self-heal watchdog" not in out

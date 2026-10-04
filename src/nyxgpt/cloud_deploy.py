@@ -3285,11 +3285,11 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
             "installed from the remote Homebrew tap and started with `brew services`, "
             "with the configured chat and embedding models pulled.\n"
             "Absent on this target, and only this: the observability stack "
-            "(Grafana/Loki/Tempo/GlitchTip) and the `nyxgpt-cassandra` container, so "
-            "the self-heal watchdog here has only the native services to heal. All of "
-            "it is Docker-based, and an EC2 Mac supports no nested virtualization, so "
-            "no Docker daemon can exist on it. Chat, RAG and the web UI are "
-            "unaffected. See docs/cloud.md, 'EC2 Mac targets'."
+            "(Grafana/Loki/Tempo/GlitchTip) and the `nyxgpt-cassandra` container -- all "
+            "Docker-based, and an EC2 Mac supports no nested virtualization, so no "
+            "Docker daemon can exist on it. The self-heal watchdog is not enabled here "
+            "either; turn it on from the dashboard if you want it. Chat, RAG and the "
+            "web UI are unaffected. See docs/cloud.md, 'EC2 Mac targets'."
         )
         # The single most expensive thing about this deploy, said at the end
         # where the operator is actually looking (#3995). A Dedicated Host is

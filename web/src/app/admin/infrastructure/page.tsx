@@ -1429,7 +1429,7 @@ export default function InfrastructurePage() {
                   label="Target OS"
                   value={
                     cloud.os_family === 'macos'
-                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services: api, web and the ollama model backend. No containers (no nested virtualization), so no observability stack and no Cassandra.'
+                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services: api, web and the ollama model backend. No containers (no nested virtualization), so no observability stack, no Cassandra and no self-heal watchdog.'
                       : cloud.os_family === 'linux'
                         ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
                         : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'
