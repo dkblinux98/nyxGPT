@@ -440,8 +440,14 @@ when a developer needs to touch them.
   - bandit: inline `# nosec <RULE_ID> -- <reason>` at the flagged line
     (bandit's own mechanism -- no separate baseline file).
   - pip-audit: add the vuln ID to `security/pip-audit-ignore.txt`.
-  - npm/audit-ci: add the module name (or the more specific advisory-ID /
-    dependency-path form) to the `allowlist` array in `web/audit-ci.jsonc`.
+  - npm/audit-ci: add a **path-scoped** entry to the `allowlist` array in
+    `web/audit-ci.jsonc` -- the advisory ID, a `|`, then the full `>`-separated
+    dependency path, e.g.
+    `GHSA-vfj7-8cjw-p6xm|@ducanh2912/next-pwa>fast-glob>micromatch>braces` --
+    with the reasoning in a full-line `//` comment above it. A bare module
+    name or bare advisory ID **fails the build**
+    (`tests/unit/test_audit_ci_allowlist.py`): those forms suppress the
+    advisory everywhere it appears, including paths nobody triaged.
   Call out any new suppression explicitly in the PR description so review
   evaluates the justification, not just the diff.
 - A dependency bump that resolves an existing allowlisted/ignored finding

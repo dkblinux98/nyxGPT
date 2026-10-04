@@ -17,7 +17,7 @@ in a CI log:
 | File | Scanner | Format |
 |---|---|---|
 | [`pip-audit-ignore.txt`](pip-audit-ignore.txt) | pip-audit | One vuln ID per line, `#`-commented justification above each entry |
-| [`../web/audit-ci.jsonc`](../web/audit-ci.jsonc) | npm audit (via `audit-ci`) | JSONC `allowlist` array (module name, advisory ID, or dependency path), inline `//` comments |
+| [`../web/audit-ci.jsonc`](../web/audit-ci.jsonc) | npm audit (via `audit-ci`) | JSONC `allowlist` array, **path-scoped entries only**: advisory ID, `\|`, then the `>`-separated dependency path (e.g. `GHSA-vfj7-8cjw-p6xm\|@ducanh2912/next-pwa>fast-glob>micromatch>braces`), reasoning in a full-line `//` comment above each. A bare module name or advisory ID fails the build |
 
 Bandit has no separate suppression file here: its official mechanism is an
 inline `# nosec <RULE_ID> -- <reason>` comment at the flagged line (see
