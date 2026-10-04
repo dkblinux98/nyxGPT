@@ -121,15 +121,30 @@ def test_the_dashboard_card_is_handed_both_wrapped_commands() -> None:
     assert "observability.publish_command" in page
 
 
-@pytest.mark.parametrize(
-    "command",
-    ("nyxgpt ops port-forward --target observability", "nyxgpt ops observability --kubernetes"),
-)
-def test_both_commands_the_card_names_are_wrapped(command: str) -> None:
-    """...and are the two the product actually supports."""
-    assert command.startswith("nyxgpt ")
-    assert "kubectl" not in command
-    assert "docker" not in command
+def test_the_card_renders_no_raw_command_of_its_own() -> None:
+    """The cause is named; the command that causes it is not.
+
+    The repair pointer's sentence used to read "if a `kubectl apply` has
+    stripped the published ports" -- a raw command string rendering into the
+    card, on the one surface Operational Command Wrapping exists for, and
+    straight through the two `/kubectl/` negative assertions the web suite
+    holds (`infrastructure.test.tsx`). Rewording the cause keeps the guard at
+    full strength instead of weakening it to admit the sentence.
+
+    Scoped to the JSX that renders, which is why the `kubectl exec` in the
+    `#3990` explanatory comment above it is not a hit.
+    """
+    page = INFRA_PAGE.read_text(encoding="utf-8")
+    rendered = [
+        line
+        for line in page.splitlines()
+        if "kubectl" in line and not line.lstrip().startswith(("*", "/*", "//"))
+    ]
+    for line in rendered:
+        assert "<code>" not in line, (
+            "the infrastructure card renders a raw command string "
+            f"({line.strip()!r}) -- name the cause, not the command (#3986)"
+        )
 
 
 def _workflow_jobs() -> dict:

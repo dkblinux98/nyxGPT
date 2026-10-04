@@ -399,6 +399,20 @@ def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     assert observability["workloads"]["grafana"] == "1/1 ready"
     # Command wrapping: the dashboard tells the operator a `nyxgpt` command.
     assert observability["port_forward_command"].startswith("nyxgpt ops port-forward")
+    # Both commands, because #3986 made it two: the forward is the
+    # bring-your-own answer and this one puts back a published node port that
+    # re-applying the shipped manifests stripped. The card renders whichever it
+    # is handed, so a typo'd key here drops the repair pointer off the
+    # Definition-of-Done surface with nothing else noticing.
+    assert observability["publish_command"] == "nyxgpt ops observability --kubernetes"
+    # ...and the wrapping property on the REAL payload values, not on literals
+    # a test chose for itself: this card is read without a terminal, so a raw
+    # `kubectl`/`docker` reaching it is an Operational Command Wrapping
+    # violation on the one screen the requirement exists for.
+    for command in (observability["port_forward_command"], observability["publish_command"]):
+        assert command.startswith("nyxgpt "), command
+        assert "kubectl" not in command, command
+        assert "docker" not in command, command
 
     # ...and the same states the Pod badges use (#3827), bar the one only a Pod
     # can be in (`SUPERSEDED`, #3990 -- a workload is never the replica that got

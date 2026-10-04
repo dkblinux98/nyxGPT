@@ -779,10 +779,10 @@ publishes none of the four SRE host ports, then runs `nyxgpt ops observability
 --kubernetes --local` and nothing else, and asserts the deploy established the
 managed forward itself and that all four UIs answer through it — then that
 `--stop` ends it and the ports really go dark. It also asserts `nyxgpt ops
-down --kubernetes` leaves a cluster nyxGPT did not create alive. The published
--NodePort path cannot be tested on the same cluster: a node created from
-nyxGPT's config holds those host ports for its whole life, so a forward there
-could only report `address already in use`.
+down --kubernetes` leaves a cluster nyxGPT did not create alive. The
+published-NodePort path cannot be tested on the same cluster: a node created
+from nyxGPT's config holds those host ports for its whole life, so a forward
+there could only report `address already in use`.
 
 **Not on the AWS k3s deployment**, which already has an owner for those two
 loopback ports: the systemd `--user` [access
