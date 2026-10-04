@@ -9431,18 +9431,18 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
     running deployment is not this step's job -- but gains any key the current
     template has added since (`_reconcile_k8s_secret_keys`).
     """
-    secret_path = K8S_DIR / "secret.yaml"
+    manifest_path = K8S_DIR / "secret.yaml"
     example = K8S_DIR / "secret.example.yaml"
-    if secret_path.exists():
-        return _reconcile_k8s_secret_keys(secret_path, example)
+    if manifest_path.exists():
+        return _reconcile_k8s_secret_keys(manifest_path, example)
     if not example.exists():
         return [OpsResult(False, f"Missing {example} to bootstrap the secret from")]
     key = _resolve_api_key(api_key)
     text = example.read_text(encoding="utf-8")
     text = re.sub(r'api-key:\s*".*"', lambda _m: f'api-key: "{key}"', text)
-    secret_path.write_text(text, encoding="utf-8")
-    os.chmod(secret_path, 0o600)
-    return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
+    manifest_path.write_text(text, encoding="utf-8")
+    os.chmod(manifest_path, 0o600)
+    return [OpsResult(True, f"Bootstrapped {manifest_path} from secret.example.yaml")]
 
 
 # Where the generated image-tag overlay lives (#3956). Beside `K8S_DIR`, never
@@ -9619,10 +9619,10 @@ def _ensure_k8s_observability_secret() -> list[OpsResult]:
     a missing key is worse than a stale one). Delete the file to re-bootstrap
     it from current config.
     """
-    secret_path = K8S_OBSERVABILITY_DIR / "secret.yaml"
+    manifest_path = K8S_OBSERVABILITY_DIR / "secret.yaml"
     example = K8S_OBSERVABILITY_DIR / "secret.example.yaml"
-    if secret_path.exists():
-        return _reconcile_k8s_secret_keys(secret_path, example)
+    if manifest_path.exists():
+        return _reconcile_k8s_secret_keys(manifest_path, example)
     if not example.exists():
         return [OpsResult(False, f"Missing {example} to bootstrap the observability secret from")]
 
@@ -9636,9 +9636,9 @@ def _ensure_k8s_observability_secret() -> list[OpsResult]:
             text,
             flags=re.MULTILINE,
         )
-    secret_path.write_text(text, encoding="utf-8")
-    os.chmod(secret_path, 0o600)
-    return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
+    manifest_path.write_text(text, encoding="utf-8")
+    os.chmod(manifest_path, 0o600)
+    return [OpsResult(True, f"Bootstrapped {manifest_path} from secret.example.yaml")]
 
 
 def _kubectl_apply_stdin(manifest: str, what: str) -> OpsResult:
@@ -22314,13 +22314,21 @@ def _k8s_wire_app_tier_dsn(dsn: str) -> list[OpsResult]:
     stays a hard failure: that is a deployment whose api really would report
     errors nowhere, and it has to stay loud.
     """
-    app_secret = K8S_DIR / "secret.yaml"
-    if not app_secret.exists() and _k8s_app_tier_deployed() is False:
+    # `app_manifest`, not `app_secret`: this is the PATH of the Secret
+    # manifest, and a path named like a secret value is a CodeQL taint source
+    # by name alone -- it then travels, correctly, onto the `kubectl apply -f`
+    # command line and into the subprocess failure log, which reports `_run`
+    # as logging a secret in clear text. The manifest's VALUES still never
+    # reach argv (`_apply_k8s_secret_file`). Pinned by
+    # tests/unit/test_no_path_is_named_like_a_secret.py, whose docstring
+    # carries the measurement.
+    app_manifest = K8S_DIR / "secret.yaml"
+    if not app_manifest.exists() and _k8s_app_tier_deployed() is False:
         return [
             OpsResult(
                 True,
                 "Skipped wiring the api/web error-tracking DSN (no app tier on this cluster)",
-                f"{app_secret} is bootstrapped by `nyxgpt ops install --kubernetes`, which "
+                f"{app_manifest} is bootstrapped by `nyxgpt ops install --kubernetes`, which "
                 "wires the DSN as part of the install. An observability-only deployment has "
                 "nothing to write it into.",
             )
@@ -22333,13 +22341,13 @@ def _k8s_wire_app_tier_dsn(dsn: str) -> list[OpsResult]:
     # Compose path rewrites it to, since the Service and the Compose alias
     # are deliberately both named `glitchtip`.
     dsn_changed, dsn_result = _write_k8s_secret_value(
-        app_secret, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
+        app_manifest, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
     )
     results.append(dsn_result)
     if not dsn_result.ok:
         return results
 
-    applied = _apply_k8s_secret_file(app_secret)
+    applied = _apply_k8s_secret_file(app_manifest)
     results.append(applied)
     if not applied.ok:
         return results
@@ -22490,13 +22498,15 @@ def _k8s_provision_glitchtip() -> list[OpsResult]:
 
     results += _k8s_wire_app_tier_dsn(dsn)
 
-    observability_secret = K8S_OBSERVABILITY_DIR / "secret.yaml"
+    # Named for what it is -- the manifest's path -- for the reason given in
+    # `_k8s_wire_app_tier_dsn` above.
+    observability_manifest = K8S_OBSERVABILITY_DIR / "secret.yaml"
     token_changed, token_write_result = _write_k8s_secret_value(
-        observability_secret, K8S_GRAFANA_GLITCHTIP_TOKEN_SECRET_KEY, token
+        observability_manifest, K8S_GRAFANA_GLITCHTIP_TOKEN_SECRET_KEY, token
     )
     results.append(token_write_result)
     if token_write_result.ok:
-        applied = _apply_k8s_secret_file(observability_secret)
+        applied = _apply_k8s_secret_file(observability_manifest)
         results.append(applied)
         # Grafana reads `$__file{}` provisioning targets at startup only, so a
         # rewritten token is invisible until the Pod restarts -- the same

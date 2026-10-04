@@ -2485,6 +2485,29 @@ rather than mechanism, and nothing can enforce them.
   guard that makes a silent re-bump fail at `pytest` rather than in fifteen
   smoke jobs.
 
+- **P-006** · 2026-10-04 · developer-agent (#3986) — The two remaining
+  `py/clear-text-logging-sensitive-data` sources in `src/nyxgpt/ops.py`
+  (alerts 105/106/141/142) are left open: `K8S_APP_SECRET_NAME` and
+  `K8S_ERROR_TRACKING_DSN_SECRET_KEY`, module constants holding a Kubernetes
+  Secret's NAME and a key inside it. The paths that reached the same two
+  sinks were renamed instead (`app_manifest`, `observability_manifest`) and
+  the rule is now pinned by
+  `tests/unit/test_no_path_is_named_like_a_secret.py`.
+  Reason: the rule classifies by variable NAME, and a *path* has an accurate
+  name that is not a secret word, so renaming it makes the code and the
+  scanner agree. These two do not: they name a Secret resource and a key
+  inside it, both must appear on a `kubectl` command line for the command to
+  mean anything, and contorting them to dodge a heuristic would make the code
+  read worse while logging nothing less. They are open on `v3.0.0` already —
+  this is not a regression introduced or hidden here.
+  Revisit when: the owner dismisses them in the security tab (the route
+  already taken for alerts 115/116/117/119/120/127/128/130 — "false
+  positive"/"won't fix"), which is the only honest way to close a false
+  positive whose name is correct. An agent cannot dismiss, so nothing here
+  can act on it.
+  Source: this branch (#3986); measurement and the parameter-vs-assignment
+  finding are in the guard's docstring.
+
 ## Open questions
 
 - **Q-001** · 2026-08-14 · developer-agent (#3774) — Should the ledger be
