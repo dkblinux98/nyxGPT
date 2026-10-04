@@ -34,6 +34,46 @@ class NyxgptWeb < Formula
     libexec.install Dir["*"]
     libexec.install ".next"
 
+    # The wrapper's config lookup is its own file, NOT a shell heredoc nested
+    # inside the wrapper's heredoc. A `<<'PY'` body has to start at column 0,
+    # and Ruby's `<<~` strips the indentation of its *least*-indented line --
+    # so one column-0 line meant nothing was stripped at all and the wrapper
+    # was written with `      #!/usr/bin/env bash`, six spaces in. An indented
+    # shebang is not a shebang, and Homebrew's Cleaner keeps the exec bit only
+    # for a file matching `\A#!\s*\S+` (`Utils::Path.text_executable?`, via
+    # `Cleaner#executable_path?`) -- which is why the `chmod 0755` below used
+    # to be undone to 0444 on every install (#4043). See nyxgpt-api.rb, whose
+    # wrapper had the identical defect.
+    (libexec/"read-web-config.py").write <<~'PY'
+      """Print the web tier's host, port, api_base_url and auth key, tab-separated.
+
+      `bin/nyxgpt-web` runs this with /usr/bin/python3, so it must import
+      nothing outside the standard library.
+      """
+      import configparser
+      import os
+
+      cfg = configparser.ConfigParser()
+      cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+      host = cfg.get('web', 'host', fallback='127.0.0.1')
+      try:
+          port = str(cfg.getint('web', 'port', fallback=3000))
+      except Exception:
+          port = '3000'
+      api_base = cfg.get('web', 'api_base_url', fallback='')
+      # The proxy in web/src/lib/apiProxy.ts attaches X-API-Key from
+      # NYXGPT_AUTH_API_KEY; without it every proxied call 401s the moment
+      # [auth] enabled is turned on (#3632).
+      try:
+          auth_on = cfg.getboolean('auth', 'enabled', fallback=False)
+      except Exception:
+          auth_on = False
+      api_key = cfg.get('auth', 'api_key', fallback='').strip() if auth_on else ''
+
+      print(f"{host}\t{port}\t{api_base}\t{api_key}")
+    PY
+
     (bin/"nyxgpt-web").write <<~SH
       #!/usr/bin/env bash
       set -euo pipefail
@@ -57,31 +97,7 @@ class NyxgptWeb < Formula
       AUTH_KEY=""
 
       if [ -f "$CONFIG_FILE" ]; then
-        IFS=$'\t' read -r HOST PORT API_BASE AUTH_KEY < <("$SYS_PY" - <<'PY'
-import configparser
-import os
-
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
-
-host = cfg.get('web', 'host', fallback='127.0.0.1')
-try:
-    port = str(cfg.getint('web', 'port', fallback=3000))
-except Exception:
-    port = '3000'
-api_base = cfg.get('web', 'api_base_url', fallback='')
-# The proxy in web/src/lib/apiProxy.ts attaches X-API-Key from
-# NYXGPT_AUTH_API_KEY; without it every proxied call 401s the moment
-# [auth] enabled is turned on (#3632).
-try:
-    auth_on = cfg.getboolean('auth', 'enabled', fallback=False)
-except Exception:
-    auth_on = False
-api_key = cfg.get('auth', 'api_key', fallback='').strip() if auth_on else ''
-
-print(f"{host}\t{port}\t{api_base}\t{api_key}")
-PY
-)
+        IFS=$'\t' read -r HOST PORT API_BASE AUTH_KEY < <("$SYS_PY" "#{libexec}/read-web-config.py")
       fi
 
       export HOST="$HOST"
@@ -100,11 +116,15 @@ PY
       cd "#{libexec}"
       exec npm run start
     SH
-    # Best-effort exec bit for anyone invoking the wrapper directly. Homebrew's
-    # post-install Cleaner resets keg scripts to 0444 regardless, so this does
-    # not survive -- which is why the service below launches the wrapper via
-    # `/bin/bash` (like nyxgpt-api.rb): bash reads the script without needing an
-    # exec bit, avoiding the launchd exec failure (error 78) (#3406).
+    # The exec bit for anyone invoking the wrapper directly. The old comment
+    # here recorded that "Homebrew's post-install Cleaner resets keg scripts to
+    # 0444 regardless, so this does not survive" -- that was the symptom of the
+    # indented shebang above, not a rule of Homebrew's: the Cleaner re-stamps a
+    # file matching `\A#!\s*\S+` to 0555 and keeps it runnable (#4043). The
+    # service below still launches the wrapper via `/bin/bash` (like
+    # nyxgpt-api.rb), which is what made the broken mode invisible and which is
+    # left alone here because bash needs neither the shebang nor the exec bit
+    # -- it was the fix for the launchd exec failure (error 78) in #3406.
     system "chmod", "0755", bin/"nyxgpt-web"
   end
 

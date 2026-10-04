@@ -521,6 +521,41 @@ class NyxgptApi < Formula
     # cannot drift from what was installed, which a hand-written wrapper can.
     bin.install_symlink venv/"bin/nyxgpt"
 
+    # The wrapper's address lookup is its own file, NOT a shell heredoc nested
+    # inside the wrapper's heredoc. A `<<'PY'` body has to start at column 0,
+    # and Ruby's `<<~` strips the indentation of its *least*-indented line --
+    # so one column-0 line meant nothing was stripped at all and the wrapper
+    # was written with `      #!/bin/bash`, six spaces in. An indented shebang
+    # is not a shebang: Homebrew's Cleaner keeps the exec bit only for a file
+    # matching `\A#!\s*\S+` (`Utils::Path.text_executable?`, via
+    # `Cleaner#executable_path?`), so the `chmod 0755` below was undone to
+    # 0444 on every install -- `==> chmod 0755 .../bin/nyxgpt-api` followed by
+    # `-r--r--r-- nyxgpt-api` in the same job (#4043). The `service` block runs
+    # the wrapper through `/bin/bash`, which needs neither the shebang nor the
+    # exec bit, so no running stack ever noticed; what noticed were the two
+    # smoke gates that exec the wrapper directly, red since 2026-08-23, and
+    # #3406's launchd failure 78 (ENOEXEC) was this same cause.
+    (libexec/"read-api-address.py").write <<~'PY'
+      """Print the api's configured listen host and port, tab-separated.
+
+      `bin/nyxgpt-api` runs this with /usr/bin/python3, so it must import
+      nothing outside the standard library.
+      """
+      import configparser
+      import os
+
+      cfg = configparser.ConfigParser()
+      cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
+
+      host = cfg.get('api', 'host', fallback='127.0.0.1')
+      try:
+          port = str(cfg.getint('api', 'port', fallback=8000))
+      except Exception:
+          port = '8000'
+
+      print(f"{host}\t{port}")
+    PY
+
     (bin/"nyxgpt-api").write <<~EOS
       #!/bin/bash
       set -euo pipefail
@@ -540,22 +575,7 @@ class NyxgptApi < Formula
       PORT="8000"
 
       if [ -f "$CONFIG_FILE" ]; then
-        IFS=$'\t' read -r HOST PORT < <("$SYS_PY" - <<'PY'
-import configparser
-import os
-
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.nyxGPT/config.ini'), encoding='utf-8')
-
-host = cfg.get('api', 'host', fallback='127.0.0.1')
-try:
-    port = str(cfg.getint('api', 'port', fallback=8000))
-except Exception:
-    port = '8000'
-
-print(f"{host}\t{port}")
-PY
-)
+        IFS=$'\t' read -r HOST PORT < <("$SYS_PY" "#{libexec}/read-api-address.py")
       fi
 
       echo "nyxgpt-api starting (self-contained Cellar venv)" >&2
@@ -576,6 +596,9 @@ PY
       # matching how nyxgpt-web.rb's wrapper `exec`s into `npm run start`.
       exec "#{venv}/bin/python3" -m uvicorn nyxgpt.app:app --host "$HOST" --port "$PORT"
     EOS
+    # Homebrew's Cleaner re-stamps this to 0555 (not 0444) because the file
+    # above starts with a real shebang -- see the comment on the address
+    # script. Kept so the mode is right between `install` and `clean` too.
     system "chmod", "0755", bin/"nyxgpt-api"
   end
 

@@ -1562,6 +1562,60 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "good: the web keg reports its own version ($VERSION) beside the API's ($UPSTREAM)"
 
+      - name: "Both service wrappers are runnable scripts, not 0444 text files (#4043)"
+        # The wrappers were written by a Ruby `<<~` heredoc containing a nested
+        # `<<'PY'` body, which has to start at column 0 -- so `<<~` stripped
+        # nothing and the shebang was written six spaces in. Homebrew's Cleaner
+        # keeps the exec bit only for a file matching `\A#!\s*\S+`
+        # (`Utils::Path.text_executable?`, via `Cleaner#executable_path?`), so
+        # the formulas' own `chmod 0755` was undone to 0444 on every install.
+        #
+        # No injection: the condition reproduced on this runner for six weeks.
+        # `test -x "$KEG/bin/nyxgpt-api"` in the #3861 step below and
+        # `nohup "$old_keg/bin/nyxgpt-api"` in the upgrade job have both been
+        # red since 2026-08-23 (`Permission denied`, and the pre-fix mode
+        # printed as `-r--r--r--` by the step that lists `bin`), which is the
+        # half-without-the-fix. What this step adds is the diagnosis at the
+        # point of installation: both failures above are five steps downstream
+        # of the cause and read as link-conflict and staging problems.
+        #
+        # The services run their wrapper as `["/bin/bash", opt_bin/...]`, which
+        # needs neither the shebang nor the exec bit -- so nothing in a running
+        # stack can tell this is broken, and only a check that execs it
+        # directly can.
+        run: |
+          set -euo pipefail
+          fail=0
+          for formula in nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc; do
+            wrapper="$(brew --prefix "$formula")/bin/${formula%@*}"
+            echo "=== $wrapper ==="
+            if [ ! -f "$wrapper" ]; then
+              echo "::error::${formula} installed no ${formula%@*} wrapper"
+              fail=1
+              continue
+            fi
+            ls -l "$wrapper"
+            echo "mode: $(stat -f '%OLp' "$wrapper")"
+            echo "first 2 bytes: $(head -c 2 "$wrapper")"
+
+            # Homebrew's own predicate, run by Homebrew's own ruby: a file it
+            # does not read as a shebang script is the file it chmods 0444.
+            if ! ruby -e 'exit(File.open(ARGV[0]) { |f| f.read(1024) } =~ /\A#!\s*\S+/ ? 0 : 1)' "$wrapper"; then
+              echo "::error::${wrapper} has no shebang at byte 0, so" \
+                "Homebrew's Cleaner strips its exec bit (#4043)"
+              head -3 "$wrapper" | cat -A
+              fail=1
+            fi
+            if [ ! -x "$wrapper" ]; then
+              echo "::error::${wrapper} is not executable (mode" \
+                "$(stat -f '%OLp' "$wrapper")) -- anything that execs it" \
+                "directly gets EACCES (#4043)"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "good: both wrappers start with a shebang and carry the exec bit"
+
       - name: "A Homebrew post-install soft failure is not an install failure (#3861)"
         # The owner's 2026-08-21 acceptance run: `nyxgpt up` reported `native
         # api service` and `native web service` FAILED and left the machine
