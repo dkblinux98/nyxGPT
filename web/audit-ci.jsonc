@@ -27,5 +27,53 @@
   // signature: check `npm audit` before looking for a culprit in the branch.
   // 4 moderate findings remain and are deliberately non-blocking per "high"
   // above.
-  "allowlist": []
+  //
+  // It recurred on 2026-10-04 (#4150), and this time the previous remedy does
+  // not apply: there is nothing to upgrade to. Measured before allowlisting --
+  //
+  //   GHSA-vfj7-8cjw-p6xm  braces: stack-exhaustion DoS via deeply nested
+  //                        patterns. Range `<= 3.0.3`, published 2026-09-18,
+  //                        `first_patched_version: null`.
+  //   npm view braces      3.0.3 is the LATEST version ever published, so the
+  //                        advisory covers every release that exists.
+  //   micromatch@4.0.8     latest; depends `braces ^3.0.3`.
+  //   fast-glob@3.3.3      latest; depends `micromatch ^4.0.8`.
+  //   npm audit fix        lockfile byte-identical -- nothing to fix.
+  //   npm audit fix --force  DOWNGRADES eslint-config-next 16.3.0 -> 14.2.35
+  //                        and @ducanh2912/next-pwa 10.2.9 -> 6.1.0, both
+  //                        semver-major, both two majors behind next@16 /
+  //                        eslint@9 -- and still ship braces, just via an
+  //                        older glob. That is a regression, not a fix.
+  //
+  // So the gate is red with no action available in the dependency graph, on
+  // the release branch and therefore on every PR in the repo. Allowlisted on
+  // the risk, which is specific to these two paths:
+  //
+  //   The vulnerability needs an attacker-controlled GLOB PATTERN. On both
+  //   paths the patterns are authored in this repository and consumed at
+  //   build/lint time, never per-request:
+  //     * @ducanh2912/next-pwa is imported only by web/next.config.ts -- a
+  //       build-time Next config wrapper that globs the build output to
+  //       generate the service worker. It is not in any serving path.
+  //     * eslint-config-next is a devDependency; it reaches braces only
+  //       through @next/eslint-plugin-next while linting.
+  //   No request-handling code in this tree reaches braces.
+  //
+  // ENTRIES ARE PATH-SCOPED ON PURPOSE, not bare advisory IDs. A bare
+  // `"GHSA-vfj7-8cjw-p6xm"` would accept this advisory on paths nobody has
+  // triaged -- including a future RUNTIME dependency, where the
+  // build-time-only reasoning above does not hold and the finding would be
+  // real. Scoped this way the gate still goes red the moment braces appears
+  // on a third path, which is the only part of this risk that is not already
+  // understood. `tests/unit/test_audit_ci_allowlist.py` fails the build on a
+  // bare-ID entry for that reason.
+  //
+  // REVISIT: drop both entries as soon as braces publishes a fixed release
+  // (watch the advisory's `first_patched_version`), or when next-pwa and
+  // eslint-config-next move off the fast-glob/micromatch chain. Neither entry
+  // is a standing acceptance of the advisory.
+  "allowlist": [
+    "GHSA-vfj7-8cjw-p6xm|@ducanh2912/next-pwa>fast-glob>micromatch>braces",
+    "GHSA-vfj7-8cjw-p6xm|eslint-config-next>@next/eslint-plugin-next>fast-glob>micromatch>braces"
+  ]
 }
