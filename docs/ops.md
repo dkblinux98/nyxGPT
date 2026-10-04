@@ -385,6 +385,25 @@ This command:
   Compose `ollama` service's pre-pull and healthcheck, the Kubernetes
   StatefulSet's postStart hook and readiness probe), because no `nyxgpt`
   process runs on the host there to do it for them.
+- **Checks that the process now answering on the api port is the build this
+  install just put in place**, and repairs it if not (#4133). Every step above
+  reports on what it *did* — the keg it installed, the service it restarted —
+  and none of that is evidence about what is serving afterwards. A process
+  started before an upgrade keeps running from the previous version's venv,
+  which the upgrade removes; it survives only while it holds the deleted files
+  open, and it is accounted for by no service manager, so nothing else in this
+  list can see it. The step asks the api for its own `sys.prefix` (`GET
+  /api/v1/info`'s `runtime` block) and compares it to the venv the installed
+  service execs. On a mismatch it stops that process by PID, restarts the
+  registered service, and re-checks — and if the running build *still* is not
+  the installed one, the step **fails** and names `nyxgpt ops restart api`.
+  When the api simply is not up yet (a first install, before
+  [`nyxgpt up`](#nyxgpt-up--nyxgpt-down)'s health wait) the step reports
+  `[WARN] Could not verify …` rather than claiming a match. The motivating
+  failure: a `brew upgrade` on a running stack where this install reported
+  56/56 steps `[OK]` over an api running a deleted python3.11 venv, and the
+  symptom surfaced at the next restart as
+  `ModuleNotFoundError: No module named 'anyio._backends'`.
 - Verifies Docker availability
 - Creates the local Cassandra container if it doesn't exist yet (name
   `nyxgpt-cassandra`, image `cassandra:5.0`, bound to
@@ -685,6 +704,29 @@ Reports:
   whenever a marker exists, so when *nothing* is deployed it says so in the
   same terms the native line does: a record of the last Terraform install,
   not a statement about whatever is serving now (#3989).
+- **Running api build** — which build the api is *actually executing*, read
+  from that process's own `sys.prefix` rather than from the Cellar (#4133).
+  Three states, and none of them is a bare version string:
+  - `OK — executing <venv>`: the live process is the installed service's venv.
+  - `MISMATCH`: it is not. Both paths are printed, the block says in so many
+    words that the install-mode and version lines above describe what is
+    *installed* and are not a statement about this process, and it names
+    `nyxgpt ops restart api` as the repair. When the running venv has been
+    deleted it adds that the next restart by **any** path (reboot, self-heal,
+    the dashboard's Restart control) will fail to start the api.
+  - `CANNOT DETERMINE`, with the reason — nothing answered on the api port, or
+    the api predates this field. Never rendered as a pass.
+
+  Nothing is printed on a Compose, Terraform or Kubernetes deployment, or on a
+  host with no native api installed: the interpreter there lives in an image,
+  so there is no keg venv for it to match.
+
+  Why this is its own line rather than a footnote on the version: every other
+  line here is derived from disk, and a process outlives the build it was
+  started from. After a `brew upgrade` on a running stack, `nyxgpt ops install`
+  reported 56/56 steps `[OK]` and this command reported the new keg's version
+  while the api serving requests was a python3.11 venv the upgrade had emptied
+  — and nothing in the output distinguished that from a correct install.
 - **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
   running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
   Compose deployment of the same component is also running. If a component is reported
@@ -1111,6 +1153,15 @@ Checks include:
   product could say so. A machine whose marker predates identities is
   reported as exactly that, rather than as a clean bill of health. Fix:
   `nyxgpt up` (add `--dev` from a checkout), which reconciles them.
+- **An api that is serving a different build than the one installed** (#4133).
+  One layer out from the check above: that one finds a *service* no install
+  claims, this one finds a *process* running a venv that is no longer the
+  installed service's — which is what a `brew upgrade` on a running stack
+  leaves behind, and which no service manager reports. The finding names the
+  venv the process is running, the one the installed service execs, and
+  `nyxgpt ops restart api`. Only a confirmed mismatch is a finding: "could not
+  determine" is reported by [`status`](#nyxgpt-ops-status), not here, because
+  `doctor` runs on machines whose api is deliberately down.
 - Required files under `~/.nyxGPT/`
 - **Whether `config.ini` parses at all**, and if not, *why* — the error class
   and the line number, e.g. `DuplicateOptionError at line 134: option

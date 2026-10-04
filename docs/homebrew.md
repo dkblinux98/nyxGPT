@@ -392,6 +392,16 @@ everywhere the product names itself -- `nyxgpt --version`, `GET
 /api/v1/info`, the web UI badge and `nyxgpt ops status` all print e.g.
 `3.0.0rc13`, not `3.0.0`.
 
+**All four of those describe the keg that is INSTALLED, not the process that is
+serving** (#4133). They read package metadata, and a running process outlives
+the build it was started from, so after a `brew upgrade` on a host with the
+stack running they can all report the new candidate while the api is still
+executing the previous one's venv. The one surface that answers for the
+*process* is `GET /api/v1/info`'s `runtime.prefix`, and
+`nyxgpt ops status`'s **Running api build** block is where the comparison is
+reported -- see [Upgrading a candidate in
+place](#upgrading-a-candidate-in-place) below.
+
 That is not cosmetic. An artifact install has no repo checkout above the
 package, so the installed distribution's metadata is the **only** record of
 which channel the keg belongs to, and `nyxgpt up` reads it to decide which
@@ -457,6 +467,41 @@ Those two are channel *swaps*, not removals: the machine keeps a nyxGPT
 install throughout, so the `com.nyxgpt.*` agents and the containers are meant
 to stay. Removing nyxGPT altogether is a different sequence — see
 [Removing nyxGPT](#removing-nyxgpt), and run `nyxgpt ops uninstall` first.
+
+### Upgrading a candidate in place
+
+The third command above — `brew upgrade nyxgpt-api@3.0.0rc` on a host where
+the stack is already running — is the common case during acceptance testing,
+and it has one failure mode worth knowing about (#4133).
+
+`brew upgrade` replaces the keg. It does **not** replace the process: an api
+started from the previous version keeps running from that version's venv,
+which the upgrade removes. The process survives only while it holds the
+deleted files open, and nothing in Homebrew's or launchd's view of the machine
+describes it — so `brew services list`, `nyxgpt --version` and every version
+surface keep describing the *new* keg while the old build serves requests. The
+symptom is deferred to whenever something next restarts the api (a reboot, the
+self-heal watchdog, the dashboard's Restart control), at which point it
+re-execs into a path that no longer exists and the api stays down with
+`ModuleNotFoundError`.
+
+`nyxgpt up` after the upgrade is what closes it, and since #4133 it says so
+rather than reporting `[OK]` over the mismatch: its **running api build** step
+compares the api's own `sys.prefix` against the venv the installed service
+execs, stops the stale process and restarts the service, and fails the step
+(naming `nyxgpt ops restart api`) if the live build still is not the installed
+one. To check by hand at any time:
+
+```bash
+nyxgpt ops status      # the "Running api build" block: OK, MISMATCH or CANNOT DETERMINE
+nyxgpt ops restart api # the repair, on a MISMATCH
+```
+
+The comparison is on the *interpreter path*, never the reported version: a
+stale process reports a plausible version number (it imports whatever metadata
+its own venv carried), so the version is evidence about the process and not the
+test. See [ops.md](ops.md#nyxgpt-ops-status) and
+[api.md](api.md#get-apiv1info).
 
 **Both directions, deliberately.** `conflicts_with` is *directional*: it is
 checked when the formula that declares it is being installed, and not
