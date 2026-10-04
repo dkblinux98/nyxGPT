@@ -24,6 +24,14 @@ export default function ModelsPage() {
   const [pulling, setPulling] = useState(false);
   const [pullError, setPullError] = useState<string | null>(null);
   const [deletingModel, setDeletingModel] = useState<string | null>(null);
+  // Why the empty list carries its own message (#4150). An Ollama that is
+  // running but holds no models is a different fault from one that is not
+  // running, and "No models found. Pull a model to get started." does not tell
+  // an operator which models this install actually requires or which wrapped
+  // command puts them there. The API answers both questions in `detail`; this
+  // shows it rather than paraphrasing it, so the terminal and the UI cannot
+  // give different advice.
+  const [emptyDetail, setEmptyDetail] = useState<string | null>(null);
 
   async function loadModels() {
     setLoading(true);
@@ -33,9 +41,17 @@ export default function ModelsPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setModels(data.models || []);
+      setEmptyDetail(typeof data.detail === 'string' ? data.detail : null);
     } catch (e: unknown) {
       const msg = errorMessage(e);
       setError(msg);
+      // The detail belongs to the reachable-but-empty answer, so a failed
+      // load must not leave the previous one standing. Rendering is gated on
+      // `!error` today, so this is invisible now -- and it is the kind of
+      // invisible that becomes a wrong remedy printed next to an unrelated
+      // error the first time that gate moves. The admin page clears it here
+      // too; the two surfaces give the same advice or neither does.
+      setEmptyDetail(null);
     } finally {
       setLoading(false);
     }
@@ -199,7 +215,24 @@ export default function ModelsPage() {
 
         {!error && !loading && models.length === 0 && (
           <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
-            No models found. Pull a model to get started.
+            <div>No models found. Pull a model to get started.</div>
+            {emptyDetail && (
+              <div
+                style={{
+                  marginTop: 12,
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  textAlign: 'left',
+                  color: '#444',
+                  background: '#fff8e1',
+                  border: '1px solid #ffe08a',
+                  borderRadius: 8,
+                  padding: '12px 14px',
+                }}
+              >
+                {emptyDetail}
+              </div>
+            )}
           </div>
         )}
 

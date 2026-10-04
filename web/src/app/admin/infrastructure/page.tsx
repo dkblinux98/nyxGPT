@@ -68,6 +68,32 @@ type InfraStatus = {
     // process has no access to.
     in_scope?: boolean;
     out_of_scope_reason?: string;
+    // Which build the api process answering THIS request is executing,
+    // against the venv the installed native service execs (#4133). Every
+    // other field above -- including `identity.version` -- is derived from
+    // what is on disk, and a process outlives the build it was started from:
+    // a `brew upgrade` on a running stack left the api serving from a venv
+    // the upgrade had deleted while `ops install` reported 56/56 [OK] and
+    // every version surface reported the new keg. `state === 'mismatch'` is
+    // the only actionable value; 'undetermined' and 'not_applicable' are
+    // reported as themselves and never as a pass. Optional so the page still
+    // renders against an api process from before #4133.
+    running_build?: {
+      state: 'match' | 'mismatch' | 'undetermined' | 'not_applicable';
+      running: {
+        executable: string;
+        prefix: string;
+        python: string;
+        pid: number;
+        version: string;
+        prefix_exists: boolean;
+      } | null;
+      expected_prefix: string;
+      expected_source: string;
+      detail: string;
+      remediation: string;
+      summary: string;
+    };
   };
   native: Record<string, string>;
   // Whether the native card's Docker-backed read (Cassandra, the one native
@@ -809,6 +835,62 @@ export default function InfrastructurePage() {
                 an earlier install.
               </p>
             )}
+            {/*
+              What this api process is ACTUALLY executing, next to the
+              installed build above (#4133). The two paragraphs above are
+              derived from disk -- a marker file and the Cellar -- and both
+              were reporting the new keg while the process serving this page
+              came from a venv a `brew upgrade` had already deleted. This row
+              is read from the serving process's own `sys.prefix`, so the
+              process that may be wrong is the one answering.
+
+              `not_applicable` renders nothing: on a Compose/Kubernetes
+              deployment there is no keg for this process to match, and a
+              permanent row saying so is what teaches an operator to skip the
+              one that matters.
+            */}
+            {status.install_mode?.running_build &&
+              status.install_mode.running_build.state === 'mismatch' && (
+                <div
+                  style={{
+                    border: '1px solid var(--error, #b91c1c)',
+                    borderRadius: '6px',
+                    padding: '0.75rem',
+                    marginBottom: '0.75rem',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  <p style={{ fontWeight: 600, marginBottom: '0.35rem' }}>
+                    Running build does not match the installed build
+                  </p>
+                  <p style={{ marginBottom: '0.35rem' }}>
+                    This API process is executing{' '}
+                    <code>{status.install_mode.running_build.running?.prefix}</code> (python{' '}
+                    {status.install_mode.running_build.running?.python}), but the installed
+                    service execs{' '}
+                    <code>{status.install_mode.running_build.expected_prefix}</code>. The version
+                    reported everywhere else describes what is installed, not this process.
+                  </p>
+                  {status.install_mode.running_build.running?.prefix_exists === false && (
+                    <p style={{ marginBottom: '0.35rem' }}>
+                      That path no longer exists — this process is holding deleted files open,
+                      and the next restart by any path (reboot, self-heal, the Restart control)
+                      will fail to start the API.
+                    </p>
+                  )}
+                  <p style={{ marginBottom: 0 }}>
+                    Fix: <code>{status.install_mode.running_build.remediation}</code>
+                  </p>
+                </div>
+              )}
+            {status.install_mode?.running_build &&
+              status.install_mode.running_build.state === 'undetermined' && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+                  Could not confirm that this API process is running the installed build:{' '}
+                  {status.install_mode.running_build.detail}. That is not the same as a match —
+                  check with <code>nyxgpt ops status</code>.
+                </p>
+              )}
             {!status.native_probe_available && (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
                 Cassandra runs as a Docker container, and this API process could not read
@@ -1438,15 +1520,31 @@ export default function InfrastructurePage() {
                 {/* #3867: the two target OSes are provisioned by different
                     bootstraps and do not leave the instance in the same
                     shape — an EC2 Mac runs the Homebrew formulas under
-                    launchd with no observability stack and no self-heal
-                    watchdog. Reported here because nothing else on this page
-                    distinguishes them. Observed, never driven: the pointer
-                    is `nyxgpt cloud deploy --os`. */}
+                    launchd and can host no containers. Reported here because
+                    nothing else on this page distinguishes them. Observed,
+                    never driven: the pointer is `nyxgpt cloud deploy --os`.
+
+                    #4150: this row used to read "no observability stack, no
+                    self-heal watchdog", which an operator could reasonably
+                    read as the full list of what a Mac gives up — and the
+                    model backend was quietly missing too. It is now installed
+                    there (api, web AND ollama), so the row says what the Mac
+                    HAS before what it lacks, and attributes the gap to the
+                    container tier rather than to a vague shortfall.
+
+                    The nested-virtualization clause covers the CONTAINER TIER
+                    and stops there. Self-healing being off is not a platform
+                    limit: the watchdog is a thread inside the api process
+                    (docs/self-healing.md), it ships disabled everywhere, and
+                    this bootstrap simply does not turn it on. Attributing it
+                    to the platform would repeat #4150's own mistake one
+                    component over, so it is named separately, as a default,
+                    with the page that toggles it. */}
                 <Row
                   label="Target OS"
                   value={
                     cloud.os_family === 'macos'
-                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services; no observability stack, no self-heal watchdog'
+                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services: api, web and the ollama model backend. No containers (no nested virtualization), so no observability stack and no Cassandra. Self-healing is off — a default this bootstrap does not change, not a platform limit; turn it on from the Self-Heal page.'
                       : cloud.os_family === 'linux'
                         ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
                         : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'

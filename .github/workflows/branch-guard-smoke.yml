@@ -26,6 +26,8 @@ on:
       - "scripts/agents/reconcile_dead_branches.sh"
       - "scripts/agents/developer_create_branch.sh"
       - "scripts/agents/developer_ensure_pr_exists.sh"
+      - "scripts/agents/lib/branch_residue.py"
+      - "scripts/agents/sweep_stranded_residue.sh"
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/developer_submit_for_review.sh"
       - "scripts/branch-guard-smoke.sh"
@@ -33,6 +35,9 @@ on:
       - "scripts/agents/snapshot_safe_add.sh"
       - "tests/test_branch_hygiene.sh"
       - "tests/test_ensure_pr_exists.sh"
+      - "tests/test_stranded_residue.sh"
+      - "tests/inject_retired_pr_guard.py"
+      - "tests/unit/test_branch_residue.py"
       - "tests/test_reconcile_work_branch.sh"
       - "tests/unit/test_branch_content.py"
       - "tests/unit/test_developer_retry_continuity.py"
@@ -45,6 +50,8 @@ on:
       - "scripts/agents/reconcile_dead_branches.sh"
       - "scripts/agents/developer_create_branch.sh"
       - "scripts/agents/developer_ensure_pr_exists.sh"
+      - "scripts/agents/lib/branch_residue.py"
+      - "scripts/agents/sweep_stranded_residue.sh"
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/developer_submit_for_review.sh"
       - "scripts/branch-guard-smoke.sh"
@@ -52,6 +59,9 @@ on:
       - "scripts/agents/snapshot_safe_add.sh"
       - "tests/test_branch_hygiene.sh"
       - "tests/test_ensure_pr_exists.sh"
+      - "tests/test_stranded_residue.sh"
+      - "tests/inject_retired_pr_guard.py"
+      - "tests/unit/test_branch_residue.py"
       - "tests/test_reconcile_work_branch.sh"
       - "tests/unit/test_branch_content.py"
       - "tests/unit/test_developer_retry_continuity.py"
@@ -96,6 +106,25 @@ jobs:
         # fixture.
         run: bash tests/test_ensure_pr_exists.sh
 
+      - name: Work pushed after its PR merged is surfaced, not stranded
+        # #4151, executed: plants the real ordering -- a branch merged by a PR,
+        # then pushed to again 19 minutes later -- against a bare origin and a
+        # stub gh, and shows the guard opening a draft residue PR and
+        # commenting on the (closed) issue.
+        #
+        # Its fault-injection half restores the retired "any PR exists -> skip"
+        # form from the real script (tests/inject_retired_pr_guard.py) and
+        # shows it opening NOTHING on the identical fixture: without that, the
+        # new assertions would also pass against an implementation that is
+        # right by luck, which is how an rc candidate passed CI and died on the
+        # owner's Mac (#3753).
+        #
+        # It also pins the two silences that make the guard readable: a
+        # squash-merged branch (unmerged commits forever, content already on
+        # the base) and an unreadable PR list are both quiet, and #3862's
+        # no-PR rescue still fires with its own distinct marker.
+        run: bash tests/test_stranded_residue.sh
+
       - name: The unit fixtures, including the rebased-but-landed ledger case
         # `pip install -e .` and not just `pip install pytest`: the root
         # `tests/conftest.py` imports `tests/log_guard.py` (-> psutil) and
@@ -106,7 +135,8 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e .
           pip install pytest
-          python -m pytest tests/unit/test_branch_content.py -v
+          python -m pytest tests/unit/test_branch_content.py \
+            tests/unit/test_branch_residue.py -v
 
   retry-continuity:
     name: A failed verification continues the work, it does not restart it

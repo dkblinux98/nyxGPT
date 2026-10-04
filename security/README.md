@@ -17,7 +17,7 @@ in a CI log:
 | File | Scanner | Format |
 |---|---|---|
 | [`pip-audit-ignore.txt`](pip-audit-ignore.txt) | pip-audit | One vuln ID per line, `#`-commented justification above each entry |
-| [`../web/audit-ci.jsonc`](../web/audit-ci.jsonc) | npm audit (via `audit-ci`) | JSONC `allowlist` array (module name, advisory ID, or dependency path), inline `//` comments |
+| [`../web/audit-ci.jsonc`](../web/audit-ci.jsonc) | npm audit (via `audit-ci`) | JSONC `allowlist` array, **path-scoped entries only**: advisory ID, `\|`, then the `>`-separated dependency path (e.g. `GHSA-vfj7-8cjw-p6xm\|@ducanh2912/next-pwa>fast-glob>micromatch>braces`), reasoning in a full-line `//` comment above each. A bare module name or advisory ID fails the build |
 
 Bandit has no separate suppression file here: its official mechanism is an
 inline `# nosec <RULE_ID> -- <reason>` comment at the flagged line (see
@@ -40,10 +40,22 @@ excludes live in `pyproject.toml`'s `[tool.bandit]` table.
   vulnerabilities in nyxGPT's own dependency closure, so the ignore file is
   empty.
 - **npm audit / audit-ci**: `"high": true` in `web/audit-ci.jsonc` -- fails
-  on high or critical severity findings not in the `allowlist`. As of
-  2026-08-06 (#3644), `npm audit` reports zero known vulnerabilities in
-  either the root or `web/` dependency closure, so the allowlist is empty.
-  Moderate/low findings are reported but non-blocking.
+  on high or critical severity findings not in the `allowlist`. Moderate/low
+  findings are reported but non-blocking. **What is currently allowlisted,
+  and why, is recorded in that file and nowhere else** -- read it rather
+  than this bullet. The sentence that used to live here ("`npm audit`
+  reports zero known vulnerabilities ... so the allowlist is empty", as of
+  2026-08-06, #3644) was a dated world-state claim about a moving target,
+  and it went false twice without a line of code changing: advisories get
+  published against versions that are already pinned, so this gate rots in
+  place (2026-09-30, cleared by `npm audit fix`; 2026-10-04 / #4150,
+  GHSA-vfj7-8cjw-p6xm against `braces`, which has **no** patched release to
+  upgrade to and is allowlisted per-path).
+
+  A red `security-scan` with no dependency change in the diff is that
+  recurrence, not a defect in the branch under review -- it fails on the
+  release branch and therefore on every open PR at once. Check `npm audit`
+  before hunting for a culprit in the change.
 
 ## Running locally
 

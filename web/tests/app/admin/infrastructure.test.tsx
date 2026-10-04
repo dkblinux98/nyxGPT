@@ -650,6 +650,189 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  // --- the RUNNING build, not the installed one (#4133) ---
+  //
+  // Everything above is derived from disk -- a marker file and the Cellar --
+  // and a process outlives the build it was started from. A `brew upgrade` on
+  // a running stack left the api serving from a venv the upgrade had deleted
+  // while every one of those lines reported the new keg. `running_build` is
+  // the serving process's own `sys.prefix`, so the process that may be wrong
+  // is the one answering this page.
+
+  const nativeWithRunningBuild = (running_build: unknown) => ({
+    ...mockStatusEmpty,
+    mode: 'native',
+    native: { api: 'started', web: 'started' },
+    install_mode: {
+      mode: 'artifact',
+      checkout: null,
+      label: 'artifact (published/vendored build -- the repo-less default)',
+      components: ['api', 'web'],
+      running_build,
+    },
+  });
+
+  it('states a running-build mismatch, both paths and the repair (#4133)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithRunningBuild({
+            state: 'mismatch',
+            running: {
+              executable: '/Users/owner/.nyxGPT/opt/nyxgpt-api/venv/bin/python3',
+              prefix: '/Users/owner/.nyxGPT/opt/nyxgpt-api/venv',
+              python: '3.11.9',
+              pid: 4133,
+              version: '3.0.0rc17',
+              prefix_exists: false,
+            },
+            expected_prefix:
+              '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc17/libexec/venv',
+            expected_source: "the nyxgpt-api@3.0.0rc keg's venv",
+            detail: 'pid 4133 is running python 3.11.9 from a deleted venv',
+            remediation: 'nyxgpt ops restart api',
+            summary: 'MISMATCH',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Running build does not match the installed build/)
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('/Users/owner/.nyxGPT/opt/nyxgpt-api/venv')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc17/libexec/venv')
+    ).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt ops restart api')).toBeInTheDocument();
+    // The version is reported elsewhere on this card and describes the
+    // install. The card has to say that outright, because the whole defect is
+    // a plausible version standing in for a statement about the process.
+    expect(screen.getByText(/not this process/)).toBeInTheDocument();
+    // The acute form: the running interpreter's venv is gone, so the next
+    // restart by any path cannot start the api.
+    expect(screen.getByText(/no longer exists/)).toBeInTheDocument();
+  });
+
+  it('omits the deleted-venv warning when the running venv is still there (#4133)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithRunningBuild({
+            state: 'mismatch',
+            running: {
+              executable: '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc14/libexec/venv/bin/python3',
+              prefix: '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc14/libexec/venv',
+              python: '3.12.4',
+              pid: 77,
+              version: '3.0.0rc14',
+              prefix_exists: true,
+            },
+            expected_prefix:
+              '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc17/libexec/venv',
+            expected_source: "the nyxgpt-api@3.0.0rc keg's venv",
+            detail: 'pid 77 is running python 3.12.4 from the previous keg',
+            remediation: 'nyxgpt ops restart api',
+            summary: 'MISMATCH',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Running build does not match the installed build/)
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/no longer exists/)).not.toBeInTheDocument();
+  });
+
+  it('reports an undetermined running build as not-a-match (#4133)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithRunningBuild({
+            state: 'undetermined',
+            running: null,
+            expected_prefix: '',
+            expected_source: '',
+            detail: 'the nyxgpt-api@3.0.0rc keg carries no libexec/venv',
+            remediation: 'nyxgpt ops restart api',
+            summary: 'could not determine',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Could not confirm/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/not the same as a match/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Running build does not match the installed build/)
+    ).not.toBeInTheDocument();
+  });
+
+  it('says nothing about the running build where the question does not apply (#4133)', async () => {
+    // A permanent row on every Compose/Kubernetes host is what teaches an
+    // operator to skip the one that matters.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithRunningBuild({
+            state: 'not_applicable',
+            running: null,
+            expected_prefix: '',
+            expected_source: '',
+            detail: 'the api port on this host is held by a container deployment',
+            remediation: '',
+            summary: 'not applicable here',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/Running build does not match the installed build/)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not confirm/)).not.toBeInTheDocument();
+  });
+
+  it('renders against an api that omits running_build entirely (#4133)', async () => {
+    // Mid-upgrade, the web tier restarts first and talks to an api from the
+    // previous build -- which is exactly the scenario this field is about, so
+    // its absence must not break the card.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(nativeWithRunningBuild(undefined))
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/Running build does not match the installed build/)
+    ).not.toBeInTheDocument();
+  });
+
   // --- WHICH build, not merely which mode (#3861) ---
   //
   // A mode cannot tell a 2.1.0 keg from a 3.0.0rc12 one -- both are
@@ -1781,7 +1964,12 @@ describe('InfrastructurePage', () => {
         screen.getByText(/macOS \(EC2 Mac\) — remote Homebrew tap \+ brew services/)
       ).toBeInTheDocument();
     });
-    expect(screen.getByText(/no self-heal watchdog/)).toBeInTheDocument();
+    // #4150 moved this claim rather than dropping it: the row used to fold the
+    // watchdog into the nested-virtualization clause, and self-healing being
+    // off is a default this bootstrap does not change, not a platform limit.
+    // Asserted on the state it now reports, because the point of the row is
+    // that a Mac's shape is named rather than guessed.
+    expect(screen.getByText(/Self-healing is off/)).toBeInTheDocument();
     first.unmount();
 
     server.use(
@@ -2349,14 +2537,14 @@ describe('InfrastructurePage', () => {
       /READY means the workload is running, not that telemetry is reaching it/
     );
     expect(readyNote).toBeInTheDocument();
-    // Scoped to this paragraph, not the whole page. This fixture carries no
-    // install record, so the version card's fallback branch (#3988) names the
-    // same command -- `Re-run nyxgpt ops install --kubernetes to record one,
-    // or ask the host with nyxgpt ops status` -- and an unscoped getByText
-    // matches both. Neither change is wrong; they landed separately and this
-    // assertion was never run with both present. Asserting it inside the
-    // paragraph is also the stronger claim: it is THIS note that has to name
-    // the command, which a page-wide match does not say.
+    // Scoped to this paragraph, not the whole page. Several cards now name the
+    // same command -- the version card's no-install-record fallback (#3988),
+    // and the ones #4150 and #4133 added -- so a page-wide `getByText` finds
+    // more than one and throws. `getAllByText(...).length > 0` would pass
+    // equally for a page that names the command anywhere EXCEPT this note,
+    // which is the one place the claim is about: it is the caveat that has to
+    // carry the pointer. Asserting it inside the paragraph says that, and
+    // stays true however many other cards mention it.
     expect(within(readyNote).getByText('nyxgpt ops status')).toBeInTheDocument();
   });
 

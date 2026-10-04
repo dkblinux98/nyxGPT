@@ -116,7 +116,7 @@ works here too and is remembered for later runs, plus:
 | `--version` | Published release to install on the instance (default: this CLI's own version, then whatever the last deploy used). Ignored under `--dev` |
 | `--dev` | Deploy **your working tree** instead of a published release — Linux targets only, see [Dev mode on a cloud target](#dev-mode-on-a-cloud-target) |
 | `--kubernetes` / `--no-kubernetes` | Run the stack on a single-node k3s cluster on the instance instead of natively, applying the same `k8s/*.yaml` manifests — this is what makes `nyxgpt cloud canary` available. Linux targets only. Remembered for later runs. See [Kubernetes on the instance](#kubernetes-on-the-instance-3956) |
-| `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors (implied by `--os macos`, whose bootstrap installs none) |
+| `--skip-observability` | Deploy the core app only, without monitoring/logging/tracing/errors (implied by `--os macos`, which can host no containers — the *core* app, Ollama included, is installed there in full) |
 | `--session-backend` | Where the instance stores chat sessions: `cassandra` (default — shared with every mode pointed at the same Cassandra) or `file` (JSON on the instance's own disk). Remembered for later runs, so a re-deploy never silently moves an instance's sessions back to files. Refused with `--kubernetes` for anything but `cassandra`, which the cluster's ConfigMap fixes. See [session-storage.md](session-storage.md) |
 | `--no-tunnel` | Don't open the tunnel (and so don't health-check through it); prints the `nyxgpt cloud tunnel` command to run instead |
 | `--ssh-user` | Login user on the instance (default `ec2-user`, the Amazon Linux 2023 default) |
@@ -234,19 +234,41 @@ for one you named with `--host`:
   `cassandra` would point the API at a database that is not there. Pass
   `--session-backend cassandra` if you run one elsewhere and point
   `[rag] cassandra_hosts` at it.
-- Enables **no** observability stack and **no** self-heal watchdog, for the
-  same reason: the macOS bootstrap installs the two formulas and starts them,
-  and does not run `ops install`. This is a platform constraint, not a
-  revisitable scoping choice: everything the bootstrap skips is
-  Docker-container-based (the observability Compose stack, GlitchTip, the
-  `nyxgpt-cassandra` container), every way of running Docker on macOS works
-  by running a Linux VM, and **EC2 Mac instances do not support nested
+- **Installs the full core stack: api, web, and the Ollama model backend with
+  the configured models already pulled (#4150).** Chat, RAG and the web UI work
+  on an EC2 Mac exactly as they do anywhere else, and a deploy that cannot put
+  the models in place fails rather than reporting success. This bullet exists
+  because the next one used to absorb it: the model backend was skipped along
+  with the container tier and disclaimed under the observability caveat, and
+  the owner paid a Dedicated Host's non-refundable 24-hour minimum to find a
+  Mac that could not answer a chat message. **Ollama is not observability.** If
+  you are reading this to work out what a Mac deploy gives up, the answer is
+  the next two bullets and nothing else — and only the first of them is a
+  platform constraint.
+- Runs **no container tier**: no observability stack (Grafana/Loki/Tempo),
+  no GlitchTip, and no `nyxgpt-cassandra` container. This one *is* a platform
+  constraint rather than a revisitable scoping choice, and the constraint is
+  exactly as wide as the containers: every way of running Docker on macOS
+  works by running a Linux VM, and **EC2 Mac instances do not support nested
   virtualization** — so no Docker daemon can exist on that target at all.
+  That is the whole of the justification, which is why it can never be
+  stretched to cover a native component: Ollama installs from a Homebrew
+  formula and needs no container, so it was never in scope for this caveat.
   Do not propose adding the container tier to the Mac path; point
   `--session-backend cassandra` / `[rag] cassandra_hosts` at a Cassandra
   running elsewhere instead. `nyxgpt cloud status` reports the target OS
   so this difference is visible after the scrollback is gone, and so does the
   admin Infrastructure page.
+- Leaves the **self-heal watchdog off** — a default this bootstrap does not
+  change, *not* a platform limit. The watchdog is a thread inside the api
+  process ([self-healing.md](self-healing.md)), so it needs no container and
+  nothing about an EC2 Mac prevents it; it ships disabled everywhere, and the
+  only difference here is that step 5 of the Linux deploy above turns it on
+  explicitly while the Mac bootstrap does not. Turn it on from the admin
+  Self-Heal page, or with `nyxgpt self-heal enable` on the instance — see
+  [self-healing.md](self-healing.md#turning-it-on). Filing it with the
+  container tier would be the same mis-scoping #4150 was about: a toggleable
+  default dressed as an impossibility.
 - Opens TCP 22 to your address and nothing else. A Mac nyxGPT allocated gets
   its own security group with the same single owner-scoped SSH rule the Linux
   substrate uses, re-detected on every deploy. A Mac you supplied with
@@ -270,7 +292,8 @@ structurally cannot reproduce (EC2 Mac hardware is on the short list in
 ```bash
 nyxgpt cloud screen                   # enable Screen Sharing + open the forward
 nyxgpt cloud screen --status          # is the path open, and what is enabled?
-nyxgpt cloud screen --status --show-password   # print the VNC credential
+nyxgpt cloud screen --status --show-password   # print the credential
+nyxgpt cloud screen --local-port 5902 # forward from a different local port
 nyxgpt cloud screen --stop            # close the forward
 nyxgpt cloud screen --disable         # close it and turn Screen Sharing off
 ```
@@ -280,8 +303,16 @@ The command does three things and asks you to type none of them:
 1. Enables macOS Screen Sharing on the Mac over the same wrapped SSH path
    every other remote step uses.
 2. Makes it **loopback-only before it listens** (see below).
-3. Forwards `localhost:5900` to the Mac's `127.0.0.1:5900`, and prints the
-   `vnc://localhost:5900` address to point a VNC client at.
+3. Forwards `localhost:5901` to the Mac's `127.0.0.1:5900`, and prints the
+   `vnc://localhost:5901` address and the account to sign in as.
+
+The local port is **5901 by default, not 5900** — and that is deliberate. On a
+macOS workstation `vnc://localhost:5900` is your *own* Screen Sharing, so
+Apple's client resolves the address to your machine and refuses with "you can't
+control your own screen" before the forward is ever consulted. `--local-port N`
+moves it; asking for a port other than the open one closes the open path and
+re-opens on the one you asked for, rather than reporting the old port as though
+it had satisfied the request.
 
 **Nothing is listening on a non-loopback address, and no port is opened.** This
 is [`DECISION_PRIVATE_ACCESS_MECHANISM.md`](../product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md)
@@ -300,22 +331,38 @@ nyxGPT's to change. What nyxGPT changes instead is the Mac's own packet filter
 | --- | --- |
 | Write and load a `pf` anchor that passes port 5900 on `lo0` and **drops it everywhere else** | Activating the agent first would leave a window, however short, with a network-reachable listener |
 | Read the anchor back and check the block rule is in it | `pfctl -f` exits 0 on a ruleset it only warned about, so a zero exit is not evidence |
+| Write the credential and verify it with `dscl . -authonly` | A listener that is already running when the credential is written never loads it |
 | **Only then** activate the Screen Sharing agent | If the rule did not load, the command fails here with nothing enabled and nothing listening |
+| Restart `system/com.apple.screensharing`, and read the new listener's start time back | `kickstart -restart -agent` cycles *ARDAgent*, not the process that authenticates on 5900 — measured, the listener's pid was unchanged across one |
 
 `--disable` turns the agent off and deliberately **leaves the `pf` rule
 loaded**: it blocks a port nothing is listening on, so it costs nothing, and it
 closes the window for any later run that fails between the two steps.
 
-**The credential.** A VNC password is generated on first use and stored in
+**The credential.** One password is generated on first use and stored in
 `~/.nyxGPT/secrets/cloud-mac-vnc-password` (mode 0600), the same place every
 other ops-managed secret on your machine lives. It is never prompted for, never
 printed unless you ask with `--show-password`, never in any `ssh` argv or shell
 history (the configuration script travels on the connection's stdin), and never
 in the `--json` payload or the HTTP API. `--rotate-password` replaces it.
 
-Because Apple's legacy VNC authentication uses that password alone, **no account
-password is ever set on the Mac** — the hand-rolled version of this flow needed
-a `passwd` on the login user, and this one does not.
+That one password is set as **both** the login account's password (with
+`dscl . -passwd`, verified with `dscl . -authonly` in the same step) and the
+Mac's legacy VNC password. Both, because the two clients authenticate against
+different things: Apple's own Screen Sharing.app — the client macOS hands
+`vnc://...` to — offers security types 30 and 33 first and prefers them, and
+both check a real **account** password, while a third-party VNC client takes
+the legacy VNC password. A VNC-only credential is therefore one Apple's client
+structurally cannot use, which is how `open vnc://localhost:5901` came back
+"`ec2-user` and password rejected" in #4121's acceptance round. Sign in as the
+deploy's SSH user (`ec2-user` unless you changed it); the command prints the
+account name next to the address.
+
+`dscl . -passwd` and not `sysadminctl -resetPasswordFor`, which is the obvious
+API and fails on an EC2 Mac with "Operation is not permitted without secure
+token unlock". Setting an account password does not weaken anything here: 5900
+stays loopback-only, the security group stays TCP 22 from your `/32`, and the
+account is reachable only through your own authenticated SSH forward.
 
 **Where it will refuse, and why.** Both refusals are scoped the way
 `nyxgpt cloud allow-ip` is — to machines nyxGPT configured:
@@ -524,9 +571,10 @@ still override.
 
 #### If you SSH in yourself (#3993)
 
-`nyxgpt` is on the PATH of any login shell on the instance. Both bootstraps
-install a `/etc/profile.d/nyxgpt.sh` drop-in that prepends the CLI's `bin`
-directory, so a plain `ssh` session can run `nyxgpt ops doctor`,
+`nyxgpt` is on the PATH of any login shell on the instance. The Linux
+bootstraps install a `/etc/profile.d/nyxgpt.sh` drop-in that prepends the CLI's
+`bin` directory, and on macOS the `nyxgpt-api` keg symlinks the CLI into
+Homebrew's own `bin` — so a plain `ssh` session can run `nyxgpt ops doctor`,
 `nyxgpt ops logs api` and the rest directly:
 
 | How the instance was provisioned | Where the binary lives |
@@ -534,6 +582,12 @@ directory, so a plain `ssh` session can run `nyxgpt ops doctor`,
 | `nyxgpt cloud deploy` (SSH-driven, Linux) | `~/.nyxGPT/venv/bin/nyxgpt` |
 | `nyxgpt cloud user-data --os linux` (first-boot bootstrap) | `~/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt` |
 | `--os macos` | on the PATH already — the `nyxgpt-api` keg symlinks it into Homebrew's `bin` |
+
+The wrapped commands above search that same list **on the instance** rather
+than assuming any one row of it (#4150). They used to run a hardcoded
+`~/.nyxGPT/venv/bin/nyxgpt`, so on an EC2 Mac — where that path does not and
+should not exist — every remote inspection died with exit 127 and told the
+operator to run the deploy that had just succeeded.
 
 The wrapped inspection commands above remain the recommended route (they need
 no SSH session at all); this is for the case where you are already on the box
@@ -1483,9 +1537,10 @@ runs `nyxgpt ops install`, which provisions the `nyxgpt-cassandra` container
 as a core service, so `cassandra` is available on the instance and is the
 default -- matching the Kubernetes overlay, and giving every mode pointed at
 the same Cassandra one shared session list. The EC2 Mac template deliberately
-does *not* run that path (it installs the two Homebrew formulas and starts
-them -- see [What the rendered scripts do](#what-the-rendered-scripts-do)),
-so nothing provisions a Cassandra there and the default is `file`. Passing
+does *not* run that path -- it installs the Homebrew formulas (api, web and
+ollama) and starts them, see
+[What the rendered scripts do](#what-the-rendered-scripts-do) -- so nothing
+provisions a Cassandra there and the default is `file`. Passing
 `--session-backend cassandra` on macOS is supported for an operator who
 points `[rag] cassandra_hosts` at a Cassandra they run elsewhere. Both
 templates apply the choice with `nyxgpt ops session-backend`, before the
@@ -1542,14 +1597,37 @@ below): installs Homebrew if missing, `brew tap`s the remote tap
 (`dkblinux98/nyxgpt`, the `dkblinux98/homebrew-nyxgpt` repository),
 `brew tap-trust`s it so the non-interactive install does not stop at
 Homebrew's third-party tap gate (#3752), installs
-`nyxgpt-api`/`nyxgpt-web`, seeds `~/.nyxGPT/config.ini`, and starts both
-via `brew services`. This
+`nyxgpt-api`/`nyxgpt-web`, seeds `~/.nyxGPT/config.ini`, **installs Ollama
+from its Homebrew formula, starts it with `brew services` and pulls the
+configured chat and embedding models with `nyxgpt ops required-models`**, then
+starts api and web via `brew services`. This
 follows [the documented local remote-tap flow](homebrew.md#remote-tap)
 exactly, in the script itself: a fresh EC2 Mac has neither Homebrew nor
 `nyxgpt` on it, so the bootstrap installs the formulas directly rather than
 installing a CLI first only to have it do the same thing. (`nyxgpt ops
 install` reaches the same remote tap when it runs on a machine with no
 checkout -- `_install_homebrew_api` in `src/nyxgpt/ops.py`, #3759.)
+
+**Why the model backend is installed here and not left to `ops install`
+(#4150).** It used to be left to it, and the result was an EC2 Mac deploy that
+exited 0 reporting the release deployed onto a machine with a healthy api, a
+healthy web and nothing behind them: `GET /api/v1/models` answered 502 on a
+connection refused to `127.0.0.1:11434`, and chat was structurally impossible.
+The macOS bootstrap does not run `ops install` because that command reconciles
+a Docker engine this target cannot have — but Ollama is not part of the
+container tier, it is the component that answers every chat message, and it
+went missing along with the tier it was never part of. Two things are needed,
+not one: installing Ollama leaves an empty model store, which answers
+`/api/v1/models` with `200 []` instead of a 502 and leaves chat just as broken.
+So the bootstrap installs Ollama *and* runs
+[`nyxgpt ops required-models`](ops.md#nyxgpt-ops-required-models), which pulls
+the models named by `[nyxgpt] default_model` and `[rag] embedding_model` —
+read from configuration, so changing the shipped default changes what a deploy
+pulls with no template edit.
+`tests/unit/test_cloud_user_data_template_parity.py` fails the build if the two
+bootstraps ever disagree about a core component again, and
+`macos-brew-smoke.yml`'s `mac-model-backend` job executes the whole sequence on
+a real `macos-15` runner.
 
 **Repo-less (CLAUDE.md, 2026-08-01):** neither script ever runs `git
 clone` -- the PyPI package and the remote Homebrew tap are the only

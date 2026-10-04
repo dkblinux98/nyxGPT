@@ -153,6 +153,13 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
         COMPOSE_GATED,
         "only reached when the Compose promtail container is running",
     ),
+    "_running_api_build_doctor_issues": (
+        HOST,
+        "compares the interpreter of whatever answers THIS host's :8000 against the venv "
+        "THIS host's installed native api service execs; it reports not-applicable (and "
+        "therefore no finding) when a container or cluster deployment holds that port, so "
+        "it structurally cannot speak about one (#4133)",
+    ),
 }
 
 # `_loki_recent_volume_by_logger` produces a `doctor` finding without carrying

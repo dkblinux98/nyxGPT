@@ -401,15 +401,50 @@ Returns basic runtime configuration details.
   "sessions_dir": "/Users/you/.nyxGPT/sessions",
   "release_version": "3.0.0rc13",
   "release_branch": "v3.0.0",
-  "release_channel": "rc"
+  "release_channel": "rc",
+  "runtime": {
+    "executable": "/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc13/libexec/venv/bin/python3",
+    "prefix": "/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc13/libexec/venv",
+    "python": "3.12.4",
+    "pid": 51234,
+    "version": "3.0.0rc13",
+    "prefix_exists": true
+  }
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `release_version` | Version of the installed `nyxgpt` package — the version actually running. Read from package metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. Pre-release suffixes are carried verbatim (`3.0.0rc13`): that suffix is the entire difference between the candidate under acceptance and the release. |
+| `release_version` | Version of the `nyxgpt` package **this process imported** — read from that package's metadata, so it is correct for both an installed artifact and a `pip install -e .` dev tree. Pre-release suffixes are carried verbatim (`3.0.0rc13`): that suffix is the entire difference between the candidate under acceptance and the release. It is not a statement about what is installed beside the process — see `runtime` below. |
 | `release_branch` | The agent tooling's `[github] RELEASE_BRANCH` config setting, or `null` if unset. A git branch name for the agent workflows — **not** the running version, and never used as one. |
 | `release_channel` | Which tier `release_version` belongs to: `stable`, `rc`, `dev` or `unknown` (#3982). Sent as its own field so every client agrees on whether an install is a candidate or a release, rather than each re-deriving it from the string and drifting. |
+| `runtime` | Which **build** the process answering this request is executing, read from its own `sys` (#4133). See below. |
+
+**Why `runtime` exists, and what it answers that `release_version` cannot.**
+`release_version` is read from package *metadata* — the metadata in whatever
+venv this process imported, which on a healthy install is the one the service
+execs and on a stale one is a venv that may no longer exist. A process outlives
+the build it was started from: during v3.0.0 acceptance a `brew upgrade` on a
+host with the stack running left this endpoint reporting a plausible
+`release_version` while the interpreter serving it came from a python3.11 venv
+the upgrade had already deleted. So a version string cannot discriminate the
+two states; only a path can, which is what `runtime.prefix` is for.
+
+| `runtime` field | Description |
+|-------|-------------|
+| `executable` | `sys.executable` of the serving process. |
+| `prefix` | `sys.prefix` — the venv root the interpreter was started from. This is the field to compare: a keg's service execs `libexec/venv/bin/python3`, so a correct native install reports a path inside the installed keg. |
+| `python` | Interpreter version, e.g. `3.12.4`. Candidate kegs have changed interpreter minor version across an upgrade, which is one of the ways the two builds in #4133 differed. |
+| `pid` | PID of the serving process, so a mismatch names the process to stop. |
+| `version` | The `nyxgpt` version **this process** imports. Evidence about the process, never the test — a stale process reports a plausible version. |
+| `prefix_exists` | Whether `prefix` is still on disk. `false` means the running interpreter's venv has been deleted and the next restart by any path cannot start the API. |
+
+`nyxgpt ops install`, `nyxgpt ops status` and `nyxgpt ops doctor` read this
+field and compare `prefix` against the venv the installed native service
+execs; a mismatch is reported as a mismatch and `nyxgpt ops restart api`
+repairs it. See [ops.md](ops.md#nyxgpt-ops-status). A client that gets no
+`runtime` block is talking to an API that predates this field — that is "cannot
+determine", not a match.
 
 **Note — the web UI's `/api/info` sees one extra pair of fields.** The Next.js
 proxy route stamps `web_version` and `web_version_source` into this payload as
@@ -446,6 +481,27 @@ List all available Ollama models.
   "models": ["llama3.1:8b", "mistral:7b", "codellama:13b"]
 }
 ```
+
+**An empty list carries its own explanation (#4150).** When Ollama answers but
+holds nothing, the response stays a `200` — the request succeeded, and the
+honest answer is that there is nothing to serve — and adds a `detail` naming
+the models this install requires and the wrapped command that pulls them:
+
+```json
+{
+  "models": [],
+  "detail": "Ollama is running at http://127.0.0.1:11434 but holds no models at all, so chat cannot be served yet. Ollama is missing required model(s): 'qwen3.5:0.8b' (chat), 'nomic-embed-text' (embedding). Run `nyxgpt ops required-models` ..."
+}
+```
+
+`detail` is absent whenever `models` is non-empty.
+
+An **unreachable** Ollama is a `502` instead, and says something different:
+it names the base URL nothing answered on and `nyxgpt ops restart ollama`. The
+two are kept distinguishable deliberately — both used to end at the web UI's
+"Failed to load models", which made "no Ollama on this machine" and "an Ollama
+that has never pulled a model" look identical to an operator, and chat is
+equally broken in both.
 
 ### `GET /api/v1/models/required`
 

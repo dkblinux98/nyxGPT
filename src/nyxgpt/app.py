@@ -60,6 +60,7 @@ from nyxgpt import cloud_state as cloud_state_module
 from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
+from nyxgpt import model_bootstrap as model_bootstrap_module
 from nyxgpt import ops as ops_module
 from nyxgpt import portability as portability_module
 from nyxgpt import release_candidate as release_candidate_module
@@ -99,6 +100,7 @@ from nyxgpt.api_models import (
     ReindexCollectionResponse,
     RenameRequest,
     ResourceMetricsResponse,
+    RuntimeBuildInfo,
     SessionDocumentsResponse,
     SessionsListResponse,
     TagsRequest,
@@ -152,6 +154,7 @@ from nyxgpt.rag.rag import (
 )
 from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
+from nyxgpt.running_build import local_runtime_build
 from nyxgpt.token_counter import count_tokens as _count_usage_tokens
 from nyxgpt.tracing import current_trace_id
 from nyxgpt.version import running_version, version_channel
@@ -1311,9 +1314,20 @@ def info(request: Request) -> InfoResponse:
     every client independently without them drifting apart, and an operator
     running acceptance kegs needs the answer to "is this a candidate or a
     release?" from the same place the version came from (#3982).
+
+    `runtime` is the half neither of those can supply (#4133): which *build*
+    this process is executing, read from its own `sys.prefix`. Every other
+    version surface is derived from what is installed on disk, and a process
+    outlives the build it was started from -- a `brew upgrade` during v3.0.0
+    acceptance left this endpoint reporting a plausible `release_version`
+    while the interpreter serving it came from a venv the upgrade had
+    deleted. `nyxgpt ops install`/`status`/`doctor` read this field and
+    compare it to the venv the installed service execs; see
+    `nyxgpt.running_build`.
     """
     cfg = _req_cfg(request)
     version_running = running_version()
+    runtime = local_runtime_build()
     return InfoResponse(
         ollama_base_url=get_ollama_base_url(cfg),
         default_model=get_default_model(cfg),
@@ -1321,6 +1335,7 @@ def info(request: Request) -> InfoResponse:
         release_version=version_running,
         release_branch=cfg.get("github", "RELEASE_BRANCH", fallback=None),
         release_channel=version_channel(version_running),
+        runtime=RuntimeBuildInfo(**runtime.to_dict()),
     )
 
 
@@ -2986,23 +3001,64 @@ def support_file_ticket(request: Request, body: api_models.SupportTicketRequest)
 def models_list(request: Request) -> dict[str, Any]:
     """List model names currently available in Ollama.
 
-    Returns `{"models": [name, ...]}`. Raises a `502` if the Ollama
+    Returns `{"models": [name, ...]}`, plus a `detail` naming the fix when that
+    list is empty. Raises a `502`, also with the fix named, if the Ollama
     `/api/tags` call fails (e.g. Ollama unreachable).
+
+    **An unreachable Ollama and a reachable-but-empty one are different faults
+    and must not read the same (#4150).** Both left the operator at "Failed to
+    load models", which is why an EC2 Mac with no Ollama at all and an EC2 Mac
+    with an Ollama that had never pulled a model were indistinguishable from
+    this endpoint -- and why a fix that installed Ollama without pulling the
+    configured models would have looked exactly like the defect it was meant to
+    close. The two answers now differ in status *and* in remedy:
+
+      * unreachable -> 502, naming the base URL and `nyxgpt ops restart ollama`
+      * reachable, no models -> 200 with an empty list and a `detail` naming the
+        required models and `nyxgpt ops required-models`
+
+    The empty case stays a 200 deliberately: the request succeeded and the
+    honest answer is that Ollama holds nothing. Turning it into an error would
+    make "no models yet" indistinguishable from "no Ollama" in the other
+    direction.
     """
     cfg = _req_cfg(request)
+    base_url = nyxgpt.config.get_ollama_base_url(cfg)
     try:
         data = get_json(_ollama_url(cfg, "/api/tags"), timeout_s=10.0)
-        models = data.get("models", []) if isinstance(data, dict) else []
-        # Normalize to a list of model names
-        names: list[str] = []
-        for m in models:
-            if isinstance(m, dict) and isinstance(m.get("name"), str):
-                names.append(m["name"])
-        return {"models": names}
     except Exception as e:
         raise HTTPException(
-            status_code=502, detail=f"Failed to list models from Ollama: {e}"
+            status_code=502,
+            detail=(
+                f"Failed to list models from Ollama: {e}. Nothing is answering at "
+                f"{base_url}, so no model-backed feature can work -- start it with "
+                "`nyxgpt ops restart ollama` (`nyxgpt ops doctor` reports which "
+                "services are down)."
+            ),
         ) from e
+
+    models = data.get("models", []) if isinstance(data, dict) else []
+    # Normalize to a list of model names
+    names: list[str] = []
+    for m in models:
+        if isinstance(m, dict) and isinstance(m.get("name"), str):
+            names.append(m["name"])
+    if names:
+        return {"models": names}
+
+    wanted = model_bootstrap_module.required_models(cfg)
+    detail = (
+        f"Ollama is running at {base_url} but holds no models at all, so chat cannot "
+        "be served yet. "
+    )
+    if wanted:
+        detail += model_bootstrap_module.missing_models_hint(wanted)
+    else:
+        detail += (
+            "No model is configured either -- set `[nyxgpt] default_model` in "
+            "~/.nyxGPT/config.ini, then run `nyxgpt ops required-models`."
+        )
+    return {"models": [], "detail": detail}
 
 
 @api.get("/models/required")

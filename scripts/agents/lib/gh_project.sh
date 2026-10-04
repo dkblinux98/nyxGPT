@@ -3582,6 +3582,240 @@ classify_mergeable() {
   fi
 }
 
+# Path to the post-merge residue classifier (#4151). Overridable for the same
+# reason BRANCH_CONTENT_PY is: a smoke harness may point at a copy.
+BRANCH_RESIDUE_PY="${BRANCH_RESIDUE_PY:-${_LIB_DIR}/branch_residue.py}"
+
+# Prints the shas on origin/<branch> that are not on origin/<base_branch>, one
+# per line, newest first. The cheap half of #4151's detection -- and the signal
+# that found the live stranding (`fix/3986-*`, 1 commit, 579 insertions,
+# `git cherry` = `+`) that every PR-shaped check had already cleared.
+branch_unmerged_shas() {
+  local branch="$1" base_branch="$2"
+  git fetch origin "$base_branch" >/dev/null 2>&1 || true
+  git fetch origin "$branch" >/dev/null 2>&1 || true
+  git rev-list "origin/${base_branch}..origin/${branch}" 2>/dev/null || true
+}
+
+# Prints a JSON object describing what to DO about `branch` (#4151):
+#
+#   {"state":…,"open_prs":[…],"merged_prs":[…],"closed_unmerged_prs":[…],
+#    "disposition":…,"unmerged_count":"…"}
+#
+# `disposition` is one of:
+#
+#   unknown         the PR list could not be read or parsed. Do nothing and
+#                   say so -- a transient REST failure must never be acted on
+#                   as "there are no pull requests".
+#   open-pr         an open PR carries this head; the work is routed.
+#   merged-residue  a PR of this head MERGED into base_branch, and the branch
+#                   has since received commits whose content is NOT on
+#                   base_branch. THE #4151 DEFECT: nothing in the pipeline
+#                   looks at those commits again.
+#   merged-clean    merged, and the branch carries nothing of its own.
+#   abandoned       closed without merging -- an explicit decision, left alone.
+#   no-pr           #3862's case: rescue or delete, per classify_mergeable.
+#
+# WHY NOT "DOES A PR EXIST". That was the question `developer_ensure_pr_exists.sh`
+# asked, and a branch whose PR is merged and which then receives commits
+# answers it "yes". A merged pull request is evidence about the commits it
+# CONTAINED, not about every commit the branch will ever hold; the git half
+# above is what closes the gap. The classification itself lives in
+# lib/branch_residue.py (unit-tested, with the incident in its docstring) so
+# the guard and the repo-wide sweep cannot disagree about one branch.
+#
+# Git is consulted only in the `merged` state, so a branch with an open PR
+# costs one REST call and no fetch (first principle 1).
+_residue_unknown() {
+  jq -nc --arg r "$1" '{state:"unreadable",open_prs:[],merged_prs:[],
+    closed_unmerged_prs:[],disposition:"unknown",unmerged_count:"",reason:$r}'
+}
+
+branch_pr_disposition() {
+  local branch="$1" base_branch="$2"
+  local pages flat state_json state count landed disp shas_text
+
+  if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$BRANCH_RESIDUE_PY" ]]; then
+    _warn "branch_residue.py unavailable; cannot classify ${branch}."
+    _residue_unknown "classifier-unavailable"
+    return 0
+  fi
+
+  # Fetch and parse are separate statements on purpose: written as one
+  # `gh … | python3 …` pipeline a failed `gh` feeds empty stdin to a parser
+  # that would have to guess, and the guess that fails open ("no PRs") is the
+  # one that opens duplicate PRs on every rate limit. See
+  # tests/test_ensure_pr_exists.sh case 1/1b for the same mistake caught live.
+  if ! pages="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls?head=${REPO_OWNER}:${branch}&state=all&per_page=100" \
+      --paginate 2>/dev/null)"; then
+    _residue_unknown "pr-list-unreadable"
+    return 0
+  fi
+  # --paginate emits one array per page (AGENTS.md); slurp and flatten before
+  # the classifier sees it.
+  if ! flat="$(jq -s '[.[][]]' <<<"$pages" 2>/dev/null)"; then
+    _residue_unknown "pr-list-unparseable"
+    return 0
+  fi
+  if ! state_json="$(printf '%s' "$flat" \
+      | python3 "$BRANCH_RESIDUE_PY" pr-state --base "$base_branch" 2>/dev/null)"; then
+    _residue_unknown "pr-state-failed"
+    return 0
+  fi
+  state="$(jq -r '.state // "unreadable"' <<<"$state_json" 2>/dev/null || echo unreadable)"
+
+  count=""
+  landed="unknown"
+  if [[ "$state" == "merged" ]]; then
+    shas_text="$(branch_unmerged_shas "$branch" "$base_branch")"
+    count="$(_count_lines "$shas_text")"
+    if [[ "${count:-0}" -gt 0 ]]; then
+      # Positive proof only: branch_content_landed fails closed, and an
+      # unprovable branch must be SURFACED here even though the same
+      # unprovable branch must be KEPT by the deletion gate. Both directions
+      # are "never silently lose the work".
+      if branch_content_landed "$branch" "$base_branch"; then landed="true"; else landed="false"; fi
+    fi
+  fi
+
+  disp="$(python3 "$BRANCH_RESIDUE_PY" disposition --state "$state" \
+    --unmerged-count "$count" --content-landed "$landed" 2>/dev/null)" || disp="unknown"
+
+  jq -c --arg d "$disp" --arg c "$count" \
+    '. + {disposition:$d, unmerged_count:$c}' <<<"$state_json"
+}
+
+# Opens a DRAFT pull request for the commits a branch received after its own PR
+# merged, and says so on the originating issue (#4151).
+#
+#   open_residue_pr <branch> <base_branch> <issue|""> <merged_prs_csv> <shas…>
+#
+# Prints the PR URL on success. Honours the caller's `DRY_RUN=1` (both callers
+# define it, and both default to reporting rather than acting). Never fails the
+# caller: this runs from `if: always()` tails and from a sweep, and a guard that
+# breaks the job it is guarding is worse than the stranding it was reporting.
+#
+# WHY A NEW PR AND A COMMENT, NOT JUST A COMMENT. The branch's own PR is merged
+# and cannot be reopened for these commits, the issue is CLOSED (so nothing
+# dispatches against it) and its board lane reads `For Release` -- i.e. the
+# whole pipeline has already concluded this work landed. A draft PR puts the
+# commits back in front of the review path and under `delete_branch_on_merge`;
+# the comment is what makes a human looking at the accepted issue see that one
+# of its criteria is not on the release branch.
+#
+# DRAFT, like #3862's rescue: `developer_submit_for_review.sh` remains the only
+# path that SUBMITS work (CLAUDE.md § PR Rules). This residue never passed a
+# verification run of its own -- the run that produced it was overtaken by the
+# merge -- so it is a waypoint, and closing it is the discard signal that lets
+# the branch be cleaned up.
+open_residue_pr() {
+  local branch="$1" base_branch="$2" issue="${3:-}" merged_prs="${4:-}"
+  shift 4 || true
+  local shas=("$@")
+  local repo="${REPO_OWNER}/${REPO_NAME}"
+  local title body_file pr_url pr_number run_url sha
+
+  run_url="${GITHUB_SERVER_URL:-https://github.com}/${repo}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+  if [[ -n "$issue" ]]; then
+    title="wip: post-merge residue on ${branch} (#${issue})"
+  else
+    title="wip: post-merge residue on ${branch}"
+  fi
+
+  body_file="$(mktemp)"
+  {
+    # Machine-readable and deliberately NOT #3862's `rescue-pr` marker: the
+    # developer workflow matches that one to continue an unfinished run on its
+    # branch, which is a different situation from work left behind by a merge.
+    # One marker for two situations is how one of them ends up handled as the
+    # other (#4151 acceptance criterion 3).
+    if [[ -n "$issue" ]]; then
+      echo "<!-- residue-pr: issue-${issue} -->"
+    else
+      echo "<!-- residue-pr: branch-${branch} -->"
+    fi
+    echo "## ⚠️ Work pushed after this branch's pull request had already merged"
+    echo
+    echo "\`${branch}\` carries ${#shas[@]} commit(s) that are **not on \`${base_branch}\`**"
+    echo "in any form, pushed after its own pull request (${merged_prs:-merged}) was merged."
+    echo "Nothing in the pipeline would have looked at them again: the PR-existence"
+    echo "backstop (#3862) asks whether a branch *has* a pull request, this branch had"
+    echo "one, and it was merged. A merged pull request is evidence about the commits it"
+    echo "contained — not about every commit the branch will ever hold (#4151)."
+    echo
+    echo "### The residue"
+    for sha in "${shas[@]}"; do
+      [[ -n "$sha" ]] || continue
+      echo "- \`${sha}\` — $(git log -1 --format='%s' "$sha" 2>/dev/null || echo 'subject unavailable')"
+    done
+    echo
+    echo "**This is not a submission for review.** It is a draft: the run that produced"
+    echo "these commits was overtaken by the merge and never passed a verification of"
+    echo "its own, so nobody has checked them."
+    echo
+    echo "What to do with it:"
+    echo
+    echo "- **Finish it** — verify the commits, then submit the PR the normal way"
+    echo "  (\`developer_submit_for_review.sh\` adopts an existing open PR on the same head)."
+    echo "- **Discard it** — close this PR. Closing without merging is the explicit"
+    echo "  abandonment signal the branch cleanup acts on, so the branch goes with it."
+    echo
+    echo "## Context"
+    if [[ -n "$issue" ]]; then
+      echo "- Originating issue: ${GITHUB_SERVER_URL:-https://github.com}/${repo}/issues/${issue}"
+    fi
+    echo "- Head branch: \`${branch}\`"
+    echo "- Base branch: \`${base_branch}\`"
+    echo "- Merged pull request(s) this work arrived after: ${merged_prs:-unknown}"
+    echo "- Detected by: ${run_url}"
+    echo
+    # `Refs`, never a closing keyword: an unverified draft must not retire its
+    # issue if someone merges it (the #3862 rule, and the issue here is already
+    # closed — a closing reference would make the merge look like the
+    # acceptance this residue proves never happened).
+    if [[ -n "$issue" ]]; then
+      echo "Refs #${issue}"
+    fi
+  } > "$body_file"
+
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    echo "[residue] [dry-run] would open a draft PR for ${branch} (base ${base_branch})" >&2
+    cat "$body_file" >&2
+    rm -f "$body_file"
+    return 0
+  fi
+
+  if ! pr_url="$(gh pr create --repo "$repo" --draft --base "$base_branch" --head "$branch" \
+      --title "$title" --body-file "$body_file" 2>&1)"; then
+    _warn "Could not open the residue draft PR for ${branch}: ${pr_url}"
+    rm -f "$body_file"
+    return 0
+  fi
+  rm -f "$body_file"
+  echo "[residue] Draft PR opened for ${branch}: ${pr_url}" >&2
+
+  pr_number="${pr_url##*/}"
+  if [[ -n "$issue" ]]; then
+    # issue_labels_json already normalises GitHub's object-or-string label
+    # shapes to an array of NAMES (unlike real_label_names, which expects the
+    # raw objects), so take the first name straight off it. Best-effort
+    # hygiene only: the issue's single label keeps the PR consistent with the
+    # one-label invariant, and nothing here may fail the run.
+    local label
+    label="$(issue_labels_json "$issue" 2>/dev/null | jq -r '.[0] // ""' 2>/dev/null || echo "")"
+    if [[ -n "$label" ]]; then
+      gh pr edit "$pr_number" --repo "$repo" --add-label "$label" >/dev/null 2>&1 \
+        || _warn "Could not copy label '${label}' to the residue PR."
+    fi
+    # The loud part. The issue is closed and reads as accepted, so a comment on
+    # it is the only place a human sees that one of its criteria is missing.
+    issue_comment "$issue" "🚨 **Work on \`${branch}\` was pushed after ${merged_prs:-its pull request} merged, and is not on \`${base_branch}\`.** Residue commit(s): $(printf '`%s` ' "${shas[@]}"). Opened ${pr_url} as a **draft** so the work is not stranded (#4151). This issue is closed and may read as accepted while part of its implementation is not on the release branch — check the residue before trusting that." \
+      >/dev/null 2>&1 || _warn "Could not comment the residue PR link on issue #${issue}."
+  fi
+
+  echo "$pr_url"
+}
+
 # Deletes prior attempt branches for `issue` (every naming convention the
 # agent loop uses: (feat|fix|chore)/<issue>-* and claude/issue-<issue>-*),
 # leaving `keep_branch` alone. Without this, every retry branch created by

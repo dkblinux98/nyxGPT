@@ -112,7 +112,12 @@ def test_models_list_handles_non_dict_response():
         response = client.get("/api/v1/models")
 
     assert response.status_code == 200
-    assert response.json() == {"models": []}
+    body = response.json()
+    assert body["models"] == []
+    # Still a 200 with an empty list -- plus the #4150 `detail`, because an
+    # empty list on its own is what made "Ollama holds no models" read as
+    # "something went wrong".
+    assert "holds no models" in body["detail"]
 
 
 def test_models_list_translates_ollama_failure_to_502():
@@ -126,6 +131,71 @@ def test_models_list_translates_ollama_failure_to_502():
     assert "connection refused" in body["error"]["message"]
     assert body["error"]["code"] == "http_error"
     assert "request_id" in body["error"]
+
+
+# --- Unreachable and empty are different faults, and say so (#4150) --------
+
+
+def _models_response(**patch_kwargs):
+    with patch("nyxgpt.app.get_json", **patch_kwargs):
+        return TestClient(app).get("/api/v1/models")
+
+
+def test_an_unreachable_ollama_and_an_empty_one_do_not_produce_the_same_message():
+    """The assertion the owner asked for before this fix could be trusted.
+
+    Both faults used to end at the web UI's "Failed to load models", so the
+    defect in #4150 (no Ollama at all on an EC2 Mac) and its most likely
+    near-miss fix (Ollama installed but no model pulled) were indistinguishable
+    from the operator's side. A fix that produced the second state would have
+    looked like it worked.
+    """
+    unreachable = _models_response(
+        side_effect=RuntimeError("Failed to reach Ollama at http://127.0.0.1:11434")
+    )
+    empty = _models_response(return_value={"models": []})
+
+    assert unreachable.status_code == 502
+    assert empty.status_code == 200
+
+    # The 502 arrives in the API's error envelope; the 200 carries its own
+    # `detail`. Different shapes, which is itself part of the distinction.
+    unreachable_text = unreachable.json()["error"]["message"]
+    empty_text = empty.json()["detail"]
+    assert unreachable_text != empty_text
+
+    # Each names its own cause, and a remedy that fits it. Starting Ollama does
+    # nothing for an Ollama that is already running and has no models; pulling
+    # models does nothing when there is no server to pull into.
+    assert "Nothing is answering" in unreachable_text
+    assert "ops restart ollama" in unreachable_text
+    assert "ops required-models" not in unreachable_text
+
+    assert "holds no models" in empty_text
+    assert "ops required-models" in empty_text
+
+    # Both are wrapped `nyxgpt` commands -- never a raw `ollama` or `docker`
+    # instruction (CLAUDE.md's Operational Command Wrapping requirement).
+    for text in (unreachable_text, empty_text):
+        assert "docker" not in text
+        assert "ollama pull" not in text
+
+
+def test_the_empty_ollama_message_names_the_configured_models():
+    """Read from configuration, so it stays right when the default changes."""
+    from nyxgpt.config import shipped_default_model
+
+    detail = _models_response(return_value={"models": []}).json()["detail"]
+
+    assert shipped_default_model() in detail
+
+
+def test_a_populated_ollama_carries_no_detail():
+    """No remediation where there is nothing to remediate."""
+    body = _models_response(return_value={"models": [{"name": "qwen3.5:0.8b"}]}).json()
+
+    assert body["models"] == ["qwen3.5:0.8b"]
+    assert "detail" not in body
 
 
 # ---------------------------------------------------------------------------
