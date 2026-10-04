@@ -27,12 +27,47 @@ class SessionInfo(TypedDict):
     meta: dict[str, Any]
 
 
+class RuntimeBuildInfo(BaseModel):
+    """What the api process answering this request is actually executing (#4133).
+
+    Self-description, not a probe of something else: these fields come from
+    the serving process's own `sys` (`nyxgpt.running_build`). They exist
+    because every other version surface is derived from what is installed on
+    disk, and a process can outlive the build it was started from -- a `brew
+    upgrade` during v3.0.0 acceptance left the api serving from a deleted
+    python3.11 venv while `ops install` reported `[OK]` and `ops status`
+    reported the new keg's version.
+
+    `prefix` is what callers compare; `version` is evidence about this
+    process, never the test (a stale process reports a plausible version).
+    """
+
+    #: `sys.executable` of the serving process.
+    executable: str
+    #: `sys.prefix` -- the venv root the interpreter was started from.
+    prefix: str
+    #: Interpreter version, e.g. `3.12.4`. A minor-version change across an
+    #: upgrade is one of the ways #4133's two builds differed.
+    python: str
+    #: PID of the serving process, so a mismatch names the process to stop.
+    pid: int
+    #: The `nyxgpt` version THIS process imports.
+    version: str
+    #: Whether `prefix` still exists. `False` means the running interpreter's
+    #: venv has been deleted and the next restart cannot start it.
+    prefix_exists: bool
+
+
 class InfoResponse(BaseModel):
     """Response model for /info endpoint."""
 
     ollama_base_url: str
     default_model: str
     sessions_dir: str
+    #: The serving process's own interpreter facts (#4133). Read by `nyxgpt
+    #: ops install`/`status`/`doctor` to decide whether the process answering
+    #: on :8000 is the build the installed service would exec.
+    runtime: RuntimeBuildInfo | None = None
     #: Version of the installed `nyxgpt` package -- the version actually running.
     release_version: str | None = None
     #: Agent tooling's configured release branch (`[github] RELEASE_BRANCH`),
