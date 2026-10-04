@@ -1887,6 +1887,52 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #4122; extends **D-043**; cites **D-047**, **D-030**, **D-006**.
 
+- **D-054** · 2026-10-02 · developer-agent (owner acceptance #3806, via
+  #4043) — **An injection barrier's character class is defined by what the
+  sink legitimately accepts, and is set per sink rather than once for the
+  module.** `self_heal.py` inlines one guard
+  (`re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", x)`) at nine sinks, because
+  CodeQL #4 recognizes that call form and not a constant or a helper. One of
+  those nine takes a *Homebrew formula* name, and Homebrew's versioned-formula
+  syntax carries `@` — so the guard refused `nyxgpt-api@3.0.0rc`, which is
+  what every candidate-channel install registers and what
+  `brew_services.resolve` correctly resolves `api` to (#3853, #3861). The
+  watchdog therefore could not heal `api` or `web` on **any** rc install, the
+  channel release candidates are accepted on, and the Restart control on the
+  pending-restart notice was a silent no-op (the **D-030(b)** shape again:
+  the one install flow used to accept a release is the one the machinery
+  structurally cannot run in). Only the watchdog being off on the owner's
+  machine kept it from surfacing before #3806's acceptance round.
+
+  Three parts to the decision, in descending generality:
+
+  (a) *Widen the validator, not the caller.* `ops` already resolved and
+  passed the correct `@`-suffixed name; `python@3.12` is an equally
+  legitimate formula. A caller-side exemption would have left the validator
+  wrong for the next caller.
+
+  (b) *Per-sink, not module-wide.* The issue reported five refusal sites and
+  inferred the defect was at all of them. Traced: the `@` name reaches
+  exactly one (`_restart_brew_service`). The other eight take Compose service
+  names, Docker container names, launchd labels and Pod names, none of which
+  can carry `@`, and widening them would admit names those tools cannot have.
+  **Do not "finish the job" by widening the rest.**
+
+  (c) *A duplicated guard needs a drift test, not a convention.* #3861's
+  first fix qualified ops' sites and left self_heal's bare, and the automated
+  recovery path stayed broken on the machines the manual one had been
+  repaired for. The literal is now pinned to `brew_services.SEGMENT_PATTERN`
+  by a test that reads the function's own source.
+
+  The behaviours are not recorded here — they are pinned by
+  `tests/unit/test_brew_formula_at_version.py` and by
+  `macos-brew-smoke.yml` → `stable-over-candidate` → "Self-heal can restart
+  the candidate's own service (#4043)", which reverts the barrier in the
+  installed keg and requires the refusal before requiring the restart.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4043; cites **D-030**, **D-022**; relates to **D-032**, **D-047**.
+
 - **D-052** · 2026-10-01 · developer-agent (owner acceptance #3956) — Three
   conventions settled by the 2026-08-26 cloud-Kubernetes acceptance round, each
   general rather than specific to that deploy:
@@ -1904,6 +1950,20 @@ rather than mechanism, and nothing can enforce them.
   rendering on the Self-Heal dashboard as a Failed, unhealable component of a
   healthy deployment — a reader with its own copy of the rule is free to
   disagree with the others. A new Pod reader takes the shared rule.
+
+  *Amended 2026-10-02 by #3990:* "keep every Pod a live controller owns,
+  whatever its phase" is narrowed by a **second** residue rule, not reversed.
+  `k8s_pod_state.superseded_pods` also sets aside a *terminal* Pod whose own
+  workload already has a **Ready Pod of a different revision** serving in its
+  place — which is the only population (a) structurally cannot reach: a
+  StatefulSet's rolled replica belongs to no ReplicaSet, and a pass whose
+  `kubectl get rs` fails is exactly the pass that leaves residue. It is still
+  not a filter on the phase — a terminal Pod of the *current* revision, or one
+  whose workload has no Ready replica at all, is reported as itself — so the
+  alternative the owner ruled out stays ruled out. Both rules live in
+  `k8s_pod_state` for the same reason, and the *policy* stays with the caller:
+  `ops.py` relabels such a Pod `[SUPERSEDED]` (shown, not counted),
+  `self_heal.py` drops it. A new Pod reader takes **both**.
 
   (b) *`kubectl` is not always kubectl, so nyxGPT names the kubeconfig itself.*
   Every kubectl child this codebase spawns is handed the kubeconfig kubectl's
@@ -1995,6 +2055,109 @@ rather than mechanism, and nothing can enforce them.
   Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #3986; cites **D-006**.
+
+- **D-055** · 2026-10-02 · developer agent (#4121) — **When the private-access
+  decision cannot be satisfied by a bind address, it is satisfied by a host
+  firewall loaded *before* the listener — and the listener is not started if the
+  rule did not load.** `nyxgpt cloud screen` reaches an EC2 Mac's screen the way
+  the app ports are reached: an SSH forward to loopback, with the Mac's security
+  group left at TCP 22 only. The complication is that macOS's
+  `com.apple.screensharing` launchd job binds 5900 on every interface and its
+  plist is SIP-protected, so "bind 127.0.0.1" — the literal wording of the
+  constraint — is not available on that platform. The resolution is a `pf`
+  anchor (passing 5900 on `lo0`, dropping it elsewhere) written, loaded and
+  **read back** first, with the Screen Sharing agent activated only afterwards;
+  a rule that did not load aborts the command with nothing enabled.
+
+  Two rules generalize past the Mac:
+
+  (a) *A constraint stated as a mechanism is really a constraint on the
+  reachable surface.* The alternative on the table was a security-group rule
+  scoped to the operator's `/32`, which is exactly what
+  `DECISION_PRIVATE_ACCESS_MECHANISM.md` compared against a never-exposed
+  loopback bind and rejected. Choosing a different *enforcement point* for the
+  same surface keeps the decision; choosing a narrower *exposure* does not.
+
+  (b) *Ordering is the guarantee, and "the command exited 0" is not evidence it
+  held.* `pfctl -f` exits 0 on a ruleset it only warned about, so the script
+  re-reads its own anchor; and the verification for it asserts the **order** of
+  the delivered text and rejects the reordered script, because a check that is
+  never made to fail is indistinguishable from no check (**D-006**'s rule
+  applied to an ordering rather than to a version).
+
+  Also settled here: the Mac's address is read from the Dedicated Host record
+  (`mac_public_ip`), not from the Linux substrate's `public_ip` — a macOS deploy
+  never applies that substrate, so the latter key does not exist for a Mac at
+  all. The behaviours are pinned by `tests/unit/test_cloud_screen.py` and by
+  `scripts/cloud-target-os-smoke.sh` phase 5 (real sshd, real delivery, refusal
+  injected), per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4121; cites **D-006**;
+  `product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md`.
+
+- **D-056** · 2026-10-03 · owner — **Escalation is explicit, labels belong to
+  the owner, and `Agent` marks agent-process work.** Three decisions settled
+  in one session:
+
+  (a) *Escalation is one step, recorded on the issue.* An escalation
+  **replaces** the issue's single label with the owner-created **`Escalation`**
+  label, assigns the owner, and sends the Slack DM. The issue **stays in its
+  current Status lane** — the owner tracks escalations on their own board, and
+  moving the lane would destroy the record of where the work had got to.
+  **The owner restores the original label themselves**; no automation removes
+  `Escalation` or puts the old label back. One function does all of it
+  (`escalate_to_owner`, `scripts/agents/lib/gh_project.sh`), and every site
+  that hands work to the owner calls it — about a dozen sites previously did
+  different subsets (some assigned and DM'd, some only DM'd, some only
+  assigned), which is why the #3687 dispatch pause had to *infer* escalation
+  from "open, assigned to the owner, not in an exempt lane". That guess was
+  wrong twice (#3868; 2026-08-19, when ordinary merges paused the queue for
+  ~10 hours) and is **retired** — see **S-009**. Because the type label is
+  replaced, the comment records what it replaced and every consumer that reads
+  an issue's TYPE (`acceptance_role`, `promote_accepted_features.sh`, the
+  retrospective) resolves it through `issue_effective_labels_json`.
+
+  (b) *A blast-radius investigation is a precondition of escalating.* The
+  count of 2 was standing in for missing investigation: agents escalate from
+  the tunnel vision of one issue, so one root cause surfaced as several
+  separate escalations and other agents rediscovered it from scratch. Every
+  escalation now answers four questions in its comment — is the release head
+  red; is other open work failing with the same signature; has an escalation
+  already gone out for this cause; what recent change is the likely common
+  cause — and an unanswerable one prints "not checked" rather than
+  disappearing. A **cause key** names the fault rather than the issue, so one
+  systemic cause produces **one** escalation; the affected issues are paused
+  by carrying `Escalation` and unrelated work keeps dispatching.
+
+  (c) *Only the owner creates labels, and nothing in automation creates, edits
+  or deletes one.* Labels are sacrosanct; the owner kept deleting labels that
+  came back. Removed: `gh label create` for `usage-limit-retry` (the retry
+  queue is now marker comments on the release tracking issue — it was never
+  anything but a queue, and it broke the one-label rule on every issue it
+  touched, #3360), `gh label create --force` for `Support` in two workflows
+  (`--force` overwrote the owner's colour and description daily), and
+  `admin_label_rename.yml` entirely. `Support` and `Agent` are owner-created
+  and stay; the workflows that need `Support` assume it exists and fail loudly
+  if it does not. Dependabot's default labels are turned off with
+  `.github/dependabot.yml` (`labels: []`) — **unverified for security
+  updates** until the next one arrives, with the fallback named in that file.
+  `WORKFLOW_CONTROL_LABELS_JSON` is retired, so no label is exempt from the
+  one-label count and `Escalation` needs no special case in hygiene. Enforced
+  by `tests/unit/test_no_agent_created_labels.py`, which also refuses the REST
+  "add labels" endpoint (it silently creates a missing label; `gh issue edit
+  --add-label` refuses).
+
+  (d) *`Agent` marks nyxAGENT-side work.* It bypasses the drain gate — the
+  DEFAULT of `DRAIN_GATE_BYPASS_LABELS` in `drain_gate.py`, not an env var each
+  caller has to remember, because that is exactly what failed before — and an
+  `Agent` issue merges to **For Release** rather than `Acceptance Testing`: it
+  ships no product surface, so it neither requires nor triggers a release
+  candidate.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0`. IDs are never reused.
+  Source: #4134; supersedes the pause in #3687/#3868; builds on #3694's
+  cross-issue collapse and **D-001**'s drain gate.
 
 ## Parked
 
@@ -2298,3 +2461,16 @@ them.
   the project-fields dispatch 404s" — superseded by **D-050** (2026-09-17): a
   stale input is refused by the build exactly like a missing one, and every
   input is produced by `retro_data_refresh.yml`, never by the session.
+
+- **S-009** — ~~"Two or more unresolved escalations should pause all
+  dispatch, where 'unresolved escalation' means an open issue assigned to the
+  owner outside an exempt lane."~~ (#3687, 2026-08-09; narrowed by #3868 and
+  again on 2026-08-19.) Superseded 2026-10-03 by **D-056** — escalation is now
+  recorded with the `Escalation` label rather than inferred from assignee and
+  lane, so there is nothing to count: the escalated issues are paused by the
+  label and unrelated work keeps dispatching.
+  `escalation_pause_gate`, `unresolved_escalation_issues` and
+  `count_unresolved_escalations` are deleted. The thing the count stood in for
+  is the blast-radius investigation (**D-056** (b)). The #3694 cross-issue
+  anomaly pause is unaffected and remains the only dispatch-wide pause — it is
+  about live infrastructure, not about a count of escalations.

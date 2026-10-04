@@ -1687,6 +1687,25 @@ def _rc_asset_names(version: str = "${VERSION}") -> tuple[str, ...]:
     return tuple(f"{service}-{version}.tar.gz" for service in rc.TAP_SERVICES)
 
 
+def _logical_commands(script: str) -> list[str]:
+    """`script` split one command per entry, backslash continuations rejoined.
+
+    A flag and the command it belongs to can sit on different physical lines,
+    so a per-line check reads them as unrelated.
+    """
+    commands: list[str] = []
+    pending: list[str] = []
+    for line in script.splitlines():
+        pending.append(line.strip())
+        if line.rstrip().endswith("\\"):
+            continue
+        commands.append(" ".join(pending))
+        pending = []
+    if pending:
+        commands.append(" ".join(pending))
+    return commands
+
+
 def test_rc_tap_job_attaches_its_assets_in_the_release_create_call():
     """The tarballs are positional arguments of `gh release create` itself."""
     steps = _rc_tap_job()["steps"]
@@ -1714,7 +1733,16 @@ def test_rc_tap_job_never_uploads_an_asset_after_publishing():
     run_steps = "\n".join(step.get("run", "") for step in _rc_tap_job()["steps"])
 
     assert "gh release upload" not in run_steps
-    assert "--clobber" not in run_steps
+    # `--clobber` was banned outright as a proxy for the upload flag it belongs
+    # to ("replace the published asset"), which immutability forbids. `gh
+    # release download --clobber` is the same spelling for a purely local
+    # overwrite -- it rewrites a file under /tmp, never the release -- so it is
+    # the one command allowed to carry it. Keeping the blanket ban would mean
+    # the re-stamp step (a32b4bd3) could not read the published bytes at all.
+    for command in _logical_commands(run_steps):
+        if "--clobber" not in command:
+            continue
+        assert "gh release download" in command, f"--clobber outside a download: {command}"
 
 
 def test_rc_tap_job_refuses_a_release_it_cannot_complete():

@@ -92,6 +92,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,7 @@ from nyxgpt.k8s_pod_state import (
     parse_retired_replicasets,
     pod_is_retired,
     retired_replicaset_argv,
+    superseded_pods,
 )
 from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 from nyxgpt.subprocess_bounds import (
@@ -192,6 +194,12 @@ ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 # deliberately inlined at each guard rather than precompiled -- CodeQL's
 # barrier-guard analysis recognizes the `re.fullmatch(...)` call form but
 # NOT the `.fullmatch` method of a precompiled `re.Pattern`.
+#
+# One guard takes a *Homebrew formula* name rather than a component/container
+# name and admits a trailing `@<version>` on top of that class
+# (`_restart_brew_service`, #4043): see `brew_services.SEGMENT_PATTERN`, which
+# is the authority for that form and explains why the wider class forbids
+# everything the narrower one does.
 
 # Maps a core native component to the *stable* Homebrew formula its service
 # is named after, for native/local-first mode health-checks/heals.
@@ -1067,7 +1075,10 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     "Running but not Ready" -- healing it again would spend a restart-budget
     attempt on a deletion that has already happened.
 
-    So is a Pod owned by a ReplicaSet scaled to zero (`pod_is_retired`, #3956).
+    So is a finished rollout's residue, by the two rules in
+    `nyxgpt.k8s_pod_state` -- a Pod owned by a ReplicaSet scaled to zero
+    (`pod_is_retired`, #3956) and a terminal Pod its own workload has already
+    replaced with a ready Pod of a newer revision (`superseded_pods`, #3990).
     `nyxgpt ops install --kubernetes` provisions GlitchTip after the stack is
     up, which writes the real error-tracking DSN and rolls api/web; the
     superseded ReplicaSet leaves a terminated Pod behind, and it carries the
@@ -1076,8 +1087,8 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     Deployments are 1/1 -- which is the same misreading that failed the owner's
     2026-08-26 install three lines above `nyxgpt-web-stable 1/1`. The extra
     ReplicaSet read is taken only when some Pod is not healthy, because that is
-    the only case where it can change an answer and this runs every 15 seconds
-    (first principle 1).
+    the only case where either rule can change an answer and this runs every 15
+    seconds (first principle 1); the second rule costs no read at all.
 
     What each Pod's state *means* is `nyxgpt.k8s_pod_state`'s job, shared with
     `ops.py` (#3832), and two of its distinctions land here:
@@ -1135,6 +1146,23 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
         retired = _retired_replicasets()
         if retired:
             ours = [entry for entry in ours if not pod_is_retired(entry[0], retired)]
+        # The second residue rule (#3990), and not a repeat of the first: this
+        # one asks only the Pods already in hand, so it still answers for a
+        # StatefulSet's rolled replica -- which no ReplicaSet owns, so
+        # `pod_is_retired` can never see it -- and for any corpse at all on a
+        # pass where the `rs` read above failed and `retired` came back empty.
+        # Shared with `ops.py` on purpose (`superseded_pods`): the first cut of
+        # this reading lived in `ops.py` alone, and the same Pod it badged
+        # SUPERSEDED on the Infrastructure page rendered here as a Failed,
+        # `healable=False` component of a deployment that was serving. Dropped
+        # rather than reported, exactly like a retired Pod: there is nothing for
+        # the watchdog to heal and nothing for the operator to act on.
+        superseded = superseded_pods(
+            [entry[0] for entry in ours],
+            [entry[3].healthy for entry in ours],
+        )
+        if superseded:
+            ours = [entry for index, entry in enumerate(ours) if index not in superseded]
 
     statuses: list[ComponentStatus] = []
     for _pod, name, tier, pod_state in ours:
@@ -1719,6 +1747,87 @@ def compose_probe() -> ComposeProbe:
     return ComposeProbe(available=True, reason="", statuses=tuple(_parse_compose_ps(cp.stdout)))
 
 
+@dataclass(frozen=True)
+class ContainerLiveness:
+    """How many times Docker has restarted a container, and when its current run began.
+
+    The two fields together identify *which run* of a container a reading is
+    about. A sampled state string cannot: `docker compose ps` reports
+    `running` for a container that has crashed and been restarted a hundred
+    times, as long as the sample lands inside one of those runs. So
+    `restarts`/`started_at` are what distinguishes "still the process we
+    started" from "the fourth replacement for it" (#4045).
+    """
+
+    container: str
+    restarts: int
+    started_at: str
+
+
+def container_liveness(containers: Sequence[str]) -> dict[str, ContainerLiveness]:
+    """`RestartCount` and `State.StartedAt` for each named container.
+
+    Keyed by container name with the leading `/` Docker returns stripped.
+    Containers that do not exist are simply absent from the result: `docker
+    inspect` exits non-zero when *any* name is unknown but still prints the
+    ones it found, so the stdout is parsed regardless of the exit code.
+
+    Returns `{}` when the inspect could not run at all (no `docker`, no
+    daemon, nothing matched). Callers must read that as "no restart evidence
+    available", never as "nothing restarted" -- the same rule
+    `ComposeProbe.available` exists for (#3812).
+
+    Lives here rather than in `ops.py` so Docker reads keep going through
+    `_docker_run`'s socket-hop policy; a session whose group membership
+    postdates it would otherwise get an empty answer here while the Compose
+    survey next to it worked.
+    """
+    names = [c for c in containers if c]
+    if not names:
+        return {}
+    if _which("docker") is None:
+        return {}
+    try:
+        cp = _docker_run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{.Name}}\t{{.RestartCount}}\t{{.State.StartedAt}}",
+                *names,
+            ],
+            # A name that does not exist is an ordinary answer here, not a
+            # fault worth logging as a Docker access problem.
+            expected=True,
+        )
+    except Exception as e:
+        logger.warning(
+            "self-heal: `docker inspect` could not be run: %s: %s -- restart evidence "
+            "unavailable this pass",
+            type(e).__name__,
+            e,
+            extra={"component": "self_heal"},
+        )
+        return {}
+    liveness: dict[str, ContainerLiveness] = {}
+    for line in (cp.stdout or "").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) != 3:
+            continue
+        name, restarts, started_at = parts
+        name = name.lstrip("/")
+        if not name:
+            continue
+        try:
+            restart_count = int(restarts)
+        except ValueError:
+            continue
+        liveness[name] = ContainerLiveness(
+            container=name, restarts=restart_count, started_at=started_at.strip()
+        )
+    return liveness
+
+
 def compose_probe_available() -> bool:
     """Whether the Compose observability survey can actually run from this process.
 
@@ -1905,8 +2014,25 @@ def _bring_up_compose_service(service: str) -> HealResult:
 
 
 def _restart_brew_service(name: str) -> HealResult:
-    """Restart Homebrew service `name` via `brew services restart` (native mode)."""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):  # inline barrier, CodeQL #4
+    """Restart Homebrew service `name` via `brew services restart` (native mode).
+
+    `name` is a *formula* name, not a logical component name, and is the one
+    value in this module that legitimately carries Homebrew's `@<version>`
+    suffix: `restart_native_component` resolves `api` against what `brew
+    services list` actually reports, which on a candidate install is
+    `nyxgpt-api@3.0.0rc` (#3853). The barrier below therefore admits that
+    suffix -- without it, every self-heal restart of `api`/`web` on an rc
+    install was refused as an invalid name while `nyxgpt ops restart api`
+    succeeded on the same machine (#4043). The other guarded sinks in this
+    module take Compose service names, Docker container names, launchd labels
+    and Pod names, none of which can contain `@`, so they keep the narrower
+    class.
+    """
+    # Inline barrier (CodeQL #4, py/command-line-injection) -- the literal is
+    # `brew_services.SEGMENT_PATTERN`, repeated here rather than referenced
+    # because the query recognizes the `re.fullmatch(r"...", x)` call form and
+    # not a module constant or a helper. A test pins the two identical.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", name):
         return HealResult(False, f"Refused to act on invalid service name: {name!r}")
     if _which("brew") is None:
         return HealResult(False, f"brew not found; cannot restart {name}")
@@ -3066,6 +3192,7 @@ __all__ = [
     "ComponentStatus",
     "ComponentSurvey",
     "ComposeProbe",
+    "ContainerLiveness",
     "HealResult",
     "HealEvent",
     "Watchdog",
@@ -3081,6 +3208,7 @@ __all__ = [
     "kubernetes_mode_active",
     "compose_probe",
     "compose_probe_available",
+    "container_liveness",
     "component_survey",
     "list_component_status",
     "restart_component",

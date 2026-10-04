@@ -12,7 +12,7 @@ application repo.
 - **Agent orchestration workflows** (the pipeline, not the app CI): `notify_scrum_ready.yml`,
   `developer_auto_implement.yml`, `claude-code-review.yml`, `review_agent_auto_review.yml`,
   `assign_backlog.yml`, `ensure_project_hygiene.yml`, `handle_acceptance_failure.yml`,
-  `usage_limit_retry.yml`, `admin_label_rename.yml`, `auto-check-tasklist.yml`,
+  `usage_limit_retry.yml`, `auto-check-tasklist.yml`,
   `add-to-release-issue-on-milestone.yml`, `link_revert_pr_to_issue.yml`,
   `notify-merge-conflicts.yml`, `manually_trigger_pr_review.yml`, `claude.yml`.
 - **Agent definitions & docs:** `agents/charters/*`, `agents/prompts/*`, `agents/runbooks/*`, `AGENTS.md`,

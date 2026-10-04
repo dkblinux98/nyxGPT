@@ -1914,10 +1914,22 @@ def infra_restart_status() -> dict[str, Any]:
     `restart_command` is the wrapped command that clears the whole set, so the
     UI can show the user the CLI equivalent of its own button rather than a
     raw `brew services`/`docker` invocation.
+
+    `attempts` reports the outcome of the last restart driven for each
+    component (`running`/`failed`, with the mechanism's own message) -- the
+    signal #4043 was missing, without which a refused restart and a slow one
+    are the same observation here.
     """
     pending = restart_state_module.snapshot()
     return {
         "pending": pending,
+        # What happened to the last restart *driven for* each component, so a
+        # caller watching this endpoint can tell "still coming back" from
+        # "refused, and here is why" (#4043). Previously the pending set was
+        # the only signal, and the two are identical in it: the UI polled a
+        # refusal for 90 seconds and then reported a timeout it had had the
+        # answer to from the first poll.
+        "attempts": restart_state_module.attempts(),
         "restart_command": (
             restart_state_module.restart_command(sorted(pending)) if pending else None
         ),
@@ -1954,14 +1966,23 @@ def _do_restart_required(targets: list[str]) -> None:
       the API process that comes back up (see `lifespan`). Leaving the call
       in place for the other components is not redundant with that -- nothing
       else observes a `web`/`ollama`/`cassandra` restart from inside.
+
+    Every way of *not* restarting records why, against the component, where
+    the caller polling `GET /infra/restart-status` will see it (#4043). The
+    pending flag standing is not a report: a self-heal refusal (#4043's
+    `@`-in-the-formula-name barrier), a `heal_now` that took no action at all,
+    and an exception are all indistinguishable from "still coming back" in the
+    pending set alone -- which is exactly how a refused restart read to the
+    user as a button that hung and then reappeared.
     """
     # Self last, so a multi-target restart does not end at its first target.
     targets = sorted(targets, key=lambda c: (c in ("api", "all"), c))
     for component in targets:
         try:
             result = self_heal_module.heal_now(service=component)
-        except Exception:
+        except Exception as exc:
             log.exception("mode-aware restart-required failed (component=%s)", component)
+            restart_state_module.record_attempt_failed(component, f"{type(exc).__name__}: {exc}")
             continue
         healed = result.get("healed", [])
         for event in healed:
@@ -1972,7 +1993,19 @@ def _do_restart_required(targets: list[str]) -> None:
             # Heal Now click -- this is equally an operator-initiated restart.
             ops_module.record_manual_restart(event["service"], event["ok"], event["message"])
         if healed and all(e["ok"] for e in healed):
+            restart_state_module.record_attempt_succeeded(component)
             restart_state_module.clear_pending(component)
+        else:
+            # No `healed` events at all means the dispatcher declined before
+            # acting (an unknown or not-running component, reported in
+            # `error`); non-ok events mean it acted and failed. Both leave the
+            # component un-restarted, and the user is owed the reason either
+            # way rather than a notice that simply stays up.
+            failures = [e["message"] for e in healed if not e["ok"]]
+            reason = "; ".join(failures) or str(
+                result.get("error") or "self-heal took no action on this component"
+            )
+            restart_state_module.record_attempt_failed(component, reason)
 
 
 @api.post("/infra/restart-required")
@@ -1981,10 +2014,17 @@ def infra_restart_required(payload: dict[str, Any] = Body(default={})) -> dict[s
 
     With no `target`, restarts every currently pending component. Mode-aware
     (native/Compose/Terraform/Kubernetes) via `_do_restart_required` -- the
-    caller never needs to know or type which raw command applies. Runs
-    off-thread, so the response reports "running"; the caller (the Admin
-    Dashboard restart button) polls `GET /infra/restart-status` to learn
-    when the pending flag clears.
+    caller never needs to know or type which raw command applies.
+
+    Runs off-thread, so the response reports only what this request actually
+    established: the restart is **`"scheduled"`**, not running. It answered
+    `{"status": "running"}` before anything had been attempted, which made a
+    restart refused outright indistinguishable from one in progress (#4043,
+    the same reporting-honesty family as #3812/#4022/#3993). Progress and
+    outcome belong to `GET /infra/restart-status`, which the caller (the
+    Admin Dashboard / wizard restart button) polls: `attempts[component]`
+    carries `running`/`failed` plus the mechanism's own message, and the
+    pending flag clearing is the success signal.
     """
     pending = restart_state_module.snapshot()
     target = payload.get("target")
@@ -2000,9 +2040,15 @@ def infra_restart_required(payload: dict[str, Any] = Body(default={})) -> dict[s
             raise HTTPException(status_code=400, detail="No restart is currently pending")
 
     admin_activity_module.record("infra.restart_required_requested", ", ".join(targets))
+    # Marked before the timer, not inside it: between the response and the
+    # deferred call the caller's first poll would otherwise see a *stale*
+    # attempt record (or none) for a restart it has already been told was
+    # accepted.
+    for component in targets:
+        restart_state_module.mark_attempt_started(component)
     threading.Timer(0.5, _do_restart_required, args=(targets,)).start()
 
-    return {"targets": targets, "status": "running"}
+    return {"targets": targets, "status": "scheduled"}
 
 
 # --- Admin dashboard endpoints (system status overview, activity log, access) ---

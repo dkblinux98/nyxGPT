@@ -132,11 +132,20 @@ mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
 The gate is for **product acceptance** work. Agent-process issues are worked
 immediately. The rule lives in `scripts/agents/lib/drain_gate.py`:
 
+- the owner-created **`Agent`** label, which marks nyxAGENT-side work as
+  distinct from nyxGPT product work (owner decision 2026-10-03, #4134). It is
+  the DEFAULT of `DRAIN_GATE_BYPASS_LABELS`, not an env var each workflow has
+  to remember to pass — that is what went wrong before, when the rule was
+  wired, the label existed and no caller supplied it;
 - an owner-authored process exception in the issue body — any phrasing
   matching *"bypasses the drain gate"*;
-- the machine marker `<!-- drain-gate: bypass -->`, for automation;
-- optionally, a label listed in `DRAIN_GATE_BYPASS_LABELS` (off by default —
-  agents may not create labels without owner permission).
+- the machine marker `<!-- drain-gate: bypass -->`, for automation.
+
+An `Agent` issue also skips rc acceptance testing entirely: on merge it goes
+to **For Release**, not **Acceptance Testing** (`review_accept_and_merge.sh`).
+It ships no product surface, so there is nothing for the owner to test in a
+candidate — and parking it in the lane the gate watches would both block the
+gate and trigger a candidate the work has no part in.
 
 The owner's `@acceptance-failure` / `@improvement` comment text is checked
 too, so an exception can be declared at filing time.

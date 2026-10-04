@@ -253,13 +253,17 @@ ESCALATION_MSG+="
 Resolution is still by **merging \`origin/${pr_base}\` into \`${pr_head}\`** — never a rebase."
 
 gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$ESCALATION_MSG" || true
-issue_comment "$ISSUE" "$ESCALATION_MSG" || _warn "Could not comment on issue #${ISSUE}."
-assign_issue_verified "$ISSUE" "$HUMAN_OWNER" \
-  || _warn "Could not verify issue #${ISSUE} assignment to @${HUMAN_OWNER} — check the assignee manually."
-notify_human_escalation "$ISSUE" "Merge conflict needs an owner decision" \
+# ONE escalation step (#4134): the comment above is the account of what
+# happened; this is what records the handover (label replaced with
+# `Escalation`, owner assigned and verified, blast radius investigated, Slack
+# DM sent, Status lane untouched). The cause key is the PR, which is also what
+# the pre-#4134 Slack dedup key used -- every later push to the release branch
+# re-fires this handler on the same conflicted PR.
+escalate_to_owner "$ISSUE" "Merge conflict needs an owner decision" \
   "${reason}${question:+ — $question}" \
   "Decide the question on PR #${PR}, then reassign to @${DEV_AGENT} to finish the merge (never rebase)." \
   "conflict:${PR}" \
-  || _warn "Slack DM escalation failed for issue #${ISSUE} — the comment above stands."
+  "$ESCALATION_MSG" \
+  || _warn "Conflict escalation for issue #${ISSUE} could not be fully verified — the PR comment above stands."
 
 _result_line "escalate" "$reason"

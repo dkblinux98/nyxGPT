@@ -845,7 +845,9 @@ def test_canary_reads_the_version_off_the_applied_tag(monkeypatch):
 
 @pytest.mark.unit
 def test_an_attention_result_does_not_log_as_ok(caplog):
-    result = ops._attention("observability errors: GlitchTip rejected Grafana's token", "re-run x")
+    result = ops._attention(
+        "observability error reporting credentials: GlitchTip rejected Grafana's token", "re-run x"
+    )
     with caplog.at_level("INFO"):
         assert ops._emit_results("install", [result]) is True
     logged = [r for r in caplog.records if "GlitchTip rejected" in r.getMessage()]

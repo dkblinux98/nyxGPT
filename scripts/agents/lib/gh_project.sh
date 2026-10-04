@@ -36,6 +36,14 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || _die "Missing required command: $1"
 }
 
+# Number of non-empty lines in `$1`. Always echoes a number and returns 0,
+# even when the count is zero (`grep -c` would otherwise exit 1).
+_count_lines() {
+  local n
+  n="$(grep -c . <<<"$1")" || true
+  echo "${n:-0}"
+}
+
 require_gh_auth() {
   require_cmd gh
   gh auth status >/dev/null 2>&1 || _die "gh not authenticated. Run: gh auth login"
@@ -212,22 +220,31 @@ count_fast_claude_steps() {
 }
 
 # -------------------------
-# Workflow-control labels
+# Labels
 # -------------------------
-# Labels the self-heal automation adds/removes to track its own retry state
-# (e.g. "usage-limit-retry"). These are not "the issue's label" and must
-# never count toward one-label-invariant checks like PR title/prefix
-# generation — doing so let a stray usage-limit-retry label permanently
-# deadlock PR submission (#3360).
-WORKFLOW_CONTROL_LABELS_JSON='["usage-limit-retry"]'
-
+# EVERY label on an issue is a real label (#4134). There used to be a second
+# class -- "workflow-control" labels the self-heal automation added to track
+# its own retry state, which this function filtered out so they could not trip
+# the one-label invariant. `WORKFLOW_CONTROL_LABELS_JSON` held exactly one
+# name, `usage-limit-retry`, and that label existed only because two workflows
+# created it with `gh label create`. Agents do not create labels (CLAUDE.md
+# §Tooling): the owner kept deleting it and it kept coming back.
+#
+# Both are gone. The retry queue it stood for is now marker comments on the
+# release tracking issue (scripts/agents/lib/usage_limit_retry.py), so there is
+# no non-type label left to exclude -- and no exclusion list to go stale the
+# next time automation invents a label, because inventing one now fails CI
+# (tests/unit/test_no_agent_created_labels.py).
+#
+# The function stays: it is the ONE definition of "the issue's labels" that
+# hygiene and the submit gate share, and two different answers to "does this
+# issue have a label?" is how the #3390/#3413/#3415 deadlock happened.
+#
 # Given a `gh issue/pr view --json labels` `.labels` array (as compact JSON),
-# prints the names of the "real" (non-workflow-control) labels, one per line.
+# prints the label names, one per line.
 real_label_names() {
   local labels_json="$1"
-  echo "$labels_json" | jq -r --argjson ctrl "$WORKFLOW_CONTROL_LABELS_JSON" '
-    .[].name | select(. as $n | ($ctrl | index($n)) | not)
-  '
+  echo "$labels_json" | jq -r '.[].name'
 }
 
 # -------------------------
@@ -966,9 +983,8 @@ count_sprint_backlog_open() {
   echo "$total"
 }
 
-# Release wall helpers. The release tracking issue's title carries the
-# release version ("Release v2.0.0"), and the owner's milestone naming
-# carries it too ("Phase 5.5: ... (v2.0.0)", "Phase 6 — ... (v3.0.0)").
+# Release wall helpers. The release version is RELEASE_BRANCH itself, and the
+# owner's milestone naming carries it too ("Phase 6 — ... (v3.0.0)").
 # Matching the two is the OUTER boundary the loop must never cross: agents
 # merge to RELEASE_BRANCH, so next-release work would land on the wrong
 # branch. It opens via the release ceremony -- pointing RELEASE_ISSUE_NUMBER
@@ -985,12 +1001,15 @@ count_sprint_backlog_open() {
 # traceable source (issue number or owner comment link); an uncited claim is
 # agent rationale, not policy.
 
-# Prints the vX.Y.Z version parsed from the release tracking issue's title,
-# or nothing if the issue/title has no version.
-release_version_from_issue() {
-  local release_issue="$1"
-  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}" \
-    --jq '.title' 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
+# Prints the vX.Y.Z release version, which is RELEASE_BRANCH (owner direction
+# 2026-10-03): the branch agents merge to is the value the wall protects, so
+# it is read directly rather than parsed out of the release tracking issue's
+# title, a second copy that could drift or fail to parse. Prints nothing if
+# RELEASE_BRANCH is not a vX.Y.Z version; callers treat that as a stop.
+release_version() {
+  if [[ "${RELEASE_BRANCH:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$RELEASE_BRANCH"
+  fi
 }
 
 # Buckets the release's open Backlog issues by Sprint iteration title and
@@ -1203,7 +1222,7 @@ drain_gate_classify_held() {
   require_cmd jq
   require_cmd python3
 
-  local issues=() issue payload blocks blocked_by
+  local issues=() issue payload blocks blocked_by effective
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
     payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
@@ -1212,6 +1231,13 @@ drain_gate_classify_held() {
       continue
     }
     [[ -n "$payload" ]] || continue
+    # An escalated held issue reads as its REAL type (#4134). `Escalation`
+    # replaced the rework label, so without this substitution a held
+    # Acceptance Failure that was escalated would classify as `original` and
+    # the gate would park it forever instead of releasing it with the batch.
+    if effective="$(issue_effective_labels_json "$issue" 2>/dev/null)" && [[ -n "$effective" ]]; then
+      payload="$(jq -c --argjson l "$effective" '. + {labels: $l}' <<<"$payload")"
+    fi
     # Same fail-safe as the body read directly above: "one unreadable issue
     # must not silently open the gate wider than it should" applied only to
     # the payload, while these two edge reads still answered "no blockers"
@@ -1312,6 +1338,15 @@ issue_acceptance_role() {
   payload="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
     --jq '{number, body: (.body // ""), labels: [.labels[]? | if type == "object" then .name else . end]}' 2>/dev/null)" || return 1
   [[ -n "$payload" ]] || return 1
+  # Read the issue's REAL type across an escalation (#4134): `Escalation`
+  # replaced the type label and nothing restores it but the owner, so the
+  # recorded prior label is substituted back in here. Each of the three roles
+  # authorizes a write, and misreading an escalated Acceptance Failure as an
+  # `original` would hand it to the promotion sweep to close.
+  local effective
+  if effective="$(issue_effective_labels_json "$issue" 2>/dev/null)" && [[ -n "$effective" ]]; then
+    payload="$(jq -c --argjson l "$effective" '. + {labels: $l}' <<<"$payload")"
+  fi
   # Fail-safe, matching the payload read above: each of the three roles
   # authorizes a write, so an unreadable edge must answer "unknown" (return 1)
   # rather than collapse into one of them. Recoverable in both directions --
@@ -1462,6 +1497,26 @@ drain_gate_release() {
   local issue
   while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
+    # An escalated held issue is not released (#4134): the owner holds it, and
+    # moving it to Backlog would put it back in front of the dispatcher the
+    # escalation took it away from. Reported, never silently dropped -- same
+    # rule as the owner-parked items above.
+    # Fail-safe on `unknown`, matching `classify_backlog_claim_state`: only an
+    # affirmative "no" releases. A transient label-read failure here would
+    # otherwise move an escalated issue back to Backlog in front of the
+    # dispatcher (#4134 review). Holding a non-escalated issue for one drain
+    # costs nothing -- the next drain re-reads it -- while releasing an
+    # escalated one undoes the owner's hold.
+    local escalation_state
+    escalation_state="$(issue_escalation_state "$issue")"
+    if [[ "$escalation_state" != "no" ]]; then
+      if [[ "$escalation_state" == "yes" ]]; then
+        echo "[drain-gate] Not released: #${issue} is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134). It returns to the queue when the owner restores its real label." >&2
+      else
+        echo "[drain-gate] Not released: #${issue}'s labels could not be read, so whether it is escalated is unknown (#4134). Held for this drain; the next one re-reads it." >&2
+      fi
+      continue
+    fi
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
       echo "[drain-gate] DRY_RUN: would move #${issue} -> ${STATUS_BACKLOG}" >&2
       released+=("$issue")
@@ -1636,14 +1691,24 @@ autopilot_scan_parked() {
 
   local in_progress_status="${STATUS_IN_PROGRESS:-In Progress}"
   local -a candidates=()
-  local n issue_json title body parked open_blockers exhausted
+  local n issue_json title body parked open_blockers exhausted escalated
 
   while IFS= read -r n; do
     [[ -n "$n" ]] || continue
     issue_json="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${n}" \
-      --jq '{title: (.title // ""), body: (.body // "")}' 2>/dev/null || echo '{}')"
+      --jq '{title: (.title // ""), body: (.body // ""), labels: [.labels[]?.name]}' 2>/dev/null || echo '{}')"
     title="$(jq -r '.title // ""' <<<"$issue_json" 2>/dev/null || echo "")"
     body="$(jq -r '.body // ""' <<<"$issue_json" 2>/dev/null || echo "")"
+
+    # Escalated issues are never auto-resumed (#4134). Reported in its own
+    # bucket rather than dropped: a parked issue that vanished from the scan
+    # would look like it had been dealt with.
+    escalated=false
+    if [[ "$(jq -c '.labels // []' <<<"$issue_json" 2>/dev/null || echo '[]')" != "[]" ]] \
+      && [[ "$(jq -c '.labels // []' <<<"$issue_json" \
+        | python3 "${_LIB_DIR}/escalation_label.py" is-escalated 2>/dev/null)" == "true" ]]; then
+      escalated=true
+    fi
 
     parked=true
     if [[ -n "$(_issue_open_pr_numbers "$n")" ]]; then
@@ -1662,8 +1727,8 @@ autopilot_scan_parked() {
     fi
 
     candidates+=("$(jq -n -c --argjson i "$n" --argjson p "$parked" \
-      --argjson b "$open_blockers" --argjson e "$exhausted" \
-      '{issue: $i, parked: $p, open_blockers: $b, budget_exhausted: $e}')")
+      --argjson b "$open_blockers" --argjson e "$exhausted" --argjson x "$escalated" \
+      '{issue: $i, parked: $p, open_blockers: $b, budget_exhausted: $e, escalated: $x}')")
   done < <(jq -r --arg s "$in_progress_status" '.open[$s][]? // empty' <<<"$snapshot" 2>/dev/null)
 
   if [[ "${#candidates[@]}" -eq 0 ]]; then
@@ -1932,10 +1997,10 @@ ${AUTOPILOT_INFO_MARKER}" \
     sprint_field="${SPRINT_FIELD:-Sprint}"
     active_sprint="$(iteration_active_title "$sprint_field" 2>/dev/null || echo "")"
     [[ "$active_sprint" != "null" ]] || active_sprint=""
-    release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+    release_version="$(release_version)"
 
     if [[ -z "$release_version" ]]; then
-      _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
+      _warn "Autopilot: RELEASE_BRANCH '${RELEASE_BRANCH:-}' is not a vX.Y.Z version -- no auto-kick (conservative stop)."
     elif [[ -z "$active_sprint" ]]; then
       # No iteration's window contains today: there is no sprint to work,
       # so park rather than falling back to release-wide selection.
@@ -2264,181 +2329,423 @@ notify_human_escalation() {
 }
 
 # -------------------------
-# Unresolved-escalation pause backstop (#3687)
+# Escalation: ONE step, recorded on the issue (#4134)
 # -------------------------
-# "Unresolved escalation" = an open issue currently assigned to
-# HUMAN_OWNER, excluding the release tracking issue (RELEASE_ISSUE_NUMBER),
-# which is owner-assigned by design for the whole life of a release
-# (#3868). Both escalation paths (the review agent's 3-cycle breaker
-# and the huddle's type-(c) immediate/spec-ambiguity escalation) end in
-# assign_issue_verified(issue, HUMAN_OWNER) on a still-open issue; the
-# owner resolving it means reassigning it away or closing it. Purely
-# derived from live issue state -- no hidden counter to drift out of sync.
-_ESCALATION_PAUSE_MARKER="<!-- escalation-pause-backstop:3687 -->"
-
-# One line per open issue assigned to `owner` (default HUMAN_OWNER):
-# "#<number> <title>". Empty output if none, or if no owner is configured.
-# The release tracking issue (RELEASE_ISSUE_NUMBER) is excluded: it is
-# owner-assigned by design for the whole life of a release, so counting it
-# would permanently inflate the escalation count by one and drop the pause
-# gate's effective threshold from 2 to 1 (#3868) -- the same exemption the
-# drain gate applies (drain_gate_release's release_issue_exempt).
-# Lanes that legitimately hold owner-assigned work, and are therefore NOT
-# escalations. This is the distinction the first cut of this backstop
-# missed: it counted by *assignee* alone, and the pipeline itself assigns
-# the owner on every successful merge (`review_accept_and_merge.sh` ends
-# with Status -> Acceptance Testing, assignee -> HUMAN_OWNER). So the gate
-# tripped as a function of throughput -- two accepted-and-unclosed items,
-# a normal healthy state, were enough to stop all dispatch. Observed
-# 2026-08-19: the queue sat paused for ~10 hours on #3910 (owner'"'"'s own
-# scheduled work) and #3814 (sitting in For Release, i.e. done and awaiting
-# the release ceremony), while three claimable issues went unworked.
+# Owner decisions, 2026-10-03. An escalation REPLACES the issue's single label
+# with `Escalation`, assigns the owner, and sends the Slack DM. The issue stays
+# in its current Status lane -- the owner tracks escalations on their own board,
+# and moving the lane would destroy the record of where the work actually was.
+# The owner restores the original label themselves; nothing here, and nothing
+# anywhere else in automation, removes `Escalation` or puts the old label back.
 #
-# The hard-coded RELEASE_ISSUE_NUMBER exemption below was the same
-# false-positive class, special-cased one instance at a time. This
-# generalises it: an escalation is owner-assigned work in a lane the
-# *agents* were driving, not work the pipeline handed the owner on purpose.
-_escalation_exempt_lane() {
-  local lane="$1"
-  [[ -n "$lane" ]] || return 1
-  case "$lane" in
-    "${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}") return 0 ;;
-    "${STATUS_FOR_RELEASE:-For Release}") return 0 ;;
-    # Open items here are held by the drain gate (#3730, D-001/D-008),
-    # waiting on the round to finish -- held is not escalated.
-    "${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}") return 0 ;;
-  esac
-  return 1
-}
+# WHY THIS EXISTS AS A FUNCTION. There was no escalation step. About a dozen
+# call sites handed work to the owner and no two agreed: some assigned the
+# owner and DM'd, some only DM'd, some only assigned. Nothing was written down,
+# so the retired pause backstop below had to INFER escalation from "open,
+# assigned to the owner, not in an exempt lane" -- a guess that was wrong twice
+# (#3868; 2026-08-19, when normal merges tripped it and the queue sat idle ~10
+# hours) with a third gap still open. Every escalating site now calls this, so
+# "escalated" is a fact on the issue rather than a reading of the board.
+#
+# THE RETIRED BACKSTOP. `escalation_pause_gate` / `unresolved_escalation_issues`
+# / `count_unresolved_escalations` paused ALL dispatch at two inferred
+# escalations. They are gone (#4134). What the count was really protecting
+# against -- escalations piling up while nothing gets done -- is now addressed
+# where the defect actually is: `blast_radius_report` makes the escalating
+# agent look past its own issue before escalating, and one systemic cause
+# produces one escalation instead of one per affected issue. Only the affected
+# issues are paused, and they are paused by carrying `Escalation` (nothing
+# dispatches, resumes, kicks, releases or submits an escalated issue).
+# Unrelated work keeps dispatching, which is the behaviour the count destroyed.
+ESCALATION_LABEL="Escalation"
 
-unresolved_escalation_issues() {
-  local owner="${1:-${HUMAN_OWNER:-}}"
+# JSON array of `issue`'s label names. Prints nothing and returns 1 when the
+# issue cannot be read: "no labels" and "could not ask" authorize different
+# things, and collapsing them is how an unreadable issue gets treated as
+# unescalated and dispatched.
+issue_labels_json() {
+  local issue="$1"
   require_cmd jq
-  if [[ -z "$owner" ]]; then
-    _warn "unresolved_escalation_issues: no owner configured (HUMAN_OWNER unset)"
+  local out
+  out="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" \
+    --jq '[.labels[]? | if type == "object" then .name else . end]' 2>/dev/null)" || return 1
+  # A JSON ARRAY, or nothing. Anything else is an answer this function did
+  # not ask for -- an error body, a truncated response -- and passing it on
+  # would have every caller downstream reading label names out of whatever
+  # keys it happened to have.
+  jq -e 'type == "array"' <<<"${out:-null}" >/dev/null 2>&1 || return 1
+  printf '%s' "$out"
+}
+
+# True when `issue` currently carries `Escalation`. Returns 1 both for "not
+# escalated" and for "could not read" -- callers that must not act on an
+# escalated issue should use issue_is_escalated_strict instead.
+issue_is_escalated() {
+  local issue="$1"
+  require_cmd python3
+  local labels
+  labels="$(issue_labels_json "$issue")" || return 1
+  [[ "$(printf '%s' "$labels" | python3 "${_LIB_DIR}/escalation_label.py" is-escalated)" == "true" ]]
+}
+
+# Three-way form for the gates: prints "yes" / "no" / "unknown". A gate that
+# refuses to act on an escalated issue has to distinguish "it isn't" from "I
+# could not tell", or a transient 5xx silently dispatches work the owner holds.
+issue_escalation_state() {
+  local issue="$1"
+  require_cmd python3
+  local labels
+  labels="$(issue_labels_json "$issue")" || { echo "unknown"; return 0; }
+  if [[ "$(printf '%s' "$labels" | python3 "${_LIB_DIR}/escalation_label.py" is-escalated)" == "true" ]]; then
+    echo "yes"
+  else
+    echo "no"
+  fi
+}
+
+# Chronological JSON array of `issue`'s comment bodies. `--jq` runs once per
+# fetched page, so the bodies are streamed and slurped afterwards (AGENTS.md).
+_issue_comment_bodies_json() {
+  local issue="$1"
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" --paginate \
+    --jq '[.[] | .body // ""]' 2>/dev/null \
+    | jq -s 'add // []'
+}
+
+# The label the most recent escalation on `issue` replaced, or "". Read from
+# the escalation comment's marker: automation never restores the label, so the
+# record in the thread is the only place the issue's real type survives.
+issue_replaced_label() {
+  local issue="$1"
+  require_cmd jq
+  require_cmd python3
+  _issue_comment_bodies_json "$issue" \
+    | python3 "${_LIB_DIR}/escalation_label.py" replaced-label 2>/dev/null \
+    || echo ""
+}
+
+# `issue`'s labels as a TYPE consumer should read them, as a JSON array:
+# `Escalation` substituted for the label it replaced. Used by the consumers
+# that key on the type label -- `acceptance_role`, the promotion sweep -- so an
+# escalated Acceptance Failure is still read as an Acceptance Failure. Costs
+# nothing extra on the normal path: the comment thread is fetched only when
+# `Escalation` is actually present.
+#
+# Returns 1 when the labels cannot be read, same as issue_labels_json.
+issue_effective_labels_json() {
+  local issue="$1"
+  require_cmd jq
+  require_cmd python3
+  local labels comments
+  labels="$(issue_labels_json "$issue")" || return 1
+  if [[ "$(printf '%s' "$labels" | python3 "${_LIB_DIR}/escalation_label.py" is-escalated)" != "true" ]]; then
+    printf '%s' "$labels"
     return 0
   fi
-  # Raw fetch and jq filtering are separate commands (rather than gh's
-  # own --jq) so tests can stub the `gh` call with canned JSON and let the
-  # real jq filter run -- same split as real_label_names above.
-  local candidates
-  candidates="$(_open_issues_assigned_to "$owner" \
-    | jq -r --arg release "${RELEASE_ISSUE_NUMBER:-}" \
-      '.[] | select(.pull_request == null)
-           | select(($release == "") or ((.number | tostring) != $release))
-           | "#\(.number) \(.title)"')"
-  [[ -n "$candidates" ]] || return 0
-
-  local line num lane rc
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    num="${line#\#}"; num="${num%% *}"
-    rc=0
-    lane="$(issue_status "$num")" || rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-      # Deliberately fail OPEN: an unreadable Status does not count as an
-      # escalation. Over-counting stalls the entire pipeline (the failure
-      # this function was rewritten for); under-counting dispatches a few
-      # issues while the owner has a real queue. The first is far more
-      # expensive, and a transient GraphQL blip must not stop the line.
-      _warn "unresolved_escalation_issues: could not read Status for #${num}; not counting it as an escalation."
-      continue
-    fi
-    _escalation_exempt_lane "$lane" && continue
-    echo "$line"
-  done <<<"$candidates"
+  comments="$(_issue_comment_bodies_json "$issue")" || comments='[]'
+  [[ -n "$comments" ]] || comments='[]'
+  jq -n -c --argjson l "$labels" --argjson c "$comments" '{labels: $l, comments: $c}' \
+    | python3 "${_LIB_DIR}/escalation_label.py" effective-labels
 }
 
-# Raw (unfiltered) JSON array of open issues/PRs assigned to `owner`. Split
-# out so tests can stub the `gh` call in isolation.
-_open_issues_assigned_to() {
-  local owner="$1"
-  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues" \
-    --method GET \
-    -f state=open \
-    -f assignee="$owner" \
-    --paginate 2>/dev/null || echo "[]"
-}
-
-# Number of non-empty lines in `$1`. Always echoes a number and returns 0,
-# even when the count is zero (grep -c would otherwise exit 1). Shared by
-# count_unresolved_escalations and escalation_pause_gate so the two never
-# drift apart.
-_count_lines() {
-  local n
-  n="$(grep -c . <<<"$1")" || true
-  echo "${n:-0}"
-}
-
-# Count of unresolved_escalation_issues.
-count_unresolved_escalations() {
-  local owner="${1:-${HUMAN_OWNER:-}}"
-  _count_lines "$(unresolved_escalation_issues "$owner")"
-}
-
-# Finds the id of our most recent pause-backstop report comment on
-# release_issue, if any (empty if none). Split out so tests can stub it
-# without a real gh/GraphQL round trip.
+# The issue that already escalated `cause`, or "" if none is open.
 #
-# `gh api --jq` has no `--arg` support, so the marker filter can't be
-# chained onto gh's own --jq -- fetch the raw paginated JSON (one array per
-# page) and filter/aggregate in a separate `jq -s` call instead, slurping
-# and flattening one level before sort_by/last so the aggregation runs over
-# every page combined, not per-page (see AGENTS.md's --paginate note).
-_escalation_pause_comment_id() {
-  local release_issue="$1"
-  gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate 2>/dev/null \
-    | jq -s --arg marker "$_ESCALATION_PAUSE_MARKER" \
-      '[.[][] | select(.body | contains($marker))] | sort_by(.created_at) | last | .id // empty' \
-    || true
+# "Open" is checked, not assumed: the registry entry on the release tracking
+# issue says a cause was escalated once, and the ORIGIN ISSUE STILL CARRYING
+# `Escalation` is what says it has not been answered yet. The owner removing
+# the label (restoring the real one) is the resolution -- no resolve command,
+# and no automation touching the label, which the owner forbade.
+escalation_cause_origin() {
+  local cause="$1" release_issue="${RELEASE_ISSUE_NUMBER:-}"
+  require_cmd jq
+  require_cmd python3
+  [[ -n "$cause" && -n "$release_issue" ]] || return 0
+  local origin
+  origin="$(_issue_comment_bodies_json "$release_issue" \
+    | python3 "${_LIB_DIR}/escalation_label.py" cause-origin "$cause" 2>/dev/null)" || return 0
+  [[ -n "$origin" ]] || return 0
+  if [[ "$(issue_escalation_state "$origin")" == "yes" ]]; then
+    printf '%s' "$origin"
+  fi
+  return 0
 }
 
-# Dispatch gate for the unresolved-escalation pause backstop. Dispatch
-# continues unconditionally through the first unresolved escalation (one
-# escalated item is normal traffic); with >=2 unresolved, new dispatch
-# pauses and this posts (or updates, if already posted) a loud report on
-# RELEASE_ISSUE_NUMBER listing the escalated issues. It resumes
-# automatically -- there is no separate "resume" action, the gate simply
-# re-evaluates live board state on every call and reopens once the count
-# drops below 2 (updating the report comment to say so).
+# Failing required-check names on `branch`'s head, one per line. Prints
+# nothing and returns 1 when the head's check state cannot be read -- that is
+# "not checked", and the report says so rather than claiming the head is green.
+_release_head_failing_checks() {
+  local branch="$1"
+  [[ -n "$branch" ]] || return 1
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${branch}/check-runs" --paginate \
+    --jq '.check_runs[]? | select(.conclusion == "failure") | .name' 2>/dev/null \
+    || return 1
+}
+
+# "<short sha> <subject>" for the most recent commits on `branch`, newest
+# first. Read over the API rather than from git: the escalating run is not
+# guaranteed to have a checkout of the release branch (the handlers do not).
+_release_recent_commits() {
+  local branch="$1" limit="${2:-5}"
+  [[ -n "$branch" ]] || return 1
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits?sha=${branch}&per_page=${limit}" \
+    --jq '.[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"' 2>/dev/null \
+    || return 1
+}
+
+# The blast-radius investigation, as the markdown block the escalation comment
+# carries (#4134). Four questions, answered explicitly -- and a question whose
+# fact could not be read renders as "not checked" rather than vanishing, so
+# the owner can tell a skipped investigation from an empty one.
 #
-# Returns 0 if dispatch may proceed, 1 if dispatch is paused. Best-effort
-# on the reporting side: a comment failure is warned, not fatal -- the
-# pause/resume decision itself always reflects the live count.
-escalation_pause_gate() {
-  local owner="${HUMAN_OWNER:-}" release_issue="${RELEASE_ISSUE_NUMBER:-}"
-  local issues count comment_id body
+# Args: <issue> <cause_key> [signature]   (signature defaults to the cause key)
+#
+# Every lookup is best-effort and this always returns 0: a failed investigation
+# must never swallow the escalation it was meant to accompany.
+blast_radius_report() {
+  local issue="$1" cause="${2:-}" signature="${3:-$2}"
+  require_cmd jq
+  require_cmd python3
 
-  issues="$(unresolved_escalation_issues "$owner")"
-  count="$(_count_lines "$issues")"
+  local branch findings checks commits release_issue same
+  branch="$(get_release_branch 2>/dev/null || echo "")"
+  findings="$(jq -n -c --arg c "$cause" --arg s "$signature" --arg b "$branch" \
+    '{cause: $c, signature: $s, release_branch: $b}')"
 
-  if [[ -z "$release_issue" ]]; then
-    if [[ "$count" -ge 2 ]]; then
-      _warn "escalation_pause_gate: ${count} unresolved escalations but RELEASE_ISSUE_NUMBER is not configured -- cannot report, gate stays open."
-    fi
-    return 0
+  # Q1: is the release branch head red?
+  if checks="$(_release_head_failing_checks "$branch")"; then
+    local checks_json
+    checks_json="$(printf '%s' "$checks" | jq -R -n -c '[inputs | select(length > 0)]')"
+    findings="$(jq -c --argjson k "${checks_json:-[]}" \
+      '. + {release_head_red: (($k | length) > 0), red_checks: $k}' <<<"$findings")"
   fi
 
-  comment_id="$(_escalation_pause_comment_id "$release_issue")"
+  # Q2 and Q3 both read the release tracking issue's registries, so its
+  # comment thread is fetched once.
+  release_issue="${RELEASE_ISSUE_NUMBER:-}"
+  if [[ -n "$release_issue" ]]; then
+    local comments
+    comments="$(_issue_comment_bodies_json "$release_issue")" || comments=""
+    if [[ -n "$comments" ]]; then
+      same="$(printf '%s' "$comments" \
+        | python3 "${_LIB_DIR}/blast_radius.py" same-signature "$signature" "$issue" 2>/dev/null)" || same=""
+      if [[ -n "$same" ]]; then
+        findings="$(jq -c --argjson s "$same" \
+          '. + {same_signature: [$s[] | "#\(.) records the same signature"]}' <<<"$findings")"
+      fi
 
-  if [[ "$count" -ge 2 ]]; then
-    body="$(printf '⏸️ **Scrummaster**: dispatch paused -- %s unresolved escalations\n\n%s\n\nDispatch resumes automatically once the unresolved count drops below 2 (no action needed beyond resolving the escalations below).\n\n%s' \
-      "$count" "$issues" "$_ESCALATION_PAUSE_MARKER")"
-    if [[ -n "$comment_id" ]]; then
-      gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
-        || _warn "escalation_pause_gate: failed to update pause report on #${release_issue}"
-    else
-      issue_comment "$release_issue" "$body" \
-        || _warn "escalation_pause_gate: failed to post pause report on #${release_issue}"
+      # Q3 reads the registry out of the thread Q2 just read, and parses it
+      # directly for the same reason Q2 does rather than calling
+      # `escalation_cause_origin`: that function prints nothing both when the
+      # cause is genuinely new AND when it could not look (no release issue,
+      # unreadable thread, parser failure). That is fine for a lookup whose
+      # only question is "is there one to link to", but the REPORT must not
+      # turn "could not look" into "this cause is new" -- the whole point of
+      # the four questions is that an unanswerable one says so (#4134 review).
+      # `false` means checked-and-none-found; the key stays ABSENT whenever
+      # the answer could not be established, and renders as "not checked".
+      local origin
+      if [[ -n "$cause" ]] && origin="$(printf '%s' "$comments" \
+            | python3 "${_LIB_DIR}/escalation_label.py" cause-origin "$cause" 2>/dev/null)"; then
+        if [[ -z "$origin" ]]; then
+          findings="$(jq -c '. + {prior_escalation: false}' <<<"$findings")"
+        else
+          case "$(issue_escalation_state "$origin")" in
+            yes)
+              findings="$(jq -c --argjson p "$origin" \
+                '. + {prior_escalation: $p}' <<<"$findings")"
+              ;;
+            no)
+              # The registry names it, but that issue is no longer escalated
+              # (the owner restored its label), so the cause is closed.
+              findings="$(jq -c '. + {prior_escalation: false}' <<<"$findings")"
+              ;;
+            *)
+              # Labels unreadable: a registry entry exists but whether it is
+              # still open is unknown. Key left absent -> "not checked".
+              :
+              ;;
+          esac
+        fi
+      fi
     fi
+  fi
+
+  # Q4: what recent change is the likely common cause?
+  if commits="$(_release_recent_commits "$branch")"; then
+    local commits_json
+    commits_json="$(printf '%s' "$commits" | jq -R -n -c '[inputs | select(length > 0)]')"
+    findings="$(jq -c --argjson k "${commits_json:-[]}" '. + {recent_commits: $k}' <<<"$findings")"
+  fi
+
+  printf '%s' "$findings" | python3 "${_LIB_DIR}/blast_radius.py" report 2>/dev/null || true
+  return 0
+}
+
+# Replaces `issue`'s labels with exactly `ESCALATION_LABEL` and prints the
+# label(s) it took away (comma-joined), or nothing when there were none.
+#
+# ADD FIRST, THEN REMOVE, deliberately. `gh issue edit --add-label` REFUSES to
+# create a label that does not exist (unlike the REST "add labels" endpoint,
+# which silently creates it -- which is why this uses the `gh` verb). If the
+# owner has deleted `Escalation`, the add fails, nothing has been removed, and
+# the issue keeps its real label instead of being left bare. Returns 1 in that
+# case; the caller escalates anyway, minus the relabel.
+_escalation_replace_label() {
+  local issue="$1" labels_json="$2"
+  local -a prior=()
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" && "$name" != "$ESCALATION_LABEL" ]] && prior+=("$name")
+  done < <(jq -r '.[]' <<<"$labels_json")
+
+  gh issue edit "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" \
+    --add-label "$ESCALATION_LABEL" >/dev/null 2>&1 || {
+    echo "::error::Could not apply the '${ESCALATION_LABEL}' label to #${issue}. It is owner-created and agents never create labels -- if it has been deleted, ask the owner to restore it. #${issue} keeps its current label." >&2
+    return 1
+  }
+
+  local applied
+  applied="$(issue_labels_json "$issue")" || applied=""
+  if [[ -z "$applied" ]] \
+    || [[ "$(printf '%s' "$applied" | python3 "${_LIB_DIR}/escalation_label.py" is-escalated)" != "true" ]]; then
+    echo "::error::'${ESCALATION_LABEL}' did not land on #${issue} (the add reported success) -- refusing to strip its real label." >&2
     return 1
   fi
 
-  if [[ -n "$comment_id" ]]; then
-    body="$(printf '▶️ **Scrummaster**: dispatch resumed -- unresolved escalations dropped below 2\n\n%s' "$_ESCALATION_PAUSE_MARKER")"
-    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${comment_id}" -f "body=${body}" >/dev/null 2>&1 \
-      || _warn "escalation_pause_gate: failed to clear pause report on #${release_issue}"
+  if [[ "${#prior[@]}" -gt 0 ]]; then
+    for name in "${prior[@]}"; do
+      gh issue edit "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" \
+        --remove-label "$name" >/dev/null 2>&1 \
+        || _warn "_escalation_replace_label: could not remove '${name}' from #${issue} -- it now carries two labels; the owner's restore will fix it."
+    done
+    local IFS=','
+    printf '%s' "${prior[*]}"
   fi
+  return 0
+}
+
+# THE escalation step (#4134). Hands ONE issue to the owner:
+#
+#   1. investigates the blast radius and writes the findings into the comment;
+#   2. replaces the issue's label with `Escalation`, recording what it took
+#      away so the owner knows what to restore;
+#   3. assigns the owner, VERIFIED (assign_issue_verified re-reads it);
+#   4. sends the Slack DM (notify_human_escalation), deduped on the CAUSE so
+#      one cause produces one DM, not one per affected issue;
+#   5. registers the cause on the release tracking issue, if it is the first
+#      escalation for it.
+#
+# It does NOT touch the Status lane. That is the owner decision, and it is also
+# the only way the owner can see where the work had got to.
+#
+# Args:
+#   $1 issue      the issue being handed over
+#   $2 state      short state label for the DM (e.g. "review-escalation")
+#   $3 diagnosis  one-line diagnosis
+#   $4 action     what the owner should do
+#   $5 cause      the CAUSE KEY -- a slug naming the fault, not the issue.
+#                 Two issues broken by one fault must pass the same key.
+#   $6 detail     optional extra markdown for the comment (the caller's own
+#                 account of what happened)
+#   $7 window     Slack dedup window in minutes (default 60)
+#
+# Returns 0 when the issue is escalated and the owner assignment verified, 1
+# when the assignment could not be verified -- the comment and the label still
+# stand, and callers report the unverified assignment loudly.
+escalate_to_owner() {
+  local issue="$1" state="$2" diagnosis="$3" action="$4" cause="${5:-$2}"
+  local detail="${6:-}" window="${7:-60}"
+  require_cmd jq
+  require_cmd python3
+
+  local owner="${HUMAN_OWNER:-}"
+  if [[ -z "$owner" ]]; then
+    _warn "escalate_to_owner: HUMAN_OWNER is not configured -- cannot escalate #${issue}."
+    return 1
+  fi
+
+  local labels already="no"
+  if labels="$(issue_labels_json "$issue")"; then
+    [[ "$(printf '%s' "$labels" | python3 "${_LIB_DIR}/escalation_label.py" is-escalated)" == "true" ]] \
+      && already="yes"
+  else
+    labels="[]"
+    _warn "escalate_to_owner: could not read #${issue}'s labels -- escalating without the relabel."
+  fi
+
+  # Already escalated: the owner holds it. Re-labelling is a no-op and
+  # re-recording a replaced label would overwrite the FIRST record, which is
+  # the one the owner has yet to restore. Say so and stop.
+  if [[ "$already" == "yes" ]]; then
+    echo "[escalate] #${issue} already carries '${ESCALATION_LABEL}' -- not re-escalating." >&2
+    return 0
+  fi
+
+  local linked_to
+  linked_to="$(escalation_cause_origin "$cause")"
+
+  local report=""
+  if [[ -z "$linked_to" ]]; then
+    # First escalation for this cause: it gets the full investigation.
+    report="$(blast_radius_report "$issue" "$cause" "$cause")"
+  fi
+
+  local replaced=""
+  replaced="$(_escalation_replace_label "$issue" "$labels")" || replaced=""
+
+  local body replaced_note=""
+  if [[ -n "$replaced" ]]; then
+    # Backticks are NOT escaped here: the format string is single-quoted, so
+    # the shell never sees them as command substitution and a `\`` would put a
+    # literal backslash into the comment.
+    replaced_note="$(printf '\n**Label replaced:** `%s` -> `%s`. Restore `%s` yourself when you hand it back -- no automation puts it back, and nothing removes `%s`.\n%s\n' \
+      "$replaced" "$ESCALATION_LABEL" "$replaced" "$ESCALATION_LABEL" \
+      "$(python3 "${_LIB_DIR}/escalation_label.py" replaced-marker "$replaced")")"
+  fi
+
+  if [[ -n "$linked_to" ]]; then
+    body="$(printf '🚨 **Escalated to @%s** — same cause as #%s\n\n**Diagnosis:** %s\n\n**Recommended action:** %s\n%s\nThis is the same cause (`%s`) as the open escalation on #%s, so it is NOT diagnosed again (#4134). The Slack DM is deduped on the cause over a %s-minute window, so you are not paged twice for a cause that is still live — a recurrence after that window pages you again, deliberately. Answer #%s and this issue clears with it.\n\nStatus lane unchanged — this issue stays exactly where the work had got to.' \
+      "$owner" "$linked_to" "$diagnosis" "$action" "$replaced_note" "$cause" "$linked_to" "$window" "$linked_to")"
+  else
+    body="$(printf '🚨 **Escalated to @%s**\n\n**Diagnosis:** %s\n\n**Recommended action:** %s\n%s\n%s\n\nStatus lane unchanged — this issue stays exactly where the work had got to. Nothing is dispatched, resumed or re-kicked against it while it carries `%s`.' \
+      "$owner" "$diagnosis" "$action" "$replaced_note" "$report" "$ESCALATION_LABEL")"
+  fi
+  [[ -z "$detail" ]] || body="$(printf '%s\n\n%s' "$body" "$detail")"
+
+  issue_comment "$issue" "$body" \
+    || _warn "escalate_to_owner: could not post the escalation comment on #${issue}."
+
+  # Register the cause so the NEXT issue broken by the same fault links here
+  # instead of repeating the diagnosis and the DM.
+  if [[ -z "$linked_to" && -n "${RELEASE_ISSUE_NUMBER:-}" ]]; then
+    local marker
+    marker="$(python3 "${_LIB_DIR}/escalation_label.py" cause-marker "$cause" "$issue" 2>/dev/null || echo "")"
+    if [[ -n "$marker" ]]; then
+      issue_comment "$RELEASE_ISSUE_NUMBER" "$(printf '🚨 **Escalation raised** on #%s — cause `%s`.\n\n%s\n\nAn agent that hits this cause on another issue links to #%s rather than rediscovering it. The cause is open while #%s still carries `%s`; removing that label (restoring the real one) closes it.\n\n%s' \
+        "$issue" "$cause" "$diagnosis" "$issue" "$issue" "$ESCALATION_LABEL" "$marker")" \
+        || _warn "escalate_to_owner: could not register cause '${cause}' on #${RELEASE_ISSUE_NUMBER}."
+    fi
+  fi
+
+  local assign_rc=0
+  assign_issue_verified "$issue" "$owner" || assign_rc=1
+
+  # One DM per CAUSE, not per issue. The linked case passes the same dedup key
+  # the origin used, so notify_human_escalation's own window suppresses it --
+  # the same collapse #3694 applies to cross-issue anomalies. Note the dedup is
+  # that ROLLING WINDOW (default 60 min), not "forever": a cause that is still
+  # breaking issues hours later pages the owner again, which is the right
+  # behaviour for a fault nobody has answered. The comment body says so rather
+  # than promising silence it cannot deliver (#4134 review).
+  notify_human_escalation "$issue" "$state" "$diagnosis" "$action" \
+    "escalation:${cause}" "$window" \
+    || _warn "escalate_to_owner: Slack notification failed for #${issue} -- the comment and the label stand."
+
+  if [[ "$assign_rc" -ne 0 ]]; then
+    echo "::error::#${issue} is labeled '${ESCALATION_LABEL}' but the assignment to @${owner} could not be verified. Manual fix: gh issue edit ${issue} --add-assignee ${owner}" >&2
+    return 1
+  fi
+  echo "[escalate] #${issue} escalated to @${owner} (cause=${cause})." >&2
   return 0
 }
 
@@ -2461,7 +2768,7 @@ escalation_pause_gate() {
 # taken out by the same class of fault. The single tracking record is a
 # marker comment on RELEASE_ISSUE_NUMBER, re-derived fresh from the live
 # comment thread on every check -- same level-triggered shape as
-# escalation_pause_gate above, no hidden counter to drift out of sync. It
+# escalation-cause registry above (#4134), no hidden counter to drift. It
 # self-expires after CROSS_ISSUE_ANOMALY_WINDOW_MINUTES and can be cleared
 # early by an OWNER-authored `RESOLVE_ANOMALY` comment.
 CROSS_ISSUE_ANOMALY_WINDOW_MINUTES="${CROSS_ISSUE_ANOMALY_WINDOW_MINUTES:-60}"
@@ -2521,12 +2828,17 @@ open_cross_issue_anomaly() {
     || _warn "open_cross_issue_anomaly: failed to post tracking record on #${release_issue}"
 }
 
-# Dispatch gate composing with escalation_pause_gate (#3687): dispatch
-# pauses while ANY step currently has an open, unresolved cross-issue
-# anomaly marker on RELEASE_ISSUE_NUMBER (cleared by an OWNER
+# The ONLY dispatch-wide pause since #4134 retired the #3687 escalation
+# count: dispatch pauses while ANY step currently has an open, unresolved
+# cross-issue anomaly marker on RELEASE_ISSUE_NUMBER (cleared by an OWNER
 # `RESOLVE_ANOMALY` comment, or by the detection window elapsing). Returns 0
-# if dispatch may proceed, 1 if paused; posts/updates a loud report exactly
-# like escalation_pause_gate.
+# if dispatch may proceed, 1 if paused; posts/updates a loud report.
+#
+# This one survived #4134's review because it is about INFRASTRUCTURE, not
+# about escalation: while a shared fault is live, every issue dispatched into
+# it fails the same way, so pausing the queue is the cheap answer. The
+# retired gate paused the queue over a COUNT of inferred escalations, which
+# said nothing about whether the next issue would succeed.
 cross_issue_anomaly_pause_gate() {
   local release_issue="${RELEASE_ISSUE_NUMBER:-}"
   [[ -z "$release_issue" ]] && return 0
@@ -3017,6 +3329,11 @@ developer_claim_issue() {
 #                  lane (#3730): the owner is still testing this
 #                  acceptance round. Skip quietly; the drain watcher moves
 #                  it to Backlog when the round drains.
+#   escalated   -- the issue carries `Escalation` (#4134): the owner holds
+#                  it, and only the owner takes it back (by restoring the
+#                  real label). Skip quietly -- this is the explicit form of
+#                  the `human_hold` state below, which had to guess from the
+#                  assignee.
 classify_backlog_claim_state() {
   local issue="$1"
   local state assignees
@@ -3025,6 +3342,18 @@ classify_backlog_claim_state() {
     echo "closed"
     return 0
   fi
+
+  # Escalation first, and before the lane read: an escalated issue stays in
+  # whatever lane the work had reached (owner decision, 2026-10-03), so the
+  # lane says nothing about it and only the label does. "unknown" is treated
+  # as escalated on purpose -- starting work on an issue the owner may be
+  # holding is the expensive mistake, and the next dispatch re-reads it.
+  case "$(issue_escalation_state "$issue")" in
+    yes | unknown)
+      echo "escalated"
+      return 0
+      ;;
+  esac
 
   # Drain gate (#3730), enforced at the start point rather than trusted to
   # the Backlog filter alone: a held issue is never started, whatever
@@ -3098,6 +3427,11 @@ scrummaster_attempt_start() {
     drain_gate_held)
       echo "SKIPPED #$issue reason=drain_gate_held"
       echo "Skipped issue #$issue -- held in '${STATUS_ACCEPTANCE_FAILED:-Acceptance Failed}' while the acceptance round is still under test (#3730). Released automatically when ${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing} drains; moving on."
+      return 10
+      ;;
+    escalated)
+      echo "SKIPPED #$issue reason=escalated"
+      echo "Skipped issue #$issue -- escalated to @${HUMAN_OWNER:-the human owner} (carries '${ESCALATION_LABEL}', #4134). Only the owner takes it back, by restoring its real label; moving on."
       return 10
       ;;
     human_hold)

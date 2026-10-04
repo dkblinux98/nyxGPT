@@ -303,6 +303,23 @@ and screenshots make verifiable in the review loop:
   list is not a licence for the job that surrounds it to assert a command
   string.** Where the claim is "the right thing is installed", assert the
   installed *artifact*, not the instruction that was meant to install it.
+
+  **The screen path, #4121, read the same narrow way.** `nyxgpt cloud screen`
+  enables macOS Screen Sharing on an EC2 Mac and forwards 5900 over SSH, and no
+  job can run `kickstart` or `pfctl` — those need macOS, and the `macos-15`
+  runners are not EC2 Macs with a Dedicated Host under them. What *is* executed,
+  by [`cloud-target-os-smoke.yml`](../.github/workflows/cloud-target-os-smoke.yml)
+  phase 5 against a real sshd: the CLI delivers the configuration script itself
+  over a real SSH connection; that script loads the loopback-only `pf` rule and
+  reads it back **before** activating the agent (asserted on the delivered text,
+  and the reordered script is rejected); it opens no security-group port and
+  sets no account password; the VNC credential is generated into
+  `~/.nyxGPT/secrets` at mode 0600 and appears in the delivered stdin but in no
+  argv and not on the terminal; the forward really opens and closes; and the
+  command **refuses** both on a Mac nyxGPT did not configure and on a Linux
+  deployment. What remains owner acceptance is only that a `mac*.metal` instance
+  executes the script — i.e. that `pfctl` loads that anchor and `kickstart`
+  activates that agent on real Apple hardware.
 - **Anything gated behind a real (non-stubbed) LLM** -- CI runs the chat
   round-trip against whatever Ollama model is configured for the runner
   (small/stubbed per the acceptance criteria); response *quality* is not

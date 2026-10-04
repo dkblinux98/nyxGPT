@@ -36,6 +36,11 @@ on:
       - 'k8s/deployment-canary.yaml'
       - 'k8s/rbac.yaml'
       - 'scripts/canary-track-metrics-smoke.sh'
+      # The job builds the api image from this Dockerfile, so a change to it
+      # changes what this job measures. It was absent, which is how a dangling
+      # symlink in the image (the packaged example.config.ini) reached v3.0.0
+      # and then failed this REQUIRED check on every unrelated PR that ran it.
+      - 'Dockerfile'
       - '.github/workflows/canary-track-metrics-smoke.yml'
   push:
     paths:
@@ -45,6 +50,11 @@ on:
       - 'k8s/deployment-canary.yaml'
       - 'k8s/rbac.yaml'
       - 'scripts/canary-track-metrics-smoke.sh'
+      # The job builds the api image from this Dockerfile, so a change to it
+      # changes what this job measures. It was absent, which is how a dangling
+      # symlink in the image (the packaged example.config.ini) reached v3.0.0
+      # and then failed this REQUIRED check on every unrelated PR that ran it.
+      - 'Dockerfile'
       - '.github/workflows/canary-track-metrics-smoke.yml'
   workflow_dispatch:
 

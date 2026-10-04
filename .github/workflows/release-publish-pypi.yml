@@ -487,6 +487,72 @@ jobs:
             exit 1
           fi
 
+      # Re-stamp each formula's sha256 from the asset that is actually PUBLISHED,
+      # not from the tarball this job just built.
+      #
+      # The two can differ, and on a re-run they always do. `build_homebrew_artifacts.py`
+      # above builds tarballs and stamps the formulas with the hash of its own
+      # output; the release step then finds an existing complete release, says
+      # "reusing it" and exits 0 -- deliberately, because releases here are
+      # immutable and cannot gain or change an asset. So the formula ends up
+      # pointing at the FIRST attempt's bytes while carrying the SECOND attempt's
+      # hash, because the tarball build is not byte-reproducible.
+      #
+      # That is what happened to 3.0.0rc16 on 2026-10-02. Its tap push failed on a
+      # misconfigured HOMEBREW_TAP_REPO; re-running just the failed jobs stamped
+      # sha256 dad89ef6... over a published asset whose real hash is 5fb7ded5...,
+      # and the mismatch only surfaced later, in macos-brew-smoke, as a bare
+      # "Formula reports different checksum" with nothing pointing at the re-run as
+      # the cause. rc16 had to be abandoned and superseded by rc17.
+      #
+      # Re-running a failed publish is the obvious thing to do, so it has to be
+      # safe. Hashing the published asset makes the stamp correct on a first run
+      # (where it is a no-op and says so) and on every re-run after it.
+      - name: Stamp the formulas from the published assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          RELEASE="${VERSION%%rc*}"
+          rc=0
+          for svc in api web; do
+            FORMULA="dist/homebrew/nyxgpt-${svc}@${RELEASE}rc.rb"
+            ASSET="nyxgpt-${svc}-${VERSION}.tar.gz"
+            if [ ! -f "$FORMULA" ]; then
+              echo "::error::${FORMULA} was not stamped by build_homebrew_artifacts.py"
+              exit 1
+            fi
+            gh release download "$VERSION" -R "$REPO" -p "$ASSET" -D /tmp/published --clobber
+            # sha256sum, not shasum: this job runs on ubuntu-latest, where the
+            # perl shasum is not guaranteed. The rest of the repo's Linux steps
+            # use sha256sum too.
+            PUBLISHED="$(sha256sum "/tmp/published/${ASSET}" | awk '{print $1}')"
+            STAMPED="$(grep -A1 'url "https' "$FORMULA" | grep sha256 | sed 's/.*"\(.*\)".*/\1/')"
+            if [ "$PUBLISHED" = "$STAMPED" ]; then
+              echo "${svc}: formula sha256 already matches the published asset (${PUBLISHED})"
+              continue
+            fi
+            echo "::warning::${svc}: formula carried ${STAMPED} but the published ${ASSET}"
+            echo "::warning::hashes to ${PUBLISHED} -- re-stamping from the published asset."
+            echo "::warning::(expected on a re-run: the release is immutable, so its bytes win)"
+            python3 - "$FORMULA" "$STAMPED" "$PUBLISHED" <<'PY'
+          import pathlib, sys
+          path, old, new = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          text = path.read_text()
+          if text.count(old) != 1:
+              sys.exit(f"refusing to edit {path}: {text.count(old)} occurrences of the stale sha256")
+          path.write_text(text.replace(old, new))
+          PY
+            # Verify the mutation rather than assume it.
+            AFTER="$(grep -A1 'url "https' "$FORMULA" | grep sha256 | sed 's/.*"\(.*\)".*/\1/')"
+            if [ "$AFTER" != "$PUBLISHED" ]; then
+              echo "::error::${svc}: re-stamp did not take (${AFTER} != ${PUBLISHED})"
+              rc=1
+            fi
+          done
+          exit "$rc"
+
       - uses: actions/upload-artifact@v4
         with:
           name: homebrew-tap-rc-formulas-${{ needs.publish.outputs.version }}

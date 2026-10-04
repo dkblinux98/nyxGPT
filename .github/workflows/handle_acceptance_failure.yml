@@ -495,6 +495,13 @@ jobs:
           issue_comment "$COMMENTED" "$(cat "$BODY_FILE")" \
             || _warn "could not post the handler-failure comment on #${COMMENTED}"
 
+          # A NOTIFICATION, not an escalation (#4134 review of every
+          # owner-facing path). The HANDLER failed; the issue did not. Nothing
+          # was filed and no edge was written, so there is no work to hand
+          # over -- and replacing this issue's label with `Escalation` over a
+          # bug in the handler would destroy the type label of an issue that
+          # is fine, which is the one thing #4134 forbade. Re-issuing the
+          # command once the cause is fixed is the whole remedy.
           notify_human_escalation "$COMMENTED" "acceptance-failure handler FAILED" \
             "The @acceptance-failure handler exited non-zero on #${COMMENTED}: nothing filed, no edge written." \
             "Read ${RUN_URL}, fix the cause, then re-issue @acceptance-failure on #${COMMENTED} (${COMMENT_URL})." \

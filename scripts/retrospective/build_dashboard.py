@@ -185,7 +185,22 @@ def milestone_short(title):
     return short if short in MS_SHORT else "(none)"
 
 
-LABELS = ["Acceptance Failure", "Feature", "Release Management", "Improvement", "Documentation"]
+# The label lens. `Agent` and `Escalation` are owner-created labels the
+# dashboard would otherwise report as nothing at all (#4134): `Agent` marks
+# agent-process work, and `Escalation` REPLACES an issue's type label while
+# the owner holds it, so an escalated Acceptance Failure counts under
+# `Escalation` until they restore the real label. The `af`/`pm` totals below
+# still key on the type labels, so an escalated failure is temporarily absent
+# from them -- visible in the lens rather than silently uncounted.
+LABELS = [
+    "Acceptance Failure",
+    "Feature",
+    "Release Management",
+    "Improvement",
+    "Documentation",
+    "Agent",
+    "Escalation",
+]
 # "pm" = product management failure: an Improvement filed during acceptance
 # testing is a spec gap (owner decision 2026-08-01/02), distinct from an
 # Acceptance Failure (implementation defect). Counted as its own failure

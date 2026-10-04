@@ -105,7 +105,12 @@ type InfraStatus = {
     // default -- and when something IS deployed with no marker, say so
     // instead (see `terraformImageMode`).
     install_mode?: {
-      mode: 'artifact' | 'dev';
+      // 'unrecorded' since #3988: a two-value field cannot express "nothing
+      // wrote this down", and `mode: 'artifact'` beside a `label` that said
+      // unrecorded is one payload carrying both the honest answer and the
+      // wrong one. `terraformImageMode` already derived the tri-state from
+      // `recorded`/`deployed`; the api now agrees with it.
+      mode: 'artifact' | 'dev' | 'unrecorded';
       checkout: string | null;
       label: string;
       images: Record<string, string>;
@@ -145,10 +150,31 @@ type InfraStatus = {
     // deployment. Optional so the page still renders against an api process
     // from before #3834.
     install_mode?: {
-      mode: 'artifact' | 'dev';
+      // 'unrecorded' is a real value of `mode` since #3988's second round:
+      // the owner's `--dev` cluster was reported as `mode: 'artifact'` with
+      // `label: 'unrecorded ...'` beside it, so a reader of either field was
+      // told something the other denied. `source` names which record
+      // answered -- the cluster's own ConfigMap, or this machine's marker --
+      // because "unrecorded" only means something with the *where* beside it.
+      mode: 'artifact' | 'dev' | 'unrecorded';
       checkout: string | null;
       label: string;
       recorded: boolean;
+      source?: string;
+    };
+    // Which nyxGPT this deployment is running (#3988, second round). The
+    // Definition of Done asks this page for "what version ... without a
+    // terminal" and the card answered Pods and nothing else -- never a
+    // vantage-point limit, since in-cluster the api process serving this page
+    // IS this deployment's api. `known: false` is the honest answer for a
+    // deployment installed before the cluster carried a record; the card says
+    // unknown rather than showing a release nobody installed. Optional so the
+    // page still renders against an api process from before this field.
+    version?: {
+      known: boolean;
+      version: string;
+      channel: string;
+      source: string;
     };
     // The in-cluster observability layer (#3787): Kubernetes mode cannot use
     // the Compose observability profiles, so it deploys its own. Optional on
@@ -158,12 +184,15 @@ type InfraStatus = {
       probe_available: boolean;
       deployed: boolean;
       workloads: Record<string, string>;
-      // The same three states the Pod list above badges (#3827). Without it
-      // this section rendered raw `"0/1 ready"`/`"1/1 ready"`/`"absent"`
-      // strings in undifferentiated grey -- a workload that is up, one still
-      // rolling out and one that never deployed all looked identical, on the
-      // same card that badges every Pod READY/PENDING/FAILED. Optional, so an
-      // older api falls back to those plain lines.
+      // Badged from the same vocabulary as the Pod list above (#3827), minus
+      // the one state only a Pod can be in: READY/PENDING/FAILED here, and
+      // additionally SUPERSEDED there (#3990), because supersession is a
+      // question about one replica being rolled past and a *workload* is never
+      // rolled past. Without these states this section rendered raw
+      // `"0/1 ready"`/`"1/1 ready"`/`"absent"` strings in undifferentiated
+      // grey -- a workload that is up, one still rolling out and one that
+      // never deployed all looked identical, on the same card that badges
+      // every Pod. Optional, so an older api falls back to those plain lines.
       workload_states?: {
         name: string;
         state: 'ready' | 'pending' | 'failed' | string;
@@ -326,6 +355,24 @@ type CloudDeployStatus = {
   connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
+  // The EC2 Mac's screen path (#4121). Two independent facts, because they are
+  // independently true: `running` is whether the SSH forward is up on the
+  // operator's machine right now, and `configured` is whether nyxGPT ever
+  // enabled Screen Sharing on that Mac -- which outlives any one tunnel. The
+  // credential is deliberately NOT in this payload; it lives in
+  // ~/.nyxGPT/secrets and `password_file` names the path, never the secret
+  // (#3458/#3466's rule for the HTTP API).
+  screen?: {
+    running: boolean;
+    pid: number;
+    local_port: number;
+    url: string;
+    configured: boolean;
+    configured_at: string;
+    password_file: string;
+    command: string;
+    stop_command: string;
+  };
   health: DeployHealth;
   history: DeployHistoryEntry[];
   urls: Record<string, string>;
@@ -402,12 +449,22 @@ function badgeStyle(ok: boolean, neutral = false): React.CSSProperties {
   };
 }
 
-// A Pod is ready, still starting, or broken -- the same three states
-// `nyxgpt ops` prints as [OK]/[PENDING]/[FAIL] (#3827). Pending is amber
-// rather than red on purpose: it is a normal stage of a rollout, and colouring
-// it as a failure is the browser version of the defect this fixed.
+// A Pod is ready, still starting, superseded or broken -- the same states
+// `nyxgpt ops` prints as [OK]/[PENDING]/[SUPERSEDED]/[FAIL] (#3827, #3990).
+// Pending is amber rather than red on purpose: it is a normal stage of a
+// rollout, and colouring it as a failure is the browser version of the defect
+// this fixed. Superseded is grey for the same reason in the other direction:
+// the Pod really is dead, but its workload has already replaced it, so nothing
+// about it is a call to action.
 function podStateBadgeStyle(state: string): React.CSSProperties {
-  const color = state === 'ready' ? '#22c55e' : state === 'pending' ? '#f59e0b' : '#ef4444';
+  const color =
+    state === 'ready'
+      ? '#22c55e'
+      : state === 'pending'
+        ? '#f59e0b'
+        : state === 'superseded'
+          ? '#6b7280'
+          : '#ef4444';
   return {
     fontSize: '0.7rem',
     fontWeight: 600,
@@ -942,6 +999,32 @@ export default function InfrastructurePage() {
                       ? ' — local kind cluster provisioned by nyxgpt (torn down together on `nyxgpt ops down --kubernetes`).'
                       : ' — bring-your-own cluster (never destroyed by `nyxgpt ops down --kubernetes`).'}
                 </p>
+                {/* What version this deployment is running (#3988). The Definition
+                    of Done asks this page for it directly, and the card used to
+                    answer Pods and stop -- while the api process serving the page
+                    knew its own version all along. */}
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  Version:{' '}
+                  {status.kubernetes.version?.known ? (
+                    <>
+                      <strong>{status.kubernetes.version.version}</strong>
+                      {status.kubernetes.version.channel &&
+                      status.kubernetes.version.channel !== 'unknown'
+                        ? ` (${status.kubernetes.version.channel} channel)`
+                        : ''}
+                      {status.kubernetes.version.source
+                        ? ` — from ${status.kubernetes.version.source}.`
+                        : ''}
+                    </>
+                  ) : (
+                    <>
+                      <strong>unknown</strong> — this deployment carries no install record to read
+                      a version from, and this dashboard is not being served from inside it.
+                      Re-run <code>nyxgpt ops install --kubernetes</code> to record one, or ask
+                      the host with <code>nyxgpt ops status</code>.
+                    </>
+                  )}
+                </p>
                 {/* The deployment's own install mode (#3834) -- what the images in
                     THIS cluster were built from. Never the native marker: a host
                     can run a native dev install and a Kubernetes artifact
@@ -951,9 +1034,11 @@ export default function InfrastructurePage() {
                   Install mode:{' '}
                   {!status.kubernetes.install_mode?.recorded ? (
                     <>
-                      <strong>unrecorded</strong> — no marker for this deployment on the machine
-                      this dashboard runs on. It was deployed before nyxGPT recorded one, or from
-                      another machine.
+                      <strong>unrecorded</strong> — neither this cluster nor the machine this
+                      dashboard runs on holds an install record for this deployment. It was
+                      deployed before nyxGPT recorded one in the cluster. Re-run{' '}
+                      <code>nyxgpt ops install --kubernetes</code> (add <code>--dev</code> for a
+                      working-tree build) to record it.
                     </>
                   ) : status.kubernetes.install_mode.mode === 'dev' ? (
                     <>
@@ -970,6 +1055,10 @@ export default function InfrastructurePage() {
                       involved).
                     </>
                   )}
+                  {status.kubernetes.install_mode?.recorded &&
+                  status.kubernetes.install_mode.source
+                    ? ` Read from ${status.kubernetes.install_mode.source}.`
+                    : ''}
                 </p>
                 {status.kubernetes.pod_states && status.kubernetes.pod_states.length > 0 ? (
                   /* Three states, not two (#3827): a Pod that is still pulling its
@@ -977,14 +1066,27 @@ export default function InfrastructurePage() {
                      [FAIL] for exactly this and buried the one Pod that really
                      could not start. FAILED carries the scheduler's/kubelet's own
                      reason, because "Pending" on its own does not distinguish
-                     "downloading" from "this node cannot fit it". */
+                     "downloading" from "this node cannot fit it".
+
+                     Four since #3990's rework: a terminal Pod its own workload
+                     has already replaced is SUPERSEDED. Kubernetes keeps those
+                     for diagnosis, so every rollout leaves one behind, and
+                     badging it FAILED would show a serving deployment as broken
+                     for ever -- and would contradict `nyxgpt ops status`, which
+                     is the disagreement #3827 exists to prevent. */
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.8rem' }}>
                     {status.kubernetes.pod_states.map((pod) => (
                       <li key={pod.name} style={{ padding: '3px 0' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
                           <span style={{ fontFamily: 'monospace' }}>{pod.name}</span>
                           <span style={podStateBadgeStyle(pod.state)}>
-                            {pod.state === 'ready' ? 'READY' : pod.state === 'pending' ? 'PENDING' : 'FAILED'}
+                            {pod.state === 'ready'
+                              ? 'READY'
+                              : pod.state === 'pending'
+                                ? 'PENDING'
+                                : pod.state === 'superseded'
+                                  ? 'SUPERSEDED'
+                                  : 'FAILED'}
                           </span>
                         </div>
                         <div style={{ color: 'var(--foreground-muted)', fontFamily: 'monospace' }}>
@@ -1057,10 +1159,13 @@ export default function InfrastructurePage() {
                     <>
                       {status.kubernetes.observability.workload_states &&
                       status.kubernetes.observability.workload_states.length > 0 ? (
-                        /* Badged with the same three states as the Pods above (#3827):
-                           `0/1 ready` is PENDING, not a quiet grey line the operator
-                           has to interpret against a Pod list that already ruled on
-                           the same condition two sections up. */
+                        /* Badged READY/PENDING/FAILED from the same vocabulary as the
+                           Pods above (#3827): `0/1 ready` is PENDING, not a quiet grey
+                           line the operator has to interpret against a Pod list that
+                           already ruled on the same condition two sections up. Three
+                           of the four, not four: the Pod list also badges SUPERSEDED
+                           (#3990), which a workload can never be -- only one of its
+                           replicas can be rolled past. */
                         <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                           {status.kubernetes.observability.workload_states.map((workload) => (
                             <li
@@ -1086,6 +1191,22 @@ export default function InfrastructurePage() {
                       ) : (
                         <ComponentList components={status.kubernetes.observability.workloads} />
                       )}
+                      {/* READY here means the workload is RUNNING, which is not the
+                          same as receiving anything -- a collector with no clients is
+                          as ready as one with a thousand, and #3990 was exactly that:
+                          ten READY badges over a tier that observed nothing. The
+                          data-flow answer is a `kubectl exec` into the Grafana and api
+                          Pods, which this api's ServiceAccount deliberately has no
+                          `pods/exec` rights for, so the page names the command that
+                          asks instead of growing the privilege to ask it itself. */}
+                      <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
+                        READY means the workload is running, not that telemetry is
+                        reaching it. For what each backend has actually received —
+                        Jaeger&apos;s spans, Prometheus&apos;s scrape targets,
+                        Loki&apos;s log labels, GlitchTip&apos;s errors, and whether
+                        Grafana&apos;s GlitchTip credential still authenticates — run{' '}
+                        <code>nyxgpt ops status</code>.
+                      </p>
                       {/* #3986: this card used to state as a fact that the SRE
                           Services were ClusterIP and a forward the only way in.
                           The SRE-tier publish falsified that --
@@ -1378,6 +1499,24 @@ export default function InfrastructurePage() {
                   }
                 />
                 <Row label="Stack health" value={healthLabel(cloud.health)} />
+                {/* #4121, macOS only. There is no screen to share on a Linux
+                    instance, so a row claiming one is closed would answer a
+                    question that does not apply. Observed, never operated
+                    (D-017): the row reports the path and names the command,
+                    and this page has no button that opens it -- a UI cannot
+                    safely drive access to the substrate serving it. */}
+                {cloud.os_family === 'macos' && !cloud.on_instance && (
+                  <Row
+                    label="Mac screen path"
+                    value={
+                      cloud.screen?.running
+                        ? `open at ${cloud.screen.url} (pid ${cloud.screen.pid}) — close it with \`${cloud.screen.stop_command}\``
+                        : cloud.screen?.configured
+                          ? `Screen Sharing is enabled on the Mac (loopback only) but no tunnel is open — \`${cloud.screen.command}\` re-opens it`
+                          : `not set up — \`${cloud.screen?.command ?? 'nyxgpt cloud screen'}\` opens one`
+                    }
+                  />
+                )}
               </ul>
 
               {/* The connection target (#3813). Reported, not offered: this
@@ -1627,6 +1766,16 @@ export default function InfrastructurePage() {
               ['Show this state from a terminal', cloud?.commands?.status ?? 'nyxgpt cloud status'],
               ['Open the access tunnel', cloud?.commands?.tunnel ?? 'nyxgpt cloud tunnel'],
               ['Close it again', cloud?.commands?.tunnel_stop ?? 'nyxgpt cloud tunnel --stop'],
+              // #4121. Only on a macOS deployment: naming it on a Linux one
+              // would advertise a capability that box has not got.
+              ...(cloud?.os_family === 'macos'
+                ? ([
+                    [
+                      'Open the Mac’s screen',
+                      cloud?.commands?.screen ?? 'nyxgpt cloud screen',
+                    ],
+                  ] as Array<[string, string]>)
+                : []),
               [
                 'Inspect the containers running on the instance',
                 cloud?.commands?.ops_status ?? 'nyxgpt cloud ops status',

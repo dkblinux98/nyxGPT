@@ -485,6 +485,14 @@ COMMENTS="$(cat "$TMP/pr-comments.txt")"
 _assert_contains "a second arrival on the SAME head escalates instead of repeating" \
   "$COMMENTS" "<!-- ci-red-escalated: sha-red -->"
 _assert_contains "and hands it to the owner" "$(cat "$TMP/gh.log")" "owner"
+# The ONE escalation step (#4134): the label is replaced with `Escalation`,
+# and that replacement is what pauses the affected work. Before this the red
+# head only assigned the owner and sent a DM, so nothing on the issue said it
+# had been escalated at all.
+_assert_contains "the issue is relabeled Escalation" \
+  "$(cat "$TMP/gh.log")" "--add-label Escalation"
+_assert_not_contains "nothing reopens the issue or moves its lane" \
+  "$(cat "$TMP/gh.log")" "gh issue reopen"
 
 : > "$TMP/gh.log"
 BEFORE="$(wc -l < "$TMP/pr-comments.txt")"

@@ -17,9 +17,10 @@ metadata:
   # watchdog needs (see docs/self-healing.md#kubernetes-mode) to list this
   # namespace's nyxgpt-api Pods and delete one to force its
   # Deployment/ReplicaSet to recreate it. No broader cluster access than
-  # that -- in particular, no access to Secrets, ConfigMaps, or any resource
-  # outside this namespace. (Blue/green's Service-selector patch permission
-  # was retired along with deploy.py -- see #3409.)
+  # that -- in particular, no access to Secrets, no resource outside this
+  # namespace, and of this namespace's ConfigMaps exactly one, by name (see
+  # `nyxgpt-install-mode` below). (Blue/green's Service-selector patch
+  # permission was retired along with deploy.py -- see #3409.)
   #
   # `pods/proxy` (get) is what makes the canary gate honest (#3829): it lets
   # canary.py read the /metrics of the Pods carrying `track=canary`
@@ -35,6 +36,16 @@ metadata:
   # which `get` alone does not cover. Without these two lines the page would
   # detect the cluster and then render every observability workload
   # "absent", which is the same false negative one card over.
+  #
+  # `configmaps` (get) is scoped to the single name `nyxgpt-install-mode` --
+  # the deployment's own install record (#3988, second round). The marker file
+  # that used to be the only record lives in the installing machine's
+  # `~/.nyxGPT`, which is exactly what an api Pod cannot see, so a `--dev`
+  # cluster reported its install mode as "unrecorded" on the page while
+  # `nyxgpt ops status` on the host said "dev". `resourceNames` keeps this to
+  # one ConfigMap by name rather than opening the namespace's ConfigMaps --
+  # `k8s/configmap.yaml` and `k8s/secret.yaml` stay unreadable through this
+  # Role, which is the property the paragraph above promises.
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -50,6 +61,10 @@ rules:
     verbs: ["get", "list", "delete"]
   - apiGroups: [""]
     resources: ["pods/proxy"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["nyxgpt-install-mode"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

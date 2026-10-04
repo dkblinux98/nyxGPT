@@ -93,6 +93,14 @@ jobs:
           [ "$cpus" -ge 2 ] || { echo "::error::need >= 2 vCPU, have ${cpus}"; exit 1; }
 
       - name: Run the checkout-free Kubernetes smoke
+        # KEEP THE CLUSTER UP for the step below (#3990). Same defect as
+        # k8s-local-smoke.yml had: the script's EXIT trap ends in
+        # `nyxgpt ops down --kubernetes`, which deletes the kind cluster, so
+        # "Diagnostics on failure" ran against nothing and printed `connection
+        # refused` where the Pod logs should be. Teardown is its own
+        # `always()` step after the diagnostics.
+        env:
+          NYXGPT_SMOKE_KEEP_UP: '1'
         run: ./scripts/k8s-artifact-smoke.sh
 
       - name: Diagnostics on failure
@@ -108,3 +116,8 @@ jobs:
           done
           ls -la "$HOME/.nyxGPT" || true
           ls -la "$HOME/.nyxGPT/k8s" || true
+
+      - name: Tear down the smoke cluster
+        # After the diagnostics, never before -- see the KEEP_UP comment above.
+        if: always()
+        run: kind delete cluster --name nyxgpt-local || true

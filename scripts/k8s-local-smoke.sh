@@ -119,12 +119,23 @@ cleanup() {
         echo "--- diagnostics ---" >&2
         kubectl -n "$NAMESPACE" get pods -o wide >&2 2>/dev/null || true
         kubectl -n "$NAMESPACE" describe pods >&2 2>/dev/null | tail -80 || true
-        # Ollama's own log, which the describe does not carry: the model pulls
-        # this smoke asserts on happen in the postStart hook, so when a model
-        # assertion fails this is the only record of what the pull did. The
-        # workflow-level "Diagnostics on failure" step cannot supply it -- the
-        # cleanup below has already torn the cluster down by then.
-        kubectl -n "$NAMESPACE" logs ollama-0 --tail=100 >&2 2>/dev/null || true
+        # EVERY Pod's log, not a hand-picked one (#3990). This block used to
+        # name `ollama-0` alone, because the teardown below removes the cluster
+        # before anything else can ask it -- so each assertion added afterwards
+        # was undiagnosable until someone noticed the omission and copied
+        # another `kubectl logs` line in. The observability assertions are what
+        # made that bite: "GlitchTip never received it" went red with no
+        # GlitchTip log in the record. A list that is derived rather than
+        # maintained cannot fall behind the assertions again.
+        #
+        # In CI the workflow sets NYXGPT_SMOKE_KEEP_UP=1 and runs its own,
+        # fuller "Diagnostics on failure" step against the surviving cluster;
+        # this is the local-run equivalent, and the reason the local run is not
+        # the poorer of the two.
+        for pod in $(kubectl -n "$NAMESPACE" get pods -o name 2>/dev/null); do
+            echo "--- logs $pod ---" >&2
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 >&2 2>/dev/null || true
+        done
     fi
     if [ "${NYXGPT_SMOKE_KEEP_UP:-0}" != "1" ]; then
         nyxgpt ops down --kubernetes >/dev/null 2>&1 || true
@@ -300,6 +311,99 @@ if grep -q "pull into the cluster" <<<"$DOCTOR_OUT"; then
     fail "ops doctor reports a missing required model against a cluster that has both"
 fi
 ok "ops doctor reports model readiness against the cluster, and finds nothing missing"
+
+# --- AC4, the #3987 re-test failure: doctor's OTHER checks (2026-08-26) ---
+#
+# The owner re-tested #3987 on a live cluster and found AC1/2/3/5 fixed and
+# AC4 not: `ops doctor` exited 2 saying "Tracing is enabled ([tracing]
+# otlp_endpoint=http://localhost:4318/v1/traces) but nothing is listening
+# there" minutes after `curl http://localhost:16686/api/services` returned
+# three services with real spans behind them, plus a GlitchTip 401 of the
+# same shape. Both read the HOST's config and probed the HOST's port.
+#
+# This runner will not reproduce that on its own -- its host config may have
+# no [tracing] section at all -- so the condition is INJECTED, both halves,
+# per CLAUDE.md/#3753. One host config.ini carrying an endpoint nothing can
+# ever answer (port 1 is IANA-reserved and never bound), and two `ops doctor`
+# runs over it differing in exactly one thing: whether the Kubernetes install
+# marker is there for doctor to see.
+#
+#   without the marker -> doctor is in native mode and MUST report it. That
+#                         is the pre-fix output, reproduced on demand, and it
+#                         is what makes the second half a real assertion.
+#   with the marker    -> doctor is reporting on the cluster and MUST NOT,
+#                         because the Pods export to http://otel-collector:4318
+#                         and that collector is up.
+#
+# HOME is redirected rather than the real config.ini edited: this step must
+# not leave the machine's own configuration altered for the twelve steps that
+# follow it. KUBECONFIG is passed through explicitly, since the redirect would
+# otherwise hide ~/.kube/config and make every run "no cluster configured".
+AC4_HOME=$(mktemp -d)
+AC4_KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
+AC4_MARKER="${HOME}/.nyxGPT/install-mode-kubernetes.json"
+mkdir -p "${AC4_HOME}/.nyxGPT"
+cat >"${AC4_HOME}/.nyxGPT/config.ini" <<'AC4EOF'
+[tracing]
+enabled = true
+otlp_endpoint = http://127.0.0.1:1/v1/traces
+AC4EOF
+AC4_NATIVE=$(HOME="${AC4_HOME}" KUBECONFIG="${AC4_KUBECONFIG}" nyxgpt ops doctor 2>&1) || true
+grep -q "127.0.0.1:1/v1/traces" <<<"$AC4_NATIVE" ||
+    fail "the injected host tracing fault was not reproduced -- without this half the \
+assertion below could not fail, whatever the code did"
+ok "pre-fix half: with no deployment in view, doctor reports the host's tracing endpoint"
+[ -f "$AC4_MARKER" ] || fail "no Kubernetes install marker at ${AC4_MARKER} to copy"
+cp "$AC4_MARKER" "${AC4_HOME}/.nyxGPT/"
+AC4_K8S=$(HOME="${AC4_HOME}" KUBECONFIG="${AC4_KUBECONFIG}" nyxgpt ops doctor 2>&1) || true
+echo "$AC4_K8S"
+rm -rf "${AC4_HOME}"
+if grep -q "127.0.0.1:1/v1/traces" <<<"$AC4_K8S"; then
+    fail "ops doctor reported the HOST's tracing endpoint on a running Kubernetes \
+deployment -- this is #3987 AC4"
+fi
+if grep -q "otel-collector Compose service" <<<"$AC4_K8S"; then
+    fail "ops doctor prescribed the Compose remedy on a Kubernetes deployment (#3987 AC4)"
+fi
+grep -q "Every other check below is about this host" <<<"$AC4_K8S" ||
+    fail "ops doctor does not say which of its checks are about the cluster and which \
+are about this host"
+ok "fixed half: the same host fault is not reported against the cluster (AC4)"
+
+# The branch must also be able to SAY something -- a cluster-scoped check that
+# is merely silent would pass every assertion above while finding nothing.
+# Scale the collector the Pods export to down to zero and require doctor to
+# report it, with the Kubernetes remedy rather than the Compose one.
+restore_collector() {
+    kubectl -n "$NAMESPACE" scale deploy/otel-collector --replicas=1 >/dev/null 2>&1 || true
+    kubectl -n "$NAMESPACE" rollout status deploy/otel-collector --timeout=300s >/dev/null 2>&1 ||
+        true
+}
+kubectl -n "$NAMESPACE" scale deploy/otel-collector --replicas=0 >/dev/null ||
+    fail "could not scale otel-collector down to inject the cluster-side tracing fault"
+AC4_DOWN=""
+for _attempt in $(seq 1 30); do
+    AC4_DOWN=$(nyxgpt ops doctor 2>&1) || true
+    if grep -q "collector workload otel-collector is" <<<"$AC4_DOWN"; then
+        break
+    fi
+    sleep 2
+done
+if ! grep -q "collector workload otel-collector is" <<<"$AC4_DOWN"; then
+    echo "$AC4_DOWN" >&2
+    restore_collector
+    fail "ops doctor did not notice the cluster's own OTLP collector was gone -- the \
+Kubernetes tracing check is silent, not substrate-aware (#3987 AC4)"
+fi
+if ! grep -q "nyxgpt ops observability --kubernetes" <<<"$AC4_DOWN"; then
+    echo "$AC4_DOWN" >&2
+    restore_collector
+    fail "ops doctor named a remedy other than the Kubernetes one for an in-cluster \
+collector that is down (#3987 AC4)"
+fi
+restore_collector
+ok "the cluster-scoped tracing check reports a real in-cluster fault, with the \
+Kubernetes remedy"
 
 step "5/19 The observability layer came up with the app tier"
 # Every workload k8s/observability/ ships, prometheus first: it is the one the
@@ -594,8 +698,66 @@ assert data["install_mode"]["in_scope"] is False, "the native card is not scoped
 pod_count = len(k8s["pods"])
 context = k8s["context"]
 print(f"[OK] in-cluster: {pod_count} Pods, context={context!r}")
+
+# The second round of #3988: detection alone was not "what is running, what
+# version". The card reported Pods, no version at all, and an install mode of
+# "artifact" for a deployment installed with --dev -- because the only record
+# it read was a marker file in the ~/.nyxGPT of the installing machine, which
+# inside a Pod is the empty home of the container. Both assertions below fail
+# on a revert with no fault injection: pre-fix there is no "version" key at
+# all, and install_mode.recorded is false from in here.
+version = k8s.get("version") or {}
+assert version.get("known") is True, f"no version reported from inside the cluster: {version}"
+assert version.get("version"), f"version reported as known but empty: {version}"
+assert version.get("source"), "a reported version must say where it came from"
+
+install = k8s["install_mode"]
+mode = install["mode"]
+source = install.get("source") or ""
+assert install["recorded"] is True, f"install mode unrecorded from inside the deployment: {install}"
+# This smoke installs without --dev, so the recorded mode is artifact.
+assert mode == "artifact", f"wrong install mode reported: {install}"
+assert "configmap/nyxgpt-install-mode" in source, f"mode not read from the cluster record: {source}"
+reported = version["version"]
+channel = version["channel"]
+print(f"[OK] version {reported} ({channel}), install mode {mode}")
 ' || fail "the Infrastructure payload served from inside the cluster is wrong (#3988)"
 ok "the page served by the api Pod reports the deployment it is running in"
+
+# The RBAC half of the AC, proven with the Pod's OWN ServiceAccount rather
+# than by reading the manifest: the install record is readable, and the Role's
+# promise that nothing else in the namespace is stays true.
+kubectl -n "$NAMESPACE" exec "$api_pod" -- \
+    kubectl -n "$NAMESPACE" get configmap nyxgpt-install-mode -o name >/dev/null ||
+    fail "the api Pod cannot read its own install record -- k8s/rbac.yaml does not grant it (#3988)"
+if kubectl -n "$NAMESPACE" exec "$api_pod" -- \
+    kubectl -n "$NAMESPACE" get configmap nyxgpt-config -o name >/dev/null 2>&1; then
+    fail "the api ServiceAccount can read nyxgpt-config -- the configmaps grant is not scoped to \
+the install record by name, which is what k8s/rbac.yaml promises"
+fi
+ok "the install record is readable by the Pod's ServiceAccount, and no other ConfigMap is"
+
+# FAULT INJECTION for the mode assertion: with the record gone, the page must
+# say `unrecorded` -- never the `artifact` default, which here would be a
+# guess about someone else's deployment (D-032, #3861). Backed up first and
+# restored after, so the rest of the run sees the cluster it expects.
+kubectl -n "$NAMESPACE" get configmap nyxgpt-install-mode -o yaml >/tmp/k8s-install-record.yaml
+kubectl -n "$NAMESPACE" delete configmap nyxgpt-install-mode >/dev/null
+kubectl -n "$NAMESPACE" exec "$api_pod" -- \
+    curl -fsS -H "X-API-Key: ${API_KEY}" http://127.0.0.1:8000/api/v1/infra/status |
+    python3 -c '
+import json, sys
+install = json.load(sys.stdin)["kubernetes"]["install_mode"]
+mode = install["mode"]
+assert install["recorded"] is False, f"a deleted record still reads as recorded: {install}"
+assert mode == "unrecorded", (
+    f"an unknown install mode rendered as the determinate value {mode!r} -- that is the "
+    "defect #3988 was re-opened for (D-032)"
+)
+print("[OK] no record -> unrecorded, not artifact")
+' || fail "with no install record the page does not report an honest unknown (#3988)"
+kubectl -n "$NAMESPACE" apply -f /tmp/k8s-install-record.yaml >/dev/null
+ok "a missing install record reads as unrecorded, never as the artifact default"
 
 step "14/19 The user path works: sessions list, via the web Service"
 wait_for_web
@@ -733,10 +895,112 @@ glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issu
     case "$issues" in *"$ERROR_MARKER"*) found=1; break ;; esac
     sleep 5
 done
-[ -n "$found" ] ||
+if [ -z "$found" ]; then
+    # Say what GlitchTip actually answered before failing (#3990). The two
+    # candidate subjects are "the api sent it somewhere else" and "GlitchTip
+    # received it and made no issue of it", and the issue list is the only
+    # record that distinguishes them which no Pod log carries. It holds no
+    # credential: the token travels in a request header, inside the Pod.
+    echo "--- GlitchTip's issue list for org nyxgpt (looking for ${ERROR_MARKER}) ---" >&2
+    printf '%s\n' "${issues:-<no response>}" | head -c 4000 >&2
+    echo >&2
     fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
 resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
+fi
 ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
+
+# 7f. The report an OPERATOR reads. Everything above is this script driving the
+#     cluster directly; the owner's 2026-08-26 re-test found that none of it
+#     surfaced on `nyxgpt ops status`, which printed ten `1/1 ready` workloads
+#     and not one word about what any of them had received. The two error
+#     questions must also be two distinct lines: a green "Grafana can log in"
+#     printed under `errors:` is what hid an api reporting nowhere.
+nyxgpt ops status >/tmp/k8s-smoke-status-flow.txt 2>&1 ||
+    fail "nyxgpt ops status failed"
+sed -n '/Kubernetes observability/,/^$/p' /tmp/k8s-smoke-status-flow.txt
+for line in "traces:" "metrics:" "logs:" "errors:" "error reporting credentials:"; do
+    grep -q "\\] ${line}" /tmp/k8s-smoke-status-flow.txt ||
+        fail "nyxgpt ops status does not report '${line}' -- the data-flow lines are \
+install-only again (#3990 AC5)"
+done
+grep -q "\\] errors: GlitchTip holds" /tmp/k8s-smoke-status-flow.txt ||
+    fail "the errors line does not say what GlitchTip RECEIVED -- it is answering the \
+credentials question again (#3990 AC5)"
+ok "nyxgpt ops status reports data flow, with the credential question on its own line"
+
+# 7g. FAULT INJECTION for the AC2 defect itself, reproduced exactly as owner
+#     acceptance found it: a CORRECT Secret and an api Pod whose
+#     NYXGPT_ERROR_TRACKING_DSN is empty. An environment is fixed at process
+#     start, so those two coexist, and before this rework every surface
+#     reported that cluster as a healthy observability tier.
+#
+#     Injected by emptying the live Secret, rolling the api so the replacement
+#     Pod boots without a DSN, and then putting the Secret back -- which is
+#     also what makes this a gate on asking the POD: a check that read the
+#     Secret would go green here while the api still reports nowhere. Only the
+#     length of the value is ever printed, never the value: a DSN carries
+#     GlitchTip's project key.
+dsn_secret_length() {
+    kubectl -n "$NAMESPACE" get secret nyxgpt-secrets \
+        -o "jsonpath={.data['error-tracking-dsn']}" | wc -c | tr -d ' '
+}
+dsn_length_before=$(dsn_secret_length)
+[ "$dsn_length_before" -gt 0 ] ||
+    fail "the nyxgpt-secrets DSN is empty before this step even begins -- the install did \
+not provision it (#3990 AC2)"
+
+kubectl -n "$NAMESPACE" patch secret nyxgpt-secrets --type merge \
+    -p '{"stringData":{"error-tracking-dsn":""}}' >/dev/null ||
+    fail "could not empty the error-tracking DSN in the cluster"
+kubectl -n "$NAMESPACE" rollout restart deploy/nyxgpt-api-stable >/dev/null
+kubectl -n "$NAMESPACE" rollout status deploy/nyxgpt-api-stable --timeout=300s ||
+    fail "the api did not roll after the injected empty DSN"
+# ...and the Secret goes back to being right, so what is left is ONLY the Pod.
+kubectl apply -f "$HOME/.nyxGPT/k8s/secret.yaml" >/dev/null ||
+    fail "could not re-apply the deployment Secret"
+dsn_length_after=$(dsn_secret_length)
+[ "$dsn_length_after" = "$dsn_length_before" ] ||
+    fail "the injected state is not the one under test: the Secret did not come back \
+(${dsn_length_before} -> ${dsn_length_after} bytes)"
+echo "injected: nyxgpt-secrets holds ${dsn_length_after} bytes, the api Pod holds none"
+
+nyxgpt ops status >/tmp/k8s-smoke-status-nodsn.txt 2>&1 || fail "nyxgpt ops status failed"
+grep -q "\\[FAIL\\] errors: the api has no error-tracking DSN" /tmp/k8s-smoke-status-nodsn.txt ||
+    fail "an api Pod with an EMPTY error-tracking DSN still reports as a healthy \
+observability tier -- this check cannot detect the #3990 AC2 defect and is worthless as a gate"
+ok "an api reporting errors nowhere is reported as a failure, not as a healthy tier"
+
+# ...and `doctor` must say the same thing about the same cluster. Its
+# cluster-side DSN drift check (#3987) compares the SECRET's key against
+# GlitchTip's live keys, and in this injected state that comparison PASSES --
+# the Secret is back and its key is genuinely live -- so a doctor that asks
+# only the Secret prints nothing here while `status` prints `[FAIL]`. Two
+# surfaces must not disagree about one fact (#3827), so this gates the
+# agreement, not just the one line. `|| true`: doctor exits 2 on any finding.
+nyxgpt ops doctor >/tmp/k8s-smoke-doctor-nodsn.txt 2>&1 || true
+grep -q "NYXGPT_ERROR_TRACKING_DSN is empty" /tmp/k8s-smoke-doctor-nodsn.txt ||
+    fail "nyxgpt ops doctor reports nothing about an api Pod with no error-tracking DSN while \
+nyxgpt ops status calls it a [FAIL] -- two surfaces disagreeing about one deployment (#3827)"
+ok "doctor and status agree that this api is reporting errors nowhere"
+
+# ...and the wrapped repair path, which also proves the rollout is driven by
+# what the running Pod has rather than by whether the DSN changed on disk.
+nyxgpt ops glitchtip-init --kubernetes ||
+    fail "nyxgpt ops glitchtip-init --kubernetes could not repair the emptied DSN"
+nyxgpt ops status >/tmp/k8s-smoke-status-redsn.txt 2>&1 || fail "nyxgpt ops status failed"
+# An `if`, not `&& fail`: a grep that finds nothing exits non-zero, which under
+# `set -e` would end the script on the PASSING path (same reason as line 320).
+if grep -q "\\[FAIL\\] errors: the api has no error-tracking DSN" \
+    /tmp/k8s-smoke-status-redsn.txt; then
+    fail "the api still has no DSN after glitchtip-init -- the repair path does not roll the \
+Pod that booted without one"
+fi
+nyxgpt ops doctor >/tmp/k8s-smoke-doctor-redsn.txt 2>&1 || true
+if grep -q "NYXGPT_ERROR_TRACKING_DSN is empty" /tmp/k8s-smoke-doctor-redsn.txt; then
+    fail "doctor still reports the api as having no DSN after glitchtip-init repaired it -- the \
+finding is not derived from the running Pod"
+fi
+ok "glitchtip-init re-wired the api and both reports went green again"
 
 step "17/19 Sessions are shared by every api replica (Cassandra-backed)"
 # With the file backend each api replica keeps its own session list, so

@@ -20,7 +20,8 @@ re-diagnosing.
 
 The tracking record is a comment marker, not a hidden counter -- re-derived
 fresh from the release issue's live comment thread on every check, the same
-level-triggered shape as escalation_pause_gate (lib/gh_project.sh, #3687).
+level-triggered shape as the escalation-cause registry
+(lib/gh_project.sh, #4134).
 It self-expires after `window_minutes` and can be cleared early by an
 OWNER-authored `RESOLVE_ANOMALY` comment.
 """

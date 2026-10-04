@@ -391,13 +391,19 @@ fi
 # deadlock that had to be trimmed by hand every time (#3390, #3413, #3415).
 # Labels are re-read here rather than reused from ISSUE_DATA above, for the
 # same reason the project fields are: the label may have been applied since.
-# "Real" means "not a workflow-control label" -- real_label_names is the same
-# helper the submit script's check uses, so the two cannot disagree. This used
-# to be a hardcoded list of four names, which made any label added to the
-# project later invisible: an `Agent`-labeled issue looked unlabeled, got
-# Feature stamped on top, and deadlocked at submit time exactly as this comment
-# describes. A rule about HOW MANY labels has to count labels, not recognise
-# names.
+# real_label_names is the same helper the submit script's check uses, so the
+# two cannot disagree. This used to be a hardcoded list of four names, which
+# made any label added to the project later invisible: an `Agent`-labeled issue
+# looked unlabeled, got Feature stamped on top, and deadlocked at submit time
+# exactly as this comment describes. A rule about HOW MANY labels has to count
+# labels, not recognise names.
+#
+# That is why `Escalation` (#4134) needs nothing special here: counting is
+# name-blind, so an escalated issue reads as labeled and keeps its single
+# label. The invariant is pinned by a test rather than left to this comment
+# (tests/unit/test_no_agent_created_labels.py) -- #4134 requires that hygiene
+# never put `Feature` next to `Escalation`, and the way to be sure of that is
+# to never special-case a name in the first place.
 LABELS_JSON=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE}" --jq '.labels')
 LABELS="$(real_label_names "$LABELS_JSON" | paste -sd, -)"
 if [[ -n "$LABELS" ]]; then

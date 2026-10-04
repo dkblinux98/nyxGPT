@@ -87,11 +87,11 @@ Env vars:
   RELEASE_ISSUE                release tracking issue number -- exempt
                                 from the drain check (`decide`)
   DRAIN_GATE_BYPASS_LABELS     comma-separated labels that mark an issue
-                                as agent-process work (`bypass`).
-                                Default empty: no label exists for this
-                                today and agents may not create one, so
-                                the marker/heading rules below carry the
-                                rule until the owner adds a label.
+                                as agent-process work (`bypass`). Defaults
+                                to "Agent", the owner-created label for
+                                nyxAGENT-side work (owner decision
+                                2026-10-03, #4134). Set it to an empty
+                                string to disable the label rule entirely.
   DRAIN_GATE_REWORK_LABELS     comma-separated labels a held issue must
                                 carry for its blocking relationship to park
                                 the issue it blocks (`rework`). Default
@@ -128,6 +128,16 @@ RELATED_FEATURE_RE = re.compile(r"(?:Parent|Related)\s+feature:\s*#(\d+)", re.IG
 # promote_accepted_features.sh sweeps (#3731) — if the gate exempted fewer
 # than the sweep parks, the gate would deadlock on its own held work.
 DEFAULT_REWORK_LABELS = ("Acceptance Failure", "Improvement")
+
+# The owner-created label that marks agent-process work -- nyxAGENT-side,
+# as distinct from nyxGPT product work (owner decision 2026-10-03, #4134).
+# It is the DEFAULT rather than an env var the workflows have to remember to
+# pass, because that is exactly what went wrong before: the rule was wired
+# and documented, `DRAIN_GATE_BYPASS_LABELS` defaulted to empty "until the
+# owner adds a label", the owner added `Agent` -- and no workflow passed it,
+# so an `Agent` issue was still held for a product acceptance round it has
+# nothing to do with. A default cannot be forgotten by a caller.
+DEFAULT_BYPASS_LABELS = ("Agent",)
 
 
 def _lane(page: dict) -> tuple[list[int], list[int], list[int], list[int] | None]:
@@ -452,13 +462,11 @@ def bypass(issue: dict) -> bool:
     work, and may therefore be worked immediately (owner decision
     2026-08-12, #3730).
 
-    Two rules, both explicit rather than incidental:
-      1. a machine marker in the body, for automation; or
-      2. an owner-authored process exception in the body prose.
-
-    A third, label-based rule is configurable but off by default:
-    creating labels needs owner permission (CLAUDE.md), so the rule is
-    wired and ready rather than assuming a label that does not exist.
+    Three rules, all explicit rather than incidental:
+      1. the owner-created `Agent` label (DEFAULT_BYPASS_LABELS), which
+         marks nyxAGENT-side work as distinct from nyxGPT product work;
+      2. a machine marker in the body, for automation; or
+      3. an owner-authored process exception in the body prose.
 
     Everything else -- every acceptance failure and improvement filed
     against a feature under test -- is gated.
@@ -469,11 +477,10 @@ def bypass(issue: dict) -> bool:
     if BYPASS_PROSE_RE.search(body):
         return True
 
-    configured = {
-        name.strip().casefold()
-        for name in os.getenv("DRAIN_GATE_BYPASS_LABELS", "").split(",")
-        if name.strip()
-    }
+    raw = os.getenv("DRAIN_GATE_BYPASS_LABELS")
+    if raw is None:
+        raw = ",".join(DEFAULT_BYPASS_LABELS)
+    configured = {name.strip().casefold() for name in raw.split(",") if name.strip()}
     return bool(configured and _label_names(issue) & configured)
 
 

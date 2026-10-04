@@ -24,6 +24,7 @@ from nyxgpt import cloud_artifact_smoke as cloud_artifact_smoke_mod
 from nyxgpt import cloud_deploy as cloud_deploy_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import cloud_provision as cloud_provision_mod
+from nyxgpt import cloud_screen as cloud_screen_mod
 from nyxgpt import cloud_smoke as cloud_smoke_mod
 from nyxgpt import cloud_state as cloud_state_mod
 from nyxgpt import models, sessions
@@ -3182,6 +3183,67 @@ def cli(argv: list[str] | None = None) -> int:
         help="Report whether a background tunnel is open, and what it forwards",
     )
 
+    # `cloud screen` (#4121): the EC2 Mac's *screen*, over the same
+    # loopback-only SSH path the app ports use. The only reason to pay a
+    # Dedicated Host's 24-hour minimum is that the hardware is a Mac, and
+    # until this command existed that was also the one thing nothing wrapped:
+    # reaching the screen meant hand-rolling `kickstart`, `passwd` and
+    # `ssh -L`, which CLAUDE.md's Operational Command Wrapping requirement
+    # forbids. Opens no security-group port -- see cloud_screen's module
+    # docstring and DECISION_PRIVATE_ACCESS_MECHANISM.md.
+    cloud_screen_p = cloud_sub.add_parser(
+        "screen",
+        help=(
+            "Open a screen-sharing path to the EC2 Mac target: enable macOS Screen Sharing "
+            "bound to loopback and forward it over SSH (no security-group port is opened)"
+        ),
+    )
+    _add_ssh_access_flags(cloud_screen_p)
+    cloud_screen_p.add_argument(
+        "--stop",
+        action="store_true",
+        help=(
+            "Close the screen path, leaving Screen Sharing enabled on the Mac "
+            "(nothing can reach it -- it is loopback-only)"
+        ),
+    )
+    cloud_screen_p.add_argument(
+        "--disable",
+        action="store_true",
+        help="Close the screen path and turn Screen Sharing back off on the Mac",
+    )
+    cloud_screen_p.add_argument(
+        "--status",
+        action="store_true",
+        help="Report whether the screen path is open, and what is enabled on the Mac",
+    )
+    cloud_screen_p.add_argument(
+        "--local-port",
+        type=int,
+        help=(
+            f"Local port to forward from (default: {cloud_screen_mod.SCREEN_PORT}). Use this "
+            "when your own machine is already sharing its screen on that port"
+        ),
+    )
+    cloud_screen_p.add_argument(
+        "--show-password",
+        action="store_true",
+        help=(
+            "Print the generated VNC credential. It is otherwise never echoed -- "
+            "it is stored in ~/.nyxGPT/secrets/ and the command prints that path"
+        ),
+    )
+    cloud_screen_p.add_argument(
+        "--rotate-password",
+        action="store_true",
+        help="Generate a new VNC credential and set it on the Mac, replacing the stored one",
+    )
+    cloud_screen_p.add_argument(
+        "--json",
+        action="store_true",
+        help="With --status, emit the machine-readable payload (never the credential)",
+    )
+
     # `cloud credentials` (#3718): the workstation-side counterpart of
     # `nyxgpt ops credentials`, reading the deployment's observability logins
     # over the same wrapped SSH access path -- so signing into Grafana or
@@ -3745,6 +3807,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "cloud" and args.cloud_cmd == "state":
         return cloud_state_mod.state_command(args)
+
+    if cmd == "cloud" and args.cloud_cmd == "screen":
+        return cloud_screen_mod.screen_command(args)
 
     if cmd == "cloud" and args.cloud_cmd in (
         "deploy",

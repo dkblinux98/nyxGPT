@@ -14,9 +14,10 @@ Behavior:
   - If pr_title is omitted, it is generated from issue label/title:
       "<SingleLabel>: <Issue Title> (#<N>)"
     The issue MUST have exactly one label, otherwise the script fails.
-    Workflow-control labels (e.g. "usage-limit-retry", added by self-heal
-    automation) are ignored for this check — they never count toward or
-    against the one-label invariant.
+    Every label counts: the "workflow-control" exemption existed only for
+    `usage-limit-retry`, an agent-created label retired by #4134.
+  - Refuses to submit an issue labeled `Escalation` (#4134): the owner holds
+    it, and it re-enters the loop only when they restore its real label.
   - If pr_body_file is omitted, a deterministic PR body is generated from issue data.
 
 Then:
@@ -153,12 +154,24 @@ if [[ "$issue_state" != "OPEN" ]]; then
   _die "Issue #$ISSUE is not OPEN (state=$issue_state). Refusing to submit for review."
 fi
 
-# ---- Enforce exactly one label, ignoring workflow-control labels (portable; no mapfile) ----
+# ---- An escalated issue is not submitted (#4134) ----
+# The owner holds it. Submitting a PR for an issue the owner has been handed
+# puts it straight back into the review loop the escalation took it out of --
+# and the PR title would read "Escalation: ...", stamping a state onto a
+# title that is supposed to carry a type. The issue returns to the loop when
+# the owner restores its real label; nothing here does that.
 labels_json="$(echo "$issue_json" | jq -c '.labels')"
+if [[ "$(printf '%s' "$labels_json" \
+  | python3 "$DIR/lib/escalation_label.py" is-escalated)" == "true" ]]; then
+  write_agent_error_detail "Issue #$ISSUE is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134) -- refusing to submit."
+  _die "Issue #$ISSUE carries '${ESCALATION_LABEL}': it is escalated to @${HUMAN_OWNER:-the owner} and must not be submitted for review. It re-enters the loop when the owner restores its real label."
+fi
+
+# ---- Enforce exactly one label (portable; no mapfile) ----
 real_labels="$(real_label_names "$labels_json")"
 label_count="$(printf '%s\n' "$real_labels" | grep -c . || true)"
 if [[ "$label_count" != "1" ]]; then
-  echo "[error] Issue #$ISSUE must have exactly one label (excluding workflow-control labels); found ${label_count}:" >&2
+  echo "[error] Issue #$ISSUE must have exactly one label; found ${label_count}:" >&2
   [[ -n "$real_labels" ]] && printf '%s\n' "$real_labels" | sed 's/^/[error] - /' >&2
   _die "Fix the issue labels and retry."
 fi

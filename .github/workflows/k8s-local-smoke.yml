@@ -75,6 +75,27 @@ name: Kubernetes Local Smoke
 # Required models header, models UNKNOWN) happens naturally here, so no fault
 # injection is needed for the step to fail on a revert.
 #
+# #3987's re-test added AC4 to that step: `ops doctor`'s OTHER checks were
+# still reading the host (a false "tracing is broken" on a cluster whose
+# Jaeger held real spans, and a GlitchTip 401 against a healthy GlitchTip).
+# That half IS fault-injected both ways, because this runner's own config may
+# carry no `[tracing]` section at all: the step writes a throwaway HOME whose
+# config.ini names an endpoint nothing can ever answer, runs `ops doctor` over
+# it without the Kubernetes install marker (which MUST report it -- the
+# pre-fix output, reproduced) and then with it (which must NOT). It then
+# scales the in-cluster `otel-collector` to zero and requires doctor to report
+# THAT, with the `--kubernetes` remedy, so the branch is proven to speak and
+# not merely to have gone quiet.
+#
+# Step 16 is #3990's: does the observability tier RECEIVE anything, or merely
+# run? Since the 2026-08-26 re-test it also asserts that the answer reaches
+# `nyxgpt ops status` -- the command an operator actually runs -- and injects
+# the AC2 defect itself: it empties the live `error-tracking-dsn`, rolls the
+# api, and requires the report to call that a failure rather than a healthy
+# tier, then repairs it with `nyxgpt ops glitchtip-init --kubernetes` and
+# requires the report to go green. Both halves run against this same cluster,
+# per the D-006 rule; the pre-fix code passes neither.
+#
 # A second, cheap job (`k8s-pod-state`) answers the narrower question #3827
 # asked: does the install tell a Pod that is merely starting apart from one
 # that will never start? See scripts/k8s-pod-state-smoke.py.
@@ -89,6 +110,12 @@ on:
       # The canary resting-state reconcile (#3991) is asserted against the
       # live cluster in steps 8-9, and `canary reset` lives here.
       - 'src/nyxgpt/canary.py'
+      # Step 13's fault injection (#3988) asserts that a deployment with no
+      # install record renders as `unrecorded` and never as the `artifact`
+      # default -- and `reported_mode()`, the one function that decides that,
+      # lives here. Without this line a change to it would skip the only job
+      # that proves the rendering against a real cluster.
+      - 'src/nyxgpt/install_mode.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
@@ -105,6 +132,12 @@ on:
       # The canary resting-state reconcile (#3991) is asserted against the
       # live cluster in steps 8-9, and `canary reset` lives here.
       - 'src/nyxgpt/canary.py'
+      # Step 13's fault injection (#3988) asserts that a deployment with no
+      # install record renders as `unrecorded` and never as the `artifact`
+      # default -- and `reported_mode()`, the one function that decides that,
+      # lives here. Without this line a change to it would skip the only job
+      # that proves the rendering against a real cluster.
+      - 'src/nyxgpt/install_mode.py'
       - 'Dockerfile'
       - 'docker/entrypoint.sh'
       - 'scripts/k8s-local-smoke.sh'
@@ -190,6 +223,22 @@ jobs:
           ./scripts/k8s-node-ballast.sh 7936
 
       - name: Run Kubernetes local smoke
+        # KEEP THE CLUSTER UP so the step below has something to ask (#3990).
+        # The script's own EXIT trap ends with `nyxgpt ops down --kubernetes`,
+        # and on the Kubernetes path that DELETES the kind cluster
+        # (`_delete_kind_cluster`) -- so every red run used to reach
+        # "Diagnostics on failure" with no cluster, no kubeconfig context and
+        # no container, and printed forty lines of `connection refused` where
+        # the logs should be. The script knew, and worked around it by
+        # hand-copying one Pod's log into the trap; that made every assertion
+        # added afterwards undiagnosable until someone noticed and copied
+        # another one. This issue's own error-flow assertion
+        # (`GlitchTip never received it`) is the one that went red with no
+        # GlitchTip log to read. Teardown moved to its own `always()` step
+        # after the diagnostics, which is the only ordering in which a
+        # diagnostics step can work at all.
+        env:
+          NYXGPT_SMOKE_KEEP_UP: '1'
         run: ./scripts/k8s-local-smoke.sh
 
       - name: Diagnostics on failure
@@ -209,10 +258,27 @@ jobs:
           kubectl -n nyxgpt get events --sort-by=.lastTimestamp | tail -40 || true
           kubectl -n nyxgpt describe pod -l tier=data || true
           kubectl -n nyxgpt describe pod -l tier=llm || true
+          # The error-reporting path, as the RUNNING api Pod sees it (#3990).
+          # The assertion that goes red here says "the api accepted the error
+          # but GlitchTip never received it", and that has two possible
+          # subjects: the DSN the api process actually carries, and whether
+          # GlitchTip's ingest turned the event into an issue. Only the host
+          # and port are printed -- the project key stays in the Pod.
+          kubectl -n nyxgpt exec deploy/nyxgpt-api-stable -- sh -c 'printf "api DSN: %s\n" \
+            "$(printf %s "${NYXGPT_ERROR_TRACKING_DSN:-<EMPTY>}" | sed -E "s#//[^@]*@#//REDACTED@#")"' || true
+          echo "--- logs deploy/glitchtip (ingest) ---"
+          kubectl -n nyxgpt logs deploy/glitchtip --tail 200 || true
+          echo "--- logs deploy/glitchtip-worker (issue creation) ---"
+          kubectl -n nyxgpt logs deploy/glitchtip-worker --tail 200 || true
           for pod in $(kubectl -n nyxgpt get pods -o name 2>/dev/null); do
             echo "--- logs $pod ---"
             kubectl -n nyxgpt logs "$pod" --tail 100 || true
           done
+
+      - name: Tear down the smoke cluster
+        # After the diagnostics, never before -- see the KEEP_UP comment above.
+        if: always()
+        run: kind delete cluster --name nyxgpt-local || true
 
   # The question this job answers (#3827): on a real cluster, does ops report a
   # Pod that is merely starting differently from one that will never start?

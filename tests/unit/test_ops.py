@@ -12,6 +12,7 @@ import tarfile
 import time
 from configparser import ConfigParser
 from contextlib import ExitStack
+from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -3222,6 +3223,62 @@ def test_sync_packaged_resources_is_idempotent_and_additive(monkeypatch, tmp_pat
     assert (nyxgpt_home / "docker" / "prometheus.yml").read_text(encoding="utf-8") == "v2"
     assert (nyxgpt_home / "docker-compose.yml").read_text(encoding="utf-8") == "v2"
     assert generated_config.read_text(encoding="utf-8") == "operator's generated config"
+
+
+@pytest.mark.unit
+def test_sync_never_overwrites_a_provisioned_k8s_secret(monkeypatch, tmp_path):
+    """The sync's docstring promised `k8s/secret.yaml` was safe "because it is
+    never packaged". True of an installed package, FALSE of a `--dev` checkout:
+    the packaged-resources root IS the checkout, and a checkout that ever ran a
+    repo-relative install (anything before #3834) has a gitignored
+    `k8s/secret.yaml` sitting in it. Copying that over the synced one reverts
+    the provisioned error-tracking DSN to the template's empty string, and the
+    next `kubectl apply -k` pushes the emptiness into the cluster -- one of the
+    ways an api Pod ends up reporting errors nowhere (#3990).
+    """
+    src_root = tmp_path / "checkout"
+    (src_root / "docker").mkdir(parents=True)
+    (src_root / "ops").mkdir(parents=True)
+    (src_root / "scripts").mkdir(parents=True)
+    (src_root / "k8s" / "observability").mkdir(parents=True)
+    (src_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (src_root / ".env.example").write_text("FOO=bar\n", encoding="utf-8")
+    # What a developer's checkout carries: a stale secret.yaml, and the
+    # template it was built from.
+    (src_root / "k8s" / "secret.yaml").write_text(
+        'stringData:\n  error-tracking-dsn: ""\n', encoding="utf-8"
+    )
+    (src_root / "k8s" / "secret.example.yaml").write_text(
+        'stringData:\n  error-tracking-dsn: ""\n', encoding="utf-8"
+    )
+    (src_root / "k8s" / "observability" / "secret.yaml").write_text(
+        'stringData:\n  glitchtip-grafana-token: "UNCONFIGURED-glitchtip-token"\n',
+        encoding="utf-8",
+    )
+
+    nyxgpt_home = tmp_path / "home" / ".nyxGPT"
+    (nyxgpt_home / "k8s" / "observability").mkdir(parents=True)
+    provisioned_app = nyxgpt_home / "k8s" / "secret.yaml"
+    provisioned_app.write_text(
+        'stringData:\n  error-tracking-dsn: "http://key@glitchtip:8080/1"\n', encoding="utf-8"
+    )
+    provisioned_obs = nyxgpt_home / "k8s" / "observability" / "secret.yaml"
+    provisioned_obs.write_text(
+        'stringData:\n  glitchtip-grafana-token: "real-token"\n', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(ops, "_packaged_resources_root", lambda: src_root)
+    monkeypatch.setattr(ops, "NYXGPT_HOME", nyxgpt_home)
+    monkeypatch.setattr(ops, "OPS_COMPOSE_FILE", nyxgpt_home / "docker-compose.yml")
+    monkeypatch.setattr(ops, "OPS_SCRIPTS_SRC_DIR", nyxgpt_home / "scripts")
+
+    assert all(r.ok for r in ops._sync_packaged_resources())
+
+    assert "http://key@glitchtip:8080/1" in provisioned_app.read_text(encoding="utf-8")
+    assert "real-token" in provisioned_obs.read_text(encoding="utf-8")
+    # ...and the TEMPLATES are still synced: they are packaged, and keeping
+    # them current is what the sync is for.
+    assert (nyxgpt_home / "k8s" / "secret.example.yaml").exists()
 
 
 # --- _install_cassandra_launchagent ---
@@ -6626,24 +6683,84 @@ def _probe(available=True, reason="", states=None):
     )
 
 
+def _liveness(**by_service):
+    """{container: ContainerLiveness} from `service=(restarts, started_at)` kwargs."""
+    return {
+        f"nyxgpt-{service}-1": ops.self_heal.ContainerLiveness(
+            container=f"nyxgpt-{service}-1", restarts=restarts, started_at=started_at
+        )
+        for service, (restarts, started_at) in by_service.items()
+    }
+
+
+def _iso_seconds_ago(seconds: float) -> str:
+    """A Docker-shaped `State.StartedAt` for a run that began `seconds` ago."""
+    from datetime import datetime, timedelta
+
+    moment = datetime.now(UTC) - timedelta(seconds=seconds)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond:06d}000Z"
+
+
+class _FakeClock:
+    """A monotonic clock that only advances when the code under test sleeps.
+
+    The settle check waits out a real 15-second window; patching both halves
+    keeps the unit tests instant while exercising the same arithmetic.
+    """
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _settle_env(monkeypatch, *, probes, liveness=None, logs="boom\n"):
+    """Patch everything `_observability_settle_verdict` reaches out to.
+
+    `probes` is a list of `ComposeProbe`s to return in order (the last one
+    repeats forever); `liveness` is either one mapping or a list of mappings
+    consumed the same way.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(ops.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(ops.time, "sleep", clock.sleep)
+    # Not copied: a test that wants to prove a later reading was actually taken
+    # watches this list shrink.
+    probe_queue = probes
+    monkeypatch.setattr(
+        ops.self_heal,
+        "compose_probe",
+        lambda: probe_queue.pop(0) if len(probe_queue) > 1 else probe_queue[0],
+    )
+    liveness_queue = list(liveness) if isinstance(liveness, list) else [liveness or {}]
+    monkeypatch.setattr(
+        ops.self_heal,
+        "container_liveness",
+        lambda containers: (
+            liveness_queue.pop(0) if len(liveness_queue) > 1 else liveness_queue[0]
+        ),
+    )
+    monkeypatch.setattr(
+        ops.self_heal,
+        "component_logs",
+        lambda service, tail=200: ops.self_heal.HealResult(True, "logs", logs),
+    )
+    return clock
+
+
 @pytest.mark.unit
 def test_settle_verdict_reports_a_crash_loop_with_the_containers_own_last_log_line(monkeypatch):
     """#3993's headline defect: the step declared the stack up over a Grafana
     that was crash-looping, and the operator had to find `docker logs`' real
     reason by hand, three times."""
-    monkeypatch.setattr(
-        ops.self_heal,
-        "compose_probe",
-        lambda: _probe(states={"grafana": "restarting", "jaeger": "running"}),
-    )
-    monkeypatch.setattr(
-        ops.self_heal,
-        "component_logs",
-        lambda service, tail=200: ops.self_heal.HealResult(
-            True,
-            f"docker compose logs {service}",
-            "starting Grafana\nError: failed to load provisioning file: ._datasources.yml\n",
-        ),
+    _settle_env(
+        monkeypatch,
+        probes=[_probe(states={"grafana": "restarting", "jaeger": "running"})],
+        logs="starting Grafana\nError: failed to load provisioning file: ._datasources.yml\n",
     )
 
     verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
@@ -6653,6 +6770,57 @@ def test_settle_verdict_reports_a_crash_loop_with_the_containers_own_last_log_li
     assert "restarting" in verdict.detail
     # The container's own reason, not a generic "something is wrong".
     assert "._datasources.yml" in verdict.detail
+
+
+@pytest.mark.unit
+def test_settle_verdict_calls_a_crash_loop_crashed_when_every_reading_reads_running(monkeypatch):
+    """#4045, the acceptance failure this check was rewritten for.
+
+    A crash loop is `running` for part of every cycle, so a check built on
+    sampled Compose states can be shown nothing but `running` while Docker
+    restarts the container underneath it -- which is exactly what real Grafana
+    does when it dies several seconds into boot on a malformed provisioning
+    file. The restart counter moving is the evidence; no `restarting` reading
+    is needed for the verdict, and widening the state comparison would not have
+    produced one.
+    """
+    jaeger_start = _iso_seconds_ago(600)
+    _settle_env(
+        monkeypatch,
+        probes=[_probe(states={"grafana": "running", "jaeger": "running"})],
+        liveness=[
+            _liveness(grafana=(3, _iso_seconds_ago(1)), jaeger=(0, jaeger_start)),
+            _liveness(grafana=(4, _iso_seconds_ago(0)), jaeger=(0, jaeger_start)),
+        ],
+        logs="Datasource provisioning error: yaml: line 7: did not find expected ',' or ']'\n",
+    )
+
+    verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
+
+    assert verdict.state == ops.SETTLE_STATE_CRASHED
+    assert verdict.services == ("grafana",)
+    assert "restarted while settling" in verdict.detail
+    assert "did not find expected" in verdict.detail
+
+
+@pytest.mark.unit
+def test_settle_verdict_catches_a_restart_that_keeps_the_same_counter(monkeypatch):
+    """A container replaced out from under the step (recreated, or restarted by
+    hand) keeps a `running` state and can keep its restart counter; the start
+    timestamp is what moved, and it is equally decisive."""
+    _settle_env(
+        monkeypatch,
+        probes=[_probe(states={"grafana": "running"})],
+        liveness=[
+            _liveness(grafana=(0, _iso_seconds_ago(2))),
+            _liveness(grafana=(0, _iso_seconds_ago(0))),
+        ],
+    )
+
+    verdict = ops._observability_settle_verdict(["grafana"])
+
+    assert verdict.state == ops.SETTLE_STATE_CRASHED
+    assert verdict.services == ("grafana",)
 
 
 @pytest.mark.unit
@@ -6693,49 +6861,97 @@ def test_settle_verdict_needs_more_than_one_running_reading(monkeypatch):
         _probe(states={"grafana": "running"}),
         _probe(states={"grafana": "restarting"}),
     ]
-    monkeypatch.setattr(ops.self_heal, "compose_probe", lambda: readings.pop(0))
-    monkeypatch.setattr(
-        ops.self_heal,
-        "component_logs",
-        lambda service, tail=200: ops.self_heal.HealResult(True, "logs", "boom\n"),
-    )
-    monkeypatch.setattr(ops.time, "sleep", lambda _s: None)
+    _settle_env(monkeypatch, probes=readings)
 
     verdict = ops._observability_settle_verdict(["grafana"])
 
     assert verdict.state == ops.SETTLE_STATE_CRASHED
-    assert not readings, "the second reading was never taken"
+    assert len(readings) == 1, "the second reading was never taken"
 
 
 @pytest.mark.unit
-def test_settle_verdict_settles_after_consecutive_running_readings(monkeypatch):
-    monkeypatch.setattr(
-        ops.self_heal,
-        "compose_probe",
-        lambda: _probe(states={"grafana": "running", "jaeger": "running"}),
+def test_settle_verdict_does_not_settle_inside_the_stable_window(monkeypatch):
+    """#4045: two `running` readings two seconds apart is two seconds of
+    evidence, and the old check returned on the second one -- before real
+    Grafana had reached the provisioning file it dies on."""
+    clock = _settle_env(
+        monkeypatch,
+        probes=[_probe(states={"grafana": "running", "jaeger": "running"})],
+        liveness=_liveness(grafana=(0, _iso_seconds_ago(0)), jaeger=(0, _iso_seconds_ago(0))),
     )
-    monkeypatch.setattr(ops.time, "sleep", lambda _s: None)
 
     verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
 
     assert verdict.state == ops.SETTLE_STATE_SETTLED
+    assert (
+        clock.now >= ops.OBSERVABILITY_SETTLE_STABLE_SECONDS
+    ), f"the stack was called settled after only {clock.now:.1f}s of observation"
+
+
+@pytest.mark.unit
+def test_settle_verdict_settles_at_once_on_a_run_already_older_than_the_window(monkeypatch):
+    """An idempotent re-run (`nyxgpt ops observability` over a stack that has
+    been up for hours) pays no settle window: Docker's own start timestamp is
+    already the evidence the window exists to collect."""
+    clock = _settle_env(
+        monkeypatch,
+        probes=[_probe(states={"grafana": "running", "jaeger": "running"})],
+        liveness=_liveness(grafana=(0, _iso_seconds_ago(7200)), jaeger=(0, _iso_seconds_ago(7200))),
+    )
+
+    verdict = ops._observability_settle_verdict(["grafana", "jaeger"])
+
+    assert verdict.state == ops.SETTLE_STATE_SETTLED
+    assert clock.now == 0.0
+
+
+@pytest.mark.unit
+def test_settle_verdict_still_settles_without_restart_evidence(monkeypatch):
+    """`docker inspect` not answering must not deadlock the step: with no
+    liveness to compare, the check falls back on watching the states itself for
+    the same duration. An empty liveness map is "no evidence", not "crashed"
+    (#3812's rule, applied to the second probe)."""
+    clock = _settle_env(
+        monkeypatch,
+        probes=[_probe(states={"grafana": "running"})],
+        liveness={},
+    )
+
+    verdict = ops._observability_settle_verdict(["grafana"])
+
+    assert verdict.state == ops.SETTLE_STATE_SETTLED
+    assert clock.now >= ops.OBSERVABILITY_SETTLE_STABLE_SECONDS
 
 
 @pytest.mark.unit
 def test_settle_verdict_is_bounded(monkeypatch):
     """An install step may not hang: a container stuck `created` closes the
     window as undetermined rather than polling forever."""
-    monkeypatch.setattr(
-        ops.self_heal, "compose_probe", lambda: _probe(states={"grafana": "created"})
-    )
-    clock = iter([0.0] + [float(i) for i in range(1, 200)])
-    monkeypatch.setattr(ops.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(ops.time, "sleep", lambda _s: None)
+    _settle_env(monkeypatch, probes=[_probe(states={"grafana": "created"})])
 
     verdict = ops._observability_settle_verdict(["grafana"])
 
     assert verdict.state == ops.SETTLE_STATE_UNDETERMINED
     assert "created" in verdict.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "started_at",
+    ["", "   ", "0001-01-01T00:00:00Z", "not a timestamp"],
+)
+def test_container_run_age_is_none_for_a_run_that_never_began(started_at):
+    assert ops._container_run_age_seconds(started_at) is None
+
+
+@pytest.mark.unit
+def test_container_run_age_parses_dockers_nanosecond_stamp():
+    """`datetime.fromisoformat` rejects nine fractional digits, which is what
+    Docker always writes -- so an unhandled stamp would silently disable the
+    already-stable fast path."""
+    age = ops._container_run_age_seconds(_iso_seconds_ago(120))
+    assert age is not None
+    assert 110 < age < 130
 
 
 @pytest.mark.unit
@@ -6829,6 +7045,108 @@ def test_reconcile_grafana_provisioning_stops_before_reconciling_against_a_crash
 
     assert credential_calls == []
     assert any(not r.ok and "did not stay up" in r.message for r in results)
+
+
+def _grafana_reconcile_env(tmp_path, monkeypatch, *, compose_state):
+    """Set `_reconcile_grafana_provisioning` up with a settled stack and
+    `compose_state` as Grafana's Compose state, and report what it did."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    (tmp_path / ".nyxGPT").mkdir(exist_ok=True)
+    (tmp_path / ".nyxGPT" / "config.ini").write_text(
+        "[monitoring]\ngrafana_ui_url = http://localhost:3001\ngrafana_admin_password = secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(ops, "_ensure_observability_volume_dirs", lambda: [])
+    monkeypatch.setattr(ops, "_sync_host_relay_env", lambda: ops.OpsResult(True, "relay"))
+    monkeypatch.setattr(ops, "_record_grafana_provisioning_fingerprint", lambda: None)
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "Observability stack up")]
+    )
+    snapshot = {"grafana": compose_state} if compose_state is not None else {}
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: snapshot)
+    calls: dict[str, list] = {"health_waits": [], "credential": []}
+    monkeypatch.setattr(
+        ops, "_wait_for_grafana_healthy", lambda *a, **k: calls["health_waits"].append(a) or False
+    )
+    monkeypatch.setattr(
+        ops,
+        "_reconcile_grafana_admin_credential",
+        lambda *a, **k: calls["credential"].append(a) or ("pw", ops.OpsResult(True, "reconciled")),
+    )
+    monkeypatch.setattr(
+        ops.self_heal,
+        "component_logs",
+        lambda service, tail=200: ops.self_heal.HealResult(
+            True, "logs", "Datasource provisioning error: yaml: line 7: did not find expected ','\n"
+        ),
+    )
+    # The credential-dependent checks downstream would otherwise spend their
+    # own retry budgets against a localhost Grafana that isn't there.
+    for name in (
+        "_verify_grafana_plugins_installed",
+        "_verify_grafana_datasources_resolve",
+        "_provision_grafana_doctor_token",
+    ):
+        monkeypatch.setattr(ops, name, lambda *a, **k: ops.OpsResult(True, "stubbed"))
+    return calls
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_waits_for_health_on_a_crash_looping_grafana(
+    tmp_path, monkeypatch
+):
+    """#4045's second guard. The wait-for-healthy was gated on Grafana reading
+    `running`, but `_compose_stack_snapshot` reports raw Compose states and a
+    crash-looping container is `restarting` -- so the one guard against a
+    Grafana that never comes up was switched off by the exact condition it
+    guards, and the operator was shown the credential reconcile's complaint
+    instead."""
+    calls = _grafana_reconcile_env(tmp_path, monkeypatch, compose_state="restarting")
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert calls["health_waits"], "the health wait was skipped on a crash-looping Grafana"
+    assert calls["credential"] == [], "the credential reconcile ran against a crash loop"
+    failures = [r for r in results if not r.ok]
+    assert failures and "never became healthy" in failures[-1].message
+    # And the operator gets Grafana's own reason, not a pointer to go find it.
+    assert "did not find expected" in failures[-1].details
+    assert not any("credential" in r.message for r in results)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compose_state", ["exited", "dead", "created"])
+def test_reconcile_grafana_provisioning_waits_on_any_non_absent_grafana(
+    tmp_path, monkeypatch, compose_state
+):
+    """The gate is "is there a Grafana container at all", not a list of bad
+    states -- enumerating states is how `restarting` got missed in the first
+    place."""
+    calls = _grafana_reconcile_env(tmp_path, monkeypatch, compose_state=compose_state)
+
+    ops._reconcile_grafana_provisioning()
+
+    assert calls["health_waits"]
+    assert calls["credential"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compose_state", [None, "absent"])
+def test_reconcile_grafana_provisioning_skips_the_health_wait_with_no_grafana_container(
+    tmp_path, monkeypatch, compose_state
+):
+    """The intended skip, preserved: a Docker-less host (or an unqueryable
+    probe, whose `known=False` rows `_compose_stack_snapshot` drops) has no
+    Grafana container to wait on, and must not be reported as a Grafana that
+    never became healthy (#3812)."""
+    calls = _grafana_reconcile_env(tmp_path, monkeypatch, compose_state=compose_state)
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert calls["health_waits"] == []
+    assert calls["credential"], "the credential reconcile handles this host shape itself"
+    assert not any("never became healthy" in r.message for r in results)
 
 
 @pytest.mark.unit
@@ -7008,13 +7326,57 @@ def test_recreate_grafana_skipped_when_not_drifted(monkeypatch):
 
 
 @pytest.mark.unit
-def test_recreate_grafana_skipped_when_not_yet_running(monkeypatch):
-    """Nothing stale to recreate if grafana was never up -- the caller's own
-    `up -d` creates it fresh with current provisioning already."""
+def test_recreate_grafana_skipped_when_container_does_not_exist(monkeypatch):
+    """Nothing stale to recreate if grafana was never created -- the caller's own
+    `up -d` creates it fresh with current provisioning already.
+
+    `absent` and a missing key are the same answer here; both are "not created",
+    which is the only case this skip is for (#4045).
+    """
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
-    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+
+    def no_docker_calls(cmd, **_k):
+        raise AssertionError(f"nothing should be recreated for an absent container: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", no_docker_calls)
+
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"prometheus": "running"})
     assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "absent"})
+    assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["restarting", "exited", "dead", "created", "paused"])
+def test_recreate_grafana_recreates_a_container_that_is_not_running(monkeypatch, state):
+    """A crash-looping or stopped Grafana is the case that most needs the recreate.
+
+    This gate used to read `!= "running"` and skip (#4045's third site). A
+    container crash-looping on *drifted* env is one `--force-recreate` away from
+    picking up the corrected value, and plain `up -d` will not do it: Compose
+    sees no change from its own point of view, so it merely starts the existing
+    container with its original env. Skipping here meant the operator fixed the
+    cause, re-ran, and watched the identical loop continue.
+    """
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": state})
+
+    def fake_run(cmd, check=True, **_k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops._recreate_grafana_if_provisioning_drifted()
+
+    assert result is not None and result.ok is True
+    assert len(calls) == 1
+    assert "--force-recreate" in calls[0]
+    assert calls[0][-1] == "grafana"
 
 
 @pytest.mark.unit
@@ -13183,6 +13545,11 @@ def test_install_kubernetes_waits_for_the_app_tier_before_reading_health():
         patch.object(ops, "_k8s_stack_health", side_effect=record("health")),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops, "_record_ops_action"),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         results = ops._install_kubernetes_steps(None)
 
@@ -13298,6 +13665,11 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
         # Its rollout wait (#3826) shells out to kubectl for real otherwise.
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
@@ -13338,6 +13710,11 @@ def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monk
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
@@ -13619,6 +13996,11 @@ def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
         # Its rollout wait (#3826) shells out to kubectl for real otherwise.
         patch.object(ops, "_wait_for_k8s_observability", return_value=ok),
         patch.object(ops, "_k8s_observability_health", return_value=ok),
+        # #3988: the install records its mode in the cluster as well as in
+        # this machine's marker, which is a `kubectl get`/`apply` of a
+        # ConfigMap against a cluster that does not exist here.
+        patch.object(ops, "_read_k8s_install_record", return_value={}),
+        patch.object(ops, "_write_k8s_install_record", return_value=ops.OpsResult(True, "ok")),
     ):
         results = ops.install_kubernetes_local(api_key="k")
     assert all(r.ok for r in results)

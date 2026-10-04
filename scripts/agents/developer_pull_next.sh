@@ -114,9 +114,13 @@ if [[ "$SPRINT_SCOPED" == "1" ]]; then
   log "Sprint-scoped pull: active sprint '${ACTIVE_SPRINT_TITLE}'"
 fi
 
-RELEASE_VERSION=""
-if [[ -n "${RELEASE_ISSUE_NUMBER:-}" ]]; then
-  RELEASE_VERSION="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+# The release wall. An empty version would switch the wall off in
+# board_pull_state.py and let next-release work land on this branch, so it
+# is a stop, never a pass.
+RELEASE_VERSION="$(release_version)"
+if [[ -z "$RELEASE_VERSION" ]]; then
+  log "RELEASE_BRANCH '${RELEASE_BRANCH:-}' is not a vX.Y.Z version -- no release wall, so no pull (conservative stop)."
+  exit 1
 fi
 
 # ---- board: every claimable Backlog candidate, and everything in flight ----

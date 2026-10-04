@@ -254,7 +254,7 @@ SPRINT_AUTOPILOT="true"
 RELEASE_ISSUE_NUMBER="2759"
 SPRINT_FIELD="Sprint"
 sprint_autopilot_paused() { return 1; }
-release_version_from_issue() { echo "v3.0.0"; }
+release_version() { echo "v3.0.0"; }
 release_backlog_by_sprint() { echo '{"Sprint 8":0,"Sprint 9":11,"":2}'; }
 
 COMMENT_FILE="$(mktemp)"
@@ -667,7 +667,7 @@ RELEASE_ISSUE_NUMBER="2759"
 SPRINT_FIELD="Sprint"
 STATUS_FOR_RELEASE="For Release"
 sprint_autopilot_paused() { return 1; }
-release_version_from_issue() { echo "v3.0.0"; }
+release_version() { echo "v3.0.0"; }
 release_backlog_by_sprint() { echo '{"Sprint 8":0}'; }
 iteration_active_title() { echo "Sprint 8"; }
 issue_comment() { printf '%s' "$2" > "$COMMENT_FILE"; }

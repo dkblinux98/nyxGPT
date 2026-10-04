@@ -53,6 +53,25 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY pyproject.toml ./
+
+# `src/nyxgpt/resources/example.config.ini` is a SYMLINK to the repo-root file
+# (../../../example.config.ini), and `COPY src ./src` preserves symlinks rather
+# than resolving them. Without the target already in /app, pip installs a
+# dangling link and the packaged resource is unreadable in the image:
+#
+#   RuntimeError: the packaged example.config.ini is unreadable, so the shipped
+#   default model cannot be determined: [Errno 2] No such file or directory:
+#   '/usr/local/lib/python3.11/site-packages/nyxgpt/resources/example.config.ini'
+#
+# That is how `canary-track-metrics-smoke` -- a [required] check -- failed on
+# every PR that ran it, and `config._shipped_default_model()` reads through
+# `importlib.resources` deliberately (never a repo-relative path, #3759), so the
+# fix belongs here and not in the reader.
+#
+# The ENV below points `config_wizard` at a copy under /etc for a different
+# reason; it does not help this path, which asks the package for its own data.
+COPY example.config.ini ./example.config.ini
+
 COPY src ./src
 
 RUN pip install --no-cache-dir .

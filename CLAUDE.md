@@ -360,8 +360,31 @@ path. Note: CodeQL default setup only scans the repo's default branch (plus
 PRs) — a non-default branch's alert list is frozen until it becomes default
 again and receives a push.
 
+**Labels are the owner's, and nothing in automation writes the label
+registry (owner decision 2026-10-03, #4134).** No workflow or script may run
+`gh label create|edit|delete`, write to `repos/{repo}/labels`, or use the REST
+"add labels to an issue" endpoint (it silently CREATES a missing label — use
+`gh issue edit --add-label`, which refuses). Workflows that need a label
+assume it exists and fail loudly if it does not.
+`tests/unit/test_no_agent_created_labels.py` fails the build on any of those
+and on applying a literal label name that is not one of the owner's.
+`.github/dependabot.yml` sets `labels: []` so GitHub stops reapplying its own.
+
+**Escalation is explicit, and it is one step.** Handing an issue to the owner
+is `escalate_to_owner` (`scripts/agents/lib/gh_project.sh`): it replaces the
+issue's single label with **`Escalation`**, records in the comment which label
+it replaced, assigns the owner (verified), writes a blast-radius investigation
+into the comment, and sends the Slack DM deduped on the **cause** — and leaves
+the Status lane alone. An issue carrying `Escalation` is never dispatched,
+resumed, kicked, released, submitted or promoted. **The owner restores the
+original label themselves**; nothing in automation removes `Escalation` or
+puts the old label back. Before escalating, investigate past the one issue
+(release head red? other work failing the same way? already escalated for
+this cause? likely common change?) — one systemic cause gets ONE escalation.
+The #3687 count-of-2 dispatch pause is retired (ledger **S-009**).
+
 **IMPORTANT: Do not create project metadata without explicit user permission:**
-- Do NOT create labels (use existing labels only)
+- Do NOT create, edit or delete labels (use existing labels only)
 - Do NOT create milestones
 - Do NOT create releases
 - Do NOT add options to project field dropdowns (Module, Phase, Status, etc.)
@@ -432,10 +455,15 @@ held, not worked immediately:
   The handlers, the gate and the promotion sweep all call that one
   function, so no two of them can disagree about one issue.
 - **Agent-process issues bypass the gate** and are worked immediately. The
-  rule is encoded in `scripts/agents/lib/drain_gate.py`: an owner-authored
-  process exception in the body ("…bypasses the drain gate"), the
-  `<!-- drain-gate: bypass -->` marker, or a label listed in
-  `DRAIN_GATE_BYPASS_LABELS`.
+  rule is encoded in `scripts/agents/lib/drain_gate.py`: the owner-created
+  **`Agent`** label (the DEFAULT of `DRAIN_GATE_BYPASS_LABELS`, owner
+  decision 2026-10-03, #4134 — a default rather than an env var each workflow
+  must remember, which is what failed before), an owner-authored process
+  exception in the body ("…bypasses the drain gate"), or the
+  `<!-- drain-gate: bypass -->` marker.
+  An `Agent` issue also **skips rc acceptance testing**: on merge it goes to
+  `For Release`, not `Acceptance Testing`. It ships no nyxGPT product
+  surface, so it neither requires nor triggers a release candidate.
 
 Rationale: working failures the moment they are filed floods Acceptance
 Testing with freshly-merged fixes mid-round and burns RC cycles while the

@@ -572,9 +572,18 @@ def test_retiring_never_uninstalls_the_previous_keg(monkeypatch):
     # read reported services launchd had already forgotten (#3861, runs
     # 32222041921 and 32228088507). What settles it is launchd: no plist, and
     # no such job. Nothing here removes the keg.
+    #
+    # launchd is asked about BOTH of `ops._BREW_SERVICE_LABEL_PREFIXES`, and
+    # has to be: no plist exists under either scheme here and brew named no
+    # file, so the label a loaded job would be bootstrapped under is not
+    # knowable from here. Asking only `homebrew.mxcl.` asks about a label that
+    # current Homebrew never writes (it writes `sh.brew.<formula>`), which
+    # would report a job it cannot see as absent. Two `launchctl print` calls
+    # on the de-registration path, only when nothing on disk answered first.
     assert ran == [
         ["brew", "services", "stop", "nyxgpt-api"],
         ["brew", "services", "list"],
         ["launchctl", "print", f"gui/{os.getuid()}/homebrew.mxcl.nyxgpt-api"],
+        ["launchctl", "print", f"gui/{os.getuid()}/sh.brew.nyxgpt-api"],
     ]
     assert not [argv for argv in ran if {"uninstall", "remove", "rm"} & set(argv)]

@@ -28,6 +28,7 @@ import logging
 from configparser import ConfigParser
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -534,3 +535,53 @@ def test_ops_status_still_returns_zero_on_a_machine_with_a_cluster(monkeypatch, 
 
     assert ops.status(SimpleNamespace()) == 0
     assert "UNKNOWN (Ollama unreachable)" in capsys.readouterr().out
+
+
+# --- The data-flow lines belong on the command an operator runs (#3990) ------
+
+
+@pytest.mark.unit
+def test_status_reports_what_the_observability_tier_has_received(monkeypatch, capsys):
+    """Owner acceptance, 2026-08-26: "None of the four appear in `nyxgpt ops
+    status`" -- `_k8s_observability_health` was reached only from the install
+    and from `ops observability`, so the command an operator actually runs to
+    ask whether the tier is working printed ten `1/1 ready` workloads and not
+    one word about what any of them had received."""
+    _stub_status_probes(
+        monkeypatch, ops.K8sDeploymentProbe(_pods(("nyxgpt-api-stable-0", ops.K8S_STATE_READY)))
+    )
+    monkeypatch.setattr(ops, "_k8s_observability_workload_state", lambda: {"grafana": "1/1 ready"})
+    monkeypatch.setattr(
+        ops,
+        "_k8s_observability_data_flow",
+        lambda _state=None: [
+            ops.OpsResult(True, "observability traces: Jaeger has nyxgpt-api"),
+            ops.OpsResult(
+                False,
+                "observability errors: the api has no error-tracking DSN -- it reports "
+                "errors nowhere",
+                "Provision it with `nyxgpt ops glitchtip-init --kubernetes`.",
+            ),
+        ],
+    )
+
+    assert ops.status(SimpleNamespace()) == 0
+
+    out = capsys.readouterr().out
+    assert "[OK] traces: Jaeger has nyxgpt-api" in out
+    assert "[FAIL] errors: the api has no error-tracking DSN" in out
+    assert "glitchtip-init --kubernetes" in out
+
+
+@pytest.mark.unit
+def test_status_asks_nothing_about_data_flow_with_no_observability_tier(monkeypatch, capsys):
+    """Cost: each line is a `kubectl exec`, and a cluster with no tier has
+    nobody to ask."""
+    _stub_status_probes(
+        monkeypatch, ops.K8sDeploymentProbe(_pods(("nyxgpt-api-stable-0", ops.K8S_STATE_READY)))
+    )
+    with patch.object(ops, "_k8s_observability_data_flow") as data_flow:
+        assert ops.status(SimpleNamespace()) == 0
+
+    capsys.readouterr()
+    data_flow.assert_not_called()

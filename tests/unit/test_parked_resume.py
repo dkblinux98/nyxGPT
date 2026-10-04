@@ -146,24 +146,85 @@ class TestClassifyCandidates:
         )
         assert parked_resume.select_resume(scan) == 3514
 
+    def test_an_escalated_issue_is_never_resumed(self):
+        """The owner holds it (#4134): re-assigning the developer agent would
+        take it back off them. It is reported, not dropped -- a parked issue
+        that vanished from the scan would read as "dealt with"."""
+        scan = parked_resume.classify_candidates(
+            [
+                {
+                    "issue": 4134,
+                    "parked": True,
+                    "open_blockers": [],
+                    "budget_exhausted": False,
+                    "escalated": True,
+                }
+            ]
+        )
+        assert scan["escalated"] == [4134]
+        assert scan["resumable"] == []
+        assert parked_resume.select_resume(scan) is None
+
+    def test_escalation_outranks_the_parked_test(self):
+        """An escalated issue with an open PR on it is still the owner's. The
+        `active` bucket would mean "something is already working it", which is
+        exactly the wrong thing to say about an issue the loop must not poke."""
+        scan = parked_resume.classify_candidates(
+            [
+                {
+                    "issue": 4134,
+                    "parked": False,
+                    "open_blockers": [],
+                    "budget_exhausted": False,
+                    "escalated": True,
+                }
+            ]
+        )
+        assert scan["escalated"] == [4134]
+        assert scan["active"] == []
+
     def test_every_candidate_lands_in_exactly_one_bucket(self):
         candidates = [
             {"issue": 1, "parked": False, "open_blockers": [], "budget_exhausted": False},
             {"issue": 2, "parked": True, "open_blockers": [1], "budget_exhausted": False},
             {"issue": 3, "parked": True, "open_blockers": [], "budget_exhausted": True},
             {"issue": 4, "parked": True, "open_blockers": [], "budget_exhausted": False},
+            {
+                "issue": 5,
+                "parked": True,
+                "open_blockers": [],
+                "budget_exhausted": False,
+                "escalated": True,
+            },
         ]
         scan = parked_resume.classify_candidates(candidates)
         bucketed = (
             [c["issue"] for c in scan["resumable"]]
             + [c["issue"] for c in scan["waiting"]]
             + [c["issue"] for c in scan["exhausted"]]
+            + scan["escalated"]
             + scan["active"]
         )
-        assert sorted(bucketed) == [1, 2, 3, 4]
+        assert sorted(bucketed) == [1, 2, 3, 4, 5]
 
 
 class TestBuildGateLines:
+    def test_an_escalated_issue_gets_its_own_line(self):
+        scan = parked_resume.classify_candidates(
+            [
+                {
+                    "issue": 4134,
+                    "parked": True,
+                    "open_blockers": [],
+                    "budget_exhausted": False,
+                    "escalated": True,
+                }
+            ]
+        )
+        lines = "\n".join(parked_resume.build_gate_lines(scan))
+        assert "#4134" in lines
+        assert "Escalated to the owner" in lines
+
     def test_waiting_issues_are_never_silently_dropped(self):
         scan = parked_resume.classify_candidates(
             [

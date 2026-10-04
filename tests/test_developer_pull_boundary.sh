@@ -121,12 +121,13 @@ EOF
 }
 
 _item() {
-  # $1=number $2=status $3=sprint title (empty for none)
+  # $1=number $2=status $3=sprint title (empty for none) $4=milestone title
   local number="$1" status="$2" sprint="$3" sprint_fv=""
+  local milestone="${4:-Phase 6 — Enterprise Deployment Hardening (v3.0.0)}"
   if [[ -n "$sprint" ]]; then
     sprint_fv=',{"__typename":"ProjectV2ItemFieldIterationValue","field":{"name":"Sprint"},"title":"'"$sprint"'"}'
   fi
-  printf '%s' "{\"content\":{\"__typename\":\"Issue\",\"number\":${number},\"state\":\"OPEN\",\"milestone\":{\"title\":\"Phase 6 — Enterprise Deployment Hardening (v3.0.0)\"},\"labels\":{\"nodes\":[]},\"assignees\":{\"nodes\":[]}},\"fieldValues\":{\"nodes\":[{\"__typename\":\"ProjectV2ItemFieldSingleSelectValue\",\"field\":{\"name\":\"Status\"},\"name\":\"${status}\"}${sprint_fv}]}}"
+  printf '%s' "{\"content\":{\"__typename\":\"Issue\",\"number\":${number},\"state\":\"OPEN\",\"milestone\":{\"title\":\"${milestone}\"},\"labels\":{\"nodes\":[]},\"assignees\":{\"nodes\":[]}},\"fieldValues\":{\"nodes\":[{\"__typename\":\"ProjectV2ItemFieldSingleSelectValue\",\"field\":{\"name\":\"Status\"},\"name\":\"${status}\"}${sprint_fv}]}}"
 }
 
 # ---- Config -----------------------------------------------------------
@@ -297,6 +298,21 @@ result="$(_run_pull)"
 stderr="$(cat "$TMP_DIR/stderr")"
 _assert_eq "an unscoped pull ignores the plan entirely" "0|100" "$result"
 _assert_contains "and says why" "$stderr" "no sprint plan applies"
+
+# --- Release wall: the version is RELEASE_BRANCH, not the release issue's ---
+# --- title. Next-release work is never pulled, even by an unscoped pull. ---
+_no_plan
+_write_items "$(_item 100 Backlog "Sprint 8" "Phase 6.5 — Post-Release Patches (v3.0.1)")" "$(_item 101 Backlog "Sprint 8")"
+result="$(_run_pull)"
+_assert_eq "the release wall skips next-release work and pulls this release's" "0|101" "$result"
+
+# --- A RELEASE_BRANCH that is not a version means no wall: stop, never pass ---
+sed -i.bak 's/^RELEASE_BRANCH=.*/RELEASE_BRANCH=main/' "$NYXGPT_CONFIG_FILE"
+result="$(_run_pull)"
+stderr="$(cat "$TMP_DIR/stderr")"
+_assert_eq "a non-version RELEASE_BRANCH pulls nothing" "1|" "$result"
+_assert_contains "and logs the conservative stop" "$stderr" "not a vX.Y.Z version"
+mv "$NYXGPT_CONFIG_FILE.bak" "$NYXGPT_CONFIG_FILE"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

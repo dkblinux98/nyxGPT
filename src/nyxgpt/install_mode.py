@@ -384,6 +384,29 @@ class InstallModeState:
             return INSTALL_MODE_UNRECORDED
         return INSTALL_MODE_DEV if self.is_dev else INSTALL_MODE_ARTIFACT
 
+    def reported_mode(self, *, deployed: bool = False) -> str:
+        """`mode` as an API payload must carry it: never a default as a fact (#3988).
+
+        `mode` is a two-value field, so a consumer reading it alone cannot
+        tell a recorded `artifact` from the absence of any record -- and one
+        payload then carries both answers at once. That is what the owner read
+        off the Infrastructure page's Kubernetes card for a `--dev` cluster:
+        `label` said "unrecorded (no install-mode marker for this cluster)"
+        while `mode` beside it said `artifact`, which is the opposite of the
+        truth and the determinate-rendering-of-an-unknown shape D-032/#3861
+        already records one surface over.
+
+        So wherever `label`/`short_label` would say unrecorded, this says
+        `INSTALL_MODE_UNRECORDED` too. `native` keeps its documented artifact
+        default: there the default really is what every machine installed
+        before #3789 is running, and it is the value `restart api` must act on.
+        """
+        if self.recorded or self.substrate == SUBSTRATE_NATIVE:
+            return self.mode
+        if self.substrate == SUBSTRATE_KUBERNETES or deployed:
+            return INSTALL_MODE_UNRECORDED
+        return self.mode
+
     def _is_unrecorded_deployment(self, deployed: bool) -> bool:
         """True for a running Terraform deployment whose mode nothing recorded."""
         return self.is_terraform and deployed and not self.recorded

@@ -69,6 +69,17 @@ name: macOS Brew Smoke
 #                shipped and reconcile is what every machine already in the
 #                state needs. Same runner, one job: #3861 shares this one
 #                rather than paying a second macOS runner to rebuild it.
+#                Since #4043 it answers one more, from the same machine state
+#                and for the same reason: with the candidate keg installed
+#                alone and registering its service as `nyxgpt-api@3.0.0rc`,
+#                can self-heal restart it? The injection barrier every
+#                self-heal service name passes through had no `@`, so the
+#                watchdog could not heal `api` or `web` on any rc install --
+#                the channel release candidates are accepted on. That step
+#                reverts the barrier in the installed keg and measures the
+#                refusal before restoring it and measuring the restart, so
+#                the job cannot pass by running on a machine that fails to
+#                reproduce the bug.
 
 #
 # Cost: macOS runners bill at a multiple of Linux, so the PR trigger is
@@ -103,12 +114,22 @@ on:
       - 'scripts/homebrew-caveats-smoke.sh'
       - 'src/nyxgpt/release_tarball.py'
       - 'src/nyxgpt/install_mode.py'
-      # The parser every brew state reaches a comparison through, and the one
-      # the identity step's reconcile depends on to decide what is registered
-      # (#3861). `ops.py` is deliberately NOT here -- it changes on nearly
-      # every PR, and a macOS job that runs every time is a job people learn
-      # to ignore -- but this file is small, focused, and its readers are the
-      # health gate and the retire.
+      # The parser every brew state reaches a comparison through, the one the
+      # identity step's reconcile depends on to decide what is registered
+      # (#3861), and since #4043 the home of `SEGMENT_PATTERN` -- the
+      # definition of a formula name self-heal will act on, which the
+      # stable-over-candidate job's heal step injects and restores.
+      # `ops.py` is deliberately NOT here -- it changes on nearly every PR,
+      # and a macOS job that runs every time is a job people learn to ignore
+      # -- but this file is small, focused, and its readers are the health
+      # gate and the retire.
+      #
+      # `self_heal.py` is not here either, and that is not an oversight: it
+      # carries a copy of that pattern inline (CodeQL #4 recognizes the
+      # `re.fullmatch(r"...", x)` call form, not a constant), and the copy is
+      # pinned to this file's by a unit test that runs on every PR
+      # (test_brew_formula_at_version.py). A change that narrows the copy
+      # fails there, cheaply, rather than needing a macOS runner.
       - 'src/nyxgpt/brew_services.py'
       # The web tier's own version, derived from the directory the keg's
       # wrapper `cd`s into (#3982). This is a claim about a Homebrew keg on
@@ -193,11 +214,27 @@ jobs:
           set -e
           echo "$upgrade_log"
           if [ "$upgrade_rc" -ne 0 ]; then
-            # "already installed" is the one non-zero worth tolerating: it
-            # means current is what is already here. Anything else is a real
-            # failure and is not swallowed.
+            # "already installed" is the one non-zero worth tolerating on its
+            # wording: it means current is what is already here.
             if printf '%s' "$upgrade_log" | grep -qF "already installed"; then
               echo "python@3.12 is already at the newest version Homebrew knows about"
+            # Otherwise tolerate it only on the OUTCOME this step is about:
+            # python@3.12 is at the newest version Homebrew knows and runs.
+            # `brew upgrade` also exits non-zero when one of the formula's
+            # DEPENDENCIES fails to link, which on a hosted runner is a
+            # property of the image rather than anything about nyxGPT -- run
+            # 36996645910 upgraded python@3.12 3.12.14 -> 3.12.15 and printed
+            # "Upgraded 1 requested outdated package", then exited 1 because
+            # `openssl@3` could not symlink `bin/openssl` over the
+            # `openssl@1.1` already owning it. Exiting there spent the entire
+            # job, including the #3859 teardown step that is this workflow's
+            # only executed proof of the launchd residue sweep, on a symlink
+            # collision in a keg nyxGPT never calls.
+            elif [ -z "$(brew outdated --quiet python@3.12)" ] \
+              && "$(brew --prefix python@3.12)/bin/python3.12" -m pip --version >/dev/null 2>&1; then
+              echo "::warning::brew upgrade exited ${upgrade_rc};" \
+                "python@3.12 is current and runs -- link conflict(s) below"
+              printf '%s\n' "$upgrade_log" | grep -i 'could not symlink' || true
             else
               echo "::error::brew upgrade python@3.12 failed"
               exit "$upgrade_rc"
@@ -1791,6 +1828,249 @@ jobs:
           command -v nyxgpt
           nyxgpt --version
 
+      - name: "Self-heal can restart the candidate's own service (#4043)"
+        # Executed evidence for #4043, on the machine state the step above
+        # just reached rather than in a second job: the candidate keg
+        # installed alone, on a real Homebrew, registering its service under
+        # the versioned formula name. That is the exact state the defect
+        # needs and the one no other job leaves behind.
+        #
+        # The question: the injection barrier every self-heal service name
+        # passes through had no `@`, so `brew_services.resolve` correctly
+        # resolved `api` to `nyxgpt-api@3.0.0rc` and `_restart_brew_service`
+        # then refused it as an invalid name -- the watchdog could not heal
+        # `api` or `web` on any rc install, which is the channel release
+        # candidates are accepted on. Unit tests pin the pattern; they cannot
+        # say that the name brew actually registers is the name the product
+        # resolves, nor that brew accepts the command that follows.
+        #
+        # Both halves are proved, in that order, because a job that only runs
+        # the fixed code is green on every machine that fails to reproduce
+        # the bug (the rc5 lesson, #3753): the keg's own copies of the two
+        # files are first reverted to the pre-fix pattern and the refusal is
+        # measured, then restored and the restart is measured. The injection
+        # edits the installed keg, never the checkout, and asserts the sed
+        # actually landed -- a no-op sed would make the first half pass by
+        # looking like the second.
+        run: |
+          set -euo pipefail
+
+          KEG=nyxgpt-api@3.0.0rc
+          PY="$(brew --prefix "$KEG" 2>/dev/null)/libexec/venv/bin/python3"
+          if [ ! -x "$PY" ]; then
+            PY="$(ls -d "$(brew --cellar "$KEG")"/*/libexec/venv/bin/python3 2>/dev/null | tail -1)"
+          fi
+          test -n "$PY" && test -x "$PY" || { echo "::error::no venv python in $KEG"; exit 1; }
+          echo "driver: $PY"
+
+          echo "=== what brew itself registers for the candidate ==="
+          brew services list
+          # Non-vacuity: if brew does not list the versioned name, the product
+          # never resolves to it and neither half below is about anything.
+          brew services list | grep -q "$KEG" || {
+            echo "::error::brew does not register a service for $KEG -- nothing here resolves to a versioned name, so this step is measuring nothing"
+            exit 1
+          }
+
+          BS="$("$PY" -c 'import nyxgpt.brew_services as m; print(m.__file__)')"
+          SH="$("$PY" -c 'import nyxgpt.self_heal as m; print(m.__file__)')"
+          echo "keg modules: $BS / $SH"
+          cp "$BS" /tmp/brew_services.shipped.py
+          cp "$SH" /tmp/self_heal.shipped.py
+          # The keg carries compiled bytecode from its install. Rewriting a
+          # .py updates its mtime, which invalidates the cached .pyc, but
+          # nothing here should add new ones either.
+          export PYTHONDONTWRITEBYTECODE=1
+
+          cat > /tmp/heal_driver.py <<'PY'
+          """Resolve `api` the way the watchdog does, then restart it."""
+          import json
+          import sys
+
+          from nyxgpt import brew_services, self_heal
+
+          snapshot = self_heal._brew_services_snapshot()
+          resolved = brew_services.resolve("api", "nyxgpt-api", snapshot)
+          result = self_heal.restart_native_component("api")
+          print(
+              json.dumps(
+                  {
+                      "pattern": brew_services.SEGMENT_PATTERN
+                      if hasattr(brew_services, "SEGMENT_PATTERN")
+                      else "(pre-#4043: no SEGMENT_PATTERN)",
+                      "resolved": resolved,
+                      "ok": result.ok,
+                      "message": result.message,
+                      "details": result.details,
+                  }
+              ),
+              file=sys.stderr,
+          )
+          print(json.dumps({"resolved": resolved, "ok": result.ok, "message": result.message}))
+          PY
+
+          cat > /tmp/brew_state.py <<'PY'
+          """Brew's own state for one service, read the way the product reads it.
+
+          NEVER compare the Status column as a raw string here. D-032(f)
+          measured, in this same workflow, that `brew services list` colours
+          its Status tokens and that the escapes survive a pipe -- `ESC[39mnone
+          ESC[0m` through `cat -v` (run 32233162053) and `ESC[31merror` through
+          `awk` (run 32228088507). A coloured `none` compares unequal to
+          `"none"`, so a literal `[ "$STATE" != "none" ]` passes in exactly the
+          state it exists to catch. `brew_services.parse_services_list` strips
+          the escapes and is the one chokepoint every state read in the product
+          goes through, so this step reads through it too.
+          """
+          import subprocess
+          import sys
+
+          from nyxgpt import brew_services
+
+          out = subprocess.run(
+              ["brew", "services", "list"], capture_output=True, text=True, check=True
+          ).stdout
+          print(brew_services.parse_services_list(out).get(sys.argv[1], "<absent>"))
+          PY
+
+          # Registration is a launchd fact, not a state word: D-032(d). The
+          # plist is the file launchd reloads at the next login, and it is what
+          # `registered()` in the #3861 step below asserts on for the same
+          # reason. Both signals are captured before the restart as well as
+          # after, so a guard that cannot move is visible as one instead of
+          # passing as evidence.
+          # BOTH of Homebrew's label schemes, because this step measured the
+          # wrong one and failed a restart that worked: run 36996645910 logged
+          # `brew services list` reporting the keg `started` with
+          # `~/Library/LaunchAgents/sh.brew.nyxgpt-api@3.0.0rc.plist`, while
+          # this assertion looked only for `homebrew.mxcl.` and reported
+          # "launchd has no plist ... nothing was restarted". Homebrew renamed
+          # its service labels from `homebrew.mxcl.<formula>` to
+          # `sh.brew.<formula>`; `ops._BREW_SERVICE_LABEL_PREFIXES` is the
+          # product's copy of this same list, and the registration is a plist
+          # under EITHER (D-032(d)).
+          plist_path() {
+            local svc="$1" prefix
+            for prefix in homebrew.mxcl. sh.brew.; do
+              if [ -e "$HOME/Library/LaunchAgents/${prefix}${svc}.plist" ]; then
+                printf '%s' "$HOME/Library/LaunchAgents/${prefix}${svc}.plist"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          echo
+          echo "=== half one: the pre-#4043 barrier, injected into the installed keg ==="
+          python3 - "$BS" "$SH" <<'INJECT'
+          import sys
+
+          WIDE = r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?"
+          NARROW = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+          touched = 0
+          for path in sys.argv[1:]:
+              text = open(path, encoding="utf-8").read()
+              if WIDE not in text:
+                  sys.exit(f"::error::{path} does not carry the #4043 pattern; the injection is a no-op")
+              open(path, "w", encoding="utf-8").write(text.replace(WIDE, NARROW))
+              touched += 1
+          print(f"reverted the barrier in {touched} keg module(s)")
+          INJECT
+
+          rc=0
+          "$PY" /tmp/heal_driver.py > before.json || rc=$?
+          echo "driver exited $rc"
+          cat before.json
+          reproduced=0
+          python3 - <<'CHECK' || reproduced=$?
+          import json
+          import sys
+
+          d = json.load(open("before.json"))
+          if d["resolved"] != "nyxgpt-api@3.0.0rc":
+              sys.exit(f"resolved {d['resolved']!r}, not the candidate's own service")
+          if d["ok"] is not False:
+              sys.exit("the pre-fix barrier restarted the service -- not reproducing #4043")
+          if "invalid service name" not in d["message"]:
+              sys.exit(f"refused for some other reason: {d['message']!r}")
+          print("reproduced:", d["message"])
+          CHECK
+          if [ "$reproduced" != "0" ]; then
+            echo "::error::the pre-#4043 barrier did NOT refuse the candidate's service name on this machine -- the second half below would prove nothing"
+            exit 1
+          fi
+          # It refused, so it cannot have run a brew command: the service must
+          # still be exactly as brew left it after the install.
+          brew services list | grep "$KEG"
+
+          echo
+          echo "=== half two: the shipped barrier ==="
+          cp /tmp/brew_services.shipped.py "$BS"
+          cp /tmp/self_heal.shipped.py "$SH"
+          # What brew reports for the keg BEFORE the restart. The injection
+          # above never touched `parse_services_list`, so this reads the same
+          # way either side of the restore.
+          STATE_BEFORE="$("$PY" /tmp/brew_state.py "$KEG")"
+          # `if`, not `test ... && VAR=`: under `set -e` a failing left-hand
+          # side of an `&&` list aborts the step.
+          PLIST_BEFORE=absent
+          if plist_path "$KEG" >/dev/null; then PLIST_BEFORE=present; fi
+          echo "before the restart: state=$STATE_BEFORE plist=$PLIST_BEFORE"
+          "$PY" /tmp/heal_driver.py > after.json
+          cat after.json
+          brew services list
+          python3 - <<'CHECK'
+          import json
+          import sys
+
+          d = json.load(open("after.json"))
+          if d["resolved"] != "nyxgpt-api@3.0.0rc":
+              sys.exit(f"resolved {d['resolved']!r}")
+          if "invalid service name" in d["message"]:
+              sys.exit(f"still refused with the fix in place: {d['message']!r}")
+          if d["ok"] is not True:
+              sys.exit(f"self-heal could not restart the candidate service: {d['message']!r}")
+          print("restarted:", d["message"])
+          CHECK
+          # brew has to have acted, not just been asked: a formula it knows
+          # about with no service loaded reads `none` and has no plist, so both
+          # signals have to have moved.
+          STATE_AFTER="$("$PY" /tmp/brew_state.py "$KEG")"
+          PLIST_AFTER=absent
+          PLIST_AFTER_PATH="$(plist_path "$KEG" || true)"
+          if [ -n "$PLIST_AFTER_PATH" ]; then PLIST_AFTER=present; fi
+          echo "after the restart:  state=$STATE_AFTER plist=$PLIST_AFTER ${PLIST_AFTER_PATH}"
+          # Non-vacuity of the two assertions below, which is the whole point
+          # of capturing the before: if the keg was ALREADY registered and
+          # already off `none` before the restart, neither of them can fail and
+          # they say nothing about whether this restart did anything. Say so
+          # rather than letting the step pass as evidence it is not.
+          if [ "$PLIST_BEFORE" = present ] && [ "$STATE_BEFORE" != none ]; then
+            echo "::error::brew already reported $KEG as registered ($PLIST_BEFORE) and '$STATE_BEFORE' BEFORE the restart -- the assertions below cannot fail, so this half proves nothing; find what started the service earlier in the job"
+            exit 1
+          fi
+          test "$PLIST_AFTER" = present || {
+            echo "::error::self-heal reported a successful restart but launchd has no plist for $KEG -- nothing is registered, so nothing was restarted (D-032(d): the plist is the registration, not the Status column)"
+            exit 1
+          }
+          [ "$STATE_AFTER" != none ] && [ "$STATE_AFTER" != "<absent>" ] || {
+            echo "::error::self-heal reported a successful restart but brew still reports $KEG as '$STATE_AFTER'"
+            exit 1
+          }
+
+          # Leave the machine as the next step expects it: a running service
+          # on :8000 is not what "install the stable onto an installed
+          # candidate" is measuring. The candidate reached this step
+          # registered-never-started (asserted above), and `brew services stop`
+          # de-registers (D-032(d)), so check that it did rather than assuming
+          # it -- this step now mutates state the steps below read, and the
+          # #3861 step registers both service sets from a clean slate.
+          brew services stop "$KEG" 2>&1 | tail -5 || true
+          ! plist_path "$KEG" >/dev/null || {
+            echo "::error::$KEG is still registered with launchd after 'brew services stop' -- this step has left a service behind for the steps below (D-032(d))"
+            exit 1
+          }
+
       - name: The other direction -- the stable onto an installed candidate
         # Beyond AC4, which names only the direction above. This is the order
         # the owner actually reached #3853 by, and until that issue was fixed
@@ -2028,10 +2308,27 @@ jobs:
           # `ops._brew_service_will_restart` does. `brew services list` is
           # still printed, because it is the useful thing to read in the log;
           # it is just not what anything asserts on.
+          # Either label scheme counts as registered, for the reason the
+          # self-heal step above records: Homebrew writes `sh.brew.<formula>`
+          # now and `homebrew.mxcl.<formula>` historically, and this step's
+          # whole subject is whether a plist is on disk. Checking one scheme
+          # would read every registration on a current Homebrew as absent --
+          # which would fail the "measuring nothing" guard below rather than
+          # pass quietly, but for the wrong reason.
+          any_plist() {
+            local prefix
+            for prefix in homebrew.mxcl. sh.brew.; do
+              if [ -e "$HOME/Library/LaunchAgents/${prefix}${1}.plist" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
           registered() {
             local svc
             for svc in $(brew list --formula | grep '^nyxgpt-' || true); do
-              if [ -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$svc.plist" ]; then
+              if any_plist "$svc"; then
                 printf '%s ' "$svc"
               fi
             done
@@ -2039,7 +2336,7 @@ jobs:
           }
 
           plist_gone() {
-            ! test -e "$HOME/Library/LaunchAgents/homebrew.mxcl.$1.plist"
+            ! any_plist "$1"
           }
 
           echo "=== register BOTH service sets: the state the owner's Mac was in ==="
