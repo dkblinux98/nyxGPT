@@ -399,6 +399,20 @@ def test_infra_status_reports_the_observability_layer(monkeypatch) -> None:
     assert observability["workloads"]["grafana"] == "1/1 ready"
     # Command wrapping: the dashboard tells the operator a `nyxgpt` command.
     assert observability["port_forward_command"].startswith("nyxgpt ops port-forward")
+    # Both commands, because #3986 made it two: the forward is the
+    # bring-your-own answer and this one puts back a published node port that
+    # re-applying the shipped manifests stripped. The card renders whichever it
+    # is handed, so a typo'd key here drops the repair pointer off the
+    # Definition-of-Done surface with nothing else noticing.
+    assert observability["publish_command"] == "nyxgpt ops observability --kubernetes"
+    # ...and the wrapping property on the REAL payload values, not on literals
+    # a test chose for itself: this card is read without a terminal, so a raw
+    # `kubectl`/`docker` reaching it is an Operational Command Wrapping
+    # violation on the one screen the requirement exists for.
+    for command in (observability["port_forward_command"], observability["publish_command"]):
+        assert command.startswith("nyxgpt "), command
+        assert "kubectl" not in command, command
+        assert "docker" not in command, command
 
     # ...and the same states the Pod badges use (#3827), bar the one only a Pod
     # can be in (`SUPERSEDED`, #3990 -- a workload is never the replica that got
@@ -2145,6 +2159,135 @@ def test_provisioning_skips_when_glitchtip_is_not_ready(monkeypatch) -> None:
     assert all(r.ok for r in results)
     assert "Skipped GlitchTip provisioning" in results[0].message
     assert "glitchtip-init --kubernetes" in results[0].details
+
+
+# --- Observability on a cluster with no app tier (#3986 AC4) ----------------
+#
+# `nyxgpt ops observability --kubernetes` is a legitimate thing to run on its
+# own, and on a bring-your-own cluster it is the ONLY command #3986's AC4 lets
+# the operator run. Such a cluster has no `k8s/secret.yaml` -- that file is
+# gitignored and bootstrapped by `install --kubernetes` -- and no api or web
+# Pod to carry the DSN either, so the write has nothing to write into and
+# nobody to write it for. It used to fail there, which made the command exit
+# non-zero on a run where everything it was asked to do had worked, the SRE
+# access path included: a command reporting failure over a working stack, and
+# the reason `k8s-observability-byo-smoke` never reached its own assertions.
+
+
+def _observability_only_secret_files(tmp_path, monkeypatch):
+    """A cluster that only ever received the observability tier: its own Secret
+    is bootstrapped by that deploy, and the app tier's does not exist."""
+    k8s_dir = tmp_path / "k8s"
+    observability_dir = k8s_dir / "observability"
+    observability_dir.mkdir(parents=True)
+    (observability_dir / "secret.yaml").write_text(
+        f'stringData:\n  glitchtip-grafana-token: "{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "K8S_DIR", k8s_dir)
+    monkeypatch.setattr(ops, "K8S_OBSERVABILITY_DIR", observability_dir)
+    return k8s_dir / "secret.yaml", observability_dir / "secret.yaml"
+
+
+def _app_tier_aware_run(ran, *, app_tier: bool):
+    """A `_run` stand-in that answers the app-tier probe and records the rest."""
+
+    def fake_run(cmd, **kwargs):
+        ran.append(cmd)
+        if "get" in cmd and "deploy" in cmd and "--ignore-not-found" in cmd:
+            stdout = (
+                "".join(f"deployment.apps/{d}\n" for d in ops.K8S_DSN_CONSUMER_DEPLOYMENTS)
+                if app_tier
+                else ""
+            )
+            return MagicMock(returncode=0, stdout=stdout, stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    return fake_run
+
+
+def test_the_dsn_write_skips_on_a_cluster_with_no_app_tier(tmp_path, monkeypatch) -> None:
+    """The bring-your-own case: a successful skip with the remedy named, and
+    the half the command CAN do still done."""
+    app_secret, observability_secret = _observability_only_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    ran: list[list[str]] = []
+    monkeypatch.setattr(ops, "_run", _app_tier_aware_run(ran, app_tier=False))
+
+    results = ops._k8s_provision_glitchtip()
+
+    assert all(r.ok for r in results), [r.message for r in results]
+    skip = next(r for r in results if "Skipped wiring the api/web" in r.message)
+    assert "install --kubernetes" in skip.details
+    # Nothing invented to make the skip possible: no app Secret conjured from
+    # the template, nothing applied for it, no Deployment rolled for a DSN no
+    # workload on this cluster reads.
+    assert not app_secret.exists()
+    assert not [c for c in ran if "apply" in c and str(app_secret) in c]
+    assert not [c for c in ran if "restart" in c]
+    # ...and Grafana's token -- the half that IS wireable here -- still lands.
+    assert 'glitchtip-grafana-token: "tok-abc"' in observability_secret.read_text()
+    assert ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER not in observability_secret.read_text()
+
+
+def test_a_missing_app_secret_stays_a_failure_when_the_app_tier_is_there(
+    tmp_path, monkeypatch
+) -> None:
+    """The skip must not swallow the state it was written around. A cluster
+    that DOES carry the app tier with no Secret manifest to write into is a
+    deployment whose api really would report errors nowhere."""
+    app_secret, _ = _observability_only_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    monkeypatch.setattr(ops, "_run", _app_tier_aware_run([], app_tier=True))
+
+    results = ops._k8s_provision_glitchtip()
+
+    failed = [r for r in results if not r.ok]
+    assert [r.message for r in failed] == [
+        f"Missing {app_secret} to write error-tracking-dsn into"
+    ], "a missing app Secret under a running app tier has to stay loud"
+    assert "install --kubernetes" in failed[0].details
+
+
+def test_an_unaskable_cluster_is_not_read_as_having_no_app_tier(tmp_path, monkeypatch) -> None:
+    """`None` is "could not tell", and only a definite `False` earns the skip --
+    the #3468 distinction. Reading an unreachable cluster as "no app tier" is
+    how a skip comes to hide a real misconfiguration."""
+    _observability_only_secret_files(tmp_path, monkeypatch)
+    _provisionable_cluster(tmp_path, monkeypatch)
+    monkeypatch.setattr(ops, "_run", _app_tier_aware_run([], app_tier=False))
+    monkeypatch.setattr(ops, "_k8s_app_tier_deployed", lambda: None)
+
+    results = ops._k8s_provision_glitchtip()
+
+    assert not any("Skipped wiring the api/web" in r.message for r in results)
+    assert any("to write error-tracking-dsn into" in r.message and not r.ok for r in results)
+
+
+def test_the_app_tier_probe_tells_absent_apart_from_unanswerable(monkeypatch) -> None:
+    """And it asks about the Deployments the DSN is written for and that the
+    repair rolls, so the question and the step it gates cannot drift apart."""
+    monkeypatch.setattr(ops, "_which", lambda name: f"/usr/bin/{name}")
+    ran: list[list[str]] = []
+    monkeypatch.setattr(ops, "_run", _app_tier_aware_run(ran, app_tier=True))
+    assert ops._k8s_app_tier_deployed() is True
+    assert [d for d in ops.K8S_DSN_CONSUMER_DEPLOYMENTS if d in ran[-1]] == list(
+        ops.K8S_DSN_CONSUMER_DEPLOYMENTS
+    )
+    # Without this an absent Deployment exits 1, which is indistinguishable
+    # from a kubectl that could not answer at all.
+    assert "--ignore-not-found" in ran[-1]
+
+    monkeypatch.setattr(ops, "_run", _app_tier_aware_run([], app_tier=False))
+    assert ops._k8s_app_tier_deployed() is False
+
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: MagicMock(returncode=1, stdout="", stderr="no cluster")
+    )
+    assert ops._k8s_app_tier_deployed() is None
+
+    monkeypatch.setattr(ops, "_which", lambda name: None)
+    assert ops._k8s_app_tier_deployed() is None
 
 
 def test_the_superuser_password_never_reaches_argv(monkeypatch) -> None:

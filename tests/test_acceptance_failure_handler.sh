@@ -346,6 +346,25 @@ _assert_contains "and the acknowledgement says so" "$(cat "$TMP/gh_output")" "re
 # the D-040 class: something must execute the loud path, or the feature is
 # unverified by construction. The step body is extracted and run against
 # shimmed writers.
+#
+# Run TWICE, because the environment is part of what is under test here:
+#
+#   config=present  the ordinary case -- the config step ran, the alert step
+#                   reads it like every other step in the job.
+#   config=absent   the case the alert step exists FOR. The step whose failure
+#                   it most needs to report is "Write ephemeral config"; after
+#                   that fails there is no NYXGPT_CONFIG_FILE and no
+#                   ~/.nyxGPT/config.ini on a runner, so load_config _die()s --
+#                   and `source`ing the library turned `set -e` on, so the step
+#                   used to exit 1 having written nothing at all. The owner's
+#                   acceptance report would be eaten in silence by the very
+#                   step whose job is to say so.
+#
+# Until this, case 5 passed `NYXGPT_CONFIG_FILE` to NOTHING and inherited it
+# from the ambient environment. A developer box and a developer-agent run both
+# export one, so it was green there; `acceptance-standard-smoke` runs on a
+# clean runner, where it was red from 2026-10-01 -- a suite whose verdict came
+# from the machine rather than from the code, in both directions.
 for wf in handle_acceptance_failure handle_improvement; do
   wf_text="$(cat "$ROOT_DIR/.github/workflows/${wf}.yml")"
   _assert_contains "${wf}: the alert step is failure-triggered" "$wf_text" "if: failure()"
@@ -353,43 +372,75 @@ for wf in handle_acceptance_failure handle_improvement; do
 
   python3 "$TMP/extract.py" ".github/workflows/${wf}.yml" \
     "Alert the owner if the handler failed" > "$TMP/alert.sh"
-  : >"$TMP/alert.log"
 
-  # The step sources the fixture's shimmed library itself, so the writers have
-  # to be overridden INSIDE that shim -- defining them beforehand is undone by
-  # the step's own `source`. Appended (case 5 is last, and each iteration
-  # rewrites the tail) rather than forking a second fixture repo.
-  cp "$TMP/repo/scripts/agents/lib/gh_project.sh" "$TMP/shim.bak"
-  cat >> "$TMP/repo/scripts/agents/lib/gh_project.sh" <<SHIM
-issue_comment() { echo "COMMENT|\$1|\$2" >> "$TMP/alert.log"; }
+  for config in present absent; do
+    cfg="$TMP/repo/config.ini"
+    [[ "$config" == "present" ]] || cfg="$TMP/no-such-config.ini"
+    : >"$TMP/alert.log"
+
+    # The step sources the fixture's shimmed library itself, so the writers have
+    # to be overridden INSIDE that shim -- defining them beforehand is undone by
+    # the step's own `source`. Appended (case 5 is last, and each iteration
+    # rewrites the tail) rather than forking a second fixture repo.
+    #
+    # The shim also reports the repo the writers would have addressed: with no
+    # config, REPO_OWNER/REPO_NAME can only come from GITHUB_REPOSITORY, and a
+    # comment posted to `/` reaches no one.
+    cp "$TMP/repo/scripts/agents/lib/gh_project.sh" "$TMP/shim.bak"
+    cat >> "$TMP/repo/scripts/agents/lib/gh_project.sh" <<SHIM
+issue_comment() {
+  echo "COMMENT|\$1|\$2" >> "$TMP/alert.log"
+  echo "REPO|\${REPO_OWNER:-}/\${REPO_NAME:-}" >> "$TMP/alert.log"
+}
 notify_human_escalation() { echo "ESCALATE|\$1|\$2|\$3|\$4" >> "$TMP/alert.log"; }
 SHIM
 
-  ( cd "$TMP/repo" || exit 1
-    RUNNER_TEMP="$TMP" \
-    COMMENT_URL="https://example.test/comment/1" \
-    RUN_URL="https://example.test/run/9" \
-    COMMENTED="4242" \
-    COMMENTED_INPUT="4242" \
-    bash "$TMP/alert.sh" >/dev/null 2>&1 )
-  alert_rc=$?
-  cp "$TMP/shim.bak" "$TMP/repo/scripts/agents/lib/gh_project.sh"
+    # `env -i`: nothing reaches the step except what is named here. An ambient
+    # NYXGPT_CONFIG_FILE or a real ~/.nyxGPT/config.ini is exactly how this
+    # case came to mean different things on different machines.
+    ( cd "$TMP/repo" || exit 1
+      env -i \
+        PATH="$TMP/bin:$PATH" \
+        HOME="$TMP/home" \
+        NYXGPT_CONFIG_FILE="$cfg" \
+        GITHUB_REPOSITORY="stub-owner/stub-repo" \
+        RUNNER_TEMP="$TMP" \
+        COMMENT_URL="https://example.test/comment/1" \
+        RUN_URL="https://example.test/run/9" \
+        COMMENTED="4242" \
+        COMMENTED_INPUT="4242" \
+        bash "$TMP/alert.sh" >/dev/null 2>&1 )
+    alert_rc=$?
+    cp "$TMP/shim.bak" "$TMP/repo/scripts/agents/lib/gh_project.sh"
 
-  _assert_eq "${wf}: the alert step runs to completion" "0" "$alert_rc"
+    _assert_eq "${wf} (config ${config}): the alert step runs to completion" "0" "$alert_rc"
 
-  alert_log="$(cat "$TMP/alert.log" 2>/dev/null || true)"
-  _assert_contains "${wf}: it comments on the reporting issue" "$alert_log" "COMMENT|4242|"
-  _assert_contains "${wf}: it escalates to the owner" "$alert_log" "ESCALATE|4242|"
-  _assert_contains "${wf}: the alert carries the failing run URL" \
-    "$alert_log" "https://example.test/run/9"
-  _assert_contains "${wf}: the alert carries the reporting comment URL" \
-    "$alert_log" "https://example.test/comment/1"
+    alert_log="$(cat "$TMP/alert.log" 2>/dev/null || true)"
+    _assert_contains "${wf} (config ${config}): it comments on the reporting issue" \
+      "$alert_log" "COMMENT|4242|"
+    _assert_contains "${wf} (config ${config}): it escalates to the owner" \
+      "$alert_log" "ESCALATE|4242|"
+    _assert_contains "${wf} (config ${config}): the alert carries the failing run URL" \
+      "$alert_log" "https://example.test/run/9"
+    _assert_contains "${wf} (config ${config}): the alert carries the reporting comment URL" \
+      "$alert_log" "https://example.test/comment/1"
 
-  # Order matters: the comment is the durable record and must land even if the
-  # Slack hop is unwired, so it cannot be sequenced behind the escalation.
-  first_action="$(head -1 "$TMP/alert.log" 2>/dev/null | cut -d'|' -f1)"
-  _assert_eq "${wf}: the comment is written before the escalation" \
-    "COMMENT" "$first_action"
+    # Where the writers aimed. With the config, from the config; without it,
+    # from GITHUB_REPOSITORY -- never at an empty repo path.
+    if [[ "$config" == "present" ]]; then
+      _assert_contains "${wf}: with a config, the alert addresses the configured repo" \
+        "$alert_log" "REPO|test-owner/test-repo"
+    else
+      _assert_contains "${wf}: with no config, the alert falls back to GITHUB_REPOSITORY" \
+        "$alert_log" "REPO|stub-owner/stub-repo"
+    fi
+
+    # Order matters: the comment is the durable record and must land even if the
+    # Slack hop is unwired, so it cannot be sequenced behind the escalation.
+    first_action="$(head -1 "$TMP/alert.log" 2>/dev/null | cut -d'|' -f1)"
+    _assert_eq "${wf} (config ${config}): the comment is written before the escalation" \
+      "COMMENT" "$first_action"
+  done
 done
 
 if [[ "$FAILURES" -eq 0 ]]; then

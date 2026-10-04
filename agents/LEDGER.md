@@ -2036,7 +2036,27 @@ rather than mechanism, and nothing can enforce them.
   command their notes still name must not get `address already in use` about a
   UI that works.
 
-  The behaviours are pinned by `tests/unit/test_k8s_host_access.py` and by
+  (c) *Where two topologies exclude each other physically, one of them needs
+  its own cluster or it is never tested.* A kind node created from nyxGPT's
+  config holds the four SRE host ports for its life, so `kubectl port-forward`
+  can never bind them there — the bring-your-own half of this feature is not
+  merely untested on that cluster, it is **untestable** on it, and three review
+  rounds were spent on a smoke step that demanded both behaviours from one
+  topology. The bring-your-own leg is now its own job on a bare `kind create
+  cluster` under a non-reserved name, which also made it the first executed
+  evidence for that path (the owner's re-test could only inspect it).
+
+  And its corollary for prose: *a claim about reachability must be made by
+  something that can see the thing it claims.* The admin dashboard's
+  observability card asserted "the Services are ClusterIP, use a forward" —
+  served from the api Pod, which can see neither the node's port mappings nor
+  the Services. It now names both access paths and asserts neither. Same
+  lesson as #3988, one layer up: the defect is not reporting the wrong value,
+  it is reporting at all about a machine you are not on.
+
+  The behaviours are pinned by `tests/unit/test_k8s_host_access.py`,
+  `tests/unit/test_k8s_sre_access_claims.py` (the falsified claim in all three
+  files that carried it, and the BYO job's topology) and by
   `scripts/k8s-local-smoke.sh` steps 7-8 (published, then returned to the
   shipped ClusterIP posture and restored through both wrapped paths), per the
   verification retirement.
@@ -2362,6 +2382,44 @@ rather than mechanism, and nothing can enforce them.
   Source: #4043; amends **D-054**; cites **D-006**, **D-032**(d), **D-051**;
   `docs/self-healing.md` §Restarting the api from the api.
 
+- **D-060** · 2026-10-04 · developer agent (#3986, submit gate) — **A required
+  suite must answer about the code, not about the machine or the clock.** Two
+  gates were red on `v3.0.0` for reasons no diff contained, and between them
+  they blocked every PR that touched their paths:
+
+  (a) *Ambient environment.* `tests/test_acceptance_failure_handler.sh` case 5
+  ran the handlers' extracted `if: failure()` alert step with no
+  `NYXGPT_CONFIG_FILE` — the one extracted step in the suite that was not given
+  one — so `load_config` read `$HOME/.nyxGPT/config.ini`. A developer box has
+  one and `developer_auto_implement.yml` exports the var, so the suite was green
+  wherever it was written and red on the clean runner that gates it (from
+  2026-10-01). Extracted-step runs are now under `env -i`: a suite that inherits
+  the environment is not reproducible in either direction, and "green on my
+  machine" is not a weaker version of green — it is a different question.
+
+  (b) *Wall clock.* `tests/test_retro_missing_sources.sh` restamps its inputs
+  because a stale input is a different test's subject, then restored the two it
+  deletes from the **checked-in** dumps — un-restamped. The build exits 3 on
+  staleness, so the suite was green for ~3 days after each retrospective data
+  refresh and red after (from 2026-10-03). A suite must not assert the freshness
+  of data it does not own.
+
+  (c) *What the leak was hiding.* The ambient config made the alert step's one
+  load-bearing case untested: when the step that FAILED is `Write ephemeral
+  config`, there is no config to read, and because sourcing `gh_project.sh`
+  enables `set -e`, the step exited 1 having posted no comment and sent no DM —
+  the owner's acceptance report eaten in silence by the step whose only job is
+  to say so. Both handlers now tolerate a config miss and fall back to
+  `GITHUB_REPOSITORY`, and the suite runs the loud path with no config at all.
+  Guard: `tests/unit/test_agent_suites_answer_about_the_code.py`, plus case 5
+  itself; both proven by injection in both directions.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. Allocated as **D-059** against a base
+  that did not yet carry the mainline's own D-059 (#4043), which is the
+  collision `ledger_ids.py` documents as created at merge by neither branch
+  alone; **renumbered here**, both entries kept. IDs are never reused.
+  Source: #3986 (fourth round, submit gate); cites **D-006**, **D-040**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -2426,6 +2484,29 @@ rather than mechanism, and nothing can enforce them.
   Source: this branch (#3986); `tests/unit/test_web_node_engines.py` is the
   guard that makes a silent re-bump fail at `pytest` rather than in fifteen
   smoke jobs.
+
+- **P-006** · 2026-10-04 · developer-agent (#3986) — The two remaining
+  `py/clear-text-logging-sensitive-data` sources in `src/nyxgpt/ops.py`
+  (alerts 105/106/141/142) are left open: `K8S_APP_SECRET_NAME` and
+  `K8S_ERROR_TRACKING_DSN_SECRET_KEY`, module constants holding a Kubernetes
+  Secret's NAME and a key inside it. The paths that reached the same two
+  sinks were renamed instead (`app_manifest`, `observability_manifest`) and
+  the rule is now pinned by
+  `tests/unit/test_no_path_is_named_like_a_secret.py`.
+  Reason: the rule classifies by variable NAME, and a *path* has an accurate
+  name that is not a secret word, so renaming it makes the code and the
+  scanner agree. These two do not: they name a Secret resource and a key
+  inside it, both must appear on a `kubectl` command line for the command to
+  mean anything, and contorting them to dodge a heuristic would make the code
+  read worse while logging nothing less. They are open on `v3.0.0` already —
+  this is not a regression introduced or hidden here.
+  Revisit when: the owner dismisses them in the security tab (the route
+  already taken for alerts 115/116/117/119/120/127/128/130 — "false
+  positive"/"won't fix"), which is the only honest way to close a false
+  positive whose name is correct. An agent cannot dismiss, so nothing here
+  can act on it.
+  Source: this branch (#3986); measurement and the parameter-vs-assignment
+  finding are in the guard's docstring.
 
 ## Open questions
 

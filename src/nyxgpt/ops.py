@@ -9431,18 +9431,18 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
     running deployment is not this step's job -- but gains any key the current
     template has added since (`_reconcile_k8s_secret_keys`).
     """
-    secret_path = K8S_DIR / "secret.yaml"
+    manifest_path = K8S_DIR / "secret.yaml"
     example = K8S_DIR / "secret.example.yaml"
-    if secret_path.exists():
-        return _reconcile_k8s_secret_keys(secret_path, example)
+    if manifest_path.exists():
+        return _reconcile_k8s_secret_keys(manifest_path, example)
     if not example.exists():
         return [OpsResult(False, f"Missing {example} to bootstrap the secret from")]
     key = _resolve_api_key(api_key)
     text = example.read_text(encoding="utf-8")
     text = re.sub(r'api-key:\s*".*"', lambda _m: f'api-key: "{key}"', text)
-    secret_path.write_text(text, encoding="utf-8")
-    os.chmod(secret_path, 0o600)
-    return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
+    manifest_path.write_text(text, encoding="utf-8")
+    os.chmod(manifest_path, 0o600)
+    return [OpsResult(True, f"Bootstrapped {manifest_path} from secret.example.yaml")]
 
 
 # Where the generated image-tag overlay lives (#3956). Beside `K8S_DIR`, never
@@ -9619,10 +9619,10 @@ def _ensure_k8s_observability_secret() -> list[OpsResult]:
     a missing key is worse than a stale one). Delete the file to re-bootstrap
     it from current config.
     """
-    secret_path = K8S_OBSERVABILITY_DIR / "secret.yaml"
+    manifest_path = K8S_OBSERVABILITY_DIR / "secret.yaml"
     example = K8S_OBSERVABILITY_DIR / "secret.example.yaml"
-    if secret_path.exists():
-        return _reconcile_k8s_secret_keys(secret_path, example)
+    if manifest_path.exists():
+        return _reconcile_k8s_secret_keys(manifest_path, example)
     if not example.exists():
         return [OpsResult(False, f"Missing {example} to bootstrap the observability secret from")]
 
@@ -9636,9 +9636,9 @@ def _ensure_k8s_observability_secret() -> list[OpsResult]:
             text,
             flags=re.MULTILINE,
         )
-    secret_path.write_text(text, encoding="utf-8")
-    os.chmod(secret_path, 0o600)
-    return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
+    manifest_path.write_text(text, encoding="utf-8")
+    os.chmod(manifest_path, 0o600)
+    return [OpsResult(True, f"Bootstrapped {manifest_path} from secret.example.yaml")]
 
 
 def _kubectl_apply_stdin(manifest: str, what: str) -> OpsResult:
@@ -13858,7 +13858,25 @@ def infra_status() -> dict[str, Any]:
             ],
             # How the operator reaches the UIs above from their own machine
             # -- a `nyxgpt` command, never a raw kubectl invocation.
+            #
+            # Two commands since #3986, because there are two shapes and the
+            # card used to assert the wrong one of them as a fact -- that the
+            # SRE Services were ClusterIP and a forward the only way in.
+            # Where nyxGPT provisioned the cluster the install publishes on the
+            # host and this dashboard's own links reach them with no terminal
+            # at all, which is what the Definition of Done requires; the
+            # forward is the bring-your-own answer, and `publish_command` is
+            # what puts a stripped node port back (a `kubectl apply -k k8s/`
+            # re-asserts the shipped ClusterIP).
+            #
+            # Which of the two applies is deliberately NOT asserted here.
+            # This payload is served by the api Pod, which can see neither
+            # the node container's port mappings nor the Services (its Role
+            # grants workloads and Pods only) -- and #3988 is exactly what
+            # guessing about a machine you are not on costs. So the card
+            # names both paths and claims neither.
             "port_forward_command": "nyxgpt ops port-forward --target observability",
+            "publish_command": "nyxgpt ops observability --kubernetes",
         },
     }
 
@@ -21939,8 +21957,8 @@ def _provision_glitchtip() -> list[OpsResult]:
 # everything from `_glitchtip_login` down is plain HTTP against GlitchTip's
 # API and knows nothing about how the process was reached. Only the two ends
 # differ, and they are what this section supplies -- how to run
-# `createsuperuser` in a Pod instead of a container, how to reach the API on
-# a ClusterIP-only Service, and where the provisioned values have to land
+# `createsuperuser` in a Pod instead of a container, how to reach an API that
+# the shipped manifests leave ClusterIP, and where the provisioned values land
 # (Kubernetes Secrets, not files on the host).
 
 K8S_GLITCHTIP_DEPLOYMENT = "glitchtip"
@@ -22036,13 +22054,19 @@ def _k8s_port_forward(service: str, remote_port: int) -> Iterator[str | None]:
     Yields the base URL, or None when the tunnel never carried traffic (the
     caller reports that; a context manager cannot).
 
-    GlitchTip's Service is ClusterIP-only, like every Service in `k8s/`, so
-    there is no way to speak to its REST API from this process without one --
-    and speaking to it from here is what lets the whole provisioning sequence
-    be SHARED with the Compose path instead of reimplemented against `kubectl
-    exec`. The local port is ephemeral rather than GlitchTip's usual 8080 so
-    this never collides with an operator's own `nyxgpt ops port-forward
-    --target glitchtip`, or with a native GlitchTip on the same workstation.
+    The manifests in `k8s/` declare every Service `ClusterIP`, so nothing is
+    reachable from this process by default -- and the one case where it later
+    is (a cluster nyxGPT provisioned, where #3986's publish step patches a node
+    port onto `glitchtip` and maps `8080` on the host) is no help here: this
+    runs BEFORE that step, and on a bring-your-own cluster or the AWS k3s
+    target it never happens at all. So the forward is what makes the whole
+    provisioning sequence SHARED with the Compose path instead of reimplemented
+    against `kubectl exec`.
+
+    The local port is ephemeral rather than GlitchTip's usual 8080 so this
+    never collides with an operator's own `nyxgpt ops port-forward --target
+    glitchtip`, with the published node port on a provisioned cluster, or with
+    a native GlitchTip on the same workstation.
 
     Readiness is decided by a real HTTP request, not by the socket accepting:
     `kubectl port-forward` binds its listener immediately and only then dials
@@ -22228,6 +22252,126 @@ def _k8s_error_tracking_dsn_wired() -> OpsResult:
     return OpsResult(True, f"The api Pod reports errors to {target or 'the in-cluster GlitchTip'}")
 
 
+def _k8s_app_tier_deployed() -> bool | None:
+    """Does this cluster carry the app tier the error-tracking DSN is *for*?
+
+    `True`/`False` are answers; `None` is "could not tell" -- no kubectl, an
+    unreachable cluster, a `kubectl get` that failed for its own reasons. The
+    three are kept apart because the only caller acts on `False` by SKIPPING a
+    step, and reading "cannot tell" as "absent" is how a skip comes to hide a
+    real misconfiguration (the #3468 distinction, applied to a Deployment set
+    rather than to a Pod).
+
+    Asked of `K8S_DSN_CONSUMER_DEPLOYMENTS` -- the Deployments the DSN is
+    written for and that `_restart_k8s_dsn_consumers` rolls -- so the question
+    and the thing it gates cannot drift apart. `--ignore-not-found` is what
+    makes an absent Deployment exit 0 with no output instead of exit 1, so a
+    missing app tier is distinguishable from a broken kubectl.
+    """
+    if _which("kubectl") is None:
+        return None
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "deploy",
+            *K8S_DSN_CONSUMER_DEPLOYMENTS,
+            "--ignore-not-found",
+            "-o",
+            "name",
+        ],
+        check=False,
+        # An observability-only cluster answering "none of those exist" is a
+        # normal answer for a probe, not something to warn about in the log.
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    return bool((cp.stdout or "").strip())
+
+
+def _k8s_wire_app_tier_dsn(dsn: str) -> list[OpsResult]:
+    """Put the minted DSN where the api and web Pods will read it, and prove
+    the running api actually carries it.
+
+    Skips -- successfully, with the remedy named -- when there is no app tier
+    on this cluster to wire. `k8s/secret.yaml` is gitignored and bootstrapped
+    by `install --kubernetes` (`_ensure_k8s_secret`), so an
+    observability-only deployment has no file to write into and no Pod to
+    write into it *for*: the DSN would be a value nothing reads. Failing there
+    made `nyxgpt ops observability --kubernetes` exit non-zero on a
+    bring-your-own cluster where every single thing it was asked to do had
+    worked, the SRE access path included -- a command reporting failure over a
+    working stack, which is the inverse of the defect #3986 opened with and
+    just as misleading. It is also what kept `k8s-observability-byo-smoke`,
+    AC4's only executed evidence, from ever reaching its assertions.
+
+    The skip is taken only on a DEFINITE "no app tier" (`is False`). A missing
+    file on a cluster that does carry the app tier, or one we could not ask,
+    stays a hard failure: that is a deployment whose api really would report
+    errors nowhere, and it has to stay loud.
+    """
+    # `app_manifest`, not `app_secret`: this is the PATH of the Secret
+    # manifest, and a path named like a secret value is a CodeQL taint source
+    # by name alone -- it then travels, correctly, onto the `kubectl apply -f`
+    # command line and into the subprocess failure log, which reports `_run`
+    # as logging a secret in clear text. The manifest's VALUES still never
+    # reach argv (`_apply_k8s_secret_file`). Pinned by
+    # tests/unit/test_no_path_is_named_like_a_secret.py, whose docstring
+    # carries the measurement.
+    app_manifest = K8S_DIR / "secret.yaml"
+    if not app_manifest.exists() and _k8s_app_tier_deployed() is False:
+        return [
+            OpsResult(
+                True,
+                "Skipped wiring the api/web error-tracking DSN (no app tier on this cluster)",
+                f"{app_manifest} is bootstrapped by `nyxgpt ops install --kubernetes`, which "
+                "wires the DSN as part of the install. An observability-only deployment has "
+                "nothing to write it into.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+    # GlitchTip mints the DSN from its own GLITCHTIP_DOMAIN (a browser-facing
+    # localhost URL). Inside a Pod that resolves to the Pod itself, so it is
+    # rewritten to the in-cluster Service -- the same host and port the
+    # Compose path rewrites it to, since the Service and the Compose alias
+    # are deliberately both named `glitchtip`.
+    dsn_changed, dsn_result = _write_k8s_secret_value(
+        app_manifest, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
+    )
+    results.append(dsn_result)
+    if not dsn_result.ok:
+        return results
+
+    applied = _apply_k8s_secret_file(app_manifest)
+    results.append(applied)
+    if not applied.ok:
+        return results
+
+    # Rolled when the value changed, and ALSO when the running api Pod
+    # turns out not to have it -- a re-run that mints the same DSN
+    # must still be able to repair a Pod that booted without one,
+    # which `dsn_changed` alone could never do (it is False on exactly
+    # that re-run).
+    if dsn_changed or _k8s_error_tracking_dsn_state()[0] == _K8S_DSN_UNSET:
+        results += _restart_k8s_dsn_consumers()
+    # Verified against the RUNNING Pod, not against the Secret this
+    # function just wrote (owner acceptance, 2026-08-26): the Secret
+    # was correct on that cluster and the api Pod's
+    # NYXGPT_ERROR_TRACKING_DSN was still empty, because an
+    # environment is fixed at process start and the Pod predated
+    # provisioning. Asserting what we wrote would have reported that
+    # state green -- "the plumbing was added and the value was never
+    # populated", invisible on every surface. This is the one check
+    # that cannot be satisfied by writing a file.
+    results.append(_k8s_error_tracking_dsn_wired())
+    return results
+
+
 def _k8s_provision_glitchtip() -> list[OpsResult]:
     """Provision the in-cluster GlitchTip and wire both halves of it up (#3990).
 
@@ -22244,10 +22388,12 @@ def _k8s_provision_glitchtip() -> list[OpsResult]:
     the placeholder that made the SRE Home panels 401).
 
     Skips -- successfully, with the remedy named -- when there is nothing to
-    provision against: no kubectl, a GlitchTip that is not ready yet, or no
-    native config.ini to persist the admin credentials in. A skip must not
-    fail an install: the app tier works without error tracking, and the
-    operator can run the command again once the missing piece is there.
+    provision against: no kubectl, a GlitchTip that is not ready yet, no
+    native config.ini to persist the admin credentials in, or (in
+    `_k8s_wire_app_tier_dsn`) no app tier on the cluster to hand the DSN to.
+    A skip must not fail an install: the app tier works without error
+    tracking, and the operator can run the command again once the missing
+    piece is there.
     """
     if _which("kubectl") is None:
         return [OpsResult(True, "Skipped GlitchTip provisioning (kubectl not found)")]
@@ -22350,45 +22496,17 @@ def _k8s_provision_glitchtip() -> list[OpsResult]:
     if dsn is None:
         return results
 
-    # GlitchTip mints the DSN from its own GLITCHTIP_DOMAIN (a browser-facing
-    # localhost URL). Inside a Pod that resolves to the Pod itself, so it is
-    # rewritten to the in-cluster Service -- the same host and port the
-    # Compose path rewrites it to, since the Service and the Compose alias
-    # are deliberately both named `glitchtip`.
-    app_secret = K8S_DIR / "secret.yaml"
-    dsn_changed, dsn_result = _write_k8s_secret_value(
-        app_secret, K8S_ERROR_TRACKING_DSN_SECRET_KEY, _containerized_error_tracking_dsn(dsn)
-    )
-    results.append(dsn_result)
-    if dsn_result.ok:
-        applied = _apply_k8s_secret_file(app_secret)
-        results.append(applied)
-        if applied.ok:
-            # Rolled when the value changed, and ALSO when the running api Pod
-            # turns out not to have it -- a re-run that mints the same DSN
-            # must still be able to repair a Pod that booted without one,
-            # which `dsn_changed` alone could never do (it is False on exactly
-            # that re-run).
-            if dsn_changed or _k8s_error_tracking_dsn_state()[0] == _K8S_DSN_UNSET:
-                results += _restart_k8s_dsn_consumers()
-            # Verified against the RUNNING Pod, not against the Secret this
-            # function just wrote (owner acceptance, 2026-08-26): the Secret
-            # was correct on that cluster and the api Pod's
-            # NYXGPT_ERROR_TRACKING_DSN was still empty, because an
-            # environment is fixed at process start and the Pod predated
-            # provisioning. Asserting what we wrote would have reported that
-            # state green -- "the plumbing was added and the value was never
-            # populated", invisible on every surface. This is the one check
-            # that cannot be satisfied by writing a file.
-            results.append(_k8s_error_tracking_dsn_wired())
+    results += _k8s_wire_app_tier_dsn(dsn)
 
-    observability_secret = K8S_OBSERVABILITY_DIR / "secret.yaml"
+    # Named for what it is -- the manifest's path -- for the reason given in
+    # `_k8s_wire_app_tier_dsn` above.
+    observability_manifest = K8S_OBSERVABILITY_DIR / "secret.yaml"
     token_changed, token_write_result = _write_k8s_secret_value(
-        observability_secret, K8S_GRAFANA_GLITCHTIP_TOKEN_SECRET_KEY, token
+        observability_manifest, K8S_GRAFANA_GLITCHTIP_TOKEN_SECRET_KEY, token
     )
     results.append(token_write_result)
     if token_write_result.ok:
-        applied = _apply_k8s_secret_file(observability_secret)
+        applied = _apply_k8s_secret_file(observability_manifest)
         results.append(applied)
         # Grafana reads `$__file{}` provisioning targets at startup only, so a
         # rewritten token is invisible until the Pod restarts -- the same

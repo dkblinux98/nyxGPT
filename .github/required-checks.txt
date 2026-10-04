@@ -97,6 +97,7 @@ k8s-capacity-smoke
 k8s-local-smoke
 k8s-pod-state
 k8s-observability-smoke
+k8s-observability-byo-smoke
 linux-native-smoke
 linux-native-dev-smoke
 ops-subprocess-output

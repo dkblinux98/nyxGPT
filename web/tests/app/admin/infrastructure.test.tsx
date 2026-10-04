@@ -32,6 +32,19 @@ const observabilityDeployed = {
     promtail: '1/1 ready',
   },
   port_forward_command: 'nyxgpt ops port-forward --target observability',
+  // Two commands since #3986, which is what the live api sends: the forward is
+  // the bring-your-own answer, and this one puts a stripped published port
+  // back. Without the field here the branch the api actually takes was never
+  // rendered by any test.
+  publish_command: 'nyxgpt ops observability --kubernetes',
+};
+
+// The same deployed tier as reported by an api predating #3986 -- the field is
+// optional on the client for exactly this version skew, and the sentence has to
+// end cleanly rather than trailing `undefined` or a dangling "; if".
+const observabilityDeployedWithoutPublishCommand = {
+  ...observabilityDeployed,
+  publish_command: undefined,
 };
 
 const mockStatusTerraform = {
@@ -1373,6 +1386,44 @@ describe('InfrastructurePage', () => {
       screen.getByText('nyxgpt ops port-forward --target observability')
     ).toBeInTheDocument();
     expect(screen.queryByText(/kubectl/)).not.toBeInTheDocument();
+    // ...and the repair path the api sends beside it (#3986): a published node
+    // port that re-applying the shipped manifests stripped is put back by a
+    // second wrapped command. Scoped to that paragraph, because the same
+    // command is this page's deploy pointer when the tier is absent.
+    const accessNote = screen
+      .getByText('nyxgpt ops port-forward --target observability')
+      .closest('p') as HTMLElement;
+    expect(accessNote.textContent).toMatch(
+      /put them back with\s*nyxgpt ops observability --kubernetes\./
+    );
+    expect(accessNote.textContent).not.toContain('undefined');
+  });
+
+  it('ends the access sentence cleanly when the api sends no publish command (#3986)', async () => {
+    // `publish_command` is optional on the client so an api predating #3986
+    // leaves the sentence short instead of rendering `undefined` into a
+    // command -- the version-skew leg the page's own comment promises.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusKubernetesServing,
+          kubernetes: {
+            ...mockStatusKubernetesServing.kubernetes,
+            observability: observabilityDeployedWithoutPublishCommand,
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    const forward = await screen.findByText('nyxgpt ops port-forward --target observability');
+    const accessNote = forward.closest('p') as HTMLElement;
+    expect(accessNote.textContent).not.toContain('undefined');
+    expect(accessNote.textContent).not.toMatch(/put them back with/);
+    expect(accessNote.textContent?.trimEnd()).toMatch(
+      /nyxgpt ops port-forward --target observability\.$/
+    );
   });
 
   it('tells the operator how to deploy the observability layer when the cluster has none (#3787)', async () => {
@@ -2533,14 +2584,19 @@ describe('InfrastructurePage', () => {
     expect(
       await screen.findByRole('heading', { name: 'In-cluster observability' })
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/READY means the workload is running, not that telemetry is reaching it/)
-    ).toBeInTheDocument();
-    // `getAllBy*`: several cards now point at the same command (#4150 and
-    // #4133 each added another), and this assertion is about the pointer
-    // being offered beside the caveat, not about it appearing exactly once
-    // on the page.
-    expect(screen.getAllByText('nyxgpt ops status').length).toBeGreaterThan(0);
+    const readyNote = screen.getByText(
+      /READY means the workload is running, not that telemetry is reaching it/
+    );
+    expect(readyNote).toBeInTheDocument();
+    // Scoped to this paragraph, not the whole page. Several cards now name the
+    // same command -- the version card's no-install-record fallback (#3988),
+    // and the ones #4150 and #4133 added -- so a page-wide `getByText` finds
+    // more than one and throws. `getAllByText(...).length > 0` would pass
+    // equally for a page that names the command anywhere EXCEPT this note,
+    // which is the one place the claim is about: it is the caveat that has to
+    // carry the pointer. Asserting it inside the paragraph says that, and
+    // stays true however many other cards mention it.
+    expect(within(readyNote).getByText('nyxgpt ops status')).toBeInTheDocument();
   });
 
   it('badges the observability workloads from the same vocabulary as the Pods (#3827)', async () => {

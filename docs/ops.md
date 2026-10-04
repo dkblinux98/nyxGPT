@@ -1691,9 +1691,14 @@ workloads have rolled out, not when the objects were accepted (#3826), so a
 first run pulling their images can take several minutes. The Compose profiles
 are not an option in that mode (they scrape the host and resolve Compose
 service names), which is why this branches rather than reconciling both. See
-[kubernetes.md](kubernetes.md#observability-in-the-cluster); reach the UIs
-with [`nyxgpt ops port-forward --target
-observability`](#nyxgpt-ops-port-forward).
+[kubernetes.md](kubernetes.md#observability-in-the-cluster). It also leaves
+the four UIs **reachable** when it returns (#3986): on a cluster nyxGPT
+provisioned it publishes them on `127.0.0.1:3001/9090/16686/8080` and verifies
+each one, and on a cluster whose host ports it cannot map it establishes the
+managed background forward itself -- either way no second command is needed.
+[`nyxgpt ops port-forward`](#nyxgpt-ops-port-forward) is for reaching a
+bring-your-own cluster, and for repairing an access path that a
+`kubectl apply` has stripped.
 
 Behavior:
 
@@ -2021,13 +2026,33 @@ Forwards a Kubernetes Service to `127.0.0.1` so it's reachable from the
 operator's own workstation. It's a thin wrapper around `kubectl port-forward`
 so operators never need to type the raw `kubectl` command themselves.
 
-Since #3986 it is **not** how you reach the web UI after a local install: the
-install leaves `http://127.0.0.1:3000` answering on its own. This remains the
-way to reach a cluster whose host ports nyxGPT cannot map (a bring-your-own
-cluster), and, on such a cluster, the only way to reach the observability UIs,
-whose Services stay ClusterIP there. On a cluster nyxGPT provisioned, the
-install publishes them on the host and no forward is needed (see
-[kubernetes.md §4](kubernetes.md)).
+Since #3986 it is **not** how you reach nyxGPT after a local install -- not
+the web UI, and not the SRE UIs either. On the kind cluster nyxGPT provisions,
+the install publishes `http://127.0.0.1:3000` *and* Grafana `3001`,
+Prometheus `9090`, Jaeger `16686` and GlitchTip `8080` on the host, and
+verifies each one answers before it returns. (The shipped manifests still
+declare `ClusterIP`; the node ports are patched on by the install, which is
+what keeps the base posture the AWS k3s target depends on -- #3503.) This
+command remains the way to reach a cluster whose host ports nyxGPT cannot map:
+a bring-your-own cluster, or a `nyxgpt-local` created by an older nyxGPT.
+
+Run against a cluster that already publishes a target, it therefore neither
+fails nor forwards: the target is reported as reachable and **dropped from the
+plan** -- `kubectl port-forward` cannot bind a host port the node container
+holds, so forwarding it could only print `address already in use` about a UI
+that is working -- and if that empties the plan the command says `Nothing left
+to forward.` and exits `0`.
+
+A target whose host port the node maps but whose Service has *lost* its node
+port is **republished** instead, and the URL is then probed rather than
+asserted. That state is reachable by ordinary means: `kubectl apply -k k8s/`
+re-asserts the shipped `ClusterIP` and strips the node port, leaving the host
+port held by the node container with nothing behind it. A forward cannot help
+there (the node holds the port, and a kind node's mappings are fixed at
+creation), and a node port survives the Pod replacement a forward dies with,
+so putting it back is both the only recovery and the better one.
+`nyxgpt ops observability --kubernetes` repairs the same state by the same
+means.
 
 `--target app` forwards web and api together; `--background` hands the forward
 to a supervised, detached child (`--status` / `--stop` inspect and end it),
@@ -2038,14 +2063,21 @@ replaced, so an unsupervised background forward would take the UI down on the
 first canary rollout.
 
 `--target` selects what to forward (default `web`): `web`, `api`, `app` for
-web and api together, `grafana`, `prometheus`, `jaeger`, `glitchtip`, or
-`observability` for all four observability UIs at once. Each target's default local port is the one that
+web and api together, `grafana`, `prometheus`, `jaeger`, `glitchtip`,
+`observability` for all four observability UIs at once, or a **comma-separated
+list** of any of those (`--target grafana,jaeger`). The list form is what lets
+the install forward *exactly* the Services a given cluster does not already
+publish instead of an all-or-nothing group -- on a `nyxgpt-local` that maps
+the app tier's ports but not the SRE tier's, a group that also claimed
+3000/8000 would fail to bind and cost the web UI to fix the SRE tier.
+Each target's default local port is the one that
 UI is published on in every other mode -- Grafana `3001`, Prometheus `9090`,
 Jaeger `16686`, GlitchTip `8080` -- which is what makes the admin
 dashboard's observability links (built from `[monitoring] grafana_ui_url`
 and friends) work unchanged in Kubernetes mode (#3787). `--port` overrides
-the local port for a single target; it is rejected with `--target
-observability`, where there are four.
+the local port for a single target; it is rejected whenever `--target`
+resolves to more than one Service (`observability`, `app`, or a list), where
+one override cannot mean anything sensible.
 
 Usage:
 
@@ -2054,14 +2086,18 @@ nyxgpt ops port-forward                          # nyxgpt-web on 3000
 nyxgpt ops port-forward --port 3005              # ... on a different local port
 nyxgpt ops port-forward --target grafana         # Grafana on 3001
 nyxgpt ops port-forward --target observability   # Grafana, Prometheus, Jaeger, GlitchTip
+nyxgpt ops port-forward --target grafana,jaeger  # exactly those two
+nyxgpt ops port-forward --status                 # is a managed background forward up?
+nyxgpt ops port-forward --stop                   # end it and release its host ports
 ```
 
 Runs in the foreground until interrupted (`Ctrl-C`), same as `kubectl
-port-forward` itself. Exits `2` if `kubectl` isn't on `PATH` or the
-target/port combination is invalid; otherwise returns the exit code of the
-first forward that stops (with `--target observability`, any one of them
-exiting ends the command and tears the rest down, since a half-working set of
-tunnels is worse than an obvious failure).
+port-forward` itself. Exits `2` if `kubectl` isn't on `PATH`, if the
+target/port combination is invalid, or if a republished URL stays silent;
+otherwise returns the exit code of the first forward that stops (with
+`--target observability`, any one of them exiting ends the command and tears
+the rest down, since a half-working set of tunnels is worse than an obvious
+failure).
 
 ---
 

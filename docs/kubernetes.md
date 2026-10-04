@@ -772,6 +772,18 @@ first cannot leave the SRE tier dark.
 foreground `nyxgpt ops port-forward` still works and is unchanged, for a
 one-off look at a single Service.
 
+**Evidence.** The `k8s-observability-byo-smoke` job of
+`.github/workflows/k8s-observability-smoke.yml` runs this path on a real
+cluster created *without* nyxGPT's kind config: it first asserts the node
+publishes none of the four SRE host ports, then runs `nyxgpt ops observability
+--kubernetes --local` and nothing else, and asserts the deploy established the
+managed forward itself and that all four UIs answer through it — then that
+`--stop` ends it and the ports really go dark. It also asserts `nyxgpt ops
+down --kubernetes` leaves a cluster nyxGPT did not create alive. The
+published-NodePort path cannot be tested on the same cluster: a node created
+from nyxGPT's config holds those host ports for its whole life, so a forward
+there could only report `address already in use`.
+
 **Not on the AWS k3s deployment**, which already has an owner for those two
 loopback ports: the systemd `--user` [access
 bridge](#kubernetes-on-the-cloud-target) the deploy installs. The install

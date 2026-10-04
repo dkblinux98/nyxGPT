@@ -226,6 +226,11 @@ type InfraStatus = {
         details: string;
       }[];
       port_forward_command: string;
+      // The wrapped command that re-publishes a stripped node port (#3986).
+      // Optional for the same reason as every field above it: an api process
+      // from before this round must leave the sentence short, not render
+      // `undefined` into a command an operator might copy.
+      publish_command?: string;
     };
   };
   serving:
@@ -1284,11 +1289,38 @@ export default function InfrastructurePage() {
                         Grafana&apos;s GlitchTip credential still authenticates — run{' '}
                         <code>nyxgpt ops status</code>.
                       </p>
+                      {/* #3986: this card used to state as a fact that the SRE
+                          Services were ClusterIP and a forward the only way in.
+                          The SRE-tier publish falsified that --
+                          where nyxGPT provisioned the cluster the install maps
+                          Grafana 3001, Prometheus 9090, Jaeger 16686 and GlitchTip
+                          8080 on the host and this page's own SRE links reach them
+                          with no terminal, which is what the Definition of Done
+                          asks for. Both paths are named and neither is asserted:
+                          served from the api Pod, this card can see neither the
+                          node's port mappings nor the Services (#3988).
+
+                          The cause is named without naming the command that
+                          causes it ("re-applying the shipped manifests", not
+                          `kubectl apply -k k8s/`): no raw command string
+                          renders anywhere in this card, which is the invariant
+                          the suite's two `/kubectl/` negative assertions pin.
+                          Operational Command Wrapping is most load-bearing
+                          here, on the one surface read without a terminal. */}
                       <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.5rem' }}>
-                        The observability Services are ClusterIP-only. Publish Grafana,
-                        Prometheus, Jaeger and GlitchTip on the ports this dashboard links to
-                        with{' '}
-                        <code>{status.kubernetes.observability.port_forward_command}</code>.
+                        Where nyxGPT provisioned the cluster, the install publishes Grafana,
+                        Prometheus, Jaeger and GlitchTip on the ports this dashboard links to —
+                        no command needed. On a bring-your-own cluster, reach them with{' '}
+                        <code>{status.kubernetes.observability.port_forward_command}</code>
+                        {status.kubernetes.observability.publish_command ? (
+                          <>
+                            ; if re-applying the shipped manifests has stripped the published
+                            ports, put them back with{' '}
+                            <code>{status.kubernetes.observability.publish_command}</code>.
+                          </>
+                        ) : (
+                          '.'
+                        )}
                       </p>
                     </>
                   ) : (

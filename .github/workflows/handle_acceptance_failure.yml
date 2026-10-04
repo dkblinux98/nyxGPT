@@ -469,7 +469,23 @@ jobs:
         run: |
           set -uo pipefail
           source scripts/agents/lib/gh_project.sh
-          load_config
+
+          # `source` turns `set -e` ON -- the library sets it at the top -- so
+          # from here any non-zero return kills this step silently. That is not
+          # survivable for the LOUD path: the step whose failure it most needs
+          # to report is "Write ephemeral config", and after that one fails
+          # there is no NYXGPT_CONFIG_FILE and no ~/.nyxGPT/config.ini on a
+          # runner, so `load_config` _die()s and the owner is told nothing at
+          # all about an acceptance report that was never filed. The repo is
+          # knowable without the config -- Actions always sets
+          # GITHUB_REPOSITORY -- and REPO_OWNER/REPO_NAME is all the comment
+          # and the DM need.
+          set +e
+          load_config \
+            || _warn "no usable config (${NYXGPT_CONFIG_FILE:-unset}) -- falling back to GITHUB_REPOSITORY"
+          _repo="${GITHUB_REPOSITORY:-}"   # :- , not bare: `set -u` would exit here
+          : "${REPO_OWNER:=${_repo%%/*}}"
+          : "${REPO_NAME:=${_repo##*/}}"
 
           # Body via a file, not a heredoc inside "$( … )": bash 3.2 (the
           # macOS shell every local test run uses) mis-parses that form, so
