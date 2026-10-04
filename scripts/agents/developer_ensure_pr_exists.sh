@@ -33,16 +33,30 @@ remote with no PR. Three branches sat there for weeks that way, two of them
 holding the only copy of 438 lines of test coverage.
 
 Run this with `if: always()` at the end of the job. For each branch it finds
-it does exactly one of three things:
+it does exactly one of these:
 
   1. **Nothing reached the remote** (no such branch on origin) -> nothing to do.
-  2. **The branch's content is provably already on the release branch**
-     (scripts/agents/lib/branch_content.py) -> delete it. This is the D-013
-     supersession event: a retry onto a fresh branch, or a rebase-and-reapply,
-     removes the branch it replaced in the same run. Guarded, so a branch
-     carrying anything of its own is never the one that gets deleted.
-  3. **Otherwise** -> open a DRAFT pull request, so the work is visible,
-     reviewable, recoverable, and covered by `delete_branch_on_merge`.
+  2. **An open PR, a closed-unmerged PR, or a merged PR with nothing left over**
+     -> nothing to do. The work is routed, explicitly abandoned, or landed.
+  3. **A merged PR, and commits pushed to the branch AFTER it merged whose
+     content is not on the release branch** -> open a DRAFT pull request for
+     that residue and say so, loudly, on the originating issue. This is #4151:
+     see the "disposition" comment below the argument parsing for the live
+     stranding that produced it, and why "a PR exists" is not "the work
+     landed".
+  4. **No PR at all, and the branch's content is provably already on the
+     release branch** (scripts/agents/lib/branch_content.py) -> delete it. This
+     is the D-013 supersession event: a retry onto a fresh branch, or a
+     rebase-and-reapply, removes the branch it replaced in the same run.
+     Guarded, so a branch carrying anything of its own is never the one that
+     gets deleted.
+  5. **No PR at all, otherwise** -> open a DRAFT pull request, so the work is
+     visible, reviewable, recoverable, and covered by `delete_branch_on_merge`.
+
+Cases 3 and 5 are different situations and carry different markers: a rescue
+draft (5) tells a reassignment to continue an unfinished run on that branch,
+while a residue draft (3) reports work the pipeline has already concluded
+landed. Neither may be handled as the other.
 
 Draft, not ready-for-review, on purpose: the run did NOT finish its checks, so
 this is a rescue, not a submission. developer_submit_for_review.sh remains the
@@ -207,30 +221,75 @@ if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
 fi
 git fetch origin "$BRANCH" >/dev/null 2>&1 || true
 
-# Any PR at all -- open, closed or merged -- means the work was routed. A
-# closed-unmerged PR is an explicit abandonment decision and reopening the
-# question here would fight it.
+# >>> disposition (#4151) >>>
+# What situation is this branch in? NOT "does it have a pull request" -- that
+# was the question this script used to ask, and it is the #4151 defect: a
+# branch whose PR is merged and which THEN receives commits answers it "yes",
+# so the guard concluded the work was accounted for and skipped. On 2026-10-04
+# that stranded 579 insertions on `fix/3986-*` (PR #4126 merged 04:24:54Z,
+# b7b3b096 pushed 04:43:46Z) implementing the one acceptance criterion the
+# owner could not test, while #3986 sat closed in `For Release` reading as
+# accepted. `git cherry` against the release branch reported `+`: the change
+# was there in no form at all.
 #
-# The fetch is captured separately from the count on purpose. Written as one
-# `gh ... | jq ... || echo unknown` pipeline it is dead code under `set -o
-# pipefail`: jq succeeds on empty stdin and prints `0`, THEN pipefail fails the
-# pipeline and the fallback appends its own line, so a failed `gh` yields
-# `pr_count=$'0\nunknown'` -- which is neither `== unknown` nor `-gt 0`, and the
-# script proceeds exactly as if it had proved there were zero PRs. The one path
-# that promises to fail closed was the one that failed open.
-if ! pr_pages="$(gh api "repos/${REPO}/pulls?head=${REPO_OWNER}:${BRANCH}&state=all&per_page=100" \
-    --paginate 2>/dev/null)"; then
-  _warn "Could not list PRs for ${BRANCH}; leaving it alone rather than opening a duplicate."
-  exit 0
-fi
-if ! pr_count="$(jq -s '[.[][]] | length' <<<"$pr_pages" 2>/dev/null)"; then
-  _warn "Could not parse the PR list for ${BRANCH}; leaving it alone rather than opening a duplicate."
-  exit 0
-fi
-if [[ "$pr_count" -gt 0 ]]; then
-  echo "[ensure-pr] ${BRANCH} already has ${pr_count} pull request(s); nothing to do." >&2
-  exit 0
-fi
+# A merged pull request is evidence about the commits it CONTAINED, not about
+# every commit the branch will ever hold -- the distinction CLAUDE.md already
+# draws for the merge itself ("'The merge command exited 0' is a report, not
+# evidence"). So the question is put to git as well as to the PR list:
+# branch_pr_disposition (lib/gh_project.sh -> lib/branch_residue.py) answers
+# with one of `unknown`, `open-pr`, `merged-residue`, `merged-clean`,
+# `abandoned`, `no-pr`. The repo-wide sweep (sweep_stranded_residue.sh) calls
+# the same function, so the per-run guard and the sweep cannot disagree about
+# one branch.
+#
+# The fail-closed property of the retired form is preserved and still tested:
+# an unreadable or unparseable PR list yields `unknown`, and `unknown` acts on
+# nothing. Written as one `gh … | jq … || echo unknown` pipeline that guard was
+# DEAD CODE under `set -o pipefail` (jq prints `0` on empty stdin, then the
+# fallback appends its own line, so the variable held $'0\nunknown' -- neither
+# `== unknown` nor `-gt 0`) and the one path that promised to fail closed was
+# the one that failed open. See tests/test_ensure_pr_exists.sh case 1/1b.
+disposition_json="$(branch_pr_disposition "$BRANCH" "$BASE_BRANCH")"
+DISPOSITION="$(jq -r '.disposition // "unknown"' <<<"$disposition_json" 2>/dev/null || echo unknown)"
+MERGED_PRS="$(jq -r '(.merged_prs // []) | map("#" + tostring) | join(", ")' <<<"$disposition_json" 2>/dev/null || echo "")"
+
+case "$DISPOSITION" in
+  unknown)
+    _warn "Could not classify ${BRANCH} ($(jq -r '.reason // "see above"' <<<"$disposition_json" 2>/dev/null || echo "see above")); leaving it alone rather than opening a duplicate."
+    exit 0
+    ;;
+  open-pr)
+    echo "[ensure-pr] ${BRANCH} is the head of an open pull request; nothing to do." >&2
+    exit 0
+    ;;
+  abandoned)
+    echo "[ensure-pr] ${BRANCH}'s pull request was closed without merging (an explicit abandonment); nothing to do." >&2
+    exit 0
+    ;;
+  merged-clean)
+    echo "[ensure-pr] ${BRANCH} was merged (${MERGED_PRS:-merged}) and carries nothing of its own; nothing to do." >&2
+    exit 0
+    ;;
+  merged-residue)
+    # THE #4151 CASE, and the one no other net in the pipeline covers: the
+    # review path has nothing to review (the PR is closed), the issue is
+    # closed so nothing dispatches against it, and the promotion sweep sees it
+    # already in `For Release`. Handled here, and deliberately NOT through
+    # #3862's rescue path: that one's marker tells a reassignment to continue
+    # an unfinished run on the branch, which is a different situation. Both
+    # cases are handled and neither masks the other (criterion 3).
+    mapfile -t RESIDUE_SHAS < <(branch_unmerged_shas "$BRANCH" "$BASE_BRANCH")
+    echo "[ensure-pr] ::warning::${BRANCH} received ${#RESIDUE_SHAS[@]} commit(s) AFTER its pull request (${MERGED_PRS:-merged}) merged, and their content is not on ${BASE_BRANCH}: ${RESIDUE_SHAS[*]}. Opening a draft PR for the residue." >&2
+    open_residue_pr "$BRANCH" "$BASE_BRANCH" "$ISSUE" "$MERGED_PRS" "${RESIDUE_SHAS[@]}" >/dev/null
+    exit 0
+    ;;
+  no-pr) : ;;  # fall through to #3862's handling below
+  *)
+    _warn "Unrecognised disposition '${DISPOSITION}' for ${BRANCH}; leaving it alone."
+    exit 0
+    ;;
+esac
+# <<< disposition (#4151) <<<
 
 # No PR. Either the branch carries nothing of its own (delete it) or it
 # carries work that must not be lost (open a draft PR for it).
