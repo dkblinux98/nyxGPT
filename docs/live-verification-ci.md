@@ -283,6 +283,9 @@ and screenshots make verifiable in the review loop:
   the same formulas from the same remote tap on a real `macos-15` runner. What
   remains owner acceptance is only that a Mac *instance* runs them -- notably
   whether `brew services start` finds a launchd session for the login user.
+  (**That "only" is wrong; see the #4121 correction two paragraphs below.** It
+  is left in place because the correction is about the word, and deleting it
+  would hide what was claimed.)
 
   **A correction to the paragraph above, from #4122.** "The same formulas" was
   doing more work than it could carry. `macos-brew-smoke.yml` installs *a* pair
@@ -304,6 +307,34 @@ and screenshots make verifiable in the review loop:
   string.** Where the claim is "the right thing is installed", assert the
   installed *artifact*, not the instruction that was meant to install it.
 
+  **A second correction, from #4121, and this one is about the word "only".**
+  The paragraph above says what remains for owner acceptance is "only ...
+  whether `brew services start` finds a launchd session". That has now been
+  falsified **twice in the same place**: both #4122 and #4121 died inside
+  `brew install` on a fresh `mac*.metal`, with
+  `SSLError(SSLCertVerificationError('OSStatus -26276'))` -- an
+  `errSecInternal` from Security.framework, i.e. a trust evaluation that could
+  not be *performed*. The cause is Homebrew's build sandbox (`sandbox-exec`
+  with `(deny mach-lookup)`), which is why `/usr/bin/curl` fetched bottle
+  manifests happily in the download phase while pip failed in the build phase,
+  and why it is deterministic rather than a flake.
+
+  **`macos-15` runs the same sandbox profile and passes**, so the difference is
+  macOS 27's Security stack and no amount of running the install on the hosted
+  runner would ever have caught it. The rule this sharpens: **a hardware
+  exception on this list is not a licence to assume the surrounding job's
+  machine state resembles the exempted hardware's.** `macos-15` is a
+  pre-warmed, recycled image on a different major OS; the exempted machine is a
+  freshly booted macOS 27 Mac. The two differ in ways that matter, and the only
+  honest response is to *inject* the condition rather than to wait for a runner
+  to reproduce it -- which `macos-brew-smoke.yml`'s `keg-install` job now does
+  for this fault (it monkeypatches pip's vendored `truststore` to raise the
+  owner's `OSStatus -26276` through a `sitecustomize` on `PYTHONPATH`, proves
+  the pre-fix bootstrap dies on it and the current one does not, and proves the
+  same for the pip that build isolation spawns). See
+  [`.github/required-checks.txt`](../.github/required-checks.txt) for that
+  job's gating status, which is `[not-required]` and therefore advisory.
+
   **The screen path, #4121, read the same narrow way.** `nyxgpt cloud screen`
   enables macOS Screen Sharing on an EC2 Mac and forwards 5900 over SSH, and no
   job can run `kickstart` or `pfctl` — those need macOS, and the `macos-15`
@@ -312,14 +343,29 @@ and screenshots make verifiable in the review loop:
   phase 5 against a real sshd: the CLI delivers the configuration script itself
   over a real SSH connection; that script loads the loopback-only `pf` rule and
   reads it back **before** activating the agent (asserted on the delivered text,
-  and the reordered script is rejected); it opens no security-group port and
-  sets no account password; the VNC credential is generated into
-  `~/.nyxGPT/secrets` at mode 0600 and appears in the delivered stdin but in no
-  argv and not on the terminal; the forward really opens and closes; and the
-  command **refuses** both on a Mac nyxGPT did not configure and on a Linux
-  deployment. What remains owner acceptance is only that a `mac*.metal` instance
-  executes the script — i.e. that `pfctl` loads that anchor and `kickstart`
-  activates that agent on real Apple hardware.
+  and the reordered script is rejected); it opens no security-group port; the
+  credential is generated into `~/.nyxGPT/secrets` at mode 0600 and appears in
+  the delivered stdin but in no argv and not on the terminal; the forward really
+  opens and closes, and a request for a different local port replaces the open
+  one rather than reporting it; and the command **refuses** both on a Mac
+  nyxGPT did not configure and on a Linux deployment.
+
+  Since the owner's 2026-10-04 round that phase also asserts the delivered
+  ordering of the credential: the account password (`dscl . -passwd`, verified
+  with `dscl . -authonly`) and the VNC password are written **before** the
+  agent is activated, and `system/com.apple.screensharing` -- not ARDAgent --
+  is restarted after them. That ordering is what the earlier version got wrong,
+  and inspection on the delivered text is as far as CI reaches; the script
+  itself closes the gap on the machine by reading the listener's start time
+  back and failing if it predates the credential's write time.
+
+  What remains owner acceptance is that a `mac*.metal` instance executes the
+  script — that `pfctl` loads that anchor, that `kickstart` activates that
+  agent, and that **Apple's own Screen Sharing client authenticates** with the
+  generated credential. The last of those is not a formality: the first
+  delivered version configured a VNC-only password, which is a credential that
+  client structurally cannot use, and nothing short of connecting with it would
+  have shown that.
 - **Anything gated behind a real (non-stubbed) LLM** -- CI runs the chat
   round-trip against whatever Ollama model is configured for the runner
   (small/stubbed per the acceptance criteria); response *quality* is not

@@ -3221,8 +3221,9 @@ def cli(argv: list[str] | None = None) -> int:
         "--local-port",
         type=int,
         help=(
-            f"Local port to forward from (default: {cloud_screen_mod.SCREEN_PORT}). Use this "
-            "when your own machine is already sharing its screen on that port"
+            f"Local port to forward from (default: {cloud_screen_mod.DEFAULT_LOCAL_SCREEN_PORT}). "
+            "The default is deliberately not 5900: on a macOS workstation that address is "
+            "your OWN screen, and Apple's client refuses it before the forward is consulted"
         ),
     )
     cloud_screen_p.add_argument(

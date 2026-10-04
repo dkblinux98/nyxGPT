@@ -564,6 +564,193 @@ jobs:
           trap - EXIT
           "$PY" -c 'import pip._internal.operations.install.wheel as m; print("restored:", m.__file__)'
 
+      # Round 4 of the same lesson (#4121, D-006), and the first one where the
+      # runner's OS is the reason it cannot reproduce. Two acceptance rounds on
+      # fresh `mac*.metal` hardware died inside `brew install` with
+      #
+      #   SSLError(SSLCertVerificationError('OSStatus -26276'))
+      #
+      # from pip's vendored `truststore` -- an `errSecInternal`, a trust
+      # evaluation that could not be PERFORMED rather than a certificate that
+      # was rejected. The cause is Homebrew's build sandbox (`sandbox-exec`
+      # with `(deny mach-lookup)` plus an allowlist that does not include the
+      # mach service Security.framework's evaluation needs), which is why
+      # `/usr/bin/curl` fetched bottle manifests happily one minute earlier in
+      # the download phase, outside the sandbox.
+      #
+      # `macos-15` runs the same sandbox profile and passes: the difference is
+      # macOS 27's Security stack, and THIS RUNNER WILL NEVER REPRODUCE IT. A
+      # job that merely installs successfully therefore proves nothing about
+      # the fix -- it has been green on Sequoia throughout both failures. So
+      # the condition is injected, exactly like the three injections above:
+      # `pip._vendor.truststore`'s trust evaluation is replaced with one that
+      # raises the owner's error, through a `sitecustomize` on PYTHONPATH.
+      #
+      # Three halves, because the third is the one a flag on the first two does
+      # not reach: the pip-wheel download, the dependency install, and the pip
+      # that `pip install <source tree>` spawns for build isolation. Patching
+      # the first two on the owner's live Mac moved the failure from
+      # `/simple/pip/` to `/simple/setuptools/`; it did not fix it.
+      - name: "Inject the OSStatus -26276 trust failure, then prove the recipe survives it"
+        run: |
+          set -euo pipefail
+
+          PY="$(brew --prefix python@3.12)/bin/python3.12"
+          WORK="$(mktemp -d)"
+          mkdir -p "$WORK/fault"
+
+          # The fault. Patched on `truststore._api`, not on `._macos`: `_api`
+          # does `from ._macos import _verify_peercerts_impl` at import time,
+          # so replacing the name in `_macos` after that would be a no-op --
+          # the class of mistake that made two earlier injections test the
+          # vehicle instead of the recipe (see the #3788 note above).
+          cat > "$WORK/fault/sitecustomize.py" <<'FAULT'
+          import ssl
+          import sys
+
+          MARKER = "nyxgpt-4121-injection: truststore trust evaluation will fail"
+
+          try:
+              from pip._vendor.truststore import _api as _truststore_api
+          except Exception as exc:  # pragma: no cover - reported, not raised
+              print("nyxgpt-4121-injection: unavailable: %r" % (exc,), file=sys.stderr)
+          else:
+              def _refuse(*_args, **_kwargs):
+                  raise ssl.SSLCertVerificationError("OSStatus -26276")
+
+              _truststore_api._verify_peercerts_impl = _refuse
+              print(MARKER, file=sys.stderr)
+          FAULT
+
+          # The injection has to FIRE, or a green result below proves nothing.
+          PYTHONPATH="$WORK/fault" "$PY" -c 'pass' 2>"$WORK/fired.log" || true
+          grep -qF "nyxgpt-4121-injection: truststore trust evaluation will fail" \
+            "$WORK/fired.log" || {
+            cat "$WORK/fired.log" || true
+            echo "the injection did not load -- this pip may no longer vendor truststore,"
+            echo "in which case the fault class is gone and so is this check's subject."
+            echo "::error::the #4121 injection never fired"
+            exit 1
+          }
+          echo "injection loaded: pip's truststore path now raises OSStatus -26276"
+
+          # The flags under test are read OUT of the formula this checkout
+          # ships, so this can never certify a spelling the recipe does not
+          # have (#4122's lesson: a job asserting a command string).
+          for FORMULA in homebrew/nyxgpt-api.rb homebrew/tap/nyxgpt-api.rb.tmpl; do
+            grep -qF -- '--use-deprecated=legacy-certs' "$FORMULA" || {
+              echo "::error::$FORMULA does not take pip off the Apple trust path"
+              exit 1
+            }
+            grep -qF -- '--no-build-isolation' "$FORMULA" || {
+              echo "::error::$FORMULA leaves build isolation to spawn an unflagged pip"
+              exit 1
+            }
+          done
+
+          echo "=== negative control 1: the rc17 bootstrap, trust evaluation broken ==="
+          "$PY" -m venv --without-pip "$WORK/venv-pre"
+          mkdir -p "$WORK/wheelhouse-pre"
+          set +e
+          PYTHONPATH="$WORK/fault" "$PY" -m pip download --no-deps --only-binary :all: \
+            --disable-pip-version-check --no-cache-dir \
+            --dest "$WORK/wheelhouse-pre" pip > "$WORK/pre.log" 2>&1
+          pre_rc=$?
+          set -e
+          tail -20 "$WORK/pre.log" || true
+          if [ "$pre_rc" -eq 0 ]; then
+            echo "the pre-fix bootstrap downloaded pip with truststore broken, so the"
+            echo "check below would pass whether or not the fix works."
+            echo "::error::this runner no longer reproduces #4121"
+            exit 1
+          fi
+          grep -qF "OSStatus -26276" "$WORK/pre.log" || {
+            echo "it failed, but not with the owner's OSStatus -- the reproduction drifted."
+            echo "::error::the #4121 reproduction has drifted"
+            exit 1
+          }
+          echo "reproduced: the unflagged download exits $pre_rc with OSStatus -26276"
+
+          echo "=== the fix, same injected fault: legacy-certs verifies with OpenSSL ==="
+          mkdir -p "$WORK/wheelhouse"
+          PYTHONPATH="$WORK/fault" "$PY" -m pip download --no-deps --only-binary :all: \
+            --disable-pip-version-check --no-cache-dir \
+            --use-deprecated=legacy-certs --dest "$WORK/wheelhouse" pip 2>&1 | tail -5
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          "$PY" -m venv --without-pip "$WORK/venv"
+          PYTHONPATH="$WORK/fault" "$WORK/venv/bin/python" "$WHEEL/pip" install --no-index \
+            --disable-pip-version-check "$WHEEL"
+          "$WORK/venv/bin/pip" --version
+
+          # A minimal source tree, so the build-isolation half costs a few
+          # seconds rather than resolving nyxGPT's 142-package dependency
+          # closure. The question is which PROCESS fetches the backend, and
+          # that does not depend on how big the tree is.
+          mkdir -p "$WORK/tree"
+          cat > "$WORK/tree/pyproject.toml" <<'TREE'
+          [build-system]
+          requires = ["setuptools>=68"]
+          build-backend = "setuptools.build_meta"
+
+          [project]
+          name = "nyxgpt-4121-probe"
+          version = "0.0.1"
+          TREE
+
+          echo "=== negative control 2: build isolation spawns an unflagged pip ==="
+          # This is the half the owner measured: the parent carries
+          # --use-deprecated=legacy-certs, the child that fetches the build
+          # backend does not inherit it, and the failure moves to setuptools.
+          #
+          # PIP_NO_CACHE_DIR, not just `--no-cache-dir`: the flag applies to
+          # this process and the child does not inherit pip's command line, so
+          # a warm HTTP cache serves the child its setuptools wheel with no
+          # network and no TLS at all -- which makes this control pass while
+          # proving nothing. Measured: with the cache available the install
+          # succeeded; with PIP_NO_CACHE_DIR=1 it failed on
+          # `/simple/setuptools/`, the owner's line exactly. The env var
+          # reaching the child is also what the recipe's
+          # ENV["PIP_USE_DEPRECATED"] rests on, which the next control proves
+          # directly.
+          set +e
+          PIP_NO_CACHE_DIR=1 PYTHONPATH="$WORK/fault" "$WORK/venv/bin/pip" install \
+            --no-cache-dir --disable-pip-version-check --use-deprecated=legacy-certs \
+            "$WORK/tree" > "$WORK/isolated.log" 2>&1
+          iso_rc=$?
+          set -e
+          tail -20 "$WORK/isolated.log" || true
+          if [ "$iso_rc" -eq 0 ]; then
+            echo "build isolation's child pip verified trust successfully, so the"
+            echo "--no-build-isolation half of the fix has nothing to prove here."
+            echo "::error::the #4121 build-isolation reproduction has drifted"
+            exit 1
+          fi
+          grep -qF "OSStatus -26276" "$WORK/isolated.log" || {
+            echo "::error::build isolation failed for some other reason than the injection"
+            exit 1
+          }
+          echo "reproduced: the build-isolation child exits $iso_rc with OSStatus -26276"
+
+          echo "=== the recipe's ENV belt-and-braces: the child DOES inherit it ==="
+          # The recipe sets both the flags and ENV["PIP_USE_DEPRECATED"]. This
+          # is the proof the env var is load-bearing rather than decoration:
+          # the same install that just failed succeeds with nothing added but
+          # that variable, because a pip subprocess inherits the environment
+          # even though it inherits no command line.
+          PIP_NO_CACHE_DIR=1 PIP_USE_DEPRECATED=legacy-certs PYTHONPATH="$WORK/fault" \
+            "$WORK/venv/bin/pip" install --no-cache-dir --disable-pip-version-check \
+            "$WORK/tree" 2>&1 | tail -3
+          "$WORK/venv/bin/pip" uninstall -y nyxgpt-4121-probe > /dev/null
+
+          echo "=== the delivered fix: seed the backend, install with no isolation ==="
+          PIP_NO_CACHE_DIR=1 PYTHONPATH="$WORK/fault" "$WORK/venv/bin/pip" install \
+            --no-cache-dir --disable-pip-version-check --use-deprecated=legacy-certs \
+            setuptools wheel 2>&1 | tail -3
+          PIP_NO_CACHE_DIR=1 PYTHONPATH="$WORK/fault" "$WORK/venv/bin/pip" install \
+            --no-cache-dir --disable-pip-version-check --use-deprecated=legacy-certs \
+            --no-build-isolation "$WORK/tree" 2>&1 | tail -5
+          "$WORK/venv/bin/pip" show nyxgpt-4121-probe | head -2
+
       - name: Stamp the rc formulas from this checkout
         env:
           # The rc channel is what the owner installs, so smoke-test that

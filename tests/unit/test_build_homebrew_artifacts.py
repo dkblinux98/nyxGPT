@@ -1062,6 +1062,13 @@ _PIP_FROM_WHEEL = 'system venv/"bin/python", "#{pip_wheel}/pip", "install", "--n
 _PIP_INSTALL_VIA_KEG_PIP = (
     'system python, "-m", "pip", "--python", venv/"bin/python", "install", "--upgrade", "pip"'
 )
+# #4121. The vendored source tree is installed with the build backend already
+# in the venv and build isolation off, because the pip that isolation spawns
+# inherits no command line and goes straight back to macOS's trust store.
+_PIP_SEED_BACKEND = 'system venv/"bin/pip", "install", *legacy_certs, "setuptools", "wheel"'
+_PIP_INSTALL_TREE = (
+    'system venv/"bin/pip", "install", *legacy_certs, "--no-build-isolation", buildpath'
+)
 
 
 def _venv_recipe(text: str) -> list[str]:
@@ -1100,8 +1107,11 @@ def test_pip_is_bootstrapped_into_the_keg_venv_from_a_wheel(which):
     # rather than silently leave the venv without a pip.
     assert 'pip_wheel = Dir.glob(wheelhouse/"pip-*.whl").first' in recipe
     assert any(line.startswith("odie ") and "pip_wheel.nil?" in line for line in recipe), recipe
-    # Everything downstream still installs through the venv's own pip.
-    assert 'system venv/"bin/pip", "install", buildpath' in recipe
+    # Everything downstream still installs through the venv's own pip, with the
+    # build backend seeded first so build isolation never spawns one (#4121).
+    assert _PIP_SEED_BACKEND in recipe
+    assert _PIP_INSTALL_TREE in recipe
+    assert recipe.index(_PIP_SEED_BACKEND) < recipe.index(_PIP_INSTALL_TREE)
 
 
 @pytest.mark.parametrize("which", sorted(_API_FORMULAS))
@@ -1123,10 +1133,18 @@ def test_the_keg_pip_never_performs_an_install(which):
     """
     recipe = _venv_recipe(_API_FORMULAS[which].read_text(encoding="utf-8"))
 
-    keg_pip = [line for line in recipe if 'system python, "-m", "pip"' in line]
+    keg_pip = [line for line in recipe if re.search(r'\bsystem python, "-m", "pip"', line)]
     assert len(keg_pip) == 1, recipe
     assert '"download"' in keg_pip[0]
     assert '"install"' not in keg_pip[0]
+    # Including the #4121 capability probe, which is also only a `download`
+    # (of `--help`, so it opens no socket) -- the rule is about the
+    # subcommand, not about how many times the keg's pip is started.
+    for line in recipe:
+        if "quiet_system python" not in line:
+            continue
+        assert '"download"' in line, line
+        assert '"install"' not in line, line
     # The exact rc11 line the owner's install died on.
     assert _PIP_INSTALL_VIA_KEG_PIP not in recipe
     # `pip --python` re-execs the keg's pip in another interpreter; it is the
@@ -1669,7 +1687,7 @@ def test_the_keg_puts_the_cli_on_path(which):
     assert _CLI_SYMLINK in recipe
     # Linked from the venv pip populated, so it cannot drift from what was
     # installed -- and only after that install has run.
-    assert recipe.index('system venv/"bin/pip", "install", buildpath') < recipe.index(_CLI_SYMLINK)
+    assert recipe.index(_PIP_INSTALL_TREE) < recipe.index(_CLI_SYMLINK)
 
 
 @pytest.mark.parametrize("which", sorted(_API_FORMULAS))

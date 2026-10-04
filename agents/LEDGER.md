@@ -2139,6 +2139,86 @@ rather than mechanism, and nothing can enforce them.
   Source: #4134; supersedes the pause in #3687/#3868; builds on #3694's
   cross-issue collapse and **D-001**'s drain gate.
 
+- **D-057** · 2026-10-04 · developer agent (owner acceptance #4121) —
+  **`OSStatus -26276` on a fresh EC2 Mac is Homebrew's build sandbox denying
+  Security.framework its mach service. It is deterministic, it is not a
+  certificate problem, and it is not reproducible on `macos-15`.** Seen twice
+  (#4122, then #4121) and diagnosed from scratch both times, which is what this
+  entry exists to stop. Four things a third sighting should not re-derive:
+
+  (a) *The error is `errSecInternal` — an evaluation that could not be
+  PERFORMED — not a rejection.* -26276 is not in the public SDK, which is why
+  pip printed the bare OSStatus with no description. A real chain failure on
+  the same host names itself (-67843 "certificate is not trusted", -67818
+  "expired"). The certificates were present and correct (121 anchors, 158
+  system roots), `curl`, `urllib` and a raw OpenSSL handshake to pypi.org all
+  succeeded on that interpreter minutes either side of the failure, and
+  `trustd` was answering 187 paired evaluations in the same 12 seconds.
+
+  (b) *The variable is the sandbox, not the clock.* The first investigation
+  measured the failure 103 seconds after boot, saw a login-shell pip succeed
+  afterwards, and concluded a first-boot window had passed. **Wrong** — it
+  reproduced seven hours into uptime, and what had changed between the two runs
+  was `sandbox-exec`, not time. `brew` builds under `(deny mach-lookup)` plus
+  an allowlist that does not include the service Security.framework's trust
+  evaluation needs; that is why `/usr/bin/curl` fetched bottle manifests
+  happily in the *download* phase and pip failed in the *build* phase one
+  minute later. The general rule: **when a fault reproduces under one harness
+  and not another, suspect the harness before the clock** — a "transient" that
+  is really an environment difference gets re-diagnosed every time it appears.
+
+  (c) *Taking pip off the Apple trust path takes THREE call sites, and the
+  third is invisible from the recipe.* `--use-deprecated=legacy-certs` on the
+  pip-wheel download and on the dependency install still left the pip that
+  `pip install <source tree>` spawns for **build isolation**, which inherits no
+  command line: patching the first two moved the owner's failure from
+  `/simple/pip/` to `/simple/setuptools/` rather than fixing it. Closed by
+  seeding setuptools/wheel into the venv and passing `--no-build-isolation`, so
+  no child is spawned; `ENV["PIP_USE_DEPRECATED"]` covers any that still is,
+  because a subprocess inherits the *environment* even when it inherits no
+  argv (measured both ways). This also disposes of the vendored-wheelhouse
+  option on its own terms — build isolation would have fetched backends anyway,
+  so it was never an offline install. (The wheelhouse was rejected by the owner
+  for separate reasons: 27 direct dependencies resolve to 142 packages and
+  337 MB against a 1.3 MB tarball, and it would make nyxGPT the distributor of
+  all 142.)
+
+  (d) *A hardware exception on the D-006 list is not a licence to assume the
+  surrounding job's machine state resembles the exempted hardware's.*
+  `macos-brew-smoke.yml` runs `macos-15` — a recycled, pre-warmed image on a
+  different major OS — and was green through both failures on macOS 27, while
+  `docs/live-verification-ci.md` claimed what remained for owner acceptance was
+  "only" whether `brew services start` finds a launchd session. The covering
+  job now **injects** the fault (pip's vendored `truststore._api` patched to
+  raise the owner's error through a `sitecustomize`) and proves both halves,
+  including the build-isolation one; one trap the injection itself had to clear
+  is that `--no-cache-dir` does not reach the child either, so a warm HTTP
+  cache made the control pass while proving nothing (`PIP_NO_CACHE_DIR` does).
+
+  Settled alongside, on the same acceptance round and about the screen path
+  **D-055** added: **the client a command's own output names is the client that
+  has to work.** `nyxgpt cloud screen` set Apple's *legacy VNC* password only
+  and justified setting no account password with it — true of a third-party
+  client, false of Screen Sharing.app, which is what macOS hands `vnc://...`
+  and which prefers the security types (30/33) that authenticate against a real
+  account password. One generated credential is now both (`dscl . -passwd`,
+  verified with `dscl . -authonly`; `sysadminctl -resetPasswordFor` fails on an
+  EC2 Mac without a secure token unlock). Two ordering facts with it:
+  `kickstart -restart -agent` cycles ARDAgent and **not** the listener (the pid
+  on 5900 was unchanged across one), so `system/com.apple.screensharing` is
+  what gets kickstarted; and a credential written after the listener starts is
+  never loaded, so the script writes it first and then *measures* the two times
+  on the host rather than trusting its own line order.
+
+  The behaviours are pinned by `tests/unit/test_formula_pip_trust_path.py`,
+  `tests/unit/test_cloud_screen.py`, `tests/unit/test_cloud_deploy.py`,
+  `macos-brew-smoke.yml`'s injected trust failure and
+  `scripts/cloud-target-os-smoke.sh` phase 5, per the verification retirement.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4121; second sighting of #4122's fault; extends **D-051** (c) and
+  **D-055**; cites **D-006**, **D-047**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

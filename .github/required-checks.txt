@@ -143,6 +143,29 @@ acceptance-standard
 # a row on unrelated PRs. It is the executed evidence for the macOS install
 # path (D-006), so leaving it advisory indefinitely would quietly retire a
 # gate the release depends on.
+#
+# STATE, recorded 2026-10-04 (#4121), because the REVISIT above has never been
+# met and the consequence had to be written down rather than inferred:
+#
+#   **The macOS install path has no executed gate at all today.** This job is
+#   the only one that installs the formulas on a real Mac, and it is advisory.
+#   `published-tap` below is [required] but cannot gate a PR either -- it is
+#   `if: inputs.formula_version != ''`, so it never attaches to a PR head, and
+#   at an rc cut it runs *after* the tap push, which
+#   `release-publish-pypi.yml` deliberately does not gate on. So between
+#   2026-08-24 and now, a change could break `brew install` on macOS and merge
+#   green. #4122 and #4121 both did.
+#
+#   Not repaired here on purpose. The job's failures since 2026-08-24 have been
+#   at a different step each time and none of them is this issue's defect;
+#   "repair keg-install" is a separate diagnosis from "stop the macOS install
+#   failing", and bundling them would mean changing a gate on the strength of a
+#   guess (first principle 4). What this issue does add to the job is the
+#   #4121 truststore fault injection, so the evidence exists and is cited in
+#   the PR even while the job is advisory.
+#
+#   The bar to flip it stands as written above: green twice in a row on
+#   unrelated PRs.
 Install the working tree's formulas
 
 # The review's own runs, including the gate itself. Requiring any of them
