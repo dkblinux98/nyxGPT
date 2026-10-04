@@ -216,6 +216,51 @@ def real_restart_grafana_if_running(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def real_running_api_probe(monkeypatch):
+    """No unit test asks the live machine which build its api is running (#4133).
+
+    `ops._probe_running_api_runtime` is an HTTP read of
+    `127.0.0.1:<api port>/api/v1/info`. It is not a subprocess, so
+    `_no_real_host_stack_commands` below cannot see it, and `home_sandbox`
+    cannot move a port -- so on a developer's machine running nyxGPT it
+    answers, and the comparison built on it starts reporting about that
+    machine instead of about the test's own fixtures.
+
+    Both halves of that are the hazard `_isolate_install_mode_marker` above
+    describes, one layer over:
+
+    - **Reads make the suite's result depend on the machine.** `ops status`,
+      `ops install`, `ops doctor` and `ops restart api` all reach this probe,
+      and none of their tests is about what the developer happens to be
+      serving.
+    - **The answer is acted on.** A machine in #4133's own state answers
+      `mismatch`, and the repair paths respond by SIGTERM/SIGKILLing the pid
+      the probe reported and restarting the service. A unit test must not be
+      able to stop the api of the machine it is running on.
+
+    Answered the way a machine with nothing serving answers: `(None, reason)`,
+    which `running_build.classify()` renders as "could not determine" and
+    every caller treats as "do not act". `tests/unit/test_ops_running_build.py`
+    shadows this fixture, because that module is the one that tests the probe;
+    anywhere else, a test that wants a specific answer patches
+    `_probe_running_api_runtime` or `ops.httpx` itself and its patch lands
+    after this one.
+
+    Requesting it by name yields the real function, the same contract
+    `real_restart_grafana_if_running` above offers.
+    """
+    from nyxgpt import ops
+
+    real = ops._probe_running_api_runtime
+    monkeypatch.setattr(
+        ops,
+        "_probe_running_api_runtime",
+        lambda: (None, "stubbed for unit tests: no live api was asked what it is running"),
+    )
+    return real
+
+
+@pytest.fixture(autouse=True)
 def _refuse_real_docker_builds(monkeypatch):
     """Fail any unit test that reaches a real `docker build` (#3834).
 

@@ -68,7 +68,11 @@ class InfoResponse(BaseModel):
     #: ops install`/`status`/`doctor` to decide whether the process answering
     #: on :8000 is the build the installed service would exec.
     runtime: RuntimeBuildInfo | None = None
-    #: Version of the installed `nyxgpt` package -- the version actually running.
+    #: Version of the `nyxgpt` package THIS process imported. An in-process
+    #: read, so it describes the serving process -- but a stale process
+    #: reports a plausible version from its own (possibly deleted) venv, so
+    #: it is evidence about the process and never a statement about what is
+    #: installed beside it. `runtime.prefix` is the discriminator (#4133).
     release_version: str | None = None
     #: Agent tooling's configured release branch (`[github] RELEASE_BRANCH`),
     #: kept distinct from the running version (#3716).

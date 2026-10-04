@@ -197,7 +197,12 @@ and screenshots make verifiable in the review loop:
   from launchd, which no service manager accounts for -- upgrades, removes the
   superseded keg, and then asserts that `nyxgpt ops status` names the mismatch
   and that the install step repairs it, with `GET /api/v1/info`'s
-  `runtime.prefix` coming back inside the new keg. Both halves are measured:
+  `runtime.prefix` coming back inside the new keg. The survivor is then staged
+  a **second** time and `nyxgpt ops restart api` -- the command every one of
+  those surfaces *prints* as the repair -- is run against it, because measuring
+  the printed remediation only on an already-repaired machine is how it stayed
+  broken through a review: `brew services restart` acts on the registered
+  service, and in that state nothing is registered. Both halves are measured:
   the installed keg's own comparison is first reverted to an unconditional
   match and the surfaces are measured reporting `[OK]` over a process running
   a deleted venv, then restored. So this job cannot pass by running on a

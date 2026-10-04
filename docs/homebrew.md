@@ -488,14 +488,22 @@ re-execs into a path that no longer exists and the api stays down with
 `nyxgpt up` after the upgrade is what closes it, and since #4133 it says so
 rather than reporting `[OK]` over the mismatch: its **running api build** step
 compares the api's own `sys.prefix` against the venv the installed service
-execs, stops the stale process and restarts the service, and fails the step
-(naming `nyxgpt ops restart api`) if the live build still is not the installed
-one. To check by hand at any time:
+execs, stops the stale process and restarts the service, and fails the step if
+the live build still is not the installed one. To check by hand at any time:
 
 ```bash
 nyxgpt ops status      # the "Running api build" block: OK, MISMATCH or CANNOT DETERMINE
 nyxgpt ops restart api # the repair, on a MISMATCH
 ```
+
+`nyxgpt ops restart api` performs the same repair, not merely a service
+restart: on a confirmed mismatch it stops the surviving process by PID first,
+then restarts the registered service, then re-probes and fails if the live
+build did not move. That order is the whole of it — a plain
+`brew services restart` acts only on what Homebrew registered, and this
+survivor is registered nowhere, so launchd would start the new build onto a
+port the old one still holds and the restart would exit `[OK]` over an
+unchanged mismatch.
 
 The comparison is on the *interpreter path*, never the reported version: a
 stale process reports a plausible version number (it imports whatever metadata

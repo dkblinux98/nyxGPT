@@ -5354,7 +5354,7 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     return build, ""
 
 
-def _native_api_build_drift() -> BuildDrift:
+def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
     """Is the api answering on this host running the build the installed service execs?
 
     Gated on the vantage point, which is the one way this check could produce
@@ -5380,7 +5380,15 @@ def _native_api_build_drift() -> BuildDrift:
     need: `detect_deployment_mode` runs `docker compose ps`, and the macOS
     expectation costs two `brew` calls. `status`, `install` and `doctor` all
     call this, so on a machine with the api down it now costs one refused
-    connection apiece.
+    connection apiece. One consequence is named in `docs/ops.md` rather than
+    hidden: a Compose/Kubernetes host with nothing answering :8000 reports
+    "could not determine" instead of "not applicable", because the cheap read
+    settles it before the scoping gates are consulted.
+
+    `mode` lets a caller that has already surveyed this host pass its own
+    `DeploymentMode` in rather than paying for a second `docker compose ps`
+    (`status` holds one). Omitted, the survey is taken here -- and only if the
+    probe got an answer, so the usual cost is zero.
     """
     build, why_not = _probe_running_api_runtime()
     if build is None:
@@ -5404,9 +5412,13 @@ def _native_api_build_drift() -> BuildDrift:
             detail=source or "there is no native api service on this machine",
             remediation="",
         )
-    mode = detect_deployment_mode()
-    container_api = compose_core_components(mode) or any(
-        _container_deployed(state) for state in mode.terraform.values()
+    survey = mode if mode is not None else detect_deployment_mode()
+    # Scoped to the api, which is the component this check is about. Asking
+    # "is ANY core component containerised" would mark a native api
+    # not_applicable because web or Cassandra happens to be Compose-managed,
+    # and silence is the one outcome this check must not reach by accident.
+    container_api = "api" in compose_core_components(survey) or _container_deployed(
+        survey.terraform.get("api", "absent")
     )
     if container_api or _k8s_access_bridge_owns_host_ports():
         return BuildDrift(
@@ -5500,6 +5512,66 @@ def _stop_stale_api_process(drift: BuildDrift) -> list[OpsResult]:
     ]
 
 
+def _repair_running_api_build(drift: BuildDrift) -> list[OpsResult]:
+    """Make the registered service be what serves :8000, given a confirmed mismatch.
+
+    The repair itself, shared by the two entry points that must not be able
+    to disagree about what repairing means (#4133, review of #4155): the
+    install step (`_reconcile_running_api_build`) and the command every
+    surface *names* as the fix (`_RUNNING_BUILD_REMEDIATION`, which routes
+    here through `_restart_native_service`). It was one of those before the
+    review, and that was the defect: the printed remediation could not repair
+    the state it was printed for.
+
+    Three parts, in this order and for this reason:
+
+    1. **Stop the stale process by PID.** No service manager accounts for it
+       -- that is the defining property of the state, and why
+       `_retire_previous_identity`'s sweep could not see it -- so there is no
+       `brew services stop` that names it. Skipping this is what made a bare
+       restart a no-op against the survivor: launchd starts the new build, it
+       cannot bind the port the survivor still holds (`[Errno 48]`, #3853's
+       restart-loop shape), and the old build keeps serving.
+    2. **Restart the registered service**, which is now able to take :8000.
+       Passed `repair_stale_build=False` so the restart does not re-probe for
+       a mismatch this function has already acted on.
+    3. **Verify, by probing again.** "The restart command exited 0" is a
+       report, not evidence -- `brew services restart` exits 0 whether or not
+       uvicorn binds. Only a second probe can say the live build moved.
+
+    A failure here names `nyxgpt ops down` + `nyxgpt up` rather than
+    `_RUNNING_BUILD_REMEDIATION`: this function *is* what that command does,
+    so prescribing it after it has just failed would send the operator in a
+    circle.
+    """
+    results = _stop_stale_api_process(drift)
+    results.extend(_restart_native_service("api", repair_stale_build=False))
+    # The restarted service has to boot before the re-probe can see it, and a
+    # budget tighter than the api's own start-up would report the repair as
+    # having failed while it was still working. Sized against the same
+    # observation `_wait_for_stack_healthy` is sized against: a cold api on a
+    # loaded machine answers in tens of seconds, not hundreds.
+    deadline = time.time() + _RUNNING_BUILD_REPAIR_BUDGET_S
+    recheck = drift
+    while time.time() < deadline:
+        recheck = _native_api_build_drift()
+        if recheck.state == BUILD_MATCH:
+            results.append(
+                OpsResult(True, "The api now executes the installed build", recheck.detail)
+            )
+            return results
+        time.sleep(2.0)
+    results.append(
+        OpsResult(
+            False,
+            "The running api is still not executing the installed build",
+            f"{recheck.summary()}. `nyxgpt ops down` then `nyxgpt up` replaces every "
+            "running process, including one no service manager accounts for.",
+        )
+    )
+    return results
+
+
 def _reconcile_running_api_build() -> list[OpsResult]:
     """Install step: make the process serving :8000 be the build just installed (#4133).
 
@@ -5514,10 +5586,8 @@ def _reconcile_running_api_build() -> list[OpsResult]:
 
     It does not merely report. Acceptance criterion 2 allows either
     behaviour and repairing is strictly better, so a confirmed mismatch is
-    acted on: stop the stale process (by PID -- no service manager knows
-    about it), restart the registered service, and probe again. The result is
-    `[OK]` only if the second probe matches. If it still does not, the step
-    FAILS and names `_RUNNING_BUILD_REMEDIATION`; an install that cannot make
+    handed to `_repair_running_api_build`. The result is `[OK]` only if the
+    re-probe matches; otherwise the step FAILS. An install that cannot make
     the running build be the installed build must not report success over it,
     which is the whole of this issue.
     """
@@ -5548,31 +5618,7 @@ def _reconcile_running_api_build() -> list[OpsResult]:
             status="WARN",
         )
     ]
-    results.extend(_stop_stale_api_process(drift))
-    results.extend(_restart_native_service("api"))
-    # The restarted service has to boot before the re-probe can see it, and a
-    # budget tighter than the api's own start-up would report the repair as
-    # having failed while it was still working. Sized against the same
-    # observation `_wait_for_stack_healthy` is sized against: a cold api on a
-    # loaded machine answers in tens of seconds, not hundreds.
-    deadline = time.time() + _RUNNING_BUILD_REPAIR_BUDGET_S
-    recheck = drift
-    while time.time() < deadline:
-        recheck = _native_api_build_drift()
-        if recheck.state == BUILD_MATCH:
-            results.append(
-                OpsResult(True, "The api now executes the installed build", recheck.detail)
-            )
-            return results
-        time.sleep(2.0)
-    results.append(
-        OpsResult(
-            False,
-            "The running api is still not executing the installed build",
-            f"{recheck.summary()}. Run `{_RUNNING_BUILD_REMEDIATION}`; if it persists, "
-            "`nyxgpt ops down` then `nyxgpt up` replaces every running process.",
-        )
-    )
+    results.extend(_repair_running_api_build(drift))
     return results
 
 
@@ -6062,8 +6108,8 @@ def _dev_launchd_label(component: str) -> str | None:
     return DEV_LAUNCHD_LABELS[component]
 
 
-def _restart_native_service(component: str) -> list[OpsResult]:
-    """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama")."""
+def _restart_registered_native_service(component: str) -> list[OpsResult]:
+    """Restart whatever service manager this OS registered `component` under."""
     if _is_macos():
         label = _dev_launchd_label(component)
         if label is not None:
@@ -6075,6 +6121,50 @@ def _restart_native_service(component: str) -> list[OpsResult]:
     if _is_linux():
         return _restart_systemd_service(NATIVE_SYSTEMD_SERVICES[component])
     return _unsupported_os_result(f"restart {component}")
+
+
+def _restart_native_service(component: str, *, repair_stale_build: bool = True) -> list[OpsResult]:
+    """Restart the OS-appropriate native service for `component` ("api"/"web"/"ollama").
+
+    For the **api** this is also the command every #4133 surface names as the
+    repair (`_RUNNING_BUILD_REMEDIATION`), so it has to actually perform one.
+    A bare `brew services restart`/`systemctl --user restart` acts only on the
+    **registered** service, and the state being repaired is defined by the
+    stale process being registered nowhere: `brew services list` could not see
+    the owner's api, which is why `_retire_previous_identity` could not
+    either. Restarting the registration alone starts the new build onto a port
+    the survivor still holds, uvicorn cannot bind it (`[Errno 48]`, #3853's
+    restart-loop shape), launchd keep-alives it in a loop, and the command
+    exits `[OK]` over a mismatch that never moved -- `[OK]`-over-a-mismatch
+    one command along from the one this issue was filed about.
+
+    So a confirmed mismatch routes through `_repair_running_api_build`, the
+    same stop-by-PID-then-restart-then-verify the install step uses. The gate
+    is `drift.mismatched`: a match, a probe that could not tell, and a
+    Compose/Kubernetes vantage point all fall through to the plain restart
+    below, unchanged. The cost is one loopback probe per api restart, which is
+    the cheapest read in the function.
+
+    `repair_stale_build=False` is for `_repair_running_api_build` itself,
+    whose restart must not re-enter the probe it has already acted on.
+    """
+    if component != "api" or not repair_stale_build:
+        return _restart_registered_native_service(component)
+    drift = _native_api_build_drift()
+    if not drift.mismatched:
+        return _restart_registered_native_service(component)
+    results = [
+        OpsResult(
+            True,
+            "An api that no service manager accounts for is holding the api port -- "
+            "stopping it before the restart",
+            f"{drift.summary()}. Restarting only the registered service would leave that "
+            "process on the port and the new one unable to bind it.",
+            status="WARN",
+        )
+    ]
+    results.extend(_repair_running_api_build(drift))
+    return results
 
 
 def _stop_native_service(component: str) -> list[OpsResult]:
@@ -13857,6 +13947,17 @@ def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
     `running_mode` is the page's own verdict about what is serving, reused
     here rather than re-derived, so the card cannot contradict the mode
     banner above it.
+
+    `"none"` is in scope alongside `"native"`, which is not a redundancy:
+    `running_mode` is `"native"` only when some native service is
+    *brew/systemd-reported started*, and a surviving pre-upgrade process is
+    registered nowhere -- so #4133's own state surveys as `"none"` while this
+    very function is being served by that process. Treating `"none"` as out of
+    scope rendered nothing on the one machine the card exists for, and made
+    the page disagree with `ops status`, which is deliberately not gated on
+    the registration either (`_native_api_build_drift`). Everything with a
+    real other subject (`compose`/`terraform`/`kubernetes`) stays out of
+    scope.
     """
     if in_cluster:
         return BuildDrift(
@@ -13871,7 +13972,7 @@ def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
             ),
             remediation="",
         )
-    if running_mode != "native":
+    if running_mode not in ("native", "none"):
         return BuildDrift(
             state=BUILD_NOT_APPLICABLE,
             running=local_runtime_build(),
@@ -14534,7 +14635,7 @@ def status(_args) -> int:
     # version are both compatible with a pre-upgrade process serving from a
     # deleted venv, which is the state no surface could distinguish from a
     # correct one.
-    _print_running_api_build(_native_api_build_drift())
+    _print_running_api_build(_native_api_build_drift(mode))
 
     terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)

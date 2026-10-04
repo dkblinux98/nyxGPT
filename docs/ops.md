@@ -396,7 +396,11 @@ This command:
   /api/v1/info`'s `runtime` block) and compares it to the venv the installed
   service execs. On a mismatch it stops that process by PID, restarts the
   registered service, and re-checks — and if the running build *still* is not
-  the installed one, the step **fails** and names `nyxgpt ops restart api`.
+  the installed one, the step **fails** and names `nyxgpt ops down` then
+  `nyxgpt up`, which replaces every running process including one no service
+  manager accounts for. (`nyxgpt ops restart api` performs this same repair,
+  so prescribing it after it has just failed would send you in a circle —
+  see [`restart`](#nyxgpt-ops-restart).)
   When the api simply is not up yet (a first install, before
   [`nyxgpt up`](#nyxgpt-up--nyxgpt-down)'s health wait) the step reports
   `[WARN] Could not verify …` rather than claiming a match. The motivating
@@ -717,9 +721,14 @@ Reports:
   - `CANNOT DETERMINE`, with the reason — nothing answered on the api port, or
     the api predates this field. Never rendered as a pass.
 
-  Nothing is printed on a Compose, Terraform or Kubernetes deployment, or on a
-  host with no native api installed: the interpreter there lives in an image,
-  so there is no keg venv for it to match.
+  Nothing at all is printed where the question has no subject — a Compose,
+  Terraform or Kubernetes api is *answering* and its interpreter lives in that
+  image, so there is no keg venv for it to match. That scoping is decided from
+  the answer the api gives, so it only applies when one is given: on a host
+  where nothing answers the api port the block prints `CANNOT DETERMINE`
+  whatever is installed there. That ordering is deliberate — one refused
+  loopback connection settles the question more cheaply than the
+  `docker compose ps` and two `brew` calls the scoping needs.
 
   Why this is its own line rather than a footnote on the version: every other
   line here is derived from disk, and a process outlives the build it was
@@ -865,6 +874,19 @@ nyxgpt ops restart observability
   second native process/container that would collide on the same port — you'll see a
   `[FAIL] Refusing to restart native <component>` message naming the port in conflict.
   Stop the Compose deployment (or manage that component through Compose) first.
+- **`restart api` repairs a stale running build before it restarts anything**
+  (#4133). This is the command every mismatch surface — `status`, `doctor`, the
+  Infrastructure page, the install step — names as the repair, so it performs
+  one rather than assuming the registration is the whole story. It asks the api
+  for its own `sys.prefix` first; on a confirmed mismatch it stops *that*
+  process by PID, then restarts the registered service, then re-probes and
+  **fails** if the live build still is not the installed one. The stop-by-PID
+  is the part a bare `brew services restart` cannot do: a process that survived
+  an upgrade is registered nowhere, so restarting the registration alone starts
+  the new build onto a port the survivor still holds, uvicorn cannot bind it,
+  and the command would exit `[OK]` over a mismatch that never moved. A match,
+  an api that did not answer, and a Compose/Kubernetes deployment all skip
+  straight to the plain restart.
 - Restarting the Cassandra container is **atomic-safe**: if the restart fails in a way that
   leaves a previously-running container stopped, `restart` attempts one recovery start. If
   that also fails, it reports a clear `DOWN: ... is now STOPPED` result instead of silently

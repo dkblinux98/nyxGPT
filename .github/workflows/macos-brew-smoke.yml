@@ -2974,9 +2974,19 @@ jobs:
     # can be run by hand on a real Mac and pinned by a unit test); that script
     # `cd`s to $HOME before touching the product, so nothing it runs can
     # resolve a path relative to a repo a user does not have (#3759).
+    #
+    # It stages the survivor TWICE, and that is the shape of the proof rather
+    # than belt-and-braces: the install step and `nyxgpt ops restart api` are
+    # two different repairs, the first consumes the state, and the second is
+    # the one printed on every mismatch surface. Measuring it only after the
+    # first had already cleaned up is how `restart api` stayed a no-op against
+    # an unregistered survivor through a whole review cycle.
     if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
     runs-on: macos-15
-    timeout-minutes: 75
+    # Raised from 75 with the second staging (two more service starts and
+    # another repair wait). A gate that reds out on its own clock is a gate
+    # people learn to re-run rather than read.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 

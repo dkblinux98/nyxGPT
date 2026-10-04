@@ -42,6 +42,20 @@ from nyxgpt.running_build import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def real_running_api_probe():
+    """Shadow the unit conftest's autouse stub of `_probe_running_api_runtime`.
+
+    That stub exists so no *other* unit test can read -- or act on -- the live
+    machine's api (see its docstring). This module is the one that tests the
+    probe and the comparison built on it, so it needs the real function in
+    place; every test here patches `ops.httpx`/`ops.load_config` or
+    `_probe_running_api_runtime` itself, so none of them reaches the network
+    either.
+    """
+    return ops._probe_running_api_runtime
+
+
 def _build(prefix: str, *, exists: bool = True, pid: int = 4133, version: str = "3.0.0rc17"):
     return RuntimeBuild(
         executable=f"{prefix}/bin/python3",
@@ -347,6 +361,63 @@ class TestNativeApiBuildDrift:
         # running, it just does not call it drift.
         assert drift.running_prefix == "/usr/local"
 
+    def test_a_containerised_sibling_does_not_silence_a_native_api(self):
+        """Scoped to the api. A Compose-managed `web` or Cassandra beside a
+        native api is a mixed install, not a reason to stop comparing the api
+        -- and silence is the one outcome this check must not reach by
+        accident."""
+        mode = self._mode(compose={"web": "running", "cassandra": "running"})
+        with (
+            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/old/venv"), "")),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
+            patch.object(ops, "detect_deployment_mode", return_value=mode),
+            patch.object(ops, "compose_core_components", return_value=["web", "cassandra"]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+        ):
+            drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_MISMATCH
+
+    def test_a_terraform_sibling_does_not_silence_a_native_api(self):
+        mode = self._mode(terraform={"cassandra": "running"})
+        with (
+            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/old/venv"), "")),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
+            patch.object(ops, "detect_deployment_mode", return_value=mode),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+        ):
+            drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_MISMATCH
+
+    def test_a_terraform_api_is_not_applicable(self):
+        mode = self._mode(native_api="none", terraform={"api": "running"})
+        with (
+            patch.object(
+                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+            ),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
+            patch.object(ops, "detect_deployment_mode", return_value=mode),
+            patch.object(ops, "compose_core_components", return_value=[]),
+        ):
+            drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_NOT_APPLICABLE
+        assert "container/cluster" in drift.detail
+
+    def test_a_survey_the_caller_already_paid_for_is_reused(self):
+        """`status` holds a `DeploymentMode`; re-deriving one costs a second
+        `docker compose ps` for an answer that cannot have changed."""
+        mode = self._mode()
+        with (
+            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/new/venv"), "")),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
+            patch.object(ops, "detect_deployment_mode") as survey,
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+        ):
+            drift = ops._native_api_build_drift(mode)
+        assert drift.state == BUILD_MATCH
+        survey.assert_not_called()
+
     def test_a_kubernetes_host_access_bridge_is_not_applicable(self):
         """The k3s bridge binds :8000 on the host, so the api answering there
         is a Pod's -- not the native keg this host may also carry."""
@@ -545,7 +616,9 @@ class TestReconcileRunningApiBuild:
         ):
             results = ops._reconcile_running_api_build()
         stop.assert_called_once_with(stale)
-        restart.assert_called_once_with("api")
+        # `repair_stale_build=False`: this call IS the repair, so the restart
+        # must not re-enter the probe it was reached from.
+        restart.assert_called_once_with("api", repair_stale_build=False)
         assert all(r.ok for r in results)
         assert any("now executes the installed build" in r.message for r in results)
 
@@ -569,8 +642,14 @@ class TestReconcileRunningApiBuild:
             results = ops._reconcile_running_api_build()
         failures = [r for r in results if not r.ok]
         assert len(failures) == 1
-        assert ops._RUNNING_BUILD_REMEDIATION in failures[0].details
         assert "still not executing the installed build" in failures[0].message
+        # NOT `nyxgpt ops restart api`: that command performs this same repair
+        # (`_restart_native_service` routes to it), so naming it after it has
+        # just failed would send the operator in a circle. The escalation that
+        # replaces every process, managed or not, is what is named.
+        assert ops._RUNNING_BUILD_REMEDIATION not in failures[0].details
+        assert "nyxgpt ops down" in failures[0].details
+        assert "nyxgpt up" in failures[0].details
 
     def test_the_step_runs_after_the_native_api_step(self, tmp_path, monkeypatch):
         """Siting is the point: the api step reports the keg it installed and
@@ -594,6 +673,153 @@ class TestReconcileRunningApiBuild:
         assert "running api build" in captured
         assert captured.index("running api build") > captured.index("native api service")
         assert captured.index("running api build") > captured.index("native web service")
+
+
+class TestRestartApiRepairsTheMismatch:
+    """AC4: the command every surface PRINTS has to repair the state it names.
+
+    The finding from the review of #4155. `_RUNNING_BUILD_REMEDIATION` is
+    `nyxgpt ops restart api`, which routes to `_restart_native_service`, which
+    before this was a bare `brew services restart`/`systemctl --user restart`
+    -- and those act only on the **registered** service. The defining property
+    of the state being repaired is that the stale process is registered
+    nowhere (it is why `brew services list` could not see the owner's api), so
+    restarting the registration alone starts the new build onto a port the
+    survivor still holds, uvicorn cannot bind it, and the command exits `[OK]`
+    over a mismatch that never moved -- the same `[OK]`-over-a-mismatch this
+    issue exists to remove, one command along.
+    """
+
+    def _stale(self):
+        return _drift(
+            BUILD_MISMATCH,
+            running=_build("/old/venv", exists=False, pid=4242),
+            expected="/new/venv",
+            detail="pid 4242 is running /old/venv",
+            remediation=ops._RUNNING_BUILD_REMEDIATION,
+        )
+
+    def test_a_mismatch_routes_through_the_same_repair_the_install_step_uses(self):
+        stale = self._stale()
+        with (
+            patch.object(ops, "_native_api_build_drift", return_value=stale) as probe,
+            patch.object(
+                ops, "_repair_running_api_build", return_value=[ops.OpsResult(True, "Repaired")]
+            ) as repair,
+            patch.object(ops, "_restart_registered_native_service") as bare,
+        ):
+            results = ops._restart_native_service("api")
+        probe.assert_called_once_with()
+        repair.assert_called_once_with(stale)
+        # The bare restart is not *also* run: the repair performs one itself,
+        # and two restarts of one service is a crash-loop invitation (#3853).
+        bare.assert_not_called()
+        assert any("no service manager accounts for" in r.message for r in results)
+        assert results[0].status == "WARN"
+
+    @pytest.mark.parametrize("state", [BUILD_MATCH, BUILD_UNDETERMINED, BUILD_NOT_APPLICABLE])
+    def test_everything_short_of_a_confirmed_mismatch_restarts_exactly_as_before(self, state):
+        """`restart api` is run constantly, on healthy machines and on ones
+        whose api is deliberately down. Only the actionable state may change
+        what it does."""
+        with (
+            patch.object(ops, "_native_api_build_drift", return_value=_drift(state)),
+            patch.object(ops, "_repair_running_api_build") as repair,
+            patch.object(
+                ops,
+                "_restart_registered_native_service",
+                return_value=[ops.OpsResult(True, "Restarted")],
+            ) as bare,
+        ):
+            results = ops._restart_native_service("api")
+        repair.assert_not_called()
+        bare.assert_called_once_with("api")
+        assert [r.message for r in results] == ["Restarted"]
+
+    @pytest.mark.parametrize("component", ["web", "ollama"])
+    def test_other_components_are_never_probed(self, component):
+        """The comparison is about the api's venv; probing :8000 to restart the
+        Next.js server would cost a loopback read to learn nothing."""
+        with (
+            patch.object(ops, "_native_api_build_drift") as probe,
+            patch.object(ops, "_restart_registered_native_service", return_value=[]) as bare,
+        ):
+            ops._restart_native_service(component)
+        probe.assert_not_called()
+        bare.assert_called_once_with(component)
+
+    def test_the_repair_itself_does_not_re_enter_the_probe(self):
+        """`_repair_running_api_build` restarts the service as its second step.
+        Re-probing there would recurse into the repair it is already doing."""
+        with (
+            patch.object(ops, "_native_api_build_drift") as probe,
+            patch.object(ops, "_restart_registered_native_service", return_value=[]) as bare,
+        ):
+            ops._restart_native_service("api", repair_stale_build=False)
+        probe.assert_not_called()
+        bare.assert_called_once_with("api")
+
+    def test_the_cli_restart_target_reaches_it(self):
+        """`nyxgpt ops restart api` is the literal every surface prints, so the
+        path from that target to the repair is what has to hold -- not just the
+        helper in isolation."""
+        stale = self._stale()
+        with (
+            patch.object(ops, "_native_api_build_drift", return_value=stale),
+            patch.object(
+                ops, "_repair_running_api_build", return_value=[ops.OpsResult(True, "Repaired")]
+            ) as repair,
+            patch.object(ops, "_restart_registered_native_service", return_value=[]),
+            patch.object(ops.self_heal, "clear_intentionally_stopped"),
+        ):
+            results = ops._restart_component("api", {})
+        repair.assert_called_once_with(stale)
+        assert any(r.message == "Repaired" for r in results)
+
+    def test_a_compose_refusal_still_wins(self):
+        """A live Compose api means the native one must not be started at all,
+        and that refusal is about port ownership rather than build drift -- it
+        is decided before this probe is worth paying for."""
+        with (
+            patch.object(ops, "_native_api_build_drift") as probe,
+            patch.object(ops, "_repair_running_api_build") as repair,
+            patch.object(ops.self_heal, "clear_intentionally_stopped") as cleared,
+        ):
+            results = ops._restart_component("api", {"api": "running"})
+        assert len(results) == 1 and not results[0].ok
+        probe.assert_not_called()
+        repair.assert_not_called()
+        cleared.assert_not_called()
+
+    def test_the_repair_stops_by_pid_then_restarts_then_verifies(self):
+        """All three, in that order. The stop is the part a service manager
+        cannot do, and the verify is the part an exit code is not."""
+        stale = self._stale()
+        repaired = _drift(BUILD_MATCH, running=_build("/new/venv"), expected="/new/venv")
+        order: list[str] = []
+        with (
+            patch.object(
+                ops,
+                "_stop_stale_api_process",
+                side_effect=lambda d: order.append("stop") or [ops.OpsResult(True, "Stopped")],
+            ),
+            patch.object(
+                ops,
+                "_restart_native_service",
+                side_effect=lambda *_a, **_k: order.append("restart")
+                or [ops.OpsResult(True, "Restarted")],
+            ),
+            patch.object(
+                ops,
+                "_native_api_build_drift",
+                side_effect=lambda *_a, **_k: order.append("probe") or repaired,
+            ),
+            patch.object(ops.time, "sleep"),
+        ):
+            results = ops._repair_running_api_build(stale)
+        assert order == ["stop", "restart", "probe"]
+        assert all(r.ok for r in results)
+        assert results[-1].message == "The api now executes the installed build"
 
 
 class TestPrintRunningApiBuild:
@@ -697,6 +923,20 @@ class TestInfraRunningBuild:
         ):
             drift = ops._infra_running_build(in_cluster=False, running_mode="native")
         assert drift.state == BUILD_MATCH
+
+    def test_a_survey_that_found_no_registered_service_is_still_compared(self):
+        """`running_mode` is `native` only when a service is brew/systemd-
+        reported *started*, and #4133's survivor is registered nowhere -- so
+        the page surveys `none` while being served by that very process.
+        Gating on `native` rendered nothing on the one machine the card exists
+        for, and made the page disagree with `ops status`, which is
+        deliberately not gated on the registration either."""
+        with patch.object(
+            ops, "_expected_native_api_venv", return_value=("/some/other/venv", "the keg")
+        ):
+            drift = ops._infra_running_build(in_cluster=False, running_mode="none")
+        assert drift.state == BUILD_MISMATCH
+        assert drift.remediation == ops._RUNNING_BUILD_REMEDIATION
 
     def test_a_native_mode_on_another_venv_is_a_mismatch(self):
         with patch.object(

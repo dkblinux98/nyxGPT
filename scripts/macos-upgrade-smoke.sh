@@ -71,6 +71,9 @@ FORMULA="nyxgpt-api@${RELEASE}rc"
 API_URL="http://127.0.0.1:8000"
 
 WORK="$(mktemp -d)"
+# Where the superseded keg is kept so the survivor can be staged more than
+# once; populated in step 3, declared here because `set -u` is on.
+KEG_BACKUP="$WORK/old-keg"
 FAILURES=0
 
 log() { printf '\n=== %s ===\n' "$*"; }
@@ -148,6 +151,53 @@ PY
 
 realpath_of() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 
+# Stage #4133's defining state: a nyxGPT api serving :8000 that NO service
+# manager accounts for, executing the superseded keg's venv.
+#
+# A function rather than a straight line through the script because the two
+# repairs under test -- the install step and the remediation every surface
+# PRINTS -- each have to be measured from this state, and the first one to run
+# consumes it. That is the hole the review of #4155 found: `nyxgpt ops restart
+# api` was executed only after the install step had already removed the
+# survivor, so the gate could not see that a bare `brew services restart` is a
+# no-op against a process launchd never knew about.
+#
+# `$1` is the keg to launch from; it is restored from `$KEG_BACKUP` if a
+# previous stage's cleanup removed it. Restored to the SAME absolute path on
+# purpose: a venv's `pyvenv.cfg` and console-script shebangs are absolute.
+stage_survivor() {
+  local old_keg="$1"
+  if [ ! -d "$old_keg" ]; then
+    test -d "$KEG_BACKUP" || { echo "::error::no keg backup to restage from"; return 1; }
+    cp -R "$KEG_BACKUP" "$old_keg" || return 1
+  fi
+  # `nohup` + `disown`, not a plain background job: a background job inherits
+  # this shell's process group and dies with the step. The staged process must
+  # outlive everything that knows about it, which is the whole point.
+  brew services stop "$FORMULA" 2>&1 | tail -5
+  wait_for_silence "$API_URL/health" 90 || {
+    echo "::error::the service did not stop, so the next process would lose the :8000 bind race"
+    return 1
+  }
+  nohup "$old_keg/bin/nyxgpt-api" > "$WORK/stale.log" 2>&1 &
+  local shell_pid=$!
+  disown "$shell_pid" 2>/dev/null || true
+  if [ "$(wait_for_http "$API_URL/health" "$WORK/health.json" 240)" != "200" ]; then
+    cat "$WORK/stale.log"
+    echo "::error::the detached $old_keg wrapper never answered -- no survivor to stage"
+    return 1
+  fi
+  # The defining property, asserted every time: nothing registered accounts
+  # for this process. A staging that left brew reporting the formula started
+  # would be measuring an ordinary restart, not #4133.
+  brew services list | tee "$WORK/services-staged.log"
+  if grep -qE "^${FORMULA}[[:space:]]+started" "$WORK/services-staged.log"; then
+    echo "::error::brew still reports $FORMULA as started -- this is not the unaccounted-for process #4133 was about"
+    return 1
+  fi
+  return 0
+}
+
 cd "$HOME" || exit 1
 
 # ---------------------------------------------------------------------------
@@ -216,37 +266,27 @@ esac
 # 2. Stage the survivor: a process no service manager accounts for.
 # ---------------------------------------------------------------------------
 log "stage the pre-upgrade survivor (detached from launchd, as #4133's was)"
-brew services stop "$FORMULA" 2>&1 | tail -5
-wait_for_silence "$API_URL/health" 90 \
-  || die "the service did not stop, so the next process would lose the :8000 bind race"
-
-# `setsid`-equivalent: a plain background job inherits this shell's process
-# group and dies with the step. `nohup` + `disown` detaches it, which is the
-# point -- the staged process must outlive everything that knows about it.
-nohup "$OLD_KEG/bin/nyxgpt-api" > "$WORK/stale.log" 2>&1 &
-STALE_SHELL_PID=$!
-disown "$STALE_SHELL_PID" 2>/dev/null || true
-CODE="$(wait_for_http "$API_URL/health" "$WORK/health.json" 240)"
-[ "$CODE" = "200" ] || {
-  cat "$WORK/stale.log"
-  die "the detached $OLD_VERSION wrapper never answered -- no survivor to stage"
-}
+stage_survivor "$OLD_KEG" || die "could not stage the survivor"
 
 IFS=$'\t' read -r STALE_PREFIX _ STALE_PID _ < <(runtime_report)
 echo "  survivor prefix: $STALE_PREFIX (pid $STALE_PID)"
 [ -n "$STALE_PID" ] || die "the running api reported no pid, so a mismatch could not name the process to stop"
-
-# The defining property: nothing registered accounts for this process.
-brew services list | tee "$WORK/services-staged.log"
-if grep -qE "^${FORMULA}[[:space:]]+started" "$WORK/services-staged.log"; then
-  die "brew still reports $FORMULA as started -- this is not the unaccounted-for process #4133 was about"
-fi
 pass "a nyxGPT api is serving that no service manager reports"
 
 # ---------------------------------------------------------------------------
 # 3. The upgrade, and the deletion that makes the next restart fatal.
 # ---------------------------------------------------------------------------
 log "brew upgrade $FORMULA $OLD_VERSION -> $NEW_VERSION"
+# Kept so the survivor can be staged a SECOND time, for the second remediation
+# (§7). One staging is consumed by whichever repair runs first, and both
+# repairs have to be measured from the state they are prescribed for -- the
+# review of #4155 found the printed remediation untested precisely because it
+# ran only after the install step had already cleaned up. Copied before the
+# upgrade and restored to the SAME absolute path, because a venv's `pyvenv.cfg`
+# and console-script shebangs are absolute: a copy that runs has to run from
+# where it was built.
+KEG_BACKUP="$WORK/old-keg"
+cp -R "$OLD_KEG" "$KEG_BACKUP" || die "could not back up $OLD_KEG for the second staging"
 TAP_DIR="$(brew --repository "$TAP")"
 cp "$NEW_RB" "$TAP_DIR/Formula/"
 brew upgrade --verbose "$TAP/$FORMULA" 2>&1 | tail -30
@@ -454,22 +494,78 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. AC4: a restart after the upgrade brings the api back.
+# 7. AC4, and the finding from the review of #4155: the remediation every
+#    surface PRINTS has to repair the state it is printed for.
+#
+#    The survivor is staged a second time, deliberately, because the install
+#    step in step 6 consumed the first one. Measuring `nyxgpt ops restart api`
+#    only on an already-healthy stack is what let a bare `brew services
+#    restart` -- which acts on the REGISTERED service, and nothing is
+#    registered here -- look like a working repair: launchd would start the new
+#    build onto a port the survivor still holds, uvicorn would fail to bind
+#    (`[Errno 48]`, #3853's restart-loop shape), and the command would exit
+#    `[OK]` over a mismatch that never moved.
 # ---------------------------------------------------------------------------
-log "nyxgpt ops restart api brings the api back on the new venv (AC4)"
-nyxgpt ops restart api > "$WORK/restart.log" 2>&1 || true
-tail -20 "$WORK/restart.log"
+log "re-stage the survivor, so the printed remediation is measured from the state it names"
+stage_survivor "$OLD_KEG" || die "could not re-stage the survivor for the remediation half"
+# Deleted again while the process runs: the acute form, same as step 3.
+rm -rf "$OLD_KEG"
+test ! -d "$OLD_KEG" || die "could not remove $OLD_KEG for the second staging"
+IFS=$'\t' read -r STALE2_PREFIX _ STALE2_PID STALE2_EXISTS < <(runtime_report)
+echo "  survivor prefix: $STALE2_PREFIX (pid $STALE2_PID, prefix exists: $STALE2_EXISTS)"
+[ -n "$STALE2_PID" ] || die "the re-staged survivor reported no pid"
+[ "$STALE2_EXISTS" = "no" ] || fail "the re-staged survivor reports its own prefix as present, but $OLD_KEG is gone"
+
+# Non-vacuity, asserted before the remediation runs: if the machine is not in
+# a mismatch state here, the assertions below pass without measuring anything.
+"$KEG_PY" "$WORK/drift_driver.py" > "$WORK/restage.json" 2>&1 \
+  || { cat "$WORK/restage.json"; die "the driver did not run against the re-staged survivor"; }
+RESTAGED_STATE="$("$KEG_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["drift"]["state"])' "$WORK/restage.json")"
+[ "$RESTAGED_STATE" = "mismatch" ] \
+  || die "the re-staged machine reports state '$RESTAGED_STATE', not 'mismatch' -- the remediation below would have nothing to repair"
+pass "the machine is back in the mismatch state the surfaces print a remediation for"
+
+log "nyxgpt ops restart api repairs it, from the staged state (AC4)"
+nyxgpt ops restart api > "$WORK/restart.log" 2>&1
+RESTART_RC=$?
+tail -30 "$WORK/restart.log"
+# The command must not report success over a persisting mismatch. Checked
+# alongside the state below rather than instead of it: an exit code is a
+# report, the interpreter path is the evidence.
+if [ "$RESTART_RC" -ne 0 ]; then
+  fail "nyxgpt ops restart api exited $RESTART_RC from the staged state"
+else
+  pass "nyxgpt ops restart api reported success"
+fi
+if grep -qF 'no service manager accounts for' "$WORK/restart.log"; then
+  pass "the restart named the unaccounted-for process it had to stop first"
+else
+  fail "nyxgpt ops restart api did not report stopping the unmanaged survivor -- a bare service restart cannot repair this state"
+fi
 CODE="$(wait_for_http "$API_URL/health" "$WORK/health.json" 240)"
 [ "$CODE" = "200" ] || fail "the api did not come back after a restart (got $CODE) -- AC4"
-IFS=$'\t' read -r RESTART_PREFIX _ _ _ < <(runtime_report)
+IFS=$'\t' read -r RESTART_PREFIX _ RESTART_PID _ < <(runtime_report)
+echo "  running prefix: $RESTART_PREFIX (pid $RESTART_PID)"
 case "$(realpath_of "$RESTART_PREFIX")" in
   "$(realpath_of "$NEW_KEG")"/*)
-    pass "after a restart the api still runs the $NEW_VERSION keg's venv"
+    pass "after the printed remediation the api runs the $NEW_VERSION keg's venv (AC4)"
     ;;
   *)
-    fail "after a restart the api reports $RESTART_PREFIX, not the $NEW_VERSION keg"
+    fail "after nyxgpt ops restart api the api reports $RESTART_PREFIX, not the $NEW_VERSION keg (AC4)"
     ;;
 esac
+if kill -0 "$STALE2_PID" 2>/dev/null; then
+  fail "pid $STALE2_PID is still alive after the printed remediation -- it repaired nothing"
+else
+  pass "the re-staged survivor is gone"
+fi
+"$KEG_PY" "$WORK/drift_driver.py" > "$WORK/after-restart.json" 2>&1 || true
+AFTER_STATE="$("$KEG_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["drift"]["state"])' "$WORK/after-restart.json" 2>/dev/null || echo unreadable)"
+if [ "$AFTER_STATE" = "match" ]; then
+  pass "the comparison now reports a match"
+else
+  fail "after the printed remediation the comparison still reports '$AFTER_STATE'"
+fi
 
 log "teardown"
 brew services stop "$FORMULA" 2>&1 | tail -5 || true

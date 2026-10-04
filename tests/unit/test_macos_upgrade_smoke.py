@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from nyxgpt import ops
-from nyxgpt.running_build import BUILD_MISMATCH
+from nyxgpt.running_build import BUILD_MISMATCH, RuntimeBuild
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +108,66 @@ def test_the_script_never_asserts_from_a_checkout(script):
     # Everything that drives the product comes after the chdir.
     for driven in ("brew services start", "nyxgpt ops status", "drift_driver.py"):
         assert body.index(driven) > cd_home, f"{driven!r} runs before the chdir to $HOME"
+
+
+def test_the_printed_remediation_is_measured_from_the_staged_state(script):
+    """The hole the review of #4155 found.
+
+    `nyxgpt ops restart api` is what every mismatch surface prints, and the
+    job used to run it only *after* the install step had already removed the
+    survivor -- so it could not see that a bare `brew services restart` acts
+    on the registered service and nothing is registered in that state. The
+    survivor is therefore staged twice: once for the install step, once for
+    the command the operator is actually told to run.
+    """
+    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert body.count('stage_survivor "$OLD_KEG"') == 2, (
+        "the survivor is staged once, so one of the two repairs under test is measured on an "
+        "already-repaired machine"
+    )
+    restart = body.index("nyxgpt ops restart api > ")
+    assert body.rindex('stage_survivor "$OLD_KEG"') < restart, (
+        "the printed remediation runs before the survivor is re-staged, which is the vacuous "
+        "ordering this test exists to forbid"
+    )
+    # And the re-staged state is asserted to BE a mismatch before the
+    # remediation runs: otherwise the assertions after it pass on a machine
+    # that never reproduced anything.
+    assert "the remediation below would have nothing to repair" in script
+    # Convergence, by interpreter path and by pid -- not by exit code.
+    assert "after the printed remediation the api runs" in script
+    assert "is still alive after the printed remediation" in script
+
+
+def test_the_restart_line_grepped_for_is_the_one_ops_prints(script):
+    """`restart api` must report stopping the unmanaged survivor, because that
+    is the step a bare service restart structurally cannot perform."""
+    needle = "no service manager accounts for"
+    assert f"grep -qF '{needle}'" in script
+    stale = ops.BuildDrift(
+        state=BUILD_MISMATCH,
+        running=RuntimeBuild(
+            executable="/old/venv/bin/python3",
+            prefix="/old/venv",
+            python="3.11.9",
+            pid=4242,
+            version="3.0.0rc14",
+            prefix_exists=False,
+        ),
+        expected_prefix="/new/venv",
+        expected_source="the keg",
+        detail="d",
+        remediation=ops._RUNNING_BUILD_REMEDIATION,
+    )
+    with (
+        patch.object(ops, "_native_api_build_drift", return_value=stale),
+        patch.object(ops, "_repair_running_api_build", return_value=[]),
+    ):
+        results = ops._restart_native_service("api")
+    assert any(needle in r.message for r in results), (
+        "ops no longer prints the line the macOS job greps for, so that assertion would fail on "
+        "a machine where the repair is working"
+    )
 
 
 def test_both_halves_are_measured(script):
