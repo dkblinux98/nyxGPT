@@ -710,9 +710,10 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
             "target OS), or drop --dev to install a published release on the Mac."
         )
     if getattr(args, "skip_observability", False) or os_family == OS_FAMILY_MACOS:
-        # No observability stack on an EC2 Mac: its bootstrap installs the two
-        # Homebrew formulas and starts them (scripts/cloud/ec2-user-data-macos
-        # .sh.tmpl), and never runs `ops install`'s observability profiles --
+        # No observability stack on an EC2 Mac: its bootstrap installs the
+        # Homebrew formulas (api, web and ollama) and starts them
+        # (scripts/cloud/ec2-user-data-macos.sh.tmpl), and never runs `ops
+        # install`'s observability profiles --
         # so recording profiles here would only make `tunnel` forward ports
         # nothing is listening on and the summary promise URLs that 404.
         profiles: list[str] = []
@@ -3280,6 +3281,14 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
         # message. The bootstrap now installs Ollama and pulls the configured
         # models, so the first line can say the core stack is complete and the
         # second can be specific about what is actually absent.
+        #
+        # And the platform constraint is stated only over the container tier.
+        # The watchdog is a thread in THIS api process (self_heal.py), so
+        # nothing about an EC2 Mac prevents it -- it ships disabled everywhere
+        # and this bootstrap simply does not turn it on, which is a default and
+        # not an impossibility. Lumping it in with "no Docker daemon can exist"
+        # would be the same mis-scoping #4150 was filed about, one component
+        # over.
         print(
             "Target OS: macOS (EC2 Mac) -- api, web and the Ollama model backend "
             "installed from the remote Homebrew tap and started with `brew services`, "
@@ -3287,9 +3296,12 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
             "Absent on this target, and only this: the observability stack "
             "(Grafana/Loki/Tempo/GlitchTip) and the `nyxgpt-cassandra` container -- all "
             "Docker-based, and an EC2 Mac supports no nested virtualization, so no "
-            "Docker daemon can exist on it. The self-heal watchdog is not enabled here "
-            "either; turn it on from the dashboard if you want it. Chat, RAG and the "
-            "web UI are unaffected. See docs/cloud.md, 'EC2 Mac targets'."
+            "Docker daemon can exist on it.\n"
+            "Separately, and not a platform limit: the self-heal watchdog is not enabled "
+            "here. It is a thread in the api process, it ships disabled everywhere, and "
+            "this bootstrap just does not turn it on -- enable it from the admin "
+            "Self-Heal page or with `nyxgpt self-heal enable` on the instance. Chat, RAG "
+            "and the web UI are unaffected. See docs/cloud.md, 'EC2 Mac targets'."
         )
         # The single most expensive thing about this deploy, said at the end
         # where the operator is actually looking (#3995). A Dedicated Host is

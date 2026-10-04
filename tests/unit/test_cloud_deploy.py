@@ -10,7 +10,9 @@ repo-less guarantee on the provisioning script.
 import argparse
 import io
 import json
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -1795,12 +1797,147 @@ def test_the_macos_caveat_covers_the_container_tier_and_not_the_model_backend(ca
     assert "observability stack" in out
     assert "nested virtualization" in out
     assert "Chat, RAG and the web UI are unaffected" in out
-    # The self-heal watchdog stays in the caveat, matching what the deploy
-    # record actually reports (`self_heal_enabled` is False for macOS).
+
+    # The self-heal watchdog is reported -- `self_heal_enabled` is False for
+    # macOS, so saying nothing would be its own lie of omission -- but it is
+    # reported as a DEFAULT, not as a platform limit. It is a thread inside the
+    # api process, so nothing about an EC2 Mac prevents it, and filing it under
+    # "no Docker daemon can exist on it" would repeat this issue's own mistake
+    # one component over. So: named separately, with the remedy.
     assert "self-heal watchdog is not enabled" in out
+    assert "not a platform limit" in out
+    assert "nyxgpt self-heal enable" in out
+    # It must not ride inside the nested-virtualization sentence, which is the
+    # specific mis-attribution being guarded. That sentence ends at the Docker
+    # daemon; self-heal is after the break.
+    container_caveat, _, rest = out.partition("Docker daemon can exist on it.")
+    assert "self-heal" not in container_caveat, container_caveat
+    assert "self-heal" in rest
 
     # And the sentence that used to absorb the model backend is gone.
     assert "No observability stack and no self-heal watchdog" not in out
+
+
+#: The EC2 Mac caveat, wherever an operator can read it. The deploy summary is
+#: asserted above from the function that prints it; these two are prose, and
+#: prose is where this defect class lives.
+_MACOS_CAVEAT_SURFACES = (
+    Path(__file__).resolve().parents[2] / "docs" / "cloud.md",
+    Path(__file__).resolve().parents[2]
+    / "web"
+    / "src"
+    / "app"
+    / "admin"
+    / "infrastructure"
+    / "page.tsx",
+)
+
+#: The clause that justifies the macOS exclusions, and the only thing it may be
+#: offered for. Nested virtualization is a fact about *containers*: every way of
+#: running Docker on macOS works by running a Linux VM, and an EC2 Mac cannot.
+#: Text invoking it is making a claim about the container tier.
+_PLATFORM_CONSTRAINT_MARKERS = ("nested virtualization", "no docker daemon", "no containers")
+
+#: What a claim that names both the constraint and the watchdog must also say,
+#: because the watchdog is on the other side of that line. One canonical phrase
+#: rather than a thesaurus: a guard that accepts five paraphrases stops pinning
+#: anything, and the phrase is short enough to keep in every surface.
+_NOT_A_PLATFORM_LIMIT = "not a platform limit"
+
+
+def _claim_blocks(text: str) -> list[str]:
+    """`text` split into the units a single claim is made in.
+
+    A markdown list item, or a run of non-blank lines. Sentence granularity is
+    too fine for the thing this file guards: the defect it caught had the
+    enumeration ("...and no self-heal watchdog.") in one sentence and the
+    justification ("This is a platform constraint ... nested virtualization")
+    in the next, inside one bullet. The bullet is what an operator reads as one
+    claim, so the bullet is the unit. Each block is returned with its
+    whitespace flattened, since both surfaces are hard-wrapped and
+    `nested\\n  virtualization` is the form the marker really appears in.
+    """
+    blocks: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        if current:
+            blocks.append(" ".join(current))
+            current.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or re.match(r"[-*+] ", stripped):
+            flush()
+        if stripped:
+            current.append(stripped)
+    flush()
+    # Markdown emphasis and backticks are stripped last so that `**no** Docker
+    # daemon` and `*not* a platform limit` match the plain phrases above, and
+    # hyphens become spaces so that a "nested-virtualization clause" cannot
+    # slip past a marker spelled with a space. That turns `self-heal` into
+    # `self heal` too, which is why the caller looks for both forms.
+    return [re.sub(r"[-‑]", " ", re.sub(r"[*_`]", "", block)).lower() for block in blocks]
+
+
+@pytest.mark.parametrize("surface", _MACOS_CAVEAT_SURFACES, ids=lambda p: p.name)
+def test_the_self_heal_watchdog_is_never_filed_under_the_platform_constraint(surface):
+    """Self-heal is a default on this target, not an impossibility (#4150).
+
+    #4150 was filed because the model backend's absence was disclaimed under
+    the *observability* caveat: one sentence that was true of Grafana silently
+    covered the component that answers chat, so the omission read as
+    intentional and bounded when it was neither, and the owner paid a Dedicated
+    Host's 24-hour minimum to discover it. The fix for that must not recreate
+    it one component over -- which the first pass did, writing "no observability
+    stack, no `nyxgpt-cassandra` container, and no self-heal watchdog. This is
+    a platform constraint ... everything the bootstrap skips is
+    Docker-container-based".
+
+    The watchdog is not container-based: it is a thread inside the api process
+    (`self_heal.py`, docs/self-healing.md), it ships disabled on every
+    platform, and the only reason it is off here is that this bootstrap does
+    not run the `nyxgpt self-heal enable` that step 5 of the Linux deploy does.
+    Nothing about an EC2 Mac prevents it, so calling it a platform constraint
+    tells an operator that a toggle they own is a wall they cannot move -- the
+    same false conclusion as #4150, pointing the other way.
+
+    The rule pinned here is mechanical: a block of text may name the
+    nested-virtualization constraint, or it may name the watchdog, and if it
+    names both it must also say the watchdog is `not a platform limit`. Say as
+    much as is useful about the watchdog anywhere else.
+    """
+    blocks = _claim_blocks(surface.read_text(encoding="utf-8"))
+
+    constraints = [
+        block for block in blocks if any(m in block for m in _PLATFORM_CONSTRAINT_MARKERS)
+    ]
+    # The guard measures something: if this surface stops stating the platform
+    # constraint at all, say so rather than passing vacuously.
+    assert constraints, (
+        f"{surface.name} states no EC2 Mac platform constraint "
+        f"({_PLATFORM_CONSTRAINT_MARKERS}), so this guard is reading nothing. Either "
+        "the wording moved -- update the markers -- or the caveat is gone."
+    )
+
+    for block in constraints:
+        if "self-heal" not in block and "self heal" not in block:
+            continue
+        assert _NOT_A_PLATFORM_LIMIT in block, (
+            f"{surface.name} offers the EC2 Mac platform constraint for the self-heal "
+            f"watchdog. The watchdog is a thread in the api process and nothing about "
+            f"the platform prevents it -- state it separately as a default, with its "
+            f'remedy, or say "{_NOT_A_PLATFORM_LIMIT}" in the same breath.'
+            f"\n\n{block}"
+        )
+
+    # And the watchdog is actually still named, so the guard cannot be
+    # satisfied by deleting every mention of it instead of correcting it: the
+    # deploy record reports it disabled on this target, so the operator is owed
+    # the fact and the toggle, not silence.
+    assert any(
+        "self heal" in block or "self-heal" in block for block in blocks
+    ), f"{surface.name} no longer mentions the self-heal watchdog at all"
 
 
 def test_deploy_status_flag_still_emits_json_and_names_its_replacement(monkeypatch, capsys):

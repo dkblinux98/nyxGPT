@@ -2943,12 +2943,60 @@ jobs:
       # Enabled at boot, not just running now. A service started in the wrong
       # launchd domain works until the instance reboots and is then silently
       # gone -- which on a Dedicated Host is discovered expensively.
+      #
+      # Registration is a launchd fact, not a state word (D-032(d)): the plist
+      # in ~/Library/LaunchAgents under EITHER of Homebrew's label schemes is
+      # what gets loaded at the next login, so that file is what the
+      # boot-survival claim rests on. `ops._brew_service_will_restart` is the
+      # product's own answer to that question -- plist first, then launchctl --
+      # and is called here rather than re-implemented, because the last two
+      # re-implementations of this read in this file both measured the wrong
+      # thing.
+      #
+      # The Status column is NOT grepped, and that is not a style choice:
+      # D-032(f) measured, in this same workflow, that brew colours its state
+      # tokens and that the escapes survive a pipe (`ESC[39mnoneESC[0m` through
+      # `cat -v`, run 32233162053; `ESC[31merror` through `awk`, run
+      # 32228088507). An ANSI-wrapped `started` matches no literal, so the
+      # `brew services list | grep -E '^ollama\s+(started|scheduled)'` this
+      # step used to run could fail on a machine where ollama is registered
+      # and running -- a *required* gate measuring its own parsing instead of
+      # the machine. Where the state is genuinely wanted (is it running right
+      # now, as opposed to merely registered) it comes through
+      # `brew_services.parse_services_list`, the one chokepoint every state
+      # read in the product goes through, which strips the escapes first.
       - name: Assert the ollama service is registered with brew services
         run: |
           set -euo pipefail
-          brew services list
-          brew services list | grep -E '^ollama\s+(started|scheduled)' \
-            || { echo "ollama is not a started brew service" >&2; exit 1; }
+          brew services list || true
+          python - <<'PY'
+          import subprocess
+
+          from nyxgpt import brew_services, ops
+
+          out = subprocess.run(
+              ["brew", "services", "list"], capture_output=True, text=True, check=True
+          ).stdout
+          state = brew_services.parse_services_list(out).get("ollama", "<absent>")
+          candidates = ops._brew_service_plist_candidates("ollama")
+          present = [str(path) for path in candidates if path.exists()]
+          print("state (escapes stripped):", state)
+          print("launchd plists searched:", [str(path) for path in candidates])
+          print("launchd plists present: ", present)
+
+          # Boot survival: does anything start it again at the next login?
+          assert ops._brew_service_will_restart("ollama"), (
+              "nothing will start ollama again after a reboot: no brew LaunchAgent "
+              f"under {[str(path) for path in candidates]} and no loaded launchd job"
+          )
+          # Running now, too -- the parsed state, never the raw column. `error`
+          # and `stopped` are states of a *registered* service, so the
+          # assertion above cannot stand in for this one.
+          assert state in {"started", "scheduled"}, (
+              f"ollama is registered with launchd but brew reports state {state!r}"
+          )
+          print(f"OK: ollama is registered with launchd and brew reports it {state}")
+          PY
 
       - name: Ollama logs on failure
         if: failure()

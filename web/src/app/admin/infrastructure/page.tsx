@@ -1424,12 +1424,21 @@ export default function InfrastructurePage() {
                     model backend was quietly missing too. It is now installed
                     there (api, web AND ollama), so the row says what the Mac
                     HAS before what it lacks, and attributes the gap to the
-                    container tier rather than to a vague shortfall. */}
+                    container tier rather than to a vague shortfall.
+
+                    The nested-virtualization clause covers the CONTAINER TIER
+                    and stops there. Self-healing being off is not a platform
+                    limit: the watchdog is a thread inside the api process
+                    (docs/self-healing.md), it ships disabled everywhere, and
+                    this bootstrap simply does not turn it on. Attributing it
+                    to the platform would repeat #4150's own mistake one
+                    component over, so it is named separately, as a default,
+                    with the page that toggles it. */}
                 <Row
                   label="Target OS"
                   value={
                     cloud.os_family === 'macos'
-                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services: api, web and the ollama model backend. No containers (no nested virtualization), so no observability stack, no Cassandra and no self-heal watchdog.'
+                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services: api, web and the ollama model backend. No containers (no nested virtualization), so no observability stack and no Cassandra. Self-healing is off — a default this bootstrap does not change, not a platform limit; turn it on from the Self-Heal page.'
                       : cloud.os_family === 'linux'
                         ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
                         : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'

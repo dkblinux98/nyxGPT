@@ -45,6 +45,13 @@ export default function ModelsPage() {
     } catch (e: unknown) {
       const msg = errorMessage(e);
       setError(msg);
+      // The detail belongs to the reachable-but-empty answer, so a failed
+      // load must not leave the previous one standing. Rendering is gated on
+      // `!error` today, so this is invisible now -- and it is the kind of
+      // invisible that becomes a wrong remedy printed next to an unrelated
+      // error the first time that gate moves. The admin page clears it here
+      // too; the two surfaces give the same advice or neither does.
+      setEmptyDetail(null);
     } finally {
       setLoading(false);
     }

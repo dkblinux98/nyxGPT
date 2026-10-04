@@ -243,23 +243,32 @@ for one you named with `--host`:
   the owner paid a Dedicated Host's non-refundable 24-hour minimum to find a
   Mac that could not answer a chat message. **Ollama is not observability.** If
   you are reading this to work out what a Mac deploy gives up, the answer is
-  the next bullet and nothing else.
-- Enables **no** observability stack, **no** `nyxgpt-cassandra` container, and
-  **no** self-heal watchdog. This is
-  a platform constraint, not a revisitable scoping choice: everything the
-  bootstrap skips is Docker-container-based (the observability Compose stack,
-  GlitchTip, the `nyxgpt-cassandra` container), every way of running Docker on
-  macOS works by running a Linux VM, and **EC2 Mac instances do not support
-  nested virtualization** — so no Docker daemon can exist on that target at
-  all. That constraint is the whole of the justification, which is why it can
-  never be stretched to cover a native component: Ollama installs from a
-  Homebrew formula and needs no container, so it was never in scope for this
-  caveat.
+  the next two bullets and nothing else — and only the first of them is a
+  platform constraint.
+- Runs **no container tier**: no observability stack (Grafana/Loki/Tempo),
+  no GlitchTip, and no `nyxgpt-cassandra` container. This one *is* a platform
+  constraint rather than a revisitable scoping choice, and the constraint is
+  exactly as wide as the containers: every way of running Docker on macOS
+  works by running a Linux VM, and **EC2 Mac instances do not support nested
+  virtualization** — so no Docker daemon can exist on that target at all.
+  That is the whole of the justification, which is why it can never be
+  stretched to cover a native component: Ollama installs from a Homebrew
+  formula and needs no container, so it was never in scope for this caveat.
   Do not propose adding the container tier to the Mac path; point
   `--session-backend cassandra` / `[rag] cassandra_hosts` at a Cassandra
   running elsewhere instead. `nyxgpt cloud status` reports the target OS
   so this difference is visible after the scrollback is gone, and so does the
   admin Infrastructure page.
+- Leaves the **self-heal watchdog off** — a default this bootstrap does not
+  change, *not* a platform limit. The watchdog is a thread inside the api
+  process ([self-healing.md](self-healing.md)), so it needs no container and
+  nothing about an EC2 Mac prevents it; it ships disabled everywhere, and the
+  only difference here is that step 5 of the Linux deploy above turns it on
+  explicitly while the Mac bootstrap does not. Turn it on from the admin
+  Self-Heal page, or with `nyxgpt self-heal enable` on the instance — see
+  [self-healing.md](self-healing.md#turning-it-on). Filing it with the
+  container tier would be the same mis-scoping #4150 was about: a toggleable
+  default dressed as an impossibility.
 - Opens TCP 22 to your address and nothing else. A Mac nyxGPT allocated gets
   its own security group with the same single owner-scoped SSH rule the Linux
   substrate uses, re-detected on every deploy. A Mac you supplied with

@@ -76,9 +76,11 @@ OS_FAMILIES: tuple[str, ...] = tuple(_TEMPLATE_FILENAMES)
 #          every mode pointed at the same Cassandra then shares one session
 #          list.
 #
-#   macos  The EC2 Mac template installs the two Homebrew formulas and starts
-#          them, and deliberately does NOT run `ops install`'s macOS path (see
-#          that template's header). Nothing provisions a Cassandra, so
+#   macos  The EC2 Mac template installs the Homebrew formulas (api, web and
+#          ollama) and starts them, and deliberately does NOT run `ops
+#          install`'s macOS path (see that template's header) -- it runs only
+#          `ops required-models`, the model pull on its own (#4150). Nothing
+#          provisions a Cassandra, so
 #          defaulting to `cassandra` there would point the API at a database
 #          that is not on the machine and break session storage outright.
 #          File-backed by default and documented as such
