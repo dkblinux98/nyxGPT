@@ -564,6 +564,273 @@ jobs:
           trap - EXIT
           "$PY" -c 'import pip._internal.operations.install.wheel as m; print("restored:", m.__file__)'
 
+      # Round 4 of the same lesson, and a different fault (#4122, D-006).
+      # With #3814 out of the way the owner's macOS 27 Mac reached PyPI and
+      # was refused there, on every attempt, at any time after boot:
+      #
+      #   SSLError(SSLCertVerificationError('OSStatus -26276'))
+      #
+      # Homebrew builds under `sandbox-exec` with `(deny mach-lookup)`, and
+      # Security.framework's trust evaluation needs a mach service that is
+      # not allowlisted -- so the evaluation cannot be PERFORMED, which is
+      # why the status is `errSecInternal` rather than a named certificate
+      # rejection, and why `curl` succeeds outside the sandbox while pip
+      # fails seconds later inside it.
+      #
+      # This runner is macos-15 and does not reproduce it: the sandbox
+      # profile is the same on both, so the difference is macOS 27's
+      # Security stack and NO amount of running the plain install here will
+      # ever surface it. EC2 Mac hardware is a documented D-006 exception
+      # (docs/live-verification-ci.md), so waiting for the condition is not
+      # an option and a job that waits is green by luck forever -- the same
+      # shape as #3753's rc5 and #3788's rc11. Inject it instead: make pip's
+      # truststore path fail the way the sandbox makes it fail, and assert
+      # BOTH halves of the fix, because the first one alone is not a fix.
+      # With the networked calls flagged and build isolation left on, the
+      # owner measured the failure MOVING from `.../simple/pip/` to
+      # `.../simple/setuptools/` -- `pip install <source tree>` spawns a
+      # separate pip to fetch the build backend, and that child inherits no
+      # `--use-deprecated`.
+      #
+      # The flags are read back out of the formula this checkout ships
+      # rather than copied here, like the mac_ver() shim above: a formula
+      # that loses one runs the "fixed" half without it and fails.
+      - name: "Reproduce the sandboxed trust failure, then prove both flags clear it"
+        run: |
+          set -euo pipefail
+
+          PY="$(brew --prefix python@3.12)/bin/python3.12"
+          WORK="$(mktemp -d)"
+          mkdir -p "$WORK/sabotage" "$WORK/tree"
+
+          # Force the network for every probe below. Measured while writing
+          # this step: pip's HTTP cache serves the index page and the wheel,
+          # so a warm cache makes the negative controls pass and proves
+          # nothing. It is the ENV var and not `--no-cache-dir` because the
+          # build-isolation child inherits the environment and not the
+          # parent's flags -- which is the whole point of control 2.
+          export PIP_NO_CACHE_DIR=1
+
+          # The observed fault, at the layer that observes it. truststore is
+          # pip's default TLS backend since 24.2 and the only part of pip
+          # that calls Security.framework; inside the sandbox its trust
+          # evaluation comes back errSecInternal. Patched onto the vendored
+          # module after it loads, so pip's own decision about whether to use
+          # truststore at all is what this step measures -- which is exactly
+          # what `--use-deprecated=legacy-certs` changes.
+          cat > "$WORK/sabotage/sitecustomize.py" <<'FAULT'
+          import importlib.abc
+          import importlib.util
+          import ssl
+          import sys
+
+          TARGET = "pip._vendor.truststore._api"
+          OSSTATUS = (
+              "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+              "OSStatus -26276"
+          )
+
+
+          def _refuse(*args, **kwargs):
+              raise ssl.SSLCertVerificationError(OSSTATUS)
+
+
+          class _Sandboxed(importlib.abc.MetaPathFinder):
+              """Let truststore import, then deny it the trust evaluation."""
+
+              def find_spec(self, fullname, path=None, target=None):
+                  if fullname != TARGET:
+                      return None
+                  sys.meta_path.remove(self)
+                  try:
+                      spec = importlib.util.find_spec(fullname)
+                  finally:
+                      sys.meta_path.insert(0, self)
+                  if spec is None or spec.loader is None:
+                      return None
+                  inner = spec.loader
+
+                  class _Loader(importlib.abc.Loader):
+                      def create_module(self, spec):
+                          return inner.create_module(spec)
+
+                      def exec_module(self, module):
+                          inner.exec_module(module)
+                          module._verify_peercerts_impl = _refuse
+                          print(
+                              "sandbox-fault: truststore trust evaluation denied "
+                              "(OSStatus -26276)",
+                              file=sys.stderr,
+                          )
+
+                  spec.loader = _Loader()
+                  return spec
+
+
+          sys.meta_path.insert(0, _Sandboxed())
+          FAULT
+          "$PY" -c "import ast,pathlib; ast.parse(pathlib.Path('$WORK/sabotage/sitecustomize.py').read_text())"
+
+          # A source tree with nyxGPT's own build-system table and none of its
+          # dependencies: the property under test is pip's build isolation,
+          # not nyxGPT's package, and the real tree is installed for real by
+          # the `brew install` steps below.
+          "$PY" - "$WORK/tree/pyproject.toml" <<'TREE'
+          import pathlib
+          import sys
+          import tomllib
+
+          pyproject = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          build_system = pyproject["build-system"]
+          requires = ", ".join(repr(item) for item in build_system["requires"])
+          pathlib.Path(sys.argv[1]).write_text(
+              "[build-system]\n"
+              f"requires = [{requires}]\n"
+              f"build-backend = {build_system['build-backend']!r}\n"
+              "\n"
+              "[project]\n"
+              'name = "nyxgpt-sandbox-probe"\n'
+              'version = "0.0.0"\n',
+              encoding="utf-8",
+          )
+          print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          TREE
+
+          # The flags the shipped recipe actually puts on each call.
+          PYTHONPATH=scripts "$PY" - "$WORK" <<'FLAGS'
+          import pathlib
+          import sys
+
+          from build_homebrew_artifacts import (
+              LEGACY_CERTS_FLAG,
+              NO_BUILD_ISOLATION_FLAG,
+              pip_invocations,
+          )
+
+          work = pathlib.Path(sys.argv[1])
+          calls = pip_invocations(pathlib.Path("homebrew/nyxgpt-api.rb").read_text(encoding="utf-8"))
+          sandbox_flags = {LEGACY_CERTS_FLAG, NO_BUILD_ISOLATION_FLAG}
+
+
+          def flags_of(predicate, what):
+              match = [call for call in calls if predicate(call)]
+              if len(match) != 1:
+                  raise SystemExit(f"expected exactly one {what} pip call, found {len(match)}")
+              return " ".join(flag for flag in match[0].literals if flag in sandbox_flags)
+
+
+          for name, predicate in (
+              ("download", lambda call: "download" in call.literals),
+              ("tree", lambda call: call.installs_a_source_tree),
+              (
+                  "seed",
+                  lambda call: "install" in call.literals
+                  and {"setuptools", "wheel"} <= set(call.literals),
+              ),
+          ):
+              value = flags_of(predicate, name)
+              (work / f"{name}-flags").write_text(value, encoding="utf-8")
+              print(f"{name} call carries: {value or '(no sandbox flags)'}")
+          FLAGS
+
+          DOWNLOAD_FLAGS="$(cat "$WORK/download-flags")"
+          TREE_FLAGS="$(cat "$WORK/tree-flags")"
+          SEED_FLAGS="$(cat "$WORK/seed-flags")"
+
+          echo "=== negative control 1: the recipe's pip download, trust evaluation denied ==="
+          # Printed because it is the one thing that could make this control
+          # fail honestly: truststore is pip's default TLS backend only since
+          # 24.2, and `--use-deprecated=legacy-certs` only exists from there
+          # too. A keg pip older than that neither exhibits the fault nor
+          # accepts the fix, and the drift message below is what to read.
+          "$PY" -m pip --version
+          mkdir -p "$WORK/wheelhouse-broken"
+          set +e
+          PYTHONPATH="$WORK/sabotage" "$PY" -m pip download --no-deps --only-binary :all: \
+            --disable-pip-version-check --dest "$WORK/wheelhouse-broken" pip \
+            > "$WORK/broken.log" 2>&1
+          broken_rc=$?
+          set -e
+          tail -20 "$WORK/broken.log" || true
+          if [ "$broken_rc" -eq 0 ]; then
+            echo "pip downloaded with its trust evaluation denied, so the checks"
+            echo "below would pass whether or not the flags work."
+            echo "::error::this runner no longer reproduces #4122"
+            exit 1
+          fi
+          grep -qF "OSStatus -26276" "$WORK/broken.log" || {
+            echo "pip failed, but not with the owner's errSecInternal, so this is"
+            echo "no longer testing the failure that was reported. Check the pip"
+            echo "version above: below 24.2 it does not use truststore at all,"
+            echo "and the recipe's own legacy-certs flag would be rejected."
+            echo "::error::the #4122 reproduction has drifted"
+            exit 1
+          }
+          echo "reproduced: pip exits $broken_rc with the owner's OSStatus -26276"
+
+          echo "=== the same download with the recipe's flags ==="
+          mkdir -p "$WORK/wheelhouse"
+          # shellcheck disable=SC2086  # the flag list is read out of the formula
+          PYTHONPATH="$WORK/sabotage" "$PY" -m pip download --no-deps --only-binary :all: \
+            --disable-pip-version-check $DOWNLOAD_FLAGS --dest "$WORK/wheelhouse" pip
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          echo "downloaded: $WHEEL"
+
+          # The venv is populated exactly as the recipe does it -- offline,
+          # out of the wheel by zipimport -- so the sabotage cannot touch it
+          # and the two halves below differ only in the flags under test.
+          bootstrap_venv() {
+            "$PY" -m venv --without-pip "$1"
+            "$1/bin/python" "$WHEEL/pip" install --no-index \
+              --disable-pip-version-check "$WHEEL" > /dev/null
+          }
+
+          echo "=== negative control 2: legacy-certs alone, build isolation left on ==="
+          # The half the owner measured: the parent is flagged, the child pip
+          # build isolation spawns is not, so the failure moves rather than
+          # clearing. This is why `--no-build-isolation` is in the recipe.
+          # `legacy-certs` is spelled out here rather than read from the
+          # formula on purpose -- this control is the pre-fix command, and it
+          # has to stay the pre-fix command however the recipe changes.
+          bootstrap_venv "$WORK/venv-isolated"
+          set +e
+          PYTHONPATH="$WORK/sabotage" "$WORK/venv-isolated/bin/pip" install \
+            --disable-pip-version-check --use-deprecated=legacy-certs "$WORK/tree" \
+            > "$WORK/isolated.log" 2>&1
+          isolated_rc=$?
+          set -e
+          tail -25 "$WORK/isolated.log" || true
+          if [ "$isolated_rc" -eq 0 ]; then
+            echo "an isolated build fetched its backend with the parent's trust"
+            echo "evaluation denied, so --no-build-isolation is not provably"
+            echo "load-bearing here and this control proves nothing."
+            echo "::error::the #4122 build-isolation reproduction has drifted"
+            exit 1
+          fi
+          grep -qF "OSStatus -26276" "$WORK/isolated.log" || {
+            echo "::error::the isolated build failed for some other reason"
+            exit 1
+          }
+          grep -qiE "setuptools" "$WORK/isolated.log" || {
+            echo "the failure did not name the build backend, so it is not the"
+            echo "child-process failure this control is about."
+            echo "::error::the #4122 build-isolation reproduction has drifted"
+            exit 1
+          }
+          echo "reproduced: the build-isolation child exits $isolated_rc on the backend fetch"
+
+          echo "=== the recipe's own sequence: seed the backend, then install with both flags ==="
+          bootstrap_venv "$WORK/venv-fixed"
+          # shellcheck disable=SC2086  # as above
+          PYTHONPATH="$WORK/sabotage" "$WORK/venv-fixed/bin/pip" install \
+            --disable-pip-version-check $SEED_FLAGS setuptools wheel
+          # shellcheck disable=SC2086  # as above
+          PYTHONPATH="$WORK/sabotage" "$WORK/venv-fixed/bin/pip" install \
+            --disable-pip-version-check $TREE_FLAGS "$WORK/tree" \
+            2>&1 | tee "$WORK/fixed.log" | tail -10
+          "$WORK/venv-fixed/bin/pip" show nyxgpt-sandbox-probe > /dev/null
+          echo "the recipe's sequence installs a source tree with Apple's trust store unreachable"
+
       - name: Stamp the rc formulas from this checkout
         env:
           # The rc channel is what the owner installs, so smoke-test that

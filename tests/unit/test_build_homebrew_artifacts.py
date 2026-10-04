@@ -1100,8 +1100,16 @@ def test_pip_is_bootstrapped_into_the_keg_venv_from_a_wheel(which):
     # rather than silently leave the venv without a pip.
     assert 'pip_wheel = Dir.glob(wheelhouse/"pip-*.whl").first' in recipe
     assert any(line.startswith("odie ") and "pip_wheel.nil?" in line for line in recipe), recipe
-    # Everything downstream still installs through the venv's own pip.
-    assert 'system venv/"bin/pip", "install", buildpath' in recipe
+    # Everything downstream still installs through the venv's own pip. Asked
+    # of the parsed call rather than pinned as a string: the flags on this
+    # statement changed for #4122 and will change again when
+    # `legacy-certs` can be dropped, and neither is this test's subject.
+    assert any(
+        call.installs_a_source_tree and 'venv/"bin/pip"' in call.statement
+        for call in build_homebrew_artifacts.pip_invocations(
+            _API_FORMULAS[which].read_text(encoding="utf-8")
+        )
+    ), recipe
 
 
 @pytest.mark.parametrize("which", sorted(_API_FORMULAS))
@@ -1668,8 +1676,22 @@ def test_the_keg_puts_the_cli_on_path(which):
 
     assert _CLI_SYMLINK in recipe
     # Linked from the venv pip populated, so it cannot drift from what was
-    # installed -- and only after that install has run.
-    assert recipe.index('system venv/"bin/pip", "install", buildpath') < recipe.index(_CLI_SYMLINK)
+    # installed -- and only after that install has run. Ordering is compared
+    # on the file's own line numbers via the parsed call, because #4122 gave
+    # that statement flags and a line continuation; a stripped-line index
+    # would be asserting the formatting.
+    text = _API_FORMULAS[which].read_text(encoding="utf-8")
+    source_tree_install = next(
+        call
+        for call in build_homebrew_artifacts.pip_invocations(text)
+        if call.installs_a_source_tree
+    )
+    symlink_line = next(
+        number
+        for number, line in enumerate(text.splitlines(), start=1)
+        if line.strip() == _CLI_SYMLINK
+    )
+    assert source_tree_install.line < symlink_line
 
 
 @pytest.mark.parametrize("which", sorted(_API_FORMULAS))

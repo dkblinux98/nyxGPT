@@ -304,6 +304,29 @@ and screenshots make verifiable in the review loop:
   string.** Where the claim is "the right thing is installed", assert the
   installed *artifact*, not the instruction that was meant to install it.
 
+  **A second correction, from #4122's second acceptance round.** The exception
+  above covers the *hardware*. It does not cover a condition that happens to
+  surface on that hardware and can be reproduced anywhere -- and the one that
+  broke every macOS install was exactly that. Homebrew builds under
+  `sandbox-exec` with `(deny mach-lookup)`; Security.framework's trust
+  evaluation needs a service that is not allowlisted, so it cannot be
+  performed and pip is refused with `SSLCertVerificationError('OSStatus
+  -26276')` -- `errSecInternal`, not a named certificate rejection.
+  Deterministic on every Mac at any time after boot. `macos-15` does not
+  reproduce it (the sandbox profile is the same on both; the difference is
+  macOS 27's Security stack), so **no amount of running the plain install on
+  the hosted runner will ever catch it** -- which is the #3753/#3788
+  green-by-luck shape, not a reason to ship it unverified. `macos-brew-smoke.yml`
+  therefore *injects* the denied trust evaluation and asserts both halves: the
+  pre-fix call fails with the owner's verbatim transcript (`Could not fetch URL
+  https://pypi.org/simple/pip/`), and the recipe's own sequence succeeds. It
+  also asserts the second half separately, because the first one alone is not a
+  fix: `pip install <source tree>` spawns a build-backend fetch in a child pip
+  that inherits none of the parent's flags, so flagging only the visible calls
+  moved the failure to `.../simple/setuptools/`. What remains owner acceptance
+  is the macOS 27 end-to-end run on real `mac2.metal` hardware; what does not
+  is whether the recipe survives a sandbox that denies the trust evaluation.
+
   **The screen path, #4121, read the same narrow way.** `nyxgpt cloud screen`
   enables macOS Screen Sharing on an EC2 Mac and forwards 5900 over SSH, and no
   job can run `kickstart` or `pfctl` — those need macOS, and the `macos-15`
