@@ -5372,14 +5372,33 @@ def _native_api_build_drift() -> BuildDrift:
     would blind the check in the one case it exists for. The gate is "is a
     native api INSTALLED here", answered by `_expected_native_api_venv`
     finding a venv on disk.
+
+    The probe runs FIRST, and that ordering is a cost decision as much as a
+    logical one (first principle 1). If nothing is answering there is no
+    running build to compare, so the answer is already settled -- and settling
+    it with one 5s loopback read is far cheaper than the work the gates below
+    need: `detect_deployment_mode` runs `docker compose ps`, and the macOS
+    expectation costs two `brew` calls. `status`, `install` and `doctor` all
+    call this, so on a machine with the api down it now costs one refused
+    connection apiece.
     """
+    build, why_not = _probe_running_api_runtime()
+    if build is None:
+        return BuildDrift(
+            state=BUILD_UNDETERMINED,
+            running=None,
+            expected_prefix="",
+            expected_source="",
+            detail=why_not,
+            remediation=_RUNNING_BUILD_REMEDIATION,
+        )
     expected, source = _expected_native_api_venv()
     if not expected:
         # No native api venv on this machine, so whatever answers :8000 is not
         # one and there is nothing to compare it to.
         return BuildDrift(
             state=BUILD_NOT_APPLICABLE,
-            running=None,
+            running=build,
             expected_prefix="",
             expected_source="",
             detail=source or "there is no native api service on this machine",
@@ -5392,7 +5411,7 @@ def _native_api_build_drift() -> BuildDrift:
     if container_api or _k8s_access_bridge_owns_host_ports():
         return BuildDrift(
             state=BUILD_NOT_APPLICABLE,
-            running=None,
+            running=build,
             expected_prefix=expected,
             expected_source=source,
             detail=(
@@ -5401,7 +5420,6 @@ def _native_api_build_drift() -> BuildDrift:
             ),
             remediation="",
         )
-    build, why_not = _probe_running_api_runtime()
     return classify_build_drift(
         build,
         expected,

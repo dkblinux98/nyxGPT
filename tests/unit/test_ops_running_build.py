@@ -297,8 +297,27 @@ class TestNativeApiBuildDrift:
             terraform_conflicts=set(),
         )
 
+    def test_nothing_answering_settles_it_before_any_other_work(self):
+        """The probe runs first, and that is a cost decision as much as a
+        logical one: `detect_deployment_mode` runs `docker compose ps` and the
+        macOS expectation costs two `brew` calls, and neither can change the
+        answer once nothing is serving."""
+        with (
+            patch.object(ops, "_probe_running_api_runtime", return_value=(None, "did not answer")),
+            patch.object(ops, "_expected_native_api_venv") as expected,
+            patch.object(ops, "detect_deployment_mode") as mode,
+        ):
+            drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_UNDETERMINED
+        assert "did not answer" in drift.detail
+        expected.assert_not_called()
+        mode.assert_not_called()
+
     def test_no_native_api_venv_is_not_applicable(self):
         with (
+            patch.object(
+                ops, "_probe_running_api_runtime", return_value=(_build("/some/venv"), "")
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("", "no venv here")),
             patch.object(ops, "detect_deployment_mode") as mode,
         ):
@@ -314,29 +333,34 @@ class TestNativeApiBuildDrift:
         host keg path would report drift on a correct deployment."""
         mode = self._mode(native_api="none", compose={"api": "running", "web": "running"})
         with (
+            patch.object(
+                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=mode),
             patch.object(ops, "compose_core_components", return_value=["api"]),
-            patch.object(ops, "_probe_running_api_runtime") as probe,
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_NOT_APPLICABLE
         assert "container/cluster" in drift.detail
-        probe.assert_not_called()
+        # The container's own prefix is still reported -- the page says what is
+        # running, it just does not call it drift.
+        assert drift.running_prefix == "/usr/local"
 
     def test_a_kubernetes_host_access_bridge_is_not_applicable(self):
         """The k3s bridge binds :8000 on the host, so the api answering there
         is a Pod's -- not the native keg this host may also carry."""
         with (
+            patch.object(
+                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=self._mode()),
             patch.object(ops, "compose_core_components", return_value=[]),
             patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=True),
-            patch.object(ops, "_probe_running_api_runtime") as probe,
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_NOT_APPLICABLE
-        probe.assert_not_called()
 
     def test_a_native_api_is_compared(self):
         with (

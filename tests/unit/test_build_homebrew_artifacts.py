@@ -912,8 +912,10 @@ def test_the_known_callers_are_still_the_only_callers():
     formulas into a throwaway tap so a broken recipe fails on the PR that
     wrote it. The fourth is that workflow's `stable-over-candidate` job
     (#3860), which stamps *both* channels so `conflicts_with` is exercised
-    against a stable formula that is really present. Both are held to the same
-    bar as the two publishing jobs by
+    against a stable formula that is really present. The fifth is that same
+    workflow's `candidate-upgrade` job (#4133), which stamps two *versions* of
+    one candidate formula so `brew upgrade` is a real upgrade. All of them are
+    held to the same bar as the two publishing jobs by
     `test_jobs_running_the_build_script_provide_what_it_imports` below, which
     iterates whatever this function finds.
     """
@@ -924,6 +926,7 @@ def test_the_known_callers_are_still_the_only_callers():
         ("release-publish-pypi.yml", "homebrew-tap-rc"),
         ("macos-brew-smoke.yml", "keg-install"),
         ("macos-brew-smoke.yml", "stable-over-candidate"),
+        ("macos-brew-smoke.yml", "candidate-upgrade"),
     }
 
 
