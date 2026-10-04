@@ -444,94 +444,61 @@ class NyxgptApi < Formula
     # documented bootstrap -- the same zipimport trick ensurepip uses, with
     # none of ensurepip and none of the keg's pip. Everything after this line
     # runs through the venv's own freshly-unpacked, complete pip.
-    # #4121: NO networked pip call in this recipe verifies TLS through macOS's
-    # trust store. Two acceptance rounds on fresh `mac*.metal` hardware died
-    # right here with
+    # Round 4, and a different fault entirely (#4122). With #3814 out of the
+    # way the bootstrap above reached PyPI and was refused there:
     #
-    #   WARNING: Retrying ... after connection broken by
-    #     'SSLError(SSLCertVerificationError('OSStatus -26276'))': /simple/pip/
+    #   SSLError(SSLCertVerificationError('OSStatus -26276'))
     #   ERROR: No matching distribution found for pip
     #
-    # -26276 is not in the public SDK and pip printed the bare OSStatus because
-    # there was no description to copy: it is an *internal* error -- a trust
-    # evaluation that could not be PERFORMED -- not a certificate that was
-    # rejected. A real chain failure on the same host names itself (-67843
-    # "certificate is not trusted", -67818 "certificate is expired").
+    # Homebrew runs `install` under `sandbox-exec` with `(deny mach-lookup)`
+    # plus an allowlist, and Security.framework's trust evaluation needs a
+    # mach service that is not on that list. So the evaluation cannot be
+    # *performed* -- which is why the status is `errSecInternal` (-26276)
+    # rather than a named certificate rejection such as -67843/-67818, and
+    # why `curl` fetching this formula's own tarball succeeds (outside the
+    # sandbox) while pip fails seconds later (inside it).
     #
-    # The cause, demonstrated on the owner's live Mac (2026-10-03) after a
-    # first-boot timing hypothesis was raised and then disproved by
-    # reproducing it seven hours into uptime: **Homebrew's build sandbox.**
-    # `brew` builds under `sandbox-exec` with `(deny mach-lookup)` plus an
-    # allowlist, and Security.framework's trust evaluation needs a mach service
-    # that is not on it. Measured, same minute, same machine:
+    # It is not time-dependent, which is the part the first investigation got
+    # wrong: measured on the owner's host in the same minute, seven hours
+    # after boot, a login shell downloaded pip fine and the sandboxed build
+    # failed. The variable is the sandbox, not the clock -- so this is
+    # deterministic on every Mac at any time after boot, and "retry it" is
+    # not a workaround. A retry was tried and failed identically.
     #
-    #   plain shell, truststore path                 -> downloaded pip    PASS
-    #   inside Homebrew's build sandbox              -> OSStatus -26276   FAIL
-    #   plain shell, --use-deprecated=legacy-certs   -> downloaded pip    PASS
+    # pip's default TLS backend since 24.2 is truststore, which verifies
+    # through Security.framework. `--use-deprecated=legacy-certs` routes it
+    # through OpenSSL and certifi instead, so no mach lookup happens and the
+    # sandbox is irrelevant. The flag is deprecated and this formula should
+    # drop it as soon as it can; the upstream condition that would allow that
+    # is pip's truststore path working inside Homebrew's build sandbox --
+    # i.e. Security.framework trust evaluation no longer needing a service
+    # the sandbox denies, or Homebrew's profile allowing it. Until one of
+    # those happens there is no non-deprecated spelling: pip offers no other
+    # way to decline truststore.
     #
-    # That is also why `/usr/bin/curl` fetched ~20 bottle manifests happily one
-    # minute earlier (download phase, outside the sandbox) while pip failed
-    # (build phase, inside it). The defect is therefore DETERMINISTIC on macOS
-    # 27 -- "retry it" is not a workaround, and a green `macos-15` run is not
-    # evidence, because the difference is the OS's Security stack and not the
-    # sandbox profile.
-    #
-    # `legacy-certs` takes pip off that path: it verifies with OpenSSL +
-    # certifi, which was working on that host at the moment truststore was not.
-    # THREE call sites need it, and the third is why patching the two obvious
-    # ones is not a fix:
-    #
-    #   1. the pip-wheel download below;
-    #   2. the dependency install at the end of this bootstrap;
-    #   3. the pip that `pip install <source tree>` spawns for **build
-    #      isolation**, which does not inherit the parent's command line. With
-    #      1 and 2 patched and 3 left alone, the owner's host moved the failure
-    #      from `/simple/pip/` to `/simple/setuptools/` -- it did not fix it.
-    #
-    # 3 is closed by seeding the build backend into the venv and passing
-    # `--no-build-isolation`, so there is no child pip to pass a flag to; the
-    # env var is belt and braces for any pip subprocess this recipe does not
-    # spell out itself. (It is also why a vendored wheelhouse would not have
-    # produced an offline install either -- build isolation still fetches
-    # backends. That option was considered and rejected by the owner; see the
-    # #4121 account for the 142-package/337MB reasoning.)
-    #
-    # Two dated risks, stated rather than hidden:
-    #
-    #   * `--use-deprecated=legacy-certs` is deprecated and pip will remove it.
-    #     It is also absent before pip 24.2 -- where truststore is not the
-    #     default backend either, so the flag is unnecessary as well as
-    #     unrecognized there. Asked for once, applied only if this pip takes it.
-    #   * `--no-build-isolation` makes an sdist build use the venv's own
-    #     setuptools. Every runtime dependency resolves to a cp312/arm64 wheel
-    #     today (the owner's run completed in 14 seconds), but a future
-    #     dependency shipping only an sdist with a non-setuptools backend would
-    #     need that backend seeded next to `setuptools`/`wheel` below.
-    legacy_certs = []
-    if quiet_system python, "-m", "pip", "download", "--use-deprecated=legacy-certs", "--help"
-      legacy_certs = ["--use-deprecated=legacy-certs"]
-      ENV["PIP_USE_DEPRECATED"] = "legacy-certs"
-    else
-      opoo "#{name}: this pip does not accept --use-deprecated=legacy-certs, so its TLS " \
-           "verification is whatever its default backend does. On pip 24.2+ that is " \
-           "truststore, which cannot evaluate trust inside Homebrew's build sandbox (#4121)."
-    end
-
+    # `--no-build-isolation` is part of the same fix and not a tuning choice.
+    # `pip install <source tree>` spawns a SEPARATE pip process to fetch the
+    # build backend, and that child does not inherit `--use-deprecated` from
+    # its parent -- so with only the networked calls flagged, the failure
+    # MOVED rather than cleared (`Could not fetch URL .../simple/pip/` became
+    # `.../simple/setuptools/`). No flag on the parent reaches that child, so
+    # the backend is seeded into the venv first and the child is never
+    # spawned. It is also why a vendored wheelhouse would not have produced
+    # an offline install: build isolation still fetches backends.
     wheelhouse = buildpath/"pip-bootstrap"
     system python, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",
-           "--disable-pip-version-check", *legacy_certs, "--dest", wheelhouse, "pip"
+           "--disable-pip-version-check", "--use-deprecated=legacy-certs",
+           "--dest", wheelhouse, "pip"
     pip_wheel = Dir.glob(wheelhouse/"pip-*.whl").first
     odie "keg venv bootstrap: `pip download` produced no pip wheel in #{wheelhouse}" if pip_wheel.nil?
     system venv/"bin/python", "#{pip_wheel}/pip", "install", "--no-index",
            "--disable-pip-version-check", pip_wheel
-
-    # The build backend goes into the venv BEFORE the source tree is installed,
-    # which is what makes `--no-build-isolation` below correct rather than
-    # merely quieter: pyproject.toml declares `setuptools.build_meta`, so these
-    # two are exactly what isolation would otherwise have fetched in a child
-    # process this recipe cannot pass a flag to (#4121, call site 3).
-    system venv/"bin/pip", "install", *legacy_certs, "setuptools", "wheel"
-    system venv/"bin/pip", "install", *legacy_certs, "--no-build-isolation", buildpath
+    # Seed the build backend into the venv, so the install below has one
+    # without build isolation fetching it from a child pip we cannot flag.
+    # Both are wheels, so nothing is built to get here.
+    system venv/"bin/pip", "install", "--use-deprecated=legacy-certs", "setuptools", "wheel"
+    system venv/"bin/pip", "install", "--use-deprecated=legacy-certs",
+           "--no-build-isolation", buildpath
 
     # config_wizard builds its schema from example.config.ini at import time
     # (#3388), so `import nyxgpt.app` -- the wrapper, the `test` block, and the

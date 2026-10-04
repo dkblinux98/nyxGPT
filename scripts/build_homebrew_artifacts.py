@@ -87,6 +87,7 @@ import re
 import shutil
 import sys
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -155,6 +156,33 @@ _PREFLIGHT_SOURCE_END = "# nyxgpt-preflight-source: end"
 # the Python that prints it and the Ruby that looks for it fails in the unit
 # suite rather than by refusing every install on a healthy Mac.
 PREFLIGHT_OK = "nyxgpt-preflight: ok"
+
+# The two flags every pip call in a formula's `install` block is measured
+# against (#4122). Homebrew builds under `sandbox-exec` with
+# `(deny mach-lookup)`, so Security.framework's trust evaluation cannot be
+# performed -- pip's default truststore backend is refused with
+# `errSecInternal` (OSStatus -26276) on every Mac, at any time after boot.
+# `legacy-certs` routes pip through OpenSSL and certifi instead; the flag is
+# deprecated, and the upstream condition that retires it is pip's truststore
+# path working inside that sandbox.
+#
+# `--no-build-isolation` is not a performance choice: `pip install
+# <source tree>` spawns a separate pip to fetch the build backend, and that
+# child inherits no `--use-deprecated` from its parent, so flagging only the
+# visible calls moves the failure instead of clearing it.
+LEGACY_CERTS_FLAG = "--use-deprecated=legacy-certs"
+NO_BUILD_ISOLATION_FLAG = "--no-build-isolation"
+
+# `--no-index` is the one thing that makes a pip call provably offline, so it
+# is also the one thing that excuses it from `LEGACY_CERTS_FLAG`: a pip that
+# never opens a socket never reaches truststore.
+_OFFLINE_FLAG = "--no-index"
+
+# A Ruby `system` statement, joined across its trailing-comma continuations.
+# Deliberately not a parser for Ruby: the formulas write these as a flat list
+# of string literals and local variables, which is all this has to read.
+_SYSTEM_START_RE = re.compile(r"^\s*system\s")
+_RUBY_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 _CLASS_RE = re.compile(r"^class\s+(\w+)\s+<\s+Formula\b", re.MULTILINE)
 
@@ -413,6 +441,128 @@ def builds_with_brewed_python(formula_text: str) -> bool:
     return 'Formula["python@3.12"]' in formula_text
 
 
+@dataclass(frozen=True)
+class PipInvocation:
+    """One `system ... pip ...` statement out of a formula's install block.
+
+    `statement` is the whole Ruby statement with its trailing-comma
+    continuations joined, `line` the 1-based line its first line sits on, and
+    `literals` every double-quoted string in it, in order -- which for these
+    formulas is the argv pip actually receives, minus the Ruby locals holding
+    paths.
+    """
+
+    statement: str
+    line: int
+    literals: tuple[str, ...]
+
+    @property
+    def offline(self) -> bool:
+        """True if this call provably opens no socket, so cannot reach TLS."""
+        return _OFFLINE_FLAG in self.literals
+
+    @property
+    def installs_a_source_tree(self) -> bool:
+        """True if pip is handed `buildpath` to install -- a tree, not a wheel.
+
+        That is the one shape that triggers pip's build isolation, and the
+        reason `NO_BUILD_ISOLATION_FLAG` exists in this module: the isolated
+        build runs in a pip subprocess no flag on this statement reaches.
+        """
+        return "install" in self.literals and "buildpath" in self.statement
+
+
+def pip_invocations(formula_text: str) -> list[PipInvocation]:
+    """Every pip call a formula's `install` block makes, in order.
+
+    Read out of the formula rather than restated anywhere, for the same
+    reason as `extract_build_shim`: these lines are Ruby that no Python
+    tooling in this repo would otherwise look at, and a pip call added
+    without the sandbox flags fails on a Mac rather than in CI (#4122).
+    Statements are matched structurally, so a call spelled a new way is
+    still measured -- a guard that pins today's exact strings passes
+    happily on tomorrow's fourth pip call.
+    """
+    try:
+        start_of_install = formula_text.index("  def install")
+    except ValueError:
+        return []
+    body = formula_text[start_of_install:]
+    # The service wrapper below it is a bash heredoc that can mention pip
+    # without running it; `install` proper ends where that write begins.
+    end_of_recipe = body.find('(bin/"nyxgpt-api").write')
+    if end_of_recipe != -1:
+        body = body[:end_of_recipe]
+
+    found: list[PipInvocation] = []
+    lines = body.splitlines()
+    index = 0
+    body_offset = formula_text[:start_of_install].count("\n")
+    while index < len(lines):
+        if not _SYSTEM_START_RE.match(lines[index]):
+            index += 1
+            continue
+        start = index
+        parts = [lines[index].strip()]
+        # A continued Ruby argument list ends its line with the separating
+        # comma; anything else ends the statement.
+        while parts[-1].endswith(",") and index + 1 < len(lines):
+            index += 1
+            parts.append(lines[index].strip())
+        index += 1
+        statement = " ".join(parts)
+        literals = tuple(_RUBY_STRING_RE.findall(statement))
+        # `-m pip`, `venv/"bin/pip"`, or pip run out of its own wheel by
+        # zipimport (`"#{pip_wheel}/pip"`) -- all three appear in the recipe.
+        if not any(part == "pip" or part.endswith("/pip") for part in literals):
+            continue
+        found.append(
+            PipInvocation(statement=statement, line=body_offset + start + 1, literals=literals)
+        )
+    return found
+
+
+def validate_pip_sandbox_flags(formula_text: str, formula: str) -> None:
+    """Refuse to publish a formula whose pip could reach Apple's trust store.
+
+    #4122: Homebrew builds under `sandbox-exec` with `(deny mach-lookup)`,
+    and Security.framework's trust evaluation needs a mach service that is
+    not allowlisted -- so the evaluation cannot be performed and pip's
+    default truststore backend is refused with `errSecInternal`
+    (`SSLCertVerificationError('OSStatus -26276')`). Deterministic on every
+    Mac at any time after boot: the variable is the sandbox, not elapsed
+    time. Two rules, because the first one alone only moved the failure from
+    `.../simple/pip/` to `.../simple/setuptools/`:
+
+      * a pip call that is not provably offline carries `legacy-certs`;
+      * a pip call handed a source tree carries `--no-build-isolation`,
+        because the isolated build is a *separate* pip process that inherits
+        no `--use-deprecated` and no flag on the parent can reach it.
+
+    A no-op for formulas that run no pip at all (`nyxgpt-web` builds with
+    npm).
+    """
+    problems = []
+    for call in pip_invocations(formula_text):
+        if not call.offline and LEGACY_CERTS_FLAG not in call.literals:
+            problems.append(
+                f"line {call.line}: reaches the network without {LEGACY_CERTS_FLAG}, so it "
+                f"verifies through Security.framework and Homebrew's build sandbox refuses "
+                f"it with OSStatus -26276"
+            )
+        if call.installs_a_source_tree and NO_BUILD_ISOLATION_FLAG not in call.literals:
+            problems.append(
+                f"line {call.line}: installs a source tree without {NO_BUILD_ISOLATION_FLAG}, "
+                f"so pip spawns a build-backend fetch this statement's flags cannot reach"
+            )
+    if problems:
+        joined = "\n  ".join(problems)
+        raise ValueError(
+            f"{formula}: pip calls in this formula's install block would fail inside "
+            f"Homebrew's build sandbox (#4122):\n  {joined}"
+        )
+
+
 def validate_interpreter_preflight(formula_text: str, formula: str) -> None:
     """Refuse to publish a formula that builds on an interpreter it never checks.
 
@@ -631,6 +781,7 @@ def build(
             stamped = render_stable_formula(stamped, name, version)
         validate_build_shim(stamped, name)
         validate_interpreter_preflight(stamped, name)
+        validate_pip_sandbox_flags(stamped, name)
         formula_path = out_dir / f"{formula_name(name, channel, version)}.rb"
         formula_path.write_text(stamped, encoding="utf-8")
         written.append(formula_path)

@@ -60,6 +60,7 @@ from nyxgpt import cloud_state as cloud_state_module
 from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
+from nyxgpt import model_bootstrap as model_bootstrap_module
 from nyxgpt import ops as ops_module
 from nyxgpt import portability as portability_module
 from nyxgpt import release_candidate as release_candidate_module
@@ -2986,23 +2987,64 @@ def support_file_ticket(request: Request, body: api_models.SupportTicketRequest)
 def models_list(request: Request) -> dict[str, Any]:
     """List model names currently available in Ollama.
 
-    Returns `{"models": [name, ...]}`. Raises a `502` if the Ollama
+    Returns `{"models": [name, ...]}`, plus a `detail` naming the fix when that
+    list is empty. Raises a `502`, also with the fix named, if the Ollama
     `/api/tags` call fails (e.g. Ollama unreachable).
+
+    **An unreachable Ollama and a reachable-but-empty one are different faults
+    and must not read the same (#4150).** Both left the operator at "Failed to
+    load models", which is why an EC2 Mac with no Ollama at all and an EC2 Mac
+    with an Ollama that had never pulled a model were indistinguishable from
+    this endpoint -- and why a fix that installed Ollama without pulling the
+    configured models would have looked exactly like the defect it was meant to
+    close. The two answers now differ in status *and* in remedy:
+
+      * unreachable -> 502, naming the base URL and `nyxgpt ops restart ollama`
+      * reachable, no models -> 200 with an empty list and a `detail` naming the
+        required models and `nyxgpt ops required-models`
+
+    The empty case stays a 200 deliberately: the request succeeded and the
+    honest answer is that Ollama holds nothing. Turning it into an error would
+    make "no models yet" indistinguishable from "no Ollama" in the other
+    direction.
     """
     cfg = _req_cfg(request)
+    base_url = nyxgpt.config.get_ollama_base_url(cfg)
     try:
         data = get_json(_ollama_url(cfg, "/api/tags"), timeout_s=10.0)
-        models = data.get("models", []) if isinstance(data, dict) else []
-        # Normalize to a list of model names
-        names: list[str] = []
-        for m in models:
-            if isinstance(m, dict) and isinstance(m.get("name"), str):
-                names.append(m["name"])
-        return {"models": names}
     except Exception as e:
         raise HTTPException(
-            status_code=502, detail=f"Failed to list models from Ollama: {e}"
+            status_code=502,
+            detail=(
+                f"Failed to list models from Ollama: {e}. Nothing is answering at "
+                f"{base_url}, so no model-backed feature can work -- start it with "
+                "`nyxgpt ops restart ollama` (`nyxgpt ops doctor` reports which "
+                "services are down)."
+            ),
         ) from e
+
+    models = data.get("models", []) if isinstance(data, dict) else []
+    # Normalize to a list of model names
+    names: list[str] = []
+    for m in models:
+        if isinstance(m, dict) and isinstance(m.get("name"), str):
+            names.append(m["name"])
+    if names:
+        return {"models": names}
+
+    wanted = model_bootstrap_module.required_models(cfg)
+    detail = (
+        f"Ollama is running at {base_url} but holds no models at all, so chat cannot "
+        "be served yet. "
+    )
+    if wanted:
+        detail += model_bootstrap_module.missing_models_hint(wanted)
+    else:
+        detail += (
+            "No model is configured either -- set `[nyxgpt] default_model` in "
+            "~/.nyxGPT/config.ini, then run `nyxgpt ops required-models`."
+        )
+    return {"models": [], "detail": detail}
 
 
 @api.get("/models/required")

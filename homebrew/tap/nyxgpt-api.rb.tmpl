@@ -383,50 +383,41 @@ class NyxgptApi < Formula
     # the venv is populated by running pip out of that wheel under the venv's
     # own interpreter (`python pip-X.whl/pip install pip-X.whl`, pip's
     # documented zipimport bootstrap).
-    # #4121: no networked pip call here verifies TLS through macOS's trust
-    # store. Two acceptance rounds on fresh `mac*.metal` hardware died on this
-    # step with `SSLError(SSLCertVerificationError('OSStatus -26276'))` -- an
-    # *internal* error, i.e. a trust evaluation that could not be performed,
-    # because Homebrew builds under `sandbox-exec` with `(deny mach-lookup)`
-    # and Security.framework's evaluation needs a mach service that is not on
-    # the allowlist. Deterministic on macOS 27, and invisible on `macos-15`.
-    # `legacy-certs` verifies with OpenSSL + certifi instead -- the path that
-    # was working on that host at the moment truststore was not.
+    # Round 4, a different fault (#4122), and the one a clean machine hits:
+    # this is the formula the published tap serves, so the fix has to be
+    # here and not only in the local copy. Homebrew builds under
+    # `sandbox-exec` with `(deny mach-lookup)`, Security.framework's trust
+    # evaluation needs a service that is not allowlisted, so it cannot be
+    # performed at all and pip is refused with
+    # `SSLCertVerificationError('OSStatus -26276')` -- `errSecInternal`,
+    # not a named certificate rejection. Deterministic on every Mac at any
+    # time after boot; the sandbox is the variable, not the clock, so a
+    # retry is not a workaround. `--use-deprecated=legacy-certs` routes pip
+    # through OpenSSL and certifi instead of truststore, so no mach lookup
+    # happens. The flag is deprecated deliberately and should be dropped as
+    # soon as pip's truststore path works inside Homebrew's build sandbox --
+    # that upstream condition, and nothing else, is what retires it; pip
+    # offers no non-deprecated way to decline truststore today.
     #
-    # Three call sites, not one: this download, the dependency install at the
-    # end of the bootstrap, and the pip that `pip install <source tree>` spawns
-    # for **build isolation** -- which inherits no command line, so patching
-    # the first two only moved the owner's failure from `/simple/pip/` to
-    # `/simple/setuptools/`. Seeding the build backend into the venv and
-    # passing `--no-build-isolation` is what removes that third process. See
-    # ../nyxgpt-api.rb's install block for the full account, the measurements,
-    # and the two dated risks (the flag is deprecated and absent before pip
-    # 24.2; `--no-build-isolation` needs any non-setuptools sdist backend
-    # seeded next to setuptools/wheel below).
-    legacy_certs = []
-    if quiet_system python, "-m", "pip", "download", "--use-deprecated=legacy-certs", "--help"
-      legacy_certs = ["--use-deprecated=legacy-certs"]
-      ENV["PIP_USE_DEPRECATED"] = "legacy-certs"
-    else
-      opoo "#{name}: this pip does not accept --use-deprecated=legacy-certs, so its TLS " \
-           "verification is whatever its default backend does. On pip 24.2+ that is " \
-           "truststore, which cannot evaluate trust inside Homebrew's build sandbox (#4121)."
-    end
-
+    # `--no-build-isolation` is part of the fix: `pip install <source tree>`
+    # spawns a separate pip to fetch the build backend and that child does
+    # not inherit `--use-deprecated`, so flagging only the networked calls
+    # moved the failure from `.../simple/pip/` to `.../simple/setuptools/`.
+    # The backend is seeded into the venv first so the child is never
+    # spawned. See ../nyxgpt-api.rb's install block for the full account.
     wheelhouse = buildpath/"pip-bootstrap"
     system python, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",
-           "--disable-pip-version-check", *legacy_certs, "--dest", wheelhouse, "pip"
+           "--disable-pip-version-check", "--use-deprecated=legacy-certs",
+           "--dest", wheelhouse, "pip"
     pip_wheel = Dir.glob(wheelhouse/"pip-*.whl").first
     odie "keg venv bootstrap: `pip download` produced no pip wheel in #{wheelhouse}" if pip_wheel.nil?
     system venv/"bin/python", "#{pip_wheel}/pip", "install", "--no-index",
            "--disable-pip-version-check", pip_wheel
-
-    # The build backend goes into the venv BEFORE the source tree is installed:
-    # pyproject.toml declares `setuptools.build_meta`, so these two are exactly
-    # what build isolation would have fetched in a child pip this recipe cannot
-    # reach (#4121).
-    system venv/"bin/pip", "install", *legacy_certs, "setuptools", "wheel"
-    system venv/"bin/pip", "install", *legacy_certs, "--no-build-isolation", buildpath
+    # Seed the build backend into the venv, so the install below has one
+    # without build isolation fetching it from a child pip we cannot flag.
+    system venv/"bin/pip", "install", "--use-deprecated=legacy-certs", "setuptools", "wheel"
+    system venv/"bin/pip", "install", "--use-deprecated=legacy-certs",
+           "--no-build-isolation", buildpath
 
     # config_wizard builds its schema from example.config.ini at import time
     # (#3388); a venv has no repo root above the package, so drop the

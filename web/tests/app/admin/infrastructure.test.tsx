@@ -1781,7 +1781,12 @@ describe('InfrastructurePage', () => {
         screen.getByText(/macOS \(EC2 Mac\) — remote Homebrew tap \+ brew services/)
       ).toBeInTheDocument();
     });
-    expect(screen.getByText(/no self-heal watchdog/)).toBeInTheDocument();
+    // #4150 moved this claim rather than dropping it: the row used to fold the
+    // watchdog into the nested-virtualization clause, and self-healing being
+    // off is a default this bootstrap does not change, not a platform limit.
+    // Asserted on the state it now reports, because the point of the row is
+    // that a Mac's shape is named rather than guessed.
+    expect(screen.getByText(/Self-healing is off/)).toBeInTheDocument();
     first.unmount();
 
     server.use(
@@ -2348,7 +2353,10 @@ describe('InfrastructurePage', () => {
     expect(
       screen.getByText(/READY means the workload is running, not that telemetry is reaching it/)
     ).toBeInTheDocument();
-    expect(screen.getByText('nyxgpt ops status')).toBeInTheDocument();
+    // `getAllBy*`: several cards now point at the same command (#4150 added
+    // another), and this assertion is about the pointer being offered beside
+    // the caveat, not about it appearing exactly once on the page.
+    expect(screen.getAllByText('nyxgpt ops status').length).toBeGreaterThan(0);
   });
 
   it('badges the observability workloads from the same vocabulary as the Pods (#3827)', async () => {
