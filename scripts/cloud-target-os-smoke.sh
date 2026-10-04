@@ -52,10 +52,16 @@
 #   5b. `cloud screen`, managed  -> the CLI delivers the Screen Sharing
 #                                   configuration itself, loads the
 #                                   loopback-only pf rule BEFORE activating the
-#                                   agent, opens no security-group port, sets no
-#                                   account password, keeps the VNC credential
-#                                   out of every argv and off the terminal, and
+#                                   agent, opens no security-group port, writes
+#                                   ONE credential (account + VNC) before
+#                                   anything listens and restarts the job that
+#                                   authenticates, keeps the credential out of
+#                                   every argv and off the terminal, and
 #                                   `cloud status` reports the open path
+#   5d. `cloud screen --local-port` -> a request for a different local port than
+#                                   the open one replaces the path instead of
+#                                   reporting the old port as satisfying it
+#                                   (#4121, owner acceptance 2026-10-04)
 #   5c. `cloud screen`, Linux    -> refuses, and the Linux status surface does
 #                                   not advertise a screen that box has not got
 #
@@ -429,21 +435,57 @@ import sys
 script = open(sys.argv[1]).read()
 block = script.index("block drop in quick proto tcp")
 readback = script.index("-s rules | grep -q")
+# The credential -- account password AND VNC password -- is written and
+# verified before anything listens, and the job that actually authenticates on
+# 5900 is restarted after it (#4121, owner acceptance 2026-10-04). Before this
+# fix the VNC password was set AFTER the agent restart and `screensharingd`
+# never loaded it: on the owner's host the listener started 4m21s earlier.
+account = script.index("dscl . -passwd")
+authonly = script.index("dscl . -authonly")
+vnc_password = script.index("-setvncpw -vncpw")
 activate = script.index("-activate -configure -access -on")
-if not block < readback < activate:
+restart = script.index("launchctl kickstart -k system/com.apple.screensharing")
+if not block < readback < account < authonly < vnc_password < activate < restart:
     raise SystemExit(
-        "the delivered script activates Screen Sharing before the loopback-only "
-        "rule is loaded and verified, so 5900 would be reachable from the network"
+        "the delivered script's ordering is wrong. It must load and read back the "
+        "loopback-only pf rule, then write and VERIFY the credential, then activate "
+        "the agent, then restart com.apple.screensharing -- any other order either "
+        "exposes 5900 or leaves the listener holding a credential it never loaded"
     )
-print("  -> delivered ordering: pf rule, read it back, THEN activate the agent")
+print("  -> delivered ordering: pf rule, read it back, credential, activate, restart")
 PY
+# Absence assertions below are made against what the Mac will RUN, not against
+# the script's comments. The delivered text names the APIs that were tried and
+# rejected -- `sysadminctl`, `kickstart -restart -agent` -- so a grep over the
+# whole file would fail on the paragraph explaining why they are not used.
+grep -v '^[[:space:]]*#' "$CAPTURE_DIR/script.sh" > "$WORK/screen-commands.sh"
+
 # No security-group port is opened, not even one scoped to the operator's /32
 # -- that is the alternative the decision rejected.
 not_contains "$CAPTURE_DIR/script.sh" "authorize-security-group-ingress"
 not_contains "$CAPTURE_DIR/script.sh" "0.0.0.0"
-# And no account password is set on the Mac: VNC's own credential is used.
-not_contains "$CAPTURE_DIR/script.sh" "passwd"
+# ONE credential, serving both clients: Apple's Screen Sharing.app offers
+# security types 30/33 first and both authenticate against the ACCOUNT
+# password, so a VNC-only credential is one the client this command's own
+# output names structurally cannot use (#4121, owner acceptance 2026-10-04).
 contains "$CAPTURE_DIR/script.sh" "-setvncpw -vncpw"
+contains "$CAPTURE_DIR/script.sh" 'dscl . -passwd "/Users/$TARGET_USER"'
+# Verified in the same step, not assumed -- and with dscl, because
+# `sysadminctl -resetPasswordFor` fails on an EC2 Mac without a secure token.
+contains "$CAPTURE_DIR/script.sh" 'dscl . -authonly "$TARGET_USER"'
+not_contains "$WORK/screen-commands.sh" "sysadminctl"
+# Still nothing interactive: `sudo passwd ec2-user` is the hand-rolled step
+# this command replaces, and no wrapped command can answer its prompt.
+not_contains "$WORK/screen-commands.sh" "sudo passwd"
+# The restart targets the process that authenticates, not ARDAgent: measured
+# across a `kickstart -restart -agent`, the pid on 5900 did not change.
+contains "$CAPTURE_DIR/script.sh" "launchctl kickstart -k system/com.apple.screensharing"
+not_contains "$WORK/screen-commands.sh" "-restart -agent"
+# And the ordering is measured on the Mac rather than trusted: the script
+# reads the listener's start time back and fails if it predates the credential.
+contains "$CAPTURE_DIR/script.sh" 'CREDENTIAL_WRITTEN_AT="$(date +%s)"'
+contains "$CAPTURE_DIR/script.sh" "ps -o lstart= -p"
+contains "$CAPTURE_DIR/script.sh" '[ "$LISTENER_STARTED_AT" -lt "$CREDENTIAL_WRITTEN_AT" ]'
 # Nothing is installed on the host beyond enabling what macOS ships.
 not_contains "$CAPTURE_DIR/script.sh" "brew install"
 not_contains "$CAPTURE_DIR/script.sh" "git clone"
@@ -460,9 +502,17 @@ not_contains "$CAPTURE_DIR/cmd.txt" "$VNC_PASSWORD"
 # It did reach the Mac -- on the connection's stdin, which is the whole point
 # of delivering a script rather than a command line.
 contains "$CAPTURE_DIR/script.sh" "$VNC_PASSWORD"
-# What the operator is told instead of the secret.
-contains "$OUT" "vnc://localhost:5900"
+# What the operator is told instead of the secret. The LOCAL port is 5901, not
+# 5900: on a macOS workstation `vnc://localhost:5900` is the operator's own
+# screen, and Apple's client refuses it before the forward is ever consulted
+# (#4121, owner acceptance 2026-10-04).
+contains "$OUT" "vnc://localhost:5901"
+not_contains "$OUT" "vnc://localhost:5900"
 contains "$OUT" "cloud-mac-vnc-password"
+# And the account to sign in as, which is the other half of connecting now
+# that the credential is the login password.
+contains "$OUT" "Sign in as"
+contains "$OUT" "$SSH_USER"
 # Wrapped end to end: no raw command is ever presented as an instruction.
 not_contains "$OUT" "ssh -L"
 not_contains "$OUT" "kickstart"
@@ -471,12 +521,47 @@ echo "-- 5b: cloud status reports the screen path (observable, not operable)"
 nyxgpt cloud status --no-probe >"$OUT" 2>&1 || fail "cloud status exited non-zero"
 cat "$OUT"
 contains "$OUT" "Screen path"
-contains "$OUT" "open at vnc://localhost:5900"
+contains "$OUT" "open at vnc://localhost:5901"
 not_contains "$OUT" "$VNC_PASSWORD"
 nyxgpt cloud screen --status --json >"$OUT" 2>&1 || fail "cloud screen --status exited non-zero"
 cat "$OUT"
 contains "$OUT" '"running": true'
+contains "$OUT" '"local_port": 5901'
 not_contains "$OUT" "$VNC_PASSWORD"
+
+echo "-- 5d: --local-port against an open path on another port replaces it"
+# The defect this covers: `start_screen_tunnel` returned the open path without
+# comparing its port to the requested one, so with a forward alive on 5901 the
+# command reported 5901 for `--local-port 5902` and opened nothing -- the flag
+# looked inert. Run twice on purpose; the first run above left a path open.
+SCREEN_PID_BEFORE="$(python -c "
+import json, pathlib
+print(json.loads(pathlib.Path('$CLOUD_DIR/screen.json').read_text()).get('pid', 0))
+")"
+nyxgpt cloud screen --ssh-user "$SSH_USER" --identity-file "$KEY" --local-port 5902 \
+    >"$OUT" 2>&1 || { cat "$OUT"; fail "cloud screen --local-port 5902 exited non-zero"; }
+cat "$OUT"
+contains "$OUT" "vnc://localhost:5902"
+not_contains "$OUT" "vnc://localhost:5901"
+contains "$OUT" "which is what was asked for"
+# The replaced forward is gone, not leaked: a path reported closed has to BE
+# closed, and the recorded pid has to be the new one.
+# SIGTERM is not synchronous, so give the replaced child a moment to reap
+# rather than racing it -- the claim under test is that it is gone, not that it
+# was gone within one scheduler tick.
+for _ in 1 2 3 4 5; do
+    kill -0 "$SCREEN_PID_BEFORE" 2>/dev/null || break
+    sleep 1
+done
+if kill -0 "$SCREEN_PID_BEFORE" 2>/dev/null; then
+    fail "the forward on 5901 is still alive after being replaced (pid $SCREEN_PID_BEFORE)"
+fi
+nyxgpt cloud screen --status --json >"$OUT" 2>&1 || fail "cloud screen --status exited non-zero"
+contains "$OUT" '"local_port": 5902'
+# And asking again for the port that IS open is a no-op, not a third process.
+nyxgpt cloud screen --ssh-user "$SSH_USER" --identity-file "$KEY" --local-port 5902 \
+    >"$OUT" 2>&1 || { cat "$OUT"; fail "cloud screen on an already-open port exited non-zero"; }
+contains "$OUT" "already open"
 
 echo "-- 5b: and it closes again, leaving the listener enabled but unreachable"
 nyxgpt cloud screen --stop >"$OUT" 2>&1 || fail "cloud screen --stop exited non-zero"
@@ -513,4 +598,5 @@ not_contains "$OUT" "Screen path"
 echo
 echo "PASS: nyxgpt drives both target-OS bootstraps and the Mac screen path itself,"
 echo "      over the wrapped SSH path, with no non-loopback listener and no secret"
-echo "      in any argv."
+echo "      in any argv -- and with one credential, written and verified before"
+echo "      anything listens, for the client the command's own output names."

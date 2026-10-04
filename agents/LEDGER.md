@@ -2200,6 +2200,71 @@ rather than mechanism, and nothing can enforce them.
   Source: #4122 (second acceptance round); extends **D-051**; cites
   **D-006**, **D-047**.
 
+- **D-058** · 2026-10-04 · developer agent (owner acceptance #4121) — **The
+  client a command's own output names is the client that has to work.**
+  `nyxgpt cloud screen` set Apple's *legacy VNC* password only, and justified
+  setting no account password with it — true of a third-party VNC client, false
+  of Screen Sharing.app, which is what macOS hands `vnc://...` and which
+  prefers the security types it is offered first (30/33), both authenticating
+  against a real account password. The operator was handed a credential the
+  named client structurally could not use, and the refusal (`ec2-user and
+  password rejected`) blamed them for it. Four things a later session should not
+  re-derive:
+
+  (a) *One generated credential is both passwords.* Set with `dscl . -passwd`
+  and verified with `dscl . -authonly` in the same step —
+  `sysadminctl -resetPasswordFor` fails on an EC2 Mac (`Operation is not
+  permitted without secure token unlock`), which is the obvious API and the
+  wrong one. Setting it does not weaken the private-access decision of
+  **D-055**: 5900 stays loopback-only behind the `pf` anchor and the account is
+  reachable only through the operator's own SSH forward.
+
+  (b) *`kickstart -restart -agent` restarts the wrong process.* It cycles
+  ARDAgent; the pid listening on 5900 was unchanged across one. Only
+  `launchctl kickstart -k system/com.apple.screensharing` replaces
+  `screensharingd`, which is what authenticates.
+
+  (c) *A credential written after the listener starts is never loaded.* The
+  shipped order wrote it 4m21s after `screensharingd` came up. The script now
+  writes first, activates second — and *measures* the listener's `lstart`
+  against the credential's write time on the host rather than trusting its own
+  line order, the same demonstrate-rather-than-assume rule the `pf` read-back
+  already followed.
+
+  (d) *A default that is always wrong on the operator's own platform is a
+  defect, not a doc note.* `vnc://localhost:5900` is the operator's **own**
+  Screen Sharing on a macOS workstation, so Apple's client refuses with "you
+  can't control your own screen" before the forward is consulted — and the
+  operator never sees nyxGPT's otherwise-good diagnostic. The local half
+  defaults to 5901; the remote half cannot move (SIP-protected launchd job).
+  `--local-port N` against a path open on another port now replaces it instead
+  of reporting the open one as satisfying the request.
+
+  On the same acceptance round, the macOS install failure (`OSStatus -26276`)
+  was the **second sighting** of the fault **D-057** records — #4122 first, this
+  issue again three days later, diagnosed from scratch both times. The fix for
+  it is D-057's and landed through #4122; nothing here repeats it. This round
+  also fixed the diagnostic that hid it: the Mac bootstrap's
+  `brew tap-trust || brew trust || true` fallback (#3770) *guarantees* a benign
+  `Unknown command: brew tap-trust` near the top of every run, so **D-051**'s
+  first-error pointer misdirected on 100% of Mac deploy failures. Errors a
+  bootstrap produces by design are now skipped and *counted* ("Skipped 1
+  earlier error line(s)"), so a line wrongly on that list is visible from the
+  output it affects.
+
+  The behaviours are pinned by `tests/unit/test_cloud_screen.py`,
+  `tests/unit/test_cloud_deploy.py`,
+  `tests/unit/test_formula_preflight_claims.py` (the preflight stops claiming
+  to cover a trust evaluation no import can reach) and
+  `scripts/cloud-target-os-smoke.sh` phase 5, per the verification retirement.
+  What stays owner acceptance under **D-006**: a `mac*.metal` instance running
+  `pfctl`/`kickstart`/`dscl`, and Apple's client actually authenticating —
+  nothing short of connecting would have shown this defect.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.0` — run, not eyeballed. IDs are never reused.
+  Source: #4121 (second acceptance round); extends **D-055** and **D-051** (c);
+  cites **D-006**, **D-057**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

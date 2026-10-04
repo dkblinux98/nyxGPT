@@ -1983,21 +1983,63 @@ _PROVISION_ERROR_MARKERS: tuple[str, ...] = (
     "sslcertverificationerror",
 )
 
+# Error lines this bootstrap is KNOWN to produce on its way to working, which
+# are therefore not the failure however early they appear (#4121).
+#
+# Why this is needed (owner acceptance, 2026-10-03): the macOS bootstrap asks
+# for whole-tap trust in both spellings Homebrew has used and tolerates the one
+# this Homebrew lacks -- `brew tap-trust <tap> || brew trust <tap> || true`
+# (#3770). On every current Homebrew the first spelling prints
+#
+#   Error: Invalid usage: Unknown command: brew tap-trust
+#
+# and the second succeeds. So a benign error line is *guaranteed* to appear
+# near the top of every Mac deploy, before anything real can fail -- which made
+# `_first_error_index` point at it on 100% of Mac deploy failures, and on the
+# round this list was added for it hid a pip TLS failure ~340 lines later.
+#
+# A list of known-benign lines rather than a cleverer heuristic, for the same
+# reason `_PROVISION_ERROR_MARKERS` is a list of the tools this bootstrap runs:
+# whether a failure was tolerated is a property of the *script*, not of its
+# output, so it has to be stated. Skipped, never silently dropped --
+# `_provision_failure_detail` says how many it passed over, so a line that
+# should not have been on this list is visible in the diagnostic itself.
+_PROVISION_BENIGN_ERROR_MARKERS: tuple[str, ...] = (
+    "unknown command: brew tap-trust",
+    "unknown command: brew trust",
+)
 
-def _first_error_index(output: list[str]) -> int:
-    """Index of the first line in `output` that looks like the failure, or -1.
+
+def _is_benign_error_line(line: str) -> bool:
+    """True for an error line this bootstrap produces by design and tolerates."""
+    lowered = line.strip().lower()
+    return any(marker in lowered for marker in _PROVISION_BENIGN_ERROR_MARKERS)
+
+
+def _first_error_index(output: list[str]) -> tuple[int, int]:
+    """`(index, benign_skipped)` for the first line that looks like the failure.
+
+    `index` is -1 when nothing in `output` looks like an error at all.
 
     Scans forwards, so the answer is the *first* error rather than the last --
     the whole point (#4122). Case-insensitive, and matched against the stripped
-    line so an indented sub-error still counts.
+    line so an indented sub-error still counts. Lines the bootstrap is known to
+    produce and tolerate are stepped over and counted (#4121): the first
+    *recognizable* error and the first *real* one are different lines on this
+    platform, and the bootstrap guarantees it.
     """
+    benign_skipped = 0
     for index, line in enumerate(output):
         lowered = line.strip().lower()
         if not lowered:
             continue
-        if any(marker in lowered for marker in _PROVISION_ERROR_MARKERS):
-            return index
-    return -1
+        if not any(marker in lowered for marker in _PROVISION_ERROR_MARKERS):
+            continue
+        if _is_benign_error_line(line):
+            benign_skipped += 1
+            continue
+        return index, benign_skipped
+    return -1, benign_skipped
 
 
 # The prefix `nyxgpt ops` puts on every failed check, including the per-step
@@ -2053,7 +2095,10 @@ def _provision_failure_detail(output: list[str]) -> str:
 
     1. every `[FAIL]` line `nyxgpt ops` emitted -- the run named its own
        failures, so nothing has to be guessed;
-    2. a window around the **first** error line, when one can be recognized;
+    2. a window around the first error line that is not one the bootstrap
+       produces by design (#4121 -- the macOS path guarantees a benign
+       `Unknown command: brew tap-trust` near the top, so "first recognizable
+       error" and "first real error" are never the same line there);
     3. the tail, and only then.
 
     The tail used to be step 2, and that is the defect. A bootstrap that
@@ -2072,7 +2117,13 @@ def _provision_failure_detail(output: list[str]) -> str:
     non_empty = [line for line in output if line.strip()]
     if not non_empty:
         return "Provisioning the instance failed (no diagnostic returned)."
-    first = _first_error_index(non_empty)
+    first, benign_skipped = _first_error_index(non_empty)
+    skipped = (
+        f"\n  (Skipped {benign_skipped} earlier error line(s) this bootstrap produces by design "
+        "and tolerates -- see _PROVISION_BENIGN_ERROR_MARKERS.)"
+        if benign_skipped
+        else ""
+    )
     if first >= 0:
         start = max(0, first - _PROVISION_ERROR_LEAD_LINES)
         window = non_empty[start : first + 1 + _PROVISION_ERROR_TRAIL_LINES]
@@ -2087,13 +2138,13 @@ def _provision_failure_detail(output: list[str]) -> str:
         return (
             "Provisioning the instance failed with no step-level diagnostic. The FIRST error in "
             f"its output was on line {first + 1} of {len(non_empty)}, with context:\n"
-            f"{quoted}{more}"
+            f"{quoted}{more}{skipped}"
         )
     tail = non_empty[-_PROVISION_TAIL_LINES:]
     quoted = "\n".join(f"  {line}" for line in tail)
     return (
         "Provisioning the instance failed with no step-level diagnostic and no recognizable "
-        f"error line. Last {len(tail)} line(s) of its output:\n{quoted}"
+        f"error line. Last {len(tail)} line(s) of its output:\n{quoted}{skipped}"
     )
 
 
