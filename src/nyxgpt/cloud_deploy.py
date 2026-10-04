@@ -710,9 +710,10 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
             "target OS), or drop --dev to install a published release on the Mac."
         )
     if getattr(args, "skip_observability", False) or os_family == OS_FAMILY_MACOS:
-        # No observability stack on an EC2 Mac: its bootstrap installs the two
-        # Homebrew formulas and starts them (scripts/cloud/ec2-user-data-macos
-        # .sh.tmpl), and never runs `ops install`'s observability profiles --
+        # No observability stack on an EC2 Mac: its bootstrap installs the
+        # Homebrew formulas (api, web and ollama) and starts them
+        # (scripts/cloud/ec2-user-data-macos.sh.tmpl), and never runs `ops
+        # install`'s observability profiles --
         # so recording profiles here would only make `tunnel` forward ports
         # nothing is listening on and the summary promise URLs that 404.
         profiles: list[str] = []
@@ -1982,21 +1983,63 @@ _PROVISION_ERROR_MARKERS: tuple[str, ...] = (
     "sslcertverificationerror",
 )
 
+# Error lines this bootstrap is KNOWN to produce on its way to working, which
+# are therefore not the failure however early they appear (#4121).
+#
+# Why this is needed (owner acceptance, 2026-10-03): the macOS bootstrap asks
+# for whole-tap trust in both spellings Homebrew has used and tolerates the one
+# this Homebrew lacks -- `brew tap-trust <tap> || brew trust <tap> || true`
+# (#3770). On every current Homebrew the first spelling prints
+#
+#   Error: Invalid usage: Unknown command: brew tap-trust
+#
+# and the second succeeds. So a benign error line is *guaranteed* to appear
+# near the top of every Mac deploy, before anything real can fail -- which made
+# `_first_error_index` point at it on 100% of Mac deploy failures, and on the
+# round this list was added for it hid a pip TLS failure ~340 lines later.
+#
+# A list of known-benign lines rather than a cleverer heuristic, for the same
+# reason `_PROVISION_ERROR_MARKERS` is a list of the tools this bootstrap runs:
+# whether a failure was tolerated is a property of the *script*, not of its
+# output, so it has to be stated. Skipped, never silently dropped --
+# `_provision_failure_detail` says how many it passed over, so a line that
+# should not have been on this list is visible in the diagnostic itself.
+_PROVISION_BENIGN_ERROR_MARKERS: tuple[str, ...] = (
+    "unknown command: brew tap-trust",
+    "unknown command: brew trust",
+)
 
-def _first_error_index(output: list[str]) -> int:
-    """Index of the first line in `output` that looks like the failure, or -1.
+
+def _is_benign_error_line(line: str) -> bool:
+    """True for an error line this bootstrap produces by design and tolerates."""
+    lowered = line.strip().lower()
+    return any(marker in lowered for marker in _PROVISION_BENIGN_ERROR_MARKERS)
+
+
+def _first_error_index(output: list[str]) -> tuple[int, int]:
+    """`(index, benign_skipped)` for the first line that looks like the failure.
+
+    `index` is -1 when nothing in `output` looks like an error at all.
 
     Scans forwards, so the answer is the *first* error rather than the last --
     the whole point (#4122). Case-insensitive, and matched against the stripped
-    line so an indented sub-error still counts.
+    line so an indented sub-error still counts. Lines the bootstrap is known to
+    produce and tolerate are stepped over and counted (#4121): the first
+    *recognizable* error and the first *real* one are different lines on this
+    platform, and the bootstrap guarantees it.
     """
+    benign_skipped = 0
     for index, line in enumerate(output):
         lowered = line.strip().lower()
         if not lowered:
             continue
-        if any(marker in lowered for marker in _PROVISION_ERROR_MARKERS):
-            return index
-    return -1
+        if not any(marker in lowered for marker in _PROVISION_ERROR_MARKERS):
+            continue
+        if _is_benign_error_line(line):
+            benign_skipped += 1
+            continue
+        return index, benign_skipped
+    return -1, benign_skipped
 
 
 # The prefix `nyxgpt ops` puts on every failed check, including the per-step
@@ -2052,7 +2095,10 @@ def _provision_failure_detail(output: list[str]) -> str:
 
     1. every `[FAIL]` line `nyxgpt ops` emitted -- the run named its own
        failures, so nothing has to be guessed;
-    2. a window around the **first** error line, when one can be recognized;
+    2. a window around the first error line that is not one the bootstrap
+       produces by design (#4121 -- the macOS path guarantees a benign
+       `Unknown command: brew tap-trust` near the top, so "first recognizable
+       error" and "first real error" are never the same line there);
     3. the tail, and only then.
 
     The tail used to be step 2, and that is the defect. A bootstrap that
@@ -2071,7 +2117,13 @@ def _provision_failure_detail(output: list[str]) -> str:
     non_empty = [line for line in output if line.strip()]
     if not non_empty:
         return "Provisioning the instance failed (no diagnostic returned)."
-    first = _first_error_index(non_empty)
+    first, benign_skipped = _first_error_index(non_empty)
+    skipped = (
+        f"\n  (Skipped {benign_skipped} earlier error line(s) this bootstrap produces by design "
+        "and tolerates -- see _PROVISION_BENIGN_ERROR_MARKERS.)"
+        if benign_skipped
+        else ""
+    )
     if first >= 0:
         start = max(0, first - _PROVISION_ERROR_LEAD_LINES)
         window = non_empty[start : first + 1 + _PROVISION_ERROR_TRAIL_LINES]
@@ -2086,13 +2138,13 @@ def _provision_failure_detail(output: list[str]) -> str:
         return (
             "Provisioning the instance failed with no step-level diagnostic. The FIRST error in "
             f"its output was on line {first + 1} of {len(non_empty)}, with context:\n"
-            f"{quoted}{more}"
+            f"{quoted}{more}{skipped}"
         )
     tail = non_empty[-_PROVISION_TAIL_LINES:]
     quoted = "\n".join(f"  {line}" for line in tail)
     return (
         "Provisioning the instance failed with no step-level diagnostic and no recognizable "
-        f"error line. Last {len(tail)} line(s) of its output:\n{quoted}"
+        f"error line. Last {len(tail)} line(s) of its output:\n{quoted}{skipped}"
     )
 
 
@@ -2846,6 +2898,61 @@ REMOTE_OPS_COMMANDS: dict[str, str] = {
 }
 
 
+# Where the instance's own `nyxgpt` lives -- resolved ON the instance, because
+# it depends on how that instance was provisioned and nothing on the
+# workstation knows (#4150):
+#
+#   ~/.nyxGPT/venv/bin/nyxgpt              SSH-driven `nyxgpt cloud deploy` (Linux)
+#   ~/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt    `cloud user-data --os linux` first-boot
+#   <brew prefix>/bin/nyxgpt               `--os macos` -- the api keg symlinks it
+#
+# The three wrapped remote entry points used to hardcode the first one. On a
+# macOS target that path does not exist, so every remote inspection died with
+# exit 127 and the error told the operator to run the deploy that had just
+# succeeded. `nyxgpt cloud ops status` is how an operator checks that the model
+# backend is running on an EC2 Mac without SSHing in, which is the acceptance
+# criterion #4150 was filed against -- so it has to resolve, not guess.
+#
+# `command -v` is tried LAST rather than first on purpose: a login shell on a
+# Mac has Homebrew's bin on PATH, but `ssh host '<command>'` is not a login
+# shell, so PATH there is the sshd default and may name none of these. The
+# explicit paths are what make this work over a non-interactive channel; the
+# PATH lookup is the fallback for a layout this list does not know.
+REMOTE_NYXGPT_RESOLVER = (
+    'NYXGPT_BIN=""; '
+    'for c in "$HOME/.nyxGPT/venv/bin/nyxgpt" "$HOME/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt" '
+    "/opt/homebrew/bin/nyxgpt /usr/local/bin/nyxgpt; do "
+    'if [ -x "$c" ]; then NYXGPT_BIN="$c"; break; fi; done; '
+    'if [ -z "$NYXGPT_BIN" ]; then NYXGPT_BIN="$(command -v nyxgpt 2>/dev/null)"; fi; '
+    'if [ -z "$NYXGPT_BIN" ]; then exit 127; fi; '
+)
+
+#: Every location `REMOTE_NYXGPT_RESOLVER` looks in, for the error message that
+#: reports failing to find any of them. One list, so the message cannot drift
+#: from what was actually searched.
+REMOTE_NYXGPT_CANDIDATES: tuple[str, ...] = (
+    "~/.nyxGPT/venv/bin/nyxgpt",
+    "~/.nyxGPT/opt/nyxgpt-cli/bin/nyxgpt",
+    "/opt/homebrew/bin/nyxgpt",
+    "/usr/local/bin/nyxgpt",
+    "anything named `nyxgpt` on the non-login PATH",
+)
+
+
+def _remote_nyxgpt(command: str) -> str:
+    """Wrap `command` so it runs the instance's own `nyxgpt`, wherever that is."""
+    return f'{REMOTE_NYXGPT_RESOLVER}"$NYXGPT_BIN" {command}'
+
+
+def _no_remote_nyxgpt_error(target: DeployTarget) -> CloudCommandError:
+    """The error for an instance where no `nyxgpt` could be found at all."""
+    searched = "\n".join(f"  {c}" for c in REMOTE_NYXGPT_CANDIDATES)
+    return CloudCommandError(
+        f"{target.host} has no nyxGPT installed. Searched:\n{searched}\n"
+        f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
+    )
+
+
 # `nyxgpt cloud canary <subcommand>` -- the capability #3506 was choosing a
 # substrate FOR, reachable on the cloud target (#3956).
 #
@@ -3213,14 +3320,39 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     if str(plan.get("os_family") or OS_FAMILY_LINUX) == OS_FAMILY_MACOS:
         # Say plainly what a Mac deploy did and did not do, rather than
         # letting the Linux wording below imply parity it does not have
-        # (#3867): its bootstrap installs the two Homebrew formulas and starts
-        # them, and runs neither the observability profiles nor the self-heal
-        # watchdog that `ops install` brings with it on Linux.
+        # (#3867).
+        #
+        # The caveat covers the CONTAINER TIER and nothing else (#4150). It
+        # used to say "that bootstrap does not run `nyxgpt ops install`" and
+        # leave the reader to work out what that cost -- which filed the
+        # *missing model backend* under the same heading as Grafana. It did
+        # not merely under-describe the omission; it made it look intentional
+        # and bounded when it was neither, and the owner paid a Dedicated
+        # Host's 24-hour minimum to find a Mac that could not answer a chat
+        # message. The bootstrap now installs Ollama and pulls the configured
+        # models, so the first line can say the core stack is complete and the
+        # second can be specific about what is actually absent.
+        #
+        # And the platform constraint is stated only over the container tier.
+        # The watchdog is a thread in THIS api process (self_heal.py), so
+        # nothing about an EC2 Mac prevents it -- it ships disabled everywhere
+        # and this bootstrap simply does not turn it on, which is a default and
+        # not an impossibility. Lumping it in with "no Docker daemon can exist"
+        # would be the same mis-scoping #4150 was filed about, one component
+        # over.
         print(
-            "Target OS: macOS (EC2 Mac) -- installed from the remote Homebrew tap and "
-            "started with `brew services`.\n"
-            "No observability stack and no self-heal watchdog: that bootstrap does not run "
-            "`nyxgpt ops install`. See docs/cloud.md, 'EC2 Mac targets'."
+            "Target OS: macOS (EC2 Mac) -- api, web and the Ollama model backend "
+            "installed from the remote Homebrew tap and started with `brew services`, "
+            "with the configured chat and embedding models pulled.\n"
+            "Absent on this target, and only this: the observability stack "
+            "(Grafana/Loki/Tempo/GlitchTip) and the `nyxgpt-cassandra` container -- all "
+            "Docker-based, and an EC2 Mac supports no nested virtualization, so no "
+            "Docker daemon can exist on it.\n"
+            "Separately, and not a platform limit: the self-heal watchdog is not enabled "
+            "here. It is a thread in the api process, it ships disabled everywhere, and "
+            "this bootstrap just does not turn it on -- enable it from the admin "
+            "Self-Heal page or with `nyxgpt self-heal enable` on the instance. Chat, RAG "
+            "and the web UI are unaffected. See docs/cloud.md, 'EC2 Mac targets'."
         )
         # The single most expensive thing about this deploy, said at the end
         # where the operator is actually looking (#3995). A Dedicated Host is
@@ -3708,9 +3840,7 @@ def remote_credentials(target: DeployTarget, service: str = "all") -> list[dict[
     per-service `remediation` text says what to run -- so only an unparseable
     or transport-level failure raises here.
     """
-    remote = (
-        f'"$HOME/.nyxGPT/venv/bin/nyxgpt" ops credentials --json --service {shlex.quote(service)}'
-    )
+    remote = _remote_nyxgpt(f"ops credentials --json --service {shlex.quote(service)}")
     completed = run_remote(target, remote, timeout=120)
     stdout = completed.stdout or ""
     try:
@@ -3773,7 +3903,7 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
     failure of the transport itself raises: ssh's own 255, or a shell that
     could not find the instance's `nyxgpt` at all.
     """
-    remote = f'"$HOME/.nyxGPT/venv/bin/nyxgpt" {REMOTE_OPS_COMMANDS[inspection]}'
+    remote = _remote_nyxgpt(REMOTE_OPS_COMMANDS[inspection])
     completed = run_remote(target, remote, stream=True, timeout=300)
     stderr = (completed.stderr or "").strip()
     if completed.returncode == 255:
@@ -3782,10 +3912,7 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
             f"If your public IP has changed, run `{LIFECYCLE_COMMANDS['allow_ip']}`."
         )
     if completed.returncode == 127:
-        raise CloudCommandError(
-            f"{target.host} has no nyxGPT installed at ~/.nyxGPT/venv/bin/nyxgpt. "
-            f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
-        )
+        raise _no_remote_nyxgpt_error(target)
     if stderr:
         print(stderr, file=sys.stderr)
     return completed.returncode
@@ -3828,7 +3955,7 @@ def remote_canary(target: DeployTarget, argv: list[str]) -> int:
     the answer (`canary evaluate` exits 2 on a failing canary, which is a
     result, not an error), and only a transport failure raises.
     """
-    remote = " ".join(['"$HOME/.nyxGPT/venv/bin/nyxgpt"', *(shlex.quote(part) for part in argv)])
+    remote = _remote_nyxgpt(" ".join(shlex.quote(part) for part in argv))
     completed = run_remote(target, remote, stream=True, timeout=600)
     stderr = (completed.stderr or "").strip()
     if completed.returncode == 255:
@@ -3837,10 +3964,7 @@ def remote_canary(target: DeployTarget, argv: list[str]) -> int:
             f"If your public IP has changed, run `{LIFECYCLE_COMMANDS['allow_ip']}`."
         )
     if completed.returncode == 127:
-        raise CloudCommandError(
-            f"{target.host} has no nyxGPT installed at ~/.nyxGPT/venv/bin/nyxgpt. "
-            f"`{LIFECYCLE_COMMANDS['deploy']}` installs it."
-        )
+        raise _no_remote_nyxgpt_error(target)
     if stderr:
         print(stderr, file=sys.stderr)
     return completed.returncode

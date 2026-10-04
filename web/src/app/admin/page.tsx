@@ -796,6 +796,18 @@ export default function AdminPage() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  /**
+   * The API's own explanation when Ollama is reachable and holds nothing
+   * (#4150).
+   *
+   * This panel is where the EC2 Mac defect surfaced: "Failed to load models"
+   * beside an empty dropdown, from a 502. The near-miss fix for that -- Ollama
+   * installed but with no model pulled -- produces a *200* and an empty
+   * dropdown with no message at all, which reads as "this install has no models
+   * configured" rather than "chat cannot work until you run one command". Both
+   * states are now explained, and differently.
+   */
+  const [modelsEmptyDetail, setModelsEmptyDetail] = useState<string | null>(null);
 
   function updateSection<K extends keyof FormValues>(
     section: K,
@@ -869,11 +881,13 @@ export default function AdminPage() {
       if (!res.ok) throw new Error(`Failed to load models: HTTP ${res.status}`);
       const data = await res.json();
       setAvailableModels(data.models || []);
+      setModelsEmptyDetail(typeof data.detail === 'string' ? data.detail : null);
     } catch (e: unknown) {
       const msg = errorMessage(e);
       console.error('Failed to load models:', e);
       setModelsError(msg);
       setAvailableModels([]);
+      setModelsEmptyDetail(null);
     } finally {
       setLoadingModels(false);
     }
@@ -1223,7 +1237,13 @@ export default function AdminPage() {
                 aria-required="true"
                 aria-invalid={!canAdvanceFromCore}
                 aria-describedby={
-                  loadingModels ? 'models-loading' : modelsError ? 'models-error' : undefined
+                  loadingModels
+                    ? 'models-loading'
+                    : modelsError
+                      ? 'models-error'
+                      : modelsEmptyDetail
+                        ? 'models-empty'
+                        : undefined
                 }
                 style={{ ...inputStyle, marginTop: 8 }}
               >
@@ -1259,6 +1279,25 @@ export default function AdminPage() {
                   role="alert"
                 >
                   ⚠️ Failed to load models: {modelsError}
+                </div>
+              )}
+              {!loadingModels && !modelsError && modelsEmptyDetail && (
+                <div
+                  id="models-empty"
+                  style={{
+                    marginTop: 8,
+                    padding: '10px 12px',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                    background: 'var(--warning-bg, #fff8e1)',
+                    color: 'var(--warning-text, #6b5200)',
+                    border: '1px solid #ffe08a',
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  ⚠️ {modelsEmptyDetail}
                 </div>
               )}
             </div>

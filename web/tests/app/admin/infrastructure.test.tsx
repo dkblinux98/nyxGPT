@@ -1964,7 +1964,12 @@ describe('InfrastructurePage', () => {
         screen.getByText(/macOS \(EC2 Mac\) — remote Homebrew tap \+ brew services/)
       ).toBeInTheDocument();
     });
-    expect(screen.getByText(/no self-heal watchdog/)).toBeInTheDocument();
+    // #4150 moved this claim rather than dropping it: the row used to fold the
+    // watchdog into the nested-virtualization clause, and self-healing being
+    // off is a default this bootstrap does not change, not a platform limit.
+    // Asserted on the state it now reports, because the point of the row is
+    // that a Mac's shape is named rather than guessed.
+    expect(screen.getByText(/Self-healing is off/)).toBeInTheDocument();
     first.unmount();
 
     server.use(
@@ -2531,12 +2536,10 @@ describe('InfrastructurePage', () => {
     expect(
       screen.getByText(/READY means the workload is running, not that telemetry is reaching it/)
     ).toBeInTheDocument();
-    // `getAllBy*`, not `getBy*`: the page names `nyxgpt ops status` in more
-    // than one place now, and `getByText` throws on a second match. The
-    // assertion is unchanged -- this card has to point at that command -- it
-    // just no longer breaks when some other card points at it too. (This was
-    // already failing on v3.0.0 before #4133 touched this file; fixed here
-    // rather than left red, since the fix preserves the claim exactly.)
+    // `getAllBy*`: several cards now point at the same command (#4150 and
+    // #4133 each added another), and this assertion is about the pointer
+    // being offered beside the caveat, not about it appearing exactly once
+    // on the page.
     expect(screen.getAllByText('nyxgpt ops status').length).toBeGreaterThan(0);
   });
 

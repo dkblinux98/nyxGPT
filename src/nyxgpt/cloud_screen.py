@@ -15,13 +15,27 @@ Command Wrapping requirement forbids.
 `nyxgpt cloud screen` is that plumbing, wrapped:
 
 1. **Enable Screen Sharing on the Mac**, over the same SSH path every other
-   remote step uses, with the VNC credential nyxGPT generated -- so no account
-   password is ever set and nothing is typed interactively.
+   remote step uses, with the credential nyxGPT generated -- nothing is typed
+   interactively and no password is prompted for.
 2. **Make it loopback-only before it listens.** See `render_enable_script`:
    the packet filter rule goes in *first*, and the agent is not activated if
    it could not be loaded.
 3. **Forward 5900 over SSH** and record the tunnel, so `nyxgpt cloud status`
    can report whether the path is open.
+
+**The client the command names is the client that has to work (#4121, owner
+acceptance 2026-10-04).** The first delivered version set Apple's *legacy VNC*
+password only, and justified skipping the account password with it. That is
+true for a third-party VNC client and false for the one this command's own
+output points at: `vnc://localhost:<port>` is handed to Apple's Screen
+Sharing.app, which prefers the security types it offers first -- 30
+(Diffie-Hellman) and 33 -- and both authenticate against a real **account**
+password. The operator was therefore handed a password their client
+structurally could not use, and `open vnc://...` came back "`ec2-user` and
+password rejected". The one generated credential is now set as the account
+password *and* the VNC password, so Apple's client and a third-party one both
+take it. Setting it does not weaken anything: 5900 stays loopback-only and the
+account is reachable only through the operator's own SSH forward.
 
 **The constraint that is not traded away.**
 `product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md`: "Nothing is ever
@@ -55,12 +69,21 @@ from typing import Any
 from nyxgpt import cloud_deploy, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 
-# Apple's Screen Sharing / VNC port. Fixed on both ends: the remote half is
-# macOS's own `vnc-server` service port, and the local half defaults to the
-# same number so a VNC client pointed at `localhost` needs no configuration.
-# `--local-port` moves the local half for an operator whose own Mac is already
-# sharing its screen on 5900.
+# Apple's Screen Sharing / VNC port, on the *remote* end. Fixed and not ours
+# to move: macOS's `com.apple.screensharing` job binds it and the launchd
+# plist is SIP-protected, which is the whole reason the pf anchor below exists.
 SCREEN_PORT = 5900
+
+# The *local* end of the forward, and deliberately not 5900 (#4121, owner
+# acceptance 2026-10-04). On a macOS workstation `vnc://localhost:5900` is
+# where the operator's OWN Screen Sharing lives, so Apple's client resolves
+# that address to the local machine and refuses with "you can't control your
+# own screen" -- in the client, before the forward is ever consulted, which
+# means the operator never sees nyxGPT's own message naming the port. macOS is
+# the operator platform this feature exists for, so 5900 was a default that is
+# always wrong exactly where it is always used. 5901 is VNC display `:1`, the
+# conventional next one, and the port the owner connected on.
+DEFAULT_LOCAL_SCREEN_PORT = 5901
 
 # The screen tunnel's pid, the Mac it reaches and what was configured on it, so
 # `--stop`, `--status` and `nyxgpt cloud status` can find a path opened by an
@@ -95,6 +118,15 @@ PF_ANCHOR_FILE = f"/etc/pf.anchors/{PF_ANCHOR_NAME}"
 # password that does not work. 8 characters out of this 58-character alphabet
 # is ~47 bits, for a listener that is reachable only from the Mac's own
 # loopback interface through an authenticated SSH tunnel.
+#
+# The same credential is the login account's password since #4121's owner
+# acceptance round, and 8 characters is short for one. The ceiling is still
+# Apple's, not a choice: one credential that both clients accept cannot be
+# longer than the shorter of the two mechanisms allows. What makes it adequate
+# is the same thing that makes the listener adequate -- the Mac's security
+# group is TCP 22 only, pf drops every non-loopback connection to 5900, and
+# the account is reachable solely through the operator's authenticated SSH
+# forward. Nothing on a reachable surface takes this password.
 VNC_PASSWORD_LENGTH = 8
 
 # Look-alike characters removed (O/0, l/1/I) because this is a secret a human
@@ -168,7 +200,7 @@ def rotate_vnc_password() -> str:
 def render_enable_script(login_user: str, password: str) -> str:
     """Render the script that enables Screen Sharing on the Mac, loopback-only.
 
-    Three properties this ordering exists for, in the order they are enforced:
+    Four properties this ordering exists for, in the order they are enforced:
 
     1. **The firewall rule is loaded before anything listens.** macOS's
        Screen Sharing job binds 5900 on all interfaces, so activating the
@@ -179,17 +211,33 @@ def render_enable_script(login_user: str, password: str) -> str:
     2. **The rule is read back, not assumed.** `pfctl -f` exits 0 on a
        ruleset it merely warned about, so the script re-reads the anchor and
        refuses if its own block rule is not in it.
-    3. **No account password is ever set.** `-setvnclegacy -vnclegacy yes
-       -setvncpw` is what lets a third-party VNC client authenticate with the
-       generated credential, which is what retires the `sudo passwd ec2-user`
-       step from the hand-rolled flow this command replaces.
+    3. **The credential is written, and verified, BEFORE anything listens.**
+       One generated secret becomes both the login account's password (via
+       `dscl . -passwd`, checked with `dscl . -authonly`) and Apple's legacy
+       VNC password. The account half is what makes Apple's own Screen
+       Sharing.app work -- see the module docstring for why the VNC half
+       alone could not. `dscl` and not `sysadminctl -resetPasswordFor`: the
+       obvious API fails on an EC2 Mac with "Operation is not permitted
+       without secure token unlock", while root may set a password through
+       `dscl` without presenting the old one.
+    4. **The process that authenticates is restarted after the write, and the
+       ordering is measured rather than asserted.** `kickstart -restart
+       -agent` cycles *ARDAgent*, which is not the listener: measured across
+       one, the pid on 5900 was 7927 before and 7927 after. `screensharingd`
+       -- the `com.apple.screensharing` launchd job -- is what serves and
+       authenticates on 5900, so that is what gets kickstarted. The script
+       then compares the listener's start time against the credential's write
+       time and fails if the listener is the older of the two; on the owner's
+       host before this fix, `screensharingd` started 4m21s *before* the VNC
+       password was written, so it never loaded it.
 
     `password` is interpolated into the script *text*, which travels on the
     SSH connection's stdin. It is therefore in no argv on the operator's
     machine, in no shell history, and in nothing sshd logs as a requested
-    command. It does reach `kickstart`'s argv on the Mac itself, which has no
-    stdin interface for it; that machine is single-tenant and the operator's
-    own, and it is the narrowest exposure available.
+    command. It does reach `kickstart`'s and `dscl`'s argv on the Mac itself,
+    neither of which has a stdin interface for it; that machine is
+    single-tenant and the operator's own, and it is the narrowest exposure
+    available.
     """
     if not _VNC_PASSWORD_RE.match(password):
         raise CloudCommandError(
@@ -262,16 +310,99 @@ if ! pfctl -a "$PF_ANCHOR_NAME" -s rules | grep -q {shlex.quote(PF_RULE_MARKER)}
     exit 1
 fi
 
-# --- 2. Screen Sharing on, for the login user only ---------------------
-"$KICKSTART" -activate -configure -access -on -users "$TARGET_USER" -privs -all -restart -agent
+# --- 2. The credential, BEFORE anything listens ------------------------
+# One generated secret, two mechanisms, because Apple's own client and a
+# third-party one authenticate against different things:
+#
+#   security type 30 / 33 (Apple DH)  -> the ACCOUNT password  <- what
+#                                        Screen Sharing.app offers first and
+#                                        prefers, so this is the one that
+#                                        decides whether `open vnc://...`
+#                                        works at all
+#   security type 2 (VNC legacy)      -> the VNC password
+#
+# Read off the live server's RFB handshake on 127.0.0.1:5900 during #4121's
+# acceptance round, where only type 2 had been configured and Apple's client
+# consequently reported "$TARGET_USER and password rejected".
+#
+# `dscl . -passwd` and not `sysadminctl -resetPasswordFor`: the obvious API
+# fails on an EC2 Mac with "Operation is not permitted without secure token
+# unlock". root may set a password through dscl without presenting the old one.
+if ! dscl . -passwd "/Users/$TARGET_USER" "$NYXGPT_VNC_PASSWORD"; then
+    echo "error: could not set the login password for $TARGET_USER with \\`dscl . -passwd\\`," >&2
+    echo "       so Apple's Screen Sharing client would reject the credential nyxGPT" >&2
+    echo "       generated. Screen Sharing was NOT enabled and nothing is listening." >&2
+    exit 1
+fi
+# Demonstrated, not assumed -- the same discipline the pf rule above gets.
+if ! dscl . -authonly "$TARGET_USER" "$NYXGPT_VNC_PASSWORD"; then
+    echo "error: the password was set but \\`dscl . -authonly\\` would not authenticate with" >&2
+    echo "       it, so it is not the credential this account will accept. Screen Sharing" >&2
+    echo "       was NOT enabled and nothing is listening." >&2
+    exit 1
+fi
+echo "nyxgpt: the generated credential authenticates as $TARGET_USER (dscl -authonly: OK)."
 
-# --- 3. The VNC credential, so no ACCOUNT password is ever set ---------
-# This is what retires the account-password step from the hand-rolled flow:
-# a third-party VNC client authenticates against this instead of against the
-# login account, so the Mac's own user keeps having no password. The word the
-# unit test greps for is deliberately absent from this whole script.
+# And the legacy VNC password, so the SAME credential also works from a
+# third-party VNC client that selects security type 2.
 "$KICKSTART" -configure -clientopts -setvnclegacy -vnclegacy yes \\
     -setvncpw -vncpw "$NYXGPT_VNC_PASSWORD" >/dev/null
+CREDENTIAL_WRITTEN_AT="$(date +%s)"
+echo "nyxgpt: credential written at epoch $CREDENTIAL_WRITTEN_AT, before anything listens."
+
+# --- 3. Screen Sharing on, for the login user only ---------------------
+"$KICKSTART" -activate -configure -access -on -users "$TARGET_USER" -privs -all
+
+# --- 4. Restart the process that actually authenticates on 5900 --------
+# NOT `kickstart -restart -agent`, which cycles ARDAgent and leaves the
+# listener's pid unchanged (7927 before, 7927 after, measured). `screensharingd`
+# belongs to this launchd job, and only kickstarting it replaces the process --
+# which is what makes it read the credential written above.
+if ! launchctl kickstart -k system/com.apple.screensharing; then
+    echo "error: Screen Sharing was activated but system/com.apple.screensharing could not" >&2
+    echo "       be restarted, so the listener may still hold an older credential and would" >&2
+    echo "       reject this one. Nothing is reachable off this host either way -- the" >&2
+    echo "       loopback-only rule is loaded. Re-run \\`nyxgpt cloud screen\\`." >&2
+    exit 1
+fi
+
+# --- 5. Measure the ordering instead of trusting the sequence above ----
+# "The credential was written first" is a claim about two processes, and the
+# script's own line order is not evidence for it: the listener may have been
+# running before this script started. So read it off the machine.
+LISTENER_PID=""
+for _ in $(seq 1 15); do
+    LISTENER_PID="$(lsof -nP -iTCP:"$SCREEN_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+    if [ -n "$LISTENER_PID" ]; then
+        break
+    fi
+    sleep 1
+done
+if [ -z "$LISTENER_PID" ]; then
+    echo "error: nothing is listening on port $SCREEN_PORT after activating Screen Sharing," >&2
+    echo "       so the screen path would report open and then fail to connect." >&2
+    exit 1
+fi
+LISTENER_LSTART="$(ps -o lstart= -p "$LISTENER_PID" 2>/dev/null | sed 's/^ *//' || true)"
+LISTENER_STARTED_AT=""
+if [ -n "$LISTENER_LSTART" ]; then
+    LISTENER_STARTED_AT="$(date -j -f '%a %b %d %H:%M:%S %Y' "$LISTENER_LSTART" +%s 2>/dev/null || true)"
+fi
+if [ -n "$LISTENER_STARTED_AT" ]; then
+    echo "nyxgpt: listener pid $LISTENER_PID started at epoch $LISTENER_STARTED_AT ($LISTENER_LSTART)."
+    if [ "$LISTENER_STARTED_AT" -lt "$CREDENTIAL_WRITTEN_AT" ]; then
+        echo "error: the process listening on $SCREEN_PORT started BEFORE the credential was" >&2
+        echo "       written, so it is authenticating against an older password and Apple's" >&2
+        echo "       Screen Sharing client will reject this one. Nothing is reachable off" >&2
+        echo "       this host. Re-run \\`nyxgpt cloud screen\\` to restart the listener." >&2
+        exit 1
+    fi
+    echo "nyxgpt: verified -- the listener is newer than the credential, so it loaded it."
+else
+    echo "nyxgpt: warning -- ps would not report a start time for pid $LISTENER_PID, so the" >&2
+    echo "        credential-before-listener ordering could not be measured on this host." >&2
+    echo "        The script's own order enforces it; this check only demonstrates it." >&2
+fi
 
 echo "nyxgpt: Screen Sharing is enabled for $TARGET_USER on 127.0.0.1:$SCREEN_PORT only."
 """
@@ -304,6 +435,12 @@ fi
 
 "$KICKSTART" -deactivate -configure -access -off
 echo "nyxgpt: Screen Sharing is off. The loopback-only packet-filter rule is left in place."
+# Said rather than quietly left true (D-018): the credential `nyxgpt cloud
+# screen` generated is this account's login password, and turning the listener
+# off does not unset it. Nothing can use it -- the security group is TCP 22
+# only -- and clearing it would mean handing `dscl . -passwd` an empty secret
+# on a machine whose SSH access does not depend on it either way.
+echo "nyxgpt: the generated credential is still this account's login password."
 """
 
 
@@ -390,13 +527,17 @@ def _remote_failure_detail(
 # --- The local half: the SSH tunnel ------------------------------------
 
 
-def screen_argv(target: cloud_deploy.DeployTarget, local_port: int = SCREEN_PORT) -> list[str]:
+def screen_argv(
+    target: cloud_deploy.DeployTarget, local_port: int = DEFAULT_LOCAL_SCREEN_PORT
+) -> list[str]:
     """Build the `ssh -N -L <local>:127.0.0.1:5900` argv for the screen path."""
     options = ["-N", "-L", f"{local_port}:127.0.0.1:{SCREEN_PORT}"]
     return cloud_deploy.ssh_argv(target, options=options)
 
 
-def screen_invocation(target: cloud_deploy.DeployTarget, local_port: int = SCREEN_PORT) -> str:
+def screen_invocation(
+    target: cloud_deploy.DeployTarget, local_port: int = DEFAULT_LOCAL_SCREEN_PORT
+) -> str:
     """The raw `ssh` the wrapped command runs, for diagnostics only.
 
     Never printed as an instruction (CLAUDE.md's wrapper requirement);
@@ -427,11 +568,15 @@ def screen_status() -> dict[str, Any]:
     running = cloud_deploy._process_alive(pid)
     if recorded and pid and not running:
         cloud_deploy._write_json(SCREEN_STATE_FILE, {**recorded, "pid": 0})
-    local_port = int(recorded.get("local_port") or SCREEN_PORT)
+    local_port = int(recorded.get("local_port") or DEFAULT_LOCAL_SCREEN_PORT)
     return {
         "running": running,
         "pid": pid if running else 0,
         "host": str(recorded.get("host") or ""),
+        # Who to sign in as in the VNC client. The generated credential is this
+        # account's password since #4121's acceptance round, so naming the
+        # account is half of what the operator needs to connect.
+        "login_user": str(recorded.get("user") or ""),
         "local_port": local_port,
         # The address to point a VNC client at. Always a `localhost` one: there
         # is no instance-facing URL for the screen any more than there is one
@@ -447,7 +592,7 @@ def screen_status() -> dict[str, Any]:
 
 
 def start_screen_tunnel(
-    target: cloud_deploy.DeployTarget, local_port: int = SCREEN_PORT
+    target: cloud_deploy.DeployTarget, local_port: int = DEFAULT_LOCAL_SCREEN_PORT
 ) -> dict[str, Any]:
     """Forward `local_port` to the Mac's loopback 5900.
 
@@ -457,10 +602,27 @@ def start_screen_tunnel(
     next thing the operator does is open a VNC client, and a command that
     blocked until Ctrl-C would make them open a second terminal to do it. A
     later `--stop` finds the path by its recorded pid.
+
+    An already-open path is reported rather than duplicated -- but only when it
+    is the path that was *asked for*. An open forward on a different local port
+    does not satisfy `--local-port N`, and reporting it as though it did is
+    what made that flag look inert (#4121, owner acceptance 2026-10-04): with a
+    path alive on 5900, `--local-port 5901` printed 5900 and opened nothing.
+    The open one is replaced instead, because the only reason to name a port is
+    that the current one does not work from the operator's machine.
     """
     existing = screen_status()
+    replaced_local_port = 0
     if existing["running"]:
-        return {"action": "screen", "already_running": True, **existing}
+        if int(existing["local_port"]) == local_port:
+            return {
+                "action": "screen",
+                "already_running": True,
+                "replaced_local_port": 0,
+                **existing,
+            }
+        replaced_local_port = int(existing["local_port"])
+        stop_screen_tunnel()
 
     argv = screen_argv(target, local_port)
     recorded = screen_state()
@@ -484,8 +646,9 @@ def start_screen_tunnel(
         raise CloudCommandError(
             "Could not open the screen tunnel"
             + (f": {detail}" if detail else ".")
-            + f"\nLocal port {local_port} may already be in use -- a Mac that is sharing its "
-            "own screen holds 5900. `--local-port <port>` forwards to a different one."
+            + f"\nLocal port {local_port} may already be in use on this machine -- a Mac that "
+            "is sharing its own screen holds 5900, and anything else may hold the rest. "
+            "`--local-port <port>` forwards from a different one."
         )
     cloud_deploy._write_json(
         SCREEN_STATE_FILE,
@@ -498,7 +661,12 @@ def start_screen_tunnel(
             "remote_port": SCREEN_PORT,
         },
     )
-    return {"action": "screen", "already_running": False, **screen_status()}
+    return {
+        "action": "screen",
+        "already_running": False,
+        "replaced_local_port": replaced_local_port,
+        **screen_status(),
+    }
 
 
 def stop_screen_tunnel() -> dict[str, Any]:
@@ -635,6 +803,7 @@ def _print_open_summary(status: dict[str, Any], *, show_password: bool) -> None:
     """Tell the operator how to connect, without putting the secret on screen."""
     print(f"\nScreen path open to {status['host']} (pid {status['pid']}).")
     cloud_deploy._print_row("Address", status["url"])
+    cloud_deploy._print_row("Sign in as", status["login_user"] or cloud_deploy.DEFAULT_SSH_USER)
     if show_password:
         cloud_deploy._print_row("Password", read_vnc_password())
     else:
@@ -644,8 +813,10 @@ def _print_open_summary(status: dict[str, Any], *, show_password: bool) -> None:
             f"(`{status['command']} --show-password` prints it)",
         )
     print(
-        "\nApple's VNC authentication uses the password alone, so there is no account "
-        "password on that Mac to set or know."
+        "\nApple's own Screen Sharing client takes that address and that credential: it "
+        "authenticates against the login account, whose password nyxGPT set to the same "
+        "generated secret. A third-party VNC client works too -- the secret is also the "
+        "Mac's legacy VNC password."
     )
     print(f"Close the path again with `{status['stop_command']}`.")
 
@@ -666,6 +837,7 @@ def _print_status_summary(status: dict[str, Any], *, show_password: bool = False
             else "Screen Sharing is not enabled by nyxGPT on this machine's record"
         ),
     )
+    cloud_deploy._print_row("Sign in as", status["login_user"] or "(no path recorded yet)")
     if show_password:
         cloud_deploy._print_row("Credential", read_vnc_password() or "(none generated yet)")
     else:
@@ -720,10 +892,15 @@ def screen_command(args: argparse.Namespace) -> int:
             print(f"{verb} VNC credential and stored it in {vnc_password_path()}.")
         configure_remote_screen_sharing(target, password)
         record_configured(target)
-        local_port = int(getattr(args, "local_port", None) or SCREEN_PORT)
+        local_port = int(getattr(args, "local_port", None) or DEFAULT_LOCAL_SCREEN_PORT)
         result = start_screen_tunnel(target, local_port)
         if result.get("already_running"):
             print("\nA screen path is already open.")
+        elif result.get("replaced_local_port"):
+            print(
+                f"\nA screen path was already open on localhost:{result['replaced_local_port']}. "
+                f"Closed it and re-opened on {local_port}, which is what was asked for."
+            )
         _print_open_summary(screen_status(), show_password=show_password)
         return 0
     except CloudCommandError as exc:

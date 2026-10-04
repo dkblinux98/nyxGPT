@@ -1496,15 +1496,31 @@ export default function InfrastructurePage() {
                 {/* #3867: the two target OSes are provisioned by different
                     bootstraps and do not leave the instance in the same
                     shape — an EC2 Mac runs the Homebrew formulas under
-                    launchd with no observability stack and no self-heal
-                    watchdog. Reported here because nothing else on this page
-                    distinguishes them. Observed, never driven: the pointer
-                    is `nyxgpt cloud deploy --os`. */}
+                    launchd and can host no containers. Reported here because
+                    nothing else on this page distinguishes them. Observed,
+                    never driven: the pointer is `nyxgpt cloud deploy --os`.
+
+                    #4150: this row used to read "no observability stack, no
+                    self-heal watchdog", which an operator could reasonably
+                    read as the full list of what a Mac gives up — and the
+                    model backend was quietly missing too. It is now installed
+                    there (api, web AND ollama), so the row says what the Mac
+                    HAS before what it lacks, and attributes the gap to the
+                    container tier rather than to a vague shortfall.
+
+                    The nested-virtualization clause covers the CONTAINER TIER
+                    and stops there. Self-healing being off is not a platform
+                    limit: the watchdog is a thread inside the api process
+                    (docs/self-healing.md), it ships disabled everywhere, and
+                    this bootstrap simply does not turn it on. Attributing it
+                    to the platform would repeat #4150's own mistake one
+                    component over, so it is named separately, as a default,
+                    with the page that toggles it. */}
                 <Row
                   label="Target OS"
                   value={
                     cloud.os_family === 'macos'
-                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services; no observability stack, no self-heal watchdog'
+                      ? 'macOS (EC2 Mac) — remote Homebrew tap + brew services: api, web and the ollama model backend. No containers (no nested virtualization), so no observability stack and no Cassandra. Self-healing is off — a default this bootstrap does not change, not a platform limit; turn it on from the Self-Heal page.'
                       : cloud.os_family === 'linux'
                         ? 'Linux — published PyPI release + systemd --user, via nyxgpt ops install'
                         : 'not recorded — this deploy predates the `nyxgpt cloud deploy --os` flag'

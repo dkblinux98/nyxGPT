@@ -46,6 +46,15 @@ name: macOS Brew Smoke
 #                reached owner acceptance over green runs. Needs a published
 #                candidate, so it runs on dispatch and after an rc cut, never
 #                on a PR.
+#   mac-model-backend  Does the EC2 Mac bootstrap's model backend actually
+#                work (#4150)? `brew install ollama`, `brew services start`,
+#                and the configured-model pull, executed -- with the
+#                install-without-pull near-miss measured in between, because a
+#                fix that stopped at the install would leave chat just as
+#                broken while changing the symptom from a 502 to an empty list.
+#                EC2 Mac hardware is a documented D-006 exception; this runner
+#                is not that hardware but it is arm64 macOS with the same
+#                Homebrew, and it runs the commands rather than reading them.
 #   stable-over-candidate  Does `conflicts_with` hold when the counterpart is
 #                actually there, in BOTH install orders? `keg-install`'s
 #                throwaway tap deliberately carries no stable formula, which
@@ -151,6 +160,20 @@ on:
       # it is what serves the pair the assertion reads.
       - 'web/src/lib/webVersion.ts'
       - 'web/src/app/api/info/route.ts'
+      # The EC2 Mac bootstrap and the model-bootstrap module behind it (#4150).
+      # These two are what the `mac-model-backend` job below exists for: the
+      # template's Ollama block is a claim about what happens when a real macOS
+      # machine runs it, and `model_bootstrap.py` decides which models get
+      # pulled. Both are small and cold, so filtering on them costs a macOS
+      # runner only when the behavior under test actually changes.
+      #
+      # `src/nyxgpt/ops.py` is still deliberately absent -- see the note above:
+      # it changes on nearly every PR, and `ops required-models` is a thin
+      # wrapper over `model_bootstrap`, which IS filtered. The parity test and
+      # tests/unit/test_models_endpoints.py pin the rest on every PR, cheaply.
+      - 'scripts/cloud/ec2-user-data-macos.sh.tmpl'
+      - 'scripts/cloud/ec2-user-data-linux.sh.tmpl'
+      - 'src/nyxgpt/model_bootstrap.py'
       - '.github/workflows/macos-brew-smoke.yml'
   workflow_dispatch:
     inputs:
@@ -3088,3 +3111,321 @@ jobs:
             echo "--- $log ---"
             cat "$log" || true
           done
+
+  # --- Does the EC2 Mac bootstrap's model backend actually work? (#4150) ----
+  #
+  # The question this job answers. `nyxgpt cloud deploy --os macos` shipped a
+  # Mac with a healthy api, a healthy web and no Ollama at all: the macOS
+  # user-data template installed the two kegs and stopped, so
+  # `GET /api/v1/models` 502'd on `[Errno 61] Connection refused` to
+  # 127.0.0.1:11434 and chat could not work. The fix adds Homebrew's ollama,
+  # `brew services start ollama`, and the configured-model pull to that
+  # template -- three runtime claims about what happens on a macOS machine,
+  # and `tests/unit/test_cloud_user_data_template_parity.py` can only prove
+  # the template *says* them.
+  #
+  # Why this is the accepted evidence. EC2 Mac hardware is one of the few
+  # genuine D-006 exceptions (docs/live-verification-ci.md) -- CI cannot
+  # provision a Dedicated Host. A GitHub-hosted macos-15 runner is not EC2 Mac,
+  # but it is arm64 macOS with the same Homebrew, and it executes the exact
+  # commands the bootstrap runs rather than inspecting them. End-to-end on real
+  # EC2 Mac hardware is the owner's acceptance test; this is what has to be
+  # green before it gets there.
+  #
+  # The condition is injected, not hoped for (#3753's lesson). Between
+  # installing Ollama and pulling into it the job MEASURES the near-miss state
+  # -- a running Ollama with an empty store -- and asserts the API reports it
+  # differently from an unreachable one. That matters because a fix that
+  # installed Ollama and forgot the pull would leave chat just as broken while
+  # changing the symptom from a 502 to an empty list, and this job would have
+  # passed. The pull is a separate step on macOS precisely because on Linux it
+  # lives inside `nyxgpt ops install`, which an EC2 Mac cannot run.
+  mac-model-backend:
+    name: The model backend, installed and pulled on real macOS
+    # PRs and dispatch. Not on the rc-cut `workflow_call` path: that caller
+    # wants the published-tap job, and this one proves a property of the
+    # working tree's bootstrap, which a published candidate does not carry.
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The CLI the bootstrap drives. Installed from the checkout rather than
+      # the tap: the claim under test is about THIS tree's
+      # `ops required-models` and THIS tree's macOS template, and a published
+      # keg carries neither.
+      - name: Install the nyxgpt CLI from the working tree
+        run: |
+          set -euo pipefail
+          python -m venv "$HOME/cli-venv"
+          "$HOME/cli-venv/bin/python" -m pip install --quiet --upgrade pip
+          "$HOME/cli-venv/bin/python" -m pip install --quiet -e '.[dev]'
+          echo "$HOME/cli-venv/bin" >> "$GITHUB_PATH"
+
+      # Exactly what the bootstrap seeds, by the same route: a copy of the
+      # packaged example.config.ini. So the models this job pulls are the
+      # models a deployed instance requires, and a change to the shipped
+      # default changes what is tested here without anyone editing this file.
+      - name: Seed ~/.nyxGPT/config.ini the way the bootstrap does
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.nyxGPT"
+          EXAMPLE_CONFIG="$(python -c \
+            "import importlib.resources as r; print(r.files('nyxgpt.resources').joinpath('example.config.ini'))")"
+          cp "$EXAMPLE_CONFIG" "$HOME/.nyxGPT/config.ini"
+          nyxgpt ops required-models --help >/dev/null
+          python - <<'PY'
+          from nyxgpt.config import load_config
+          from nyxgpt.model_bootstrap import required_models
+          wanted = required_models(load_config(None))
+          assert wanted, "the seeded config requires no models -- nothing to test"
+          for m in wanted:
+              print(f"required {m.role} model: {m.name} (from {m.setting})")
+          PY
+
+      # The starting state the defect left behind, asserted rather than
+      # assumed: nothing named ollama, and nothing on :11434.
+      - name: Assert the machine starts with no model backend
+        run: |
+          set -euo pipefail
+          if command -v ollama >/dev/null 2>&1; then
+            echo "This runner already has ollama; the install step below would be a no-op" >&2
+            exit 1
+          fi
+          if curl -fsS --max-time 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+            echo "Something is already listening on :11434" >&2
+            exit 1
+          fi
+          echo "OK: no ollama, nothing on :11434 -- the state an --os macos deploy used to leave"
+
+      # The API's answer in that state, measured. This is the 502 from the
+      # owner's acceptance report, reproduced here, so the assertion after the
+      # pull is a comparison and not a lone claim.
+      - name: Measure what the API says with no Ollama at all
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from nyxgpt.app import app
+
+          response = TestClient(app, raise_server_exceptions=False).get("/api/v1/models")
+          print(response.status_code, response.text)
+          assert response.status_code == 502, "an unreachable Ollama must be an error"
+          message = response.json()["error"]["message"]
+          assert "Nothing is answering" in message, message
+          assert "ops restart ollama" in message, message
+          PY
+
+      # Homebrew's formula, not Ollama's official installer. ollama ships an
+      # arm64 bottle, so this is a download-and-link with no source build --
+      # which is why it does not touch the pip/TLS sandbox failure that blocks
+      # `nyxgpt-api@` source installs on macOS 27 (#4121).
+      - name: brew install ollama
+        run: |
+          set -euo pipefail
+          brew install ollama
+          BREW_PREFIX="$(brew --prefix)"
+          test -x "$BREW_PREFIX/bin/ollama" \
+            || { echo "no ollama binary at $BREW_PREFIX/bin/ollama" >&2; exit 1; }
+          echo "OK: $("$BREW_PREFIX/bin/ollama" --version)"
+
+      - name: brew services start ollama, and wait for :11434
+        run: |
+          set -euo pipefail
+          brew services start ollama
+          for _ in $(seq 1 60); do
+            if curl -fsS --max-time 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+              echo "OK: Ollama answering on :11434"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Ollama never started answering on :11434 after 120s" >&2
+          brew services list || true
+          exit 1
+
+      # THE INJECTED CONDITION. Installing Ollama is not the fix; this is the
+      # state a fix that stopped there would ship, and it is measured rather
+      # than reasoned about. If these assertions ever fail because the store is
+      # pre-warmed, the step below proves nothing and says so.
+      - name: Prove install-without-pull is still broken, and reads differently
+        run: |
+          set -euo pipefail
+          TAGS="$(curl -fsS http://127.0.0.1:11434/api/tags)"
+          echo "$TAGS"
+          python - "$TAGS" <<'PY'
+          import json
+          import sys
+
+          from fastapi.testclient import TestClient
+
+          from nyxgpt.app import app
+          from nyxgpt.config import load_config
+          from nyxgpt.model_bootstrap import required_models
+
+          installed = json.loads(sys.argv[1]).get("models") or []
+          assert installed == [], (
+              "Ollama already holds models, so this step cannot demonstrate the "
+              f"install-without-pull state: {installed}"
+          )
+
+          response = TestClient(app, raise_server_exceptions=False).get("/api/v1/models")
+          print(response.status_code, response.text)
+          # A 200 and an empty list: the request succeeded and the honest answer
+          # is that there is nothing to serve. Chat is still broken.
+          assert response.status_code == 200, response.text
+          body = response.json()
+          assert body["models"] == [], body
+          detail = body["detail"]
+          # And it does NOT read like the unreachable case measured earlier.
+          assert "holds no models" in detail, detail
+          assert "Nothing is answering" not in detail, detail
+          assert "ops required-models" in detail, detail
+          # Naming the models this install requires, read from configuration.
+          for model in required_models(load_config(None)):
+              assert model.name in detail, (model.name, detail)
+          print("OK: install-without-pull is a distinct, named, still-broken state")
+          PY
+
+      # The second half of the bootstrap's model block, run as the bootstrap
+      # runs it. No model name is passed: the command reads
+      # `[nyxgpt] default_model` and `[rag] embedding_model` from the config
+      # seeded above.
+      - name: nyxgpt ops required-models
+        run: |
+          set -euo pipefail
+          nyxgpt ops required-models
+
+      - name: Assert :11434 now lists every configured model
+        run: |
+          set -euo pipefail
+          TAGS="$(curl -fsS http://127.0.0.1:11434/api/tags)"
+          echo "$TAGS"
+          python - "$TAGS" <<'PY'
+          import json
+          import sys
+
+          from nyxgpt.config import load_config
+          from nyxgpt.model_bootstrap import normalize_model_name, required_models
+
+          installed = {
+              normalize_model_name(str(m.get("name") or m.get("model") or ""))
+              for m in (json.loads(sys.argv[1]).get("models") or [])
+          }
+          print("installed:", sorted(installed))
+          for model in required_models(load_config(None)):
+              assert normalize_model_name(model.name) in installed, (
+                  f"{model.role} model {model.name!r} was not pulled; Ollama holds "
+                  f"{sorted(installed)}"
+              )
+          print("OK: every configured model is in the store Ollama serves from")
+          PY
+
+      # The acceptance criterion, through the product's own endpoint rather
+      # than Ollama's: a 200 with at least one model and no remediation text.
+      - name: Assert GET /api/v1/models answers 200 with a model
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+
+          from nyxgpt.app import app
+          from nyxgpt.config import get_default_model, load_config
+
+          response = TestClient(app, raise_server_exceptions=False).get("/api/v1/models")
+          print(response.status_code, response.text)
+          assert response.status_code == 200, response.text
+          body = response.json()
+          assert body["models"], "the endpoint still reports no models"
+          assert "detail" not in body, body
+          chat_model = get_default_model(load_config(None))
+          assert any(name.startswith(chat_model.split(":")[0]) for name in body["models"]), (
+              chat_model,
+              body["models"],
+          )
+          print("OK: /api/v1/models answers 200 with the configured chat model")
+          PY
+
+      # Idempotent, because the bootstrap is re-run by every re-deploy: a
+      # second pass must report the models present and download nothing.
+      - name: Assert a re-run is a no-op
+        run: |
+          set -euo pipefail
+          OUT="$(nyxgpt ops required-models 2>&1)"
+          echo "$OUT"
+          echo "$OUT" | grep -qi "already installed" \
+            || { echo "a re-run did not report the models as already present" >&2; exit 1; }
+
+      # Enabled at boot, not just running now. A service started in the wrong
+      # launchd domain works until the instance reboots and is then silently
+      # gone -- which on a Dedicated Host is discovered expensively.
+      #
+      # Registration is a launchd fact, not a state word (D-032(d)): the plist
+      # in ~/Library/LaunchAgents under EITHER of Homebrew's label schemes is
+      # what gets loaded at the next login, so that file is what the
+      # boot-survival claim rests on. `ops._brew_service_will_restart` is the
+      # product's own answer to that question -- plist first, then launchctl --
+      # and is called here rather than re-implemented, because the last two
+      # re-implementations of this read in this file both measured the wrong
+      # thing.
+      #
+      # The Status column is NOT grepped, and that is not a style choice:
+      # D-032(f) measured, in this same workflow, that brew colours its state
+      # tokens and that the escapes survive a pipe (`ESC[39mnoneESC[0m` through
+      # `cat -v`, run 32233162053; `ESC[31merror` through `awk`, run
+      # 32228088507). An ANSI-wrapped `started` matches no literal, so the
+      # `brew services list | grep -E '^ollama\s+(started|scheduled)'` this
+      # step used to run could fail on a machine where ollama is registered
+      # and running -- a *required* gate measuring its own parsing instead of
+      # the machine. Where the state is genuinely wanted (is it running right
+      # now, as opposed to merely registered) it comes through
+      # `brew_services.parse_services_list`, the one chokepoint every state
+      # read in the product goes through, which strips the escapes first.
+      - name: Assert the ollama service is registered with brew services
+        run: |
+          set -euo pipefail
+          brew services list || true
+          python - <<'PY'
+          import subprocess
+
+          from nyxgpt import brew_services, ops
+
+          out = subprocess.run(
+              ["brew", "services", "list"], capture_output=True, text=True, check=True
+          ).stdout
+          state = brew_services.parse_services_list(out).get("ollama", "<absent>")
+          candidates = ops._brew_service_plist_candidates("ollama")
+          present = [str(path) for path in candidates if path.exists()]
+          print("state (escapes stripped):", state)
+          print("launchd plists searched:", [str(path) for path in candidates])
+          print("launchd plists present: ", present)
+
+          # Boot survival: does anything start it again at the next login?
+          assert ops._brew_service_will_restart("ollama"), (
+              "nothing will start ollama again after a reboot: no brew LaunchAgent "
+              f"under {[str(path) for path in candidates]} and no loaded launchd job"
+          )
+          # Running now, too -- the parsed state, never the raw column. `error`
+          # and `stopped` are states of a *registered* service, so the
+          # assertion above cannot stand in for this one.
+          assert state in {"started", "scheduled"}, (
+              f"ollama is registered with launchd but brew reports state {state!r}"
+          )
+          print(f"OK: ollama is registered with launchd and brew reports it {state}")
+          PY
+
+      - name: Ollama logs on failure
+        if: failure()
+        run: |
+          brew services list || true
+          for log in /opt/homebrew/var/log/ollama.log /usr/local/var/log/ollama.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log ---"
+            tail -200 "$log" || true
+          done
+          launchctl list | grep -i ollama || echo "no ollama launchd job"

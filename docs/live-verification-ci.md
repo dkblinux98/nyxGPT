@@ -278,10 +278,18 @@ and screenshots make verifiable in the review loop:
   shows data rather than a permanent placeholder is a browser question:
   `nyxgpt ops verify`'s Playwright screenshots cover it for the Compose
   stack, and for the brew path it stays owner acceptance.
-- **Ollama model pulls and anything needing a GPU** -- the hosted runners have
-  neither the disk budget nor the hardware. The `ollama` *service* is
-  installed and started on the user path; pulling a model and generating from
-  it is owner acceptance.
+- **LLM answer quality, and anything needing a GPU** -- the hosted runners
+  have no accelerator, so whether a model produces a *good* answer is owner
+  acceptance. Installing Ollama, starting it and pulling the configured models
+  is **not** on this list any more (#4150):
+  [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml)'s
+  `mac-model-backend` job runs `brew install ollama`,
+  `brew services start ollama` and `nyxgpt ops required-models` on a real
+  `macos-15` runner and asserts `:11434/api/tags` lists every configured model.
+  The shipped default is small enough for a hosted runner's disk, and the
+  claim being tested is about *installation*, not inference. The exclusion as
+  previously written is what let the EC2 Mac bootstrap ship with no model
+  backend at all and no job that could have noticed.
 - **Real Slack delivery** -- `nyxgpt ops alert-test` (separate command)
   posts through Grafana's contact-point test API; actually landing a
   message in a real Slack workspace still requires a real webhook secret,
@@ -301,9 +309,17 @@ and screenshots make verifiable in the review loop:
   proves `nyxgpt cloud deploy --os macos` delivers that bootstrap itself over a
   real SSH connection (#3867), and
   [`macos-brew-smoke.yml`](../.github/workflows/macos-brew-smoke.yml) installs
-  the same formulas from the same remote tap on a real `macos-15` runner. What
+  the same formulas from the same remote tap on a real `macos-15` runner --
+  and, since #4150, its `mac-model-backend` job executes that bootstrap's
+  whole model-backend sequence there (`brew install ollama`,
+  `brew services start ollama`, `nyxgpt ops required-models`), with the
+  install-without-pull near-miss measured in between so the job cannot pass by
+  running on a machine that fails to reproduce the defect. What
   remains owner acceptance is only that a Mac *instance* runs them -- notably
   whether `brew services start` finds a launchd session for the login user.
+  (**That "only" is wrong; see the two corrections below, from #4122 and #4121.** It
+  is left in place because the correction is about the word, and deleting it
+  would hide what was claimed.)
 
   **A correction to the paragraph above, from #4122.** "The same formulas" was
   doing more work than it could carry. `macos-brew-smoke.yml` installs *a* pair
@@ -348,6 +364,18 @@ and screenshots make verifiable in the review loop:
   is the macOS 27 end-to-end run on real `mac2.metal` hardware; what does not
   is whether the recipe survives a sandbox that denies the trust evaluation.
 
+  **And the rule that correction sharpens, from #4121's round on the same
+  substrate.** The paragraph further up says what remains for owner acceptance
+  is "only ... whether `brew services start` finds a launchd session". That word
+  has now been falsified twice in the same place: both #4122 and #4121 died
+  inside `brew install`, before any service was started. **A hardware exception
+  on this list is not a licence to assume the surrounding job's machine state
+  resembles the exempted hardware's.** `macos-15` is a pre-warmed, recycled
+  image on a different major OS; the exempted machine is a freshly booted macOS
+  27 Mac. The two differ in ways that matter, so where a condition surfaces only
+  on the exempted hardware but can be reproduced anywhere, inject it — and say
+  what is left over, without "only".
+
   **The screen path, #4121, read the same narrow way.** `nyxgpt cloud screen`
   enables macOS Screen Sharing on an EC2 Mac and forwards 5900 over SSH, and no
   job can run `kickstart` or `pfctl` — those need macOS, and the `macos-15`
@@ -356,14 +384,29 @@ and screenshots make verifiable in the review loop:
   phase 5 against a real sshd: the CLI delivers the configuration script itself
   over a real SSH connection; that script loads the loopback-only `pf` rule and
   reads it back **before** activating the agent (asserted on the delivered text,
-  and the reordered script is rejected); it opens no security-group port and
-  sets no account password; the VNC credential is generated into
-  `~/.nyxGPT/secrets` at mode 0600 and appears in the delivered stdin but in no
-  argv and not on the terminal; the forward really opens and closes; and the
-  command **refuses** both on a Mac nyxGPT did not configure and on a Linux
-  deployment. What remains owner acceptance is only that a `mac*.metal` instance
-  executes the script — i.e. that `pfctl` loads that anchor and `kickstart`
-  activates that agent on real Apple hardware.
+  and the reordered script is rejected); it opens no security-group port; the
+  credential is generated into `~/.nyxGPT/secrets` at mode 0600 and appears in
+  the delivered stdin but in no argv and not on the terminal; the forward really
+  opens and closes, and a request for a different local port replaces the open
+  one rather than reporting it; and the command **refuses** both on a Mac
+  nyxGPT did not configure and on a Linux deployment.
+
+  Since the owner's 2026-10-04 round that phase also asserts the delivered
+  ordering of the credential: the account password (`dscl . -passwd`, verified
+  with `dscl . -authonly`) and the VNC password are written **before** the
+  agent is activated, and `system/com.apple.screensharing` -- not ARDAgent --
+  is restarted after them. That ordering is what the earlier version got wrong,
+  and inspection on the delivered text is as far as CI reaches; the script
+  itself closes the gap on the machine by reading the listener's start time
+  back and failing if it predates the credential's write time.
+
+  What remains owner acceptance is that a `mac*.metal` instance executes the
+  script — that `pfctl` loads that anchor, that `kickstart` activates that
+  agent, and that **Apple's own Screen Sharing client authenticates** with the
+  generated credential. The last of those is not a formality: the first
+  delivered version configured a VNC-only password, which is a credential that
+  client structurally cannot use, and nothing short of connecting with it would
+  have shown that.
 - **Anything gated behind a real (non-stubbed) LLM** -- CI runs the chat
   round-trip against whatever Ollama model is configured for the runner
   (small/stubbed per the acceptance criteria); response *quality* is not

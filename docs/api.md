@@ -482,6 +482,27 @@ List all available Ollama models.
 }
 ```
 
+**An empty list carries its own explanation (#4150).** When Ollama answers but
+holds nothing, the response stays a `200` — the request succeeded, and the
+honest answer is that there is nothing to serve — and adds a `detail` naming
+the models this install requires and the wrapped command that pulls them:
+
+```json
+{
+  "models": [],
+  "detail": "Ollama is running at http://127.0.0.1:11434 but holds no models at all, so chat cannot be served yet. Ollama is missing required model(s): 'qwen3.5:0.8b' (chat), 'nomic-embed-text' (embedding). Run `nyxgpt ops required-models` ..."
+}
+```
+
+`detail` is absent whenever `models` is non-empty.
+
+An **unreachable** Ollama is a `502` instead, and says something different:
+it names the base URL nothing answered on and `nyxgpt ops restart ollama`. The
+two are kept distinguishable deliberately — both used to end at the web UI's
+"Failed to load models", which made "no Ollama on this machine" and "an Ollama
+that has never pulled a model" look identical to an operator, and chat is
+equally broken in both.
+
 ### `GET /api/v1/models/required`
 
 Report whether Ollama holds the models this install requires: the configured
