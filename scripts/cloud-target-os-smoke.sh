@@ -483,11 +483,26 @@ not_contains "$CAPTURE_DIR/script.sh" "0.0.0.0"
 # password, so a VNC-only credential is one the client this command's own
 # output names structurally cannot use (#4121, owner acceptance 2026-10-04).
 contains "$CAPTURE_DIR/script.sh" "-setvncpw -vncpw"
-contains "$CAPTURE_DIR/script.sh" 'dscl . -passwd "/Users/$TARGET_USER"'
+# On a DEDICATED account, never the login user. `ec2-user` on the EC2 macOS
+# AMI holds a SecureToken, and macOS then refuses to change its password
+# without the existing one -- for root too (owner acceptance 2026-10-05: the
+# command aborted with "Permission denied. Please enter user's old password").
+# A freshly created account carries no token, so its password is settable.
+contains "$CAPTURE_DIR/script.sh" 'dscl . -passwd "/Users/$SCREEN_USER"'
+not_contains "$CAPTURE_DIR/script.sh" 'dscl . -passwd "/Users/$TARGET_USER"'
+contains "$CAPTURE_DIR/script.sh" "sysadminctl -addUser"
 # Verified in the same step, not assumed -- and with dscl, because
 # `sysadminctl -resetPasswordFor` fails on an EC2 Mac without a secure token.
-contains "$CAPTURE_DIR/script.sh" 'dscl . -authonly "$TARGET_USER"'
-not_contains "$WORK/screen-commands.sh" "sysadminctl"
+# Creating an account is not resetting one, so only the reset verb is barred.
+contains "$CAPTURE_DIR/script.sh" 'dscl . -authonly "$SCREEN_USER"'
+not_contains "$WORK/screen-commands.sh" "-resetPasswordFor"
+not_contains "$WORK/screen-commands.sh" "-secureTokenOn"
+# Authenticating to Screen Sharing only reaches the console's LOGIN WINDOW,
+# and that window caches its user list at launch -- so an account created
+# seconds earlier is not offered and there is no "switch user" affordance.
+# Without this the feature authenticates perfectly and delivers nothing an
+# operator can log into (owner verified: usable only after the restart).
+contains "$CAPTURE_DIR/script.sh" "killall loginwindow"
 # Still nothing interactive: `sudo passwd ec2-user` is the hand-rolled step
 # this command replaces, and no wrapped command can answer its prompt.
 not_contains "$WORK/screen-commands.sh" "sudo passwd"
