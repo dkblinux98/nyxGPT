@@ -112,7 +112,37 @@ sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap dkblinux98/nyxgpt
 sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" tap-trust dkblinux98/nyxgpt \
   || sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" trust dkblinux98/nyxgpt || true
 # shellcheck disable=SC2086  # deliberately word-split: two formula names.
-sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install $NYXGPT_BREW_FORMULAS
+# NOT subject to `set -e`, deliberately (#3861, and the 2026-10-04 acceptance
+# run that proved it).
+#
+# Homebrew's post-build phase uses `ofail`, not `odie`: it records the failure
+# in a flag and RETURNS, so the installer finishes the keg, links it, prints
+# the caveats -- and only `brew.rb`'s closing `exit Homebrew.failed? ? 1 : 0`
+# turns that flag into a status. A purely cosmetic post-install complaint
+# ("running through sudo, using user/* instead of gui/* domain", "Failed to
+# fix install linkage") therefore makes `brew install` exit 1 on an install
+# that delivered exactly what was asked for.
+#
+# Under the `set -euxo pipefail` above, that exit killed this script AT this
+# line on 2026-10-04: both kegs built (nyxgpt-api and nyxgpt-web, 3.0.0rc19,
+# verified afterwards by hand -- the CLI present, executable and reporting the
+# right version), and yet the config seed, `ops session-backend`, the service
+# starts, the Ollama install and the model pull below never ran. The deploy
+# then failed its own health gate on an api that had never been started, and
+# the operator paid a Dedicated Host's 24-hour minimum for it.
+#
+# The verification block immediately below is the real check, and it was
+# written for exactly this (see its own comment on D-047: "brew exited 0" and
+# "both formulas are installed" are different claims). But `set -e` fired
+# BEFORE it, so the guard could only ever run in the cases where it was not
+# needed. Letting the install's status through here is what makes that guard
+# reachable: the status is recorded and reported, and the block below decides
+# whether the install actually happened by looking at the keg.
+brew_install_rc=0
+sudo -u "$NYXGPT_TARGET_USER" -H "$BREW_BIN" install $NYXGPT_BREW_FORMULAS || brew_install_rc=$?
+if [ "$brew_install_rc" -ne 0 ]; then
+  echo "ec2-user-data-macos: \`brew install $NYXGPT_BREW_FORMULAS\` exited ${brew_install_rc}. That is NOT yet an install failure -- Homebrew reports post-install soft failures the same way (#3861). The checks below decide, by inspecting the keg." >&2
+fi
 
 # The keg of the api formula that was actually requested. For a candidate this
 # is `opt/nyxgpt-api@3.0.0rc`, not `opt/nyxgpt-api` -- which is why the paths
