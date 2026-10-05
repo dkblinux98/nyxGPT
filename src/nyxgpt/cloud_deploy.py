@@ -2099,7 +2099,7 @@ def _run_provision_script(
     runner = (
         "set -e; "
         "_nyxgpt_bootstrap=$(mktemp /tmp/nyxgpt-bootstrap.XXXXXX); "  # nosec B108 - remote path on the instance, created by mktemp
-        'trap \'rm -f "$_nyxgpt_bootstrap"\' EXIT; '
+        "trap 'rm -f \"$_nyxgpt_bootstrap\"' EXIT; "
         'cat > "$_nyxgpt_bootstrap"; '
         f'{remote_command} "$_nyxgpt_bootstrap"'
     )

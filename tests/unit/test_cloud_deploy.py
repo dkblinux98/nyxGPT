@@ -2497,9 +2497,7 @@ def test_the_macos_bootstrap_is_elevated_and_told_which_user_to_install_for():
     root) and drops to the login user with `sudo -u` for every brew call."""
     plan = cloud_deploy.resolve_plan(_args(os_family="macos", ssh_user="admin"))
 
-    assert cloud_deploy.provision_remote_command(plan) == (
-        "sudo -n NYXGPT_TARGET_USER=admin bash"
-    )
+    assert cloud_deploy.provision_remote_command(plan) == ("sudo -n NYXGPT_TARGET_USER=admin bash")
 
 
 def test_the_linux_bootstrap_is_still_run_by_a_plain_shell():

@@ -536,15 +536,21 @@ echo "nyxgpt: the generated credential is still this account's login password."
 
 
 def remote_command(login_user: str) -> str:
-    """The shell command the rendered script is piped into on the Mac.
+    """The shell command that runs the rendered script on the Mac.
 
     Elevated the same way the macOS bootstrap is
     (`cloud_deploy.provision_remote_command`): `kickstart` and `pfctl` are
     root-only, and `sudo -n` means a Mac whose login user needs a password
     fails immediately with sudo's own message instead of hanging a wrapped
     command on a prompt nothing can answer.
+
+    Returns the interpreter invocation WITHOUT a script argument, for the same
+    reason `cloud_deploy.provision_remote_command` does: `_run_remote_script`
+    stages the script to a file on the Mac and appends that path, so nothing
+    the script runs can consume the script itself off stdin. See that
+    function's docstring.
     """
-    return f"sudo -n NYXGPT_TARGET_USER={shlex.quote(login_user)} bash -s"
+    return f"sudo -n NYXGPT_TARGET_USER={shlex.quote(login_user)} bash"
 
 
 def _run_remote_script(
@@ -557,8 +563,40 @@ def _run_remote_script(
     is one of those arguments. Streaming that straight through would put the
     credential in the operator's scrollback by way of an error message, which
     is precisely what this command exists not to do.
+
+    STAGED TO A FILE, NOT RUN FROM STDIN (#4122, 2026-10-05).
+    ---------------------------------------------------------
+    `bash -s` reads the script from stdin, and so does anything the script
+    runs -- they share the one stream. A command that reads stdin therefore
+    consumes the REST OF THE SCRIPT, bash hits EOF and exits 0, and the
+    remaining steps silently never run while the exit status says success.
+    The macOS bootstrap lost its config seed, both service starts, the Ollama
+    install and the model pull to exactly that, and reported a health-check
+    timeout fifteen minutes later instead of the truncation.
+
+    Nothing in THIS script reads stdin today, so it has not bitten -- but the
+    here-doc that writes the pf anchor is read off that same stream, and the
+    script gained `sysadminctl -addUser` and `killall loginwindow` on
+    2026-10-05. The failure mode is silent and reports success: a truncated
+    run would load the loopback rule, exit 0, and leave Screen Sharing
+    unconfigured while the caller reports an open path. So the hazard is
+    removed rather than monitored.
+
+    The only thing that reads the pipe is the `cat` that stages the file, and
+    it exits before the script starts, so the script's own stdin is at EOF.
+    `mktemp` creates the file 0600 -- it carries the generated credential, so
+    it must not be world-readable even briefly -- and a trap removes it on
+    every exit path.
     """
-    argv = [*cloud_deploy.ssh_argv(target), remote_command(target.user)]
+    runner = (
+        "set -e; "
+        "_nyxgpt_screen=$(mktemp /tmp/nyxgpt-screen.XXXXXX); "  # nosec B108 - remote path on the Mac, created by mktemp
+        'chmod 600 "$_nyxgpt_screen"; '
+        "trap 'rm -f \"$_nyxgpt_screen\"' EXIT; "
+        'cat > "$_nyxgpt_screen"; '
+        f'{remote_command(target.user)} "$_nyxgpt_screen"'
+    )
+    argv = [*cloud_deploy.ssh_argv(target), runner]
     output: list[str] = []
     with subprocess.Popen(
         argv,

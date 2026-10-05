@@ -18,6 +18,7 @@ exception list in docs/live-verification-ci.md.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import subprocess
 
@@ -288,9 +289,53 @@ def test_the_disable_script_leaves_the_loopback_rule_in_place():
 
 
 def test_the_remote_command_elevates_non_interactively():
-    assert cloud_screen.remote_command("ec2-user") == (
-        "sudo -n NYXGPT_TARGET_USER=ec2-user bash -s"
+    assert cloud_screen.remote_command("ec2-user") == ("sudo -n NYXGPT_TARGET_USER=ec2-user bash")
+
+
+def test_the_script_is_staged_to_a_file_not_read_from_stdin(monkeypatch):
+    """`bash -s` reads the script from stdin and so does anything the script
+    runs, so a stdin-reading command consumes the REST OF THE SCRIPT: bash
+    hits EOF, exits 0, and the remaining steps silently never run (#4122 --
+    the macOS bootstrap lost its config seed, service starts, Ollama install
+    and model pull to exactly that). Nothing here reads stdin today, but the
+    pf anchor's here-doc is read off the same stream and the script gained
+    `sysadminctl -addUser` and `killall loginwindow`. The failure reports
+    success, so the hazard is removed rather than watched.
+    """
+    handed = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_popen(argv, **kwargs):
+        handed["argv"] = argv
+        return _FakeProc()
+
+    monkeypatch.setattr(cloud_screen.subprocess, "Popen", fake_popen)
+    cloud_screen._run_remote_script(
+        cloud_deploy.DeployTarget(host="198.51.100.10", user="ec2-user"), "echo hi", ""
     )
+
+    runner = handed["argv"][-1]
+    assert "mktemp" in runner, runner
+    assert "cat > " in runner, runner
+    # The credential is in that file, so it must not be world-readable.
+    assert "chmod 600" in runner, runner
+    # The interpreter is handed the staged path, never `-s`.
+    assert runner.rstrip().endswith('bash "$_nyxgpt_screen"'), runner
+    assert " -s " not in runner and not runner.endswith(" -s"), runner
+    # And it is cleaned up however the run ends.
+    assert "trap" in runner and "rm -f" in runner, runner
 
 
 def test_the_credential_travels_on_stdin_never_in_an_argv(monkeypatch):
