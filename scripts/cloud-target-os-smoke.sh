@@ -213,7 +213,13 @@ contains "$CAPTURE_DIR/script.sh" 'services start "$NYXGPT_BREW_API_FORMULA"'
 not_contains "$CAPTURE_DIR/script.sh" "git clone http"
 # And it asked for it to be run the way ec2-macos-init would have: as root,
 # non-interactively, told which login user to install Homebrew for.
-contains "$CAPTURE_DIR/cmd.txt" "sudo -n NYXGPT_TARGET_USER=$SSH_USER bash -s"
+# Staged to a file, not fed on stdin (#4122): `bash -s` reads the script from
+# stdin and so does anything it runs, so a stdin-reading command consumes the
+# rest of the script -- bash then exits 0 with steps silently skipped. The
+# interpreter is handed a path instead, so assert the elevation AND that no
+# `-s` survives.
+contains "$CAPTURE_DIR/cmd.txt" "sudo -n NYXGPT_TARGET_USER=$SSH_USER bash \"\$_nyxgpt"
+not_contains "$CAPTURE_DIR/cmd.txt" "bash -s"
 
 # The substrate was left alone -- reconciling it would have billed for a
 # Linux instance nothing then deploys to.
@@ -337,7 +343,9 @@ contains "$CAPTURE_DIR/script.sh" 'NYXGPT_VERSION="3.0.0"'
 contains "$CAPTURE_DIR/script.sh" 'install --quiet "nyxgpt==${NYXGPT_VERSION}"'
 contains "$CAPTURE_DIR/script.sh" "ops install"
 not_contains "$CAPTURE_DIR/script.sh" "dkblinux98/nyxgpt"
-contains "$CAPTURE_DIR/cmd.txt" "bash -s"
+# Also staged rather than piped (#4122) -- see the macOS assertion above.
+contains "$CAPTURE_DIR/cmd.txt" 'bash "$_nyxgpt_bootstrap"'
+not_contains "$CAPTURE_DIR/cmd.txt" "bash -s"
 not_contains "$CAPTURE_DIR/cmd.txt" "sudo"
 
 echo
@@ -420,7 +428,13 @@ cat "$OUT"
 
 # The CLI, not a human, put the configuration script on the box -- and asked
 # for it elevated the way `kickstart` and `pfctl` need.
-contains "$CAPTURE_DIR/cmd.txt" "sudo -n NYXGPT_TARGET_USER=$SSH_USER bash -s"
+# Staged to a file, not fed on stdin (#4122): `bash -s` reads the script from
+# stdin and so does anything it runs, so a stdin-reading command consumes the
+# rest of the script -- bash then exits 0 with steps silently skipped. The
+# interpreter is handed a path instead, so assert the elevation AND that no
+# `-s` survives.
+contains "$CAPTURE_DIR/cmd.txt" "sudo -n NYXGPT_TARGET_USER=$SSH_USER bash \"\$_nyxgpt"
+not_contains "$CAPTURE_DIR/cmd.txt" "bash -s"
 contains "$CAPTURE_DIR/script.sh" "ARDAgent.app/Contents/Resources/kickstart"
 contains "$CAPTURE_DIR/script.sh" "-activate -configure -access -on"
 
