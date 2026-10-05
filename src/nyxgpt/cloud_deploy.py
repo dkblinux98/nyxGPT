@@ -1921,10 +1921,10 @@ def render_k3s_bootstrap() -> str:
 
 
 def provision_remote_command(plan: DeployPlan) -> str:
-    """The shell command the rendered bootstrap is piped into on the instance.
+    """The shell command that runs the rendered bootstrap on the instance.
 
     Linux's script is written to run as the login user and elevates per step
-    with `sudo`, so it is fed to a plain `bash -s`.
+    with `sudo`, so it runs under a plain `bash`.
 
     The macOS script refuses to run as anyone but root -- `ec2-macos-init`
     hands user-data to root, and the script drops to the login user with
@@ -1935,10 +1935,15 @@ def provision_remote_command(plan: DeployPlan) -> str:
     message rather than hanging a deploy on a prompt no wrapped command can
     answer, and `NYXGPT_TARGET_USER` so the script installs Homebrew for the
     user the operator actually logged in as instead of assuming `ec2-user`.
+
+    Returns the interpreter invocation WITHOUT a script argument. The caller
+    (`_run_provision_script`) stages the bootstrap to a file on the instance
+    and appends that path -- see its docstring for why the script is no longer
+    fed on the shell's stdin.
     """
     if plan.os_family == OS_FAMILY_MACOS:
-        return f"sudo -n NYXGPT_TARGET_USER={shlex.quote(plan.ssh_user)} bash -s"
-    return "bash -s"
+        return f"sudo -n NYXGPT_TARGET_USER={shlex.quote(plan.ssh_user)} bash"
+    return "bash"
 
 
 # How many trailing lines of the provisioning output a failure summary quotes
@@ -2048,7 +2053,7 @@ _OPS_FAIL_PREFIX = "[FAIL]"
 
 
 def _run_provision_script(
-    target: DeployTarget, script: str, remote_command: str = "bash -s"
+    target: DeployTarget, script: str, remote_command: str = "bash"
 ) -> tuple[int, list[str]]:
     """Run `script` on the instance, echoing its output live and keeping a copy.
 
@@ -2062,8 +2067,43 @@ def _run_provision_script(
     The script is written to stdin in one go before reading: it is a few KB,
     comfortably inside the pipe buffer, so this cannot deadlock against a
     remote that hasn't started draining yet.
+
+    STAGED TO A FILE, NOT RUN FROM STDIN (#4122, 2026-10-05).
+    ---------------------------------------------------------
+    `bash -s` reads the script from stdin, and so does anything the script
+    runs. `brew install` reads stdin; on the owner's 2026-10-04 EC2 Mac
+    acceptance run it consumed the REST OF THE BOOTSTRAP, the shell then hit
+    EOF and exited 0, and every step after the install -- the config seed,
+    `ops session-backend`, both `brew services start` calls, the Ollama
+    install and the default-model pull -- silently never ran. The deploy then
+    failed its own `/health` gate on an api that had never been started, the
+    web UI reported "failed to load sessions", and two Dedicated Hosts' worth
+    of 24-hour minimums were spent before the cause was found.
+    The tell was the script's own source text appearing in the output stream
+    where brew's stdout belonged: those were the unread bytes.
+
+    So the shell is handed a PATH, and the only thing that reads the pipe is
+    the `cat` that stages it -- which exits before the bootstrap starts, so
+    the script's stdin is at EOF and nothing downstream can eat anything.
+    `build_working_tree_archive` already took this route for the same class of
+    reason ("Staged to a file rather than streamed straight into ssh's
+    stdin"); the bootstrap had simply never been converted.
+
+    A narrower fix -- `</dev/null` on the one `brew install` line -- was
+    rejected deliberately: it leaves every other stdin-reading command in the
+    bootstrap armed, and `ollama pull` was next in line.
     """
-    argv = [*ssh_argv(target), remote_command]
+    # `mktemp` rather than a predictable name: the path is created by the
+    # remote shell with 0600, so a pre-planted symlink cannot redirect the
+    # write. The trap removes it on every exit path, including a failure.
+    runner = (
+        "set -e; "
+        "_nyxgpt_bootstrap=$(mktemp /tmp/nyxgpt-bootstrap.XXXXXX); "  # nosec B108 - remote path on the instance, created by mktemp
+        'trap \'rm -f "$_nyxgpt_bootstrap"\' EXIT; '
+        'cat > "$_nyxgpt_bootstrap"; '
+        f'{remote_command} "$_nyxgpt_bootstrap"'
+    )
+    argv = [*ssh_argv(target), runner]
     output: list[str] = []
     with subprocess.Popen(
         argv,

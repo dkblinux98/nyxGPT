@@ -605,7 +605,9 @@ def test_run_provision_script_streams_and_captures_merged_output(monkeypatch, ca
     assert returncode == 2
     assert output == ["[1/23] config...", "[FAIL] boom"]
     assert handed["kwargs"]["stderr"] is subprocess.STDOUT
-    assert handed["argv"][-1] == "bash -s"
+    # The shell runs the STAGED FILE, not the script on stdin (#4122) -- see
+    # test_neither_bootstrap_is_fed_on_stdin for why that matters.
+    assert handed["argv"][-1].endswith('bash "$_nyxgpt_bootstrap"')
     # Streamed as it arrives rather than withheld until the end.
     assert "[FAIL] boom" in capsys.readouterr().out
 
@@ -2496,12 +2498,58 @@ def test_the_macos_bootstrap_is_elevated_and_told_which_user_to_install_for():
     plan = cloud_deploy.resolve_plan(_args(os_family="macos", ssh_user="admin"))
 
     assert cloud_deploy.provision_remote_command(plan) == (
-        "sudo -n NYXGPT_TARGET_USER=admin bash -s"
+        "sudo -n NYXGPT_TARGET_USER=admin bash"
     )
 
 
-def test_the_linux_bootstrap_is_still_piped_into_a_plain_shell():
-    assert cloud_deploy.provision_remote_command(cloud_deploy.resolve_plan(_args())) == "bash -s"
+def test_the_linux_bootstrap_is_still_run_by_a_plain_shell():
+    assert cloud_deploy.provision_remote_command(cloud_deploy.resolve_plan(_args())) == "bash"
+
+
+def test_neither_bootstrap_is_fed_on_stdin(monkeypatch):
+    """The bootstrap is staged to a file and the shell is given its PATH.
+
+    `bash -s` reads the script from stdin, and so does anything the script
+    runs: `brew install` ate the rest of the bootstrap on the owner's
+    2026-10-04 EC2 Mac run, the shell hit EOF and exited 0, and every step
+    after the install silently never ran (#4122). So `provision_remote_command`
+    must not carry `-s`, and the runner must hand over a path.
+    """
+    for plan_args in (_args(), _args(os_family="macos", ssh_user="admin")):
+        command = cloud_deploy.provision_remote_command(cloud_deploy.resolve_plan(plan_args))
+        assert " -s" not in command, f"{command!r} still reads the script from stdin"
+
+    handed = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_popen(argv, **kwargs):
+        handed["argv"] = argv
+        return _FakeProc()
+
+    monkeypatch.setattr(cloud_deploy.subprocess, "Popen", fake_popen)
+    cloud_deploy._run_provision_script(
+        cloud_deploy.DeployTarget(host="198.51.100.10"), "echo hi", "bash"
+    )
+
+    runner = handed["argv"][-1]
+    assert "mktemp" in runner, runner
+    assert "cat > " in runner, runner
+    # The interpreter is handed the staged path, not `-s`.
+    assert runner.rstrip().endswith('bash "$_nyxgpt_bootstrap"'), runner
+    # And the staged file is cleaned up however the run ends.
+    assert "trap" in runner and "rm -f" in runner, runner
 
 
 def test_a_macos_plan_defaults_sessions_to_file_and_a_linux_plan_to_cassandra():
