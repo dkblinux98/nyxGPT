@@ -538,10 +538,18 @@ contains "$CAPTURE_DIR/script.sh" "$VNC_PASSWORD"
 contains "$OUT" "vnc://localhost:5901"
 not_contains "$OUT" "vnc://localhost:5900"
 contains "$OUT" "cloud-mac-vnc-password"
-# And the account to sign in as, which is the other half of connecting now
-# that the credential is the login password.
+# And the account to sign in as, which is the other half of connecting: the
+# operator authenticates to Screen Sharing AND logs in at the Mac's login
+# window as this account. It is the DEDICATED user, not the login user --
+# `ec2-user` holds a SecureToken and macOS refuses to set its password at all
+# (#4121, owner acceptance 2026-10-05). Naming the login user here is what
+# sent the owner round that loop, so assert the output does NOT.
+# `contains nyxgpt-screen` is the regression guard on its own: a revert to the
+# login user cannot satisfy it. A `not_contains` on the row text would have to
+# hard-code the column padding and would break on a cosmetic width change, so
+# it is deliberately not asserted that way.
 contains "$OUT" "Sign in as"
-contains "$OUT" "$SSH_USER"
+contains "$OUT" "nyxgpt-screen"
 # Wrapped end to end: no raw command is ever presented as an instruction.
 not_contains "$OUT" "ssh -L"
 not_contains "$OUT" "kickstart"
