@@ -156,15 +156,19 @@ def test_one_credential_serves_apples_client_and_a_third_party_one():
     so the operator was given a credential their client would always reject."""
     script = cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h")
 
-    # The account half, which is what makes `open vnc://...` work...
-    assert 'dscl . -passwd "/Users/$TARGET_USER" "$NYXGPT_VNC_PASSWORD"' in script
+    # The account half, which is what makes `open vnc://...` work -- set on the
+    # DEDICATED user, never the login user. `ec2-user` holds a SecureToken and
+    # macOS refuses to change its password without the existing one, for root
+    # too (measured 2026-10-05): the earlier version targeted it and aborted
+    # with "Please enter user's old password".
+    assert 'dscl . -passwd "/Users/$SCREEN_USER" "$NYXGPT_VNC_PASSWORD"' in script
     # ...verified rather than assumed, in the same step...
-    assert 'dscl . -authonly "$TARGET_USER" "$NYXGPT_VNC_PASSWORD"' in script
+    assert 'dscl . -authonly "$SCREEN_USER" "$NYXGPT_VNC_PASSWORD"' in script
     # ...and the VNC half, so one secret covers both clients.
     assert "-setvnclegacy -vnclegacy yes" in script
     assert "-setvncpw -vncpw" in script
-    # One secret, not two: the same shell variable feeds all three.
-    assert script.count("$NYXGPT_VNC_PASSWORD") == 3
+    # The login user's password is NEVER touched -- that is the whole point.
+    assert 'dscl . -passwd "/Users/$TARGET_USER"' not in script
 
 
 def _commands_only(script: str) -> str:
@@ -180,10 +184,15 @@ def _commands_only(script: str) -> str:
 
 def test_the_account_password_is_set_with_dscl_not_sysadminctl():
     """`sysadminctl -resetPasswordFor` is the obvious API and it fails on an
-    EC2 Mac: "Operation is not permitted without secure token unlock"."""
+    EC2 Mac: "Operation is not permitted without secure token unlock".
+
+    `sysadminctl -addUser` IS used -- creating an account is not resetting one,
+    and it is the supported way to make the dedicated user. Only the reset verb
+    is forbidden.
+    """
     commands = _commands_only(cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h"))
-    assert "sysadminctl" not in commands
     assert "-resetPasswordFor" not in commands
+    assert "-secureTokenOn" not in commands
     # And not the interactive tool the hand-rolled flow used, which no wrapped
     # command can answer a prompt for.
     assert "sudo passwd" not in commands
@@ -233,12 +242,36 @@ def test_the_rendered_script_installs_nothing_on_the_mac():
         assert installer not in script
 
 
-def test_the_rendered_script_grants_access_to_the_login_user_only():
+def test_the_rendered_script_grants_access_to_the_dedicated_user_only():
     script = cloud_screen.render_enable_script("someone-else", "Ab3dEf7h")
     assert "TARGET_USER=someone-else" in script
-    assert '-users "$TARGET_USER"' in script
+    assert f"SCREEN_USER={cloud_screen.SCREEN_USER}" in script
+    # Screen access goes to the dedicated account, not the login user.
+    assert '-users "$SCREEN_USER"' in script
+    assert '-users "$TARGET_USER"' not in script
     # Not `-allUsers`, which would let any account on the box take the screen.
     assert "-allUsers" not in script
+
+
+def test_the_login_window_is_restarted_so_the_new_user_appears_on_it():
+    """Authenticating to Screen Sharing only reaches the console's login
+    window, and that window caches its user list at launch -- so an account
+    created seconds earlier is not offered, and there is no "switch user"
+    affordance to work around it. Without this restart the feature
+    authenticates perfectly and still delivers nothing to log into (owner
+    verified on a live mac2.metal, 2026-10-05: usable only after it).
+    """
+    script = cloud_screen.render_enable_script("ec2-user", "Ab3dEf7h")
+
+    assert "killall loginwindow" in script
+    # Skipped when someone is logged in -- restarting it would end their
+    # session. A fresh EC2 Mac reports `root` (loginwindow itself).
+    assert "/dev/console" in script
+    # And it happens AFTER the listener is restarted, so the user exists and
+    # has access by the time the window re-reads the list.
+    assert script.index("launchctl kickstart -k system/com.apple.screensharing") < script.index(
+        "killall loginwindow"
+    )
 
 
 def test_a_hand_edited_credential_that_cannot_work_is_refused_not_spliced():

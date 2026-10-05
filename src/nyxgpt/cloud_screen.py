@@ -111,6 +111,16 @@ KICKSTART = (
 # that into a loopback-only listener on the host itself. Belt and braces with
 # the security group, which stays TCP 22 only either way.
 PF_ANCHOR_NAME = "nyxgpt-screen"
+
+# The account Apple's Screen Sharing client authenticates as, and the one the
+# operator logs in as at the Mac's login window.
+#
+# NOT the login user: `ec2-user` on the EC2 macOS AMI holds a SecureToken, and
+# macOS then refuses to change its password without the existing one -- for
+# root as well (measured 2026-10-05; see `render_enable_script`). A dedicated
+# account created by this command carries no token, so its password is
+# nyxGPT's to set, and `ec2-user`'s credential is never touched.
+SCREEN_USER = "nyxgpt-screen"
 PF_ANCHOR_FILE = f"/etc/pf.anchors/{PF_ANCHOR_NAME}"
 
 # Apple's legacy VNC password is DES-based and truncated to 8 bytes, so a
@@ -256,6 +266,7 @@ PF_ANCHOR_FILE={shlex.quote(PF_ANCHOR_FILE)}
 PF_ANCHOR_NAME={shlex.quote(PF_ANCHOR_NAME)}
 SCREEN_PORT={SCREEN_PORT}
 TARGET_USER={shlex.quote(login_user)}
+SCREEN_USER={shlex.quote(SCREEN_USER)}
 NYXGPT_VNC_PASSWORD={shlex.quote(password)}
 
 if [ "$(id -u)" != "0" ]; then
@@ -325,23 +336,57 @@ fi
 # acceptance round, where only type 2 had been configured and Apple's client
 # consequently reported "$TARGET_USER and password rejected".
 #
-# `dscl . -passwd` and not `sysadminctl -resetPasswordFor`: the obvious API
-# fails on an EC2 Mac with "Operation is not permitted without secure token
-# unlock". root may set a password through dscl without presenting the old one.
-if ! dscl . -passwd "/Users/$TARGET_USER" "$NYXGPT_VNC_PASSWORD"; then
-    echo "error: could not set the login password for $TARGET_USER with \\`dscl . -passwd\\`," >&2
+# A DEDICATED USER, because the login user's password cannot be set at all.
+#
+# `ec2-user` on the EC2 macOS AMI holds a SecureToken:
+#
+#     AuthenticationAuthority: ;ShadowHash;HASHLIST:<...> ;Kerberosv5;... ;SecureToken;
+#
+# and once an account holds one, macOS requires the EXISTING credential to
+# change its password -- for root too. Both obvious APIs are blocked by that
+# one policy, and only their wording differs:
+#
+#     sudo -n dscl . -passwd /Users/ec2-user <pw>
+#         Permission denied. Please enter user's old password:
+#         <dscl_cmd> DS Error: -14090 (eDSAuthFailed)
+#     sudo -n sysadminctl -resetPasswordFor ec2-user -newPassword <pw>
+#         Operation is not permitted without secure token unlock.
+#
+# Measured on a live mac2.metal, 2026-10-05, with `id -u` == 0 in the same
+# script (pfctl and kickstart in this very file succeed, so the privilege is
+# real -- this is policy, not sudo). An earlier version of this code set the
+# login user's password and was proven against a Mac whose `ec2-user` had NO
+# SecureToken; that account was the exception, and the rule broke it.
+#
+# A freshly created account carries no token, so root sets its password
+# freely. Nothing here touches `ec2-user`'s credential, which is why the
+# SecureToken stops mattering.
+#
+# Idempotent: `cloud screen` is expected to be re-run, so an existing
+# SCREEN_USER has its password rotated rather than being recreated.
+if ! dscl . -read "/Users/$SCREEN_USER" >/dev/null 2>&1; then
+    if ! sysadminctl -addUser "$SCREEN_USER" -password "$NYXGPT_VNC_PASSWORD" \\
+            -fullName "nyxGPT screen access" 2>&1; then
+        echo "error: could not create the dedicated screen-sharing user $SCREEN_USER." >&2
+        echo "       Screen Sharing was NOT enabled and nothing is listening." >&2
+        exit 1
+    fi
+    echo "nyxgpt: created the dedicated screen-sharing user $SCREEN_USER."
+fi
+if ! dscl . -passwd "/Users/$SCREEN_USER" "$NYXGPT_VNC_PASSWORD"; then
+    echo "error: could not set the password for $SCREEN_USER with \\`dscl . -passwd\\`," >&2
     echo "       so Apple's Screen Sharing client would reject the credential nyxGPT" >&2
     echo "       generated. Screen Sharing was NOT enabled and nothing is listening." >&2
     exit 1
 fi
 # Demonstrated, not assumed -- the same discipline the pf rule above gets.
-if ! dscl . -authonly "$TARGET_USER" "$NYXGPT_VNC_PASSWORD"; then
+if ! dscl . -authonly "$SCREEN_USER" "$NYXGPT_VNC_PASSWORD"; then
     echo "error: the password was set but \\`dscl . -authonly\\` would not authenticate with" >&2
     echo "       it, so it is not the credential this account will accept. Screen Sharing" >&2
     echo "       was NOT enabled and nothing is listening." >&2
     exit 1
 fi
-echo "nyxgpt: the generated credential authenticates as $TARGET_USER (dscl -authonly: OK)."
+echo "nyxgpt: the generated credential authenticates as $SCREEN_USER (dscl -authonly: OK)."
 
 # And the legacy VNC password, so the SAME credential also works from a
 # third-party VNC client that selects security type 2.
@@ -350,8 +395,8 @@ echo "nyxgpt: the generated credential authenticates as $TARGET_USER (dscl -auth
 CREDENTIAL_WRITTEN_AT="$(date +%s)"
 echo "nyxgpt: credential written at epoch $CREDENTIAL_WRITTEN_AT, before anything listens."
 
-# --- 3. Screen Sharing on, for the login user only ---------------------
-"$KICKSTART" -activate -configure -access -on -users "$TARGET_USER" -privs -all
+# --- 3. Screen Sharing on, for the dedicated user only -----------------
+"$KICKSTART" -activate -configure -access -on -users "$SCREEN_USER" -privs -all
 
 # --- 4. Restart the process that actually authenticates on 5900 --------
 # NOT `kickstart -restart -agent`, which cycles ARDAgent and leaves the
@@ -366,13 +411,59 @@ if ! launchctl kickstart -k system/com.apple.screensharing; then
     exit 1
 fi
 
+# --- 4b. Make the dedicated user reachable AT THE LOGIN WINDOW ---------
+#
+# Authenticating to Screen Sharing gets the operator to the screen; the screen
+# is the console's login window, and that window caches its user list when it
+# starts. SCREEN_USER is created moments ago, so the window on screen has
+# never heard of it: the operator sees only `ec2-user`, whose password cannot
+# be set (the SecureToken above) and so cannot be entered. There is no "switch
+# user" affordance to work around it.
+#
+# Restarting loginwindow makes it re-read the list, and SCREEN_USER appears.
+# This is the step that turns "the screen is reachable" into "the Mac is
+# usable", and it is not obvious: without it the feature authenticates
+# perfectly and still delivers nothing an operator can log into. Owner
+# verified the whole path on a live mac2.metal, 2026-10-05 ("completely
+# useable" only after this restart).
+#
+# Safe here: nothing is logged in on a freshly provisioned EC2 Mac -- the
+# console belongs to loginwindow itself (`stat -f %Su /dev/console` reports
+# `root`), so there is no session to interrupt. It is skipped when someone IS
+# logged in, because restarting it would throw them out.
+CONSOLE_OWNER="$(stat -f "%Su" /dev/console 2>/dev/null || echo "")"
+if [ "$CONSOLE_OWNER" = "root" ] || [ -z "$CONSOLE_OWNER" ]; then
+    if killall loginwindow 2>/dev/null; then
+        echo "nyxgpt: restarted the login window so $SCREEN_USER appears on it."
+    else
+        echo "nyxgpt: no login window to restart (none was running)."
+    fi
+else
+    echo "nyxgpt: $CONSOLE_OWNER is logged in at the console, so the login window was left"
+    echo "        alone -- restarting it would end that session. If $SCREEN_USER is not"
+    echo "        offered on screen, log that session out and re-run \\`nyxgpt cloud screen\\`."
+fi
+
 # --- 5. Measure the ordering instead of trusting the sequence above ----
 # "The credential was written first" is a claim about two processes, and the
 # script's own line order is not evidence for it: the listener may have been
 # running before this script started. So read it off the machine.
 LISTENER_PID=""
 for _ in $(seq 1 15); do
-    LISTENER_PID="$(lsof -nP -iTCP:"$SCREEN_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+    # NOT simply the first pid lsof reports. Screen Sharing is socket-
+    # activated, so launchd (pid 1) holds the listening socket alongside
+    # `screensharingd` and sorts first -- and launchd's start time is BOOT,
+    # which is necessarily earlier than any credential this script writes. The
+    # check below then condemns a correct setup: measured on a live mac2.metal
+    # on 2026-10-05, "listener pid 1 started at epoch ... so it is
+    # authenticating against an older password", about a listener that had
+    # just been restarted and held the new credential.
+    #
+    # pid 1 is never the authenticating process, so skip it and take the real
+    # one. The process that authenticates on 5900 is what this measurement is
+    # about.
+    LISTENER_PID="$(lsof -nP -iTCP:"$SCREEN_PORT" -sTCP:LISTEN -t 2>/dev/null \\
+        | awk '$1 != 1' | head -1 || true)"
     if [ -n "$LISTENER_PID" ]; then
         break
     fi
@@ -404,7 +495,7 @@ else
     echo "        The script's own order enforces it; this check only demonstrates it." >&2
 fi
 
-echo "nyxgpt: Screen Sharing is enabled for $TARGET_USER on 127.0.0.1:$SCREEN_PORT only."
+echo "nyxgpt: Screen Sharing is enabled for $SCREEN_USER on 127.0.0.1:$SCREEN_PORT only."
 """
 
 
@@ -803,7 +894,11 @@ def _print_open_summary(status: dict[str, Any], *, show_password: bool) -> None:
     """Tell the operator how to connect, without putting the secret on screen."""
     print(f"\nScreen path open to {status['host']} (pid {status['pid']}).")
     cloud_deploy._print_row("Address", status["url"])
-    cloud_deploy._print_row("Sign in as", status["login_user"] or cloud_deploy.DEFAULT_SSH_USER)
+    # SCREEN_USER, not the login user: the operator authenticates to Screen
+    # Sharing AND logs in at the Mac's login window as this account. Naming
+    # `ec2-user` here is what sent the owner round the SecureToken loop on
+    # 2026-10-05 -- it is the one account whose password nothing can set.
+    cloud_deploy._print_row("Sign in as", SCREEN_USER)
     if show_password:
         cloud_deploy._print_row("Password", read_vnc_password())
     else:
@@ -813,10 +908,15 @@ def _print_open_summary(status: dict[str, Any], *, show_password: bool) -> None:
             f"(`{status['command']} --show-password` prints it)",
         )
     print(
-        "\nApple's own Screen Sharing client takes that address and that credential: it "
-        "authenticates against the login account, whose password nyxGPT set to the same "
-        "generated secret. A third-party VNC client works too -- the secret is also the "
-        "Mac's legacy VNC password."
+        f"\nApple's own Screen Sharing client takes that address and that credential. You "
+        f"will land on the Mac's login window: log in there as {SCREEN_USER} with the same "
+        f"password. A third-party VNC client works too -- the secret is also the Mac's "
+        f"legacy VNC password."
+    )
+    print(
+        f"{SCREEN_USER} is an account nyxGPT creates for this. The instance's login user "
+        f"holds a SecureToken, so macOS will not let anything set ITS password -- not even "
+        f"root -- and that account is therefore not usable for screen sharing."
     )
     print(f"Close the path again with `{status['stop_command']}`.")
 
