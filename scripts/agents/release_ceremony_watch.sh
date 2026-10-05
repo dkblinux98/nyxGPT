@@ -15,7 +15,7 @@ set -uo pipefail
 # Guardrails (decision logic in lib/ceremony_trigger.py, unit-tested):
 #   * only the release tracking issue triggers it;
 #   * only the TRANSITION into For Release does — a version-scoped marker
-#     comment makes every later poll a no-op;
+#     comment makes every later dispatch a no-op;
 #   * only with a parseable vX.Y.Z version in the issue title.
 #
 # Phase scope: Phases 0-3 (entry gate, master+tag+release, stable publish,
@@ -33,8 +33,9 @@ set -uo pipefail
 # and carrying a `Release Management` label the ceremony, the drain gate and
 # the promotion sweep all read. Replacing that label with `Escalation` would
 # break the release machinery in order to report that the release machinery is
-# broken. Nothing changes hands here: the ceremony stops and the next poll
-# retries, so `escalate_to_owner` is not the right verb.
+# broken. Nothing changes hands here: the ceremony stops and the owner
+# re-dispatches it (`gh workflow run release_ceremony.yml`; there is no
+# schedule since 2026-10-05), so `escalate_to_owner` is not the right verb.
 #
 # Usage:
 #   scripts/agents/release_ceremony_watch.sh [--check-only]
@@ -137,17 +138,17 @@ if [[ -z "${NYXGPT_CEREMONY_PAT:-}" ]]; then
   echo "[ceremony-watch] Ceremony token not configured (RELEASE_CEREMONY_TOKEN / NYXGPT_CEREMONY_PAT) — refusing to start." >&2
   issue_comment "$RELEASE_ISSUE" "🚨 **Release ceremony (${VERSION}) did not start**: the ceremony token is not configured (repository secret \`RELEASE_CEREMONY_TOKEN\`).
 
-Nothing was changed — no tag, no master merge, no publish. Configure the secret (an owner-level token that may push to \`master\`) and the next poll starts the ceremony automatically." \
+Nothing was changed — no tag, no master merge, no publish. Configure the secret (an owner-level token that may push to \`master\`) then re-run it: \`gh workflow run release_ceremony.yml\` (there is no schedule; nothing retries on its own)." \
     || _warn "ceremony-watch: could not post the missing-token report."
   notify_human_escalation "$RELEASE_ISSUE" "release-ceremony-no-token" \
     "Automated release ceremony for ${VERSION} could not start: RELEASE_CEREMONY_TOKEN is not configured" \
-    "Add the RELEASE_CEREMONY_TOKEN repository secret (owner-level token with push access to master); the next poll retries" \
+    "Add the RELEASE_CEREMONY_TOKEN repository secret (owner-level token with push access to master), then re-run: gh workflow run release_ceremony.yml" \
     "${RELEASE_ISSUE}:ceremony-token:${VERSION}" 1440 || true
   exit 1
 fi
 
 # Claim the ceremony BEFORE doing anything irreversible: the marker is what
-# stops the next poll (and a concurrent run) from starting a second one.
+# stops a repeat or concurrent dispatch from starting a second one.
 MARKER="$(python3 "${DIR}/lib/ceremony_trigger.py" marker "$VERSION")"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_OWNER}/${REPO_NAME}}/actions/runs/${GITHUB_RUN_ID:-0}"
 issue_comment "$RELEASE_ISSUE" "🚀 **Release ceremony (automated, #3730)**: release issue moved to **${STATUS_FOR_RELEASE:-For Release}** — starting the ceremony for \`${VERSION}\` unattended.
@@ -157,14 +158,14 @@ Scope: master fast-forward → tag + GitHub Release → \`stable\` publish (#372
 [Ceremony run](${RUN_URL})
 
 ${MARKER}" || {
-  # The marker IS the claim. Without it a later poll would start a second
+  # The marker IS the claim. Without it a later dispatch would start a second
   # ceremony, hit the Phase 0 tag gate and DM the owner a false alarm.
   # Nothing irreversible has happened yet, so stopping here is free and the
-  # next poll retries the whole thing cleanly.
-  _warn "ceremony-watch: could not post the ceremony marker — refusing to start the ceremony unclaimed. The next poll will retry."
+  # a re-dispatch retries the whole thing cleanly.
+  _warn "ceremony-watch: could not post the ceremony marker — refusing to start the ceremony unclaimed. Re-run: gh workflow run release_ceremony.yml"
   notify_human_escalation "$RELEASE_ISSUE" "release-ceremony-unclaimed" \
     "Automated release ceremony for ${VERSION} could not claim the release issue (marker comment failed) — it did NOT start" \
-    "Check GitHub API availability and the ceremony token; the next poll retries automatically" \
+    "Check GitHub API availability and the ceremony token, then re-run: gh workflow run release_ceremony.yml" \
     "${RELEASE_ISSUE}:ceremony-claim:${VERSION}" 60 || true
   exit 1
 }

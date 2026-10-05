@@ -75,7 +75,7 @@ fails if it drifts. Do not hand-edit.
 | `reconcile_closed_backlog_status.yml` | workflow_dispatch | Reconcile Closed Backlog Status |
 | `release-artifacts.yml` | release, workflow_dispatch | Release Artifacts |
 | `release-publish-pypi.yml` | workflow_dispatch | PyPI Publish (rc / stable) |
-| `release_ceremony.yml` | schedule, workflow_dispatch | Release Ceremony (Automated) |
+| `release_ceremony.yml` | workflow_dispatch | Release Ceremony (Automated) |
 | `restart-activation-smoke.yml` | pull_request, push, workflow_dispatch | Restart Activation Smoke |
 | `retro-dashboard-stamp-smoke.yml` | push, pull_request, workflow_dispatch | Retro Dashboard Stamp Smoke |
 | `retro-data-pipeline-smoke.yml` | push, pull_request, workflow_dispatch | Retro Data Pipeline Smoke |

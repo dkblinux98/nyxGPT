@@ -401,13 +401,17 @@ The #3687 count-of-2 dispatch pause is retired (ledger **S-009**).
 The old rule read "master/main is human controlled", meaning the owner ran the
 master fast-forward by hand. That is superseded: **the human control point is
 now the owner moving the release tracking issue to `For Release`.** That move
-is the sign-off, and from it the release ceremony runs end-to-end unattended —
+is the sign-off, and one dispatch (`gh workflow run release_ceremony.yml`)
+starts the release ceremony, which then runs end-to-end unattended —
 master fast-forward, tag, GitHub Release, `stable` publish via the #3727
 pipeline, stable Homebrew tap stamp, and retirement of that line's `-rc`
 formulas (`.github/workflows/release_ceremony.yml` →
 `scripts/agents/release_ceremony_watch.sh` → `scripts/release_ceremony.sh
---unattended`). No human step happens after the move; any failure in the
-ceremony alerts the owner over the Slack DM channel (#3695) and stops.
+--unattended`). The dispatch is needed because a user-project status change
+raises no workflow event; the old 15-minute poll was removed 2026-10-05
+(ledger D-060) because GitHub throttled it to every 3-8 hours. No human step
+happens after the dispatch; any failure in the ceremony alerts the owner over
+the Slack DM channel (#3695) and stops, and re-running is another dispatch.
 
 Nothing else may push master: agents still never merge to master, and the
 ceremony reaches it only through that one signed-off path. Phase 4 of the

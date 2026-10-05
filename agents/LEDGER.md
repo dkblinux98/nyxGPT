@@ -243,7 +243,7 @@ rather than mechanism, and nothing can enforce them.
   issue to `For Release`; from that move the ceremony runs unattended through
   master fast-forward, tag, GitHub Release, `stable` publish, tap stamp and
   `-rc` retirement. No human step happens after the move. Nothing else may push
-  master.
+  master. *(Trigger amended by D-060: the move is followed by one dispatch.)*
   Source: #3730; `CLAUDE.md` §Branch Rules; `.github/workflows/release_ceremony.yml`.
 
 - **D-004** · 2026-08-14 · owner — At genuine decision points (cut a candidate
@@ -2361,6 +2361,21 @@ rather than mechanism, and nothing can enforce them.
   origin/v3.0.0` — run, not eyeballed. IDs are never reused.
   Source: #4043; amends **D-054**; cites **D-006**, **D-032**(d), **D-051**;
   `docs/self-healing.md` §Restarting the api from the api.
+
+- **D-060** · 2026-10-05 · owner — **The release ceremony is dispatch-only.**
+  `release_ceremony.yml`'s `*/15` cron is removed; after moving the release
+  issue to `For Release` the owner (or a session on the owner's instruction)
+  runs `gh workflow run release_ceremony.yml`. Why: a user-project status
+  change raises no workflow event, so the cron was the only trigger, and
+  GitHub throttled it to every 3-8 hours (observed 2026-10-04/05) -- at
+  v3.0.0's sign-off it would not have noticed the move for hours. A release
+  happens at most monthly; a constant, unreliable poll is the wrong shape for
+  it, as the drain gate's identical removal (2026-08-25) already concluded.
+  The version-scoped marker keeps repeat/concurrent dispatches idempotent.
+  Failure messages now say "re-run: gh workflow run release_ceremony.yml"
+  instead of "the next poll retries", which became false. Revisit only if a
+  real event for user-project item changes becomes available.
+  Source: owner instruction 2026-10-05; `.github/workflows/release_ceremony.yml`.
 
 ## Parked
 

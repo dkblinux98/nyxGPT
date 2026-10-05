@@ -14,19 +14,29 @@ name: Release Ceremony (Automated)
 # CLAUDE.md, Branch Rules).
 #
 # Detection: the project Status field lives on a USER project, whose item
-# changes raise no `projects_v2_item` event a workflow can subscribe to, so
-# the trigger is a cheap poll of the release issue's Status plus the
-# obvious event hooks. The poll is free of side effects -- the trigger is
-# edge-triggered by a version-scoped marker comment, so once a ceremony has
-# started every later poll is a no-op (scripts/agents/lib/ceremony_trigger.py,
-# unit-tested in tests/unit/test_ceremony_trigger.py).
+# changes raise no `projects_v2_item` event a workflow can subscribe to. So
+# the ceremony is started by an explicit dispatch after the move:
+#
+#     gh workflow run release_ceremony.yml
+#
+# It used to poll on `*/15 * * * *` instead. That was removed 2026-10-05 by
+# owner decision for the same reason the drain gate's cron was removed on
+# 2026-08-25: a release happens at most monthly, and GitHub throttles
+# scheduled workflows so hard that the "15-minute" poll actually ran every
+# 3-8 hours -- on v3.0.0's sign-off it would not have noticed the move for
+# hours. A constant poll that is also unreliable is the worst of both; one
+# dispatch is immediate and is a clearer human control point than a timer.
+#
+# The dispatch stays idempotent: the trigger is edge-triggered by a
+# version-scoped marker comment, so a second dispatch (or a concurrent one)
+# is a no-op once a ceremony has started (scripts/agents/lib/ceremony_trigger.py,
+# unit-tested in tests/unit/test_ceremony_trigger.py). Re-running after a
+# failure that stopped BEFORE the marker is likewise just another dispatch.
 #
 # Phase 4 (next-line preparation + repoint) stays owner-run: it needs the
 # owner's local config.ini mirror and next-line decisions.
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       force:

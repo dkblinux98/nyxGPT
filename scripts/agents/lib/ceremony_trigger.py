@@ -17,8 +17,9 @@ touching GitHub:
     `For Release` is ordinary accepted work;
   * it fires on the TRANSITION only -- a ceremony marker already on the
     issue means this ceremony has run (or is running), and every later
-    poll is a no-op. The watcher polls, so without this a completed
-    release would re-run the ceremony every 15 minutes;
+    dispatch is a no-op. The workflow is dispatch-only since 2026-10-05
+    (it polled every 15 minutes before), so without this a repeat or
+    concurrent dispatch would re-run a completed ceremony;
   * it needs a parseable vX.Y.Z version in the issue title, because the
     ceremony is version-driven. No version -> conservative stop.
 """

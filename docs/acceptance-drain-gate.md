@@ -7,7 +7,8 @@ Two things changed:
 1. Acceptance failures and improvements filed **during** an acceptance round
    are held until the round drains, instead of being worked immediately.
 2. The owner moving the **release tracking issue** to `For Release` is now the
-   release sign-off, and the release ceremony runs from it unattended.
+   release sign-off; one `gh workflow run release_ceremony.yml` then starts
+   the release ceremony, which runs unattended (no schedule since 2026-10-05).
 
 ---
 
@@ -246,16 +247,17 @@ only when **all** of these hold:
 - its Status is **`For Release`**;
 - its title carries a parseable **`vX.Y.Z`** — no version is a conservative
   stop;
-- no **version-scoped ceremony marker** is already on the issue. The watcher
-  polls, so this is what makes the trigger edge-triggered: a finished release
-  is never re-run. A previous line's marker never suppresses a new line's
+- no **version-scoped ceremony marker** is already on the issue. This is what
+  makes the trigger edge-triggered: a repeat or concurrent dispatch of a
+  finished (or running) release is a no-op. A previous line's marker never suppresses a new line's
   ceremony.
 
 The marker is posted **before** anything irreversible happens — and if it
 cannot be posted, the ceremony does not start at all. Claiming is the point:
-an unclaimed ceremony would let the next poll start a second one, which then
-dies at the tag gate and DMs the owner a false alarm. Nothing has changed at
-that point, so the next poll simply retries. The ceremony token is checked at
+an unclaimed ceremony would let a second dispatch start a second one, which
+then dies at the tag gate and DMs the owner a false alarm. Nothing has changed
+at that point, so re-running is simply another dispatch
+(`gh workflow run release_ceremony.yml`) -- nothing retries on its own. The ceremony token is checked at
 the same point, before the claim.
 
 ### Failure handling
