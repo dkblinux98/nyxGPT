@@ -81,6 +81,17 @@ jobs:
         with:
           ref: ${{ vars.RELEASE_BRANCH }}
           fetch-depth: 0
+          # REQUIRED, not hygiene. With the default (true) checkout stores this
+          # job's GITHUB_TOKEN as an `http.https://github.com/.extraheader`, and
+          # git sends that header on EVERY github.com request -- overriding the
+          # PAT release_ceremony.sh embeds in its push URL. The master
+          # fast-forward then goes out as github-actions[bot] with
+          # `contents: read` and gets a 403. That is exactly how v3.0.0's first
+          # real ceremony died (run 37432169625, 2026-10-06), after the entry
+          # gate passed. The repo is public, so the script's one `git fetch`
+          # needs no credential. Guarded by
+          # tests/unit/test_release_ceremony_workflow.py.
+          persist-credentials: false
 
       - name: Write ephemeral config
         run: |
