@@ -231,12 +231,24 @@ loop, and now reaches a release only through this one signed-off path.
    Version-scoped by name (#3735): a later line's candidates are a different
    formula and are left alone.
 
-**Phase 4 (next-line preparation and the repoint) stays owner-run** — it needs
-the owner's local `config.ini` mirror and next-line decisions:
+7. **Phase 4** next line + repoint (automated since 2026-10-07, ledger D-061):
+   the next branch is named by the lowest open milestone titled `(vX.Y.Z)`
+   above the release; it is created from the release tag (or, if it exists,
+   the release is forward-ported into it), its `Release Management` release
+   issue and draft release are created, `pyproject.toml` is bumped, and the
+   default branch / `RELEASE_BRANCH` / `RELEASE_ISSUE_NUMBER` are repointed.
 
-```bash
-scripts/release_ceremony.sh <VERSION> --phase4-only --next-branch v<NEXT>
-```
+**Agent pause.** Phase 0 sets `AGENTS_ENABLED`, `SPRINT_AUTOPILOT` and
+`CLAUDE_REVIEW_ENABLED` to `false` (prior values saved in the repo variable
+`CEREMONY_PAUSED_FLAGS`) so nothing merges into the line being released;
+Phase 4 restores them after the repoint, so the agents resume on the new line.
+A run that stops part-way leaves them paused deliberately.
+
+**Resume.** Re-dispatching after a failure needs no `force` once the release
+tag exists: the watcher runs `--phase4-only`, which verifies Phases 0-3
+completed and runs only Phase 4. The only owner prerequisite is the next
+line's milestone and a sprint iteration; the session that dispatched the run
+reconciles the owner's local `config.ini` mirror afterwards.
 
 ### Guardrails
 

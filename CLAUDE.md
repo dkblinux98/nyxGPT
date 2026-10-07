@@ -402,10 +402,13 @@ The old rule read "master/main is human controlled", meaning the owner ran the
 master fast-forward by hand. That is superseded: **the human control point is
 now the owner moving the release tracking issue to `For Release`.** That move
 is the sign-off, and one dispatch (`gh workflow run release_ceremony.yml`)
-starts the release ceremony, which then runs end-to-end unattended —
-master fast-forward, tag, GitHub Release, `stable` publish via the #3727
-pipeline, stable Homebrew tap stamp, and retirement of that line's `-rc`
-formulas (`.github/workflows/release_ceremony.yml` →
+starts the release ceremony, which then runs end-to-end unattended — agent
+flags paused, master fast-forward, tag, GitHub Release, `stable` publish via
+the #3727 pipeline, stable Homebrew tap stamp, retirement of that line's `-rc`
+formulas, then **the next line**: named by its open `(vX.Y.Z)` milestone,
+created from the tag with its `Release Management` release issue and draft
+release, the repo repointed to it, and the agent flags restored
+(`.github/workflows/release_ceremony.yml` →
 `scripts/agents/release_ceremony_watch.sh` → `scripts/release_ceremony.sh
 --unattended`). The dispatch is needed because a user-project status change
 raises no workflow event; the old 15-minute poll was removed 2026-10-05
@@ -413,9 +416,22 @@ raises no workflow event; the old 15-minute poll was removed 2026-10-05
 happens after the dispatch; any failure in the ceremony alerts the owner over
 the Slack DM channel (#3695) and stops, and re-running is another dispatch.
 
+**When the owner tells a session to run the release ceremony** (owner decision
+2026-10-07, ledger D-061): make sure the release issue is in `For Release`
+(move it with `set_issue_status` if the owner has not), run
+`gh workflow run release_ceremony.yml`, watch it to completion, and verify the
+outcome independently (tag, master, GitHub Release, PyPI, tap, new branch,
+release issue, draft release, repo vars, flags restored). Then reconcile the
+owner's `~/.nyxGPT/config.ini` `[github] RELEASE_BRANCH`/`RELEASE_ISSUE_NUMBER`
+to the new repo variables — those keys sync *to* the repo, so a stale mirror
+would push the old line back. The owner types nothing; there is no `repoint`
+confirmation in an unattended run. The one prerequisite is the owner's: the
+next line's milestone (`... (vX.Y.Z)`) and a sprint iteration must exist. A
+failed run leaves the agent flags paused on purpose; re-dispatching resumes
+(Phases 0-3 are skipped once the release tag exists) and restores them.
+
 Nothing else may push master: agents still never merge to master, and the
-ceremony reaches it only through that one signed-off path. Phase 4 of the
-ceremony (next-line preparation and the repoint) remains owner-run.
+ceremony reaches it only through that one signed-off path.
 
 ---
 

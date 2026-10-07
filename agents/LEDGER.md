@@ -2377,6 +2377,27 @@ rather than mechanism, and nothing can enforce them.
   real event for user-project item changes becomes available.
   Source: owner instruction 2026-10-05; `.github/workflows/release_ceremony.yml`.
 
+- **D-061** · 2026-10-07 · owner — **The release ceremony is fully automated
+  through Phase 4.** When the owner tells a session to run it, the session
+  dispatches `release_ceremony.yml` and the owner types nothing more (no
+  `repoint` confirmation). Phase 0 pauses `AGENTS_ENABLED`,
+  `SPRINT_AUTOPILOT` and `CLAUDE_REVIEW_ENABLED` (saved in
+  `CEREMONY_PAUSED_FLAGS`); Phase 4 names the next line from the lowest open
+  `(vX.Y.Z)` milestone above the release, creates it from the tag (or
+  forward-ports into an existing one), creates its `Release Management`
+  release issue and draft release, bumps `pyproject.toml`, repoints the
+  default branch and both repo variables, and restores the flags. A re-dispatch
+  resumes at Phase 4 once the release tag exists. Prerequisite (owner): the
+  next line's milestone and a sprint iteration. Found while doing it for
+  3.0.0: `--phase4-only` had been parsed and never used, Phase 4 read the
+  project owner from a `[github]` section the runner's config lacks, a
+  forward-port conflict logged and carried on to the repoint, and the
+  workflow's `AGENTS_ENABLED` gate would have skipped any resume. Sessions
+  reconcile the owner's local `config.ini` `[github] RELEASE_BRANCH` /
+  `RELEASE_ISSUE_NUMBER` after a run (those keys sync TO the repo).
+  Source: owner instruction 2026-10-07; `scripts/release_ceremony.sh`;
+  `scripts/agents/release_ceremony_watch.sh`; `CLAUDE.md` §Branch Rules.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
