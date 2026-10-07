@@ -530,8 +530,10 @@ else
   # the `Release Management` label (drain gate, promotion sweep), the
   # milestone, and a place on the project board.
   if [[ -z "$NEXT_RELEASE_ISSUE" ]]; then
+    # The plain list, NOT --search: the search index lags, so a resume right
+    # after a create would miss the issue it just made and file a duplicate.
     NEXT_RELEASE_ISSUE="$(gh issue list -R "$REPO" --state open --label "Release Management" \
-      --search "\"Release ${NEXT_BRANCH}\" in:title" --json number,title \
+      --limit 100 --json number,title \
       --jq "[.[] | select(.title | startswith(\"Release ${NEXT_BRANCH}\"))][0].number // empty")"
   fi
   if [[ -n "$NEXT_RELEASE_ISSUE" ]]; then
@@ -567,14 +569,16 @@ Move this issue to \`For Release\` and ask a session to run the release ceremony
         --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")" != "0" ]]; then
     log "  ok: draft release for ${NEXT_BRANCH} already exists"
   else
-    gh api -X POST "repos/${REPO}/releases" \
+    DRAFT_NEW_ID="$(gh api -X POST "repos/${REPO}/releases" \
       -f tag_name="${NEXT_VERSION}" -f target_commitish="${NEXT_BRANCH}" \
       -f name="nyxGPT Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}" \
       -f body="Draft — populated at ceremony time from the release issue." \
-      -F draft=true --silent
-    [[ "$(gh api "repos/${REPO}/releases?per_page=30" \
-      --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")" != "0" ]] \
-      || fail "verify failed: draft release for ${NEXT_BRANCH} not found after create"
+      -F draft=true --jq .id)"
+    # Verify by the id the create returned. Re-listing releases lags the
+    # write: 3.0.0's Phase 4 (run 37569589877) created this draft and then
+    # failed to find it in the list a second later.
+    [[ "$(gh api "repos/${REPO}/releases/${DRAFT_NEW_ID}" --jq .draft 2>/dev/null)" == "true" ]] \
+      || fail "verify failed: draft release ${DRAFT_NEW_ID:-?} for ${NEXT_BRANCH} not readable after create"
     log "  verified: draft release created for ${NEXT_BRANCH}"
   fi
 fi
