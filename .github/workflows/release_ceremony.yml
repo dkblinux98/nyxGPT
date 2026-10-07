@@ -33,8 +33,11 @@ name: Release Ceremony (Automated)
 # unit-tested in tests/unit/test_ceremony_trigger.py). Re-running after a
 # failure that stopped BEFORE the marker is likewise just another dispatch.
 #
-# Phase 4 (next-line preparation + repoint) stays owner-run: it needs the
-# owner's local config.ini mirror and next-line decisions.
+# All five phases run (owner decision 2026-10-07): Phase 0 pauses the agent
+# flags, Phase 4 creates the next line (named by its open "(vX.Y.Z)"
+# milestone) with its release issue and draft release, repoints the repo and
+# restores the flags. A re-dispatch after a failure resumes -- Phases 0-3 are
+# skipped once the release tag exists.
 
 on:
   workflow_dispatch:
@@ -59,7 +62,9 @@ concurrency:
 
 jobs:
   ceremony:
-    if: vars.AGENTS_ENABLED == 'true'
+    # No `vars.AGENTS_ENABLED` gate: Phase 0 sets that flag to false, so the
+    # gate would silently skip the very re-dispatch that resumes a ceremony
+    # which stopped part-way. The ceremony is owner-instructed, not an agent.
     runs-on: ubuntu-latest
     env:
       # Read-side gh calls run as the scrummaster agent; the ceremony's own

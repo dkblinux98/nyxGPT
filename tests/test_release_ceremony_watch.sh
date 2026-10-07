@@ -56,6 +56,11 @@ case "$args" in
   *comments*)
     echo "${FAKE_COMMENTS:-[]}"
     exit 0 ;;
+  *releases/tags/*)
+    # `--jq .draft` -- unset means "no such release" (gh exits non-zero)
+    [[ -n "${FAKE_RELEASE_DRAFT:-}" ]] || exit 1
+    echo "$FAKE_RELEASE_DRAFT"
+    exit 0 ;;
   *issues/*)
     # `--jq '.title'` -- gh applies the filter itself, so print the title
     echo "$FAKE_TITLE"
@@ -111,13 +116,23 @@ _assert_eq "the version comes from the release issue title" \
   "3.0.0" "$(jq -r '.version' <<<"$out")"
 
 # --- Test 3: a marker for this version means it already ran -> no re-fire ---
-# (the watcher polls every 15 minutes; without this the ceremony would
-# re-run forever after a release)
+# (without this a repeat dispatch would re-run Phases 0-3 of a release)
 export FAKE_COMMENTS='[{"body":"starting\n<!-- nyxgpt-release-ceremony:3.0.0 -->"}]'
 out="$(_run)"
 _assert_eq "an existing marker for this version suppresses a second ceremony" \
   "false" "$(jq -r '.fire' <<<"$out")"
 _assert_contains "the reason says it already started" "$out" "already started"
+
+# --- Test 3a: release already PUBLISHED -> Phase 4 is resumable despite the marker ---
+# Phases 0-3 are done once the tag's release is published; only Phase 4
+# (idempotent) remains, and a plain re-dispatch must pick it up without force.
+export FAKE_RELEASE_DRAFT="false"
+out="$(_run)"
+_assert_eq "a published release resumes Phase 4 even though a marker exists" \
+  "true" "$(jq -r '.fire' <<<"$out")"
+err="$(NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SCRIPT" --check-only 2>&1 >/dev/null)"
+_assert_contains "the resume is announced" "$err" "only Phase 4"
+unset FAKE_RELEASE_DRAFT
 
 # --- Test 3b: a marker for a DIFFERENT version does not suppress it ---
 export FAKE_COMMENTS='[{"body":"previous line\n<!-- nyxgpt-release-ceremony:2.1.0 -->"}]'
@@ -192,6 +207,11 @@ case "$args" in
   *comments*)
     echo "${FAKE_COMMENTS:-[]}"
     exit 0 ;;
+  *releases/tags/*)
+    # `--jq .draft` -- unset means "no such release" (gh exits non-zero)
+    [[ -n "${FAKE_RELEASE_DRAFT:-}" ]] || exit 1
+    echo "$FAKE_RELEASE_DRAFT"
+    exit 0 ;;
   *issues/*)
     echo "$FAKE_TITLE"
     exit 0 ;;
@@ -207,6 +227,30 @@ rc=$?
 _assert_eq "an unclaimable ceremony fails the run" "1" "$rc"
 _assert_contains "the refusal explains the unposted claim" "$err" "refusing to start the ceremony unclaimed"
 _assert_eq "no ceremony runs unclaimed" "" "$(cat "$RAN_FILE")"
+
+# Test 9: resume -- with the release published, the ceremony is run with
+# --phase4-only and the rc retirement (a Phase 0-3 follow-up) is not repeated.
+cat >"$WORK/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"auth status"*) exit 0 ;;
+  *"-X POST"*comments*) exit 0 ;;
+  *graphql*)
+    printf '{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"fieldValues":{"nodes":[{"field":{"name":"Status"},"name":"%s"}]}}]}}}}}\n' "$FAKE_STATUS"
+    exit 0 ;;
+  *comments*) echo "${FAKE_COMMENTS:-[]}"; exit 0 ;;
+  *releases/tags/*) echo "false"; exit 0 ;;
+  *issues/*) echo "$FAKE_TITLE"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$WORK/bin/gh"
+export FAKE_COMMENTS='[{"body":"<!-- nyxgpt-release-ceremony:3.0.0 -->"}]'
+: >"$RAN_FILE"
+NYXGPT_CEREMONY_PAT="fake-token" NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SANDBOX_SCRIPT" >/dev/null 2>&1
+_assert_contains "a published release runs only Phase 4" "$(cat "$RAN_FILE")" "release_ceremony.sh 3.0.0 --unattended --phase4-only"
+_assert_eq "rc retirement is not repeated on a Phase 4 resume" "" "$(grep retire_rc_formulas "$RAN_FILE" || true)"
 
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."

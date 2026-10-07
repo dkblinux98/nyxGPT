@@ -18,10 +18,15 @@ set -uo pipefail
 #     comment makes every later dispatch a no-op;
 #   * only with a parseable vX.Y.Z version in the issue title.
 #
-# Phase scope: Phases 0-3 (entry gate, master+tag+release, stable publish,
-# project close-out). Phase 4 (next-line preparation and the repoint) stays
-# with the owner-run script: it needs the owner's local config.ini mirror
-# and next-line decisions, and is not part of the automated scope.
+# Phase scope: all five phases (owner decision 2026-10-07): entry gate (which
+# pauses the agent flags), master+tag+release, stable publish, close-out, and
+# Phase 4 -- the next line named by its open "(vX.Y.Z)" milestone is created
+# with its release issue and draft release, the repo is repointed to it, and
+# the agent flags are restored. No owner step follows the dispatch.
+#
+# Resume: if the release tag already exists, Phases 0-3 are done and only
+# Phase 4 is outstanding, so the ceremony runs with --phase4-only. That makes a
+# plain re-dispatch pick up where a failed run stopped, without `force`.
 #
 # Any failure alerts the owner on the existing Slack DM channel (#3695) in
 # addition to a loud comment on the release issue.
@@ -100,6 +105,17 @@ if [[ -n "$VERSION_GUESS" && "${FORCE_CEREMONY:-0}" != "1" ]]; then
   fi
 fi
 
+# Phases 0-3 already done? The tag is the proof (Phase 1 creates it). Then only
+# Phase 4 is left; it is idempotent, so the version marker -- which exists to
+# stop Phases 0-3 running twice -- must not suppress it.
+PHASE4_ONLY=0
+if [[ -n "$VERSION_GUESS" ]] \
+   && [[ "$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/releases/tags/${VERSION_GUESS}" --jq .draft 2>/dev/null)" == "false" ]]; then
+  PHASE4_ONLY=1
+  ALREADY=false
+  echo "[ceremony-watch] ${VERSION_GUESS} is already published -- only Phase 4 (next line + repoint) remains." >&2
+fi
+
 DECISION="$(jq -n -c \
   --argjson issue "$RELEASE_ISSUE" \
   --argjson release_issue "$RELEASE_ISSUE" \
@@ -153,7 +169,7 @@ MARKER="$(python3 "${DIR}/lib/ceremony_trigger.py" marker "$VERSION")"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_OWNER}/${REPO_NAME}}/actions/runs/${GITHUB_RUN_ID:-0}"
 issue_comment "$RELEASE_ISSUE" "🚀 **Release ceremony (automated, #3730)**: release issue moved to **${STATUS_FOR_RELEASE:-For Release}** — starting the ceremony for \`${VERSION}\` unattended.
 
-Scope: master fast-forward → tag + GitHub Release → \`stable\` publish (#3727) → stable tap stamp → retirement of the \`${VERSION}rc*\` formulas. Phase 4 (next-line preparation and the repoint) remains owner-run.
+Scope: agents paused → master fast-forward → tag + GitHub Release → \`stable\` publish (#3727) → stable tap stamp → retirement of the \`${VERSION}rc*\` formulas → next line (branch, release issue, draft release) → repoint → agents restored.
 
 [Ceremony run](${RUN_URL})
 
@@ -187,22 +203,28 @@ The ceremony stopped here — nothing further ran. Re-run it after fixing the ca
   exit 1
 }
 
-echo "[ceremony-watch] Running the ceremony for ${VERSION} (Phases 0-3, unattended)." >&2
+CEREMONY_ARGS=(--unattended)
+[[ "$PHASE4_ONLY" == "1" ]] && CEREMONY_ARGS+=(--phase4-only)
+CEREMONY_LOG="$(mktemp)"
+echo "[ceremony-watch] Running the ceremony for ${VERSION} (${CEREMONY_ARGS[*]}, all phases)." >&2
 if ! NYXGPT_CEREMONY_PAT="${NYXGPT_CEREMONY_PAT}" \
-  "$ROOT/scripts/release_ceremony.sh" "$VERSION" --unattended --stop-after-phase 3; then
-  ceremony_failed "the ceremony itself (Phases 0-3: entry gate, master/tag/release, stable publish, close-out)" \
-    "See the run log for which phase stopped it. The entry gate is read-only, so a gate failure changed nothing."
+  "$ROOT/scripts/release_ceremony.sh" "$VERSION" "${CEREMONY_ARGS[@]}" 2>&1 | tee "$CEREMONY_LOG"; then
+  ceremony_failed "the ceremony itself" \
+    "See the run log for which phase stopped it. **The agent flags (AGENTS_ENABLED, SPRINT_AUTOPILOT, CLAUDE_REVIEW_ENABLED) stay paused** until a run completes -- that is deliberate, so nothing merges into a half-released line. Re-dispatching resumes: Phases 0-3 are skipped once the release tag exists, and the saved flags are restored at the end of Phase 4."
+fi
+NEXT_LINE="$(grep -oE 'NEXT_LINE v[0-9.]+ #[0-9]+' "$CEREMONY_LOG" | tail -1 | cut -d' ' -f2-)"
+
+if [[ "$PHASE4_ONLY" != "1" ]]; then
+  echo "[ceremony-watch] Retiring the ${VERSION}rc* formulas from the tap." >&2
+  if ! "$ROOT/scripts/retire_rc_formulas.sh" "$VERSION"; then
+    ceremony_failed "rc formula retirement" \
+      "The release is published and the repo is repointed; only the tap cleanup failed. Re-run \`scripts/retire_rc_formulas.sh ${VERSION}\` once the tap is reachable."
+  fi
 fi
 
-echo "[ceremony-watch] Retiring the ${VERSION}rc* formulas from the tap." >&2
-if ! "$ROOT/scripts/retire_rc_formulas.sh" "$VERSION"; then
-  ceremony_failed "rc formula retirement" \
-    "The release itself is published; only the tap cleanup failed. Re-run \`scripts/retire_rc_formulas.sh ${VERSION}\` once the tap is reachable."
-fi
+issue_comment "$RELEASE_ISSUE" "✅ **Release ceremony complete (${VERSION})** — master fast-forwarded, tag and GitHub Release published, \`stable\` published to PyPI, tap stamped, \`${VERSION}rc*\` formulas retired, next line ready and repointed${NEXT_LINE:+ (**${NEXT_LINE}**)}, agent flags restored.
 
-issue_comment "$RELEASE_ISSUE" "✅ **Release ceremony complete (${VERSION})** — master fast-forwarded, tag and GitHub Release published, \`stable\` published to PyPI, tap stamped and the \`${VERSION}rc*\` formulas retired.
-
-Remaining owner step: Phase 4 (next-line preparation and the repoint) — \`scripts/release_ceremony.sh ${VERSION} --phase4-only --next-branch <next>\`.
+Nothing is left for the owner. The session that dispatched this reconciles the local ~/.nyxGPT/config.ini mirror (\`[github] RELEASE_BRANCH\` / \`RELEASE_ISSUE_NUMBER\`).
 
 [Ceremony run](${RUN_URL})" \
   || _warn "ceremony-watch: could not post the completion note."

@@ -14,11 +14,23 @@
 #            authenticates with PyPI Trusted
 #            Publishing (OIDC), and no PyPI token is stored anywhere.
 #   Phase 3  Project close-out (statuses -> Done, milestone + issue close)
-#   Phase 4  Line reconciliation                       -> STOP: repoint
-#            point release: merge release into the next development line
-#            major release: next line is born from the release point (manual)
+#   Phase 4  Next line + repoint
+#            the next line is named by the open "(vX.Y.Z)" milestone; it is
+#            created from the release tag (or, if it already exists, the
+#            release is forward-ported into it), its release issue and draft
+#            release are created, and the default branch / RELEASE_BRANCH /
+#            RELEASE_ISSUE_NUMBER are repointed to it.
 #
-# Run LOCALLY by the human owner. Credentials come from ~/.nyxGPT/config.ini:
+# Agent pause (owner requirement, 2026-10-07): Phase 0 sets AGENTS_ENABLED,
+# SPRINT_AUTOPILOT and CLAUDE_REVIEW_ENABLED to false so nothing merges into
+# the line being released, saving their prior values in the repo variable
+# CEREMONY_PAUSED_FLAGS. Phase 4 restores them once the repoint is done, so the
+# agents resume on the NEW line. A ceremony that stops part-way leaves them
+# paused on purpose; re-running resumes and restores them.
+#
+# Normally run by .github/workflows/release_ceremony.yml (dispatched by a
+# session on the owner's instruction) with --unattended and the ceremony PAT.
+# Run locally, credentials come from ~/.nyxGPT/config.ini:
 #   [github] PAT          — owner PAT (ruleset bypass: master push, repoint)
 # No PyPI credential is needed here: Phase 2 dispatches the publish workflow,
 # which uploads with Trusted Publishing (OIDC) from GitHub Actions.
@@ -27,18 +39,20 @@
 #   scripts/release_ceremony.sh VERSION [options]
 #     VERSION                e.g. 2.1.0  (release branch is v<VERSION>)
 #   Options:
-#     --next-branch BRANCH   next development line. Point release: must exist
-#                            (e.g. v3.0.0) — receives the forward-port merge.
-#                            Major (x.0.0): will be CREATED from the release
-#                            tag as the new release-candidate branch.
-#     --next-release-issue N RELEASE_ISSUE_NUMBER after repoint. Point
-#                            releases: required (issue exists). Major: omit —
-#                            the ceremony creates the release issue and uses
-#                            its number.
-#     --next-title TEXT      major only: descriptive suffix for the next
-#                            line's release issue + draft release name
-#     --phase4-only          resume at Phase 4 (line prep + repoint) after an
-#                            earlier abort; Phases 0-3 must already be done
+#     --next-branch BRANCH   next development line. Default: derived from
+#                            the lowest open milestone titled "(vX.Y.Z)" with
+#                            X.Y.Z above VERSION. Created from the release tag
+#                            if missing; forward-ported into if it exists.
+#     --next-release-issue N the next line's release issue. Default: an open
+#                            `Release Management` issue naming the branch, or
+#                            a new one created by the ceremony.
+#     --next-title TEXT      suffix for the next release issue / draft name.
+#                            Default: the milestone title minus "Phase N —"
+#                            and "(vX.Y.Z)".
+#     --phase4-only          run only Phase 4, after verifying Phases 0-3
+#                            completed (tag published, master contains it).
+#                            release_ceremony_watch.sh selects this itself
+#                            when the release tag already exists.
 #     --skip-scan-gate       skip the code-scanning gate (v2.1.0 decision;
 #                            keep the gate for lines with the full CI suite)
 #     --skip-pypi            skip Phase 2
@@ -49,11 +63,9 @@
 #                            Credentials come from NYXGPT_CEREMONY_PAT (or
 #                            GH_TOKEN) instead of ~/.nyxGPT/config.ini.
 #     --stop-after-phase N   stop cleanly after phase N (0-4, default 4).
-#                            The automated ceremony stops after Phase 3:
-#                            Phase 4 repoints the line, which needs the
-#                            owner's local config.ini and next-line
-#                            decisions, and is not part of the automated
-#                            scope (#3730).
+#                            The automated ceremony runs all five phases
+#                            (owner decision 2026-10-07; it used to stop
+#                            after Phase 3 and leave Phase 4 to the owner).
 #     --dry-run              run all read-only checks; print, don't mutate
 #
 # Major (x.0.0) line preparation — performed BEFORE any repoint, per owner
@@ -100,14 +112,8 @@ done
 
 REL_BRANCH="v${VERSION}"
 if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then REL_TYPE="major"; else REL_TYPE="point"; fi
-# --next-branch only matters to Phase 4; a run that stops earlier (the
-# automated ceremony, #3730) neither needs nor should guess a next line.
-if [[ -z "$NEXT_BRANCH" && $DRY -eq 0 && $STOP_AFTER_PHASE -ge 4 ]]; then
-  fail "--next-branch is required (point: existing line to forward-port into; major: new RC branch to create)"
-fi
-if [[ "$REL_TYPE" == "point" && -z "$NEXT_RELEASE_ISSUE" && $DRY -eq 0 && $STOP_AFTER_PHASE -ge 4 ]]; then
-  fail "point release requires --next-release-issue (the next line's existing release issue)"
-fi
+# The next line is resolved in Phase 4 (from the open milestones) unless
+# given explicitly, so an unattended run needs no next-line arguments.
 NEXT_VERSION="${NEXT_BRANCH#v}"
 
 # --- credentials ---
@@ -151,6 +157,64 @@ confirm() { # confirm "prompt-token"
   [[ "$ans" == "$1" ]] || fail "aborted at stop point (expected '$1')"
 }
 
+# Project owner/number: the owner's config.ini ([github] section), else the
+# repo variable. The runner's ephemeral config has no [github] section, so
+# without the fallback Phase 4's sprint check queried an empty owner.
+project_setting() { # project_setting KEY
+  local v=""
+  [[ -f "$CONFIG_FILE" ]] && v="$(ini_get github "$1")"
+  [[ -n "$v" ]] || v="$(gh variable get "$1" -R "$REPO" 2>/dev/null || true)"
+  printf '%s' "$v"
+}
+
+AGENT_FLAGS=(AGENTS_ENABLED SPRINT_AUTOPILOT CLAUDE_REVIEW_ENABLED)
+PAUSED_FLAGS_VAR="CEREMONY_PAUSED_FLAGS"
+
+# Pause the agent loop for the length of the ceremony. The prior values are
+# saved ONCE: if a previous run stopped part-way the saved values are the
+# owner's real settings and the current `false`s are ours, so they must not
+# overwrite them.
+pause_agent_flags() {
+  if [[ $DRY -eq 1 ]]; then log "DRY-RUN: would pause ${AGENT_FLAGS[*]} (saving prior values in ${PAUSED_FLAGS_VAR})"; return 0; fi
+  local saved f cur pairs=()
+  saved="$(gh variable get "$PAUSED_FLAGS_VAR" -R "$REPO" 2>/dev/null || true)"
+  if [[ -z "$saved" ]]; then
+    for f in "${AGENT_FLAGS[@]}"; do
+      cur="$(gh variable get "$f" -R "$REPO" 2>/dev/null || true)"
+      [[ -n "$cur" ]] && pairs+=("${f}=${cur}")
+    done
+    saved="$(IFS=,; echo "${pairs[*]}")"
+    [[ -n "$saved" ]] || { log "  agents: none of ${AGENT_FLAGS[*]} is set -- nothing to pause"; return 0; }
+    gh variable set "$PAUSED_FLAGS_VAR" -R "$REPO" --body "$saved"
+    [[ "$(gh variable get "$PAUSED_FLAGS_VAR" -R "$REPO")" == "$saved" ]] || fail "verify failed: could not save agent flags"
+  else
+    log "  agents: a previous run already saved the owner's flags (${saved}) -- keeping them"
+  fi
+  local pair
+  IFS=, read -r -a pairs <<<"$saved"
+  for pair in "${pairs[@]}"; do
+    f="${pair%%=*}"
+    gh variable set "$f" -R "$REPO" --body false
+    [[ "$(gh variable get "$f" -R "$REPO")" == "false" ]] || fail "verify failed: ${f} not paused"
+  done
+  log "  agents paused for the ceremony: ${saved} -> false (restored after Phase 4)"
+}
+
+resume_agent_flags() {
+  if [[ $DRY -eq 1 ]]; then log "DRY-RUN: would restore the agent flags saved in ${PAUSED_FLAGS_VAR}"; return 0; fi
+  local saved pair f v pairs=()
+  saved="$(gh variable get "$PAUSED_FLAGS_VAR" -R "$REPO" 2>/dev/null || true)"
+  [[ -n "$saved" ]] || { log "  agents: no paused flags to restore"; return 0; }
+  IFS=, read -r -a pairs <<<"$saved"
+  for pair in "${pairs[@]}"; do
+    f="${pair%%=*}"; v="${pair#*=}"
+    gh variable set "$f" -R "$REPO" --body "$v"
+    [[ "$(gh variable get "$f" -R "$REPO")" == "$v" ]] || fail "verify failed: ${f} not restored to ${v}"
+  done
+  gh variable delete "$PAUSED_FLAGS_VAR" -R "$REPO"
+  log "  verified: agent flags restored (${saved})"
+}
+
 # Ends the run cleanly after the last phase the caller asked for.
 phase_boundary() { # phase_boundary N
   if [[ $STOP_AFTER_PHASE -le $1 ]]; then
@@ -163,8 +227,25 @@ phase_boundary() { # phase_boundary N
 log "Release $VERSION ($REL_TYPE release) — branch $REL_BRANCH"
 git fetch origin --tags --quiet
 
-# --- Phase 0: entry gate (read-only) ---
+if [[ $PHASE4_ONLY -eq 1 ]]; then
+# --- Phases 0-3 already ran: verify that, then go straight to Phase 4 ---
+log "Phases 0-3: skipped (--phase4-only) -- verifying they completed"
+TIP="$(gh api "repos/${REPO}/commits/${VERSION}" --jq .sha 2>/dev/null)" \
+  || fail "tag ${VERSION} does not exist -- Phases 0-3 have not run; drop --phase4-only"
+log "  ok: tag ${VERSION} -> ${TIP}"
+[[ "$(gh api "repos/${REPO}/releases/tags/${VERSION}" --jq .draft 2>/dev/null)" == "false" ]] \
+  || fail "the ${VERSION} GitHub Release is not published -- Phase 1 has not completed"
+log "  ok: GitHub Release ${VERSION} is published"
+case "$(gh api "repos/${REPO}/compare/${VERSION}...master" --jq .status 2>/dev/null)" in
+  identical|ahead) log "  ok: master contains ${VERSION}" ;;
+  *) fail "master does not contain tag ${VERSION} -- Phase 1 has not completed" ;;
+esac
+pause_agent_flags
+else
+
+# --- Phase 0: entry gate (read-only apart from pausing the agents) ---
 log "Phase 0: entry gate"
+pause_agent_flags
 GATE_FAIL=0
 
 TIP=$(git rev-parse "origin/${REL_BRANCH}" 2>/dev/null) || fail "origin/${REL_BRANCH} not found"
@@ -344,117 +425,157 @@ else
 fi
 phase_boundary 3
 
-# --- Phase 4: next-line preparation + repoint ---
-log "Phase 4: next-line preparation ($REL_TYPE release)"
+fi  # end: Phases 0-3 (skipped under --phase4-only)
 
-# 4-pre: readiness gates for the next line — checked BEFORE any repoint.
-# (4) phase milestone(s) and (5) sprint iteration(s) must exist.
+# --- Phase 4: next-line preparation + repoint ---
+log "Phase 4: next-line preparation"
+
+# 4.0 name the next line. Nothing to type in an unattended run: the owner
+# prepares the next line's milestone ("... (vX.Y.Z)"), and that IS the
+# decision. Several open lines -> the lowest version above this release.
+NEXT_MS_TITLE=""
+if [[ -z "$NEXT_BRANCH" ]]; then
+  NEXT_PICK="$(gh api "repos/${REPO}/milestones?state=open&per_page=100" --jq '[.[].title]' \
+    | python3 -c '
+import json, re, sys
+cur = tuple(int(x) for x in sys.argv[1].split("."))
+best = None
+for t in json.load(sys.stdin):
+    m = re.search(r"\(v(\d+)\.(\d+)\.(\d+)\)", t)
+    if not m:
+        continue
+    v = tuple(int(x) for x in m.groups())
+    if v > cur and (best is None or v < best[0]):
+        best = (v, t)
+if best:
+    print("v" + ".".join(map(str, best[0])) + "\t" + best[1])
+' "$VERSION")"
+  [[ -n "$NEXT_PICK" ]] || fail "no open milestone names a version above ${VERSION} as \"(vX.Y.Z)\" -- create the next line's milestone (it names the next branch), then re-run"
+  NEXT_BRANCH="${NEXT_PICK%%$'\t'*}"; NEXT_MS_TITLE="${NEXT_PICK#*$'\t'}"
+  log "  next line: ${NEXT_BRANCH} (from milestone '${NEXT_MS_TITLE}')"
+fi
+NEXT_VERSION="${NEXT_BRANCH#v}"
+if [[ -z "$NEXT_MS_TITLE" ]]; then
+  NEXT_MS_TITLE="$(gh api "repos/${REPO}/milestones?state=open&per_page=100" \
+    --jq "[.[] | select(.title | test(\"v${NEXT_VERSION}\"))][0].title // empty")"
+fi
+if [[ -z "$NEXT_TITLE" && -n "$NEXT_MS_TITLE" ]]; then
+  NEXT_TITLE="$(sed -E -e 's/[[:space:]]*\(v[0-9]+\.[0-9]+\.[0-9]+\)[[:space:]]*$//' \
+    -e 's/^Phase[[:space:]]+[0-9.]+[[:space:]]*[—-][[:space:]]*//' <<<"$NEXT_MS_TITLE")"
+fi
+
+# 4-pre: readiness gates for the next line -- checked BEFORE any change.
 LINE_GATE_FAIL=0
-MS_NEXT=$(gh api "repos/${REPO}/milestones?state=open&per_page=100" \
-  --jq "[.[] | select(.title | test(\"v${NEXT_VERSION}\"))] | length")
-if [[ "$MS_NEXT" == "0" ]]; then
-  log "  LINE GATE FAIL: no open milestone mentions v${NEXT_VERSION} — prepare the phase milestone(s) first"
+if [[ -z "$NEXT_MS_TITLE" ]]; then
+  log "  LINE GATE FAIL: no open milestone mentions v${NEXT_VERSION} -- prepare the phase milestone first"
   LINE_GATE_FAIL=1
 else
-  log "  ok: $MS_NEXT open phase milestone(s) for v${NEXT_VERSION}:"
-  gh api "repos/${REPO}/milestones?state=open&per_page=100" \
-    --jq ".[] | select(.title | test(\"v${NEXT_VERSION}\")) | \"    \" + .title"
+  log "  ok: open milestone for v${NEXT_VERSION}: ${NEXT_MS_TITLE}"
 fi
-PROJ_OWNER="$(ini_get github PROJECT_OWNER)"; PROJ_NUM="$(ini_get github PROJECT_NUMBER)"
+PROJ_OWNER="$(project_setting PROJECT_OWNER)"; PROJ_NUM="$(project_setting PROJECT_NUMBER)"
 SPRINTS_RAW=$(gh api graphql -f owner="$PROJ_OWNER" -F num="${PROJ_NUM:-0}" -f query='
   query($owner:String!,$num:Int!){ user(login:$owner){ projectV2(number:$num){
     field(name:"Sprint"){ ... on ProjectV2IterationField {
       configuration { iterations { title startDate } } } } } } }' 2>&1) || SPRINTS_RAW="QUERY_ERROR: $SPRINTS_RAW"
 if grep -qE 'QUERY_ERROR|"errors"|RATE_LIMIT' <<<"$SPRINTS_RAW"; then
-  log "  LINE GATE FAIL: could not verify Sprint iterations (GraphQL error/rate limit) — retry when the limit resets:"
+  log "  LINE GATE FAIL: could not verify Sprint iterations (GraphQL error/rate limit) -- retry when the limit resets:"
   head -2 <<<"$SPRINTS_RAW" | sed 's/^/    /'
   LINE_GATE_FAIL=1
 else
   SPRINTS=$(jq -r '.data.user.projectV2.field.configuration.iterations[].title' <<<"$SPRINTS_RAW" 2>/dev/null || true)
   if [[ -z "$SPRINTS" ]]; then
-    log "  LINE GATE FAIL: no active/upcoming Sprint iteration on the project — prepare the sprint(s) first"
+    log "  LINE GATE FAIL: no active/upcoming Sprint iteration on the project -- prepare the sprint first"
     LINE_GATE_FAIL=1
   else
     log "  ok: active/upcoming sprint iteration(s): $(echo "$SPRINTS" | tr '\n' ' ')"
   fi
 fi
-[[ $LINE_GATE_FAIL -eq 0 || $DRY -eq 1 ]] || fail "next-line readiness gate failed — prepare milestones/sprints, then re-run with --phase4-only"
+[[ $LINE_GATE_FAIL -eq 0 || $DRY -eq 1 ]] || fail "next-line readiness gate failed -- prepare the milestone/sprint, then re-run (Phases 0-3 are not repeated)"
 
-if [[ "$REL_TYPE" == "point" ]]; then
-  # Point release: next line already exists — it must absorb the release
-  # content (forward-port), on top of master's fast-forward. Verify its
-  # release issue exists too (it is about to become RELEASE_ISSUE_NUMBER).
-  if [[ $DRY -eq 1 ]]; then
-    log "  DRY-RUN: would merge ${REL_BRANCH} into ${NEXT_BRANCH:-<next-branch>} (server-side merge)"
-  else
-    [[ "$(gh issue view "$NEXT_RELEASE_ISSUE" -R "$REPO" --json state --jq .state 2>/dev/null)" == "OPEN" ]] \
-      || fail "next release issue #$NEXT_RELEASE_ISSUE is not an open issue"
-    MERGE_RESP=$(gh api -X POST "repos/${REPO}/merges" \
-      -f base="$NEXT_BRANCH" -f head="$TIP" \
-      -f commit_message="merge: absorb release ${VERSION} into ${NEXT_BRANCH} (forward-port of release content)" \
-      2>&1) && MERGED=1 || MERGED=0
-    if [[ $MERGED -eq 1 ]]; then
-      log "  verified: ${REL_BRANCH} merged into ${NEXT_BRANCH}"
-      log "  NOTE: merge updated ${NEXT_BRANCH} into any open PR branches targeting it (house rule):"
-      gh pr list -R "$REPO" --base "$NEXT_BRANCH" --state open --json number,headRefName \
-        --jq '.[]|"    PR #\(.number) (\(.headRefName))"' || true
-    else
-      log "  MERGE CONFLICT or error merging ${REL_BRANCH} -> ${NEXT_BRANCH}:"
-      echo "$MERGE_RESP" | sed 's/^/    /'
-      log "  resolve manually (local merge + push), then re-run with --phase4-only"
-    fi
-  fi
+if [[ $DRY -eq 1 ]]; then
+  log "  DRY-RUN: would create ${NEXT_BRANCH} at ${VERSION} (or forward-port into it if it exists), find/create its release issue and draft release, and bump its pyproject to ${NEXT_VERSION}"
 else
-  # Major release: BUILD the next line before anything points at it.
-  if [[ $DRY -eq 1 ]]; then
-    log "  DRY-RUN (major): would create branch ${NEXT_BRANCH:-<next>} from tag ${VERSION}, its release issue, and its draft release"
+  # (1) the next line's branch: born from the release tag, or -- if it
+  # already exists -- forward-ported so it carries the release content.
+  if gh api "repos/${REPO}/branches/${NEXT_BRANCH}" >/dev/null 2>&1; then
+    MERGE_CODE=$(gh api -X POST "repos/${REPO}/merges" -f base="$NEXT_BRANCH" -f head="$TIP" \
+      -f commit_message="merge: absorb release ${VERSION} into ${NEXT_BRANCH} (forward-port of release content)" \
+      -i 2>&1 | awk 'NR==1{print $2}') || true
+    case "$MERGE_CODE" in
+      201) log "  verified: ${VERSION} forward-ported into existing ${NEXT_BRANCH}" ;;
+      204) log "  ok: ${NEXT_BRANCH} already contains ${VERSION}" ;;
+      *)   fail "could not forward-port ${VERSION} into ${NEXT_BRANCH} (HTTP ${MERGE_CODE:-?}; 409 = conflict) -- resolve with a local merge + push, then re-run" ;;
+    esac
   else
-    # (1) new release-candidate branch from the release tag
-    if gh api "repos/${REPO}/branches/${NEXT_BRANCH}" >/dev/null 2>&1; then
-      log "  branch ${NEXT_BRANCH} already exists (ok)"
-    else
-      mutate "create branch ${NEXT_BRANCH} at tag ${VERSION}" \
-        git push "$AUTH_URL" "${TIP}:refs/heads/${NEXT_BRANCH}"
-      [[ "$(gh api "repos/${REPO}/branches/${NEXT_BRANCH}" --jq .commit.sha)" == "$TIP" ]] \
-        || fail "verify failed: ${NEXT_BRANCH} not at release tip"
-      log "  verified: ${NEXT_BRANCH} created at release tip"
-    fi
-    # (2) release issue for the new line
-    if [[ -z "$NEXT_RELEASE_ISSUE" ]]; then
-      ISSUE_TITLE="Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}"
-      NEXT_RELEASE_ISSUE=$(gh issue create -R "$REPO" --title "$ISSUE_TITLE" --body "## ${ISSUE_TITLE}
+    mutate "create branch ${NEXT_BRANCH} at tag ${VERSION}" \
+      git push "$AUTH_URL" "${TIP}:refs/heads/${NEXT_BRANCH}"
+    [[ "$(gh api "repos/${REPO}/branches/${NEXT_BRANCH}" --jq .commit.sha)" == "$TIP" ]] \
+      || fail "verify failed: ${NEXT_BRANCH} not at release tip"
+    log "  verified: ${NEXT_BRANCH} created at ${VERSION}"
+  fi
+  # Anything committed to the release branch AFTER its tag -- a fix to the
+  # ceremony itself, made while running it -- must carry forward, or the next
+  # line (and its ceremony) silently lacks it. 204 = nothing past the tag.
+  POST_TAG_CODE=$(gh api -X POST "repos/${REPO}/merges" -f base="$NEXT_BRANCH" -f head="$REL_BRANCH" \
+    -f commit_message="merge: carry ${REL_BRANCH} (post-${VERSION} commits) into ${NEXT_BRANCH}" \
+    -i 2>&1 | awk 'NR==1{print $2}') || true
+  case "$POST_TAG_CODE" in
+    201) log "  verified: post-${VERSION} commits on ${REL_BRANCH} carried into ${NEXT_BRANCH}" ;;
+    204) log "  ok: ${NEXT_BRANCH} already has everything on ${REL_BRANCH}" ;;
+    *)   fail "could not carry ${REL_BRANCH} into ${NEXT_BRANCH} (HTTP ${POST_TAG_CODE:-?}; 409 = conflict) -- resolve with a local merge + push, then re-run" ;;
+  esac
+
+  # (2) the next line's release issue -- found if it exists (re-runs are
+  # idempotent), else created carrying what the release machinery reads:
+  # the `Release Management` label (drain gate, promotion sweep), the
+  # milestone, and a place on the project board.
+  if [[ -z "$NEXT_RELEASE_ISSUE" ]]; then
+    NEXT_RELEASE_ISSUE="$(gh issue list -R "$REPO" --state open --label "Release Management" \
+      --search "\"Release ${NEXT_BRANCH}\" in:title" --json number,title \
+      --jq "[.[] | select(.title | startswith(\"Release ${NEXT_BRANCH}\"))][0].number // empty")"
+  fi
+  if [[ -n "$NEXT_RELEASE_ISSUE" ]]; then
+    log "  ok: next release issue #${NEXT_RELEASE_ISSUE}"
+  else
+    ISSUE_TITLE="Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}"
+    ISSUE_URL="$(gh issue create -R "$REPO" --title "$ISSUE_TITLE" --label "Release Management" \
+      ${NEXT_MS_TITLE:+--milestone "$NEXT_MS_TITLE"} --body "## ${ISSUE_TITLE}
 
 **Release branch:** \`${NEXT_BRANCH}\` (cut from tag \`${VERSION}\`)
-**Milestone(s):** see open v${NEXT_VERSION} phase milestones
+**Milestone:** ${NEXT_MS_TITLE:-see open v${NEXT_VERSION} milestones}
 
 ## Included Work
 _Populated as work merges (add-to-release-issue automation + scrummaster)._
 
-## Ceremony Checklist (remaining)
-- [ ] Run \`scripts/release_ceremony.sh ${NEXT_VERSION}\` when scope completes" \
-        | grep -oE '[0-9]+$')
-      [[ -n "$NEXT_RELEASE_ISSUE" ]] || fail "could not create/parse next release issue"
-      log "  verified: release issue #${NEXT_RELEASE_ISSUE} created"
-    else
-      log "  using provided next release issue #${NEXT_RELEASE_ISSUE}"
+## Ceremony
+Move this issue to \`For Release\` and ask a session to run the release ceremony
+(\`gh workflow run release_ceremony.yml\`). It runs all five phases unattended.")"
+    NEXT_RELEASE_ISSUE="${ISSUE_URL##*/}"
+    [[ "$NEXT_RELEASE_ISSUE" =~ ^[0-9]+$ ]] || fail "could not create/parse the next release issue (${ISSUE_URL})"
+    [[ "$(gh issue view "$NEXT_RELEASE_ISSUE" -R "$REPO" --json labels --jq '[.labels[].name] | index("Release Management") != null')" == "true" ]] \
+      || fail "verify failed: #${NEXT_RELEASE_ISSUE} is missing the Release Management label"
+    if [[ -n "$PROJ_OWNER" && -n "$PROJ_NUM" ]]; then
+      gh project item-add "$PROJ_NUM" --owner "$PROJ_OWNER" --url "$ISSUE_URL" >/dev/null \
+        || log "  WARN: could not add #${NEXT_RELEASE_ISSUE} to project ${PROJ_NUM} -- add it by hand"
     fi
-    # (3) draft release for the new line (draft => no tag is created yet;
-    # tag_name/target are pre-normalized for the next ceremony)
-    EXISTING_DRAFT=$(gh api "repos/${REPO}/releases?per_page=30" \
-      --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")
-    if [[ "$EXISTING_DRAFT" != "0" ]]; then
-      log "  draft release for ${NEXT_BRANCH} already exists (ok)"
-    else
-      gh api -X POST "repos/${REPO}/releases" \
-        -f tag_name="${NEXT_VERSION}" -f target_commitish="${NEXT_BRANCH}" \
-        -f name="nyxGPT Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}" \
-        -f body="Draft — populated at ceremony time from the release issue." \
-        -F draft=true --silent
-      [[ "$(gh api "repos/${REPO}/releases?per_page=30" \
-        --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")" != "0" ]] \
-        || fail "verify failed: draft release for ${NEXT_BRANCH} not found after create"
-      log "  verified: draft release created for ${NEXT_BRANCH}"
-    fi
+    log "  verified: release issue #${NEXT_RELEASE_ISSUE} created (${ISSUE_TITLE})"
+  fi
+
+  # (3) draft release for the next line (draft => no tag yet; tag_name and
+  # target are pre-set for its ceremony's Phase 1)
+  if [[ "$(gh api "repos/${REPO}/releases?per_page=30" \
+        --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")" != "0" ]]; then
+    log "  ok: draft release for ${NEXT_BRANCH} already exists"
+  else
+    gh api -X POST "repos/${REPO}/releases" \
+      -f tag_name="${NEXT_VERSION}" -f target_commitish="${NEXT_BRANCH}" \
+      -f name="nyxGPT Release ${NEXT_BRANCH}${NEXT_TITLE:+ — ${NEXT_TITLE}}" \
+      -f body="Draft — populated at ceremony time from the release issue." \
+      -F draft=true --silent
+    [[ "$(gh api "repos/${REPO}/releases?per_page=30" \
+      --jq "[.[] | select(.draft==true) | select(.name | test(\"${NEXT_BRANCH}\"))] | length")" != "0" ]] \
+      || fail "verify failed: draft release for ${NEXT_BRANCH} not found after create"
+    log "  verified: draft release created for ${NEXT_BRANCH}"
   fi
 fi
 
@@ -488,23 +609,34 @@ fi
 
 confirm "repoint"
 if [[ $DRY -eq 1 ]]; then
-  log "DRY-RUN: would repoint default branch + RELEASE_BRANCH -> ${NEXT_BRANCH:-<next>}, RELEASE_ISSUE_NUMBER -> ${NEXT_RELEASE_ISSUE:-<from-created-issue>} (GitHub vars AND config.ini)"
+  log "DRY-RUN: would repoint default branch + RELEASE_BRANCH -> ${NEXT_BRANCH}, RELEASE_ISSUE_NUMBER -> ${NEXT_RELEASE_ISSUE:-<created issue>}"
 else
   gh api -X PATCH "repos/${REPO}" -f default_branch="$NEXT_BRANCH" --silent
   [[ "$(gh api "repos/${REPO}" --jq .default_branch)" == "$NEXT_BRANCH" ]] || fail "verify failed: default branch"
   gh variable set RELEASE_BRANCH -R "$REPO" --body "$NEXT_BRANCH"
   gh variable set RELEASE_ISSUE_NUMBER -R "$REPO" --body "$NEXT_RELEASE_ISSUE"
+  [[ "$(gh variable get RELEASE_BRANCH -R "$REPO")" == "$NEXT_BRANCH" \
+     && "$(gh variable get RELEASE_ISSUE_NUMBER -R "$REPO")" == "$NEXT_RELEASE_ISSUE" ]] \
+    || fail "verify failed: RELEASE_BRANCH / RELEASE_ISSUE_NUMBER"
   log "  verified: default branch, RELEASE_BRANCH, RELEASE_ISSUE_NUMBER -> ${NEXT_BRANCH} / #${NEXT_RELEASE_ISSUE}"
-  # config.ini mirror (local scripts read these — must match the repo vars)
-  sed -i.cerbak -E \
-    -e "s|^(RELEASE_BRANCH[[:space:]]*=).*|\1${NEXT_BRANCH}|" \
-    -e "s|^(RELEASE_ISSUE_NUMBER[[:space:]]*=).*|\1${NEXT_RELEASE_ISSUE}|" \
-    "$CONFIG_FILE"
-  grep -q "^RELEASE_BRANCH[[:space:]]*=${NEXT_BRANCH}$" "$CONFIG_FILE" \
-    && grep -q "^RELEASE_ISSUE_NUMBER[[:space:]]*=${NEXT_RELEASE_ISSUE}$" "$CONFIG_FILE" \
-    || fail "verify failed: config.ini repoint (backup at ${CONFIG_FILE}.cerbak)"
-  rm -f "${CONFIG_FILE}.cerbak"
-  log "  verified: config.ini RELEASE_BRANCH/RELEASE_ISSUE_NUMBER updated"
+  # The owner's config.ini mirrors these ([github] keys are synced TO the repo
+  # variables, so a stale mirror would push the old line back). Update it
+  # when this run has it; a runner's ephemeral config is not the mirror.
+  if [[ -f "$CONFIG_FILE" ]] && grep -q '^\[github\]' "$CONFIG_FILE"; then
+    sed -i.cerbak -E \
+      -e "s|^(RELEASE_BRANCH[[:space:]]*=).*|\1${NEXT_BRANCH}|" \
+      -e "s|^(RELEASE_ISSUE_NUMBER[[:space:]]*=).*|\1${NEXT_RELEASE_ISSUE}|" \
+      "$CONFIG_FILE"
+    grep -qE "^RELEASE_BRANCH[[:space:]]*=${NEXT_BRANCH}$" "$CONFIG_FILE" \
+      && grep -qE "^RELEASE_ISSUE_NUMBER[[:space:]]*=${NEXT_RELEASE_ISSUE}$" "$CONFIG_FILE" \
+      || fail "verify failed: config.ini repoint (backup at ${CONFIG_FILE}.cerbak)"
+    rm -f "${CONFIG_FILE}.cerbak"
+    log "  verified: config.ini RELEASE_BRANCH/RELEASE_ISSUE_NUMBER updated"
+  else
+    log "  NOTE: no owner config.ini on this host -- the session that dispatched the ceremony reconciles ~/.nyxGPT/config.ini [github] RELEASE_BRANCH=${NEXT_BRANCH} RELEASE_ISSUE_NUMBER=${NEXT_RELEASE_ISSUE}"
+  fi
 fi
 
+resume_agent_flags
+log "NEXT_LINE ${NEXT_BRANCH} #${NEXT_RELEASE_ISSUE}"
 log "Ceremony complete for ${VERSION}."
