@@ -75,6 +75,7 @@ fails if it drifts. Do not hand-edit.
 | `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |
 | `rag-fresh-cassandra-smoke.yml` | pull_request, push, workflow_dispatch | RAG Fresh Cassandra Smoke |
 | `reconcile_closed_backlog_status.yml` | workflow_dispatch | Reconcile Closed Backlog Status |
+| `red-head-round-smoke.yml` | push, pull_request, workflow_dispatch | Red Head Round Smoke |
 | `release-artifacts.yml` | release, workflow_dispatch | Release Artifacts |
 | `release-prereq-smoke.yml` | pull_request, push, workflow_dispatch | Release Prereq Smoke |
 | `release-publish-pypi.yml` | workflow_dispatch | PyPI Publish (rc / stable) |
@@ -117,7 +118,7 @@ fails if it drifts. Do not hand-edit.
 | `bulk_set_status.sh` | set the project Status field on a list of issues |
 | `create_issue.sh` | Creates a GitHub issue with proper project hygiene: |
 | `create_phase6.sh` | File the Phase 6 issue set from product_management/PHASE_6_PLAN.md (2026-07-31 rewrite) into the owner-created milestone and the t |
-| `developer_analyze_failure.sh` | Intelligent failure analysis for developer workflow Analyzes workflow failures and attempts auto-fixes for common issues |
+| `developer_analyze_failure.sh` | Phase 2 of the developer workflow's failure handling: ACT on the class Phase 1 already decided, and investigate live state only wh |
 | `developer_create_branch.sh` | Creates and checks out a branch off the current release branch |
 | `developer_ensure_pr_exists.sh` | The backstop that closes #3862's first defect: work reached `origin` and no |
 | `developer_pull_next.sh` | Selection, in the developer's context (#3883) |

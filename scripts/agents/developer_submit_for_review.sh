@@ -126,9 +126,18 @@ if [[ "$CI_STATE" == "failed" ]]; then
     # no signature. A refusal that means "the developer round continues" cannot
     # depend on GitHub having flushed a log: it leaves its reason on the runner
     # the classifier is already standing on.
+    #
+    # It also records WHICH checks failed and WHERE TO READ THEM, as
+    # `red-head-check: <name> <url>` lines (#4179). The names were already in
+    # the prose; the structured lines are what the next round, the auto-retry
+    # comment and the escalation's cause key read, so a continued round starts
+    # from the cause instead of re-discovering it -- a retry that loses the
+    # cause just burns the budget. scripts/agents/lib/escalation_evidence.py
+    # owns the format (`parse_red_head_detail`).
     REFUSAL="$(
       echo "[error] Required checks FAILED on head ${HEAD_SHA}: ${CI_FAILED}"
       echo "[error] Refusing to submit: a red head is not reviewable (#3971)."
+      red_head_check_lines "$HEAD_SHA" "$CI_FAILED"
       echo "[error] This is the developer round's work, not the reviewer's -- fix the"
       echo "[error] failing check(s), push, and submit again."
       echo "[error] If the failure reproduces on ${BASE_BRANCH} without this change, re-run with:"

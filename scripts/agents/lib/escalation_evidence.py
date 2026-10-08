@@ -53,9 +53,17 @@ nothing -- which is the one case where it is true.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from typing import Any
+
+# The error-class table (#4179). Same directory, so `python3
+# scripts/agents/lib/escalation_evidence.py` finds it on sys.path[0]; the
+# explicit insert is for importers that put only the repo root there.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import error_classes  # noqa: E402
 
 #: How many failing test node IDs the detail file names before it switches to
 #: a count. Enough to see the pattern (one module? all of them?), few enough
@@ -68,20 +76,33 @@ FAILING_TEST_LIMIT = 20
 #: tests/test_escalation_evidence.sh pins the classifier's reading of it.
 DETAIL_MARKER = "Final Verification failed: gate="
 
+#: The marker line `red_head_check_lines` (gh_project.sh) writes into the
+#: agent error-detail file for each failing required check, and
+#: `parse_red_head_detail` below reads back. Pinned on both sides by
+#: tests/unit/test_error_classes.py -- shell writes it, Python reads it, which
+#: is the handshake #4176's verification detail has in the other direction.
+RED_HEAD_CHECK_PREFIX = "red-head-check: "
+
+#: The refusal sentence `developer_submit_for_review.sh` prints and
+#: `classify_error` greps for (#3971). Present here because
+#: `parse_red_head_detail` needs to recognise a refusal that named no checks.
+RED_HEAD_MARKER = "red head is not reviewable"
+
 #: The sentence this whole module exists to stop being the headline. It is the
 #: text `escalate_fatal` used to print for `unknown`, kept verbatim so the
 #: owner can tell "there was genuinely no evidence" from the old behaviour.
-GENERIC_HEADLINE = "Error type could not be determined. Manual investigation needed."
+GENERIC_HEADLINE = error_classes.explanation("unknown")
 
 #: Human-readable explanations for the classes that ARE self-explanatory. The
 #: last-resort layer, below every piece of real evidence.
+#:
+#: READ FROM THE ONE TABLE (#4179). This used to be a second hand-maintained
+#: dict, which is the same defect in prose that Phase 2's missing `ci_red` arm
+#: was in control flow: `retriable:ci_red` had no entry here either, so a
+#: ci_red escalation fell through `.get(class) or ["unknown"]` to "Error type
+#: could not be determined" -- the exact sentence #4176 removed.
 ERROR_EXPLANATIONS = {
-    "fatal:issue_closed": "Issue is closed. This may be intentional or accidental.",
-    "fatal:auth_failure": (
-        "Authentication failed. Requires admin intervention to fix secrets/permissions."
-    ),
-    "fatal:already_merged": "Work already completed in a merged PR.",
-    "unknown": GENERIC_HEADLINE,
+    name: str(row["explanation"]) for name, row in error_classes.ERROR_CLASSES.items()
 }
 
 #: Gate -> what failing it means, in the words of the command that failed.
@@ -190,6 +211,67 @@ def parse_verification_detail(text: Any) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# The red-head refusal: written by red_head_check_lines (shell), read here
+# ---------------------------------------------------------------------------
+
+
+def parse_red_head_detail(text: Any) -> dict[str, Any] | None:
+    """The failing required checks named by a red-head refusal, or None.
+
+    Returns `{"checks": [{"name": ..., "url": ...}, ...]}` for a refusal that
+    named them, and `{"checks": []}` for one that did not -- a refusal with no
+    readable check list is still a refusal, and the difference between "no
+    checks named" and "not a refusal at all" is the difference between
+    continuing the round and escalating it.
+
+    Tolerant in the same way `parse_verification_detail` is: the check list is
+    read from the structured lines when they are there, and from the refusal's
+    own `Required checks FAILED on head <sha>: a, b` sentence when they are
+    not (refusals recorded before #4179 carry only the sentence).
+    """
+    raw = _text(text)
+    if not raw or RED_HEAD_MARKER not in raw:
+        return None
+
+    checks: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if RED_HEAD_CHECK_PREFIX not in stripped:
+            continue
+        rest = stripped.split(RED_HEAD_CHECK_PREFIX, 1)[1].strip()
+        if not rest:
+            continue
+        name, _, url = rest.partition(" ")
+        if name and name not in seen:
+            seen.add(name)
+            checks.append({"name": name, "url": url.strip()})
+
+    if not checks:
+        match = re.search(r"Required checks FAILED on head \S+:\s*(.+)", raw)
+        if match:
+            for name in (n.strip() for n in match.group(1).split(",")):
+                if name and name not in seen:
+                    seen.add(name)
+                    checks.append({"name": name, "url": ""})
+
+    sha = ""
+    sha_match = re.search(r"Required checks FAILED on head (\S+)", raw)
+    if sha_match:
+        sha = sha_match.group(1).rstrip(":")
+    return {"checks": checks, "head_sha": sha}
+
+
+def red_head_checks(text: Any) -> list[dict[str, str]]:
+    """Just the check list from a red-head refusal (empty if it is not one)."""
+    parsed = parse_red_head_detail(text)
+    if not parsed:
+        return []
+    checks = parsed.get("checks")
+    return checks if isinstance(checks, list) else []
+
+
+# ---------------------------------------------------------------------------
 # The sentences
 # ---------------------------------------------------------------------------
 
@@ -245,6 +327,27 @@ def verification_sentence(ev: dict[str, Any]) -> str:
     return f"Final Verification failed at the {label} gate."
 
 
+def red_head_sentence(ev: dict[str, Any]) -> str:
+    """Which required check is red on THIS branch's head, and where to read it.
+
+    Distinct from `base_red_sentence`, which is about the release branch: this
+    one is the issue's own head, so it is the developer round's work rather
+    than an inherited failure (#3971). A ci_red escalation can only mean the
+    retry budget ran out, so the sentence names the check both to say what to
+    fix and so the cause key can be keyed on it.
+    """
+    checks = red_head_checks(ev.get("verification_detail"))
+    if not checks:
+        return ""
+    named = ", ".join(f"`{c['name']}`" + (f" ({c['url']})" if c.get("url") else "") for c in checks)
+    plural = "checks are" if len(checks) > 1 else "check is"
+    return (
+        f"Red head: the required {plural} failing on this branch's own head -- {named}. "
+        f"The submission was refused because a red head is not reviewable (#3971); "
+        f"fixing the check is the developer round's work."
+    )
+
+
 def phase3_crash_sentence(ev: dict[str, Any]) -> str:
     """ "Phase 3 diagnosis did not run" -- said plainly, never implied.
 
@@ -283,13 +386,17 @@ def headline(ev: dict[str, Any]) -> str:
         _text(ev.get("phase3_diagnosis")) or _text(ev.get("phase2_diagnosis")),
         base_red_sentence(ev),
         verification_sentence(ev),
+        red_head_sentence(ev),
         phase3_crash_sentence(ev),
     ]
     composed = [p for p in parts if p]
     if composed:
         return " ".join(composed)
-    error_class = _text(ev.get("error_class"))
-    return ERROR_EXPLANATIONS.get(error_class) or ERROR_EXPLANATIONS["unknown"]
+    # The last resort, read from the one error-class table (#4179) -- which
+    # normalises `verification_failed:<gate>` onto its family and anything
+    # unrecognised onto `unknown`, so a class with no row still gets the
+    # honest sentence rather than a KeyError.
+    return error_classes.explanation(_text(ev.get("error_class")))
 
 
 def cause_key(ev: dict[str, Any]) -> str:
@@ -309,6 +416,16 @@ def cause_key(ev: dict[str, Any]) -> str:
         branch = _text(ev.get("base_branch")) or "release-branch"
         checks = ",".join(_lines(ev.get("base_checks"))) or "unnamed-check"
         return f"base-red:{branch}:{checks}"
+    # A red head that survived its retry budget is keyed on the FAILING CHECK,
+    # not on the step that noticed it (#4179). Every such failure reports the
+    # same step -- "Submit PR for review" -- so the old key collapsed two
+    # unrelated broken checks into one cause while splitting one broken check
+    # across every issue that hits it. The check name is the thing that is
+    # actually failing; the escalation for #4138's `k3s-cloud-smoke` and the
+    # next issue's belong together.
+    head_checks = red_head_checks(ev.get("verification_detail"))
+    if head_checks:
+        return "head-red:" + ",".join(c["name"] for c in head_checks)
     step = _text(ev.get("failed_step")) or "unknown-step"
     return f"developer-failure:{step}"
 
@@ -323,6 +440,8 @@ def analysis_phase(ev: dict[str, Any]) -> str:
         return "Phase 1 (base-red finding)"
     if verification_sentence(ev):
         return "Phase 1 (Final Verification's own reason)"
+    if red_head_sentence(ev):
+        return "Phase 1 (the refused red head)"
     if phase3_crash_sentence(ev):
         return "Phase 3 (did not run)"
     return "Phase 1 (Error classification)"
@@ -356,16 +475,33 @@ def _stdin_json(default: Any) -> Any:
 
 
 def main(argv: list[str]) -> int:
-    commands = {"headline", "compose", "cause", "verification-detail", "parse-detail"}
+    commands = {
+        "headline",
+        "compose",
+        "cause",
+        "verification-detail",
+        "parse-detail",
+        "red-head-checks",
+    }
     if not argv or argv[0] not in commands:
         print(
             "usage: escalation_evidence.py {headline|compose|cause|parse-detail}  "
             "# evidence JSON on stdin\n"
+            "       escalation_evidence.py red-head-checks  "
+            "# refusal text on stdin, '<name>\\t<url>' lines out\n"
             "       escalation_evidence.py verification-detail <gate> [total]  "
             "# failure lines on stdin",
             file=sys.stderr,
         )
         return 2
+
+    if argv[0] == "red-head-checks":
+        # Text in, lines out: the workflow steps that name the failing check
+        # in a comment are shell, and a tab-separated pair is what shell can
+        # read without a JSON parser.
+        for check in red_head_checks(sys.stdin.read()):
+            print(f"{check['name']}\t{check.get('url', '')}")
+        return 0
 
     if argv[0] == "verification-detail":
         if len(argv) < 2:

@@ -2551,6 +2551,38 @@ rather than mechanism, and nothing can enforce them.
   `scripts/release_ceremony.sh` Phase 0; `CLAUDE.md` §Tooling, §Branch Rules;
   `docs/acceptance-drain-gate.md`.
 
+- **D-066** · 2026-10-08 · developer-agent (#4179) — **One table decides what
+  each developer-failure error class does, and "Phase 2 found nothing" is
+  never fatal.** `scripts/agents/lib/error_classes.py` is that table, read by
+  Phase 1's `is_retriable_error`/`is_fatal_error`, by Phase 2
+  (`developer_analyze_failure.sh`) and by the escalation headline's last-resort
+  sentence. Three rules bind anyone adding to this path: **Phase 1's class and
+  Phase 1's error text are Phase 2's inputs** — Phase 2 re-derives neither and
+  makes no API call to try (its old harvest was `gh run view <id> --log`, which
+  serves an archive that exists only after the run completes, so mid-run it is
+  a 403); **the default Phase 2 outcome is `defer`** (exit 3 →
+  `fix_status=DEFER`), which leaves Phase 1's class standing, because the old
+  default asserted `FATAL` from the absence of evidence; and **a new error
+  class needs a row**, enforced by `tests/unit/test_error_classes.py`, which
+  enumerates the classes by reading `classify_error` itself rather than
+  restating them. Cause: #4138 (run 37722699004) escalated
+  `retriable:ci_red` — the class that exists so a refused red head *continues*
+  the round (#3971) — as `FATAL` with the headline "Unrecognized error type",
+  because Phase 2's `case` had no arm for it and its harvest came back empty.
+  Phase 1's half had been tested since #3971; Phase 2's had not, which is why
+  the disagreement survived seven weeks. A continued ci_red round is now handed
+  the failing check's name and run URL (recorded as `red-head-check:` lines,
+  re-derived live from the PR head for the brief), and a ci_red escalation —
+  which can only mean the retry budget ran out — is keyed `head-red:<checks>`
+  rather than `developer-failure:<step>`. Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4179; related #3971, #4176, #4138;
+  `scripts/agents/lib/error_classes.py`;
+  `scripts/agents/developer_analyze_failure.sh`;
+  `.github/workflows/red-head-round-smoke.yml`;
+  `docs/escalation-evidence.md`; `docs/reviewable-head-gate.md`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
