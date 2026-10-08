@@ -521,6 +521,28 @@ jobs:
                     `[View workflow logs](${repoUrl}/actions/runs/${context.runId})`
             });
 
+      # ---------------------------------------------------------------
+      # #4176: a leftover worktree blocks the next branch checkout.
+      # ---------------------------------------------------------------
+      # Every `claude-code-action` invocation mints and CHECKS OUT a fresh
+      # `claude/issue-<n>-<timestamp>` branch in its own setup, and a worktree
+      # an earlier step left behind holds whatever branch it was created on. On
+      # #4166 attempt 2 ran `git worktree add /tmp/base-wt v3.0.1` to check
+      # whether the failures already existed on the base -- the right question
+      # -- and never removed it, so Phase 3 died with `fatal: 'v3.0.1' is
+      # already used by worktree at '/tmp/base-wt'` and the run escalated with
+      # no diagnosis at all.
+      #
+      # So this runs before EVERY invocation, not just Phase 3's. The prompts
+      # also now tell the agent to use `git worktree add --detach` (which holds
+      # no branch name), but prompt guidance is not a guard -- the next trap
+      # will be set by something no prompt anticipated. The script never fails
+      # the job: failing here would block the step it exists to unblock.
+      - name: Clear stray worktrees before Claude (#4176)
+        if: steps.acceptance_failure.conclusion == 'success'
+        shell: bash
+        run: ./scripts/agents/prune_stray_worktrees.sh
+
       - name: Run Claude Code to fix acceptance failure
         if: steps.acceptance_failure.conclusion == 'success'
         id: claude_acceptance_fix
@@ -722,6 +744,12 @@ jobs:
               body: `✅ **Developer Agent**: PR #${pr_number} already exists and ` +
                     `has no review issues.\n\nSkipping implementation step.`
             });
+
+      # Same guard, same reason as the acceptance-fix invocation above (#4176).
+      - name: Clear stray worktrees before the Review Fix (#4176)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
+        shell: bash
+        run: ./scripts/agents/prune_stray_worktrees.sh
 
       - name: Run Claude Code to fix review issues (Review Fix)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
@@ -948,6 +976,12 @@ jobs:
                     `[workflow logs](https://github.com/${context.repo.owner}/` +
                     `${context.repo.repo}/actions/runs/${context.runId}).`
             });
+
+      # Same guard, same reason as the acceptance-fix invocation above (#4176).
+      - name: Clear stray worktrees before the implementation (#4176)
+        if: steps.check_pr.outputs.pr_exists == 'false'
+        shell: bash
+        run: ./scripts/agents/prune_stray_worktrees.sh
 
       - name: Run Claude Code to implement issue (Initial)
         if: steps.check_pr.outputs.pr_exists == 'false'
@@ -1481,6 +1515,16 @@ jobs:
             echo "✅ All verification checks passed!"
           fi
 
+      # Same guard, same reason as the acceptance-fix invocation above (#4176).
+      # This one is the closest to the #4166 trap: attempt 2 is where the base
+      # comparison that left the worktree behind actually happened.
+      - name: Clear stray worktrees before attempt 2 (#4176)
+        if: |
+          steps.verify1.outputs.verification_passed == 'false' &&
+          steps.work_branch.outputs.name != ''
+        shell: bash
+        run: ./scripts/agents/prune_stray_worktrees.sh
+
       - name: Claude Fix Issues (Attempt 2)
         # Gated on a KNOWN work branch as well as a failed verification (#4038).
         # A retry that cannot be told where the previous attempt's commits are
@@ -1554,6 +1598,30 @@ jobs:
             - If the checkout fails, diagnose and fix it yourself (`git remote prune origin`,
               re-fetch, check the exact branch name above). Do not proceed on the action's
               branch.
+
+            ## Checking whether the failures already exist on the base (do this with --detach)
+
+            Asking "do these failures reproduce on `${{ vars.RELEASE_BRANCH }}`?" is the right
+            question -- a failure that reproduces there is a RED BASE, not a defect in this
+            work, and no amount of fixing on this branch will clear it. Compare with a
+            **detached** worktree:
+
+            ```bash
+            git worktree add --detach /tmp/base-check origin/${{ vars.RELEASE_BRANCH }}
+            # run the failing check inside /tmp/base-check, then:
+            git worktree remove --force /tmp/base-check
+            ```
+
+            `git worktree add /tmp/base-check ${{ vars.RELEASE_BRANCH }}` -- without `--detach`
+            -- CHECKS OUT the branch name and HOLDS it, so every later checkout of that
+            branch in this job dies with
+            `fatal: '<branch>' is already used by worktree at '<path>'`. On #4166 that
+            killed the failure-diagnosis step three steps later and the owner got an
+            escalation with no diagnosis in it (#4176). Remove the worktree when you are
+            done either way.
+
+            If the failures DO reproduce on the base, say so explicitly in your commit
+            message and stop trying to fix them here.
 
             Failure logs have been saved to:
             - /tmp/pytest_attempt1.log (if pytest failed)
@@ -1673,6 +1741,14 @@ jobs:
             echo "✅ All verification checks passed!"
           fi
 
+      # Same guard, same reason as the acceptance-fix invocation above (#4176).
+      - name: Clear stray worktrees before attempt 3 (#4176)
+        if: |
+          steps.verify2.outputs.verification_passed == 'false' &&
+          steps.work_branch.outputs.name != ''
+        shell: bash
+        run: ./scripts/agents/prune_stray_worktrees.sh
+
       - name: Claude Fix Issues (Attempt 3)
         # Same gate, same reason, as Attempt 2 (#4038): no known work branch,
         # no retry.
@@ -1731,6 +1807,26 @@ jobs:
             or stay on any other branch — a second branch strands the work and ends the run
             with two divergent branches and an orphan rescue PR (#4033).
 
+            ## Checking whether the failures already exist on the base (do this with --detach)
+
+            Same as attempt 2, and by now it is the question to ask: if these failures
+            reproduce on `${{ vars.RELEASE_BRANCH }}` they are a RED BASE and not yours
+            to fix here. Use a **detached** worktree so it holds no branch name:
+
+            ```bash
+            git worktree add --detach /tmp/base-check origin/${{ vars.RELEASE_BRANCH }}
+            # run the failing check inside /tmp/base-check, then:
+            git worktree remove --force /tmp/base-check
+            ```
+
+            Without `--detach` the worktree HOLDS the branch, and the next step in this
+            job that checks it out dies with `fatal: '<branch>' is already used by
+            worktree at '<path>'` -- which is how #4166 lost its failure diagnosis
+            entirely (#4176). Remove the worktree when you are done.
+
+            If the failures DO reproduce on the base, say so explicitly in your commit
+            message rather than attempting more fixes.
+
             Latest failure logs:
             - /tmp/black_attempt2.log (if black formatting failed)
             - /tmp/ruff_attempt2.log (if ruff linting failed)
@@ -1784,37 +1880,19 @@ jobs:
       - name: Final Verification (Must Pass)
         id: verify_final
         timeout-minutes: 15
-        run: |
-          # Run ALL checks unconditionally on the entire codebase
-          # This is the final gate - no regressions allowed
-
-          echo "::group::Final black format check"
-          python -m black --check .
-          echo "::endgroup::"
-
-          echo "::group::Final ruff verification"
-          python -m ruff check src/ tests/
-          echo "::endgroup::"
-
-          echo "::group::Final mypy verification"
-          # --no-incremental for the same reason as attempt 1 (see #3730).
-          python -m mypy --no-incremental src/
-          echo "::endgroup::"
-
-          echo "::group::Final pytest verification (unit tests - integration tests skipped in CI)"
-          # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing
-          echo "::endgroup::"
-
-          echo "::group::Final TypeScript verification"
-          (cd web && npm run type-check)
-          echo "::endgroup::"
-
-          echo "::group::Final route validation"
-          ./scripts/agents/validate-web-routes.sh
-          echo "::endgroup::"
-
-          echo "✅ All verification checks passed on final attempt!"
+        # Runs ALL checks unconditionally on the entire codebase -- the final
+        # gate, no regressions allowed -- and, when one fails, RECORDS WHY
+        # (#4176): which gate, and for pytest the failing node IDs, written to
+        # the agent error-detail file so Phase 1 classifies a direct answer
+        # instead of this step's NAME. Before that, the classifier's only input
+        # was the string "Final Verification (Must Pass)", which matches no
+        # signature, classifies `unknown`, and reaches the owner as "Error type
+        # could not be determined. Manual investigation needed." (#4166).
+        #
+        # A script, not an inline block, so the recording can be EXECUTED in CI
+        # against a deliberately red tree rather than inspected
+        # (.github/workflows/escalation-headline-smoke.yml).
+        run: ./scripts/agents/run_final_verification.sh
 
       - name: Post verification failure comment
         # #3689: skip when the job failed at a policy gate (not In Progress
@@ -2490,11 +2568,32 @@ jobs:
 
           exit 0  # Don't fail the workflow - we're handling errors
 
-      - name: Deep analysis with Claude (Phase 3 - complex reasoning)
+      # Same guard, same reason as the acceptance-fix invocation above (#4176)
+      # -- and this is the invocation that actually died of it on #4166, in the
+      # action's own branch setup, taking the whole diagnosis with it. `always()`
+      # is deliberate: this is the failure path, so a step with no `failure()`
+      # in its condition would be skipped exactly when it is needed.
+      - name: Clear stray worktrees before Phase 3 (#4176)
         if: |
           failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
             steps.intelligent_fix.outputs.fix_status == 'UNKNOWN' ||
-            steps.classify_error.outputs.error_class == 'unknown'
+            steps.classify_error.outputs.error_class == 'unknown' ||
+            startsWith(steps.classify_error.outputs.error_class, 'verification_failed')
+          )
+        shell: bash
+        run: ./scripts/agents/prune_stray_worktrees.sh
+
+      - name: Deep analysis with Claude (Phase 3 - complex reasoning)
+        # `verification_failed:<gate>` reaches Phase 3 too (#4176). Before this
+        # issue a Final Verification failure classified `unknown` and therefore
+        # got a Phase 3 diagnosis; now that it classifies specifically, the
+        # class has to be named here or better classification would silently
+        # REMOVE the diagnosis step from the path it matters most on.
+        if: |
+          failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
+            steps.intelligent_fix.outputs.fix_status == 'UNKNOWN' ||
+            steps.classify_error.outputs.error_class == 'unknown' ||
+            startsWith(steps.classify_error.outputs.error_class, 'verification_failed')
           )
         id: claude_analysis
         uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1.0.201
@@ -2692,6 +2791,68 @@ jobs:
             - DON'T reopen intentionally closed issues (old + merged PR)
             - DON'T just retry without understanding WHY it failed
             - DO provide detailed diagnosis for fatal errors
+
+      - name: Record that Phase 3 did not run (#4176)
+        # `claude_result` below requires `claude_analysis.conclusion ==
+        # 'success'`, so a Phase 3 that CRASHED produces no Phase 3 outputs at
+        # all -- byte-identical to a Phase 3 that ran and concluded nothing.
+        # On #4166 that is exactly what happened (the action died in its own
+        # branch setup on a leftover worktree) and the escalation reported the
+        # absence of a diagnosis as "error type could not be determined".
+        #
+        # Reads `outcome`, not `conclusion`: `conclusion` is what the step's
+        # `continue-on-error` setting reports, `outcome` is what actually
+        # happened.
+        #
+        # The error line is BEST EFFORT and says so when it fails: the per-job
+        # logs API is written on job completion and routinely returns nothing
+        # mid-run (the same limitation that made Phase 1 classify a step name).
+        # An honest "the step's log was not available mid-run" is the point --
+        # the headline still states that Phase 3 did not run, which is the fact
+        # the owner was missing.
+        if: always() && steps.claude_analysis.outcome == 'failure'
+        id: phase3_crash
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          EXECUTION_FILE: ${{ steps.claude_analysis.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          source scripts/agents/lib/gh_project.sh
+
+          LINE=""
+          # 1. The action's own execution output, when it got far enough to
+          #    write one (it had not on #4166 -- it died before `steps.run`).
+          if [[ -n "${EXECUTION_FILE:-}" && -s "${EXECUTION_FILE:-/nonexistent}" ]]; then
+            LINE="$(jq -r '[.. | objects | select(has("error")) | .error | tostring] | first // empty' \
+              "$EXECUTION_FILE" 2>/dev/null | head -1)"
+          fi
+
+          # 2. The job log, anchored on the LAST claude-code-action invocation
+          #    -- Phase 3 is the last one on this path.
+          if [[ -z "$LINE" ]]; then
+            JOB_ID="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+              --jq '.jobs[0].id // empty' 2>/dev/null || echo "")"
+            if [[ -n "$JOB_ID" ]]; then
+              LOG="$(gh api "repos/${{ github.repository }}/actions/jobs/${JOB_ID}/logs" 2>/dev/null || echo "")"
+              LINE="$(first_error_after_marker "$LOG" "claude-code-action")"
+            fi
+          fi
+
+          # One line, bounded: this becomes a step output and a sentence in a
+          # comment, not a log dump.
+          LINE="$(printf '%s' "${LINE:0:300}" | tr -d '\r\n')"
+          printf '%s\n' "$LINE" > /tmp/phase3_error.txt
+          {
+            echo "phase3_outcome=failure"
+            echo "phase3_error=${LINE}"
+          } >> "$GITHUB_OUTPUT"
+          if [[ -n "$LINE" ]]; then
+            echo "::warning::Phase 3 diagnosis did not run -- the deep-analysis step failed: ${LINE}"
+          else
+            echo "::warning::Phase 3 diagnosis did not run, and its own error line was not available mid-run."
+          fi
 
       - name: Read Claude analysis result (Phase 3)
         if: failure() && steps.claude_analysis.conclusion == 'success'
@@ -2943,6 +3104,105 @@ jobs:
           assign_and_trigger_developer "$ISSUE"
           echo "::notice::Auto-retry triggered (${NEXT_N}/3) for step '${FAILED_STEP}' -- issue #${ISSUE} re-assigned to @${DEV_AGENT_LOGIN}"
 
+      - name: Compose the escalation headline from the evidence (#4176)
+        # THE FIX for the headline itself. It used to be
+        # `phase3Diagnosis || phase2Diagnosis || errorExplanations[errorClass]`
+        # inside the escalation's own JavaScript -- a lookup on the CLASS, so
+        # with both diagnoses empty it printed "Error type could not be
+        # determined. Manual investigation needed." while the same comment's
+        # blast-radius section said, three lines down, "Is `v3.0.1` red? yes --
+        # `test` failing. Everything built on this head is affected" (#4166).
+        #
+        # Now every piece of evidence the run holds is gathered HERE, once, and
+        # the headline is composed from it by
+        # scripts/agents/lib/escalation_evidence.py (pure, so every combination
+        # is unit-tested). This step also decides the CAUSE KEY: a red base is
+        # one cause for every issue it breaks, not one `developer-failure:<step>`
+        # per issue (CLAUDE.md: one systemic cause gets ONE escalation).
+        #
+        # Gated on classify_error's own conclusion, like the retry-budget and
+        # anomaly steps, so it is available to BOTH escalating paths below (the
+        # fatal one and the retry-budget-exhausted one in the autopilot kick).
+        if: failure() && steps.classify_error.conclusion == 'success'
+        id: headline
+        continue-on-error: true
+        shell: bash
+        env:
+          # #3837: step outputs reach the shell as data, never as source.
+          ERROR_CLASS: ${{ steps.classify_error.outputs.error_class }}
+          FAILED_STEP: ${{ steps.classify_error.outputs.failed_step }}
+          PHASE3_DIAGNOSIS: ${{ steps.claude_result.outputs.diagnosis }}
+          PHASE3_OUTCOME: ${{ steps.claude_analysis.outcome }}
+          PHASE3_ERROR: ${{ steps.phase3_crash.outputs.phase3_error }}
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set -uo pipefail
+          source scripts/agents/lib/gh_project.sh
+          load_config
+
+          # Phase 2's diagnosis, from the file it writes (same parse as the
+          # escalation step used to do in JavaScript).
+          PHASE2_DIAGNOSIS=""
+          if [[ -f /tmp/analysis_result.txt ]]; then
+            PHASE2_DIAGNOSIS="$(sed -n 's/^DIAGNOSIS=//p' /tmp/analysis_result.txt | head -1)"
+          fi
+
+          # What the failing step recorded about itself (#3971) -- for Final
+          # Verification that is the gate and the failing node IDs (#4176).
+          VERIFICATION_DETAIL="$(read_agent_error_detail)"
+
+          # Is the base already red, and on which check? ONE definition,
+          # shared with the blast-radius investigation, computed here and
+          # passed in rather than re-derived where the comment is written.
+          HEAD_STATE="$(release_head_state_json)" || HEAD_STATE='{}'
+          [[ -n "$HEAD_STATE" ]] || HEAD_STATE='{}'
+          echo "::notice::Release-head state: ${HEAD_STATE}"
+
+          EVIDENCE="$(jq -n -c \
+            --argjson head "$HEAD_STATE" \
+            --arg ec "${ERROR_CLASS:-}" \
+            --arg fs "${FAILED_STEP:-}" \
+            --arg p3d "${PHASE3_DIAGNOSIS:-}" \
+            --arg p3o "${PHASE3_OUTCOME:-}" \
+            --arg p3e "${PHASE3_ERROR:-}" \
+            --arg p2d "${PHASE2_DIAGNOSIS:-}" \
+            --arg vd "${VERIFICATION_DETAIL:-}" \
+            '{
+               error_class: $ec,
+               failed_step: $fs,
+               phase3_diagnosis: $p3d,
+               phase3_outcome: $p3o,
+               phase3_error: $p3e,
+               phase2_diagnosis: $p2d,
+               verification_detail: $vd,
+               base_branch: $head.release_branch,
+               base_sha: ($head.release_head_sha // ""),
+               base_red: $head.release_head_red,
+               base_checks: ($head.red_checks // [])
+             }')"
+
+          COMPOSED="$(printf '%s' "$EVIDENCE" \
+            | python3 scripts/agents/lib/escalation_evidence.py compose)"
+          echo "::notice::Composed escalation: ${COMPOSED}"
+
+          # Written to a FILE as well as to step outputs: the escalation step
+          # reads free-form prose about a failure, and #3820 is the rule that
+          # such text never becomes script source. The file is read with `fs`,
+          # the outputs are read through `env:`.
+          printf '%s' "$COMPOSED" | jq -r '.headline' > /tmp/escalation_headline.txt
+          {
+            echo "cause=$(printf '%s' "$COMPOSED" | jq -r '.cause')"
+            echo "analysis_phase=$(printf '%s' "$COMPOSED" | jq -r '.analysis_phase')"
+            echo "generic=$(printf '%s' "$COMPOSED" | jq -r '.generic')"
+          } >> "$GITHUB_OUTPUT"
+
+          # A generic headline is now a reportable condition, not the norm: it
+          # means the run really held no evidence. Saying so in the log is how
+          # the next instance of this defect gets found from the run itself.
+          if [[ "$(printf '%s' "$COMPOSED" | jq -r '.generic')" == "true" ]]; then
+            echo "::warning::No evidence was available to compose a headline from -- the escalation will carry the generic sentence (#4176)."
+          fi
+
       - name: Escalate fatal error (Phase 1+2+3 - no retry)
         # Phase 3's verdict outranks Phase 1's guess (#3909). Phase 1 is a
         # grep over log lines: `unknown` from it means "no signature matched",
@@ -2973,8 +3233,12 @@ jobs:
           ERROR_CLASS: ${{ steps.classify_error.outputs.error_class }}
           PHASE2_STATUS: ${{ steps.intelligent_fix.outputs.fix_status }}
           PHASE3_STATUS: ${{ steps.claude_result.outputs.status }}
-          PHASE3_DIAGNOSIS: ${{ steps.claude_result.outputs.diagnosis }}
           DEV_AGENT_LOGIN: ${{ vars.DEV_AGENT }}
+          # #4176: the headline is COMPOSED from the evidence by the step
+          # above, not looked up on the error class here. The lookup is what
+          # printed "Error type could not be determined" over a run that had
+          # already found the cause.
+          HEADLINE_PHASE: ${{ steps.headline.outputs.analysis_phase }}
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
@@ -2985,41 +3249,42 @@ jobs:
             const errorClass = process.env.ERROR_CLASS || '';
             const phase2Status = process.env.PHASE2_STATUS || '';
             const phase3Status = process.env.PHASE3_STATUS || '';
-            const phase3Diagnosis = process.env.PHASE3_DIAGNOSIS || '';
 
-            // Read diagnosis from Phase 2 if available
             const fs = require('fs');
-            let phase2Diagnosis = '';
-            try {
-              const result = fs.readFileSync('/tmp/analysis_result.txt', 'utf8');
-              const match = result.match(/DIAGNOSIS=(.+)/);
-              if (match) phase2Diagnosis = match[1];
-            } catch (e) {}
+
+            // Both paths are env-overridable with the production value as the
+            // default, so escalation_script_probe.py can point them at its own
+            // fixtures and EXECUTE this script over hostile file content
+            // (#4176). The workflow sets neither.
+            const detailPath = process.env.FAILURE_DETAIL_FILE || '/tmp/failure_detail.txt';
+            const headlinePath = process.env.HEADLINE_FILE || '/tmp/escalation_headline.txt';
 
             // Read the concrete failing step + error excerpt captured by
             // Phase 1 (read from a file, not a GitHub Actions expression,
             // so arbitrary log content can never break out of this script).
             let failureDetail = '';
             try {
-              failureDetail = fs.readFileSync('/tmp/failure_detail.txt', 'utf8').trim();
+              failureDetail = fs.readFileSync(detailPath, 'utf8').trim();
             } catch (e) {}
 
-            // Use Phase 3 diagnosis if available, otherwise Phase 2
-            let diagnosis = phase3Diagnosis || phase2Diagnosis;
-
-            // Map error types to human-friendly explanations
-            const errorExplanations = {
-              'fatal:issue_closed': 'Issue is closed. This may be intentional or accidental.',
-              'fatal:auth_failure': 'Authentication failed. Requires admin intervention to ' +
-                                    'fix secrets/permissions.',
-              'fatal:already_merged': 'Work already completed in a merged PR.',
-              'unknown': 'Error type could not be determined. Manual investigation needed.'
-            };
-
-            const explanation = diagnosis || errorExplanations[errorClass] || 'Unrecognized error type.';
-            const analysisPhase = phase3Status === 'FATAL' ? 'Phase 3 (Claude reasoning)' :
-                                 phase2Status === 'FATAL' ? 'Phase 2 (Script analysis)' :
-                                 'Phase 1 (Error classification)';
+            // The composed headline, from a file for the same reason: it is
+            // prose about a failure, so it is data here and never source
+            // (#3820). An empty file means the compose step itself did not
+            // run -- say THAT, rather than inventing a diagnosis.
+            let explanation = '';
+            try {
+              explanation = fs.readFileSync(headlinePath, 'utf8').trim();
+            } catch (e) {}
+            if (!explanation) {
+              explanation = `The escalation headline could not be composed (the "Compose the ` +
+                            `escalation headline" step did not run or failed); error class ` +
+                            `\`${errorClass || 'unknown'}\`. The failure detail below and the ` +
+                            `run log are the evidence.`;
+            }
+            const analysisPhase = process.env.HEADLINE_PHASE ||
+                                 (phase3Status === 'FATAL' ? 'Phase 3 (Claude reasoning)' :
+                                  phase2Status === 'FATAL' ? 'Phase 2 (Script analysis)' :
+                                  'Phase 1 (Error classification)');
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -3041,6 +3306,8 @@ jobs:
                     `   - **issue_closed:** Check if issue should be reopened or work is complete\n` +
                     `   - **auth_failure:** Verify repository secrets and permissions\n` +
                     `   - **already_merged:** Work may already be done, check PRs\n` +
+                    `   - **verification_failed:&lt;gate&gt;:** the diagnosis above names the gate and ` +
+                    `the failing tests; if the base is red, fix the base first -- this issue is a symptom\n` +
                     `   - **unknown:** Investigate logs for specific error details\n` +
                     `3. Once fixed, assign @${devAgent} to the issue -- the assignment is the retry (#3882)\n\n` +
                     `**Note:** Phase 2 intelligent analysis will auto-fix many of these errors.`
@@ -3096,6 +3363,10 @@ jobs:
           STATE_ANOMALY: ${{ steps.cross_issue_anomaly.outputs.matched }}
           ANOMALY_ORIGIN: ${{ steps.cross_issue_anomaly.outputs.origin_issue }}
           ANOMALY_STEP: ${{ steps.classify_error.outputs.failed_step }}
+          # #4176: the cause key, decided from the evidence. A red base is ONE
+          # cause for every issue it breaks; only without that finding does the
+          # key fall back to this run's failed step.
+          CAUSE_KEY: ${{ steps.headline.outputs.cause }}
         run: |
           set -euo pipefail
           source scripts/agents/lib/gh_project.sh
@@ -3154,8 +3425,16 @@ jobs:
           # owner gets one escalation for the step instead of one per issue.
           # That is the same collapse as the anomaly path above, applied to
           # the terminal case where the work really does change hands.
+          #
+          # #4176 widened it one step further: when the evidence says the
+          # RELEASE BASE is red, the cause is the base and the key names it
+          # (`base-red:<branch>:<checks>`), so the dozen issues that inherit
+          # one red base produce one escalation between them rather than a
+          # `developer-failure:Final Verification (Must Pass)` each. The
+          # fallback is the old key, for the runs where the failure really is
+          # this run's own.
           escalate_to_owner "$ISSUE" "$STATE" "$DIAGNOSIS" "$ACTION" \
-            "developer-failure:${ANOMALY_STEP:-unknown-step}" \
+            "${CAUSE_KEY:-developer-failure:${ANOMALY_STEP:-unknown-step}}" \
             "[Failed run](${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" \
             || echo "::error::Issue #${ISSUE} was escalated but the handover could not be fully verified — see the errors above."
 

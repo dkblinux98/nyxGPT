@@ -48,6 +48,7 @@ fails if it drifts. Do not hand-edit.
 | `developer_auto_implement.yml` | issues | Developer Agent Auto-Implement |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
 | `ensure_project_hygiene.yml` | issues, pull_request_target | Ensure Project Hygiene |
+| `escalation-headline-smoke.yml` | push, pull_request, workflow_dispatch | Escalation Headline Smoke |
 | `escalation-label-smoke.yml` | push, pull_request, workflow_dispatch | Escalation and Label Smoke |
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
@@ -128,6 +129,7 @@ fails if it drifts. Do not hand-edit.
 | `manually_trigger_pr_review.sh` | Manually triggers a code review for a PR. This is useful for: |
 | `pr_close_project_status.sh` | stamp a merged/closed PR's project item to the terminal PR lane (STATUS_CLOSED) |
 | `promote_accepted_features.sh` | Promote issues whose acceptance blockers are all accepted (owner flow, 2026-08-02; native relationships since #3731, owner decisio |
+| `prune_stray_worktrees.sh` | remove every git worktree except this one, so a leftover worktree cannot block the next branch checkou |
 | `reconcile_closed_status.sh` | project-hygiene sweep |
 | `reconcile_dead_branches.sh` | On-demand REPORT of claude/*, feat/*, fix/*, and chore/* branches (#3392, |
 | `reconcile_pr_lane.sh` | sweep merged/closed PR cards into the terminal PR lane (STATUS_CLOSED) |
@@ -137,6 +139,7 @@ fails if it drifts. Do not hand-edit.
 | `review_ensure_handoff.sh` | dispatch-mode post-review handoff backstop (#3704) |
 | `review_head_gate_action.sh` | Reports a head the review trigger cannot review, without spending a review invocation on it (#3971) |
 | `round_state.sh` | derive an acceptance round's state from git and GitHub |
+| `run_final_verification.sh` | the developer agent's Final Verification gate, which RECORDS WHY IT FAILED (#4176) |
 | `scrummaster_dispatch_next.sh` | Runs the #3665 fall-through dispatch loop: select the next eligible |
 | `scrummaster_sprint_reorg_apply.sh` | Applies the most recent unapplied sprint reorganization proposal posted by |
 | `scrummaster_sprint_report.sh` | Computes sprint standing for the active Sprint (done / in-review / |

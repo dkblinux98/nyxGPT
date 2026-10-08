@@ -669,6 +669,37 @@ before the mechanism itself was removed:
   otherwise it lapses as the cycles age out of the window. The guard bounds
   spend to ~3 cycles per window, it is not a lockout.
 
+## 3h) An escalation reports what the run already knows (#4176)
+
+Full reference: `docs/escalation-evidence.md`. The rule, because the owner
+received "Error type could not be determined. Manual investigation needed."
+over a run whose blast-radius section named the cause three lines further down
+(#4166):
+
+- **A failing step records its own reason.** Final Verification does it
+  (`scripts/agents/run_final_verification.sh` -> `write_agent_error_detail`:
+  which gate, and for pytest the failing node IDs from the `-rf` short
+  summary), and `classify_error` answers `verification_failed:<gate>` instead
+  of `unknown`. **Any step you add that knows why it failed does the same** --
+  Phase 1's log harvest is empty mid-run, so a step that records nothing is
+  classified by its NAME.
+- **The headline is composed, never looked up.**
+  `scripts/agents/lib/escalation_evidence.py` composes it from the Phase 3
+  diagnosis, the base-red finding, the gate's own reason and "Phase 3 did not
+  run", in that order. Do not add an error-class -> sentence table anywhere
+  near an escalation: that table is the defect.
+- **Ask "is this inherited?" before fixing anything.** If the failures
+  reproduce on `origin/<release branch>`, the base is red and the work in front
+  of you is not the cause. Compare with a **detached** worktree --
+  `git worktree add --detach /tmp/base-check origin/<release branch>` -- and
+  remove it when you are done. Without `--detach` the worktree HOLDS the branch
+  name and the next `claude-code-action` invocation dies with
+  `fatal: '<branch>' is already used by worktree at '<path>'`, which is how
+  #4166 lost its diagnosis entirely.
+- **A knowledge failure is never dressed as an answer.** An unreadable head is
+  "not checked", not green; a crashed Phase 3 says it did not run rather than
+  concluding nothing.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check

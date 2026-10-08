@@ -102,8 +102,12 @@ disappearing, so the owner can tell a skipped investigation from an empty one.
 
 **A systemic cause produces ONE escalation for the cause, not one per
 affected issue.** Pass a **cause key** that names the fault rather than the
-issue (`red-head:<check names>`, `developer-failure:<step>`,
-`conflict:<pr>`) -- two issues broken by one fault must pass the same key. The
+issue (`red-head:<check names>`, `base-red:<branch>:<check names>`,
+`developer-failure:<step>`, `conflict:<pr>`) -- two issues broken by one fault
+must pass the same key. `base-red:...` is chosen for you when the evidence says
+the release base is already red (#4176, `docs/escalation-evidence.md`): every
+issue that inherits that base links to one escalation instead of raising a
+`developer-failure:Final Verification (Must Pass)` each. The
 second issue to hit a live cause is labelled and assigned (so it is paused
 too) but links to the origin escalation and sends no second DM.
 

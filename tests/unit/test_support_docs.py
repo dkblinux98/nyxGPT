@@ -34,6 +34,7 @@ _NOT_PRODUCT_DOCS = {
     "agent-smoke",
     "cloud-artifact-smoke",
     "development",
+    "escalation-evidence",
     "file-lock-audit",
     "github-tokens",
     "how-this-project-is-run",
