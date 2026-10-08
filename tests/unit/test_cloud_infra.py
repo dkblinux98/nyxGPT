@@ -403,17 +403,23 @@ def test_apply_writes_the_state_contract_allow_ip_reads(terraform_calls, monkeyp
     assert resolved == "sg-456"
 
 
-def test_apply_preserves_unrelated_keys_in_the_shared_state_file(terraform_calls, monkeypatch):
+def test_apply_preserves_the_other_substrates_block(terraform_calls, monkeypatch):
+    """The EC2 Mac's block survives a substrate apply (#4136 names the unit).
+
+    Was written against a fictional `some_other_command` key; the real other
+    writer is `cloud_mac`, and its block is the one that must not be erased --
+    it records a Dedicated Host that is still billing.
+    """
     cloud_infra.CLOUD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     cloud_infra.CLOUD_STATE_FILE.write_text(
-        json.dumps({"some_other_command": "value"}), encoding="utf-8"
+        json.dumps({"mac_host_id": "h-0abc", "mac_region": "us-east-1"}), encoding="utf-8"
     )
     monkeypatch.setattr(cloud_infra, "terraform_outputs", lambda: {"security_group_id": "sg-1"})
 
     cloud_infra.apply_infra(_args())
 
     written = json.loads(cloud_infra.CLOUD_STATE_FILE.read_text(encoding="utf-8"))
-    assert written["some_other_command"] == "value"
+    assert written["mac_host_id"] == "h-0abc"
     assert written["security_group_id"] == "sg-1"
 
 
@@ -522,17 +528,17 @@ def test_destroy_uses_saved_settings_without_touching_the_network(terraform_call
     assert [call[0] for call in terraform_calls] == ["init", "destroy"]
 
 
-def test_destroy_clears_only_this_modules_state_keys(terraform_calls):
+def test_destroy_clears_only_this_substrates_block(terraform_calls):
     cloud_infra.save_settings(cloud_infra.resolve_settings(_args()))
     cloud_infra.TFSTATE_FILE.write_text("{}", encoding="utf-8")
     cloud_infra.CLOUD_STATE_FILE.write_text(
-        json.dumps({"security_group_id": "sg-1", "some_other_command": "value"}), encoding="utf-8"
+        json.dumps({"security_group_id": "sg-1", "mac_host_id": "h-0abc"}), encoding="utf-8"
     )
 
     cloud_infra.destroy_infra(argparse.Namespace())
 
     written = json.loads(cloud_infra.CLOUD_STATE_FILE.read_text(encoding="utf-8"))
-    assert written == {"some_other_command": "value"}
+    assert written == {"mac_host_id": "h-0abc"}
 
 
 def test_destroy_removes_the_state_file_when_nothing_else_is_left(terraform_calls):

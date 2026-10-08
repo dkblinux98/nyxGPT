@@ -47,7 +47,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_infra
+from nyxgpt import cloud_infra, cloud_record
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
@@ -69,32 +69,20 @@ MAC_RELEASE_TFSTATE_FILE = cloud_infra.CLOUD_DIR / "mac-release.tfstate"
 MAC_TFVARS_FILE = cloud_infra.CLOUD_DIR / "mac.tfvars"
 MAC_RELEASE_TFVARS_FILE = cloud_infra.CLOUD_DIR / "mac-release.tfvars"
 
-# Keys this module owns inside the shared `~/.nyxGPT/cloud/state.json`.
-# `cloud_infra.write_cloud_state`/`clear_cloud_state` touch only their own
-# `STATE_KEYS` and preserve everything else, so a substrate teardown cannot
-# take the record of a still-billing host with it.
-STATE_KEYS: tuple[str, ...] = (
-    "mac_host_id",
-    "mac_instance_id",
-    "mac_instance_type",
-    "mac_region",
-    "mac_availability_zone",
-    "mac_public_ip",
-    "mac_security_group_id",
-    # What the instance actually booted and how big its root disk is. Recorded
-    # so a reconcile re-applies the *same* values rather than re-resolving
-    # them: `most_recent = true` on the AMI data source and a differing volume
-    # size both force instance replacement, and replacing an EC2 Mac means a
-    # terminated instance, a lost disk and a host that then scrubs for an hour
-    # before anything can be placed on it again.
-    "mac_ami_id",
-    "mac_root_volume_size",
-    "mac_allocated_at",
-    "mac_release_at",
-    "mac_hourly_rate",
-    "mac_release_scheduled",
-    "mac_release_scheduled_at",
-)
+# This substrate's *block* inside the shared `~/.nyxGPT/cloud/state.json`.
+# Defined in `cloud_record`, which owns the file: each substrate's block is
+# replaced whole and never merged into (#4136), and the other substrate's block
+# is preserved -- so a substrate teardown cannot take the record of a
+# still-billing host with it.
+#
+# Among the keys there: `mac_ami_id` and `mac_root_volume_size` record what the
+# instance actually booted and how big its root disk is, so a reconcile
+# re-applies the *same* values rather than re-resolving them (`most_recent =
+# true` on the AMI data source and a differing volume size both force instance
+# replacement, and replacing an EC2 Mac means a terminated instance, a lost
+# disk and a host that then scrubs for an hour before anything can be placed on
+# it again).
+STATE_KEYS: tuple[str, ...] = cloud_record.MAC_BLOCK_KEYS
 
 # EC2 bills an allocated Dedicated Host for at least this long, and refuses
 # ReleaseHosts until it has elapsed. Not configurable: it is AWS's number.
@@ -371,6 +359,211 @@ def accrued_cost(allocated_at: datetime, hourly_rate: float, now: datetime | Non
     return hourly_rate * max(float(HOST_MINIMUM_HOURS), elapsed_hours)
 
 
+# --- What AWS actually billed ------------------------------------------
+
+
+@dataclass
+class MacHostSpend:
+    """What Cost Explorer says the Dedicated Host family has cost.
+
+    `amount is None` is a first-class outcome for the same reason it is on
+    `MacHostPricing`: an operator who cannot be told the figure must be told
+    *that*, not shown a locally computed number dressed up as AWS's.
+    """
+
+    host_family: str
+    region: str
+    amount: float | None = None
+    currency: str = "USD"
+    # Last day included, `YYYY-MM-DD`. Cost Explorer lags by up to a day, so a
+    # figure with no "through" date reads as more current than it is.
+    through: str = ""
+    daily: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form, carried in the status payload."""
+        return {
+            "host_family": self.host_family,
+            "region": self.region,
+            "amount": self.amount,
+            "currency": self.currency,
+            "through": self.through,
+            "daily": list(self.daily),
+            "error": self.error,
+        }
+
+
+# Cost Explorer is billed per request, so the figure is cached in the record
+# and refreshed no more than this often. The number it reports moves at most
+# once a day (AWS's own granularity), so a shorter interval would buy nothing
+# and a dashboard poll would buy it repeatedly.
+SPEND_REFRESH_SECONDS = 3600.0
+
+# Cost Explorer has one endpoint, in us-east-1, whatever region is being
+# queried -- same shape as the Pricing API above.
+COST_EXPLORER_REGION = "us-east-1"
+
+# Dedicated Host line items carry a usage type of `HostUsage:<family>`,
+# optionally prefixed with a region code (`EUC1-HostUsage:mac2`). The family
+# after the colon is matched exactly: `mac2` and `mac2-m2` are different
+# hardware at different prices, and a prefix match would add one to the other.
+HOST_USAGE_MARKER = "HostUsage:"
+
+# What Cost Explorer calls EC2 compute. Dedicated Host charges land here, not
+# under a service of their own.
+EC2_COMPUTE_SERVICE = "Amazon Elastic Compute Cloud - Compute"
+
+
+def lookup_host_spend(
+    instance_type: str,
+    region: str,
+    profile: str = "",
+    *,
+    since: datetime | None = None,
+    now: datetime | None = None,
+) -> MacHostSpend:
+    """Ask Cost Explorer what the Dedicated Host family has actually cost.
+
+    This is the answer to "how much has this host cost me?", and it replaces
+    `hourly_rate * (now - allocated_at)` (#4136), which was wrong in both
+    directions and most wrong exactly when it mattered: it read $48.44 for a
+    host AWS had billed $12.02 for and had stopped charging for two days
+    earlier, because a local clock multiplied by a local rate keeps counting
+    after the resource is gone. The figure here stops moving when the charges
+    do, because it is the charges.
+
+    Never raises: a cost lookup that fails must not stop a lifecycle command,
+    and must not be replaced by a guess either. The failure lands in `error`
+    and every surface prints it instead of a number.
+
+    Scoped to the host *family* in one region rather than to the host id.
+    Resource-level attribution is a separate, opt-in Cost Explorer feature with
+    its own 14-day window, and nyxGPT allocates at most one Mac host per region
+    by construction, so the family total in that region is the host's bill.
+    """
+    family = host_family(instance_type)
+    spend = MacHostSpend(host_family=family, region=region)
+    moment = (now or utc_now()).astimezone(UTC)
+    # Cost Explorer's `End` is exclusive, so tomorrow is what includes today.
+    end = (moment + timedelta(days=1)).date()
+    start = (since.astimezone(UTC).date() if since else None) or (moment - timedelta(days=30)).date()
+    if start >= end:
+        start = end - timedelta(days=1)
+
+    try:
+        client = _client("ce", COST_EXPLORER_REGION, profile)
+        response = client.get_cost_and_usage(
+            TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
+            Granularity="DAILY",
+            Metrics=["UnblendedCost"],
+            Filter={
+                "And": [
+                    {"Dimensions": {"Key": "SERVICE", "Values": [EC2_COMPUTE_SERVICE]}},
+                    {"Dimensions": {"Key": "REGION", "Values": [region]}},
+                ]
+            },
+            GroupBy=[{"Type": "DIMENSION", "Key": "USAGE_TYPE"}],
+        )
+    except Exception as exc:
+        spend.error = f"the AWS Cost Explorer API could not be queried: {exc}"
+        return spend
+
+    total = 0.0
+    matched = False
+    for period in response.get("ResultsByTime", []):
+        day = str((period or {}).get("TimePeriod", {}).get("Start") or "")
+        day_total = 0.0
+        day_matched = False
+        for group in (period or {}).get("Groups", []):
+            keys = [str(key) for key in (group or {}).get("Keys", [])]
+            if not any(
+                key.split(HOST_USAGE_MARKER, 1)[1] == family
+                for key in keys
+                if HOST_USAGE_MARKER in key
+            ):
+                continue
+            metric = (group or {}).get("Metrics", {}).get("UnblendedCost", {})
+            try:
+                day_total += float(metric.get("Amount"))
+            except (TypeError, ValueError):
+                continue
+            day_matched = True
+            currency = str(metric.get("Unit") or "")
+            if currency:
+                spend.currency = currency
+        if day_matched:
+            matched = True
+            total += day_total
+            spend.daily.append({"date": day, "amount": round(day_total, 4)})
+        if day:
+            spend.through = day
+
+    if not matched:
+        spend.error = (
+            f"Cost Explorer reported no Dedicated Host charges for family {family!r} in "
+            f"{region} between {start.isoformat()} and {end.isoformat()}. A host allocated in "
+            "the last few hours may not have been billed yet -- Cost Explorer lags by up to a day."
+        )
+        return spend
+    spend.amount = round(total, 2)
+    return spend
+
+
+def record_findings(record: dict[str, Any]) -> list[str]:
+    """Internal inconsistencies in the Mac block, each detectable with no API call.
+
+    An incoherent block is reported rather than used (#4136). All three of
+    these were true of the record the 2026-10-03 deploy read, and every one is
+    free: no credentials, no network, no latency. A block that fails them
+    describes no state AWS could ever have been in, so the only safe reading is
+    that its fields came from more than one run.
+    """
+    findings: list[str] = []
+    if not record.get("mac_host_id"):
+        return findings
+
+    allocated_at = parse_timestamp(str(record.get("mac_allocated_at") or ""))
+    release_at = parse_timestamp(str(record.get("mac_release_at") or ""))
+    scheduled_at = parse_timestamp(str(record.get("mac_release_scheduled_at") or ""))
+
+    if record.get("mac_allocated_at") and allocated_at is None:
+        findings.append(
+            f"mac_allocated_at ({record.get('mac_allocated_at')!r}) is not a timestamp"
+        )
+    if scheduled_at is not None and allocated_at is not None and scheduled_at < allocated_at:
+        findings.append(
+            f"mac_release_scheduled_at ({scheduled_at.isoformat()}) is EARLIER than "
+            f"mac_allocated_at ({allocated_at.isoformat()}) -- the release of this host cannot "
+            "have been scheduled before the host existed, so these two fields were written by "
+            "different runs about different hosts"
+        )
+    if allocated_at is not None and release_at is not None:
+        expected = release_time(allocated_at)
+        # Whole seconds; the record stores both to second precision, so any
+        # real difference is minutes or days, never rounding.
+        if abs((release_at - expected).total_seconds()) > 1:
+            findings.append(
+                f"mac_release_at ({release_at.isoformat()}) is not mac_allocated_at + "
+                f"{HOST_MINIMUM_HOURS}h{RELEASE_BUFFER_MINUTES}m "
+                f"(expected {expected.isoformat()})"
+            )
+    if record.get("mac_release_scheduled"):
+        scheduled_host = _recorded_release_host()
+        host_id = str(record.get("mac_host_id") or "")
+        if not scheduled_host:
+            findings.append(
+                "mac_release_scheduled is true but no release schedule exists on this machine "
+                "-- nothing will release this host"
+            )
+        elif scheduled_host != host_id:
+            findings.append(
+                f"mac_release_scheduled is true but the release schedule names {scheduled_host} "
+                f"rather than {host_id}"
+            )
+    return findings
+
+
 # --- Consent -----------------------------------------------------------
 
 
@@ -457,64 +650,63 @@ def confirm_allocation(
 # --- Cloud-state record ------------------------------------------------
 
 
-def _load_cloud_state() -> dict[str, Any]:
-    """Read the shared `~/.nyxGPT/cloud/state.json`, returning `{}` when absent."""
-    path = cloud_infra.CLOUD_STATE_FILE
-    if not path.exists():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+def record_mac_host(values: dict[str, Any], *, reason: str = "") -> dict[str, Any]:
+    """Replace this substrate's whole block with `values` and return the record.
 
+    **Whole, not merged** (#4136). Every key this substrate owns is decided by
+    this call; one `values` does not carry is dropped. The merge this replaced
+    wrote only the fields the caller happened to touch, so a deploy that
+    provisioned a *new* Mac updated the instance fields and left the host
+    fields naming the previous, released host -- a new instance stapled to a
+    dead host, a combination that never existed. Everything downstream then
+    read the whole file as equally fresh: the consent gate skipped a priced
+    disclosure, `cloud status` reported a release window that had "passed" for
+    a host allocated hours later, and `destroy` would have tried to release a
+    deleted host while leaving the live, billing one untracked.
 
-def _save_cloud_state(state: dict[str, Any]) -> None:
-    """Write the shared cloud state file back (0600 -- it names the deployment)."""
-    path = cloud_infra.CLOUD_STATE_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
-
-
-def record_mac_host(values: dict[str, Any]) -> dict[str, Any]:
-    """Merge this module's keys into the shared cloud state and return the record.
-
-    Only `STATE_KEYS` are touched, mirroring `cloud_infra.write_cloud_state`:
-    the substrate and the Mac write the same file and neither may erase the
-    other's entries -- least of all the entry that says money is still being
-    spent.
+    Use `amend_mac_record` for an update to fields of a host that is already
+    recorded -- it proves the block still describes the same host first. Only
+    the other substrate's block is preserved here.
     """
-    state = _load_cloud_state()
-    for key in STATE_KEYS:
-        if key in values and values[key] is not None:
-            state[key] = values[key]
-    _save_cloud_state(state)
+    cloud_record.write_block(cloud_record.SUBSTRATE_MAC, values, reason=reason)
+    return load_mac_record()
+
+
+def amend_mac_record(
+    updates: dict[str, Any], *, host_id: str, reason: str = ""
+) -> dict[str, Any]:
+    """Update fields of the recorded host, proving it is still that host.
+
+    The gated merge. `host_id` is what the caller believes the block describes;
+    if the record now names a different host the write is refused
+    (`cloud_record.StaleRecordError`) rather than applied to whichever host
+    happens to be recorded. Without that proof, "the release is scheduled"
+    lands on the wrong host -- which is how a `release_scheduled_at` 78 seconds
+    *earlier* than the `allocated_at` of the host it described got written.
+    """
+    cloud_record.amend_block(
+        cloud_record.SUBSTRATE_MAC,
+        updates,
+        expect={"mac_host_id": host_id},
+        reason=reason,
+    )
     return load_mac_record()
 
 
 def load_mac_record() -> dict[str, Any]:
     """Return what is recorded about the Mac host, or `{}` when there is none."""
-    state = _load_cloud_state()
-    record = {key: state[key] for key in STATE_KEYS if key in state}
+    record = cloud_record.load_block(cloud_record.SUBSTRATE_MAC)
     return record if record.get("mac_host_id") else {}
 
 
-def clear_mac_record() -> None:
-    """Drop this module's keys from the shared cloud state.
+def clear_mac_record(*, reason: str = "") -> None:
+    """Drop this substrate's block from the shared cloud state.
 
     Called only once the host is *gone* -- not when the instance is
     terminated. A record deleted while the host still bills is the exact
     failure `nyxgpt cloud status`'s pending-release row exists to prevent.
     """
-    state = _load_cloud_state()
-    if not state:
-        return
-    remaining = {k: v for k, v in state.items() if k not in STATE_KEYS}
-    if remaining:
-        _save_cloud_state(remaining)
-    else:
-        cloud_infra.CLOUD_STATE_FILE.unlink(missing_ok=True)
+    cloud_record.clear_block(cloud_record.SUBSTRATE_MAC, reason=reason)
 
 
 def pending_release() -> dict[str, Any]:
@@ -536,9 +728,22 @@ def pending_release() -> dict[str, Any]:
     except (TypeError, ValueError):
         rate = 0.0
 
-    accrued: float | None = None
+    # The local figure is an *estimate* and is reported under that name
+    # (#4136). It used to be the headline "Accrued" number, computed as
+    # `rate * (now - allocated_at)`, which kept climbing after AWS stopped
+    # charging -- $48.44 displayed for a $12.02 bill that had ended two days
+    # earlier. What AWS billed comes from Cost Explorer and is recorded by
+    # `verify_mac_record`; this one is the fallback for a record that has not
+    # been verified yet, never a substitute for it.
+    estimate: float | None = None
     if allocated_at is not None and rate > 0:
-        accrued = accrued_cost(allocated_at, rate, now)
+        estimate = accrued_cost(allocated_at, rate, now)
+
+    spend_amount = record.get("mac_spend_amount")
+    try:
+        spend = float(spend_amount) if spend_amount is not None else None
+    except (TypeError, ValueError):
+        spend = None
 
     releasable = bool(release_at and now >= release_at)
     return {
@@ -557,10 +762,34 @@ def pending_release() -> dict[str, Any]:
         "allocated_at": str(record.get("mac_allocated_at") or ""),
         "release_at": str(record.get("mac_release_at") or ""),
         "release_scheduled": bool(record.get("mac_release_scheduled")),
+        "release_scheduled_at": str(record.get("mac_release_scheduled_at") or ""),
         "hourly_rate": rate or None,
-        "accrued_cost": accrued,
-        "currency": "USD",
+        # What AWS billed, and only that. `None` means nobody has asked AWS
+        # yet (or it could not answer) -- it never silently becomes the local
+        # estimate, which is carried separately so no surface can print one
+        # under the other's name.
+        "accrued_cost": spend,
+        "accrued_source": "aws-cost-explorer" if spend is not None else "",
+        "estimated_cost": estimate,
+        "spend_through": str(record.get("mac_spend_through") or ""),
+        "spend_as_of": str(record.get("mac_spend_as_of") or ""),
+        "spend_error": str(record.get("mac_spend_error") or ""),
+        "currency": str(record.get("mac_spend_currency") or "USD"),
         "releasable_now": releasable,
+        # When AWS last confirmed this host exists, and what it said. Empty /
+        # `None` means no run has confirmed it, which is a different claim from
+        # "it is gone" -- and the reason no surface here says "still billing"
+        # on the strength of the record alone.
+        "verified_at": str(record.get("mac_verified_at") or ""),
+        "host_present": (
+            bool(record.get("mac_host_present"))
+            if record.get("mac_host_present") is not None
+            else None
+        ),
+        # Free internal-consistency checks. Non-empty means the block cannot
+        # describe any state AWS was ever in, so its fields came from more than
+        # one run and must not be acted on.
+        "incoherent": record_findings(record),
         "billing": True,
     }
 
@@ -822,19 +1051,56 @@ def destroy_release_stack() -> bool:
     return True
 
 
+#: The error EC2 returns for a host id it has no record of -- a host released
+#: long enough ago that it has aged out of `DescribeHosts` entirely. Both
+#: spellings are matched because botocore has shipped each: the EC2 API
+#: documents `InvalidHostID.NotFound`, and some paths report `InvalidHostId`.
+HOST_NOT_FOUND_CODES = ("invalidhostid.notfound", "invalidhostidnotfound")
+
+
+def _aws_error_code(exc: Exception) -> str:
+    """botocore's `Error.Code` off a ClientError, or `''` for anything else.
+
+    Read off the response dict rather than by catching typed botocore
+    exceptions, for the same reason `cloud_state._error_code` does: importing
+    `botocore.exceptions` at module scope would break this module on an install
+    without the cloud extra.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        if isinstance(error, dict):
+            return str(error.get("Code", ""))
+    return ""
+
+
 def host_still_allocated(host_id: str, region: str, profile: str = "") -> bool | None:
     """Is `host_id` still allocated? `None` when AWS could not be asked.
 
-    Three answers, not two, and the third matters: expired credentials must
-    not be reported as "the host is gone", which would be the one wrong answer
-    that stops an operator looking for a resource that is still billing.
+    Three answers, not two, and both of the definite ones matter.
+
+    * Expired credentials must not be reported as "the host is gone", which
+      would be the one wrong answer that stops an operator looking for a
+      resource that is still billing. That is the `None`.
+    * **`InvalidHostID.NotFound` is an answer, not a failure** (#4136). EC2
+      returns it for a host it has no record of, which is precisely "the host
+      is gone" -- but it arrives as a `ClientError`, and catching every
+      exception as `None` turned the clearest possible *no* into "could not
+      ask". That is the whole 2026-10-03 incident: `reconcile_released_host`
+      made exactly this call, got `InvalidHostID.NotFound` for a host released
+      three days earlier, read it as unknown, left the stale record in place,
+      and the deploy went on to announce "no new host, no new 24-hour minimum"
+      before allocating one.
     """
     if not host_id:
         return False
     try:
         client = _client("ec2", region, profile)
         response = client.describe_hosts(HostIds=[host_id])
-    except Exception:
+    except Exception as exc:
+        code = _aws_error_code(exc).replace("-", "").lower()
+        if code in HOST_NOT_FOUND_CODES:
+            return False
         return None
     for host in response.get("Hosts", []):
         if str(host.get("HostId") or "") != host_id:
@@ -972,17 +1238,50 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     holds the host", which is true from the moment the allocation succeeds,
     whatever fails afterwards. `allocated_host_from_state` is the read, and the
     record is healed from it on the way through.
+
+    **And "already allocated" is never decided by the record alone (#4136).**
+    Every reconcile path below requires AWS to have confirmed the host *in this
+    run*. The 2026-10-03 deploy skipped the disclosure and the prompt because
+    the record named a host released three days earlier and nothing here
+    insisted on asking; one `DescribeHosts` answered `InvalidHostID.NotFound`
+    and was read as "could not ask". A billable allocation now cannot happen
+    without the disclosure and the prompt whatever the local record says,
+    because the only paths that bypass them are the ones holding a positive
+    answer from AWS.
     """
     reconcile_released_host(args)
     existing = load_mac_record()
     if existing and mac_state_exists():
+        host_id = str(existing.get("mac_host_id") or "")
+        if not host_confirmed_this_run(existing):
+            raise CloudCommandError(_unconfirmed_host_message(host_id))
         return _reconcile_existing(args, existing)
     # No usable record, but Terraform already holds a host: a previous run
     # allocated it and then failed before recording it. Heal the record and
-    # reconcile -- never re-disclose (#4122).
+    # reconcile -- never re-disclose (#4122). Still only on a confirmed host:
+    # Terraform state outlives the resource it names just as the record does.
     orphaned_host = allocated_host_from_state()
     if orphaned_host:
-        return _reconcile_existing(args, _heal_orphaned_record(args, orphaned_host, existing))
+        present = host_still_allocated(
+            orphaned_host, _record_region(existing, args), _record_profile(args)
+        )
+        if present is None:
+            raise CloudCommandError(_unconfirmed_host_message(orphaned_host))
+        if present:
+            _heal_orphaned_record(args, orphaned_host, existing)
+            _record_verification(orphaned_host, True)
+            # Re-read rather than reuse what `_heal_orphaned_record` returned:
+            # the verification landed after it, and the reconcile's block is
+            # built from this record.
+            return _reconcile_existing(args, load_mac_record())
+        print(
+            f"Terraform's state names Dedicated Host {orphaned_host}, but AWS has released it. "
+            "Discarding that state so this deploy allocates a host with the full disclosure "
+            "rather than reconciling one that no longer exists.",
+            file=sys.stderr,
+        )
+        MAC_TFSTATE_FILE.unlink(missing_ok=True)
+        MAC_TFVARS_FILE.unlink(missing_ok=True)
 
     plan = resolve_allocation_plan(args)
     allocated_at = utc_now().replace(microsecond=0)
@@ -1016,7 +1315,8 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
                     "mac_release_at": releasable_at.isoformat(),
                     "mac_hourly_rate": (plan.pricing.hourly_rate if plan.pricing else None),
                     "mac_release_scheduled": False,
-                }
+                },
+                reason=f"recorded Dedicated Host {stranded} stranded by a failed apply",
             )
             print(
                 f"\nWARNING: Dedicated Host {stranded} WAS allocated before this failure and is "
@@ -1050,7 +1350,13 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
             "mac_release_at": releasable_at.isoformat(),
             "mac_hourly_rate": (plan.pricing.hourly_rate if plan.pricing else None),
             "mac_release_scheduled": False,
-        }
+            # Confirmed by the allocation itself -- the host exists because this
+            # run just created it, which is the one case that needs no
+            # `DescribeHosts` to prove.
+            "mac_verified_at": utc_now().isoformat(),
+            "mac_host_present": True,
+        },
+        reason=f"allocated Dedicated Host {host_id}",
     )
     return {
         "allocated": True,
@@ -1100,19 +1406,24 @@ def _heal_orphaned_record(
         "bound on the age of the host.",
         file=sys.stderr,
     )
+    # Both timestamps come from the *same* moment, so the record cannot end up
+    # with a release time that is not its allocation time plus AWS's minimum --
+    # one of the incoherences `record_findings` reports.
+    recorded_allocation = parse_timestamp(str(existing.get("mac_allocated_at") or "")) or (
+        allocated_at
+    )
     return record_mac_host(
         {
             "mac_host_id": host_id,
             "mac_instance_type": instance_type,
             "mac_region": str(existing.get("mac_region") or settings.aws_region),
             "mac_availability_zone": str(existing.get("mac_availability_zone") or ""),
-            "mac_allocated_at": str(existing.get("mac_allocated_at") or allocated_at.isoformat()),
-            "mac_release_at": str(
-                existing.get("mac_release_at") or release_time(allocated_at).isoformat()
-            ),
+            "mac_allocated_at": recorded_allocation.isoformat(),
+            "mac_release_at": release_time(recorded_allocation).isoformat(),
             "mac_hourly_rate": existing.get("mac_hourly_rate") or pricing.hourly_rate,
             "mac_release_scheduled": False,
-        }
+        },
+        reason=f"adopted Dedicated Host {host_id} from Terraform state",
     )
 
 
@@ -1132,6 +1443,97 @@ def _recorded_root_volume_size(existing: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return int(default)
     return size if size > 0 else int(default)
+
+
+def _reconciled_block(
+    existing: dict[str, Any],
+    outputs: dict[str, Any],
+    plan: MacAllocationPlan,
+) -> dict[str, Any]:
+    """The complete block a reconcile records, built field by field (#4136).
+
+    Every key this substrate owns is decided here, because `record_mac_host`
+    replaces the block whole and a key this function omits is a key that
+    disappears. The reconcile used to write five of them and leave the rest
+    alone, which is the defect: the host fields kept describing the *previous*
+    host while the instance fields described the new one.
+
+    The host-identity fields come from the apply's own outputs, so a host id
+    that changed under a reconcile is recorded as what it is rather than
+    papered over -- and when it changes, the timing fields that described the
+    old host (`mac_allocated_at`, `mac_release_at`, both release-schedule
+    fields) are recomputed or dropped rather than carried across -- including
+    the verification fields, which are a claim about the host AWS confirmed and
+    say nothing about a different one.
+    """
+    applied_host = str(outputs.get("host_id") or "")
+    expected_host = str(existing.get("mac_host_id") or "")
+    host_id = applied_host or expected_host
+    host_changed = bool(applied_host and expected_host and applied_host != expected_host)
+
+    if host_changed:
+        # Not reachable through `allocate`, which confirms the host at AWS and
+        # requires Terraform's state to hold it before it ever gets here -- so
+        # the apply has nothing to create. Reported rather than trusted not to
+        # happen: if it ever does, a non-refundable 24-hour minimum has started
+        # without a disclosure, and the record saying so is the only way the
+        # operator finds out before the bill.
+        print(
+            f"WARNING: this reconcile was for Dedicated Host {expected_host}, but the apply "
+            f"reports {applied_host}. A NEW host has been allocated and a new 24-hour minimum "
+            "has started. The record now describes the new host; the previous one is in "
+            f"{cloud_record.archive_file()}. Check `nyxgpt cloud status` and release whichever "
+            "host you do not want.",
+            file=sys.stderr,
+        )
+        allocated = utc_now().replace(microsecond=0)
+        allocated_at: str = allocated.isoformat()
+        release_at: str = release_time(allocated).isoformat()
+    else:
+        allocated_at = str(existing.get("mac_allocated_at") or "")
+        release_at = str(existing.get("mac_release_at") or "")
+
+    block: dict[str, Any] = {
+        "mac_host_id": host_id,
+        "mac_instance_id": str(outputs.get("instance_id") or ""),
+        "mac_instance_type": str(outputs.get("instance_type") or plan.instance_type),
+        "mac_region": str(outputs.get("region") or plan.region),
+        "mac_availability_zone": str(outputs.get("availability_zone") or plan.availability_zone),
+        "mac_public_ip": str(outputs.get("public_ip") or ""),
+        "mac_security_group_id": str(outputs.get("security_group_id") or ""),
+        # Heals a record written before these keys existed: the output is the
+        # instance's own `ami`, so what lands here is what the Mac is running,
+        # and the next reconcile pins to it instead of resolving `most_recent`
+        # all over again.
+        "mac_ami_id": str(outputs.get("ami_id") or plan.ami_id or ""),
+        "mac_root_volume_size": plan.root_volume_size,
+        "mac_allocated_at": allocated_at,
+        "mac_release_at": release_at,
+        "mac_hourly_rate": existing.get("mac_hourly_rate"),
+    }
+    if not host_changed:
+        # A pending release belongs to the host it was created for. Carried only
+        # when the host is the same one, and dropped outright when it is not --
+        # `mac_release_scheduled = true` against a host whose release nothing
+        # scheduled is one of the incoherences `record_findings` reports.
+        block["mac_release_scheduled"] = bool(existing.get("mac_release_scheduled"))
+        if existing.get("mac_release_scheduled_at"):
+            block["mac_release_scheduled_at"] = existing["mac_release_scheduled_at"]
+        # The recorded spend is about this host and this family, so it survives
+        # a same-host reconcile; `verify_mac_record` refreshes it on its own
+        # schedule. So does the confirmation -- `allocate` has just had AWS
+        # confirm this exact host, and dropping that would make the record read
+        # as unverified immediately after the one run that verified it.
+        for key in (
+            "mac_spend_amount",
+            "mac_spend_currency",
+            "mac_spend_through",
+            "mac_verified_at",
+            "mac_host_present",
+        ):
+            if existing.get(key) is not None:
+                block[key] = existing[key]
+    return {key: value for key, value in block.items() if value not in (None, "")}
 
 
 def _reconcile_existing(args: argparse.Namespace, existing: dict[str, Any]) -> dict[str, Any]:
@@ -1169,23 +1571,16 @@ def _reconcile_existing(args: argparse.Namespace, existing: dict[str, Any]) -> d
     plan.name_prefix = f"{settings.name_prefix}-mac"
     plan.ami_id = str(existing.get("mac_ami_id") or "")
     plan.root_volume_size = _recorded_root_volume_size(existing)
+    expected_host = str(existing.get("mac_host_id") or "")
     print(
         f"Reconciling the EC2 Mac already allocated from this machine "
-        f"(host {existing.get('mac_host_id')}) -- no new host, no new 24-hour minimum."
+        f"(host {expected_host}, confirmed at AWS in this run) -- no new host, no new "
+        "24-hour minimum."
     )
     outputs = apply_mac_host(plan)
     record = record_mac_host(
-        {
-            "mac_public_ip": str(outputs.get("public_ip") or ""),
-            "mac_instance_id": str(outputs.get("instance_id") or ""),
-            "mac_security_group_id": str(outputs.get("security_group_id") or ""),
-            # Heals a record written before these keys existed: the output is
-            # the instance's own `ami`, so what lands here is what the Mac is
-            # running, and the next reconcile pins to it instead of resolving
-            # `most_recent` all over again.
-            "mac_ami_id": str(outputs.get("ami_id") or plan.ami_id or ""),
-            "mac_root_volume_size": plan.root_volume_size,
-        }
+        _reconciled_block(existing, outputs, plan),
+        reason=f"reconciled Dedicated Host {expected_host}",
     )
     return {
         "allocated": False,
@@ -1234,32 +1629,165 @@ def reconcile_released_host(args: argparse.Namespace) -> bool:
     deleted on the strength of expired credentials would hide a resource that
     is still costing money. Never raises -- a reconcile that cannot run must
     not stop the command it runs ahead of.
+
+    A definite *yes* is written down too (#4136). `mac_verified_at` /
+    `mac_host_present` are what let every later surface say "AWS confirmed this
+    host at <time>" instead of repeating the record back as fact, and they are
+    what `allocate` requires before it is allowed to claim "no new host, no new
+    24-hour minimum".
     """
     record = load_mac_record()
     host_id = str(record.get("mac_host_id") or "")
     if not host_id:
         return False
+    region = _record_region(record, args)
+    profile = _record_profile(args)
+    try:
+        present = host_still_allocated(host_id, region, profile)
+    except Exception:  # pragma: no cover - host_still_allocated swallows its own
+        return False
+    if present is not False:
+        if present is True:
+            _record_verification(host_id, True)
+        return False
+    print(
+        f"Dedicated Host {host_id} has been released -- AWS no longer has it. "
+        "Clearing it from this machine's cloud state."
+    )
+    try:
+        destroy_release_stack()
+    except Exception as exc:  # pragma: no cover - best effort by design
+        print(f"note: could not clean up the released host's schedule: {exc}", file=sys.stderr)
+    clear_mac_record(reason=f"AWS reports Dedicated Host {host_id} as released")
+    MAC_TFSTATE_FILE.unlink(missing_ok=True)
+    MAC_TFVARS_FILE.unlink(missing_ok=True)
+    return True
+
+
+def _record_region(record: dict[str, Any], args: argparse.Namespace) -> str:
+    """Region for the recorded host: the record first, then flags, then settings.
+
+    A host lives in exactly one region and that is the one it was allocated in,
+    whatever the flags or the AWS CLI default say now. Flags are only a
+    fallback for a record written before the region was captured.
+    """
     saved = cloud_infra.load_settings()
-    region = (
+    return (
         str(record.get("mac_region") or "")
         or str(getattr(args, "region", None) or "")
         or str(saved.get("aws_region") or "")
     )
-    profile = str(getattr(args, "profile", None) or "") or str(saved.get("aws_profile") or "")
+
+
+def _record_profile(args: argparse.Namespace) -> str:
+    """Credential profile for an AWS call about the recorded host.
+
+    Unlike the region this is *not* a property of the resource -- it is which
+    credentials to use now -- so the flag wins over the saved setting.
+    """
+    return str(getattr(args, "profile", None) or "") or str(
+        cloud_infra.load_settings().get("aws_profile") or ""
+    )
+
+
+def _record_verification(host_id: str, present: bool) -> None:
+    """Write down that AWS confirmed `host_id`, and when. Best effort.
+
+    Amended rather than written whole, and gated on the host id: the point of
+    the field is that it describes *this* host, so landing it on a block that
+    has since been replaced would make the record less trustworthy than having
+    no verification at all.
+    """
     try:
-        if host_still_allocated(host_id, region, profile) is not False:
-            return False
-        print(
-            f"Dedicated Host {host_id} has been released -- AWS no longer has it. "
-            "Clearing it from this machine's cloud state."
+        amend_mac_record(
+            {"mac_verified_at": utc_now().isoformat(), "mac_host_present": present},
+            host_id=host_id,
+            reason="AWS confirmed the host",
         )
-        destroy_release_stack()
-    except Exception as exc:  # pragma: no cover - best effort by design
-        print(f"note: could not clean up the released host's schedule: {exc}", file=sys.stderr)
-    clear_mac_record()
-    MAC_TFSTATE_FILE.unlink(missing_ok=True)
-    MAC_TFVARS_FILE.unlink(missing_ok=True)
-    return True
+    except Exception:  # pragma: no cover - a record that moved under us
+        return
+
+
+# How recent a `DescribeHosts` confirmation has to be to count as "this run".
+# Generous enough to cover a slow Terraform sync between the reconcile and the
+# decision, short enough that it can only ever mean the current command.
+VERIFICATION_MAX_AGE_SECONDS = 300.0
+
+
+def host_confirmed_this_run(record: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """Did AWS confirm this record's host within the last few minutes?
+
+    The gate on every path that skips the priced disclosure and the `allocate`
+    prompt (#4136). "The record names a host" is not evidence the host exists;
+    `mac_host_present` plus a fresh `mac_verified_at` is, and nothing writes
+    those except an actual answer from `DescribeHosts`.
+    """
+    if not record.get("mac_host_id") or not record.get("mac_host_present"):
+        return False
+    verified = parse_timestamp(str(record.get("mac_verified_at") or ""))
+    if verified is None:
+        return False
+    return ((now or utc_now()) - verified).total_seconds() <= VERIFICATION_MAX_AGE_SECONDS
+
+
+def _unconfirmed_host_message(host_id: str) -> str:
+    """Why a reconcile cannot proceed when AWS could not be asked about `host_id`."""
+    return (
+        f"Dedicated Host {host_id} is recorded on this machine, but AWS could not be asked "
+        "whether it still exists in this run -- so nyxGPT cannot tell a host you are already "
+        "paying for from one that was released.\n"
+        "Reconciling on the record alone is how a deploy came to announce 'no new host, no new "
+        "24-hour minimum' and then allocate one (#4136), so nothing is applied and nothing is "
+        "billed here.\n"
+        "Fix the credentials (`nyxgpt cloud credentials-setup`, or check the profile/region) and "
+        "re-run. `nyxgpt cloud status` shows what is recorded in the meantime."
+    )
+
+
+def verify_mac_record(args: argparse.Namespace) -> dict[str, Any]:
+    """Confirm the recorded host against AWS and refresh what it has cost.
+
+    The read-side counterpart to `reconcile_released_host`: same single
+    `DescribeHosts` call (so a released host still clears the record), plus the
+    Cost Explorer figure that replaces the local `rate * elapsed` estimate.
+
+    The cost query is cached in the record and refreshed at most every
+    `SPEND_REFRESH_SECONDS`, because Cost Explorer bills per request and its own
+    granularity is a day -- a dashboard poll must not be able to turn an
+    observability surface into a line item. Never raises.
+    """
+    if reconcile_released_host(args):
+        return {"host_present": False, "cleared": True}
+    record = load_mac_record()
+    host_id = str(record.get("mac_host_id") or "")
+    if not host_id:
+        return {}
+
+    as_of = parse_timestamp(str(record.get("mac_spend_as_of") or ""))
+    if as_of is not None and (utc_now() - as_of).total_seconds() < SPEND_REFRESH_SECONDS:
+        return {"host_present": record.get("mac_host_present"), "spend_cached": True}
+
+    spend = lookup_host_spend(
+        str(record.get("mac_instance_type") or DEFAULT_MAC_INSTANCE_TYPE),
+        _record_region(record, args),
+        _record_profile(args),
+        since=parse_timestamp(str(record.get("mac_allocated_at") or "")),
+    )
+    try:
+        amend_mac_record(
+            {
+                "mac_spend_amount": spend.amount,
+                "mac_spend_currency": spend.currency,
+                "mac_spend_through": spend.through or None,
+                "mac_spend_as_of": utc_now().isoformat(),
+                "mac_spend_error": spend.error or None,
+            },
+            host_id=host_id,
+            reason="refreshed the Cost Explorer figure",
+        )
+    except Exception:  # pragma: no cover - a record that moved under us
+        pass
+    return {"host_present": record.get("mac_host_present"), "spend": spend.to_dict()}
 
 
 def teardown(args: argparse.Namespace) -> dict[str, Any]:
@@ -1332,11 +1860,18 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
                 name_prefix=f"{cloud_infra.load_settings().get('name_prefix') or 'nyxgpt-tf'}-mac",
             )
             result["release_scheduled"] = True
-            record_mac_host(
+            # Amended, not written whole, and gated on the host id (#4136): this
+            # says "the release of *this* host is scheduled", and landing it on
+            # a block that has since been replaced is how a
+            # `mac_release_scheduled_at` 78 seconds earlier than the
+            # `mac_allocated_at` of the host it described got written.
+            amend_mac_record(
                 {
                     "mac_release_scheduled": True,
                     "mac_release_scheduled_at": utc_now().isoformat(),
-                }
+                },
+                host_id=host_id,
+                reason="deferred release scheduled",
             )
         except Exception as exc:
             result["errors"].append(str(exc))

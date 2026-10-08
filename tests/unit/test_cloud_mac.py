@@ -392,7 +392,13 @@ def test_the_pending_release_reports_the_id_the_time_and_the_accrued_cost(monkey
 
     assert pending["host_id"] == "h-0abc"
     assert pending["release_at"] == "2026-08-23T18:30:00+00:00"
-    assert pending["accrued_cost"] == pytest.approx(15.60)
+    # #4136: the headline figure is AWS's, and nothing has asked AWS here, so
+    # there is no figure. The local `rate * elapsed` number is still computed
+    # but is reported under its own name -- it is an estimate, and a surface
+    # that printed it as "accrued" told the owner $48.44 for a $12.02 bill.
+    assert pending["accrued_cost"] is None
+    assert pending["accrued_source"] == ""
+    assert pending["estimated_cost"] == pytest.approx(15.60)
     assert pending["releasable_now"] is False
     assert pending["billing"] is True
 
@@ -885,10 +891,18 @@ def test_a_host_terraform_already_holds_is_adopted_not_re_disclosed(monkeypatch)
     )
     monkeypatch.setattr(cloud_mac, "resolve_allocation_plan", _never_priced)
     monkeypatch.setattr(cloud_mac, "reconcile_released_host", lambda args: False)
+    # #4136: adoption requires AWS to confirm the host in this run. Terraform's
+    # state naming it is not evidence it exists -- that is how the 2026-10-03
+    # deploy reconciled a host released three days earlier.
+    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: True)
     monkeypatch.setattr(
         cloud_mac,
         "apply_mac_host",
-        lambda plan: {"public_ip": "98.93.96.217", "instance_id": "i-05289782c39bdc827"},
+        lambda plan: {
+            "host_id": "h-06c438d25077be888",
+            "public_ip": "98.93.96.217",
+            "instance_id": "i-05289782c39bdc827",
+        },
     )
     monkeypatch.setattr(
         cloud_mac,
