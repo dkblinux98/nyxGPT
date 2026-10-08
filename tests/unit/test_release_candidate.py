@@ -35,6 +35,27 @@ PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: The release line every fixture in this module is written against. `plan`
+#: blocks a branch whose name disagrees with the declared version, so these
+#: tests need a declared version to agree with -- and reading the *checkout's*
+#: made them a hostage of the release ceremony rather than a test of the
+#: arithmetic. The 3.0.0 -> 3.0.1 bump reddened 28 of them at once without
+#: touching a line of the code under test. The line is fixture data; pin it.
+FIXTURE_LINE = "3.0.0"
+FIXTURE_BRANCH = f"v{FIXTURE_LINE}"
+
+
+@pytest.fixture(autouse=True)
+def _pin_declared_line(monkeypatch):
+    """Pin the declared release line to `FIXTURE_LINE` for every test here.
+
+    `declared_version` itself is not what this module is about: the guard that
+    compares it to the branch name is, and that guard is still exercised --
+    `test_plan_refuses_a_branch_that_disagrees_with_the_declared_version`
+    asks for an unrelated line and asserts the blocker.
+    """
+    monkeypatch.setattr(rc, "declared_version", lambda *_args, **_kwargs: FIXTURE_LINE)
+
 
 def _args(**overrides) -> argparse.Namespace:
     base = {

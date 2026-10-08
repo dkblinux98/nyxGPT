@@ -24,8 +24,17 @@ PUBLISHED = ["2.1.0", "3.0.0rc1"]
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    """No test reaches pypi.org."""
+    """No test reaches pypi.org, and no test reads the checkout's version.
+
+    `plan` blocks a branch whose name disagrees with the declared version, so
+    the `v3.0.0` these tests ask about has to be the line the backend thinks
+    it is on. Reading it from the checkout coupled the endpoint's payload shape
+    to whichever line the repo happens to be on, and the 3.0.0 -> 3.0.1
+    ceremony bump turned the payload into a list of blockers. Pin it, the same
+    way `tests/unit/test_release_candidate.py` does.
+    """
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
+    monkeypatch.setattr(release_candidate, "declared_version", lambda *a, **k: "3.0.0")
 
 
 def test_endpoint_returns_the_plan_the_cli_reports():

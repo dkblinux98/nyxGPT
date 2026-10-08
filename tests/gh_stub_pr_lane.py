@@ -53,6 +53,17 @@ OPTIONS = {
 OPTION_NAMES = {v: k for k, v in OPTIONS.items()}
 
 
+def _base_branch() -> str:
+    """The release branch this stub pretends the repo has.
+
+    `STUB_BASE_BRANCH` is set by the callers (`tests/test_pr_lane_hygiene.sh`)
+    from the checkout's declared version, because the merge script's closure
+    gate (#3862) fetches this branch from the real origin -- a literal here
+    goes stale the moment a release ceremony retires the line it names.
+    """
+    return os.environ.get("STUB_BASE_BRANCH", "v3.0.0")
+
+
 def _path(name: str) -> str:
     return os.path.join(STUB_DIR, name)
 
@@ -253,7 +264,7 @@ def _rest(route: str, jq_filter: str | None) -> None:
     if len(parts) >= 5 and parts[3] == "pulls":
         pr = parts[4]
         entry = _read_json("pulls.json", {}).get(
-            pr, {"head": "feat/example", "base": "v3.0.0", "merged": False, "state": "open"}
+            pr, {"head": "feat/example", "base": _base_branch(), "merged": False, "state": "open"}
         )
         default_sha = os.environ.get("STUB_HEAD_SHA", "HEAD")
         _emit(
@@ -276,7 +287,7 @@ def _rest(route: str, jq_filter: str | None) -> None:
 
     if len(parts) >= 5 and parts[3] == "branches":
         branch = "/".join(parts[4:])
-        if branch == os.environ.get("STUB_BASE_BRANCH", "v3.0.0"):
+        if branch == _base_branch():
             _emit({"name": branch}, jq_filter)
         sys.exit(1)  # head branch already deleted
 
