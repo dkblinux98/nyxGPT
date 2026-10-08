@@ -6,7 +6,22 @@ on:
     # (#3871). Deliberately not `edited`: re-running the fill on a live issue
     # would re-open the clobber window #3816 closed.
     types: [opened, closed]
-  pull_request:
+  # `pull_request_target`, NOT `pull_request` (#4167). GitHub treats a
+  # Dependabot-authored `pull_request` run as a fork PR: Actions secrets are
+  # withheld and replaced by the (empty) Dependabot secret store, so
+  # `SCRUMMASTER_AGENT_TOKEN` arrived blank and `pr-hygiene` died at
+  # `require_gh_auth` on every single Dependabot PR -- which is also why none
+  # of them ever reached the board in `In Review`, and so never reached the
+  # review agent (#4163, #4165, the latter carrying a critical alert).
+  # `pull_request_target` runs the BASE branch's copy of this file with the
+  # repository's own secrets regardless of who opened the PR. The safety
+  # condition that makes that acceptable is below, on the job.
+  #
+  # Copying the token into the Dependabot secret store was the rejected
+  # alternative: it hands a `workflow`-scoped PAT to jobs that install the
+  # PR's dependency tree, which is the exposure GitHub's restriction exists
+  # to prevent.
+  pull_request_target:
     types: [opened, reopened]
 
 jobs:
@@ -140,7 +155,24 @@ jobs:
         run: bash scripts/agents/ensure_issue_hygiene.sh --closure "${{ github.event.issue.number }}"
 
   pr-hygiene:
-    if: github.event_name == 'pull_request'
+    # SAFETY CONDITION for the `pull_request_target` trigger above (#4167):
+    # this job NEVER checks out or executes PR head code. It checks out
+    # `vars.RELEASE_BRANCH` -- the base branch, i.e. the same code whose copy
+    # of this workflow is running -- and otherwise only makes GitHub API
+    # calls about the PR's number. That is what makes running with the
+    # repository's secrets on an arbitrary author's PR safe; a `ref:` pointing
+    # at the PR head, a `gh pr checkout`, or running anything out of the PR's
+    # tree would hand this job's token to that author.
+    # `tests/unit/test_pull_request_target_safety.py` fails the build on any
+    # of those, and `project-hygiene-smoke.yml`'s `pr-head-guard-discriminates`
+    # job executes that guard against a deliberately broken copy so it cannot
+    # pass by being vacuous.
+    #
+    # One consequence worth naming: a `pull_request_target` run is associated
+    # with the base branch's commit, not the PR head, so `pr-hygiene` must
+    # stay in `.github/required-checks.txt`'s `[not-required]` section -- it
+    # was already there as project bookkeeping, and the guard pins it.
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -215,12 +247,18 @@ jobs:
           load_config
           require_gh_auth
 
-          # Self-contained on purpose: no checkout, no config, no sourced
-          # library. A PR-triggered workflow runs the PR's copy of this file
+          # Self-contained on purpose: no config, no sourced library. A
+          # `pull_request`-triggered workflow runs the PR's copy of this file
           # against a RELEASE_BRANCH checkout, so calling a helper the base
           # branch does not have yet fails with exit 127 -- which is exactly
           # how this step and pr-hygiene went red on the PR that introduced
           # the helper. A query needs nothing checked out to work.
+          #
+          # Since #4167 this job runs on `pull_request_target`, so for THIS
+          # file the file and the checkout are both the base branch and that
+          # version skew is gone. The inline query stays anyway: it is still
+          # correct, it costs nothing, and the same idiom in the four other
+          # workflows that read this link is still `pull_request`-triggered.
           ISSUE=$(gh api graphql -f query='
             query($owner:String!, $name:String!, $pr:Int!){
               repository(owner:$owner, name:$name){

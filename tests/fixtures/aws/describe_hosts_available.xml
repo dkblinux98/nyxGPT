@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The same call for a host that IS still allocated. The pair is the point:
+     the two scenarios differ only in which of these AWS returns, so a build that
+     ignores AWS's answer cannot pass both. -->
+<DescribeHostsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>5c7d9a44-1f0b-4d61-8e2c-recorded4136</requestId>
+  <hostSet>
+    <item>
+      <hostId>h-06c438d25077be888</hostId>
+      <state>available</state>
+      <availabilityZone>us-east-1a</availabilityZone>
+      <autoPlacement>off</autoPlacement>
+      <allocationTime>2026-09-30T15:49:43.000Z</allocationTime>
+      <hostProperties>
+        <instanceFamily>mac2</instanceFamily>
+        <instanceType>mac2.metal</instanceType>
+      </hostProperties>
+      <availableCapacity>
+        <availableInstanceCapacity>
+          <item>
+            <instanceType>mac2.metal</instanceType>
+            <availableCapacity>0</availableCapacity>
+            <totalCapacity>1</totalCapacity>
+          </item>
+        </availableInstanceCapacity>
+      </availableCapacity>
+    </item>
+  </hostSet>
+</DescribeHostsResponse>

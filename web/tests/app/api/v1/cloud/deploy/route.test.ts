@@ -82,7 +82,35 @@ describe('/api/v1/cloud/deploy proxy route', () => {
       expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/cloud/deploy?probe_health=true');
     });
 
-    it('does not ask for a probe when the caller did not', async () => {
+    it('forwards an explicit host verification to the backend (#4136)', async () => {
+      // The Infrastructure page asks for this on its explicit load so the
+      // Dedicated Host rows are AWS's answer rather than the local record.
+      // Dropping it here is invisible from either side of the seam: the page
+      // tests mock this route, and the FastAPI tests call the endpoint
+      // directly. Assert the whole URL -- a substring check passes on a URL
+      // that carried only `probe_health`.
+      mockFetch({ ok: true, status: 200, data: { deployed: true } });
+
+      const { GET } = await import('../../../../../../src/app/api/v1/cloud/deploy/route');
+      await GET(getReq('?verify_host=true'), undefined);
+
+      const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/cloud/deploy?verify_host=true');
+    });
+
+    it('forwards both opt-ins together, as the Infrastructure page sends them (#4136)', async () => {
+      mockFetch({ ok: true, status: 200, data: { deployed: true } });
+
+      const { GET } = await import('../../../../../../src/app/api/v1/cloud/deploy/route');
+      await GET(getReq('?probe_health=true&verify_host=true'), undefined);
+
+      const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(calledUrl).toBe(
+        'http://127.0.0.1:8000/api/v1/cloud/deploy?probe_health=true&verify_host=true'
+      );
+    });
+
+    it('does not ask for a probe or a host verification when the caller did not', async () => {
       // The unprobed status is the side-effect-free read; adding a probe here
       // would put a network call behind every poll.
       mockFetch({ ok: true, status: 200, data: { deployed: true } });

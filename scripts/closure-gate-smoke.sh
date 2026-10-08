@@ -23,7 +23,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD="${ROOT_DIR}/scripts/agents/lib/branch_content.py"
-BASE="v3.0.0"
+BASE="v9.9.9"
 
 FAILURES=0
 _ok()   { echo "[ok] $*"; }

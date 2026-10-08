@@ -7,6 +7,16 @@ of a workflow step straight out of the YAML and executes it under Node with
 stubbed ``context``/``github``/``core`` globals, so what runs here is the same
 JavaScript GitHub Actions runs.
 
+**The channel moved, the property did not (#4176).** The escalation's one-line
+diagnosis is no longer a step output read from ``process.env``: it is now
+COMPOSED from the run's evidence by a shell step and handed over in a file,
+because the lookup on the error class printed "Error type could not be
+determined" over runs whose cause was already known. So this probe injects the
+hostile text through the FILE the script reads, and its vulnerable half
+devolves ``fs.readFileSync(...)`` into the same unescaped literal that ``${{ }}``
+used to produce. That also closes a gap: ``/tmp/failure_detail.txt`` has always
+carried raw log excerpts into this script and was never probed.
+
 Two halves, per D-006 -- a diagnosis with no quote character passes either way,
 which is exactly why the defect shipped:
 
@@ -17,9 +27,9 @@ which is exactly why the defect shipped:
     intact.
 
 ``vulnerable``
-    Rewrite each ``process.env.NAME`` read back into the pre-fix construct --
-    a single-quoted JS literal holding the substituted text, which is what
-    ``${{ }}`` produced before the fix -- and run that. It must die with a
+    Rewrite each ``process.env.NAME`` read *and each file read* back into the
+    pre-fix construct -- a single-quoted JS literal holding the text, which is
+    what ``${{ }}`` produced before the fix -- and run that. It must die with a
     ``SyntaxError``, reproducing run 31959968196.
 
 Both halves are asserted, so the probe fails if the bug is reintroduced *and*
@@ -51,16 +61,33 @@ HOSTILE_DIAGNOSIS = (
     "`git push` hit a wall\nsecond line with a backslash \\ and ${injected}"
 )
 
-#: Environment the escalation script reads. Values are deliberately plain
-#: except the diagnosis, which is the free-form prose that broke it.
+#: Environment the escalation script reads. Values are deliberately plain:
+#: since #4176 the free-form prose arrives in a FILE (see `HOSTILE_FILES`),
+#: because the headline is composed from the run's evidence by a shell step
+#: rather than looked up on the error class in this script.
 PROBE_ENV = {
     "ERROR_CLASS": "fatal:auth_failure",
     "PHASE2_STATUS": "FATAL",
     "PHASE3_STATUS": "FATAL",
-    "PHASE3_DIAGNOSIS": HOSTILE_DIAGNOSIS,
+    "HEADLINE_PHASE": "Phase 3 (Claude reasoning)",
 }
 
-_ENV_READ = re.compile(r"process\.env\.([A-Z0-9_]+)(?:\s*\|\|\s*'')?")
+#: The files the script reads, keyed by the env var that overrides each path,
+#: and what the probe puts in them. BOTH carry text the pipeline did not
+#: author: the headline composes a model's prose, and the failure detail is a
+#: raw log excerpt -- which has been read into this script since #3360 and was
+#: never probed until #4176 moved the headline alongside it.
+HOSTILE_FILES = {
+    "HEADLINE_FILE": HOSTILE_DIAGNOSIS,
+    "FAILURE_DETAIL_FILE": "**Failed step(s):**\n```\nit's `Final Verification`\n```",
+}
+
+_ENV_READ = re.compile(r"process\.env\.([A-Z0-9_]+)(?:\s*\|\|\s*'[^']*')?")
+
+#: `fs.readFileSync(<path expr>, 'utf8')`, with or without a trailing
+#: `.trim()`. The pre-fix construct for a FILE channel is the same one #3820
+#: fixed for a step output: the text pasted in as source.
+_FILE_READ = re.compile(r"fs\.readFileSync\([^)]*\)(?:\.trim\(\))?")
 
 _HARNESS = """\
 'use strict';
@@ -112,44 +139,68 @@ def extract_script(workflow: Path = DEVELOPER_WORKFLOW, step_name: str = ESCALAT
     raise ValueError(f"step {step_name!r} not found in {workflow}")
 
 
-def devolve_to_vulnerable(script: str, env: dict[str, str]) -> str:
-    """Rewrite ``process.env.NAME`` reads back into the pre-fix construct.
+def devolve_to_vulnerable(script: str, env: dict[str, str], file_payload: str | None = None) -> str:
+    """Rewrite the script's data reads back into the pre-fix construct.
 
     ``${{ steps.x.outputs.y }}`` was substituted into the source before parsing,
     producing ``const v = '<the text, verbatim>';``. Reproduce that by putting
     the value between single quotes with no escaping -- escaping it would be
     the fix.
+
+    Applied to ``process.env.NAME`` reads and, since #4176, to
+    ``fs.readFileSync(...)`` reads: a file is the channel the composed headline
+    and the Phase 1 failure detail arrive on, and "interpolated as source" is
+    the same defect whichever side the text came from. ``file_payload``
+    defaults to the hostile diagnosis.
     """
 
-    def replace(match: re.Match[str]) -> str:
+    def replace_env(match: re.Match[str]) -> str:
         return "'" + env.get(match.group(1), "") + "'"
 
-    return _ENV_READ.sub(replace, script)
+    payload = HOSTILE_DIAGNOSIS if file_payload is None else file_payload
+    devolved = _ENV_READ.sub(replace_env, script)
+    return _FILE_READ.sub(lambda _: "'" + payload + "'", devolved)
 
 
-def run_script(script: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    """Execute ``script`` under Node with github-script's globals stubbed."""
+def run_script(
+    script: str, env: dict[str, str], files: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Execute ``script`` under Node with github-script's globals stubbed.
+
+    ``files`` maps each path-override env var to the content to put in a temp
+    file for it. The script reads its production paths by default, so a probe
+    that did not do this would silently read whatever a previous real run left
+    in ``/tmp`` -- or nothing, and report an empty diagnosis as a pass.
+    """
     indented = "\n".join(f"  {line}" if line.strip() else line for line in script.splitlines())
     harness = _HARNESS.replace("__SCRIPT__", indented)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "probe.js"
         path.write_text(harness)
+        file_env: dict[str, str] = {}
+        for var, content in (files or {}).items():
+            target = Path(tmp) / f"{var.lower()}.txt"
+            target.write_text(content)
+            file_env[var] = str(target)
         return subprocess.run(
             ["node", str(path)],
             capture_output=True,
             text=True,
-            env={**os.environ, **env},
+            env={**os.environ, **env, **file_env},
             check=False,
         )
 
 
-def probe_fixed(script: str, env: dict[str, str] | None = None) -> str:
+def probe_fixed(
+    script: str, env: dict[str, str] | None = None, files: dict[str, str] | None = None
+) -> str:
     """Run the current script; return the posted comment body.
 
     Raises ``AssertionError`` if it fails to run or drops the diagnosis.
     """
     env = env or PROBE_ENV
-    result = run_script(script, env)
+    files = HOSTILE_FILES if files is None else files
+    result = run_script(script, env, files)
     if result.returncode != 0:
         raise AssertionError(
             "escalation script failed to execute with a quote-bearing diagnosis "
@@ -158,7 +209,7 @@ def probe_fixed(script: str, env: dict[str, str] | None = None) -> str:
     body = str(json.loads(result.stdout).get("body") or "")
     if not body:
         raise AssertionError("escalation script posted no comment")
-    diagnosis = env["PHASE3_DIAGNOSIS"]
+    diagnosis = files.get("HEADLINE_FILE", env.get("PHASE3_DIAGNOSIS", HOSTILE_DIAGNOSIS))
     if diagnosis not in body:
         raise AssertionError(
             "posted comment does not contain the diagnosis intact.\n"
@@ -167,14 +218,17 @@ def probe_fixed(script: str, env: dict[str, str] | None = None) -> str:
     return body
 
 
-def probe_vulnerable(script: str, env: dict[str, str] | None = None) -> str:
+def probe_vulnerable(
+    script: str, env: dict[str, str] | None = None, files: dict[str, str] | None = None
+) -> str:
     """Run the pre-fix form; return its stderr.
 
     Raises ``AssertionError`` if it does *not* fail -- a reproduction that
     stopped reproducing proves nothing about the fix.
     """
     env = env or PROBE_ENV
-    result = run_script(devolve_to_vulnerable(script, env), env)
+    files = HOSTILE_FILES if files is None else files
+    result = run_script(devolve_to_vulnerable(script, env, files.get("HEADLINE_FILE")), env, files)
     if result.returncode == 0:
         raise AssertionError(
             "the pre-fix (interpolated) form ran cleanly -- the fault was not "
@@ -196,7 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     script = extract_script(args.workflow, args.step)
 
     print(f"Probing step: {args.step}")
-    print(f"Diagnosis payload: {PROBE_ENV['PHASE3_DIAGNOSIS']!r}\n")
+    print(f"Diagnosis payload (via {'/'.join(HOSTILE_FILES)}): {HOSTILE_DIAGNOSIS!r}\n")
 
     print("[1/2] pre-fix form (fault injected) must fail to parse ...")
     stderr = probe_vulnerable(script)

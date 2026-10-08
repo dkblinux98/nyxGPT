@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Git ref to report alerts for'
+        description: 'Git ref to report alerts for (blank = the live release branch)'
         required: false
-        default: 'refs/heads/v2.1.0'
+        default: ''
 
 permissions:
   security-events: read
@@ -22,7 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      REF: ${{ inputs.ref }}
+      # Blank resolves to the live release line: a literal default named
+      # `refs/heads/v2.1.0` long after that branch was retired.
+      REF: ${{ inputs.ref || format('refs/heads/{0}', vars.RELEASE_BRANCH) }}
     steps:
       - name: Recent analyses
         run: |

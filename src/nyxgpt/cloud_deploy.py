@@ -529,19 +529,135 @@ def installed_version() -> str:
         return ""
 
 
-def resolve_target(args: argparse.Namespace) -> DeployTarget:
+#: An instance nothing on this machine has a record of.
+_NO_INSTANCE: dict[str, str] = {
+    "host": "",
+    "instance_id": "",
+    "region": "",
+    "security_group_id": "",
+}
+
+
+def _recorded_instance(
+    state: dict[str, Any], record: dict[str, Any], os_family: str = ""
+) -> dict[str, str]:
+    """Return the address and ids of the instance this machine last worked on.
+
+    **One instance, two vocabularies** (#4161). `~/.nyxGPT/cloud/state.json`
+    holds both, because both writers use it:
+
+    * a **Linux** deploy applies the Terraform substrate, and
+      `cloud_infra.apply_infra` records its outputs under the bare keys --
+      `public_ip`, `instance_id`, `region`, `security_group_id`;
+    * a **macOS** deploy never applies that substrate (an EC2 Mac needs a
+      Dedicated Host, which `cloud_mac.allocate` owns), and
+      `cloud_mac.record_mac_host` records the same facts under `mac_`-prefixed
+      keys -- `mac_public_ip`, `mac_instance_id`, `mac_region`,
+      `mac_security_group_id`.
+
+    Reading only the bare keys -- which is what every `cloud ops`, `tunnel`,
+    `credentials` and `canary` invocation did until this existed -- therefore
+    reports "No provisioned instance found" for a Mac whose correct, current
+    address is sitting in that very file under the other name. The values were
+    never stale (that is #4136's defect class); the reader was looking up the
+    wrong word.
+
+    **Which family, and who says so.** `os_family` is the family of the
+    deployment the *caller* is in the middle of, and it wins over the recorded
+    one whenever it is given. Only `_deploy` passes it, and it has to: it
+    resolves through here immediately after `apply_infra`, when `deploy.json`
+    still describes the *previous* deploy. Without the pin, a Linux deploy
+    following a macOS one read the Mac's family off that stale record, took
+    the Mac's address, and ran `wait_for_ssh` and the remote install against a
+    working Mac -- `ssh_user` is `ec2-user` on both substrates, so it would
+    have connected -- while the Linux instance this run had just paid for sat
+    empty. `resolve_plan` already treats a family switch as a real case (the
+    session backend and `kubernetes` are deliberately not carried across one),
+    so the record's family is a *default*, never an override.
+
+    **Each candidate is taken whole**, not field by field. The address and the
+    ids have to come from the same place or a host ends up wearing another
+    machine's instance id, region and security group. In order:
+
+    1. **The substrate block for the family in play** -- the `mac_` keys for a
+       Mac, the bare keys otherwise. This is both the Linux happy path and the
+       freshly-applied outputs `_deploy` depends on, so nothing below may
+       outrank it.
+    2. **`deploy.json`'s plain `host`**, which is what `cloud status` and
+       `cloud screen` already trust. It covers the `--host` box nyxGPT did not
+       provision, whose address appears in no substrate record at all -- and
+       which correspondingly has no security group of ours, so the record
+       carries none and this returns none. Skipped entirely when the caller
+       pinned a family the record contradicts: a Linux deploy whose Terraform
+       outputs were unreadable (#3993) must refuse rather than fall through to
+       the Mac the record still names.
+    3. **The `mac_` keys**, when no family is known at all -- a Mac that was
+       allocated but whose deploy never finished has no `deploy.json`, hence
+       no `os_family`, and is still reachable by the inspections an operator
+       runs to find out why.
+
+    Both files are removed by `cloud destroy`, so nothing here can resurrect
+    an instance that is gone.
+    """
+    recorded_family = str(record.get("os_family") or "")
+    family = os_family or recorded_family
+    mac = {
+        "host": str(state.get("mac_public_ip") or ""),
+        "instance_id": str(state.get("mac_instance_id") or ""),
+        "region": str(state.get("mac_region") or ""),
+        "security_group_id": str(state.get("mac_security_group_id") or ""),
+    }
+    linux = {
+        "host": str(state.get("public_ip") or ""),
+        "instance_id": str(state.get("instance_id") or ""),
+        "region": str(state.get("region") or ""),
+        "security_group_id": str(state.get("security_group_id") or ""),
+    }
+    candidates = [mac if family == OS_FAMILY_MACOS else linux]
+    if not (os_family and recorded_family and os_family != recorded_family):
+        candidates.append(
+            {
+                "host": str(record.get("host") or ""),
+                "instance_id": str(record.get("instance_id") or ""),
+                "region": str(record.get("region") or ""),
+                "security_group_id": "",
+            }
+        )
+    if not family:
+        candidates.append(mac)
+    for candidate in candidates:
+        if candidate["host"]:
+            return candidate
+    return dict(_NO_INSTANCE)
+
+
+def resolve_target(args: argparse.Namespace, os_family: str = "") -> DeployTarget:
     """Locate the provisioned instance and how to SSH to it.
 
     Reads `~/.nyxGPT/cloud/state.json` -- the handoff `cloud infra apply`
-    writes -- so no flag is needed on the happy path.
+    writes, and the one `cloud_mac.allocate` writes its `mac_`-prefixed
+    equivalents into -- plus the deploy record, so no flag is needed on the
+    happy path for either target OS. `_recorded_instance` holds that lookup
+    and the reasoning for its precedence (#4161), including why a caller that
+    knows which family it is deploying (only `_deploy`) must say so.
     """
     state = _cloud_state()
-    host = str(getattr(args, "host", None) or state.get("public_ip") or "")
+    record = load_deploy_state()
+    found = _recorded_instance(state, record, os_family)
+    requested = str(getattr(args, "host", None) or "")
+    host = requested or found["host"]
+    if requested and requested != found["host"]:
+        # `--host` names a machine that is not the one on record, so the
+        # recorded ids describe a different box. Reporting them beside this
+        # host would attribute an instance id, region and security group to a
+        # machine that has none of them (#4161).
+        found = {**_NO_INSTANCE, "host": host}
     if not host:
         raise CloudCommandError(
             "No provisioned instance found in "
-            f"{cloud_infra.CLOUD_STATE_FILE} -- run `nyxgpt cloud deploy` (which provisions "
-            "first) or `nyxgpt cloud infra apply`, or pass --host to target an existing box."
+            f"{cloud_infra.CLOUD_STATE_FILE} or {DEPLOY_STATE_FILE} -- run `nyxgpt cloud "
+            "deploy` (which provisions first) or `nyxgpt cloud infra apply`, or pass --host "
+            "to target an existing box."
         )
     saved = cloud_infra.load_settings()
     # No identity file means "let ssh use its own defaults and agent", which
@@ -555,9 +671,9 @@ def resolve_target(args: argparse.Namespace) -> DeployTarget:
         host=host,
         user=str(getattr(args, "ssh_user", None) or DEFAULT_SSH_USER),
         identity_file=identity,
-        region=str(state.get("region") or saved.get("aws_region") or ""),
-        instance_id=str(state.get("instance_id") or ""),
-        security_group_id=str(state.get("security_group_id") or ""),
+        region=str(found["region"] or saved.get("aws_region") or ""),
+        instance_id=str(found["instance_id"]),
+        security_group_id=str(found["security_group_id"]),
     )
 
 
@@ -2558,7 +2674,13 @@ def _deploy(
             }
         )
 
-        target = resolve_target(args)
+        # `plan.os_family` is passed, not inferred: `deploy.json` still
+        # describes the *previous* deploy at this point, and if that one was a
+        # Mac its `os_family` would steer this resolution onto the Mac's
+        # `mac_public_ip` -- installing a Linux stack over SSH onto a working
+        # EC2 Mac while the instance this run just applied sits empty and
+        # billing. See `_recorded_instance` (#4161).
+        target = resolve_target(args, os_family=plan.os_family)
         if plan.identity_file:
             target.identity_file = str(Path(plan.identity_file).expanduser())
         target.user = plan.ssh_user
@@ -2921,8 +3043,11 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
 
 # The read-only inspections `nyxgpt cloud ops <name>` runs *on* the instance
 # over the same wrapped SSH path `nyxgpt cloud credentials` uses (#3813), so
-# checking container state never needs a hand-rolled `ssh` followed by a raw
-# `docker compose ps` (CLAUDE.md's wrapper requirement). Deliberately an
+# checking what the instance is running never needs a hand-rolled `ssh`
+# followed by a raw `docker compose ps` (CLAUDE.md's wrapper requirement).
+# What `status` reports is whatever tier that instance has -- systemd units
+# plus containers on Linux, `brew services` on an EC2 Mac, which has no
+# Docker daemon to report on (#4161). Deliberately an
 # allowlist of reads: changing what runs on the instance is `nyxgpt cloud
 # deploy`, which is idempotent and records what it did.
 REMOTE_OPS_COMMANDS: dict[str, str] = {
@@ -3151,11 +3276,13 @@ def _screen_status() -> dict[str, Any]:
     return cloud_screen.screen_status()
 
 
-def deploy_status(probe_health: bool = False) -> dict[str, Any]:
-    """Report the deployment's state without touching AWS or the instance.
+def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict[str, Any]:
+    """Report the deployment's state; both network calls are opt-in.
 
-    Cheap enough for the dashboard to poll, and still answers on a machine
-    whose AWS credentials have expired.
+    The default touches neither AWS nor the instance, so it is cheap enough
+    for the dashboard to poll and still answers on a machine whose AWS
+    credentials have expired. `probe_health` and `verify_host` each add one
+    call, and are described below.
 
     Like the substrate status it wraps, this answers from whichever source
     can see the deployment from here:
@@ -3195,7 +3322,19 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
     A probe with no tunnel open would only ever time out, so it is skipped --
     as is a probe from the instance, where the tunnel is not the access path
     and the answering process is the one being asked about.
+
+    `verify_host=True` additionally asks AWS whether the recorded EC2 Mac
+    Dedicated Host still exists, and refreshes what Cost Explorer says it has
+    cost (#4136). Opt-in for the same reason as the health probe, and it is what
+    makes the difference between "AWS confirmed this host at <time>" and
+    repeating the record back as fact -- the `mac_host` block below says which
+    of those the reader is looking at, whichever way this was called.
     """
+    if verify_host:
+        # Never raises, by construction: an observability surface must not fail
+        # because credentials expired. A host it finds released clears the
+        # record, so the still-billing row below disappears with the charge.
+        cloud_mac.verify_mac_record()
     record = load_deploy_state()
     attempt = load_deploy_attempt()
     infra = cloud_infra.infra_status()
@@ -3359,8 +3498,9 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         # two moments the only thing that still costs money is the one thing
         # every other field here has stopped describing. Empty dict when
         # nothing is outstanding. Read from `~/.nyxGPT/cloud/state.json`, so
-        # it still answers after `deploy.json` is gone -- and, like everything
-        # else on this surface, with no AWS call.
+        # it still answers after `deploy.json` is gone. The read itself makes
+        # no AWS call; `verify_host=True` above is what asks AWS, and the
+        # block says which of the two the reader is looking at (#4136).
         "mac_host": cloud_mac.pending_release(),
         "connection": connection_status(on_instance),
         "infra": infra,
@@ -3503,9 +3643,15 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     # again -- the address, the SSH target, the tunnel state -- so an
     # operator never has to reconstruct it from a terminal's scrollback
     # (#3813).
+    # "What it is running", not "its containers" (#4161): on a macOS target
+    # the sentence four lines above has just said no Docker daemon can exist
+    # there, so promising a container report in the closing pointer
+    # contradicted the same output -- and did it in the line an operator is
+    # most likely to act on. `ops status` reports whatever tier the instance
+    # has, which is what this now says.
     print(
         f"\nAsk for all of this again at any time with `{LIFECYCLE_COMMANDS['status']}`, and "
-        f"check the instance's own containers with `{LIFECYCLE_COMMANDS['ops_status']}`."
+        f"check what the instance itself is running with `{LIFECYCLE_COMMANDS['ops_status']}`."
     )
 
 
@@ -3663,13 +3809,32 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     """
     if not mac_host or not mac_host.get("host_id"):
         return
-    print("\nEC2 Mac Dedicated Host (still billing)")
+    # "Still billing" is a claim about AWS, so it is only made when AWS said so
+    # in this run (#4136). An unconfirmed record gets the weaker heading it has
+    # always deserved: `nyxgpt cloud status` used to print "still billing" over
+    # a host that had been released three days earlier, because the record was
+    # the only thing it asked.
+    if mac_host.get("verified_at"):
+        heading = (
+            f"EC2 Mac Dedicated Host (still billing -- AWS confirmed {mac_host['verified_at']})"
+        )
+    else:
+        heading = (
+            "EC2 Mac Dedicated Host (recorded here; NOT confirmed at AWS in this run -- "
+            "`nyxgpt cloud status` asks)"
+        )
+    print(f"\n{heading}")
     _print_row("Host", f"{mac_host['host_id']} ({mac_host.get('instance_type') or 'unknown type'})")
     _print_row(
         "Location",
         f"{mac_host.get('region') or 'unknown'} / {mac_host.get('availability_zone') or 'unknown'}",
     )
     _print_row("Allocated", mac_host.get("allocated_at") or "unknown")
+    for finding in mac_host.get("incoherent") or []:
+        # Reported, not used. Each of these is detectable with no API call and
+        # each means the block's fields were written by different runs about
+        # different hosts -- so none of the rows below can be trusted together.
+        _print_row("INCOHERENT", finding)
     if mac_host.get("releasable_now"):
         release_note = f"{mac_host.get('release_at') or 'unknown'} -- that moment has passed"
     else:
@@ -3678,13 +3843,18 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     if mac_host.get("release_scheduled") and mac_host.get("releasable_now"):
         # Deliberately not "released": nothing on this machine watched the
         # schedule fire, so claiming the charge has stopped would be an
-        # assertion nothing checked. Slack has the outcome; the next
-        # lifecycle command asks AWS and clears this row if the host is gone.
+        # assertion nothing checked. Slack has the outcome.
+        #
+        # The second sentence used to promise that the next lifecycle command
+        # "asks AWS whether the host is really gone", and #4136 found the deploy
+        # not asking -- it made the call and discarded `InvalidHostID.NotFound`
+        # as "could not ask". It is true now, of three commands rather than two,
+        # which is why this names the cheap one first.
         _print_row(
             "Release",
-            "the scheduled release has fired -- Slack has the outcome. This row clears on the "
-            "next `nyxgpt cloud deploy --os macos` or `nyxgpt cloud destroy --yes`, which asks "
-            "AWS whether the host is really gone",
+            "the scheduled release has fired -- Slack has the outcome. This row clears as soon "
+            "as AWS confirms the host is gone, which `nyxgpt cloud status`, `nyxgpt cloud deploy "
+            "--os macos` and `nyxgpt cloud destroy --yes` each ask it",
         )
     elif mac_host.get("release_scheduled"):
         _print_row(
@@ -3697,16 +3867,41 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
             "NOT scheduled yet -- `nyxgpt cloud destroy --yes` terminates the Mac and "
             "schedules it",
         )
-    accrued = mac_host.get("accrued_cost")
-    rate = mac_host.get("hourly_rate")
-    if accrued is not None and rate:
-        _print_row(
-            "Accrued",
-            f"${float(accrued):.2f} at ${float(rate):.4f}/hour "
-            f"(the {cloud_mac.HOST_MINIMUM_HOURS}-hour minimum is charged either way)",
+    _print_row("Spend", _mac_spend_label(mac_host))
+
+
+def _mac_spend_label(mac_host: dict[str, Any]) -> str:
+    """One line for what the Dedicated Host has cost (#4136).
+
+    AWS's figure when there is one, and when there is not, the local estimate
+    *named as an estimate*. The row used to print `rate * (now - allocated_at)`
+    as "Accrued", which kept climbing after the charges stopped: it read $48.44
+    for a host AWS billed $12.02 for and had not charged for in two days. A
+    number that is not the bill may be shown; it may not be shown as the bill.
+    """
+    currency = str(mac_host.get("currency") or "USD")
+    amount = mac_host.get("accrued_cost")
+    if amount is not None:
+        through = mac_host.get("spend_through")
+        suffix = f" through {through}" if through else ""
+        return (
+            f"{currency} {float(amount):.2f} from AWS Cost Explorer{suffix} "
+            f"(as of {mac_host.get('spend_as_of') or 'unknown'})"
         )
-    else:
-        _print_row("Accrued", "unknown -- no rate was recorded for this host")
+
+    estimate = mac_host.get("estimated_cost")
+    rate = mac_host.get("hourly_rate")
+    reason = str(mac_host.get("spend_error") or "") or (
+        "AWS has not been asked yet -- `nyxgpt cloud status` asks"
+    )
+    if estimate is not None and rate:
+        return (
+            f"no AWS figure ({reason}). Local ESTIMATE only: {currency} {float(estimate):.2f} at "
+            f"${float(rate):.4f}/hour, counted from the recorded allocation time and floored at "
+            f"the {cloud_mac.HOST_MINIMUM_HOURS}-hour minimum -- it keeps counting whether or not "
+            "AWS is still charging"
+        )
+    return f"unknown -- no AWS figure and no rate was recorded for this host ({reason})"
 
 
 def _screen_label(screen: dict[str, Any], commands: dict[str, str]) -> str:
@@ -3900,7 +4095,9 @@ def _print_status_summary(status: dict[str, Any]) -> None:
                 if status.get("os_family") == OS_FAMILY_MACOS
                 else ()
             ),
-            ("Containers on the instance", "ops_status"),
+            # Not "Containers on the instance" (#4161): an EC2 Mac runs the
+            # stack as `brew services` and can host no containers at all.
+            ("What the instance is running", "ops_status"),
             ("Diagnose the instance", "doctor"),
             ("Observability logins", "credentials"),
             ("Redeploy (idempotent)", "redeploy"),
@@ -3992,8 +4189,8 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
     """Run one read-only `nyxgpt` inspection *on* the instance, over wrapped SSH.
 
     The same access path `remote_credentials` uses, for the same reason:
-    checking what containers the deployment is running should not require an
-    operator to hand-roll `ssh` and then a raw `docker compose ps` (#3813).
+    checking what the deployment is running should not require an operator to
+    hand-roll `ssh` and then a raw `docker compose ps` (#3813).
     The instance's own output is streamed through unchanged -- this is the
     remote command's answer, not a re-formatting of it.
 
@@ -4105,8 +4302,17 @@ def _status_command(args: argparse.Namespace) -> int:
     `deploy_status` already skips the probe entirely when there is no tunnel
     to probe through (or when it is the instance answering), so the default
     costs nothing in exactly the cases where it would have been useless.
+
+    The Dedicated Host confirmation rides on the same flag (#4136). This
+    command is where an operator asks what is still costing them money, and
+    answering it from a local record is what let `cloud status` report a
+    release window that had "passed" for a host allocated hours later, and a
+    $48.44 spend for a $12.02 bill that had stopped two days earlier.
     """
-    status = deploy_status(probe_health=not getattr(args, "no_probe", False))
+    status = deploy_status(
+        probe_health=not getattr(args, "no_probe", False),
+        verify_host=not getattr(args, "no_probe", False),
+    )
     if getattr(args, "json", False):
         print(json.dumps(status, indent=2))
     else:
@@ -4167,8 +4373,8 @@ def _print_mac_teardown(mac: dict[str, Any]) -> None:
             f"{mac.get('release_at') or 'its 24-hour minimum closes'} -- AWS refuses to release "
             "one before that. A one-shot AWS schedule releases it then and posts the outcome "
             f"to Slack{where}."
-            "\n`nyxgpt cloud status` reports the host, its release time and the accrued cost "
-            "until it is gone."
+            "\n`nyxgpt cloud status` reports the host, its release time and what AWS has "
+            "billed for it until it is gone."
         )
     else:
         print(

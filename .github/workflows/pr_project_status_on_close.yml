@@ -14,8 +14,38 @@ name: PR Project Status on Close
 # non-GitHub deployments), it is not retroactive, and it was enabled while
 # merged PRs kept stranding in "In Review".
 
+# `pull_request_target`, NOT `pull_request` (#4167). Same fault, same fix as
+# `ensure_project_hygiene.yml`'s `pr-hygiene`: GitHub treats a
+# Dependabot-authored `pull_request` run as a fork PR, withholds this
+# repository's Actions secrets and substitutes the (empty) Dependabot store,
+# so `SCRUMMASTER_AGENT_TOKEN` arrives blank and
+# `scripts/agents/pr_close_project_status.sh` dies at `require_gh_auth`
+# before it stamps anything.
+#
+# Why it had to move in the SAME change that fixed `pr-hygiene`: until then
+# a Dependabot PR never got a project card, so a failed stamp stamped
+# nothing and cost nothing. `pr-hygiene` on `pull_request_target` now puts
+# every Dependabot PR on the board in `In Review` — and Dependabot routinely
+# closes its own PRs without merging (superseded by a newer version,
+# dependency dropped). That `closed` event is Dependabot-actored, so the only
+# job that would move the card to the terminal `Closed` status would have
+# been the one that cannot authenticate, stranding exactly the debris the
+# #3742 lane invariant exists to prevent. There is no sweep backstop: the
+# other `close_pr_project_item` callers are the review agent's merge path and
+# owner-actored merges, neither of which sees a Dependabot supersede-close.
+#
+# SAFETY CONDITION (the thing that makes a secret-carrying run on an
+# arbitrary author's PR acceptable, per ledger D-062): the single job below
+# never checks out or executes PR head code. It checks out
+# `vars.RELEASE_BRANCH` and the only event-derived value reaching a shell is
+# the PR's number. `tests/unit/test_pull_request_target_safety.py` states
+# that over every `pull_request_target` workflow in this repository, so this
+# file is covered by it automatically, and
+# `project-hygiene-smoke.yml`'s `pr-head-guard-discriminates` job executes
+# that guard against deliberately broken copies of both files so it cannot
+# pass by being vacuous.
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 permissions:

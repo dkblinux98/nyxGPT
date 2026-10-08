@@ -1,0 +1,6 @@
+{
+  "FormatVersion": "aws_v1",
+  "PriceList": [
+    "{\"product\": {\"productFamily\": \"Dedicated Host\", \"attributes\": {\"instanceType\": \"mac2\", \"regionCode\": \"us-east-1\", \"location\": \"US East (N. Virginia)\"}, \"sku\": \"RECORDED4136MAC2\"}, \"terms\": {\"OnDemand\": {\"RECORDED4136MAC2.JRTCKXETXF\": {\"priceDimensions\": {\"RECORDED4136MAC2.JRTCKXETXF.6YS6EN2CT7\": {\"unit\": \"Hrs\", \"description\": \"$0.65 per On Demand mac2 Dedicated Host Hour\", \"pricePerUnit\": {\"USD\": \"0.6500000000\"}}}, \"sku\": \"RECORDED4136MAC2\", \"offerTermCode\": \"JRTCKXETXF\"}}}, \"version\": \"20261003000000\", \"publicationDate\": \"2026-10-03T00:00:00Z\"}"
+  ]
+}

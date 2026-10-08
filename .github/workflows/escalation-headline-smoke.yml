@@ -1,0 +1,403 @@
+name: Escalation Headline Smoke
+
+# Which questions does this job answer? (#3775 executed verification, #4176)
+#
+#   1. "Does Final Verification actually RECORD which gate failed and which
+#       tests -- when RUN against a red tree, not when read?"
+#   2. "Does Phase 1 then classify it specifically -- and did it really
+#       classify `unknown` before, or is this job green by luck?"
+#   3. "Does a leftover worktree really block the next branch checkout, and
+#       does the prune really free it?"
+#   4. "Would the #4166 escalation now arrive with the cause in its headline?"
+#
+# The motivating run is #4166's (37709148793): Final Verification failed three
+# times on tests that were failing on `v3.0.1` itself, Phase 3 died on a
+# leftover worktree, and the owner got "Error type could not be determined.
+# Manual investigation needed." All four questions above are about things that
+# happen when the pipeline RUNS; three of them were invisible to inspection,
+# which is how all three shipped.
+#
+# FAULT INJECTION, both directions (the macos-brew-smoke.yml template, and the
+# #3753 lesson that a job which only exercises the fixed path passes on every
+# machine that fails to reproduce the bug):
+#
+#   * the gate is run against a planted failing test AND against a clean one --
+#     a script that recorded a failure unconditionally would pass half of this;
+#   * the classifier is run over the recorded detail AND over the bare step
+#     NAME Phase 1 used to fall back to, which must still classify `unknown`;
+#   * the branch checkout is attempted BEFORE the prune and must fail with the
+#     #4166 fatal, then after it and must succeed;
+#   * the headline is composed with the evidence AND with none, and the generic
+#     sentence must appear in exactly the second case.
+#
+# WHAT THIS CANNOT COVER, and does not pretend to: a genuinely red release
+# branch. Making a required check fail on `v3.0.1` to watch an escalation name
+# it is not something CI may do, so the GitHub answer to "is the base red" is
+# served by a stubbed `gh` on PATH while `release_head_state_json` -- the
+# function the escalation and the blast-radius report both call -- runs for
+# real over it. The live half (a real red head producing a real escalation
+# comment) is what #4166 already demonstrated, in the failure direction.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/run_final_verification.sh"
+      - "scripts/agents/prune_stray_worktrees.sh"
+      - "scripts/agents/lib/escalation_evidence.py"
+      - "scripts/agents/lib/gh_project.sh"
+      - "tests/test_escalation_evidence.sh"
+      - "tests/unit/test_escalation_headline.py"
+      - ".github/workflows/developer_auto_implement.yml"
+      - ".github/workflows/escalation-headline-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/run_final_verification.sh"
+      - "scripts/agents/prune_stray_worktrees.sh"
+      - "scripts/agents/lib/escalation_evidence.py"
+      - "scripts/agents/lib/gh_project.sh"
+      - "tests/test_escalation_evidence.sh"
+      - "tests/unit/test_escalation_headline.py"
+      - ".github/workflows/developer_auto_implement.yml"
+      - ".github/workflows/escalation-headline-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  the-4166-run-reproduced:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the gate's own dependencies
+        shell: bash
+        run: python -m pip install --quiet pytest pyyaml
+
+      # ---------------------------------------------------------------
+      # Q1: Final Verification records its own reason
+      # ---------------------------------------------------------------
+      - name: Final Verification, EXECUTED against a planted failing test
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/fixture
+          cat > /tmp/fixture/test_planted.py <<'PY'
+          def test_passes():
+              assert True
+
+
+          def test_release_candidate_formula_version():
+              # Stands in for the real #4166 failure: a test that was already
+              # failing on `v3.0.1` after the ceremony's 3.0.1 bump.
+              assert "3.0.0" == "3.0.1", "planted inherited failure (#4176)"
+
+
+          def test_release_candidate_rc_pin():
+              raise AssertionError("second planted inherited failure (#4176)")
+          PY
+
+          export NYXGPT_AGENT_ERROR_FILE=/tmp/agent-error.txt
+          : > "$NYXGPT_AGENT_ERROR_FILE"
+
+          # `|| true`-free and -e-safe: the gate is EXPECTED to fail here, so
+          # the expectation is written as the condition rather than as a status
+          # captured after the fact (the step's shell is `bash -e`).
+          if (
+            cd /tmp/fixture &&
+            NYXGPT_VERIFY_GATES="pytest" \
+            NYXGPT_VERIFY_PYTEST_TARGET="test_planted.py" \
+            NYXGPT_VERIFY_PYTEST_ARGS="-p no:cacheprovider --noconftest" \
+            NYXGPT_VERIFY_LOG_DIR="/tmp/logs" \
+              "$GITHUB_WORKSPACE/scripts/agents/run_final_verification.sh"
+          ); then
+            echo "::error::the gate PASSED on a tree with two failing tests."
+            exit 1
+          fi
+
+          DETAIL="$(cat /tmp/agent-error.txt)"
+          printf '%s\n' "$DETAIL"
+          for needle in \
+            "Final Verification failed: gate=pytest" \
+            "test_planted.py::test_release_candidate_formula_version" \
+            "test_planted.py::test_release_candidate_rc_pin" \
+            "2 failing test(s)"; do
+            if ! printf '%s' "$DETAIL" | grep -qF "$needle"; then
+              echo "::error::the recorded reason does not contain: ${needle}"
+              exit 1
+            fi
+          done
+          echo "OK: the gate recorded its own gate and failing node IDs"
+
+      - name: And records NOTHING when the tree is clean
+        shell: bash
+        # The other direction. Without this, a script that wrote a failure
+        # detail unconditionally would satisfy every assertion above.
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/fixture-clean
+          printf 'def test_passes():\n    assert True\n' > /tmp/fixture-clean/test_clean.py
+          export NYXGPT_AGENT_ERROR_FILE=/tmp/agent-error-clean.txt
+          : > "$NYXGPT_AGENT_ERROR_FILE"
+          (
+            cd /tmp/fixture-clean &&
+            NYXGPT_VERIFY_GATES="pytest" \
+            NYXGPT_VERIFY_PYTEST_TARGET="test_clean.py" \
+            NYXGPT_VERIFY_PYTEST_ARGS="-p no:cacheprovider --noconftest" \
+            NYXGPT_VERIFY_LOG_DIR="/tmp/logs" \
+              "$GITHUB_WORKSPACE/scripts/agents/run_final_verification.sh"
+          ) || { echo "::error::the gate failed on a clean tree"; exit 1; }
+          if [ -s /tmp/agent-error-clean.txt ]; then
+            echo "::error::the gate recorded a failure for a tree that passed:"
+            cat /tmp/agent-error-clean.txt
+            exit 1
+          fi
+          echo "OK: a passing gate records nothing"
+
+      # ---------------------------------------------------------------
+      # Q2: the classifier, over what was recorded AND over the old fallback
+      # ---------------------------------------------------------------
+      - name: Phase 1 classifies it specifically -- and `unknown` without it
+        shell: bash
+        run: |
+          set -uo pipefail
+          source scripts/agents/lib/gh_project.sh
+          export NYXGPT_AGENT_ERROR_FILE=/tmp/agent-error.txt
+
+          CLASS="$(classify_error "$(read_agent_error_detail)")"
+          echo "classification with the recorded reason: ${CLASS}"
+          if [ "$CLASS" != "verification_failed:pytest" ]; then
+            echo "::error::expected verification_failed:pytest, got ${CLASS}"
+            exit 1
+          fi
+
+          # INJECTION: the pre-#4176 world. The gate recorded nothing, so
+          # Phase 1's harvest fell back to the failed step's NAME -- and this
+          # is the input that produced the generic headline on #4166. It must
+          # still classify `unknown`: if this ever stops being true, the
+          # assertion above has stopped proving anything.
+          OLD="$(classify_error "Final Verification (Must Pass)")"
+          echo "classification with only the step name (the old behaviour): ${OLD}"
+          if [ "$OLD" != "unknown" ]; then
+            echo "::error::the injected pre-fix input classified ${OLD}, not unknown --"
+            echo "::error::this job is no longer proving that the recording is what fixed it."
+            exit 1
+          fi
+          echo "OK: specific with the recording, unknown without it"
+
+      # ---------------------------------------------------------------
+      # Q3: the worktree trap, in this workspace, proven in both directions
+      # ---------------------------------------------------------------
+      - name: A stray worktree blocks the next checkout -- until it is pruned
+        shell: bash
+        run: |
+          set -uo pipefail
+          ORIG_REF="$(git rev-parse HEAD)"
+          git branch -f smoke-base HEAD
+
+          # The trap, set exactly as #4166 set it: a worktree on the BRANCH
+          # NAME, which holds it. `claude-code-action` then checks out a branch
+          # in its own setup and dies.
+          git worktree add /tmp/base-wt smoke-base >/dev/null
+
+          if ERR="$(git checkout smoke-base 2>&1)"; then
+            echo "::error::the fixture is wrong -- checking out a worktree-held branch succeeded."
+            echo "::error::This job proves nothing until that is fixed."
+            exit 1
+          fi
+          printf '%s\n' "$ERR"
+          if ! printf '%s' "$ERR" | grep -qF "is already used by worktree"; then
+            echo "::error::the checkout failed for some other reason than the #4166 fatal."
+            exit 1
+          fi
+          echo "OK: reproduced 'fatal: ... is already used by worktree'"
+
+          ./scripts/agents/prune_stray_worktrees.sh
+
+          if ! git checkout smoke-base >/dev/null 2>&1; then
+            echo "::error::the branch is STILL held after the prune -- Phase 3 would still die."
+            exit 1
+          fi
+          echo "OK: after the prune the branch checks out, so Phase 3 can run"
+
+          # And a detached worktree -- what the fix prompts now tell the agent
+          # to use for base comparisons -- never sets the trap in the first place.
+          git checkout --detach "$ORIG_REF" >/dev/null 2>&1
+          git worktree add --detach /tmp/detached-wt smoke-base >/dev/null
+          if ! git checkout smoke-base >/dev/null 2>&1; then
+            echo "::error::a --detach worktree held the branch name; the prompt guidance is wrong."
+            exit 1
+          fi
+          echo "OK: --detach holds no branch name"
+          git checkout --detach "$ORIG_REF" >/dev/null 2>&1
+          ./scripts/agents/prune_stray_worktrees.sh
+
+      # ---------------------------------------------------------------
+      # Q4: the escalation the owner would now receive
+      # ---------------------------------------------------------------
+      - name: The headline, composed from the run's own evidence
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # The GitHub half of "is the base red" is stubbed -- CI may not make
+          # a required check fail on the release branch. `release_head_state_json`
+          # itself, which is what the escalation and the blast-radius report
+          # both call, runs for real over the stub.
+          mkdir -p /tmp/bin
+          cat > /tmp/bin/gh <<'SH'
+          #!/usr/bin/env bash
+          for arg in "$@"; do
+            case "$arg" in
+              */check-runs) echo "test"; exit 0 ;;
+            esac
+          done
+          for arg in "$@"; do
+            case "$arg" in
+              repos/*/commits/*) echo "0123456789abcdef0123456789abcdef01234567"; exit 0 ;;
+            esac
+          done
+          exit 1
+          SH
+          chmod +x /tmp/bin/gh
+          export PATH="/tmp/bin:$PATH"
+
+          source scripts/agents/lib/gh_project.sh
+          REPO_OWNER="dkblinux98"
+          REPO_NAME="nyxGPT"
+          RELEASE_BRANCH="v9.9.9"
+          export NYXGPT_AGENT_ERROR_FILE=/tmp/agent-error.txt
+
+          HEAD_STATE="$(release_head_state_json)"
+          echo "release head state: ${HEAD_STATE}"
+
+          # Phase 3's own failure, as the #4166 run produced it. The group
+          # header is quoted WITHOUT the action's pinned-ref suffix on purpose:
+          # tests/unit/test_developer_retry_continuity.py treats the action's
+          # qualified name followed by an at-sign, anywhere in a workflow file,
+          # as "this workflow INVOKES the action" -- and this one only quotes it
+          # in a log fixture. The marker the parser anchors on is the name.
+          PHASE3_ERROR="$(first_error_after_marker \
+            "$(printf '%s\n' \
+              '##[group]Run anthropics/claude-code-action' \
+              "fatal: 'v9.9.9' is already used by worktree at '/tmp/base-wt'")" \
+            "claude-code-action")"
+
+          EVIDENCE="$(jq -n -c \
+            --argjson head "$HEAD_STATE" \
+            --arg vd "$(read_agent_error_detail)" \
+            --arg p3e "$PHASE3_ERROR" \
+            '{
+               error_class: "verification_failed:pytest",
+               failed_step: "Final Verification (Must Pass)",
+               phase3_outcome: "failure",
+               phase3_error: $p3e,
+               verification_detail: $vd,
+               base_branch: $head.release_branch,
+               base_sha: ($head.release_head_sha // ""),
+               base_red: $head.release_head_red,
+               base_checks: ($head.red_checks // [])
+             }')"
+
+          COMPOSED="$(printf '%s' "$EVIDENCE" \
+            | python3 scripts/agents/lib/escalation_evidence.py compose)"
+          HEADLINE="$(printf '%s' "$COMPOSED" | jq -r '.headline')"
+          CAUSE="$(printf '%s' "$COMPOSED" | jq -r '.cause')"
+
+          {
+            echo "### The escalation headline #4166 should have had"
+            echo
+            echo "**Diagnosis:** ${HEADLINE}"
+            echo
+            echo "**Cause key:** \`${CAUSE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$HEADLINE"
+
+          fail=0
+          for needle in \
+            "v9.9.9" \
+            "0123456" \
+            '`test` is failing' \
+            "test_planted.py::test_release_candidate_formula_version" \
+            "2 failing test(s)" \
+            "Phase 3 diagnosis did not run"; do
+            if ! printf '%s' "$HEADLINE" | grep -qF "$needle"; then
+              echo "::error::the headline does not name: ${needle}"
+              fail=1
+            fi
+          done
+          if printf '%s' "$HEADLINE" | grep -qF "Error type could not be determined"; then
+            echo "::error::the headline is STILL the generic sentence -- #4176 is not fixed."
+            fail=1
+          fi
+          if [ "$CAUSE" != "base-red:v9.9.9:test" ]; then
+            echo "::error::the cause key is '${CAUSE}', not the red base -- every issue that"
+            echo "::error::inherits this base would escalate separately."
+            fail=1
+          fi
+
+          # INJECTION: with no evidence at all -- the state the old lookup was
+          # always in -- the generic sentence is exactly what must appear. If it
+          # does not, the assertions above are not testing what they claim.
+          BARE="$(printf '{"error_class":"unknown"}' \
+            | python3 scripts/agents/lib/escalation_evidence.py headline)"
+          if [ "$BARE" != "Error type could not be determined. Manual investigation needed." ]; then
+            echo "::error::with no evidence the headline was '${BARE}' -- the generic fallback"
+            echo "::error::has moved, so this job's comparisons are meaningless."
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: the headline names the red base, the failing tests, and the dead Phase 3"
+
+  the-pure-decisions-and-the-shell-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: bash
+        run: python -m pip install --quiet pytest pyyaml
+
+      # `--noconftest` so this job costs a two-package install instead of the
+      # whole editable package (tests/conftest.py imports psutil and
+      # nyxgpt.config, so collection would die at exit 4 before a single test
+      # ran). Same trade as escalation-label-smoke.yml. The shell-suite test in
+      # that file is run separately below so its stdout can be checked.
+      - name: Every combination of evidence, as a pure decision
+        shell: bash
+        run: |
+          python -m pytest -q -p no:cacheprovider --noconftest \
+            --no-header --rootdir . -c /dev/null \
+            tests/unit/test_escalation_headline.py \
+            --deselect tests/unit/test_escalation_headline.py::TestShellSuite
+
+      - name: The shell suite, with its executed section proven to have run
+        shell: bash
+        # The suite SKIPS its executed section when the interpreter it is given
+        # has no pytest, and a skip there would leave this job green over
+        # nothing. So the interpreter is named explicitly and one of the
+        # section's own [ok] lines must appear in the output.
+        run: |
+          set -uo pipefail
+          OUT="$(NYXGPT_TEST_PYTHON="$(command -v python)" bash tests/test_escalation_evidence.sh 2>&1)" \
+            && RC=0 || RC=$?
+          printf '%s\n' "$OUT"
+          [ "$RC" -eq 0 ] || exit 1
+          if ! printf '%s' "$OUT" | grep -qF "[ok] it records the first failing node ID"; then
+            echo "::error::the suite's EXECUTED section did not run (it was skipped) --"
+            echo "::error::this job would be green over an unexecuted gate."
+            exit 1
+          fi

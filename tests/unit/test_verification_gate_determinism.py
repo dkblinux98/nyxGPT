@@ -43,17 +43,33 @@ WORKFLOW = (
     Path(__file__).resolve().parents[2] / ".github" / "workflows" / "developer_auto_implement.yml"
 )
 
+#: The final gate moved out of the workflow and into a script (#4176) so that
+#: it could RECORD which gate failed -- and so the recording could be executed
+#: in CI rather than inspected. The `--no-incremental` property has to follow
+#: it there, or it would have quietly stopped being enforced for the one gate
+#: whose verdict is terminal.
+VERIFY_SCRIPT = (
+    Path(__file__).resolve().parents[2] / "scripts" / "agents" / "run_final_verification.sh"
+)
+
 
 @pytest.fixture(scope="module")
 def mypy_invocations() -> list[str]:
-    """Every line in the workflow that actually invokes mypy on `src/`."""
+    """Every line in the gate that actually invokes mypy on `src/`.
+
+    Matches `-m mypy` rather than `python -m mypy`: the script parameterises
+    the interpreter (`"$PY" -m mypy`) so the smoke job can point it at its own.
+    """
     assert WORKFLOW.is_file(), f"missing workflow: {WORKFLOW}"
+    assert VERIFY_SCRIPT.is_file(), f"missing script: {VERIFY_SCRIPT}"
     lines = [
         line.strip()
-        for line in WORKFLOW.read_text(encoding="utf-8").splitlines()
-        if "python -m mypy" in line and not line.strip().startswith("#")
+        for path in (WORKFLOW, VERIFY_SCRIPT)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "-m mypy" in line and not line.strip().startswith("#")
     ]
-    # attempt 1, attempt 2, and the final verification pass.
+    # attempt 1 and attempt 2 (in the workflow), and the final verification
+    # pass (in the script).
     assert len(lines) == 3, f"unexpected mypy invocation count: {lines}"
     return lines
 

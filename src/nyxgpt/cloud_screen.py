@@ -882,13 +882,14 @@ def resolve_screen_target(args: argparse.Namespace) -> cloud_deploy.DeployTarget
             "inspected, and `nyxgpt cloud tunnel` reaches its UIs."
         )
 
-    # Deliberately *not* `cloud_deploy.resolve_access_target`, which takes the
-    # address from the Linux substrate's `state.json` `public_ip`. A macOS
-    # deploy never applies that substrate, so that key is not written for a
-    # Mac at all -- the Mac's address is `mac_public_ip`, recorded by
-    # `cloud_mac.record_mac_host` at allocation. Reading it from there is also
-    # what makes the check below exact rather than approximate: the host this
-    # command acts on is, by construction, the one nyxGPT allocated.
+    # Deliberately *not* `cloud_deploy.resolve_access_target`, even though
+    # that resolver now finds a Mac too (#4161 taught it the `mac_`-prefixed
+    # `state.json` vocabulary, which is why this one was written separately in
+    # the first place). What it would not give is the exactness the check
+    # below needs: this reads the Mac's address from
+    # `cloud_mac.record_mac_host`'s own record, so the host this command acts
+    # on is by construction the one nyxGPT allocated, and a `--host` Mac
+    # nobody's security group is known for cannot slip through as "resolved".
     mac = cloud_mac.load_mac_record()
     managed_ip = str(mac.get("mac_public_ip") or "")
     requested = str(getattr(args, "host", None) or record.get("host") or managed_ip)

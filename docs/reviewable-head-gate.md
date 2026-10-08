@@ -88,10 +88,18 @@ check costs nothing on the PRs where it does not run.
 
 **Keeping it honest.** `tests/unit/test_required_checks.py` fails in both
 directions: a name that matches no job in any workflow (a gate that can never
-fire), and a `pull_request`-triggered job that the file never classified (a
-real gate the review never waits for). Adding a smoke workflow therefore forces
-the decision instead of defaulting to "not a gate", which is the direction that
-fails quietly.
+fire), and a `pull_request`- or `pull_request_target`-triggered job that the
+file never classified (a real gate the review never waits for). Adding a smoke
+workflow therefore forces the decision instead of defaulting to "not a gate",
+which is the direction that fails quietly.
+
+`pull_request_target` is in that invariant as of #4167, and it carries a
+consequence for the classification itself: such a run is associated with the
+**base** commit, so its check run never attaches to the PR head this gate asks
+about. A `pull_request_target` job therefore cannot be `[required]` — it would
+hold every head at `absent`/`pending` forever. Both of today's
+(`pr-hygiene`, `stamp-closed-lane`) are `[not-required]` on their own merits as
+project bookkeeping; this is the second, independent reason.
 
 Names are **check-run names**, which are the job's `name:` when it has one and
 its job id otherwise — hence entries like `Install the working tree's formulas`

@@ -18,11 +18,20 @@ set -uo pipefail
 #     comment makes every later dispatch a no-op;
 #   * only with a parseable vX.Y.Z version in the issue title.
 #
-# Phase scope: all five phases (owner decision 2026-10-07): entry gate (which
-# pauses the agent flags), master+tag+release, stable publish, close-out, and
-# Phase 4 -- the next line named by its open "(vX.Y.Z)" milestone is created
-# with its release issue and draft release, the repo is repointed to it, and
-# the agent flags are restored. No owner step follows the dispatch.
+# Phase scope: all five phases (owner decision 2026-10-07): the Phase 0
+# prerequisite inventory (which provisions what is missing, then pauses the
+# agent flags), master+tag+release, stable publish, close-out, and Phase 4 --
+# the next line named by its open "(vX.Y.Z)" milestone is created with its
+# release issue and draft release, the repo is repointed to it, and the agent
+# flags are restored. No owner step follows the dispatch.
+#
+# Prerequisites are no longer the owner's to prepare (#4166): Phase 0 creates
+# the next line's milestone (as a self-named placeholder), the next sprint
+# iteration and this release's draft release if they are missing, and reports
+# every gap it CANNOT fill in one pass before anything irreversible runs. The
+# tap and Slack wiring this script needs AFTER the publish is part of that
+# inventory, so a missing tap token stops the run at Phase 0 instead of at the
+# rc retirement with the release already out.
 #
 # Resume: if the release tag already exists, Phases 0-3 are done and only
 # Phase 4 is outstanding, so the ceremony runs with --phase4-only. That makes a
@@ -148,7 +157,8 @@ fi
 
 # Fail fast on a missing ceremony token, BEFORE the marker is claimed: the
 # scrummaster token cannot fast-forward master, so without this the
-# ceremony would post its start comment, run the read-only entry gate and
+# ceremony would post its start comment, run the Phase 0 inventory (which
+# since #4166 also PROVISIONS the milestone/sprint/draft it can) and
 # only then die at the Phase 1 push — with the marker already stamped.
 if [[ -z "${NYXGPT_CEREMONY_PAT:-}" ]]; then
   echo "[ceremony-watch] Ceremony token not configured (RELEASE_CEREMONY_TOKEN / NYXGPT_CEREMONY_PAT) — refusing to start." >&2
@@ -169,7 +179,9 @@ MARKER="$(python3 "${DIR}/lib/ceremony_trigger.py" marker "$VERSION")"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_OWNER}/${REPO_NAME}}/actions/runs/${GITHUB_RUN_ID:-0}"
 issue_comment "$RELEASE_ISSUE" "🚀 **Release ceremony (automated, #3730)**: release issue moved to **${STATUS_FOR_RELEASE:-For Release}** — starting the ceremony for \`${VERSION}\` unattended.
 
-Scope: agents paused → master fast-forward → tag + GitHub Release → \`stable\` publish (#3727) → stable tap stamp → retirement of the \`${VERSION}rc*\` formulas → next line (branch, release issue, draft release) → repoint → agents restored.
+Scope: Phase 0 prerequisite inventory (#4166 — every prerequisite for all five phases, with the provisionable ones created) → agents paused → master fast-forward → tag + GitHub Release → \`stable\` publish (#3727) → stable tap stamp → retirement of the \`${VERSION}rc*\` formulas → next line (branch, release issue, draft release) → repoint → agents restored.
+
+Anything Phase 0 has to put in place (next-line milestone, sprint iteration, draft release, release-issue label/milestone) is listed in its own comment below. A prerequisite automation cannot create stops the run **before** Phase 1, with every gap listed at once.
 
 [Ceremony run](${RUN_URL})
 
@@ -212,7 +224,30 @@ if ! NYXGPT_CEREMONY_PAT="${NYXGPT_CEREMONY_PAT}" \
   ceremony_failed "the ceremony itself" \
     "See the run log for which phase stopped it. **The agent flags (AGENTS_ENABLED, SPRINT_AUTOPILOT, CLAUDE_REVIEW_ENABLED) stay paused** until a run completes -- that is deliberate, so nothing merges into a half-released line. Re-dispatching resumes: Phases 0-3 are skipped once the release tag exists, and the saved flags are restored at the end of Phase 4."
 fi
-NEXT_LINE="$(grep -oE 'NEXT_LINE v[0-9.]+ #[0-9]+' "$CEREMONY_LOG" | tail -1 | cut -d' ' -f2-)"
+# `|| true` on BOTH greps below, for the same reason as line 102: sourcing
+# gh_project.sh turns on `set -e`, and `grep` exits 1 when the pattern is
+# absent -- which `pipefail` propagates out of the command substitution. These
+# two lines read OPTIONAL detail out of the ceremony log, so a miss has to mean
+# "nothing to report", not an abort. Without it the watcher dies here after a
+# SUCCESSFUL ceremony: the rc formulas are never retired, the completion
+# comment is never posted, and nothing says so (no failure comment, no DM,
+# since `ceremony_failed` is never reached either).
+NEXT_LINE="$(grep -oE 'NEXT_LINE v[0-9.]+ #[0-9]+' "$CEREMONY_LOG" | tail -1 | cut -d' ' -f2- || true)"
+# What Phase 0 had to put in place (#4166). The ceremony posts its own note on
+# the release issue at the time; this carries it into the completion summary so
+# the owner sees "a placeholder milestone is waiting to be renamed" without
+# scrolling back. Provisioning nothing is the normal case once the owner has
+# prepared the line themselves, so this grep misses more often than it hits.
+PROVISIONED="$(grep -oE '^\[ceremony\] PROVISIONED .*' "$CEREMONY_LOG" | tail -1 | sed 's/^\[ceremony\] PROVISIONED //' || true)"
+# Built outside the comment body on purpose: inside a double-quoted string,
+# `${VAR:+...}` re-parses quotes in its word, so an apostrophe in the prose
+# would open a quote and leave the script unparseable.
+PROVISIONED_NOTE=""
+if [[ -n "$PROVISIONED" ]]; then
+  PROVISIONED_NOTE="
+Phase 0 provisioned: ${PROVISIONED}. A placeholder milestone is the ceremony's stand-in — rename and re-scope it for the real next line.
+"
+fi
 
 if [[ "$PHASE4_ONLY" != "1" ]]; then
   echo "[ceremony-watch] Retiring the ${VERSION}rc* formulas from the tap." >&2
@@ -223,7 +258,7 @@ if [[ "$PHASE4_ONLY" != "1" ]]; then
 fi
 
 issue_comment "$RELEASE_ISSUE" "✅ **Release ceremony complete (${VERSION})** — master fast-forwarded, tag and GitHub Release published, \`stable\` published to PyPI, tap stamped, \`${VERSION}rc*\` formulas retired, next line ready and repointed${NEXT_LINE:+ (**${NEXT_LINE}**)}, agent flags restored.
-
+${PROVISIONED_NOTE}
 Nothing is left for the owner. The session that dispatched this reconciles the local ~/.nyxGPT/config.ini mirror (\`[github] RELEASE_BRANCH\` / \`RELEASE_ISSUE_NUMBER\`).
 
 [Ceremony run](${RUN_URL})" \

@@ -14,6 +14,8 @@ Two halves:
 
 from __future__ import annotations
 
+import ast
+import re
 import subprocess
 from pathlib import Path
 
@@ -32,6 +34,32 @@ CLOSE_WORKFLOW = ROOT / ".github" / "workflows" / "pr_project_status_on_close.ym
 SWEEP_WORKFLOW = ROOT / ".github" / "workflows" / "sweep_pr_status.yml"
 
 
+def _docstring_lines(source: str) -> set[int]:
+    """Line numbers occupied by module/class/function docstrings.
+
+    Deliberately docstrings only, not every string literal: the defect this
+    serves (`test_fixtures_do_not_hardcode_a_release_line_branch`) WAS a string
+    literal, so exempting the lot would make that guard vacuous.
+    """
+    lines: set[int] = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+            and first.end_lineno is not None
+        ):
+            lines.update(range(first.lineno, first.end_lineno + 1))
+    return lines
+
+
 class TestShellSuite:
     def test_pr_lane_suite_passes(self):
         suite = ROOT / "tests" / "test_pr_lane_hygiene.sh"
@@ -42,6 +70,58 @@ class TestShellSuite:
             timeout=300,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_fixtures_do_not_hardcode_a_release_line_branch(self):
+        """The suite's base branch must outlive the release ceremony.
+
+        #3862's closure gate in `review_accept_and_merge.sh` is deliberately
+        unstubbed: it runs a real `git fetch origin <base>` and resolves
+        `origin/<base>`, because its whole purpose is to read content rather
+        than trust a reported exit code. So whatever branch the fixtures name
+        has to exist on `origin` forever.
+
+        The suite originally hardcoded `v3.0.0`. That held only while v3.0.0
+        was the live release line -- the v3.0.1 ceremony deleted the branch,
+        the fetch began failing, and case 4 went red reporting "the merge
+        cannot be verified". The next ceremony would have done it again.
+
+        What shipped is the release branch's resolution, which this branch's
+        merge adopted over its own: the fixtures *derive* the branch from the
+        checkout's declared version (`RELEASE_BRANCH` in the shell suite,
+        `_default_base_branch()` in the stub), so they always name the line the
+        repo is actually on and the ceremony keeps the two in step. An earlier
+        attempt here pinned them to `master` instead; it also survives the
+        ceremony, but it makes the fixture name a branch no PR in this
+        repository ever targets. Either way the literal is what has to go, so
+        this guard is written over the literal and holds for both.
+
+        Prose that explains the history is allowed to name the version, and
+        "prose" means `#` comments *and docstrings* -- the mainline's
+        explanation of exactly this defect lives in `_default_base_branch`'s
+        docstring, and an earlier cut of this guard, which exempted only `#`
+        lines, failed on it at the merge. A plain string literal is NOT
+        exempted: `"base": "v3.0.0"` was the original defect.
+        """
+        release_line = re.compile(r"\bv\d+\.\d+\.\d+\b")
+        for path in (
+            ROOT / "tests" / "test_pr_lane_hygiene.sh",
+            ROOT / "tests" / "gh_stub_pr_lane.py",
+        ):
+            text = path.read_text(encoding="utf-8")
+            prose = _docstring_lines(text) if path.suffix == ".py" else set()
+            offenders = [
+                line
+                for number, line in enumerate(text.splitlines(), start=1)
+                if release_line.search(line)
+                and not line.lstrip().startswith("#")
+                and number not in prose
+            ]
+            assert not offenders, (
+                f"{path.name} names a release-line branch in executable code: "
+                f"{offenders}. Derive it instead (`RELEASE_BRANCH` / "
+                "`_default_base_branch()`) -- a release branch is deleted by the "
+                "ceremony and the closure gate's real `git fetch` then fails."
+            )
 
 
 class TestLibraryHelpers:
@@ -96,7 +176,15 @@ class TestClosedWithoutMergePath:
         workflow = yaml.safe_load(CLOSE_WORKFLOW.read_text(encoding="utf-8"))
         # PyYAML parses the bare `on:` key as the boolean True.
         triggers = workflow.get("on", workflow.get(True))
-        assert triggers["pull_request"]["types"] == ["closed"]
+        # `pull_request_target`, not `pull_request`, since #4167's review
+        # round: GitHub withholds Actions secrets from a Dependabot-actored
+        # `pull_request` run, so the stamp died at `require_gh_auth` for
+        # exactly the author whose board cards #4167 started creating. Why
+        # that is safe here, and the guard that holds it so, is
+        # `tests/unit/test_pull_request_target_safety.py` -- this assertion is
+        # only about the lane invariant still having an event behind it.
+        assert triggers["pull_request_target"]["types"] == ["closed"]
+        assert "pull_request" not in triggers
 
     def test_workflow_covers_merged_and_unmerged(self):
         """No `merged == false` guard: both exits must reach the terminal lane."""

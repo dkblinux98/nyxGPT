@@ -343,8 +343,13 @@ never rely on comment/body text alone (#3600, going-public hardening).
 ## 3c) Workflow actor-gate audit (#3600, 2026-08-03)
 
 Point-in-time audit of every `.github/workflows/*.yml` job triggered by
-`issues`, `issue_comment`, `pull_request`, or `pull_request_review*`, taken
+`issues`, `issue_comment`, `pull_request`, `pull_request_target`, or
+`pull_request_review*`, taken
 when the three gates in §3b were added ahead of the repo going public.
+(`pull_request_target` added to the scope by #4167, which introduced the
+project's first use of it — it is the one trigger that combines
+write-capable secrets with a branch an arbitrary author controls, so a job
+on it belongs in this table by construction.)
 Extend this table (don't replace it) the next time a workflow with one of
 these triggers is added or edited — the review-runbook checklist entry for
 §3b points back here.
@@ -360,15 +365,53 @@ these triggers is added or edited — the review-runbook checklist entry for
 | `acceptance_plan.yml` | `issues`(edited) | issues write | `github.actor==HUMAN_OWNER` + plan marker in body | Unchanged |
 | `add-to-release-issue-on-milestone.yml` | `issues`(milestoned) | issues write (`GITHUB_TOKEN`) | none, but `milestoned` can only be produced by a user with write access — no public-actor path exists | Unchanged, no gate needed |
 | `assign_backlog.yml` | `issues`(opened,reopened) | issues write (`SCRUMMASTER_AGENT_TOKEN`), adds an assignee | none besides `AGENTS_ENABLED` | Unchanged — write is scoped to adding scrummaster-agent as assignee on the triggering issue itself; no cross-resource write, no code exec, no merge |
-| `ensure_project_hygiene.yml` — `add-to-project` + fill-if-missing jobs | `issues`(opened), `pull_request`(opened,reopened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`) | none besides `event_name`/`action` checks | Unchanged — writes only project fields/labels/milestone on the same issue/PR that triggered it; no cross-resource write |
+| `ensure_project_hygiene.yml` — `add-to-project` + fill-if-missing jobs | `issues`(opened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`) | none besides `event_name`/`action` checks | Unchanged — writes only project fields/labels/milestone on the same issue that triggered it; no cross-resource write |
+| `ensure_project_hygiene.yml` — `pr-hygiene` job | **`pull_request_target`**(opened,reopened) | issues/PR write (`SCRUMMASTER_AGENT_TOKEN`): adds the PR to the project and, for an issue-less PR, stamps `In Review` + Priority/Effort defaults | none besides `event_name` — and none available: the whole point is that this job must run for an actor (Dependabot) GitHub deliberately de-privileges | **Row split out and rewritten by #4167** (per this table's own extend-don't-replace rule). It was `pull_request`, and GitHub treats a Dependabot-authored `pull_request` run as a fork PR: Actions secrets are withheld and replaced by the empty Dependabot store, so the token was blank and the job died at `require_gh_auth` on every Dependabot PR — which is why #4163/#4165 never reached the board or the review agent. `pull_request_target` runs the base branch's copy of the file with the repo's own secrets regardless of actor. **This trigger is the dangerous one in this table**, so the safety condition is explicit and tested rather than argued: the job never resolves anything to the PR head (checkout pins `vars.RELEASE_BRANCH`; no `gh pr checkout`; no dependency install or build), and every write targets the triggering PR's own project item. `tests/unit/test_pull_request_target_safety.py` states that over *every* `pull_request_target` workflow and `project-hygiene-smoke.yml`'s `pr-head-guard-discriminates` job executes it against nine broken copies, so the guard cannot pass by being vacuous. The residual public-actor path is bounded to a stranger's own PR getting a project card and an `In Review` lane — the same surface opening the PR already had, with no code execution. **One cross-resource write, named precisely rather than rounded off** (review of #4170): on the *linked-issue* path the PR body's `Closes #N` is attacker-nameable, and `ensure_pr_project_hygiene "$PR" "$N"` calls `ensure_issue_in_project "$N"` (`gh_project.sh:4056`) — so a stranger can cause issue N to be ADDED to the project board if it is not already there. Nothing else touches N: the field copies read N and write the PR's own item, and the milestone PATCH targets the PR. So the bound is "every *field* write targets the triggering PR's own item, plus one idempotent add-to-board on an issue the author names" |
 | `ensure_project_hygiene.yml` — `closure-hygiene` job | `issues`(closed) | issues write (`SCRUMMASTER_AGENT_TOKEN`): sets the **`Phase X: Rejected` milestone** (the marker), makes `HUMAN_OWNER` the **sole** assignee, and then **clears every project field** — Status, Priority, Effort, Module, Phase, Sprint — all on the triggering issue itself. Status *is* written here, and only here: the D-001/D-008 rule that lane placement is owner signal governs *live* work, and a rejected issue has no lane to be signalled about | none besides `event_name`/`action` + `state_reason` filters and the `Support`-label skip — and none needed; see Notes | **Added by #3871** (row extended per this table's own rule). Why no actor gate: closing an issue requires being its author or holding triage/write access; no comment or body text is parsed (only `github.event.issue.number` — a number — reaches the shell, via `env:` per §3b); and the write is scoped to the triggering issue's own project fields and assignees, so there is no cross-resource write, no code exec and no merge. The residual public-actor path is bounded to *an issue the actor authored*: a non-collaborator can open one, close it as `not planned`, and thereby cause the intended rule to be applied to their own issue — which also assigns `HUMAN_OWNER`, i.e. it is a low-rate owner-notification vector no worse than opening the issue in the first place. Issues not on the board are a no-op (`find_issue_project_item` empty → return), and the `Phase X: Rejected` milestone is never created if absent (fail loud, owner-only board change) |
+| `pr_project_status_on_close.yml` — `stamp-closed-lane` job | **`pull_request_target`**(closed) | project field write (`SCRUMMASTER_AGENT_TOKEN`): moves the triggering PR's own card to the terminal `Closed` Status | none besides the trigger — and none available, for the same reason as `pr-hygiene`: the actor it must work for is one GitHub de-privileges | **Added by #4167's review round** (table extended per its own rule). It was `pull_request`, carrying the identical secret-withholding fault as `pr-hygiene`, and the #4167 issue's "only `pr-hygiene` is affected" was an observation of two `opened` events rather than a class search. It had to move in the *same* change: `pr-hygiene` on `pull_request_target` now puts every Dependabot PR on the board in `In Review`, and Dependabot's own supersede-close is a Dependabot-actored `closed` event — so a blank token here would strand the card this fix creates, with no sweep backstop (the other `close_pr_project_item` callers are the review agent's merge path and owner-actored merges). Same safety condition, same guard: checkout pins `vars.RELEASE_BRANCH`, the only event-derived value reaching a shell is the PR number, and `tests/unit/test_pull_request_target_safety.py` covers this file automatically because it is written over every `pull_request_target` workflow. Residual public-actor path: a stranger closing their own PR stamps their own card `Closed` — strictly narrower than `pr-hygiene`'s, no cross-resource write at all |
 | `auto-check-tasklist.yml` | `issues`(closed), `repository_dispatch` | issues write | none besides `AGENTS_ENABLED` | Unchanged — only checks a box on a tracking issue that already contains an unchecked `- [ ] #<closed-issue-number>` line placed there by scrummaster automation beforehand; an attacker can close only issues they already have permission to close, and gains no reference in a tracking issue they don't already appear in |
 | `link_revert_pr_to_issue.yml` | `pull_request`(opened) | pull-requests write (`github.token`) | gated on `body` `startsWith('Reverts')` (attacker-controlled string) | Unchanged — re-verified during this audit: every write (`gh pr edit`, the informational comment) targets `github.event.pull_request.number`, i.e. the PR the attacker themselves just opened. Crafting a "Reverts owner/repo#N" body lets an attacker rewrite the body of *their own* PR to include a `Closes #ISSUE` line (extracted read-only from a real PR's linked issue) — this writes no resource the attacker doesn't already control, and any downstream merge/close of that PR is independently gated elsewhere. No actor gate added. |
-| `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened), `push`(release branches), `workflow_dispatch` | `REVIEW_AGENT_TOKEN` on the `resolve` job: issue/PR comments, issue **Status** writes, developer-agent reassignment (which starts a developer run), owner assignment on the escalation path | none on the trigger; **comment-content gate**: only comments authored by `{DEV_AGENT, REVIEW_AGENT, HUMAN_OWNER}` steer the routing decision | **Rewritten by #3801** — the old row ("notification only, no merge/code-exec", "issues write (comment only)", gate "none") is false for every cell since #3801. Why no trigger actor gate is needed: `push` to a release branch and `workflow_dispatch` both require write access, and the `pull_request` path only *reads* the PR (the job checks out `RELEASE_BRANCH`, never the PR head, so no attacker-authored code executes; fork PRs receive no secrets; workflow-level `GITHUB_TOKEN` is read-only). The real public-actor surface is comment **content**, not the trigger — `dispatch_conflict_resolution.sh` polls the thread, so a stranger's comment could otherwise forge round exhaustion, force an owner escalation carrying their text, or hold a PR in permanent cooldown. That is closed by the author gate in `conflict_resolution.decide()`, which is fail-closed (the CLI refuses to route without a trusted set) |
+| `notify-merge-conflicts.yml` | `pull_request`(opened,synchronize,reopened), `push`(release branches), `workflow_dispatch` | `REVIEW_AGENT_TOKEN` on the `resolve` job: issue/PR comments, issue **Status** writes, developer-agent reassignment (which starts a developer run), owner assignment on the escalation path | none on the trigger; **comment-content gate**: only comments authored by `{DEV_AGENT, REVIEW_AGENT, HUMAN_OWNER}` steer the routing decision | **Rewritten by #3801** — the old row ("notification only, no merge/code-exec", "issues write (comment only)", gate "none") is false for every cell since #3801. Why no trigger actor gate is needed: `push` to a release branch and `workflow_dispatch` both require write access, and the `pull_request` path only *reads* the PR (the job checks out `RELEASE_BRANCH`, never the PR head, so no attacker-authored code executes; fork PRs receive no secrets; workflow-level `GITHUB_TOKEN` is read-only). The real public-actor surface is comment **content**, not the trigger — `dispatch_conflict_resolution.sh` polls the thread, so a stranger's comment could otherwise forge round exhaustion, force an owner escalation carrying their text, or hold a PR in permanent cooldown. That is closed by the author gate in `conflict_resolution.decide()`, which is fail-closed (the CLI refuses to route without a trusted set). **Known member of the #4167 secret-withholding class, reported not fixed:** on a Dependabot-actored `pull_request` event `resolve` gets a blank `REVIEW_AGENT_TOKEN` and that one conflict notice is lost. It strands nothing (this workflow writes no lane), and the `push`-to-release-branch entry point re-sweeps every open PR *with* secrets — which is the event that creates base-moved conflicts anyway. Moving it to `pull_request_target` would be a behavior decision (it would dispatch a developer-agent conflict round at a Dependabot PR), not a token fix, so it is enumerated in `tests/unit/test_pull_request_target_safety.py`'s `DEPENDABOT_SECRETLESS_TOLERATED` with that reason rather than changed |
 | `conflict_owner_escalation.yml` | `issue_comment`(created) | issues write, `REVIEW_AGENT_TOKEN`; assigns the owner + Slack DM | commenter ∈ `{DEV_AGENT, REVIEW_AGENT, HUMAN_OWNER}` on the `comment_gate` job + the shared anchored comment-token gate (#3790/V-011) | Added by #3801 — the single route from a merge conflict to the owner; follows the `handle_acceptance_failure.yml` reference pattern (actor + token tests both on `comment_gate`, whose verdict the privileged job requires) |
 | `delete_branch_on_pr_close.yml` | `pull_request`(closed) | contents write (branch delete) | none, but explicitly skips fork-head PRs + branch allow-pattern + deny-list | Unchanged — already scoped safely by construction |
 | `claude.yml` | `issue_comment`, `pull_request_review_comment`, `issues`(opened,assigned), `pull_request_review` | Bash/Read/Write/Edit, `CLAUDE_CODE_OAUTH_TOKEN`; job-level `GITHUB_TOKEN` is read-only | **none** — any `@claude` mention triggers a full agentic session | **Known gap, out of #3600's scope.** The read-only job token can't push/merge directly, but on a public repo any user can trigger a costly agent session that posts comments under the bot's identity. Flagged for an owner decision (gate to `HUMAN_OWNER`/agent identities, or accept the risk for public Q&A). No fast-follow issue has been filed for this yet — file one before relying on this row as a tracked follow-up. |
 | `bulk_set_issue_status.yml`, `promote_accepted_features.yml`, `reconcile_closed_backlog_status.yml`, `scrummaster_sprint_report.yml`, `usage_limit_retry.yml`, `terraform-local-smoke.yml`, `validate-web-routes.yml`, `security-scan.yml` | `workflow_dispatch`/`schedule`/path-filtered CI | varies | N/A | No comment/issue-content-driven public-actor path. `security-scan.yml` (#3501, pending owner hand-carry per `docs/security-scanning-ci.md`) has no write permissions block and calls no `gh`/write APIs -- `pull_request`/`push` triggered but out of scope for this table's actor-gate requirement per §3b's "read-only automation is exempt." |
+
+### The Dependabot secret-withholding class (#4167, enumerated by its review round)
+
+Separate axis from the actor gates above, and it bites in the opposite
+direction: a gate asks *can this actor make the job do something*, and this
+asks *does the job work at all for this actor*. GitHub withholds Actions
+secrets from a **Dependabot-actored `pull_request` run** and substitutes the
+repository's Dependabot secret store, which is empty here — so every
+`pull_request`-triggered job reading `secrets.*` fails on every Dependabot PR.
+Security updates still arrive (`.github/dependabot.yml` disables *version*
+updates only), so this is live, not hypothetical.
+
+**Enumerate before you gate.** The whole class is held in
+`DEPENDABOT_SECRETLESS_TOLERATED` in
+`tests/unit/test_pull_request_target_safety.py`, checked in both directions, so
+a new `pull_request`+secrets workflow fails the build until someone states what
+a blank token does to it:
+
+| Workflow | Disposition |
+|---|---|
+| `ensure_project_hygiene.yml` (`pr-hygiene`) | **Fixed** by #4167 — `pull_request_target`. A blank token meant the PR never reached the board, so never reached the review agent |
+| `pr_project_status_on_close.yml` (`stamp-closed-lane`) | **Fixed** in the same change — a blank token would strand the card the line above now creates |
+| `notify-merge-conflicts.yml` (`resolve`) | Tolerated, reported — one lost notice, no state written, re-swept by the `push` entry point |
+| `claude-code-review.yml` | Tolerated — gated out before it starts (needs `REVIEW_AGENT` as reviewer/assignee, which nothing puts on a Dependabot PR) |
+| `support-intake-smoke.yml` (`label-exists`) | Tolerated — path-filtered, read-only `gh label list`, `[not-required]`; a blank token makes the check red and writes nothing |
+
+**The discriminator is whether a blank token strands agent state.** A red check
+is a cost; a card stuck in `In Review` with nothing left to move it is debris
+the lane invariant (#3742) exists to prevent, and that is what earns a move to
+`pull_request_target` — never convenience, because that trigger is the one that
+combines this repository's secrets with an arbitrary author's branch (ledger
+**D-062**). An adjacent, *different* fault worth not confusing with this one:
+Dependabot-actored runs also get a **read-only `GITHUB_TOKEN`** regardless of a
+workflow's `permissions:` block, which is why `delete_branch_on_pr_close.yml`
+cannot delete a Dependabot branch — token downgrade, not secret withholding,
+and harmless here because Dependabot deletes its own.
 
 **Verification.** Each new `if:` condition was hand-traced against
 representative actors:
@@ -625,6 +668,37 @@ before the mechanism itself was removed:
   comments — whichever comes first. An owner comment clears the halt at once;
   otherwise it lapses as the cycles age out of the window. The guard bounds
   spend to ~3 cycles per window, it is not a lockout.
+
+## 3h) An escalation reports what the run already knows (#4176)
+
+Full reference: `docs/escalation-evidence.md`. The rule, because the owner
+received "Error type could not be determined. Manual investigation needed."
+over a run whose blast-radius section named the cause three lines further down
+(#4166):
+
+- **A failing step records its own reason.** Final Verification does it
+  (`scripts/agents/run_final_verification.sh` -> `write_agent_error_detail`:
+  which gate, and for pytest the failing node IDs from the `-rf` short
+  summary), and `classify_error` answers `verification_failed:<gate>` instead
+  of `unknown`. **Any step you add that knows why it failed does the same** --
+  Phase 1's log harvest is empty mid-run, so a step that records nothing is
+  classified by its NAME.
+- **The headline is composed, never looked up.**
+  `scripts/agents/lib/escalation_evidence.py` composes it from the Phase 3
+  diagnosis, the base-red finding, the gate's own reason and "Phase 3 did not
+  run", in that order. Do not add an error-class -> sentence table anywhere
+  near an escalation: that table is the defect.
+- **Ask "is this inherited?" before fixing anything.** If the failures
+  reproduce on `origin/<release branch>`, the base is red and the work in front
+  of you is not the cause. Compare with a **detached** worktree --
+  `git worktree add --detach /tmp/base-check origin/<release branch>` -- and
+  remove it when you are done. Without `--detach` the worktree HOLDS the branch
+  name and the next `claude-code-action` invocation dies with
+  `fatal: '<branch>' is already used by worktree at '<path>'`, which is how
+  #4166 lost its diagnosis entirely.
+- **A knowledge failure is never dressed as an answer.** An unreadable head is
+  "not checked", not green; a crashed Phase 3 says it did not run rather than
+  concluding nothing.
 
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:

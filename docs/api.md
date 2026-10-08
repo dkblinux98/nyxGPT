@@ -51,7 +51,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/cloud/infra/apply` | POST | Provision/reconcile the AWS substrate and record its ids |
 | `/api/v1/cloud/infra/destroy` | POST | Tear the AWS substrate down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/state` | GET | Terraform state backend: local file, or S3 with DynamoDB locking |
-| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, health, deploy history, localhost URLs (no AWS call unless `?probe_health=true`) |
+| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, health, deploy history, localhost URLs (no AWS call and no connection to the instance unless `?probe_health=true` or `?verify_host=true`) |
 | `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/ops/cloud-artifact-smoke` | GET | Last containerized artifact-install smoke (verdict, defect class, diagnostics), whether one is in flight, and what a green run does not cover |
@@ -1881,14 +1881,16 @@ log (`cloud_deploy.deploy`/`.destroy`).
 ### `GET /api/v1/cloud/deploy`
 
 Report what is deployed, whether the access tunnel is open, and what has
-happened to this deployment. Reads recorded state only — no AWS call and no
-connection to the instance — so it is cheap to poll.
+happened to this deployment. The default reads recorded state only — no AWS
+call and no connection to the instance — so it is cheap to poll. Both network
+calls are opt-in query parameters.
 
 **Query parameters**
 
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `probe_health` | `false` | Also make one short request to the tunneled API health endpoint. Opt-in so the polled default stays free of network calls; skipped with a reason when no tunnel is open, since a probe would only time out. |
+| `verify_host` | `false` | Also ask AWS whether the recorded EC2 Mac Dedicated Host still exists, and refresh what Cost Explorer says it has cost (#4136). One `DescribeHosts` plus an hourly-cached `GetCostAndUsage`, and only when a host is recorded. This is what makes the `mac_host` block AWS's answer rather than the local record read back; the block reports which of the two it is either way. Never fails the request — expired credentials leave the block labelled as unconfirmed. |
 
 Like the substrate read it names its source (#3804): `deploy-record` on the
 machine that ran the deploy, `local-instance` when this process *is* the

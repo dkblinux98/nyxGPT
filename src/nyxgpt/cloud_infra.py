@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_imds
+from nyxgpt import cloud_cluster_record, cloud_imds, cloud_record
 from nyxgpt import config as config_mod
 from nyxgpt.cloud import (
     CLOUD_STATE_FILE,
@@ -80,19 +80,11 @@ SETTINGS_FILE = CLOUD_DIR / "infra.json"
 
 PLAN_FILE = CLOUD_DIR / "tfplan"
 
-# Keys `nyxgpt cloud infra` owns inside the shared cloud state file. Anything
-# else in there (written by other `nyxgpt cloud` work) is preserved on write
-# and left alone on destroy.
-STATE_KEYS = (
-    "region",
-    "vpc_id",
-    "security_group_id",
-    "instance_id",
-    "instance_type",
-    "public_ip",
-    "private_ip",
-    "ssh_key_name",
-)
+# Keys `nyxgpt cloud infra` owns inside the shared cloud state file -- this
+# substrate's *block*. Defined in `cloud_record`, which owns the file and the
+# rule that a block is replaced whole rather than merged into (#4136). Another
+# substrate's block is preserved on write and left alone on destroy.
+STATE_KEYS = cloud_record.AWS_BLOCK_KEYS
 
 # Terraform was pulled from homebrew-core after HashiCorp's 2023 BUSL
 # relicense, so `brew install terraform` fails -- the official tap is the
@@ -589,32 +581,27 @@ def terraform_outputs() -> dict[str, Any]:
 
 def _load_cloud_state() -> dict[str, Any]:
     """Read the shared `~/.nyxGPT/cloud/state.json`, returning `{}` when absent/unreadable."""
-    if not CLOUD_STATE_FILE.exists():
-        return {}
-    try:
-        loaded = json.loads(CLOUD_STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+    return cloud_record.load_state()
 
 
 def write_cloud_state(outputs: dict[str, Any]) -> dict[str, Any]:
-    """Replace this module's keys in the shared cloud state file with `outputs`.
+    """Replace this substrate's block in the shared cloud state file with `outputs`.
 
-    Only `STATE_KEYS` are touched; anything else another `nyxgpt cloud`
-    command wrote is preserved. This is what makes `nyxgpt cloud allow-ip`
-    work with no arguments right after provisioning.
+    Only this substrate's block is touched; another substrate's block is
+    preserved. That is what makes `nyxgpt cloud allow-ip` work with no
+    arguments right after provisioning.
 
-    Within `STATE_KEYS` this *replaces* rather than merges (#3993). The merge
-    it replaced only ever wrote keys the new outputs carried, so a key the
-    apply did not produce kept the previous substrate's value -- and the file
-    then described two substrates at once. Observed live: `state.json` naming
-    the new instance's id beside the destroyed substrate's `security_group_id`,
-    which sent `nyxgpt cloud allow-ip`'s auto-discovery at a group that no
-    longer existed, while the operator was locked out and depending on it. A
-    key with no value in the new outputs is *dropped*: "this substrate has no
-    such id" is an answer, and a stale id is worse than a missing one because
-    every consumer treats it as current.
+    The block is *replaced*, never merged into (#3993, enforced for every
+    substrate in `cloud_record.write_block` since #4136). The merge it replaced
+    only ever wrote keys the new outputs carried, so a key the apply did not
+    produce kept the previous substrate's value -- and the file then described
+    two substrates at once. Observed live: `state.json` naming the new
+    instance's id beside the destroyed substrate's `security_group_id`, which
+    sent `nyxgpt cloud allow-ip`'s auto-discovery at a group that no longer
+    existed, while the operator was locked out and depending on it. A key with
+    no value in the new outputs is *dropped*: "this substrate has no such id"
+    is an answer, and a stale id is worse than a missing one because every
+    consumer treats it as current.
 
     Empty `outputs` is the one case that changes nothing. `terraform_outputs`
     returns `{}` both for "no substrate yet" and for "the output read itself
@@ -624,29 +611,18 @@ def write_cloud_state(outputs: dict[str, Any]) -> dict[str, Any]:
     `apply_infra` reports that case rather than acting on it.
     """
     if not outputs:
-        return _load_cloud_state()
-    state = {k: v for k, v in _load_cloud_state().items() if k not in STATE_KEYS}
-    for key in STATE_KEYS:
-        if outputs.get(key) is not None:
-            state[key] = outputs[key]
-    CLOUD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CLOUD_STATE_FILE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    os.chmod(CLOUD_STATE_FILE, 0o600)
-    return state
+        return cloud_record.load_block(cloud_record.SUBSTRATE_AWS)
+    cloud_record.write_block(
+        cloud_record.SUBSTRATE_AWS, outputs, reason="replaced by `nyxgpt cloud infra apply`"
+    )
+    return _load_cloud_state()
 
 
 def clear_cloud_state() -> None:
-    """Drop this module's keys from the shared cloud state after a destroy."""
-    state = _load_cloud_state()
-    if not state:
-        CLOUD_STATE_FILE.unlink(missing_ok=True)
-        return
-    remaining = {k: v for k, v in state.items() if k not in STATE_KEYS}
-    if remaining:
-        CLOUD_STATE_FILE.write_text(json.dumps(remaining, indent=2) + "\n", encoding="utf-8")
-        os.chmod(CLOUD_STATE_FILE, 0o600)
-    else:
-        CLOUD_STATE_FILE.unlink(missing_ok=True)
+    """Drop this substrate's block from the shared cloud state after a destroy."""
+    cloud_record.clear_block(
+        cloud_record.SUBSTRATE_AWS, reason="substrate destroyed by `nyxgpt cloud infra destroy`"
+    )
 
 
 # --- Operations (shared by the CLI and the admin dashboard API) ---

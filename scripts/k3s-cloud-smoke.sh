@@ -1318,7 +1318,7 @@ PY
 
 log "MEASURED: the ConfigMap the install created, as the cluster holds it:"
 kubectl -n "$NAMESPACE" get configmap nyxgpt-cloud-deploy \
-  -o jsonpath='{range $k,$v := .data}{$k}={$v}{"\n"}{end}' | sed 's/^/    | /'
+  -o go-template='{{range $k, $v := .data}}{{$k}}={{$v}}{{"\n"}}{{end}}' | sed 's/^/    | /'
 
 # The authorization a real Pod depends on, asked of the real API server --
 # which is the half the simulated reads above cannot cover. Both directions:
