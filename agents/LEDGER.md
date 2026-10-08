@@ -2398,6 +2398,29 @@ rather than mechanism, and nothing can enforce them.
   Source: owner instruction 2026-10-07; `scripts/release_ceremony.sh`;
   `scripts/agents/release_ceremony_watch.sh`; `CLAUDE.md` §Branch Rules.
 
+- **D-062** · 2026-10-08 · developer-agent (#4167) — **`pull_request_target`
+  is permitted in this repo for a job that never resolves anything to the PR
+  head, and for nothing else.** `pr-hygiene` needed it: GitHub treats a
+  Dependabot-authored `pull_request` run as a fork PR, withholding Actions
+  secrets, so `SCRUMMASTER_AGENT_TOKEN` was blank and the job — the one that
+  puts an issue-less PR on the board in `In Review`, i.e. the only way the
+  review agent sees one — died at `require_gh_auth` on every Dependabot PR.
+  Rejected alternative: copying the PAT into the Dependabot secret store,
+  which hands a `workflow`-scoped token to jobs that install the PR's
+  dependency tree. The permission is conditional, not general: a
+  `pull_request_target` job may not use a PR-head `ref`, `github.head_ref`,
+  `refs/pull/*`, `gh pr checkout`, or any build/dependency install, because
+  the run carries this repository's secrets on a branch an arbitrary author
+  controls. Enforced by `tests/unit/test_pull_request_target_safety.py` over
+  *every* such workflow, with `project-hygiene-smoke.yml`'s
+  `pr-head-guard-discriminates` job executing that guard against five broken
+  copies so it cannot pass by being vacuous. One consequence: such a run is
+  associated with the base commit, so the check stays `[not-required]`.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4167; `agents/runbooks/developer-runbook.md` §3c;
+  `docs/live-verification-ci.md`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
