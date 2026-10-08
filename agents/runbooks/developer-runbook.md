@@ -943,6 +943,21 @@ again.
   first refusal (run 32419181728). **If you add a script that knows why it
   failed, write the reason with `write_agent_error_detail` rather than
   trusting stderr to survive the trip.**
+- **Classifying it was only half of that, until #4179.** Phase 2 used to
+  classify the failure *again* — from the run-log API, which cannot answer
+  mid-run — and its `case` had no `ci_red` arm, so the class fell to a default
+  that wrote `STATUS=FATAL` and the round escalated anyway (#4138, run
+  37722699004). `scripts/agents/lib/error_classes.py` is now the **one table**
+  of what each class does, read by Phase 1's predicates, by Phase 2 and by the
+  escalation headline. Two rules follow for anyone touching this path: **a new
+  error class needs a row in that table** (`tests/unit/test_error_classes.py`
+  reads `classify_error` itself and fails the build otherwise), and **"Phase 2
+  found nothing" is `DEFER`, never `FATAL`** — Phase 1's class stands.
+- **The continued round is told which check is red.** The refusal records
+  `red-head-check: <name> <url>` lines, the auto-retry comment names them, and
+  the Review Fix brief re-derives them live from the PR head. A retry that
+  loses the cause just burns the budget (3 per issue+step, `retry_budget.py`);
+  when it does run out the escalation is keyed `head-red:<checks>`.
 
 Full mechanics: `docs/reviewable-head-gate.md`.
 

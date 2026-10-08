@@ -317,6 +317,14 @@ if [[ "${1:-}" == "api" ]]; then
     # The stub answers what the real `--jq` would have produced: the
     # library's own jq filter is exercised by Part 1 above; what is under
     # test here is the submit script's behaviour given a verdict.
+    #
+    # Two filters hit the same endpoint (#4179): `head_check_runs` asks for
+    # conclusions and `head_check_links` asks for `html_url`. The stub tells
+    # them apart by the filter, since the path cannot.
+    if [[ "$*" == *html_url* ]]; then
+      cat "$TMP/check-run-links.txt" 2>/dev/null
+      exit 0
+    fi
     cat "$TMP/check-runs.txt"
     exit 0
   fi
@@ -366,6 +374,11 @@ _run_submit() {
   : > "$TMP/gh.log"
   rm -f "$TMP/pr-body.md"
   printf '%s\n' "$1" > "$TMP/check-runs.txt"
+  # Where each check run can be READ (#4179). Written alongside the
+  # conclusions so a refusal can name the check AND its run URL.
+  printf '%s\n' \
+    "k8s-artifact-smoke=https://github.com/test-owner/test-repo/actions/runs/777/job/888" \
+    "security-scan=" > "$TMP/check-run-links.txt"
   shift
   # The stub cannot answer Projects v2 GraphQL, so the bookkeeping tail
   # (project hygiene, status, assignment) is not what these cases assert --
@@ -382,6 +395,12 @@ _assert_eq "a red head exits 3, distinguishable from every other failure" "3" "$
 _assert_contains "the refusal names the failing check" "$OUT" "k8s-artifact-smoke"
 _assert_contains "the refusal says whose problem it is" "$OUT" "red head is not reviewable"
 _assert_contains "the refusal documents the override" "$OUT" "--ci-override"
+# #4179: the structured half -- what the next round, the auto-retry comment
+# and the escalation's cause key read. The prose named the check; nothing
+# named WHERE TO READ IT, so a continued round had to rediscover the cause.
+_assert_contains "the refusal records the check as a structured line" "$OUT" \
+  "red-head-check: k8s-artifact-smoke"
+_assert_contains "with the check run's URL" "$OUT" "actions/runs/777/job/888"
 _assert_not_contains "a refused submission opens no PR" "$(cat "$TMP/gh.log")" "gh pr create"
 _assert_not_contains "a refused submission requests no reviewer" "$(cat "$TMP/gh.log")" "--add-reviewer"
 
@@ -544,6 +563,12 @@ if [[ "${1:-}" == "api" && "$*" == *"/pulls/"* && "$*" == *".head.sha"* ]]; then
   echo "sha-under-test"
   exit 0
 fi
+# `head_check_links` asks the same endpoint for `html_url` (#4179); the
+# filter is the only thing that tells the two queries apart.
+if [[ "$*" == *html_url* ]]; then
+  cat "$STUB_TMP/check-run-links.txt" 2>/dev/null || true
+  exit 0
+fi
 cat "$STUB_TMP/check-runs.txt" 2>/dev/null || true
 exit 0
 STUB
@@ -624,6 +649,24 @@ CLASSIFY="$(
 )"
 _assert_eq "a refused red head classifies retriable, so the round continues" \
   "retriable:ci_red" "$CLASSIFY"
+
+# #4179: classifying it retriable was never the end of the story -- Phase 2
+# re-classified it from an empty harvest and escalated it as FATAL anyway
+# (#4138, run 37722699004). These assert on the REAL refusal this script just
+# wrote, end to end: the reader gets the check and its URL back out, and Phase
+# 2 continues the round instead of ending it.
+PARSED="$("${NYXGPT_TEST_PYTHON:-python3}" \
+  "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" red-head-checks \
+  < "$NYXGPT_AGENT_ERROR_FILE")"
+_assert_contains "the reader gets the failing check back out of the refusal" \
+  "$PARSED" "k8s-artifact-smoke"
+_assert_contains "and where to read it" "$PARSED" "actions/runs/777/job/888"
+
+CAUSE="$(jq -n -c --arg vd "$(cat "$NYXGPT_AGENT_ERROR_FILE")" \
+    --arg fs "Submit PR for review" '{verification_detail: $vd, failed_step: $fs}' \
+  | "${NYXGPT_TEST_PYTHON:-python3}" "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" cause)"
+_assert_eq "an escalation for it would be keyed on the failing check, not the step" \
+  "head-red:k8s-artifact-smoke" "$CAUSE"
 
 # Fault injection: without the recorded reason, Phase 1's fallback is the step
 # NAME -- and that is the `unknown` that woke the owner. If this ever stops

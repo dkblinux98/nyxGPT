@@ -69,6 +69,44 @@ stays as the fallback. **A new agent script that knows why it failed should
 record it the same way** — this is the difference between a signature in
 `classify_error` that works and one that only reads as if it does.
 
+### Classifying it was only half (#4179)
+
+Phase 1 answering `retriable:ci_red` is not the decision. **Phase 2 used to
+classify the failure again**, with a `case` that had no `ci_red` arm and a
+default that wrote `STATUS=FATAL`, from a harvest (`gh run view <id> --log`)
+that cannot answer while the run is in progress. So the refusal was classified
+correctly and escalated anyway: on #4138
+([run 37722699004](https://github.com/dkblinux98/nyxGPT/actions/runs/37722699004))
+the owner was woken with *"Error type: retriable:ci_red … Diagnosis:
+Unrecognized error type."* for a one-line bug in that branch's own smoke
+script.
+
+Now `scripts/agents/lib/error_classes.py` is the single table of what each
+class does, Phase 2 acts on the class Phase 1 already derived, and a Phase 2
+that finds nothing **defers** instead of overruling it. See
+`docs/escalation-evidence.md` → *The error-class table*.
+
+### What the continued round is told
+
+A refusal leaves no PR behind, so `developer_ensure_pr_exists.sh` opens a
+rescue draft and the next round takes the Review Fix path. The brief it is
+handed used to say only "finish the work on that branch" — which is how a
+round re-submitted into the same red head and spent the retry budget on a
+cause nobody had named.
+
+The refusal therefore records **which** checks failed and **where to read
+them**, as `red-head-check: <name> <url>` lines in the error-detail file
+(`red_head_check_lines`, read back by
+`escalation_evidence.parse_red_head_detail`), and the auto-retry comment names
+them. The brief itself is derived **live from the PR's own head** rather than
+relayed through that comment: GitHub's answer is the unforgeable one, and a
+check that has since gone green must not send the round chasing it.
+
+The round is bounded by the same unforgeable retry budget as any other retry
+(3 per `(issue, failed step)` since the last owner comment, `retry_budget.py`).
+When it runs out, the escalation is keyed `head-red:<checks>` — the failing
+check, not the step that noticed it.
+
 ## The required set is a named list
 
 `.github/required-checks.txt`, in two sections.

@@ -186,16 +186,43 @@ classify_error() {
   echo "unknown"
 }
 
+# error_class_disposition <error_class>
+#
+# `retriable` / `fatal` / `diagnose`, FROM THE TABLE in
+# scripts/agents/lib/error_classes.py -- the one place that decides what a
+# class does (#4179). Phase 1's predicates below, Phase 2
+# (developer_analyze_failure.sh) and the escalation headline all read that
+# table, because the defect this replaces was three readers each holding their
+# own opinion: Phase 1 said `retriable:ci_red`, Phase 2's `case` had no arm for
+# it and defaulted to FATAL, and the owner was woken for a class the pipeline
+# itself calls retriable (#4138, run 37722699004).
+#
+# FALLS BACK TO THE PREFIX, and deliberately: this runs on the failure path, so
+# a missing interpreter or an unreadable table must not be the reason a failing
+# run cannot classify itself. The class names carry their own disposition in
+# their prefix, which is what the predicates used to read directly.
+error_class_disposition() {
+  local error_class="${1:-}" out=""
+  out="$(python3 "${_LIB_DIR}/error_classes.py" disposition "$error_class" 2>/dev/null)" || out=""
+  if [[ -z "$out" ]]; then
+    _warn "error_class_disposition: could not read the error-class table -- using the class prefix"
+    case "$error_class" in
+      retriable:*) out="retriable" ;;
+      fatal:*) out="fatal" ;;
+      *) out="diagnose" ;;
+    esac
+  fi
+  printf '%s\n' "$out"
+}
+
 # Check if error type is retriable
 is_retriable_error() {
-  local error_class="$1"
-  [[ "$error_class" == retriable:* ]]
+  [[ "$(error_class_disposition "${1:-}")" == "retriable" ]]
 }
 
 # Check if error type is fatal
 is_fatal_error() {
-  local error_class="$1"
-  [[ "$error_class" == fatal:* ]]
+  [[ "$(error_class_disposition "${1:-}")" == "fatal" ]]
 }
 
 # -------------------------
@@ -4480,6 +4507,63 @@ head_check_runs() {
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${sha}/check-runs" --paginate \
     --jq '.check_runs[]
           | "\(.name)=\(if .status != "completed" then "pending" else (.conclusion // "pending") end)"'
+}
+
+# "<name>=<url>" for every check run on a commit -- where to GO to read why it
+# failed (#4179).
+#
+# A separate function and a separate call rather than a fourth line on
+# `required_check_state`: this is only ever wanted on the red path (a refusal,
+# an escalation, the brief handed to the next round), while
+# `required_check_state` runs on every submission and every review trigger, and
+# its three-line output is a pinned contract. Never fails the caller -- a URL
+# is a convenience on a failure path, and the check's NAME is the part that
+# matters.
+head_check_links() {
+  local sha="$1"
+  require_cmd gh
+  gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${sha}/check-runs" --paginate \
+    --jq '.check_runs[] | "\(.name)=\(.html_url // .details_url // "")"' 2>/dev/null || return 0
+}
+
+# red_head_check_lines <sha> <failed_names_csv>
+#
+# One `red-head-check: <name> <url>` line per failing required check, which is
+# the structured half of the red-head refusal recorded in the agent
+# error-detail file (#4179).
+#
+# THE FORMAT IS OWNED BY scripts/agents/lib/escalation_evidence.py
+# (`RED_HEAD_CHECK_PREFIX` / `parse_red_head_detail`), which is the reader --
+# the escalation headline, its cause key and the next round's brief all come
+# from there. Written here in shell because the refusal's own sentence lives in
+# developer_submit_for_review.sh and is pinned there (#3971); the prefix is
+# pinned on BOTH sides by tests/unit/test_error_classes.py so the two cannot
+# drift the way #4176's two ends of the verification detail did.
+#
+# The URL is best effort. A failing check with no readable URL still gets its
+# line, because "which check" is the cause and "where to read it" is the
+# convenience.
+red_head_check_lines() {
+  local sha="${1:-}" failed_csv="${2:-}"
+  [[ -n "$failed_csv" ]] || return 0
+  local links="" name url
+  [[ -n "$sha" ]] && links="$(head_check_links "$sha" || true)"
+  # Deliberate word splitting on commas, which is how `required_check_state`
+  # reports the failing set.
+  local IFS=','
+  # shellcheck disable=SC2086
+  for name in $failed_csv; do
+    [[ -n "$name" ]] || continue
+    url=""
+    if [[ -n "$links" ]]; then
+      # Split on the FIRST `=` only: a check-run URL may legitimately carry
+      # one in a query string, and `-F=` would truncate it there.
+      url="$(printf '%s\n' "$links" \
+        | awk -v n="$name" 'index($0, n "=") == 1 { u = substr($0, length(n) + 2); if (u != "") { print u; exit } }')"
+    fi
+    printf 'red-head-check: %s%s\n' "$name" "${url:+ $url}"
+  done
+  return 0
 }
 
 # required_check_state <sha>

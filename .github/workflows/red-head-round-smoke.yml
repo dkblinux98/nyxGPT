@@ -1,0 +1,180 @@
+name: Red Head Round Smoke
+
+# Which questions does this job answer? (#3775 executed verification, #4179)
+#
+#   1. "Is the premise true -- does `gh run view <id> --log` really fail while
+#       the run is in progress?" The #4179 issue says so and notes that the
+#       evidence was lost to a truncated log, so the inference rested on a
+#       comment. This job PROVES it, on its own in-progress run.
+#   2. "Did `retriable:ci_red` really have no arm in Phase 2's `case`?" Proven
+#       by running the pre-#4179 `case` and watching it exit FATAL -- the
+#       failure direction, without which the fixed direction proves nothing
+#       (#3753's lesson).
+#   3. "Does Phase 2 now continue the round -- with NOTHING harvestable, which
+#       is the state the observed run was actually in?"
+#   4. "Does the WORKFLOW then continue rather than escalate?" The two `if:`
+#       expressions are evaluated over the outputs a ci_red round produces, so
+#       the answer is about the condition rather than about a grep for it.
+#   5. "Is the continued round told which check is red?" The real brief step is
+#       executed against a stubbed red head, and against a green one.
+#
+# The motivating run is #4138's (37722699004): `k3s-cloud-smoke` red on the
+# head from a one-line bug in that branch's own smoke script, the submission
+# correctly refused, Phase 1 correctly classifying `retriable:ci_red`, and the
+# owner woken with "Diagnosis: Unrecognized error type."
+#
+# WHAT THIS CANNOT COVER, and does not pretend to: a real re-dispatch. Finishing
+# the chain means assigning the developer agent on a real issue, and a CI job
+# may not write the board or spend a Claude invocation to prove a condition the
+# evaluated `if:` already decides. Everything up to and including the decision
+# runs here; the live half is cited in the PR from a real run.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/lib/error_classes.py"
+      - "scripts/agents/lib/escalation_evidence.py"
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/developer_analyze_failure.sh"
+      - "scripts/agents/developer_submit_for_review.sh"
+      - "tests/test_red_head_round.sh"
+      - "tests/test_reviewable_head_gate.sh"
+      - "tests/unit/test_error_classes.py"
+      - "tests/unit/test_red_head_round_wiring.py"
+      - ".github/workflows/developer_auto_implement.yml"
+      - ".github/workflows/red-head-round-smoke.yml"
+  pull_request:
+    paths:
+      - "scripts/agents/lib/error_classes.py"
+      - "scripts/agents/lib/escalation_evidence.py"
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/developer_analyze_failure.sh"
+      - "scripts/agents/developer_submit_for_review.sh"
+      - "tests/test_red_head_round.sh"
+      - "tests/test_reviewable_head_gate.sh"
+      - "tests/unit/test_error_classes.py"
+      - "tests/unit/test_red_head_round_wiring.py"
+      - ".github/workflows/developer_auto_implement.yml"
+      - ".github/workflows/red-head-round-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  the-4138-round-reproduced:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the suites' own dependencies
+        shell: bash
+        run: python -m pip install --quiet pytest pyyaml
+
+      # ---------------------------------------------------------------
+      # Q1: the premise -- the run-log API cannot answer mid-run
+      # ---------------------------------------------------------------
+      # This is the fact Phase 2's old harvest was built on top of, and the one
+      # #4179 could only infer: GitHub had truncated the job log that would
+      # have shown it. Here it is answered by asking, from inside a run that is
+      # still in progress.
+      - name: The run-log archive really is unavailable mid-run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          if gh run view "${GITHUB_RUN_ID}" --log > /tmp/midrun.log 2>/tmp/midrun.err; then
+            # Backslash-escaped: an unescaped backtick pair here would RUN the
+            # command this message is about.
+            echo "::warning::\`gh run view --log\` ANSWERED mid-run on this runner."
+            echo "That is not the behaviour Phase 2's old harvest was built on, but it does"
+            echo "not make the harvest correct either: it answered for THIS job and returned"
+            echo "nothing useful for a job still writing its log. Phase 2 reads the files on"
+            echo "the runner regardless, which is why this is a warning and not a failure."
+            head -5 /tmp/midrun.log || true
+          else
+            echo "Confirmed: the run-log archive is not available while the run is in progress."
+            head -5 /tmp/midrun.err || true
+          fi
+
+      # ---------------------------------------------------------------
+      # Q2: the failure direction -- the old `case` had no ci_red arm
+      # ---------------------------------------------------------------
+      - name: Reproduce the pre-4179 Phase 2, which escalates ci_red as FATAL
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # The arms the old `case` actually had, verbatim in shape. Nothing
+          # here is the new code: this is the defect, run.
+          old_phase2() {
+            case "$1" in
+              issue_closed|rate_limit|stale_ref|test_failure|api_overloaded|network_timeout)
+                echo "STATUS=TRANSIENT"; return 2 ;;
+              auth_failure|already_merged)
+                echo "STATUS=FATAL"; return 1 ;;
+              *)
+                echo "STATUS=FATAL"
+                echo "DIAGNOSIS=Error type not recognized - manual investigation needed"
+                return 1 ;;
+            esac
+          }
+
+          OUT="$(old_phase2 ci_red)"; RC=$?
+          if [[ "$RC" != "1" || "$OUT" != *"STATUS=FATAL"* ]]; then
+            echo "::error::the pre-#4179 case did NOT escalate ci_red -- this job's premise is wrong."
+            exit 1
+          fi
+          echo "Confirmed: ci_red fell to the default arm -> STATUS=FATAL, exit 1 -> escalate."
+          echo "$OUT"
+
+          # And the table now refuses to leave any retriable class there.
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "scripts/agents/lib")
+          import error_classes as ec
+          stranded = [c for c in ec.retriable_classes()
+                      if ec.phase2_outcome(c) == ec.PHASE2_DEFER]
+          assert not stranded, f"retriable classes with no Phase 2 outcome: {stranded}"
+          assert ec.exit_code("retriable:ci_red") == ec.EXIT_TRANSIENT
+          print("The table gives every retriable class an outcome; ci_red exits 2, not 1.")
+          PY
+
+      # ---------------------------------------------------------------
+      # Q3 + Q5: the scripts and the workflow's own run blocks, executed
+      # ---------------------------------------------------------------
+      - name: Phase 2 and the continued round's brief, EXECUTED
+        shell: bash
+        run: bash tests/test_red_head_round.sh
+
+      - name: The refusal that starts it, EXECUTED end to end
+        shell: bash
+        run: bash tests/test_reviewable_head_gate.sh
+
+      # ---------------------------------------------------------------
+      # Q4: would the escalation step have run?
+      # ---------------------------------------------------------------
+      - name: The workflow's decision, evaluated over a ci_red round's outputs
+        shell: bash
+        run: python -m pytest tests/unit/test_red_head_round_wiring.py tests/unit/test_error_classes.py -q
+
+      - name: Summarise what ran
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Red-head round smoke (#4179)"
+            echo
+            echo "* the run-log archive's mid-run availability, asked on this run"
+            echo "* the pre-#4179 Phase 2 \`case\`, run: ci_red -> FATAL, exit 1"
+            echo "* Phase 2 today, run with nothing harvestable: continues the round"
+            echo "* the workflow's \`if:\` expressions, evaluated: retry yes, escalate no"
+            echo "* the continued round's brief, run against a red head and a green one"
+          } >> "$GITHUB_STEP_SUMMARY"

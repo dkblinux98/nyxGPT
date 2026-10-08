@@ -682,6 +682,51 @@ jobs:
             echo "Saved review feedback to /tmp/review-comments.txt"
           fi
 
+          # ---- The red head this round has to fix (#4179) ----------------
+          # #3971's contract is that a submission refused for a red head is
+          # continued by ANOTHER DEVELOPER ROUND. That round lands here (the
+          # refusal left no PR, so developer_ensure_pr_exists.sh opened a
+          # rescue draft, and a rescue draft takes the Review Fix path) -- and
+          # before this, the brief it was handed said only "finish the work on
+          # that branch". It did not say which check was red, so the round
+          # re-submitted into the same red head and the retry budget was spent
+          # three times over on a cause nobody had named. On #4138 that cause
+          # was a one-line bug in the branch's own smoke script: a round that
+          # had been told would have fixed it.
+          #
+          # Derived LIVE from the PR head rather than relayed through a
+          # comment: GitHub's answer is the unforgeable one, and a check that
+          # has since gone green must not send this round chasing it.
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          PR_HEAD_SHA="$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.sha // ""' 2>/dev/null || echo "")"
+          if [[ -n "$PR_HEAD_SHA" ]]; then
+            HEAD_BLOCK="$(required_check_state "$PR_HEAD_SHA")"
+            HEAD_STATE="$(printf '%s\n' "$HEAD_BLOCK" | sed -n 's/^state=//p')"
+            HEAD_FAILED="$(printf '%s\n' "$HEAD_BLOCK" | sed -n 's/^failed=//p')"
+            echo "::notice::Required checks on PR #$PR head $PR_HEAD_SHA: $HEAD_STATE${HEAD_FAILED:+ (failed: $HEAD_FAILED)}"
+            if [[ "$HEAD_STATE" == "failed" && -n "$HEAD_FAILED" ]]; then
+              {
+                echo
+                echo "## A required check is RED on this branch's head -- fix it first (#3971, #4179)"
+                echo
+                echo "The previous round's submission was REFUSED because a red head is not"
+                echo "reviewable. That is this round's work, not the reviewer's. Failing required"
+                echo "check(s) on \`${PR_HEAD_SHA}\`:"
+                echo
+                red_head_check_lines "$PR_HEAD_SHA" "$HEAD_FAILED" \
+                  | sed 's/^red-head-check: /- /'
+                echo
+                echo "Read the failing check's own log, fix the cause, and push to this branch."
+                echo "Do NOT submit the PR yourself and do not override the gate: the workflow"
+                echo "submits once the checks pass."
+              } >> /tmp/review-comments.txt
+              echo "Appended the red-head brief for: $HEAD_FAILED"
+            fi
+          else
+            echo "::warning::Could not read PR #$PR's head SHA -- the brief will not name a red check."
+          fi
+
           # Extract structured critical_issues from hidden review comment if available.
           # Same per-page --jq pitfall as above -- stream, then slurp+last.
           STRUCTURED_COMMENT=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
@@ -2362,6 +2407,15 @@ jobs:
           echo "$ERROR_LOG"
           echo "::endgroup::"
 
+          # The text Phase 1 classified, handed to Phase 2 as a FILE on this
+          # runner (#4179). Phase 2 used to re-harvest it with `gh run view
+          # --log` -- the call the comment above explains cannot answer
+          # mid-run -- and then reported the empty result as a fatal
+          # diagnosis. There is no reason for two steps in one job to ask
+          # GitHub the same unanswerable question: the first one already has
+          # the answer.
+          printf '%s\n' "$ERROR_LOG" > /tmp/phase1_error_text.txt
+
           # Persist the concrete failing step + error excerpt to a file so
           # downstream comment steps can surface the real error instead of a
           # generic classification (#3360 — a misdiagnosed run previously
@@ -2518,6 +2572,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          # #4179: Phase 1's class and Phase 1's error text are INPUTS. Phase 2
+          # does not re-classify and does not re-harvest -- its old harvest was
+          # a run-log API call that cannot answer mid-run, and its old default
+          # arm turned that empty answer into `STATUS=FATAL`.
+          ERROR_CLASS: ${{ steps.classify_error.outputs.error_class }}
+          NYXGPT_PHASE1_ERROR_FILE: /tmp/phase1_error_text.txt
         continue-on-error: true
         run: |
           set +e  # Don't exit on error - we're handling it
@@ -2527,7 +2587,8 @@ jobs:
           # Run the analysis script
           ./scripts/agents/developer_analyze_failure.sh \
             "${{ github.event.issue.number }}" \
-            "${{ github.run_id }}"
+            "${{ github.run_id }}" \
+            "$ERROR_CLASS"
 
           RESULT=$?
 
@@ -2547,6 +2608,14 @@ jobs:
               echo "fix_status=TRANSIENT" >> "$GITHUB_OUTPUT"
               echo "::notice::Error is transient - retry recommended"
               ;;
+            3)
+              # #4179: "Phase 2 had nothing to add" is its own answer, and it
+              # is NOT fatal. Phase 1 already classified this failure
+              # retriable (that is the gate on this step), so the auto-retry
+              # step below owns it exactly as it owns a TRANSIENT.
+              echo "fix_status=DEFER" >> "$GITHUB_OUTPUT"
+              echo "::notice::Phase 2 deferred - Phase 1's classification stands"
+              ;;
             *)
               echo "fix_status=UNKNOWN" >> "$GITHUB_OUTPUT"
               echo "::error::Analysis script returned unexpected code: $RESULT"
@@ -2563,6 +2632,10 @@ jobs:
 
             echo "action=${ACTION:-none}" >> "$GITHUB_OUTPUT"
             echo "wait_seconds=${WAIT_SECONDS:-0}" >> "$GITHUB_OUTPUT"
+            # #4179: the failing required check(s), so the auto-retry comment
+            # names the cause the continued round has to fix.
+            echo "ci_red_checks=${CI_RED_CHECKS:-}" >> "$GITHUB_OUTPUT"
+            echo "ci_red_urls=${CI_RED_URLS:-}" >> "$GITHUB_OUTPUT"
             echo "::notice::Analysis: $STATUS - $ERROR_TYPE"
           fi
 
@@ -2977,10 +3050,18 @@ jobs:
                     `[Workflow run](https://github.com/${repo}/actions/runs/${runId})`
             });
 
-      - name: Auto-retry on failure (Phase 2+3 - transient errors only)
+      - name: Auto-retry on failure (Phase 2+3 - retriable errors)
+        # DEFER is in the gate (#4179). Phase 2 only runs when Phase 1 called
+        # the error retriable, so "Phase 2 had nothing to add" leaves a
+        # retriable class with a defined response -- another round. Before
+        # this, a retriable class Phase 2 did not recognise fell through the
+        # script's default arm to FATAL and was escalated to the owner; the
+        # worked example is `retriable:ci_red` on #4138, whose whole contract
+        # (#3971) is that the developer round continues.
         if: |
           failure() && steps.cross_issue_anomaly.outputs.matched != 'true' && (
             steps.intelligent_fix.outputs.fix_status == 'TRANSIENT' ||
+            steps.intelligent_fix.outputs.fix_status == 'DEFER' ||
             steps.claude_result.outputs.status == 'TRANSIENT'
           )
         id: auto_retry
@@ -2989,6 +3070,10 @@ jobs:
           FAILED_STEP: ${{ steps.classify_error.outputs.failed_step }}
           ERROR_CLASS: ${{ steps.classify_error.outputs.error_class }}
           SIGNATURE: ${{ steps.classify_error.outputs.signature }}
+          # #4179: the cause the continued round must start from. A retry that
+          # loses the cause just burns the budget.
+          CI_RED_CHECKS: ${{ steps.intelligent_fix.outputs.ci_red_checks }}
+          CI_RED_URLS: ${{ steps.intelligent_fix.outputs.ci_red_urls }}
           PHASE3_STATUS: ${{ steps.claude_result.outputs.status }}
           RETRY_COUNT: ${{ steps.retry_budget.outputs.retry_count }}
           CAP_EXCEEDED: ${{ steps.retry_budget.outputs.cap_exceeded }}
@@ -3006,6 +3091,20 @@ jobs:
 
           ANALYSIS_PHASE="Phase 2 (Script)"
           [[ "$PHASE3_STATUS" == "TRANSIENT" ]] && ANALYSIS_PHASE="Phase 3 (Claude)"
+
+          # #4179: for a red head, name the failing check and where to read it
+          # in both comments below. The next round re-derives the same list
+          # live from its PR head (see "Save review comments to file"), so this
+          # is the record rather than the mechanism -- but a retry comment that
+          # says only "workflow failed" is how the budget gets spent on three
+          # rounds that never learn what broke.
+          CAUSE_LINES=""
+          if [[ -n "${CI_RED_CHECKS:-}" ]]; then
+            CAUSE_LINES="$(printf '**Failing required check(s):** %s\n' "$CI_RED_CHECKS")"
+            if [[ -n "${CI_RED_URLS:-}" ]]; then
+              CAUSE_LINES="${CAUSE_LINES}$(printf '**Check run(s):** %s\n' "$CI_RED_URLS")"
+            fi
+          fi
 
           # #3689: budget/signature are computed once by the "Compute retry
           # budget" step from an unforgeable marker embedded in every prior
@@ -3063,9 +3162,9 @@ jobs:
             # now "assign the developer agent", which no comment can do --
             # the marker stays as the standing convention for any agent
             # comment that quotes control words back at the owner.
-            BODY="$(printf '%s\n\n**Failed step:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n**Same signature as immediately preceding run:** %s\n**Analysis:** %s\n\n%s\n\n**What to do:**\n1. Review the [failed workflow logs](https://github.com/%s/actions/runs/%s)\n2. Fix the underlying problem manually\n3. Comment on this issue (as the repo owner) to reset the budget, then assign @%s to try again\n\n**Note:** Only a comment from the repo owner resets this budget -- relabeling the error or a bot comment does not (#3689).\n\n%s\n' \
+            BODY="$(printf '%s\n\n**Failed step:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n**Same signature as immediately preceding run:** %s\n**Analysis:** %s\n%s\n%s\n\n**What to do:**\n1. Review the [failed workflow logs](https://github.com/%s/actions/runs/%s)\n2. Fix the underlying problem manually\n3. Comment on this issue (as the repo owner) to reset the budget, then assign @%s to try again\n\n**Note:** Only a comment from the repo owner resets this budget -- relabeling the error or a bot comment does not (#3689).\n\n%s\n' \
               "❌ **Developer Agent**: Auto-retry stopped -- unforgeable budget exhausted or signature disproof triggered." \
-              "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$REASON" "$REPO" "$RUN_ID" "$DEV_AGENT_LOGIN" "<!-- nyxgpt-token-mention -->")"
+              "$FAILED_STEP" "$RETRY_COUNT" "$SAME_SIG" "$ANALYSIS_PHASE" "$CAUSE_LINES" "$REASON" "$REPO" "$RUN_ID" "$DEV_AGENT_LOGIN" "<!-- nyxgpt-token-mention -->")"
             gh issue comment "$ISSUE" --body "$BODY"
             echo "escalated=true" >> "$GITHUB_OUTPUT"
             # #3695: one-line diagnosis + recommended action for the human-
@@ -3073,7 +3172,7 @@ jobs:
             # sends after this one. GITHUB_OUTPUT writes persist even though
             # this step exits 1 below.
             {
-              echo "diagnosis=${REASON} (failed step: ${FAILED_STEP})"
+              echo "diagnosis=${REASON}${CI_RED_CHECKS:+ Failing required check(s): ${CI_RED_CHECKS}.} (failed step: ${FAILED_STEP})"
               echo "action=Review the failed workflow logs, fix the underlying problem manually, then comment on the issue (as the repo owner) to reset the budget and re-assign @${DEV_AGENT_LOGIN}."
             } >> "$GITHUB_OUTPUT"
             exit 1
@@ -3093,9 +3192,9 @@ jobs:
           # prose start runs (#3706, #3790). The budget marker still rides in
           # the comment: retry_budget.py counts markers, not tokens, so the
           # cap and the owner reset are unchanged.
-          BODY="$(printf '%s\n\n**Failed step:** %s\n**Analysis:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n\nRe-assigning to @%s, which restarts the run. The agent will attempt to:\n1. Diagnose and fix any infrastructure issues\n2. Handle branch creation/checkout problems\n3. Retry the implementation\n\n[Previous failed run](https://github.com/%s/actions/runs/%s)\n\n%s\n' \
+          BODY="$(printf '%s\n\n**Failed step:** %s\n**Analysis:** %s\n**Retry count:** %s/3 for this step (since last owner comment)\n%s\n\nRe-assigning to @%s, which restarts the run. The agent will attempt to:\n1. Diagnose and fix any infrastructure issues\n2. Handle branch creation/checkout problems\n3. Retry the implementation\n\n[Previous failed run](https://github.com/%s/actions/runs/%s)\n\n%s\n' \
             "⚠️ **Developer Agent**: Workflow failed - auto-retry triggered." \
-            "$FAILED_STEP" "$ANALYSIS_PHASE" "$NEXT_N" "$DEV_AGENT_LOGIN" "$REPO" "$RUN_ID" "$MARKER")"
+            "$FAILED_STEP" "$ANALYSIS_PHASE" "$NEXT_N" "$CAUSE_LINES" "$DEV_AGENT_LOGIN" "$REPO" "$RUN_ID" "$MARKER")"
           gh issue comment "$ISSUE" --body "$BODY"
 
           source scripts/agents/lib/gh_project.sh
@@ -3308,6 +3407,9 @@ jobs:
                     `   - **already_merged:** Work may already be done, check PRs\n` +
                     `   - **verification_failed:&lt;gate&gt;:** the diagnosis above names the gate and ` +
                     `the failing tests; if the base is red, fix the base first -- this issue is a symptom\n` +
+                    `   - **retriable:ci_red:** a required check is red on this branch's head. This ` +
+                    `class CONTINUES the round (#3971, #4179), so reaching here means the retry ` +
+                    `budget ran out -- the diagnosis above names the check\n` +
                     `   - **unknown:** Investigate logs for specific error details\n` +
                     `3. Once fixed, assign @${devAgent} to the issue -- the assignment is the retry (#3882)\n\n` +
                     `**Note:** Phase 2 intelligent analysis will auto-fix many of these errors.`
