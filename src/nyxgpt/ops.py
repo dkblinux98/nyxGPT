@@ -12516,6 +12516,14 @@ def _record_k8s_cloud_deploy() -> list[OpsResult]:
     instance. A local `kind`/minikube install is not a cloud deployment, so
     there is nothing to record and nothing to report, and the page's UNKNOWN
     for that vantage point is #3804's case working as designed.
+
+    The gate is "is this host an EC2 instance", NOT "did `nyxgpt cloud deploy`
+    run this install" -- deliberately. An operator who provisioned a box
+    themselves and ran `ops install --kubernetes --local` on it gets the same
+    record, which is the same answer the host already gives: there IMDS
+    answers, so `cloud status` reports `local-instance` and DEPLOYED today.
+    Recording less would make the Pod and the host disagree about one box,
+    which is the whole defect.
     """
     facts = cloud_imds.instance_facts()
     record = cloud_cluster_record.build_record(
