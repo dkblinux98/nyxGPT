@@ -3,7 +3,7 @@
 # reconcile_pr_lane.sh — sweep merged/closed PR cards into the terminal PR
 # lane (STATUS_CLOSED). The backstop half of the #3742 lane invariant.
 #
-# The merge flow (review_accept_and_merge.sh) and the pull_request:closed
+# The merge flow (review_accept_and_merge.sh) and the pull_request_target:closed
 # handler (pr_close_project_status.sh) stamp PR cards at the moment they
 # leave review. This sweep exists for everything those two could not reach:
 # the strays that predate the invariant (13 + 3 hand-swept on 2026-08-10, 10

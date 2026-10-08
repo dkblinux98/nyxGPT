@@ -13,6 +13,7 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
+from release_line_pin import pin_declared_release_line
 
 from nyxgpt import release_candidate
 from nyxgpt.app import app
@@ -28,18 +29,18 @@ def _offline(monkeypatch):
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
 
 
+# MERGE NOTE (#4167 <- v3.0.1): the release branch's inline `_declared_line`
+# fixture and this one are the same fix; see the note in
+# `test_release_candidate.py` for why the shared `release_line_pin` helper is
+# the one kept.
 @pytest.fixture(autouse=True)
-def _declared_line(monkeypatch, tmp_path):
-    """Pin the declared release line to the `v3.0.0` these fixtures name.
+def _declared_release_line(monkeypatch, tmp_path_factory):
+    """`PUBLISHED` above names the 3.0.0 line, so the declared version does too.
 
-    Same reason as `tests/unit/test_release_candidate.py::_declared_line`, and
-    the same seam: without it the endpoint's plan is compared against whatever
-    version the checkout currently declares, so shipping a release turns these
-    cases red. See that fixture's docstring for the full rationale.
+    See `release_line_pin`: read from the checkout instead, these payload
+    assertions break on the next release ceremony's version bump (#4167).
     """
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text('[project]\nname = "nyxGPT"\nversion = "3.0.0"\n', encoding="utf-8")
-    monkeypatch.setattr(release_candidate, "_checkout_pyproject", lambda: pyproject)
+    pin_declared_release_line(monkeypatch, tmp_path_factory)
 
 
 def test_endpoint_returns_the_plan_the_cli_reports():

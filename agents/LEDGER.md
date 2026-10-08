@@ -2398,6 +2398,70 @@ rather than mechanism, and nothing can enforce them.
   Source: owner instruction 2026-10-07; `scripts/release_ceremony.sh`;
   `scripts/agents/release_ceremony_watch.sh`; `CLAUDE.md` §Branch Rules.
 
+- **D-062** · 2026-10-08 · developer-agent (#4167) — **`pull_request_target`
+  is permitted in this repo for a job that never resolves anything to the PR
+  head, and for nothing else.** `pr-hygiene` needed it: GitHub treats a
+  Dependabot-authored `pull_request` run as a fork PR, withholding Actions
+  secrets, so `SCRUMMASTER_AGENT_TOKEN` was blank and the job — the one that
+  puts an issue-less PR on the board in `In Review`, i.e. the only way the
+  review agent sees one — died at `require_gh_auth` on every Dependabot PR.
+  Rejected alternative: copying the PAT into the Dependabot secret store,
+  which hands a `workflow`-scoped token to jobs that install the PR's
+  dependency tree. The permission is conditional, not general: a
+  `pull_request_target` job may not use a PR-head `ref`, `github.head_ref`,
+  `refs/pull/*`, `gh pr checkout`, or any build/dependency install, because
+  the run carries this repository's secrets on a branch an arbitrary author
+  controls. Enforced by `tests/unit/test_pull_request_target_safety.py` over
+  *every* such workflow, with `project-hygiene-smoke.yml`'s
+  `pr-head-guard-discriminates` job executing that guard against nine broken
+  copies so it cannot pass by being vacuous. One consequence: such a run is
+  associated with the base commit, so the check stays `[not-required]`.
+  **Scope widened by #4170's review round, to two jobs and an enumerated
+  class.** The secret-withholding fault is not specific to `pr-hygiene`: it
+  afflicts every workflow on `pull_request` that reads a secret, and
+  `pr_project_status_on_close.yml` had it the whole time — the #4167 issue's
+  "only `pr-hygiene` is affected" was an observation of two `opened` events,
+  not a class search. It moved in the same change because fixing `pr-hygiene`
+  is what made it consequential: a Dependabot PR now gets a board card, and
+  Dependabot's own supersede-close is a Dependabot-actored `closed` event, so
+  a blank token there strands that card in `In Review` with no sweep backstop
+  (#3742 debris). **The discriminator for moving a workflow is whether a blank
+  token strands agent state** — a red check is a cost, debris is a defect; the
+  three that only lose a notification or a read-only check
+  (`notify-merge-conflicts.yml`, `claude-code-review.yml`,
+  `support-intake-smoke.yml`) stay on `pull_request` and are enumerated in
+  `DEPENDABOT_SECRETLESS_TOLERATED` in the same guard, with a stated reason
+  each and checked in both directions so the class cannot grow unexamined
+  again. Do not confuse it with the adjacent fault that Dependabot-actored
+  runs also get a read-only `GITHUB_TOKEN` whatever `permissions:` says.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4167; PR #4170 review round; `agents/runbooks/developer-runbook.md`
+  §3c and its "Dependabot secret-withholding class" table;
+  `docs/live-verification-ci.md`.
+
+- **D-063** · 2026-10-08 · developer-agent (#4167) — **A unit test whose
+  fixtures name a release line supplies the declared version itself; it does
+  not read the checkout's.** `release_candidate.plan()` compares the branch it
+  is given against `pyproject.toml`'s `project.version` (via
+  `declared_version()` -> `_checkout_pyproject()`), so the publish-pipeline
+  tests — written against the `3.0.0` line, with `PUBLISHED` and the expected
+  `3.0.0rc3`/`3.0.0rc2` as arithmetic on it — passed only while the repo sat
+  on that line. The v3.0.1 ceremony bump (`ae64a2cd`) therefore turned 28
+  tests in `tests/unit/test_release_candidate.py` and
+  `test_release_candidate_endpoint.py` red **on the release branch itself**,
+  all on `branch v3.0.0 names release 3.0.0, but pyproject.toml declares
+  3.0.1`. Found as collateral on #4167's verification gate, not caused by it
+  (reproduced on a clean `origin/v3.0.1` worktree). Rewriting the literals to
+  `3.0.1` was rejected: it clears the symptom and re-arms it for v3.0.2
+  (first principle 2). `tests/unit/release_line_pin.py` pins the seam
+  instead, and `test_the_pinned_release_line_is_what_the_plan_reads` fails
+  first if that seam is renamed. Every release ceremony bumps this version —
+  treat any test that reads it as on this list.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4167; `tests/unit/release_line_pin.py`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
