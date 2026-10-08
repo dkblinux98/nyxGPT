@@ -11488,7 +11488,7 @@ def _ensure_k8s_observability_host_access() -> list[OpsResult]:
         for host, entry in K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()
         if entry.service in present
     }
-    urls = [f"http://127.0.0.1:{host}" for host in sorted(publishable)]
+    urls = _k8s_host_urls(publishable)
 
     provisioned = _kubectl_context() == KIND_CONTEXT and _kind_cluster_publishes_host_ports(
         mappings=K8S_OBSERVABILITY_HOST_PORT_MAPPINGS
@@ -13214,6 +13214,136 @@ def _republish_stale_host_ports(stale: list[tuple[int, K8sPublishedService]]) ->
     return _emit_results("port-forward", results)
 
 
+class _K8sObservabilityAccess(NamedTuple):
+    """How the SRE UIs are reachable from THIS machine, per the live cluster.
+
+    `served` and `stripped` are host ports, so a caller can name URLs or count
+    them; `note` is the one phrase the reporting commands print, and is what
+    stops them contradicting the install about the same cluster (#4135).
+    """
+
+    served: list[int]
+    stripped: list[int]
+    note: str
+
+
+def _k8s_host_urls(host_ports: Iterable[int]) -> list[str]:
+    """`http://127.0.0.1:<port>` for each host port, in port order."""
+    return [f"http://127.0.0.1:{port}" for port in sorted(host_ports)]
+
+
+def _k8s_observability_host_access(*, context: str | None = None) -> _K8sObservabilityAccess:
+    """Ask the cluster how the SRE UIs are reached, instead of asserting one answer (#4135).
+
+    `ops status` printed "reach the UIs with `nyxgpt ops port-forward --target
+    observability`" unconditionally -- minutes after the install on the same
+    cluster had reported the four NodePort URLs and probed them. Two messages
+    in one product about one cluster, and only one of them true: the operator
+    either spends a step on a forward they do not need, or reads the header as
+    "these are not reachable from here" and goes looking for a fault that does
+    not exist.
+
+    That is the #4126 finding in a second location, and the fix is the helper
+    #4126 added. A mapped host port is only being *served* when the Service
+    really carries the node port it maps to -- `kubectl apply -k k8s/`
+    re-asserts the shipped `type: ClusterIP` and strips the patched-on node
+    port, leaving the host port held by the node container with nothing behind
+    it. So the question goes to the live Service
+    (`_k8s_service_node_ports`), never to the install mode and never to
+    `K8S_OBSERVABILITY_PUBLISHED_SERVICES` alone -- that table records what
+    *would* be published, which is the claim being checked, not evidence for
+    it.
+
+    Four answers, the same four `_ensure_k8s_observability_host_access`
+    establishes and in the same order, so the install and the commands
+    reporting on it cannot disagree:
+
+    * **In a Pod** -- the access path belongs to the machine the operator
+      browses from, and a Pod can see neither the node's port mappings nor the
+      Services (#3988). Both paths named, neither claimed, exactly as the
+      dashboard's own observability card does.
+    * **A cluster nyxGPT provisioned** -- the URLs, in the install's own
+      words. A mapped host port whose Service lost its node port is named as
+      mapped-but-dark with the wrapped command that puts it back; a forward
+      cannot fix those, since the node container already holds the port.
+    * **The cloud k3s instance**, where the supervised access bridge owns
+      these ports and a forward started here would win a bind race it must
+      lose.
+    * **Anything else** -- a bring-your-own cluster, where the forward is the
+      only way in and the pointer is correct. When the install already
+      started one, say so rather than asking for it again.
+
+    `context` is kubectl's current context when the caller has already paid
+    for it (`status` has), so reporting does not cost a second
+    `kubectl config current-context`.
+    """
+    forward_pointer = "reach the UIs with `nyxgpt ops port-forward --target observability`"
+    if _in_cluster():
+        return _K8sObservabilityAccess(
+            [],
+            [],
+            "reach the UIs from the machine you browse from -- published on the host where "
+            f"nyxGPT provisioned the cluster, otherwise {forward_pointer} (a Pod can see "
+            "neither the node's port mappings nor the Services)",
+        )
+
+    if (_kubectl_context() if context is None else context) == KIND_CONTEXT:
+        mapped = _kind_published_host_ports()
+        # Only Services that are actually there: an absent Service carries no
+        # node port either, and calling that "lost its node port" would be a
+        # fresh wrong message of exactly the kind this issue is about. One
+        # `kubectl get svc` for the set, then one read per mapped Service.
+        present = _k8s_services_present(
+            {entry.service for entry in K8S_OBSERVABILITY_PUBLISHED_SERVICES.values()}
+        )
+        served: list[int] = []
+        stripped: list[int] = []
+        for host, entry in sorted(K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()):
+            if host not in mapped or entry.service not in present:
+                continue
+            if entry.node_port in _k8s_service_node_ports(entry.service):
+                served.append(host)
+            else:
+                stripped.append(host)
+        notes = []
+        if served:
+            notes.append(
+                f"SRE UIs reachable at {', '.join(_k8s_host_urls(served))} -- NodePorts "
+                "published by the cluster, no port-forward needed, and they survive Pod "
+                "replacement"
+            )
+        if stripped:
+            notes.append(
+                f"the cluster maps {', '.join(_k8s_host_urls(stripped))} but the Service(s) "
+                "behind them lost their node port -- `nyxgpt ops observability --kubernetes` "
+                "publishes them again"
+            )
+        if notes:
+            return _K8sObservabilityAccess(served, stripped, "; ".join(notes))
+        # A `nyxgpt-local` created before the SRE host ports were mapped: its
+        # node publishes none of them and they cannot be added to a running
+        # cluster, so the forward below is the answer here too.
+
+    if _k8s_access_bridge_owns_host_ports():
+        return _K8sObservabilityAccess(
+            [],
+            [],
+            "the SRE UIs are held by the Kubernetes access bridge on this instance -- reach "
+            "them from your workstation with `nyxgpt cloud tunnel`",
+        )
+
+    if port_forward_status()["running"]:
+        return _K8sObservabilityAccess(
+            [],
+            [],
+            "reached by the managed background port-forward the install started "
+            "(`nyxgpt ops port-forward --status` / `--stop`; `nyxgpt ops port-forward "
+            "--target observability` re-establishes it)",
+        )
+
+    return _K8sObservabilityAccess([], [], forward_pointer)
+
+
 @dataclass
 class _PortForwardArgs:
     """The two fields `_port_forward_plan` reads, for in-process callers.
@@ -14376,10 +14506,14 @@ def up(args) -> int:
         # so this is a URL, not homework.
         print(f"nyxGPT is up: {WEB_URL}")
         if not skip_observability:
+            # The same claim the install just established, read back from the
+            # cluster rather than asserted (#4135): this line used to name a
+            # port-forward unconditionally, two screens below the install's
+            # own "[OK] SRE UIs reachable at ... -- no port-forward needed"
+            # on the same cluster. The comment above is the rule it broke.
             print(
                 "Observability (Grafana, Prometheus, Jaeger, GlitchTip) runs in the cluster "
-                "too -- `nyxgpt ops port-forward --target observability` publishes all four "
-                "on the ports the admin dashboard links to."
+                f"too -- {_k8s_observability_host_access().note}."
             )
     else:
         print(f"nyxGPT is up: {WEB_URL}")
@@ -14963,10 +15097,15 @@ def status(_args) -> int:
 
             observability_state = _k8s_observability_workload_state()
             if any(state != "absent" for state in observability_state.values()):
-                print(
-                    "\nKubernetes observability (in-cluster -- reach the UIs with "
-                    "`nyxgpt ops port-forward --target observability`):"
-                )
+                print("\nKubernetes observability (in-cluster):")
+                # Asked of the cluster, not asserted (#4135). This header used
+                # to tell every operator to open a port-forward -- including
+                # the one whose install had just published those four UIs on
+                # the host and probed them, which is two messages in one
+                # product contradicting each other about one cluster. The
+                # context is the one already read above, so the answer costs
+                # no second `kubectl config current-context`.
+                print(f"  Access: {_k8s_observability_host_access(context=context).note}")
                 # `0/1 ready` is PENDING here too, not a bare count the
                 # operator has to interpret against the labelled Pod lines
                 # printed just above it (#3827).
