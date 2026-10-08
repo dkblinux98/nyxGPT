@@ -17,7 +17,7 @@ name: k3s Cloud Smoke
 # `render_provision_script()`, rather than a hand-maintained copy. A smoke that
 # tests an approximation certifies the approximation -- the #3860 lesson.
 #
-# Six of its eleven steps carry FAULT INJECTIONS (#3753's both-halves rule): the
+# Seven of its twelve steps carry FAULT INJECTIONS (#3753's both-halves rule): the
 # bootstrap step proves an overlapping VPC network is refused and nothing
 # installed, the image-import step proves the Pod fails without the import and
 # runs with it, the bridge step proves 127.0.0.1:8000 goes dead when the bridge
@@ -45,6 +45,20 @@ name: k3s Cloud Smoke
 # is now injected through the bootstrap's own NYXGPT_VPC_CIDRS override, and
 # the job also measures the networks the RUNNING cluster cut and requires
 # CoreDNS Available at zero restarts with no `plugin/loop` in its log.
+#
+# The seventh injection is #4138's, the inverse of the sixth and the other
+# vantage point no unit fixture reproduces: a Pod of a `--kubernetes` cloud
+# deployment could not report the deployment it is part of, because it reaches
+# neither IMDS (link-local is not routed into the Pod network) nor the host's
+# `~/.nyxGPT/cloud`. The owner's dashboard on the EC2 k3s instance read "it is
+# neither an EC2 instance" while `nyxgpt cloud status` on that box printed the
+# instance in full. Step 11 proves both halves against the live cluster: with
+# nothing recorded an in-cluster read must still say UNKNOWN (which is also
+# #3804's case, so the fix cannot have broken it), and after the product's own
+# writer records the instance the two status surfaces must report it -- plus
+# the API server's own answer on whether the `nyxgpt-api` ServiceAccount may
+# read that one ConfigMap and no other, which is the authorization a real Pod
+# depends on and no unit test can ask.
 #
 # The sixth injection is #4137's, and it is the clearest case yet for running a
 # check on a live cluster: the defect is a property of THIS VANTAGE POINT. A k3s
@@ -82,6 +96,11 @@ on:
       # step 10, so a change to either must re-run it.
       - 'src/nyxgpt/self_heal.py'
       - 'src/nyxgpt/cli.py'
+      # Step 11's subjects (#4138): the cluster record, and the two status
+      # functions the CLI and the dashboard share.
+      - 'src/nyxgpt/cloud_cluster_record.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud_imds.py'
       - 'k8s/**'
       - 'terraform/aws/variables.tf'
       - 'scripts/k3s-cloud-smoke.sh'
@@ -94,6 +113,11 @@ on:
       # step 10, so a change to either must re-run it.
       - 'src/nyxgpt/self_heal.py'
       - 'src/nyxgpt/cli.py'
+      # Step 11's subjects (#4138): the cluster record, and the two status
+      # functions the CLI and the dashboard share.
+      - 'src/nyxgpt/cloud_cluster_record.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud_imds.py'
       - 'k8s/**'
       - 'terraform/aws/variables.tf'
       - 'scripts/k3s-cloud-smoke.sh'

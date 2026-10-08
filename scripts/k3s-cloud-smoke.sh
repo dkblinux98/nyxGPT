@@ -19,8 +19,8 @@
 # hand-maintained approximation of a bootstrap is evidence about the
 # approximation (the #3860 lesson).
 #
-# Ten steps, and five of them carry fault injections -- a job that only runs
-# the happy path passes on every machine that fails to reproduce the bug
+# Twelve steps, and seven of them carry fault injections -- a job that only
+# runs the happy path passes on every machine that fails to reproduce the bug
 # (#3753):
 #
 #   1  FAULT INJECTION: a VPC network that overlaps the k3s pod or Service
@@ -70,7 +70,19 @@
 #   9  The applied image tags: per-build-path and versioned, through a generated
 #      kustomize overlay that kubectl's embedded kustomize has to accept and the
 #      API server has to admit -- with `k8s/` still byte-identical.
-#  10  The `--no-kubernetes` transition, against the live cluster and bridge
+#  10  FAULT INJECTION: host-side probes must not answer FOR the cluster
+#      (#4137). A k3s host is neither in-cluster nor Compose, so a gate written
+#      as "am I inside a Pod?" cannot see it.
+#  11  FAULT INJECTION: a Pod must be able to report its own cloud deployment
+#      (#4138) -- the inverse vantage point. With nothing recorded, an
+#      in-cluster read of this live cluster must say UNKNOWN (which is both the
+#      defect the owner photographed and #3804's case, so neither can regress
+#      unnoticed); after the product's own writer records the instance into the
+#      cluster, both status surfaces must report it, the real API server must
+#      agree that the `nyxgpt-api` ServiceAccount may read that one ConfigMap
+#      read-only and no other, an off-cluster read of the same cluster must
+#      still say UNKNOWN, and deleting the record must take the answer with it.
+#  12  The `--no-kubernetes` transition, against the live cluster and bridge
 #      the steps above built: the native section really stops and removes the
 #      bridge, frees 8000, uninstalls k3s and frees 6443 -- and a second pass
 #      on a box with none of them is a no-op, which every first deploy runs.
@@ -148,7 +160,7 @@ if ! systemctl --user status >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-step "1/11  Execute the deploy's own k3s bootstrap"
+step "1/12  Execute the deploy's own k3s bootstrap"
 # ---------------------------------------------------------------------------
 python3 - > "$WORK/k3s-bootstrap.sh" <<'PY'
 from nyxgpt.cloud_deploy import render_k3s_bootstrap
@@ -219,7 +231,7 @@ NODE_IP="$(awk -F'[/:]+' '/server:/ {print $3; exit}' "$KUBECONFIG")"
 log "MEASURED: the kubeconfig points at https://${NODE_IP}:6443"
 
 # ---------------------------------------------------------------------------
-step "2/11  The access surface: #3503 says nothing but TCP 22"
+step "2/12  The access surface: #3503 says nothing but TCP 22"
 # ---------------------------------------------------------------------------
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
@@ -354,7 +366,7 @@ fi
 log "PASS: CoreDNS is Available with 0 restarts and no resolver loop"
 
 # ---------------------------------------------------------------------------
-step "3/11  k8s/*.yaml applies to k3s UNCHANGED"
+step "3/12  k8s/*.yaml applies to k3s UNCHANGED"
 # ---------------------------------------------------------------------------
 # Through the product's own resource sync and secret bootstrap, not a
 # hand-rolled copy: what a deploy applies is the PACKAGED manifests under
@@ -420,7 +432,7 @@ fi
 log "PASS: every Service is ClusterIP"
 
 # ---------------------------------------------------------------------------
-step "4/11  FAULT INJECTION: a docker-built image is invisible to k3s"
+step "4/12  FAULT INJECTION: a docker-built image is invisible to k3s"
 # ---------------------------------------------------------------------------
 # k3s runs its own containerd with its own image store, and every Deployment in
 # k8s/ pins `imagePullPolicy: IfNotPresent` against a `:local` tag that exists
@@ -499,7 +511,7 @@ kubectl -n "$NAMESPACE" wait --for=condition=Ready pod/import-probe-after --time
 log "PASS (fix proven): after _k3s_import_image the same Pod runs"
 
 # ---------------------------------------------------------------------------
-step "5/11  The access bridge, end to end"
+step "5/12  The access bridge, end to end"
 # ---------------------------------------------------------------------------
 # `k8s/`'s Services are ClusterIP-only, so nothing binds 127.0.0.1:8000 on the
 # instance the way the native services do -- and the SSH tunnel forwards to
@@ -543,7 +555,7 @@ log "MEASURED: 127.0.0.1:8000/health -> $bridged"
 log "PASS: systemd --user unit -> nyxgpt ops port-forward -> ClusterIP Service -> Pod"
 
 # ---------------------------------------------------------------------------
-step "6/11  FAULT INJECTION: the bridge is what was measured"
+step "6/12  FAULT INJECTION: the bridge is what was measured"
 # ---------------------------------------------------------------------------
 # Without this, step 5 would pass on any runner where something else happened
 # to be listening on 8000.
@@ -556,7 +568,7 @@ fi
 log "PASS: with the bridge stopped, 127.0.0.1:8000 is dead"
 
 # ---------------------------------------------------------------------------
-step "7/11  FAULT INJECTION: a corpse from a finished rollout fails the install"
+step "7/12  FAULT INJECTION: a corpse from a finished rollout fails the install"
 # ---------------------------------------------------------------------------
 # The 2026-08-26 acceptance blocker (#3956). A `--kubernetes` deploy applies
 # `k8s/` (whose ConfigMap carries the placeholder error-tracking DSN), brings
@@ -791,7 +803,7 @@ log "      self-heal and canary alike -- and one the current ReplicaSet owns sti
 log "      with its reason"
 
 # ---------------------------------------------------------------------------
-step "8/11  FAULT INJECTION: kubectl on a k3s node is not kubectl"
+step "8/12  FAULT INJECTION: kubectl on a k3s node is not kubectl"
 # ---------------------------------------------------------------------------
 # The second 2026-08-26 blocker. `/usr/local/bin/kubectl` on a k3s node is a
 # symlink to the `k3s` binary, whose shim defaults KUBECONFIG to the root-only
@@ -875,7 +887,7 @@ log "PASS: the product finds the kubeconfig kubectl would have, and a probe that
 log "      not ask never answers 'native'"
 
 # ---------------------------------------------------------------------------
-step "9/11  The applied image tags name the build and the version"
+step "9/12  The applied image tags name the build and the version"
 # ---------------------------------------------------------------------------
 # The third 2026-08-26 blocker: four build paths shared `nyxgpt-api:local` /
 # `nyxgpt-web:local`, so an instance running published 3.0.0rc14 reported its
@@ -927,7 +939,7 @@ diff -r --exclude=secret.yaml "$CHECKOUT/k8s" "$K8S_DIR" \
 log "PASS: the manifests are still byte-identical to k8s/ (secret.yaml aside)"
 
 # ---------------------------------------------------------------------------
-step "10/11  FAULT INJECTION: host-side probes must not answer for the cluster"
+step "10/12  FAULT INJECTION: host-side probes must not answer for the cluster"
 # ---------------------------------------------------------------------------
 # #4137, and it needs a live k3s host rather than unit fixtures because the
 # whole defect is a property of this vantage point: a k3s host is NEITHER
@@ -1158,7 +1170,299 @@ unset NYXGPT_COMPOSE_FILE
 kubectl -n "$NAMESPACE" delete pod cassandra-0 grafana-smoke --now >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-step "11/11  The --no-kubernetes transition actually moves the box"
+step "11/12  FAULT INJECTION: a Pod must be able to report its own deployment"
+# ---------------------------------------------------------------------------
+# #4138, and like step 10 it is a property of a VANTAGE POINT no unit fixture
+# reproduces -- here the opposite one. On the owner's EC2 k3s instance the
+# dashboard that deployment was itself serving read:
+#
+#   AWS substrate                                          [UNKNOWN]
+#     Unknown from this machine -- it is neither an EC2 instance nor one that
+#     has provisioned the substrate, so nothing here can answer.
+#   Cloud deployment                                       [UNKNOWN]
+#     Unknown from this machine -- no deploy has been recorded here and this
+#     is not the instance.
+#
+# while `nyxgpt cloud status` ON that instance printed i-081ec19e9a96fa4ff
+# (m5.xlarge), us-east-1, 184.193.4.58 and 3.0.0rc17 one process away. The api
+# Pod reaches neither IMDS (169.254.169.254 is link-local and not routed into
+# the Pod network) nor the host's ~/.nyxGPT/cloud, so it had nothing to answer
+# with. The fix is #3988's: the install RECORDS the facts in the cluster.
+#
+# Both halves are proved against this live cluster:
+#   (a) in-cluster with no record, `infra_status` must still report UNKNOWN --
+#       the defect condition, and simultaneously the #3804 case AC4 says must
+#       not regress;
+#   (b) after the product's own writer applies the record to the real API
+#       server, both status surfaces must report the instance, and the
+#       off-cluster read of the SAME cluster must still report UNKNOWN.
+#
+# Two things this step does NOT pretend to be:
+#   * a real EC2 instance. There is no hosted runner that is one
+#     (docs/live-verification-ci.md), so the IMDS facts are injected into the
+#     product's writer -- which is exactly where the real install gets them,
+#     and the write, the manifest, the API server, the RBAC scope and both
+#     reads are all real.
+#   * a real Pod. In a Pod kubectl authenticates with the mounted
+#     ServiceAccount; here the in-cluster READS are simulated by setting
+#     KUBERNETES_SERVICE_HOST, which makes `subprocess_bounds.kubectl_env`
+#     stand aside, so KUBECONFIG has to be named explicitly for kubectl to
+#     reach this node's cluster at all (step 8's finding). The real in-Pod
+#     authorization is covered below by asking the API server directly whether
+#     the `nyxgpt-api` ServiceAccount may read this ConfigMap -- and whether it
+#     may read any other, which it must not.
+
+# rbac.yaml for real this time: step 3 validated it server-side only (a dry
+# run creates nothing), and `kubectl auth can-i --as=serviceaccount` needs the
+# Role and RoleBinding to exist. Free -- no Pods, no image pulls.
+kubectl apply -n "$NAMESPACE" -f "$K8S_DIR/rbac.yaml" | sed 's/^/    | /'
+
+# The precondition that makes the whole step evidence: the facts below cannot
+# have come from IMDS or from a deploy record, because this box has neither.
+python3 - <<'PY'
+import sys
+from pathlib import Path
+
+from nyxgpt import cloud_deploy, cloud_imds, cloud_infra
+
+if cloud_imds.instance_facts(force=True) is not None:
+    sys.exit(
+        "this runner answers on the IMDS address, so a populated card here would prove "
+        "nothing about the cluster record"
+    )
+print("    | MEASURED: cloud_imds.instance_facts() -> None (this box is not an EC2 instance)")
+for label, path in (
+    ("deploy record", cloud_deploy.DEPLOY_STATE_FILE),
+    ("deploy attempt", cloud_deploy.DEPLOY_ATTEMPT_FILE),
+    ("substrate handoff", cloud_infra.CLOUD_STATE_FILE),
+):
+    if Path(path).exists():
+        sys.exit(f"this box has a {label} at {path} -- it would answer instead of the cluster")
+    print(f"    | MEASURED: no {label} at {path}")
+PY
+
+# --- (a) the defect condition, on a live cluster ---------------------------
+# In-cluster, cluster reachable, namespace present, no record: UNKNOWN.
+export KUBECONFIG="$HOME/.kube/config"
+export KUBERNETES_SERVICE_HOST=127.0.0.1
+export KUBERNETES_SERVICE_PORT=6443
+kubectl -n "$NAMESPACE" delete configmap nyxgpt-cloud-deploy --ignore-not-found >/dev/null
+
+python3 - <<'PY'
+import sys
+
+from nyxgpt import cloud_cluster_record, cloud_deploy, cloud_infra
+
+cloud_cluster_record.reset_cache()
+if not cloud_cluster_record.in_cluster():
+    sys.exit("the in-cluster simulation did not take -- the reads below are the host's")
+
+infra = cloud_infra.infra_status()
+deploy = cloud_deploy.deploy_status()
+print(f"    | infra.source={infra['source']}  known={infra['known']}")
+print(f"    | deploy.source={deploy['source']}  known={deploy['known']}")
+
+# This is the owner's screenshot, reproduced: a Pod of a live cluster, with
+# nothing recorded, saying it cannot answer. It is BOTH the defect condition
+# and AC4's requirement, which is why it is asserted rather than assumed.
+if infra["known"] or infra["source"] != cloud_infra.SOURCE_UNKNOWN:
+    sys.exit(
+        "an in-cluster read answered about AWS with no record in the cluster -- the card "
+        "would be asserting an instance nothing named"
+    )
+if deploy["known"]:
+    sys.exit("the deployment card claims to know a deployment with no record of one")
+print("    | FAULT INJECTION LIVE: both cards read UNKNOWN from inside this cluster")
+PY
+log "PASS (defect condition reproduced): a Pod of a live cluster cannot answer without a record"
+
+# --- the write, by the product, on the host --------------------------------
+# Not in-cluster: the real write happens during `ops install --kubernetes` ON
+# the instance, so the env is put back to the host's for it.
+env -u KUBERNETES_SERVICE_HOST -u KUBERNETES_SERVICE_PORT python3 - <<'PY'
+import sys
+
+from nyxgpt import cloud_imds, ops
+
+FACTS = {
+    "instance_id": "i-081ec19e9a96fa4ff",
+    "instance_type": "m5.xlarge",
+    "region": "us-east-1",
+    "availability_zone": "us-east-1a",
+    "public_ip": "184.193.4.58",
+    "private_ip": "10.0.1.20",
+    "vpc_id": "vpc-0smoke0",
+    "subnet_id": "subnet-0smoke0",
+    "security_group_id": "sg-0smoke0",
+    "ssh_key_name": "nyxgpt-smoke",
+}
+# The one injection: this runner is not an EC2 instance, so the IMDS read the
+# install makes on the real instance is substituted. Everything downstream --
+# the record, the manifest, `kubectl apply`, the API server -- is the product's.
+cloud_imds.instance_facts = lambda **_kw: dict(FACTS)
+
+results = ops._record_k8s_cloud_deploy()
+for r in results:
+    print(f"    | [{'OK' if r.ok else 'FAIL'}] {r.message}")
+    print(f"    |     {r.details}")
+if not results:
+    sys.exit("the install wrote no record even with instance facts available")
+if not all(r.ok for r in results):
+    sys.exit("the install could not write the cloud-deploy record into the cluster")
+PY
+
+log "MEASURED: the ConfigMap the install created, as the cluster holds it:"
+kubectl -n "$NAMESPACE" get configmap nyxgpt-cloud-deploy \
+  -o jsonpath='{range $k,$v := .data}{$k}={$v}{"\n"}{end}' | sed 's/^/    | /'
+
+# The authorization a real Pod depends on, asked of the real API server --
+# which is the half the simulated reads above cannot cover. Both directions:
+# the record readable, and the namespace's other ConfigMaps still not.
+API_SA="system:serviceaccount:${NAMESPACE}:nyxgpt-api"
+kubectl auth can-i get configmap/nyxgpt-cloud-deploy -n "$NAMESPACE" --as="$API_SA" \
+  | sed 's/^/    | can-i get configmap\/nyxgpt-cloud-deploy: /'
+kubectl auth can-i get configmap/nyxgpt-cloud-deploy -n "$NAMESPACE" --as="$API_SA" -q \
+  || fail "the api ServiceAccount may not read the cloud-deploy record -- in a real Pod the
+           cards would read UNKNOWN however correctly the install wrote it"
+if kubectl auth can-i get configmap/nyxgpt-config -n "$NAMESPACE" --as="$API_SA" -q; then
+  fail "the Role grants the namespace's other ConfigMaps too -- resourceNames is supposed to
+        keep configmap.yaml and the Secret unreadable through it"
+fi
+if kubectl auth can-i update configmap/nyxgpt-cloud-deploy -n "$NAMESPACE" --as="$API_SA" -q; then
+  fail "the api ServiceAccount may WRITE the cloud-deploy record -- the page observes the
+        deployment, it does not act on it (D-017)"
+fi
+log "PASS: the Role grants that one ConfigMap, read-only, and no other"
+
+# --- (b) the fix, from inside the cluster ----------------------------------
+python3 - <<'PY'
+import sys
+
+from nyxgpt import cloud_cluster_record, cloud_deploy, cloud_infra
+
+cloud_cluster_record.reset_cache()
+infra = cloud_infra.infra_status()
+deploy = cloud_deploy.deploy_status()
+
+print(f"    | infra.source={infra['source']}  on_ec2={infra['on_ec2']}")
+print(f"    | infra.source_label={infra['source_label'][:110]}...")
+print(f"    | deploy.source={deploy['source']}  deployed={deploy['deployed']}")
+
+if infra["source"] != cloud_infra.SOURCE_CLUSTER_RECORD or not infra["provisioned"]:
+    sys.exit("the substrate card still cannot report the instance this cluster runs on")
+if deploy["source"] != cloud_deploy.SOURCE_CLUSTER_RECORD or not deploy["deployed"]:
+    sys.exit("the deployment card still cannot report the deployment serving the page")
+
+# AC2: the values must be the ones `nyxgpt cloud status` prints on the box.
+expected = {
+    "instance_id": "i-081ec19e9a96fa4ff",
+    "instance_type": "m5.xlarge",
+    "region": "us-east-1",
+    "public_ip": "184.193.4.58",
+}
+for key, want in expected.items():
+    if infra[key] != want:
+        sys.exit(f"substrate card: {key}={infra[key]!r}, expected {want!r}")
+for key, want in (
+    ("instance_id", expected["instance_id"]),
+    ("instance_type", expected["instance_type"]),
+    ("region", expected["region"]),
+    ("host", expected["public_ip"]),
+    ("substrate", "kubernetes"),
+):
+    if deploy[key] != want:
+        sys.exit(f"deployment card: {key}={deploy[key]!r}, expected {want!r}")
+if not deploy["version"]:
+    sys.exit("the deployment card reports no version from inside the deployment")
+print(f"    | deploy.version={deploy['version']} (the process answering, read first-hand)")
+
+# AC3: the card names the vantage point it answered from.
+if cloud_cluster_record.CLOUD_DEPLOY_CONFIGMAP not in infra["source_label"]:
+    sys.exit("the card does not name the record it answered from")
+
+# AC6: nothing on this path reads the host filesystem for these facts. The
+# record is the only source, so removing it must remove the answer.
+PY
+log "PASS (fix proven): both cards report the deployment from inside the cluster serving them"
+
+# --- AC5: one endpoint, so the CLI prints what the page renders ------------
+# `deploy_status()` is the single function behind both `GET /cloud/deploy` and
+# `nyxgpt cloud status`, so this is not two code paths being compared -- it is
+# the one answer, rendered twice. Printed in full because the owner's report
+# was a side-by-side of these two surfaces disagreeing.
+log "MEASURED: \`nyxgpt cloud status\` from inside the deployment:"
+python3 - <<'PY' | sed 's/^/    | /'
+from nyxgpt import cloud_cluster_record, cloud_deploy
+
+cloud_cluster_record.reset_cache()
+cloud_deploy._print_status_summary(cloud_deploy.deploy_status())
+PY
+python3 - <<'PY'
+import contextlib
+import io
+import sys
+
+from nyxgpt import cloud_cluster_record, cloud_deploy
+
+cloud_cluster_record.reset_cache()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cloud_deploy._print_status_summary(cloud_deploy.deploy_status())
+out = buf.getvalue()
+for needle in (
+    "DEPLOYED",
+    "i-081ec19e9a96fa4ff",
+    "m5.xlarge",
+    "184.193.4.58",
+    cloud_cluster_record.CLOUD_DEPLOY_CONFIGMAP,
+):
+    if needle not in out:
+        sys.exit(f"`nyxgpt cloud status` does not print {needle!r} -- the CLI and the page "
+                 f"would be disagreeing about the same endpoint's answer")
+print("    | the CLI prints the same instance, type, IP and vantage point the page renders")
+PY
+log "PASS: the CLI and the page agree because they read the same function"
+
+# --- the gate: off-cluster, the same cluster answers nothing ---------------
+env -u KUBERNETES_SERVICE_HOST -u KUBERNETES_SERVICE_PORT python3 - <<'PY'
+import sys
+
+from nyxgpt import cloud_cluster_record, cloud_infra
+
+cloud_cluster_record.reset_cache()
+if cloud_cluster_record.read_cloud_deploy_record():
+    sys.exit(
+        "an off-cluster process read the cluster's cloud-deploy record -- a workstation "
+        "pointed at a local cluster would start answering questions about AWS"
+    )
+status = cloud_infra.infra_status()
+print(f"    | off-cluster: source={status['source']}  known={status['known']}")
+if status["known"]:
+    sys.exit("this host answers about AWS from a ConfigMap in a cluster it merely runs")
+PY
+log "PASS: the record is read only from inside the cluster, never by the host beside it"
+
+# --- and the record is what did it -----------------------------------------
+kubectl -n "$NAMESPACE" delete configmap nyxgpt-cloud-deploy >/dev/null
+python3 - <<'PY'
+import sys
+
+from nyxgpt import cloud_cluster_record, cloud_deploy, cloud_infra
+
+cloud_cluster_record.reset_cache()
+if cloud_infra.infra_status()["known"] or cloud_deploy.deploy_status()["known"]:
+    sys.exit(
+        "the cards still answer with the ConfigMap deleted, so something other than the "
+        "record was the source and the two assertions above proved nothing"
+    )
+print("    | with the record gone, both cards are UNKNOWN again")
+PY
+log "PASS (attribution): the record is the source -- delete it and the answer goes with it"
+
+unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
+
+# ---------------------------------------------------------------------------
+step "12/12  The --no-kubernetes transition actually moves the box"
 # ---------------------------------------------------------------------------
 # `--no-kubernetes` is documented as moving a deployment back to the native
 # substrate. The failure this proves against is silent in the worst available
@@ -1237,8 +1541,9 @@ log "ALL PASS -- the k3s substrate a --kubernetes cloud deploy creates works, th
 log "manifests apply to it unchanged (with the image tags pinned from outside them),"
 log "nothing listens on the public interface, the product finds the cluster with no"
 log "KUBECONFIG exported, a finished rollout's leftover Pod no longer fails the"
-log "install, no host-side probe answers for the cluster from this host, the"
-log "--no-kubernetes transition really retires it -- and all six fault injections"
-log "reproduced the failures they guard against."
+log "install, no host-side probe answers for the cluster from this host, a Pod of"
+log "the cluster can report the cloud deployment it is part of (and reports UNKNOWN"
+log "when nothing recorded one), the --no-kubernetes transition really retires it --"
+log "and all seven fault injections reproduced the failures they guard against."
 log "NOT covered here, by construction: a real EC2 instance, a real AWS security"
 log "group, and IMDSv2 -- see docs/live-verification-ci.md."

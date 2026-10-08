@@ -93,6 +93,10 @@ K8S_INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_sync_packaged_resources",
     "_apply_k8s_observability",
     "_record_k8s_install_mode",
+    # #4138: records the EC2 instance this cluster runs on, into the cluster.
+    # A step that must not run for real in a unit test -- it reads IMDS and
+    # applies a ConfigMap to whatever cluster kubectl is pointed at.
+    "_record_k8s_cloud_deploy",
     "_wait_for_k8s_app_tier",
     "_wait_for_k8s_observability",
     # Provisions the in-cluster GlitchTip (#3990). Very much a step that must
