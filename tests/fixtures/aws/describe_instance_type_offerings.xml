@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Which AZs in us-east-1 offer mac2.metal. Queried rather than assumed because
+     Mac capacity is per-AZ and differs by family; `resolve_allocation_plan` asks
+     this before it prices anything. -->
+<DescribeInstanceTypeOfferingsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>2a9f0e71-6b55-41cf-9a6b-recorded4136</requestId>
+  <instanceTypeOfferingSet>
+    <item>
+      <instanceType>mac2.metal</instanceType>
+      <locationType>availability-zone</locationType>
+      <location>us-east-1a</location>
+    </item>
+    <item>
+      <instanceType>mac2.metal</instanceType>
+      <locationType>availability-zone</locationType>
+      <location>us-east-1b</location>
+    </item>
+    <item>
+      <instanceType>mac2.metal</instanceType>
+      <locationType>availability-zone</locationType>
+      <location>us-east-1c</location>
+    </item>
+    <item>
+      <instanceType>mac2.metal</instanceType>
+      <locationType>availability-zone</locationType>
+      <location>us-east-1d</location>
+    </item>
+  </instanceTypeOfferingSet>
+</DescribeInstanceTypeOfferingsResponse>

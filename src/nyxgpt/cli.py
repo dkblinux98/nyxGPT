@@ -3117,8 +3117,10 @@ def cli(argv: list[str] | None = None) -> int:
         "--no-probe",
         action="store_true",
         help=(
-            "Do not health-check the deployment through an open tunnel "
-            "(the probe is skipped anyway when no tunnel is open)"
+            "Make no network calls: no health check through an open tunnel "
+            "(skipped anyway when no tunnel is open) and no AWS check on the "
+            "recorded EC2 Mac Dedicated Host, whose rows are then labelled as "
+            "unconfirmed rather than reported as current"
         ),
     )
 

@@ -3142,11 +3142,13 @@ def _screen_status() -> dict[str, Any]:
     return cloud_screen.screen_status()
 
 
-def deploy_status(probe_health: bool = False) -> dict[str, Any]:
-    """Report the deployment's state without touching AWS or the instance.
+def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict[str, Any]:
+    """Report the deployment's state; both network calls are opt-in.
 
-    Cheap enough for the dashboard to poll, and still answers on a machine
-    whose AWS credentials have expired.
+    The default touches neither AWS nor the instance, so it is cheap enough
+    for the dashboard to poll and still answers on a machine whose AWS
+    credentials have expired. `probe_health` and `verify_host` each add one
+    call, and are described below.
 
     Like the substrate status it wraps, this answers from whichever source
     can see the deployment from here:
@@ -3181,7 +3183,19 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
     A probe with no tunnel open would only ever time out, so it is skipped --
     as is a probe from the instance, where the tunnel is not the access path
     and the answering process is the one being asked about.
+
+    `verify_host=True` additionally asks AWS whether the recorded EC2 Mac
+    Dedicated Host still exists, and refreshes what Cost Explorer says it has
+    cost (#4136). Opt-in for the same reason as the health probe, and it is what
+    makes the difference between "AWS confirmed this host at <time>" and
+    repeating the record back as fact -- the `mac_host` block below says which
+    of those the reader is looking at, whichever way this was called.
     """
+    if verify_host:
+        # Never raises, by construction: an observability surface must not fail
+        # because credentials expired. A host it finds released clears the
+        # record, so the still-billing row below disappears with the charge.
+        cloud_mac.verify_mac_record()
     record = load_deploy_state()
     attempt = load_deploy_attempt()
     infra = cloud_infra.infra_status()
@@ -3311,8 +3325,9 @@ def deploy_status(probe_health: bool = False) -> dict[str, Any]:
         # two moments the only thing that still costs money is the one thing
         # every other field here has stopped describing. Empty dict when
         # nothing is outstanding. Read from `~/.nyxGPT/cloud/state.json`, so
-        # it still answers after `deploy.json` is gone -- and, like everything
-        # else on this surface, with no AWS call.
+        # it still answers after `deploy.json` is gone. The read itself makes
+        # no AWS call; `verify_host=True` above is what asks AWS, and the
+        # block says which of the two the reader is looking at (#4136).
         "mac_host": cloud_mac.pending_release(),
         "connection": connection_status(on_instance),
         "infra": infra,
@@ -3615,13 +3630,32 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     """
     if not mac_host or not mac_host.get("host_id"):
         return
-    print("\nEC2 Mac Dedicated Host (still billing)")
+    # "Still billing" is a claim about AWS, so it is only made when AWS said so
+    # in this run (#4136). An unconfirmed record gets the weaker heading it has
+    # always deserved: `nyxgpt cloud status` used to print "still billing" over
+    # a host that had been released three days earlier, because the record was
+    # the only thing it asked.
+    if mac_host.get("verified_at"):
+        heading = (
+            f"EC2 Mac Dedicated Host (still billing -- AWS confirmed {mac_host['verified_at']})"
+        )
+    else:
+        heading = (
+            "EC2 Mac Dedicated Host (recorded here; NOT confirmed at AWS in this run -- "
+            "`nyxgpt cloud status` asks)"
+        )
+    print(f"\n{heading}")
     _print_row("Host", f"{mac_host['host_id']} ({mac_host.get('instance_type') or 'unknown type'})")
     _print_row(
         "Location",
         f"{mac_host.get('region') or 'unknown'} / {mac_host.get('availability_zone') or 'unknown'}",
     )
     _print_row("Allocated", mac_host.get("allocated_at") or "unknown")
+    for finding in mac_host.get("incoherent") or []:
+        # Reported, not used. Each of these is detectable with no API call and
+        # each means the block's fields were written by different runs about
+        # different hosts -- so none of the rows below can be trusted together.
+        _print_row("INCOHERENT", finding)
     if mac_host.get("releasable_now"):
         release_note = f"{mac_host.get('release_at') or 'unknown'} -- that moment has passed"
     else:
@@ -3630,13 +3664,18 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     if mac_host.get("release_scheduled") and mac_host.get("releasable_now"):
         # Deliberately not "released": nothing on this machine watched the
         # schedule fire, so claiming the charge has stopped would be an
-        # assertion nothing checked. Slack has the outcome; the next
-        # lifecycle command asks AWS and clears this row if the host is gone.
+        # assertion nothing checked. Slack has the outcome.
+        #
+        # The second sentence used to promise that the next lifecycle command
+        # "asks AWS whether the host is really gone", and #4136 found the deploy
+        # not asking -- it made the call and discarded `InvalidHostID.NotFound`
+        # as "could not ask". It is true now, of three commands rather than two,
+        # which is why this names the cheap one first.
         _print_row(
             "Release",
-            "the scheduled release has fired -- Slack has the outcome. This row clears on the "
-            "next `nyxgpt cloud deploy --os macos` or `nyxgpt cloud destroy --yes`, which asks "
-            "AWS whether the host is really gone",
+            "the scheduled release has fired -- Slack has the outcome. This row clears as soon "
+            "as AWS confirms the host is gone, which `nyxgpt cloud status`, `nyxgpt cloud deploy "
+            "--os macos` and `nyxgpt cloud destroy --yes` each ask it",
         )
     elif mac_host.get("release_scheduled"):
         _print_row(
@@ -3649,16 +3688,41 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
             "NOT scheduled yet -- `nyxgpt cloud destroy --yes` terminates the Mac and "
             "schedules it",
         )
-    accrued = mac_host.get("accrued_cost")
-    rate = mac_host.get("hourly_rate")
-    if accrued is not None and rate:
-        _print_row(
-            "Accrued",
-            f"${float(accrued):.2f} at ${float(rate):.4f}/hour "
-            f"(the {cloud_mac.HOST_MINIMUM_HOURS}-hour minimum is charged either way)",
+    _print_row("Spend", _mac_spend_label(mac_host))
+
+
+def _mac_spend_label(mac_host: dict[str, Any]) -> str:
+    """One line for what the Dedicated Host has cost (#4136).
+
+    AWS's figure when there is one, and when there is not, the local estimate
+    *named as an estimate*. The row used to print `rate * (now - allocated_at)`
+    as "Accrued", which kept climbing after the charges stopped: it read $48.44
+    for a host AWS billed $12.02 for and had not charged for in two days. A
+    number that is not the bill may be shown; it may not be shown as the bill.
+    """
+    currency = str(mac_host.get("currency") or "USD")
+    amount = mac_host.get("accrued_cost")
+    if amount is not None:
+        through = mac_host.get("spend_through")
+        suffix = f" through {through}" if through else ""
+        return (
+            f"{currency} {float(amount):.2f} from AWS Cost Explorer{suffix} "
+            f"(as of {mac_host.get('spend_as_of') or 'unknown'})"
         )
-    else:
-        _print_row("Accrued", "unknown -- no rate was recorded for this host")
+
+    estimate = mac_host.get("estimated_cost")
+    rate = mac_host.get("hourly_rate")
+    reason = str(mac_host.get("spend_error") or "") or (
+        "AWS has not been asked yet -- `nyxgpt cloud status` asks"
+    )
+    if estimate is not None and rate:
+        return (
+            f"no AWS figure ({reason}). Local ESTIMATE only: {currency} {float(estimate):.2f} at "
+            f"${float(rate):.4f}/hour, counted from the recorded allocation time and floored at "
+            f"the {cloud_mac.HOST_MINIMUM_HOURS}-hour minimum -- it keeps counting whether or not "
+            "AWS is still charging"
+        )
+    return f"unknown -- no AWS figure and no rate was recorded for this host ({reason})"
 
 
 def _screen_label(screen: dict[str, Any], commands: dict[str, str]) -> str:
@@ -4046,8 +4110,17 @@ def _status_command(args: argparse.Namespace) -> int:
     `deploy_status` already skips the probe entirely when there is no tunnel
     to probe through (or when it is the instance answering), so the default
     costs nothing in exactly the cases where it would have been useless.
+
+    The Dedicated Host confirmation rides on the same flag (#4136). This
+    command is where an operator asks what is still costing them money, and
+    answering it from a local record is what let `cloud status` report a
+    release window that had "passed" for a host allocated hours later, and a
+    $48.44 spend for a $12.02 bill that had stopped two days earlier.
     """
-    status = deploy_status(probe_health=not getattr(args, "no_probe", False))
+    status = deploy_status(
+        probe_health=not getattr(args, "no_probe", False),
+        verify_host=not getattr(args, "no_probe", False),
+    )
     if getattr(args, "json", False):
         print(json.dumps(status, indent=2))
     else:
@@ -4108,8 +4181,8 @@ def _print_mac_teardown(mac: dict[str, Any]) -> None:
             f"{mac.get('release_at') or 'its 24-hour minimum closes'} -- AWS refuses to release "
             "one before that. A one-shot AWS schedule releases it then and posts the outcome "
             f"to Slack{where}."
-            "\n`nyxgpt cloud status` reports the host, its release time and the accrued cost "
-            "until it is gone."
+            "\n`nyxgpt cloud status` reports the host, its release time and what AWS has "
+            "billed for it until it is gone."
         )
     else:
         print(

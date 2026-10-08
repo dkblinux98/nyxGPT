@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recorded from EC2's DescribeHosts for h-06c438d25077be888 on 2026-10-03,
+     three days after the host was released. Served with HTTP 400, as EC2 does:
+     botocore turns this into a ClientError whose response["Error"]["Code"] is
+     InvalidHostID.NotFound. Reading that exception as "could not ask AWS" is the
+     whole of #4136. -->
+<Response>
+  <Errors>
+    <Error>
+      <Code>InvalidHostID.NotFound</Code>
+      <Message>The dedicated host ID 'h-06c438d25077be888' does not exist</Message>
+    </Error>
+  </Errors>
+  <RequestID>8f1c2b1e-0c3a-4a2f-9f1b-recorded4136</RequestID>
+</Response>

@@ -2685,7 +2685,9 @@ def _cloud_deploy_args(payload: dict[str, Any]) -> argparse.Namespace:
 
 
 @api.get("/cloud/deploy")
-def cloud_deploy_status(_request: Request, probe_health: bool = False) -> dict[str, Any]:
+def cloud_deploy_status(
+    _request: Request, probe_health: bool = False, verify_host: bool = False
+) -> dict[str, Any]:
     """What is deployed, at what version, whether the tunnel is open, and its history.
 
     Side-effect free by default -- reads the recorded deploy/tunnel state and
@@ -2693,8 +2695,15 @@ def cloud_deploy_status(_request: Request, probe_health: bool = False) -> dict[s
     dashboard can poll it. `probe_health=true` adds one short request to the
     tunneled API health endpoint, which is what the Cloud Deployment page asks
     for on an explicit load or refresh.
+
+    `verify_host=true` additionally asks AWS whether the recorded EC2 Mac
+    Dedicated Host still exists and what Cost Explorer says it has cost (#4136).
+    Opt-in like the health probe, and asked for on the same explicit load: the
+    reply's `mac_host.verified_at` is what tells the page whether it is looking
+    at AWS's answer or at a local record, so a caller that skips this still gets
+    an honest payload rather than an unmarked stale one.
     """
-    return cloud_deploy_module.deploy_status(probe_health=probe_health)
+    return cloud_deploy_module.deploy_status(probe_health=probe_health, verify_host=verify_host)
 
 
 @api.post("/cloud/deploy")

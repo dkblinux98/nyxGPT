@@ -85,11 +85,21 @@ def _load_cloud_state() -> dict[str, Any]:
 
 
 def _resolve_security_group_id(args: argparse.Namespace) -> str:
-    """Resolve the target security group id from `--security-group-id`, else the cloud state file."""
+    """Resolve the target security group id from `--security-group-id`, else the cloud state file.
+
+    Both substrates are read (#4136). A macOS deploy records its group as
+    `mac_security_group_id` and never writes the Linux substrate's
+    `security_group_id`, so auto-discovery found nothing at all after
+    `nyxgpt cloud deploy --os macos` -- which made #3993's "allow-ip
+    auto-discovery works flag-free after any deploy" false for exactly the
+    deployments it was written about. The flag-free path has to work at the
+    moment this command matters, which is when the operator is locked out.
+    """
     explicit = getattr(args, "security_group_id", None)
     if explicit:
         return str(explicit)
-    sg_id = _load_cloud_state().get("security_group_id")
+    state = _load_cloud_state()
+    sg_id = state.get("security_group_id") or state.get("mac_security_group_id")
     if sg_id:
         return str(sg_id)
     raise CloudCommandError(
@@ -111,8 +121,13 @@ def _resolve_region(args: argparse.Namespace) -> str | None:
     explicit = getattr(args, "region", None)
     if explicit:
         return str(explicit)
+    state = _load_cloud_state()
     region = (
-        _load_cloud_state().get("region")
+        state.get("region")
+        # The EC2 Mac's region, for the same reason its security group is read
+        # above (#4136): a macOS deployment records only `mac_*` keys, and
+        # looking up its group in whatever region came next finds nothing.
+        or state.get("mac_region")
         or _saved_infra_settings().get("aws_region")
         or _configured_cloud_reference().get("region")
     )

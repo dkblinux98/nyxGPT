@@ -34,6 +34,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
 | `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
+| `cloud-stale-record-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Stale Record Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
@@ -143,5 +144,5 @@ fails if it drifts. Do not hand-edit.
 | `snapshot_safe_add.sh` | Stages uncommitted work for the developer workflow's "Snapshot uncommitted implementation work" step without a blanket `git add -A |
 | `sweep_parked_blocked_issues.sh` | Batch-promotes merged-but-blocked issues parked in "In Review" (owner process rule, 2026-08-04, #3631): review_accept_and_merge.sh |
 | `sweep_stranded_residue.sh` | The one-off, repo-wide answer to "is any branch carrying work that was pushed |
-| `validate-web-routes.sh` | Validate that web proxy routes exist for all frontend API calls |
+| `validate-web-routes.sh` | Validate that web proxy routes exist for all frontend API calls, AND that each one forwards the query parameters its caller sends |
 | `verify_phase6_fields.sh` | Verify (and optionally repair) the project fields of the Phase 6 issue set (#3500-#3516, filed 2026-07-31 by create_phase6.sh via |
