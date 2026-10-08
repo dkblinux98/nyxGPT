@@ -47,7 +47,7 @@ fails if it drifts. Do not hand-edit.
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
 | `developer_auto_implement.yml` | issues | Developer Agent Auto-Implement |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
-| `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |
+| `ensure_project_hygiene.yml` | issues, pull_request_target | Ensure Project Hygiene |
 | `escalation-label-smoke.yml` | push, pull_request, workflow_dispatch | Escalation and Label Smoke |
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
@@ -68,7 +68,7 @@ fails if it drifts. Do not hand-edit.
 | `list_issues_by_status.yml` | workflow_dispatch | List Issues By Status |
 | `macos-brew-smoke.yml` | pull_request, workflow_dispatch, workflow_call | macOS Brew Smoke |
 | `notify-merge-conflicts.yml` | pull_request, push, workflow_dispatch | Notify Merge Conflicts |
-| `pr_project_status_on_close.yml` | pull_request | PR Project Status on Close |
+| `pr_project_status_on_close.yml` | pull_request_target | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
 | `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |

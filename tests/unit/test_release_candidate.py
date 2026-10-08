@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from release_line_pin import TEST_RELEASE_LINE, pin_declared_release_line
 
 from nyxgpt import release_candidate as rc
 
@@ -35,36 +36,39 @@ PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: The release line this suite's fixtures are written against. Every branch,
-#: candidate and formula asserted below names it, and `PUBLISHED` above is the
-#: PyPI history of that one line.
-FIXTURE_RELEASE = "3.0.0"
+# MERGE NOTE (#4167 <- v3.0.1). The release branch and this branch fixed the
+# same D-063 defect independently and concurrently, so the merge brought in two
+# autouse fixtures patching the same seam. One is kept, and it is the shared one
+# below: the mainline's inline `_declared_line`/`FIXTURE_RELEASE` pair did the
+# identical thing per file, but wrote its pinned `pyproject.toml` into the
+# test's own `tmp_path` -- which a test writing its own `tmp_path/pyproject.toml`
+# collides with -- and left no guard against the `_checkout_pyproject` seam
+# being renamed. `release_line_pin` has its own `tmp_path_factory` dir and
+# `test_the_pinned_release_line_is_what_the_plan_reads` below. Nothing the
+# mainline fix achieved is lost; `TEST_RELEASE_LINE` is `FIXTURE_RELEASE` under
+# one name, in one place, used by both of the files that need it.
 
 
 @pytest.fixture(autouse=True)
-def _declared_line(monkeypatch, tmp_path):
-    """Pin the declared release line to `FIXTURE_RELEASE`, not the repo's own.
+def _declared_release_line(monkeypatch, tmp_path_factory):
+    """Every `v3.0.0` below names `TEST_RELEASE_LINE`, not the checkout's line.
 
-    `plan()` compares the branch it is given against `declared_version()`,
-    which reads the *checkout's* pyproject.toml -- so with nothing pinned this
-    suite silently asserted that the repo's current version is whatever its
-    fixtures happen to say. It isn't, the moment a release ships: the v3.0.1
-    ceremony bumped pyproject.toml to 3.0.1 and all 27 `v3.0.0` cases here
-    went red on the branch-vs-declared guard, having found nothing wrong with
-    the code under test.
-
-    A unit test of version arithmetic has to supply its own version. Patching
-    `_checkout_pyproject` is the seam that does it without weakening anything:
-    `declared_version`'s real work -- parse the TOML, strip the pre-release
-    suffix -- still runs, and only "which checkout" is answered by the
-    fixture. Tests that deliberately read the shipped pyproject.toml go
-    through `REPO_ROOT` and are unaffected.
+    See `release_line_pin`: without this, a release ceremony's version bump
+    turns this whole file red (#4167).
     """
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        f'[project]\nname = "nyxGPT"\nversion = "{FIXTURE_RELEASE}"\n', encoding="utf-8"
-    )
-    monkeypatch.setattr(rc, "_checkout_pyproject", lambda: pyproject)
+    pin_declared_release_line(monkeypatch, tmp_path_factory)
+
+
+def test_the_pinned_release_line_is_what_the_plan_reads():
+    """Guards the fixture, not the product.
+
+    `pin_declared_release_line` patches `rc._checkout_pyproject`. Rename or
+    inline that seam and the patch becomes a no-op -- the tests below would go
+    back to reading the checkout's version and would fail, one release
+    ceremony later, for a reason that has nothing to do with the code they
+    cover. This fails first, and says why.
+    """
+    assert rc.declared_version() == TEST_RELEASE_LINE
 
 
 def _args(**overrides) -> argparse.Namespace:
