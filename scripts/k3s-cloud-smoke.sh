@@ -1114,6 +1114,46 @@ log "PASS (fix proven): the Cassandra check answers for the substrate that is se
 # rc 0 here would be asserting something this box cannot be. The claim is
 # about which substrate each check answered for, and that is what is checked.
 
+# --- the Infrastructure page's payload --------------------------------------
+# The screen the owner actually read the CANNOT DETERMINE badge on, answered
+# here from the same live cluster. The core/observability split this asserts is
+# the reason it is worth a third reading: the gate is "does the cluster hold
+# the CORE tier", not "are there Pods", so both of the Pods above have to be
+# classified correctly for the two answers below to come out as they do.
+python3 - <<'PY'
+from nyxgpt import ops
+
+status = ops.infra_status()
+print(f"    | in_cluster={status['in_cluster']}  compose_in_scope={status['compose_in_scope']}")
+print(f"    | compose_probe_reason={status['compose_probe_reason']}")
+
+assert status["in_cluster"] is False, (
+    "this host is being read as in-cluster, so the #3988 gate would cover it and this step "
+    "is no longer exercising the vantage point #4137 is about"
+)
+assert status["compose_in_scope"] is False, (
+    "the Infrastructure page still owes a Compose answer on a host whose core tier is in "
+    "the cluster -- this is the CANNOT DETERMINE badge the owner saw"
+)
+for leak in ("docker-compose.yml", "docker compose ps"):
+    assert leak not in status["compose_probe_reason"], (
+        f"the card still names {leak!r} on a host with no Compose stack"
+    )
+# A separate question, and it must NOT have been swept along: this process is
+# the native install, so the page can speak for it.
+assert status["install_mode"]["in_scope"] is True, (
+    "the native card went out of scope on a host that is not in a Pod -- the page just "
+    "hid the one install it can speak for"
+)
+# The observability Pod alone must never be what decides the above: classified
+# as its own tier, it is not core.
+assert ops._k8s_core_pods_present(
+    [s for s in ops._k8s_pod_states()[0] if s.name == "grafana-smoke"]
+) is False, "an observability Pod is being counted as the core tier"
+print("    | the core/observability split is read from the live cluster")
+PY
+log "PASS (fix proven): the Infrastructure page's Compose card is scoped, not undetermined"
+
 unset NYXGPT_COMPOSE_FILE
 kubectl -n "$NAMESPACE" delete pod cassandra-0 grafana-smoke --now >/dev/null 2>&1 || true
 

@@ -471,6 +471,71 @@ def test_a_host_with_no_cluster_and_a_failed_probe_still_cannot_determine(monkey
 
 
 @pytest.mark.unit
+def test_an_observability_only_cluster_leaves_the_compose_card_in_scope(monkeypatch):
+    """The survey's `kubernetes_mode_active` rule, on this surface too.
+
+    `nyxgpt ops observability --kubernetes` can put the observability overlay
+    on a cluster while api/web/Cassandra/Ollama run natively. Gating the card
+    on `bool(pods)` made that host read NOT IN SCOPE -- false for a
+    native-core deployment, and it buries a genuine probe failure -- while the
+    Self-Heal page and the CLI, core-tier-gated, said CANNOT DETERMINE about
+    the same deployment. Two notions of Kubernetes mode on one deployment is
+    #3827's defect; this is the one notion.
+    """
+    _infra_host(
+        monkeypatch,
+        pods=["grafana-868", "prometheus-75867cd7d6-nv26m", "promtail-fvlhx"],
+        compose_probe=lambda: self_heal.ComposeProbe(available=False, reason=EXIT_125),
+    )
+
+    result = ops.infra_status()
+
+    assert result["compose_in_scope"] is True
+    assert result["compose_out_of_scope_reason"] == ""
+    # The probe failure is still on screen, which is the point of staying in
+    # scope: this deployment's core stack could be the Compose one.
+    assert result["compose_probe_available"] is False
+    assert result["compose_probe_reason"] == EXIT_125
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pod", ["nyxgpt-api-stable-7c9f", "nyxgpt-web-stable-55d", "ollama-0"])
+def test_any_core_tier_pod_is_enough_to_put_compose_out_of_scope(monkeypatch, pod):
+    """All four core tiers, not just the api pool -- #3828's gap, which cost
+    web, Cassandra and Ollama any watcher at all, applied to this gate."""
+    _infra_host(
+        monkeypatch,
+        pods=[pod, "grafana-868"],
+        compose_probe=lambda: self_heal.ComposeProbe(available=False, reason=EXIT_125),
+    )
+
+    assert ops.infra_status()["compose_in_scope"] is False
+
+
+@pytest.mark.unit
+def test_the_native_install_card_stays_in_scope_on_a_kubernetes_host(monkeypatch):
+    """Scoping the native card is a SEPARATE question from the Compose one.
+
+    `infra_status` is only ever served by the api itself, so a process
+    answering from outside a Pod *is* the native install. Marking it out of
+    scope alongside Compose would hide the one install this page can speak
+    for -- and would tell the operator it "is running inside a Kubernetes
+    Pod", which on a k3s host is simply false.
+    """
+    _infra_host(
+        monkeypatch,
+        pods=["nyxgpt-api-stable-7c9f", "cassandra-0"],
+        compose_probe=lambda: self_heal.ComposeProbe(available=False, reason=EXIT_125),
+    )
+
+    result = ops.infra_status()
+
+    assert result["compose_in_scope"] is False
+    assert result["install_mode"]["in_scope"] is True
+    assert result["install_mode"]["out_of_scope_reason"] == ""
+
+
+@pytest.mark.unit
 def test_inside_a_pod_the_compose_probe_is_not_run_at_all(monkeypatch):
     """#3988's scoping, kept -- and now it also costs nothing: a survey with no
     subject should not be paid for either."""
@@ -485,6 +550,9 @@ def test_inside_a_pod_the_compose_probe_is_not_run_at_all(monkeypatch):
 
     assert result["compose_in_scope"] is False
     assert "inside a Kubernetes Pod" in result["compose_out_of_scope_reason"]
+    # #3988's native scoping, which this issue must not loosen: in a Pod the
+    # marker the image carries describes a different machine.
+    assert result["install_mode"]["in_scope"] is False
 
 
 # --- 4. ops.doctor's Cassandra check -----------------------------------------

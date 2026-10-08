@@ -809,6 +809,17 @@ Self-Heal page already read `observability_source` and got the k3s case right;
 `nyxgpt cloud ops self-heal` and the Infrastructure page did not, so two
 surfaces disagreed about one deployment — which is its own defect (#3827).
 
+**What puts a deployment in the bottom row is the cluster holding the *core*
+tier** — api, web, Cassandra, Ollama (`self_heal.kubernetes_mode_active`, and
+`ops._k8s_core_pods_present` for the Infrastructure page's Compose card) — not
+merely the namespace holding Pods. `nyxgpt ops observability --kubernetes` can
+put the observability overlay on a cluster while the core stack runs natively
+on the host, and that deployment's core components are native ones: a Compose
+answer is still owed there, so an unreadable survey is the middle row (cannot
+determine, with the reason) and not a question to withdraw. Both surfaces draw
+that line from the same four tiers, deliberately — two notions of "Kubernetes
+mode" on one deployment is how two screens end up contradicting each other.
+
 ### Present, absent, unknown: three states, not two
 
 A component's state is one of three things, and the third is not a kind of

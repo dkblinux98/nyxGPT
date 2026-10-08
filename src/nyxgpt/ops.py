@@ -8501,6 +8501,20 @@ K8S_OLLAMA_BASE_URL = f"http://ollama.{K8S_NAMESPACE}.svc.cluster.local:11434"
 # so `cassandra-0`), which is what `_k8s_cassandra_deployment_issues` matches on.
 K8S_CASSANDRA_WORKLOAD = "statefulset/cassandra"
 K8S_CASSANDRA_POD_PREFIX = "cassandra-"
+K8S_OLLAMA_POD_PREFIX = "ollama-"
+
+# The four core tiers' Pod-name prefixes, as distinct from the observability
+# overlay that shares the namespace (#4137). The name twin of
+# `self_heal.K8S_CORE_POD_APPS`, matched on name rather than on the `app`
+# label because `_k8s_pod_states` carries names: one `kubectl get pods` answers
+# the Pod list, the badges and this question at once, and asking again with
+# `-l` would buy a second notion of "is the core tier here" on the same screen.
+# The two StatefulSets are matched by Kubernetes' `<name>-<ordinal>` rule.
+K8S_CORE_POD_PREFIXES: tuple[str, ...] = (
+    *K8S_APP_POD_PREFIXES,
+    K8S_CASSANDRA_POD_PREFIX,
+    K8S_OLLAMA_POD_PREFIX,
+)
 
 # The deployment's data/LLM tier (#3786): the in-cluster Cassandra that holds
 # chat sessions for every api replica and the in-cluster Ollama that answers
@@ -10184,6 +10198,27 @@ def _k8s_app_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
     ones whose names begin with these prefixes.
     """
     return any(name.startswith(K8S_APP_POD_PREFIXES) for name in (s.name for s in pod_states))
+
+
+def _k8s_core_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
+    """Whether the cluster holds this deployment's *core* tier.
+
+    The question "is this a Kubernetes deployment?", and not the same question
+    as `bool(pod_states)` (#4137). `nyxgpt ops observability --kubernetes` can
+    put the observability overlay on a cluster while api/web/Cassandra/Ollama
+    run natively on the host; that deployment's core components are native
+    ones, so a namespace holding only observability Pods must not make a
+    host-scoped card read "not in scope for this deployment".
+
+    The `ops.py` twin of `self_heal.kubernetes_mode_active`, which draws the
+    same line from the same four tiers (`K8S_CORE_POD_APPS`) -- deliberately,
+    because the Infrastructure page and the Self-Heal page describe one
+    deployment and two notions of Kubernetes-mode is how they end up
+    contradicting each other (#3827). Wider than `_k8s_app_pods_present`,
+    which asks only about api/web because its subject is the *image* identity
+    of those two Deployments.
+    """
+    return any(name.startswith(K8S_CORE_POD_PREFIXES) for name in (s.name for s in pod_states))
 
 
 def _k8s_workload_selector(ref: str) -> str:
@@ -13810,7 +13845,10 @@ def infra_status() -> dict[str, Any]:
     exits 125. On that instance the card read CANNOT DETERMINE and named
     `/home/ec2-user/.nyxGPT/docker-compose.yml` as the cause, directly above
     its own list of running Pods. The gate is now what *answers*, not where
-    this process runs.
+    this process runs -- specifically, whether the cluster holds the **core**
+    tier (`_k8s_core_pods_present`), because a namespace holding only the
+    observability overlay belongs to a deployment whose core stack is
+    somewhere else and still owes a Compose answer.
 
     `native_probe_available`/`native_probe_reason` are the same pair for the
     **native** card, and `terraform.probe_available` was rebuilt on the same
@@ -13880,6 +13918,11 @@ def infra_status() -> dict[str, Any]:
     pods: list[str] = []
     pod_states: list[dict[str, str]] = []
     unschedulable: list[str] = []
+    # Whether api/web/Cassandra/Ollama are the cluster's, which is the question
+    # the Compose card's scope turns on -- not merely whether the namespace
+    # holds Pods (#4137). Captured here because the classified read below is
+    # the only place that can answer it.
+    core_pods_in_cluster = False
     # No kubeconfig context AND no in-cluster credentials means no cluster was
     # ever configured here -- that's a confidently-determined NOT DEPLOYED
     # (#3468), not the CANNOT DETERMINE state reserved for a *configured*
@@ -13911,6 +13954,7 @@ def infra_status() -> dict[str, Any]:
             # that has simply not been placed *yet* is PENDING, and is not
             # named here.
             unschedulable = [s.name for s in states if s.summary == K8S_SUMMARY_UNSCHEDULABLE]
+            core_pods_in_cluster = _k8s_core_pods_present(states)
     # The in-cluster observability layer (#3787), reported per workload so the
     # Infrastructure page can say *which* piece is missing rather than just
     # "observability: no". Only probed when the cluster answered at all --
@@ -14094,7 +14138,7 @@ def infra_status() -> dict[str, Any]:
             "no host filesystem and no Docker socket. Run `nyxgpt ops status` on the host to "
             "survey a Docker Compose deployment there."
         )
-    elif bool(pods) and kubernetes_probe_available and not compose_probe_available:
+    elif core_pods_in_cluster and kubernetes_probe_available and not compose_probe_available:
         # The #4137 case, and the reason the gate above could not cover it: a
         # k3s host is neither in-cluster nor Compose. `kubectl` there reaches
         # the cluster perfectly well -- the Pod list below this card is proof
@@ -14104,6 +14148,15 @@ def infra_status() -> dict[str, Any]:
         # `/home/ec2-user/.nyxGPT/docker-compose.yml` as the cause, sending
         # the operator to look for a Compose stack that was never meant to
         # exist on that instance.
+        #
+        # `core_pods_in_cluster`, not `bool(pods)`: the namespace also holds
+        # the observability overlay, and `nyxgpt ops observability
+        # --kubernetes` can put that there while api/web/Cassandra/Ollama run
+        # natively. On that host a Compose answer IS owed -- its core stack
+        # could genuinely be a Compose one -- so an unreadable probe is a
+        # probe failure to report, not a question to withdraw. Keyed on the
+        # same four tiers as `self_heal.kubernetes_mode_active`, so this card
+        # and the Self-Heal page cannot disagree about one deployment (#3827).
         #
         # Gated on the probe having actually failed, deliberately: a host that
         # runs a Compose stack *and* a cluster still has a real Compose answer,
@@ -14120,10 +14173,17 @@ def infra_status() -> dict[str, Any]:
     if compose_out_of_scope_reason:
         compose_probe_available = False
         compose_probe_reason = compose_out_of_scope_reason
-        # Same for the native install identity: whatever marker the container
-        # image happens to carry describes a different machine, and the
-        # remedies the card offers (`nyxgpt up`, `nyxgpt ops doctor`) are
-        # aimed at a host this process cannot reach.
+    # The native install's scope is a SEPARATE question, and it turns on
+    # `in_cluster` alone (#3988) -- not on the Compose verdict above. Inside a
+    # Pod, whatever marker the container image happens to carry describes a
+    # different machine, and the remedies the card offers (`nyxgpt up`,
+    # `nyxgpt ops doctor`) are aimed at a host this process cannot reach. On a
+    # Kubernetes *host* the opposite holds: `infra_status` is only ever served
+    # by the api itself (see `running_build` below), so a process answering
+    # from outside a Pod IS the native install, and marking it out of scope
+    # would hide the one install this page can speak for -- while telling the
+    # operator it is "running inside a Kubernetes Pod", which it is not.
+    if in_cluster:
         install_mode["in_scope"] = False
         install_mode["out_of_scope_reason"] = (
             "Not in scope from here: this API is running inside a Kubernetes Pod. The "

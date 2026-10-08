@@ -1552,15 +1552,22 @@ Such a row is never `giving_up`: nothing was tried. `heal_key` is the
 identity the restart budget is kept under -- the service name for most
 components, the owning ReplicaSet (`kubernetes/replicaset/<name>`) for a Pod,
 because healing a Pod replaces it. `compose_probe_available: false` means the
-`docker compose ps` survey couldn't be run from this vantage point at all --
-no `docker`, an unreachable daemon, or a compose file that isn't there. It is
-answered by *running* the survey, not by checking that a binary and a file
-exist (#3812), and `compose_probe_reason` carries the cause as one operator-
-facing line (e.g. ``` `docker compose ps` exited 125: permission denied while
-trying to connect to the Docker daemon socket ... ```), empty when the probe
-is available. A caller reads this as "can't check the observability tier from
-here", never as "the observability tier isn't running" -- see
-[self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
+`docker compose ps` survey did **not** run -- for one of two reasons, and
+`compose_probe_applicable`/`compose_probe_undetermined` are what tell them
+apart (see the table below, and key any "cannot determine" banner off the
+second flag, never off `available` alone): either an answer was owed and could
+not be had (no `docker`, an unreachable daemon, or a compose file that isn't
+there), or this deployment keeps no Compose tier for the survey to be about
+and the probe was deliberately never asked (#4137). It is answered by
+*running* the survey, not by checking that a binary and a file exist (#3812),
+and `compose_probe_reason` carries the cause -- or, in the never-asked case,
+the scope sentence -- as one operator-facing line (e.g. ``` `docker compose
+ps` exited 125: permission denied while trying to connect to the Docker daemon
+socket ... ```), empty when the survey ran. Neither reading is ever "the
+observability tier isn't running": where an answer was owed a caller reads
+`false` as "can't check the observability tier from here" -- see
+[self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container)
+-- and where none was owed, as "this question is not about this deployment".
 A socket-access failure is retried once through the `docker` group (`sg
 docker`) before the flag goes `false`, so on the common cause -- a service
 session that predates its group membership -- the survey runs and this stays
