@@ -112,6 +112,35 @@ _reset_stub() {
   mkdir -p "$GH_STUB_DIR"
 }
 
+# ---- a throwaway repo + bare origin for the git-dependent cases --------
+# `gh` is stubbed, but #3862's closure gate in review_accept_and_merge.sh runs
+# REAL git in the cwd: it fetches the PR's base branch from `origin` and then
+# asks branch_content.py whether the head's paths are readable there. Cases 4
+# and 4b used to run that in this checkout against the real remote, with the
+# fixture base branch `v3.0.0` -- which held only while v3.0.0 was a live
+# branch on origin. The v3.0.1 line retired that name, the fetch started
+# failing, and the gate correctly refused the merge case 4 expects to succeed.
+# Bumping the literal each release just re-arms the same trap, because every
+# release retires a branch name. So these cases get their own repo and their
+# own bare origin, and depend on no remote that anything else can delete. The
+# fixture branch takes the derived release line's name rather than a literal,
+# so the stub's PR base, the config's RELEASE_BRANCH and the fixture agree.
+BASE_BRANCH="$RELEASE_BRANCH"
+FIXTURE_ORIGIN="$TMP_ROOT/origin.git"
+FIXTURE_REPO="$TMP_ROOT/repo"
+git init --quiet --bare --initial-branch="$BASE_BRANCH" "$FIXTURE_ORIGIN"
+git init --quiet --initial-branch="$BASE_BRANCH" "$FIXTURE_REPO"
+(
+  cd "$FIXTURE_REPO" || exit 1
+  git config user.email "pr-lane-hygiene@example.invalid"
+  git config user.name "pr lane hygiene fixture"
+  echo seed > seed.txt
+  git add seed.txt
+  git commit --quiet -m "seed the fixture base branch"
+  git remote add origin "$FIXTURE_ORIGIN"
+  git push --quiet origin "$BASE_BRANCH"
+) || { echo "[FAIL] could not build the git fixture" >&2; exit 1; }
+
 # Reads a PR's board Status back through the production helper.
 _pr_lane() {
   bash -c "source '$LIB'; load_config; pr_status $1" 2>/dev/null
@@ -151,16 +180,16 @@ _reset_stub case4
 cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"303": {"item_id": "PVTI_pr303", "status": "In Review"}}
 EOF
-# head_sha/base_sha are the checkout's own HEAD, so #3862's closure gate sees
-# a PR whose content is trivially already on the base and verifies it. Case 4b
-# below is the other half.
-HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+# head_sha/base_sha are the fixture repo's own HEAD, so #3862's closure gate
+# sees a PR whose content is trivially already on the base and verifies it.
+# Case 4b below is the other half.
+HEAD_SHA="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
 {"303": {"head": "feat/lane-invariant", "base": "$RELEASE_BRANCH", "merged": false, "state": "open",
          "head_sha": "$HEAD_SHA", "base_sha": "$HEAD_SHA"}}
 EOF
 
-merge_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
+merge_out="$(cd "$FIXTURE_REPO" && CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
   bash "$MERGE_SCRIPT" 303 3742 2>&1)"
 merge_rc=$?
 _assert_eq "merge flow exits 0" "$merge_rc" "0"
@@ -184,7 +213,7 @@ cat > "$GH_STUB_DIR/pulls.json" <<EOF
          "base_sha": "0000000000000000000000000000000000000000"}}
 EOF
 
-unverified_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
+unverified_out="$(cd "$FIXTURE_REPO" && CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
   bash "$MERGE_SCRIPT" 313 3742 2>&1)"
 unverified_rc=$?
 _assert_eq "an unverifiable merge fails the run" "$unverified_rc" "1"

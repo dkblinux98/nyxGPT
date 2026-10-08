@@ -7,7 +7,7 @@ reports what launchd has registered. None of them asks the process that is
 actually answering on :8000 what it is executing, so the two can disagree
 indefinitely and nothing says so.
 
-They did, on the owner's Mac during v3.0.0 acceptance (#4133). A `brew
+They did, on the owner's Mac during the 3.0.0 acceptance round (#4133). A `brew
 upgrade` took `nyxgpt-api@3.0.0rc` from rc14 to rc17; `nyxgpt ops install`
 reported 56/56 steps `[OK]` including a service restart, and `nyxgpt ops
 status` reported the keg's version -- while the process serving requests was

@@ -25,7 +25,7 @@ Pure functions over text, so the arithmetic is unit-testable without git
 (same shape as `retry_budget.py` / `stop_loop_guard.py`); the CLI at the
 bottom is what the runbooks call.
 
-    python3 scripts/agents/lib/ledger_ids.py next V --base origin/v3.0.0
+    python3 scripts/agents/lib/ledger_ids.py next V --base origin/<release-branch>
 """
 
 from __future__ import annotations
@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     p_next.add_argument(
         "--base",
         help="git ref of the live release branch to also allocate against "
-        "(e.g. origin/v3.0.0); fetch it first",
+        "(e.g. origin/<release-branch>); fetch it first",
     )
     p_next.set_defaults(func=_cmd_next)
 
@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Run at MERGE time. Prints 'old -> new' per collision; exits 1 "
         "when anything was reallocated, 0 when there was nothing to do.",
     )
-    p_realloc.add_argument("--base", required=True, help="live base ref, e.g. origin/v3.0.0")
+    p_realloc.add_argument("--base", required=True, help="live base ref, e.g. origin/<release-branch>")
     p_realloc.add_argument("--branch", default="HEAD", help="branch ref (default: %(default)s)")
     p_realloc.add_argument(
         "--write", action="store_true", help="rewrite the ledger in place (default: report only)"

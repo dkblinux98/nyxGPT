@@ -19,7 +19,7 @@ Env vars:
                                        Sprint membership is the automatic
                                        loop's hard work boundary (owner
                                        policy 2026-08-10, #3706).
-  RELEASE_VERSION                     When set (e.g. "v2.0.0"), only issues
+  RELEASE_VERSION                     When set (e.g. "vX.Y.Z"), only issues
                                        whose milestone title contains this
                                        version string are eligible. This is
                                        the release wall: neither the

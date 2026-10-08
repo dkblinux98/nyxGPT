@@ -113,7 +113,6 @@ fails if it drifts. Do not hand-edit.
 |---|---|
 | `admin_set_fields.sh` | owner tooling: set assignee / milestone / board fields on a batch of issues OR pull requests by number |
 | `bulk_set_status.sh` | set the project Status field on a list of issues |
-| `check_no_hardcoded_release_branch.sh` | Guard for the 2026-08-04 owner principle (#3614): no YAML workflow or script may hardcode a release-branch name |
 | `create_issue.sh` | Creates a GitHub issue with proper project hygiene: |
 | `create_phase6.sh` | File the Phase 6 issue set from product_management/PHASE_6_PLAN.md (2026-07-31 rewrite) into the owner-created milestone and the t |
 | `developer_analyze_failure.sh` | Intelligent failure analysis for developer workflow Analyzes workflow failures and attempts auto-fixes for common issues |

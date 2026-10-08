@@ -374,7 +374,7 @@ def build_sprint_park_note(payload: dict[str, Any]) -> str:
       sprint_title     the active sprint that just completed ("" if there is
                        no active iteration at all -- the conservative-stop
                        case)
-      release_version  e.g. "v3.0.0" (may be empty)
+      release_version  e.g. "vX.Y.Z" (may be empty)
       by_sprint        {sprint title or "": open Backlog count} for the rest
                        of the release, active sprint included (it is zero by
                        definition when this note is rendered)
