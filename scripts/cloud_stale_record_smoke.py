@@ -554,6 +554,25 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Preflight, before any scenario runs. The decision under test is made by a
+    # boto3 call, so without boto3 the deploy takes its "AWS could not be asked"
+    # branch and every scenario fails with a message about the deploy's
+    # behaviour -- `the deploy never asked AWS about the recorded host` -- which
+    # sends the reader into cloud_mac.py after a defect that is not there. Name
+    # the real cause here instead: the environment is missing the dependency the
+    # job's own install step provides (`pip install "<wheel>[cloud]"`).
+    try:
+        import boto3  # noqa: F401
+    except ImportError:
+        print(
+            "cloud-stale-record-smoke: boto3 is not importable, so nyxGPT cannot ask AWS "
+            "anything and no scenario below would be testing what it claims to test.\n"
+            "Install the cloud extra first -- `pip install 'nyxgpt[cloud]'`, or the "
+            "wheel-into-a-venv step this job uses -- and re-run.",
+            file=sys.stderr,
+        )
+        return 2
+
     if shutil.which("terraform"):
         print(
             "note: terraform is on PATH; the `allocated` scenario will attempt a real "
