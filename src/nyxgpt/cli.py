@@ -2929,9 +2929,14 @@ def cli(argv: list[str] | None = None) -> int:
         )
         parser.add_argument(
             "--host",
+            # Both files, because the resolver reads both (#4161): a macOS
+            # deploy records its address under `mac_public_ip` in state.json
+            # and as the plain `host` in deploy.json, and naming only the
+            # Linux vocabulary here would imply the flag is the sole way to
+            # reach a Mac -- which is what the defect made true.
             help=(
                 "Target host instead of the provisioned instance recorded in "
-                "~/.nyxGPT/cloud/state.json"
+                "~/.nyxGPT/cloud/state.json or deploy.json"
             ),
         )
 
@@ -3125,13 +3130,22 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     # `cloud ops` (#3813): read-only inspections run *on* the instance over the
-    # same wrapped SSH path `cloud credentials` uses, so checking container
-    # state never means a hand-rolled `ssh` plus a raw `docker compose ps`
-    # (CLAUDE.md's wrapper requirement).
+    # same wrapped SSH path `cloud credentials` uses, so checking what the
+    # instance is running never means a hand-rolled `ssh` plus a raw `docker
+    # compose ps` (CLAUDE.md's wrapper requirement).
+    #
+    # The help names *services*, not containers (#4161). It used to promise
+    # that `cloud ops status` "reports its containers", which is a claim about
+    # the Linux layout stated as if it were the command's contract: an EC2 Mac
+    # runs api, web and Ollama as `brew services` and can host no Docker daemon
+    # at all, so on that target the help advertised a thing the instance cannot
+    # have. "Services" is true of both substrates, and the instance's own
+    # output -- which this streams back unchanged -- is what names the tier it
+    # actually found.
     cloud_ops_p = cloud_sub.add_parser(
         "ops",
         help=(
-            "Run a read-only inspection on the deployed instance (container state, "
+            "Run a read-only inspection on the deployed instance (what it is running, "
             "doctor, self-heal) over the wrapped SSH access path"
         ),
     )
@@ -3142,7 +3156,7 @@ def cli(argv: list[str] | None = None) -> int:
         choices=sorted(cloud_deploy_mod.REMOTE_OPS_COMMANDS),
         help=(
             "Which inspection to run on the instance (default: status -- the instance's "
-            "own `nyxgpt ops status`, which reports its containers)"
+            "own `nyxgpt ops status`, which reports the services it is running)"
         ),
     )
     _add_ssh_access_flags(cloud_ops_p)

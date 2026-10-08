@@ -626,9 +626,11 @@ def test_it_accepts_the_mac_nyxgpt_manages(_isolated_cloud_home):
 
 def test_it_finds_the_mac_without_the_linux_substrates_public_ip(_isolated_cloud_home):
     """A macOS deploy never applies the Linux substrate, so `state.json` has no
-    `public_ip` -- only `mac_public_ip`. Resolving through
-    `cloud_deploy.resolve_target` would therefore refuse a Mac nyxGPT really
-    does manage, with "No provisioned instance found"."""
+    `public_ip` -- only `mac_public_ip`. This resolver reads the Mac's own
+    record, so that split never reaches it (and since #4161
+    `cloud_deploy.resolve_target` reads both vocabularies too, rather than
+    refusing a Mac nyxGPT really does manage with "No provisioned instance
+    found")."""
     (_isolated_cloud_home / "deploy.json").write_text(
         json.dumps({"host": "198.51.100.10", "os_family": "macos", "ssh_user": "ec2-user"}),
         encoding="utf-8",

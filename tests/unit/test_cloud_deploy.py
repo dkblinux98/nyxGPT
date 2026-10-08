@@ -112,6 +112,165 @@ def test_resolve_target_honours_an_explicit_host_and_identity(_isolated_cloud_ho
     assert target.identity_file == str(key)
 
 
+def _write_macos_state(cloud_dir, **overrides):
+    """Write the `state.json` a *macOS* deploy leaves behind (#4161).
+
+    The shape matters as much as the values: a Mac deploy never applies the
+    Linux substrate, so there is no bare `public_ip` key at all -- only the
+    `mac_`-prefixed block `cloud_mac.record_mac_host` writes.
+    """
+    state = {
+        "mac_host_id": "h-0a34ad0272012a987",
+        "mac_instance_id": "i-0a1bd7690f11507d6",
+        "mac_public_ip": "98.88.75.21",
+        "mac_region": "us-east-1",
+        "mac_security_group_id": "sg-0mac",
+    }
+    state.update(overrides)
+    (cloud_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return state
+
+
+def test_resolve_target_finds_a_macos_instance_from_the_mac_keys(_isolated_cloud_home):
+    """#4161: `cloud ops`/`tunnel` on a Mac must not need `--host`.
+
+    `resolve_target` read `public_ip` alone, which a macOS deploy never
+    writes -- so every command that goes through it refused a Mac whose
+    correct, current address was in `state.json` under `mac_public_ip`.
+    """
+    _write_macos_state(_isolated_cloud_home)
+    target = cloud_deploy.resolve_target(_args())
+    assert target.host == "98.88.75.21"
+    assert target.instance_id == "i-0a1bd7690f11507d6"
+    assert target.region == "us-east-1"
+    assert target.security_group_id == "sg-0mac"
+
+
+def test_resolve_target_prefers_the_mac_when_the_deploy_record_says_macos(_isolated_cloud_home):
+    """One `state.json` can carry both blocks; the deploy record breaks the tie.
+
+    A workstation that deployed Linux before deploying a Mac has the old
+    `public_ip` sitting beside the new `mac_public_ip`, and reading the bare
+    key first would send every inspection at the wrong machine.
+    """
+    _write_cloud_state(_isolated_cloud_home)  # the earlier Linux substrate
+    _write_macos_state(_isolated_cloud_home, public_ip="198.51.100.10", instance_id="i-0abc")
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "98.88.75.21", "os_family": "macos", "ssh_user": "ec2-user"}),
+        encoding="utf-8",
+    )
+    target = cloud_deploy.resolve_target(_args())
+    assert target.host == "98.88.75.21"
+    assert target.instance_id == "i-0a1bd7690f11507d6"
+
+
+def test_resolve_target_falls_back_to_the_deploy_records_host(_isolated_cloud_home):
+    """A `--host` box appears in no substrate record, but the deploy recorded it."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "203.0.113.7", "os_family": "linux"}), encoding="utf-8"
+    )
+    assert cloud_deploy.resolve_target(_args()).host == "203.0.113.7"
+
+
+def test_resolve_target_keeps_the_fresh_substrate_ahead_of_the_deploy_record(_isolated_cloud_home):
+    """`_deploy` resolves through this right after an apply (#4161).
+
+    At that moment `deploy.json` still names the *previous* deploy's box, so
+    the substrate handoff this run just wrote has to win or the deploy would
+    install onto the wrong machine.
+    """
+    _write_cloud_state(_isolated_cloud_home, public_ip="198.51.100.77")
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10"}), encoding="utf-8"
+    )
+    assert cloud_deploy.resolve_target(_args()).host == "198.51.100.77"
+
+
+def test_resolve_target_pins_the_in_flight_family_over_a_stale_mac_record(_isolated_cloud_home):
+    """A Linux deploy after a Mac deploy must not resolve the Mac (#4161).
+
+    The previous case is the same invariant with a record that carries no
+    `os_family` at all, so it only ever exercised the bare-key branch. This is
+    the one that bit: `deploy.json` still says `os_family: macos` from the
+    last deploy, and reading the family off that record would take the Mac's
+    `mac_public_ip` and never look at the `public_ip` the apply just wrote --
+    installing a Linux stack onto a working EC2 Mac over SSH (`ec2-user` on
+    both substrates, so it connects) while the new instance bills with nothing
+    on it. `_deploy` passes the family it is actually deploying, which wins.
+    """
+    _write_macos_state(_isolated_cloud_home, public_ip="198.51.100.77", instance_id="i-0new")
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "98.88.75.21", "os_family": "macos", "instance_id": "i-0mac"}),
+        encoding="utf-8",
+    )
+
+    target = cloud_deploy.resolve_target(_args(), os_family=cloud_deploy.OS_FAMILY_LINUX)
+
+    assert target.host == "198.51.100.77"
+    assert target.instance_id == "i-0new"
+    # And the Mac's family is still honoured when nobody pins one, which is
+    # every inspection command.
+    assert cloud_deploy.resolve_target(_args()).host == "98.88.75.21"
+
+
+def test_resolve_target_refuses_rather_than_crossing_to_the_other_familys_record(
+    _isolated_cloud_home,
+):
+    """A pinned family whose substrate output is missing must not fall through.
+
+    `apply_infra` reports an unreadable-outputs apply instead of raising
+    (#3993), so `_deploy` can reach the resolver with no bare `public_ip`.
+    Falling back to `deploy.json`'s host there would hand a Linux deploy the
+    Mac that record names -- the exact wrong-machine install, one step later.
+    Refusing is the safe answer: nothing has been touched and the operator is
+    told which records were read.
+    """
+    _write_macos_state(_isolated_cloud_home)
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "98.88.75.21", "os_family": "macos"}), encoding="utf-8"
+    )
+
+    with pytest.raises(CloudCommandError, match="No provisioned instance found"):
+        cloud_deploy.resolve_target(_args(), os_family=cloud_deploy.OS_FAMILY_LINUX)
+
+
+def test_resolve_target_takes_each_candidate_whole(_isolated_cloud_home):
+    """The address and the ids come from one place or from none (#4161).
+
+    A `--host` box nyxGPT did not provision is in `deploy.json` and in no
+    substrate record. Mixing per field -- its `host` beside whatever ids the
+    `mac_` block happens to hold -- would report an instance id, region and
+    security group belonging to a different machine.
+    """
+    _write_macos_state(_isolated_cloud_home)
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "203.0.113.7", "os_family": "linux", "region": "eu-west-1"}),
+        encoding="utf-8",
+    )
+
+    target = cloud_deploy.resolve_target(_args())
+
+    assert target.host == "203.0.113.7"
+    assert target.region == "eu-west-1"
+    assert (target.instance_id, target.security_group_id) == ("", "")
+
+
+def test_resolve_target_does_not_attribute_recorded_ids_to_another_host(_isolated_cloud_home):
+    """`--host` names a different box, so the recorded ids are not its (#4161)."""
+    _write_macos_state(_isolated_cloud_home)
+    target = cloud_deploy.resolve_target(_args(host="203.0.113.9"))
+    assert target.host == "203.0.113.9"
+    assert (target.instance_id, target.security_group_id) == ("", "")
+
+
+def test_resolve_target_error_names_both_records_it_read(_isolated_cloud_home):
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.resolve_target(_args())
+    message = str(excinfo.value)
+    assert "state.json" in message
+    assert "deploy.json" in message
+
+
 def test_resolve_plan_defaults_to_every_observability_profile():
     plan = cloud_deploy.resolve_plan(_args())
     assert plan.profiles == ["monitoring", "logging", "tracing", "errors"]
@@ -894,6 +1053,53 @@ def test_deploy_runs_the_steps_in_order_and_records_what_it_installed(
     assert recorded["version"] == "3.0.0"
     assert recorded["host"] == "198.51.100.10"
     assert result["urls"]["web"] == "http://localhost:3000"
+
+
+def test_deploy_after_a_mac_deploy_targets_the_new_linux_instance(
+    stubbed_deploy, _isolated_cloud_home, monkeypatch
+):
+    """The wrong-machine install this resolution has to make impossible (#4161).
+
+    A workstation that deployed an EC2 Mac and then runs a plain `nyxgpt cloud
+    deploy` is a Linux deploy -- `resolve_os_family` reads the family from the
+    instance type, not from the record, unless `--host` names the recorded
+    box. So the Mac's `deploy.json` is simply stale, and every machine-facing
+    step from here (`wait_for_ssh`, `provision_instance`, the deploy record)
+    must name the instance this run applied. If it named the Mac instead, the
+    install would land on a working Mac and the new instance would bill empty.
+    """
+    _write_macos_state(_isolated_cloud_home)
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps(
+            {
+                "host": "98.88.75.21",
+                "os_family": "macos",
+                "instance_id": "i-0a1bd7690f11507d6",
+                "ssh_user": "ec2-user",
+            }
+        ),
+        encoding="utf-8",
+    )
+    reached: list[str] = []
+    monkeypatch.setattr(
+        cloud_deploy,
+        "wait_for_ssh",
+        lambda target, timeout, **k: reached.append(target.host) or 1.0,
+    )
+    monkeypatch.setattr(
+        cloud_deploy,
+        "provision_instance",
+        lambda target, plan: reached.append(target.host) or {"version": plan.version},
+    )
+
+    result = cloud_deploy.deploy(_args())
+
+    assert reached == ["198.51.100.10", "198.51.100.10"]
+    assert result["target"]["host"] == "198.51.100.10"
+    assert "98.88.75.21" not in reached
+    recorded = json.loads((_isolated_cloud_home / "deploy.json").read_text())
+    assert recorded["host"] == "198.51.100.10"
+    assert recorded["os_family"] == "linux"
 
 
 def test_deploy_is_idempotent_across_repeated_runs(stubbed_deploy, _isolated_cloud_home):
@@ -1894,6 +2100,52 @@ def test_the_macos_caveat_covers_the_container_tier_and_not_the_model_backend(ca
 
     # And the sentence that used to absorb the model backend is gone.
     assert "No observability stack and no self-heal watchdog" not in out
+
+
+def test_the_macos_deploy_never_points_at_containers_on_the_instance(capsys):
+    """#4161: the closing pointer must not promise what this target cannot have.
+
+    It said "check the instance's own containers with `nyxgpt cloud ops
+    status`" -- four lines after the same output had correctly explained that
+    no Docker daemon can exist on an EC2 Mac. The last line of a deploy is the
+    one an operator acts on, so it is the worst place to assert a shape the
+    machine does not have.
+    """
+    cloud_deploy._print_deploy_summary(
+        {
+            "target": {"instance_id": "i-0abc", "host": "203.0.113.5"},
+            "plan": {"version": "3.0.0", "os_family": cloud_deploy.OS_FAMILY_MACOS},
+            "steps": [],
+            "tunnel": {"running": False},
+            "urls": {},
+        }
+    )
+
+    out = capsys.readouterr().out
+    _, _, pointer = out.rpartition("Ask for all of this again")
+
+    assert "nyxgpt cloud ops status" in pointer
+    assert "container" not in pointer.lower(), pointer
+
+
+def test_the_wrapped_ops_help_names_services_rather_than_containers(capsys):
+    """The same claim in `cloud ops --help`, which is substrate-independent (#4161).
+
+    The help is one string for every target OS, so it cannot promise the Linux
+    layout's containers: on an EC2 Mac the stack is `brew services` and no
+    Docker daemon can exist. It names services instead, and the instance's own
+    streamed output is what says which tier was actually found.
+    """
+    from nyxgpt import cli
+
+    with pytest.raises(SystemExit):
+        cli.cli(["cloud", "ops", "--help"])
+
+    out = capsys.readouterr().out
+
+    assert "nyxgpt ops status" in out
+    assert "services" in out
+    assert "container" not in out.lower(), out
 
 
 #: The EC2 Mac caveat, wherever an operator can read it. The deploy summary is

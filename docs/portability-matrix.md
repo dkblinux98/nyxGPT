@@ -201,7 +201,7 @@ command; you never type `ssh`, `terraform`, `docker`, or `kubectl`.
 | 2 | `nyxgpt cloud credentials-setup` | AWS credentials collected and validated, routed to `~/.aws/credentials` or the OS keychain — never `config.ini` |
 | 3 | `nyxgpt cloud deploy` | substrate applied, instance provisioned from published artifacts, observability profiles up, self-heal enabled, tunnel open, `/health` 200, localhost URLs printed |
 | 4 | `nyxgpt cloud status` | the SSH target, the public IP and SSH-only ingress from your own CIDR are printed — every app and observability URL is a `localhost` one through the tunnel |
-| 5 | `nyxgpt cloud ops status` | the instance's own `nyxgpt ops status` answers over the wrapped SSH path — container state with no hand-rolled `ssh` and no raw `docker compose` |
+| 5 | `nyxgpt cloud ops status` | the instance's own `nyxgpt ops status` answers over the wrapped SSH path — the running services with no hand-rolled `ssh` and no raw `docker compose` |
 | 6 | `nyxgpt cloud smoke --skip-deploy --keep` | chat round-trip, RAG ingest + query, and every observability UI green |
 | 7 | `nyxgpt self-heal status` | `enabled: true`, every component healthy |
 | 8 | `nyxgpt cloud destroy --yes` | tunnel closed, substrate destroyed, no billed resources left |

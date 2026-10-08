@@ -357,11 +357,16 @@ ACCEPTANCE_SEQUENCE: tuple[dict[str, str], ...] = (
         ),
     },
     {
-        "step": "containers",
+        # Named for services rather than containers (#4161): the step is about
+        # the wrapped SSH path answering at all, and `cloud ops status` is one
+        # command across both target OSes -- an EC2 Mac runs the stack as
+        # `brew services` and can host no Docker daemon. The instance's own
+        # streamed output is what names the tier it actually found.
+        "step": "services",
         "command": "nyxgpt cloud ops status",
         "expect": (
             "the instance's own `nyxgpt ops status` answers over the wrapped SSH path -- "
-            "container state without a hand-rolled ssh or a raw docker compose"
+            "the running services without a hand-rolled ssh or a raw docker compose"
         ),
     },
     {

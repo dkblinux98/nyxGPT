@@ -8,7 +8,7 @@
 # entry point resolves them, and whether they read the state files at the
 # paths the deploy actually writes.
 #
-# Five phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
+# Ten phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
 #
 #   1.  No deploy record         -> UNKNOWN, and explicitly not "not deployed"
 #   1b. A failed deploy attempt  -> NOT COMPLETED, naming the phase and the
@@ -18,6 +18,21 @@
 #   2.  A deploy record present  -> the connection target is printed
 #   3.  An unreachable instance  -> `cloud ops` fails with the wrapped fix,
 #                                   never a raw ssh/docker instruction
+#   4a. Nothing recorded at all  -> `cloud ops` still refuses, which is what
+#                                   makes 4b-4d mean something (#4161)
+#   4b. A macOS state.json       -> every `cloud ops` inspection resolves the
+#                                   Mac from its `mac_` keys with no --host
+#   4c. Both substrate blocks    -> the deploy record decides, so a Mac
+#                                   deployed after a Linux box is the target
+#   4d. The same Mac, `tunnel`   -> the shared resolver fixed it there too
+#   4e. A Linux deploy after it  -> the deploy's own family wins over that
+#                                   stale record, so the install cannot land
+#                                   on the Mac
+#
+# 4a-4e are the #4161 half: on a live `mac2.metal` during v3.0.0 acceptance
+# testing, every `nyxgpt cloud ops` subcommand answered "No provisioned
+# instance found" about a Mac the same CLI had just deployed, because the
+# resolver read `public_ip` and a macOS deploy writes `mac_public_ip`.
 #
 # 1b/1c are the #3993 half: after three failed deploys, `cloud status` on the
 # deploying workstation said "UNKNOWN from this machine" while a live, billing
@@ -207,6 +222,148 @@ contains "$OUT" "nyxgpt cloud allow-ip"
 # A failure to reach the box must not fall back to telling the operator to
 # type ssh or docker themselves (CLAUDE.md's wrapper requirement).
 not_contains "$OUT" "docker compose"
+
+echo
+echo "== Phase 4a: nothing recorded at all -- the refusal must still happen =="
+# What makes phase 4b non-vacuous (#3753's rule): the resolver must still
+# refuse when there genuinely is no instance, or "it resolved the Mac" would
+# only mean "it resolves anything".
+rm -rf "$CLOUD_DIR"
+set +e
+nyxgpt cloud ops status >"$OUT" 2>&1
+code=$?
+set -e
+cat "$OUT"
+[ "$code" -ne 0 ] || fail "cloud ops exited 0 with no instance recorded at all"
+contains "$OUT" "No provisioned instance found"
+
+echo
+echo "== Phase 4b: a macOS deploy's state.json -- mac_ keys, no public_ip (#4161) =="
+# The exact shape a successful `nyxgpt cloud deploy --os macos` leaves behind:
+# that deploy never applies the Linux substrate, so there is no bare
+# `public_ip` key anywhere in the file. `cloud ops` read only that key, so
+# every wrapped inspection refused a Mac it had just deployed -- the whole
+# `cloud ops` surface unreachable without re-typing `--host`.
+#
+# The address is TEST-NET-3 again: reaching the resolver is what is under
+# test, so the right pass is the *ssh* failure against the Mac's own address,
+# not "No provisioned instance found".
+mkdir -p "$CLOUD_DIR"
+cat >"$CLOUD_DIR/state.json" <<'JSON'
+{
+  "mac_host_id": "h-0a34ad0272012a987",
+  "mac_instance_id": "i-0a1bd7690f11507d6",
+  "mac_public_ip": "203.0.113.21",
+  "mac_region": "us-east-1",
+  "mac_security_group_id": "sg-0mac",
+  "mac_instance_type": "mac2.metal"
+}
+JSON
+set +e
+nyxgpt cloud ops status >"$OUT" 2>&1
+code=$?
+set -e
+cat "$OUT"
+[ "$code" -eq 1 ] || fail "expected exit 1 from an unreachable Mac, got $code"
+not_contains "$OUT" "No provisioned instance found"
+contains "$OUT" "ec2-user@203.0.113.21"
+contains "$OUT" "nyxgpt cloud allow-ip"
+# Every other inspection goes through the same resolver, so none of them may
+# fail on resolution either.
+for inspection in doctor self-heal session-backend; do
+    set +e
+    nyxgpt cloud ops "$inspection" >"$OUT" 2>&1
+    set -e
+    not_contains "$OUT" "No provisioned instance found"
+    contains "$OUT" "203.0.113.21"
+done
+
+echo
+echo "== Phase 4c: a Mac deployed after a Linux one -- the record breaks the tie =="
+# One state.json can hold both blocks. With the old Linux `public_ip` still
+# present, reading the bare key first would point every inspection at a
+# machine the operator is not running.
+cat >"$CLOUD_DIR/state.json" <<'JSON'
+{
+  "region": "us-east-1",
+  "instance_id": "i-0abc123def",
+  "public_ip": "203.0.113.10",
+  "security_group_id": "sg-0abc",
+  "mac_host_id": "h-0a34ad0272012a987",
+  "mac_instance_id": "i-0a1bd7690f11507d6",
+  "mac_public_ip": "203.0.113.21",
+  "mac_region": "us-east-1",
+  "mac_security_group_id": "sg-0mac"
+}
+JSON
+cat >"$CLOUD_DIR/deploy.json" <<'JSON'
+{
+  "version": "3.0.0",
+  "os_family": "macos",
+  "ssh_user": "ec2-user",
+  "host": "203.0.113.21",
+  "instance_id": "i-0a1bd7690f11507d6",
+  "region": "us-east-1"
+}
+JSON
+set +e
+nyxgpt cloud ops status >"$OUT" 2>&1
+set -e
+cat "$OUT"
+contains "$OUT" "ec2-user@203.0.113.21"
+not_contains "$OUT" "203.0.113.10"
+
+echo
+echo '== Phase 4d: `nyxgpt cloud tunnel` resolves the same Mac (#4161) =='
+# The tunnel shares the resolver, and it failed the same way on a Mac. Its
+# own record is the evidence: the host it opened a tunnel *to*.
+set +e
+nyxgpt cloud tunnel --background >"$OUT" 2>&1
+set -e
+cat "$OUT"
+not_contains "$OUT" "No provisioned instance found"
+if [ -f "$CLOUD_DIR/tunnel.json" ]; then
+    contains "$CLOUD_DIR/tunnel.json" "203.0.113.21"
+    nyxgpt cloud tunnel --stop >/dev/null 2>&1 || true
+else
+    # ssh died before the record was written (it is connecting to an
+    # unroutable address). The resolution still has to have happened -- the
+    # failure must be about the tunnel, not about finding the instance.
+    contains "$OUT" "Could not open the SSH tunnel"
+fi
+
+echo
+echo '== Phase 4e: a Linux deploy after a Mac one must not target the Mac (#4161) =='
+# The other half of the same resolution, and the dangerous one. `cloud deploy`
+# resolves its install target through this resolver immediately after applying
+# the substrate -- at which point deploy.json still describes the PREVIOUS
+# deploy. Phase 4c is the inspection case, where that stale record is exactly
+# right. Here it is exactly wrong: a plain `nyxgpt cloud deploy` after a macOS
+# one is a Linux deploy (the family comes from the instance type), so taking
+# `os_family: macos` off the record would send the Linux install over SSH onto
+# a working EC2 Mac -- `ec2-user` on both substrates, so it connects -- while
+# the instance this run just paid for sits empty.
+#
+# Driven through the installed package rather than `nyxgpt cloud deploy`,
+# which would need AWS and a real apply. The resolver is still the shipped
+# one, read from the wheel in the venv, against the same real files on disk.
+#
+# The state.json below is what phase 4c left: both blocks, Mac deployed last.
+# 203.0.113.10 is the Linux box this run would have just applied.
+python - <<'PY' >"$OUT" 2>&1
+import argparse
+
+from nyxgpt import cloud_deploy
+
+args = argparse.Namespace(host=None, ssh_user=None, identity_file=None)
+print("deploying-linux:", cloud_deploy.resolve_target(args, os_family="linux").host)
+print("inspecting:", cloud_deploy.resolve_target(args).host)
+PY
+cat "$OUT"
+contains "$OUT" "deploying-linux: 203.0.113.10"
+# ...and with nobody pinning a family, the Mac is still what an inspection
+# resolves, so the fix above did not simply disable the record.
+contains "$OUT" "inspecting: 203.0.113.21"
 
 echo
 echo "All phases passed."
