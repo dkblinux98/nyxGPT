@@ -41,6 +41,7 @@ from release_prereqs import (  # noqa: E402
     decide,
     is_placeholder_title,
     iteration_resubmit,
+    milestone_for_version,
     next_patch_version,
     next_release_title,
     next_sprint_plan,
@@ -115,6 +116,42 @@ class TestPickNextLine:
         """'v3.0.10' < 'v3.0.9' as strings, and that would cut the wrong line."""
         branch, _ = pick_next_line(["a (v3.0.10)", "b (v3.0.9)"], "3.0.1")
         assert branch == "v3.0.9"
+
+
+class TestMilestoneForVersion:
+    """`--next-branch` picks its own milestone, and must use the SAME anchored
+    `(vX.Y.Z)` parser Phase 4 does. The substring form this replaced
+    (`select(test("v" + version))`) matched the version anywhere in a title,
+    so an explicit `--next-branch v3.0.2` could adopt "(v3.0.21)" and mis-title
+    the next line's release issue and draft."""
+
+    OPEN = [
+        "Phase 9 — Far future (v3.0.21)",
+        "Phase 7 — nyxAgent (v3.1.0)",
+        "Placeholder — next line (v3.0.2)",
+    ]
+
+    def test_it_takes_the_milestone_naming_exactly_that_version(self):
+        assert milestone_for_version(self.OPEN, "3.0.2") == "Placeholder — next line (v3.0.2)"
+
+    def test_a_longer_version_is_not_a_prefix_match(self):
+        """The case the substring form got wrong: without the anchored parens,
+        `v3.0.2` matches inside "(v3.0.21)"."""
+        assert milestone_for_version(["Phase 9 — Far future (v3.0.21)"], "3.0.2") is None
+
+    def test_a_prose_mention_outside_the_parens_does_not_count(self):
+        """Phase 4 parses `(vX.Y.Z)`, so anything else is not this line's
+        milestone however much it talks about the version."""
+        assert milestone_for_version(["Follow-up work for v3.0.2 (v3.4.0)"], "3.0.2") is None
+
+    def test_no_match_is_reported_as_none_not_guessed(self):
+        assert milestone_for_version(self.OPEN, "4.0.0") is None
+
+    def test_it_agrees_with_pick_next_line_about_a_title_s_version(self):
+        """One parser, two callers: if they disagreed, Phase 0 could provision
+        against one milestone and Phase 4 derive another."""
+        branch, title = pick_next_line(self.OPEN, "3.0.1")
+        assert milestone_for_version(self.OPEN, branch[1:]) == title
 
 
 class TestNextReleaseTitle:
@@ -384,6 +421,55 @@ class TestCli:
 CEREMONY = ROOT / "scripts" / "release_ceremony.sh"
 PROOF = ROOT / "scripts" / "sprint-iteration-preservation-proof.sh"
 
+#: Any `gh api` call aimed at a `/milestones` path.
+_GH_API_MILESTONES_RE = re.compile(r"gh\s+api\b.*?/milestones\b")
+#: An explicit method, if one is given at all.
+_GH_API_METHOD_RE = re.compile(r"(?:-X|--method)[=\s]+([A-Za-z]+)")
+#: A field flag. `gh api` sends a POST when one of these is present and no
+#: method is given, so this -- not `-X POST` -- is what makes the implicit
+#: form a write.
+_GH_API_FIELD_RE = re.compile(r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)[=\s]")
+
+
+def _logical_lines(text: str):
+    """The file's commands, with backslash continuations joined and comments
+    dropped.
+
+    Scanning one physical line at a time is evadable by a line break: the
+    method or field flag that makes a call a write can sit on the
+    continuation, leaving the `gh api` line looking like a plain read.
+    """
+    buf = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        buf = f"{buf} {stripped}" if buf else stripped
+        if buf.endswith("\\"):
+            buf = buf[:-1].rstrip()
+            continue
+        line, buf = buf, ""
+        if line and not line.startswith("#"):
+            yield line
+    if buf and not buf.startswith("#"):
+        yield buf
+
+
+def is_milestone_write(command: str) -> bool:
+    """Does this command create, edit or delete a milestone?
+
+    The predicate the #4166 guard uses. It is deliberately wider than
+    "`-X POST` on `/milestones`", which the review found evadable: `gh api
+    "repos/.../milestones" -f title=x` POSTs with no method flag at all, and
+    would have slipped past. So: any `gh api` on a `/milestones` path whose
+    explicit method is not GET, or which carries a field flag with no method
+    given.
+    """
+    if not _GH_API_MILESTONES_RE.search(command):
+        return False
+    method = _GH_API_METHOD_RE.search(command)
+    if method:
+        return method.group(1).upper() != "GET"
+    return bool(_GH_API_FIELD_RE.search(command))
+
 
 class TestCeremonyWiring:
     """Cheap structural guards on the Phase 0 contract.
@@ -418,6 +504,18 @@ class TestCeremonyWiring:
         assert "inventory_line" in resume_block
         assert "provision_line" in resume_block
 
+    def test_the_explicit_next_branch_uses_the_anchored_milestone_parser(self):
+        """`--next-branch` must resolve its milestone through
+        `milestone-for`, not a jq substring `test()`: the substring form
+        matched `v3.0.2` inside "(v3.0.21)" and in any prose mention, so an
+        explicit branch could adopt a milestone naming a different line and
+        mis-title the next release issue and draft."""
+        body = CEREMONY.read_text(encoding="utf-8")
+        block = body[body.index("NEXT_BRANCH_EXPLICIT") :]
+        block = block[: block.index("NEXT_VERSION=")]
+        assert "milestone-for" in block
+        assert 'test("v"' not in block, "the unanchored substring match is back"
+
     def test_the_sprint_query_asks_for_the_completed_iterations(self):
         """Dropping them from the resubmit list wipes their items' values, so
         the read has to include them in the first place."""
@@ -426,7 +524,7 @@ class TestCeremonyWiring:
         assert "completedIterations" in query
         assert re.search(r"iterations\s*\{\s*id title startDate duration", query)
 
-    def test_only_the_ceremony_creates_a_milestone(self):
+    def test_only_the_ceremony_writes_a_milestone(self):
         """CLAUDE.md §Tooling forbids agents creating milestones; #4166 is the
         owner's permission for the CEREMONY and nothing else. If a second
         caller appears, that scoped exception has drifted into a general
@@ -437,16 +535,51 @@ class TestCeremonyWiring:
         sources += [p for p in (ROOT / "scripts").rglob("*.py") if "__pycache__" not in str(p)]
         sources += sorted((ROOT / ".github" / "workflows").glob("*.yml"))
         for path in sources:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith("#"):
-                    continue
-                if re.search(r"(?:-X|--method)\s+POST[^\n]*?/milestones\b", stripped):
+            for command in _logical_lines(path.read_text(encoding="utf-8")):
+                if is_milestone_write(command):
                     callers.add(str(path.relative_to(ROOT)))
         assert callers == {"scripts/release_ceremony.sh"}, (
-            "milestone creation is sanctioned for the release ceremony alone (#4166), "
-            f"but these create one: {sorted(callers)}"
+            "milestone writes are sanctioned for the release ceremony alone (#4166), "
+            f"but these write one: {sorted(callers)}"
         )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'gh api -X POST "repos/o/r/milestones" -f title=x',
+            'gh api --method POST "repos/o/r/milestones" -f title=x',
+            # The evasion the `-X POST`-only form missed: `gh api` sends a POST
+            # *because* a field flag is present, with no method flag at all.
+            'gh api "repos/o/r/milestones" -f title=x',
+            'gh api "repos/o/r/milestones" -F due_on=2026-01-01',
+            'gh api "repos/o/r/milestones" --field title=x',
+            'gh api "repos/o/r/milestones" --raw-field title=x',
+            'gh api "repos/o/r/milestones" --input payload.json',
+            'gh api -X PATCH "repos/o/r/milestones/18" -f state=closed',
+            'gh api -X DELETE "repos/o/r/milestones/18"',
+            # Continuations are joined first, so splitting the flag across
+            # lines does not hide it either.
+            'gh api "repos/o/r/milestones" \\\n  -f title=x',
+        ],
+    )
+    def test_the_guard_recognises_every_write_shape(self, command):
+        assert any(is_milestone_write(c) for c in _logical_lines(command))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'gh api "repos/o/r/milestones?state=open&per_page=100" --jq ".[].title"',
+            "gh api repos/o/r/milestones",
+            'gh api --paginate "repos/o/r/milestones?state=all"',
+            'gh api -X GET "repos/o/r/milestones" -f state=open',
+            # A different resource: setting an issue's milestone is a write to
+            # /issues/N, not a milestone creation, and must not be flagged.
+            'gh api -X PATCH "repos/o/r/issues/7" -f milestone=18',
+            "# gh api -X POST repos/o/r/milestones -f title=x",
+        ],
+    )
+    def test_the_guard_leaves_reads_and_other_resources_alone(self, command):
+        assert not any(is_milestone_write(c) for c in _logical_lines(command))
 
     def test_the_proof_script_is_referenced_where_the_hazard_is_encoded(self):
         """The evidence has to be findable from the code it licenses."""

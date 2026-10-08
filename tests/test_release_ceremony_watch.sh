@@ -252,6 +252,72 @@ NYXGPT_CEREMONY_PAT="fake-token" NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SA
 _assert_contains "a published release runs only Phase 4" "$(cat "$RAN_FILE")" "release_ceremony.sh 3.0.0 --unattended --phase4-only"
 _assert_eq "rc retirement is not repeated on a Phase 4 resume" "" "$(grep retire_rc_formulas "$RAN_FILE" || true)"
 
+# --- Tests 10/11: the PROVISIONED marker contract, consumer side (#4166) ---
+# `scripts/release_ceremony.sh` emits `[ceremony] PROVISIONED <what>` for the
+# objects Phase 0 had to create; the watcher greps that out of the ceremony log
+# and carries it into the owner's completion comment. The producer side is
+# pinned in tests/test_release_ceremony_phase0.sh (Cases 4/5); without this the
+# consumer could stop reading the marker and nobody would notice until a real
+# release left a placeholder milestone nobody was told to rename.
+COMMENTS_FILE="$WORK/comments"
+cat >"$WORK/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"auth status"*) exit 0 ;;
+  *"-X POST"*comments*) printf '%s\n' "$args" >>"$COMMENTS_FILE"; exit 0 ;;
+  *graphql*)
+    printf '{"data":{"repository":{"issue":{"projectItems":{"nodes":[{"fieldValues":{"nodes":[{"field":{"name":"Status"},"name":"%s"}]}}]}}}}}\n' "$FAKE_STATUS"
+    exit 0 ;;
+  *comments*) echo "${FAKE_COMMENTS:-[]}"; exit 0 ;;
+  # No release for this tag yet -> a full run, not a Phase 4 resume.
+  *releases/tags/*) exit 1 ;;
+  *issues/*) echo "$FAKE_TITLE"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$WORK/bin/gh"
+export COMMENTS_FILE
+export FAKE_COMMENTS='[]'
+
+_stub_ceremony() { # _stub_ceremony <line to print on stdout>
+  cat >"$SANDBOX/scripts/release_ceremony.sh" <<EOF
+#!/usr/bin/env bash
+echo "release_ceremony.sh \$*" >>"$RAN_FILE"
+printf '%s\n' "$1"
+EOF
+  chmod +x "$SANDBOX/scripts/release_ceremony.sh"
+}
+
+# Test 10: the marker's content reaches the completion comment.
+: >"$RAN_FILE"; : >"$COMMENTS_FILE"
+_stub_ceremony "[ceremony] PROVISIONED Release Management label on #3521; milestone 'Placeholder — next line (v3.0.1)'"
+NYXGPT_CEREMONY_PAT="fake-token" NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SANDBOX_SCRIPT" >/dev/null 2>&1
+# The whole recorded body, not just the matching line: the note is appended
+# several lines below "Release ceremony complete".
+posted="$(cat "$COMMENTS_FILE")"
+_assert_contains "the completion comment is posted at all" "$posted" "Release ceremony complete"
+_assert_contains "the completion comment carries what Phase 0 provisioned" \
+  "$posted" "Phase 0 provisioned: Release Management label on #3521"
+_assert_contains "the provisioned milestone is named for the owner to rename" \
+  "$posted" "Placeholder — next line (v3.0.1)"
+_assert_contains "the note says the placeholder is the owner's to re-scope" \
+  "$posted" "rename and re-scope it"
+
+# Test 11: nothing provisioned -> no note at all, rather than an empty one.
+# (the normal case once the owner has prepared the line themselves)
+: >"$RAN_FILE"; : >"$COMMENTS_FILE"
+_stub_ceremony "[ceremony] Phase 0: prerequisite inventory"
+NYXGPT_CEREMONY_PAT="fake-token" NYXGPT_CONFIG_FILE="$WORK/config.ini" bash "$SANDBOX_SCRIPT" >/dev/null 2>&1
+posted="$(cat "$COMMENTS_FILE")"
+_assert_eq "a run that provisioned nothing claims nothing" \
+  "" "$(grep -o 'Phase 0 provisioned' <<<"$posted" || true)"
+# The real bite: `grep` finding no marker exits 1, and sourcing gh_project.sh
+# turns on `set -e`, so without the `|| true` the watcher died HERE -- after a
+# successful ceremony, with the rc formulas unretired and no comment at all.
+_assert_contains "the completion comment is still posted" "$posted" "agent flags restored"
+_assert_contains "the rc formulas are still retired" "$(cat "$RAN_FILE")" "retire_rc_formulas.sh 3.0.0"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0

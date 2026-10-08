@@ -376,13 +376,16 @@ inventory_line() {
     if [[ -n "$NEXT_BRANCH_EXPLICIT" ]]; then
       # --next-branch overrides the derivation, so the milestone that matters
       # is the one naming THAT version -- not whatever the derivation picked,
-      # which would mis-title the next release issue and draft.
+      # which would mis-title the next release issue and draft. Matched by the
+      # same anchored `(vX.Y.Z)` parser Phase 4 uses, not a substring search:
+      # a version string also appears inside a longer patch number, and in
+      # any prose mention of it elsewhere in a title.
       NEXT_MS_TITLE="$(printf '%s' "$titles" \
-        | jq -r --arg v "${NEXT_BRANCH#v}" '[.[] | select(test("v" + ($v | gsub("\\."; "\\."))))][0] // empty')"
+        | python3 "$PREREQS" milestone-for "${NEXT_BRANCH#v}")"
       if [[ -n "$NEXT_MS_TITLE" ]]; then
         prereq next-line-milestone provision true "next line ${NEXT_BRANCH} (--next-branch), milestone '${NEXT_MS_TITLE}'"
       else
-        prereq next-line-milestone gate false "--next-branch ${NEXT_BRANCH} was given but no open milestone mentions v${NEXT_BRANCH#v} -- the placeholder is only derived for the next patch version, so create or name the right milestone"
+        prereq next-line-milestone gate false "--next-branch ${NEXT_BRANCH} was given but no open milestone names it as \"(v${NEXT_BRANCH#v})\" -- the placeholder is only derived for the next patch version, so create or name the right milestone"
       fi
     elif [[ -n "$picked" ]]; then
       NEXT_BRANCH="${picked%%$'\t'*}"

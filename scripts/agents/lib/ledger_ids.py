@@ -239,7 +239,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Run at MERGE time. Prints 'old -> new' per collision; exits 1 "
         "when anything was reallocated, 0 when there was nothing to do.",
     )
-    p_realloc.add_argument("--base", required=True, help="live base ref, e.g. origin/<release-branch>")
+    p_realloc.add_argument(
+        "--base", required=True, help="live base ref, e.g. origin/<release-branch>"
+    )
     p_realloc.add_argument("--branch", default="HEAD", help="branch ref (default: %(default)s)")
     p_realloc.add_argument(
         "--write", action="store_true", help="rewrite the ledger in place (default: report only)"

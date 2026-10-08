@@ -214,9 +214,13 @@ loop, and now reaches a release only through this one signed-off path.
 
 ### What runs, unattended
 
-1. **Phase 0** entry gate (read-only): milestone fully closed, release issue
-   task list clean, no open critical/high code-scanning alerts, draft release
-   present, tag not already taken.
+1. **Phase 0** prerequisite inventory → provision → entry gate (#4166): it
+   checks every prerequisite for all five phases in one pass, creates the ones
+   automation can (see **Prerequisites** below), and stops before Phase 1 —
+   listing *every* gap, not the first — if anything it cannot create is
+   missing: milestone not fully closed, release issue task list unclean, open
+   critical/high code-scanning alerts, a `pyproject.toml` version mismatch, a
+   tag already taken.
 2. **Phase 1** master fast-forward → normalize and publish the draft release
    (tag created on master).
 3. **Phase 2** `stable` publish, delegated to the single publish pipeline

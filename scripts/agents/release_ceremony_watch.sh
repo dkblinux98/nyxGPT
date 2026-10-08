@@ -157,7 +157,8 @@ fi
 
 # Fail fast on a missing ceremony token, BEFORE the marker is claimed: the
 # scrummaster token cannot fast-forward master, so without this the
-# ceremony would post its start comment, run the read-only entry gate and
+# ceremony would post its start comment, run the Phase 0 inventory (which
+# since #4166 also PROVISIONS the milestone/sprint/draft it can) and
 # only then die at the Phase 1 push — with the marker already stamped.
 if [[ -z "${NYXGPT_CEREMONY_PAT:-}" ]]; then
   echo "[ceremony-watch] Ceremony token not configured (RELEASE_CEREMONY_TOKEN / NYXGPT_CEREMONY_PAT) — refusing to start." >&2
@@ -223,12 +224,21 @@ if ! NYXGPT_CEREMONY_PAT="${NYXGPT_CEREMONY_PAT}" \
   ceremony_failed "the ceremony itself" \
     "See the run log for which phase stopped it. **The agent flags (AGENTS_ENABLED, SPRINT_AUTOPILOT, CLAUDE_REVIEW_ENABLED) stay paused** until a run completes -- that is deliberate, so nothing merges into a half-released line. Re-dispatching resumes: Phases 0-3 are skipped once the release tag exists, and the saved flags are restored at the end of Phase 4."
 fi
-NEXT_LINE="$(grep -oE 'NEXT_LINE v[0-9.]+ #[0-9]+' "$CEREMONY_LOG" | tail -1 | cut -d' ' -f2-)"
+# `|| true` on BOTH greps below, for the same reason as line 102: sourcing
+# gh_project.sh turns on `set -e`, and `grep` exits 1 when the pattern is
+# absent -- which `pipefail` propagates out of the command substitution. These
+# two lines read OPTIONAL detail out of the ceremony log, so a miss has to mean
+# "nothing to report", not an abort. Without it the watcher dies here after a
+# SUCCESSFUL ceremony: the rc formulas are never retired, the completion
+# comment is never posted, and nothing says so (no failure comment, no DM,
+# since `ceremony_failed` is never reached either).
+NEXT_LINE="$(grep -oE 'NEXT_LINE v[0-9.]+ #[0-9]+' "$CEREMONY_LOG" | tail -1 | cut -d' ' -f2- || true)"
 # What Phase 0 had to put in place (#4166). The ceremony posts its own note on
 # the release issue at the time; this carries it into the completion summary so
 # the owner sees "a placeholder milestone is waiting to be renamed" without
-# scrolling back.
-PROVISIONED="$(grep -oE '^\[ceremony\] PROVISIONED .*' "$CEREMONY_LOG" | tail -1 | sed 's/^\[ceremony\] PROVISIONED //')"
+# scrolling back. Provisioning nothing is the normal case once the owner has
+# prepared the line themselves, so this grep misses more often than it hits.
+PROVISIONED="$(grep -oE '^\[ceremony\] PROVISIONED .*' "$CEREMONY_LOG" | tail -1 | sed 's/^\[ceremony\] PROVISIONED //' || true)"
 # Built outside the comment body on purpose: inside a double-quoted string,
 # `${VAR:+...}` re-parses quotes in its word, so an apostrophe in the prose
 # would open a quote and leave the script unparseable.

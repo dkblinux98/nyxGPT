@@ -120,6 +120,42 @@ def is_placeholder_title(title: str) -> bool:
     return title.startswith(PLACEHOLDER_PREFIX)
 
 
+def title_version(title: str) -> tuple[int, int, int] | None:
+    """The version a milestone title names as `(vX.Y.Z)`, or None.
+
+    One definition, used by every caller: `pick_next_line` (which line comes
+    next) and `milestone_for_version` (which milestone names a given line)
+    must agree about what version a title carries, or `--next-branch` and the
+    derivation could pick different milestones for the same branch.
+    """
+    m = _MILESTONE_VERSION_RE.search(title)
+    if not m:
+        return None
+    major, minor, patch = (int(x) for x in m.groups())
+    return major, minor, patch
+
+
+def milestone_for_version(titles: list[str], version: str) -> str | None:
+    """The open milestone naming exactly `version` as `(vX.Y.Z)`, or None.
+
+    `--next-branch` overrides the derivation, so the milestone that matters is
+    the one naming THAT version rather than whatever the derivation picked --
+    an explicit branch that took its milestone title from the derivation would
+    mis-title the next line's release issue and draft.
+
+    Matched on the anchored `(vX.Y.Z)` form, deliberately: a bare substring
+    search also hits a longer patch number that merely starts with the one
+    wanted (`(vX.Y.ZN)`), and any prose mention of the version anywhere in a
+    title -- so the ceremony could adopt a milestone that Phase 4 then parses
+    as a different line entirely.
+    """
+    want = parse_version(version)
+    for title in titles:
+        if title_version(title) == want:
+            return title
+    return None
+
+
 def pick_next_line(titles: list[str], version: str) -> tuple[str, str] | None:
     """The next line's branch and milestone title, or None if nothing qualifies.
 
@@ -131,12 +167,11 @@ def pick_next_line(titles: list[str], version: str) -> tuple[str, str] | None:
     current = parse_version(version)
     best: tuple[tuple[int, int, int], str] | None = None
     for title in titles:
-        m = _MILESTONE_VERSION_RE.search(title)
-        if not m:
+        found = title_version(title)
+        if found is None:
             continue
-        found = tuple(int(x) for x in m.groups())
         if found > current and (best is None or found < best[0]):
-            best = (found, title)  # type: ignore[assignment]
+            best = (found, title)
     if best is None:
         return None
     return "v" + ".".join(str(x) for x in best[0]), best[1]
@@ -354,6 +389,15 @@ def _cmd_next_line(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_milestone_for(args: argparse.Namespace) -> int:
+    titles = json.load(sys.stdin)
+    title = milestone_for_version(titles, args.version)
+    if title is None:
+        return 0
+    print(title)
+    return 0
+
+
 def _cmd_next_release_title(args: argparse.Namespace) -> int:
     print(next_release_title(args.milestone))
     return 0
@@ -391,6 +435,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("next-line", help="branch<TAB>milestone for the line above VERSION")
     p.add_argument("version")
     p.set_defaults(func=_cmd_next_line)
+
+    p = sub.add_parser("milestone-for", help="the open milestone naming exactly VERSION")
+    p.add_argument("version")
+    p.set_defaults(func=_cmd_milestone_for)
 
     p = sub.add_parser("next-release-title", help="release-issue suffix from a milestone title")
     p.add_argument("milestone")
