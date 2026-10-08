@@ -43,7 +43,7 @@ the ceremony and the dashboard:
   publishing is refused from anywhere but a `v<X.Y.Z>` branch whose number
   matches the version declared in `pyproject.toml`
   (`release_branch_version`, `plan`). A `3.0.0rc4` cut from a feature branch
-  would claim to be the v3.0.0 line and would not be.
+  would claim to be the vX.Y.Z line and would not be.
 * **Never reuses a version.** `next_rc_number` reads what PyPI already
   serves; numbers only ever go up, and PyPI itself refuses a re-upload of a
   version it already has (versions are immutable).
@@ -187,7 +187,7 @@ def release_branch_version(branch: str) -> str | None:
 
 
 def is_release_branch(branch: str) -> bool:
-    """True when `branch` is a release branch (`v3.0.0`), not a feature branch."""
+    """True when `branch` is a release branch (`vX.Y.Z`), not a feature branch."""
     return release_branch_version(branch) is not None
 
 
@@ -477,7 +477,7 @@ def run_published_channel(run: dict[str, Any], channel: str) -> bool:
     """Whether a workflow run of the publish pipeline is a `channel` build.
 
     Both channels arrive as a `workflow_dispatch`, so a run is identified by
-    the title the workflow's `run-name:` renders ("publish rc from v3.0.0").
+    the title the workflow's `run-name:` renders ("publish rc from vX.Y.Z").
     A dry run titles itself "publish rc [dry run] from ..." and uploads
     nothing, so it deliberately does NOT match -- treating it as a published
     candidate would suppress the next real one.
@@ -607,7 +607,7 @@ def autopilot_rc_preflight(
     release = release_branch_version(branch)
     if release is None:
         raise ReleaseCandidateError(
-            f"Refusing to plan a candidate from {branch!r} -- release branches (v3.0.0) only."
+            f"Refusing to plan a candidate from {branch!r} -- release branches (vX.Y.Z) only."
         )
     versions = [str(v) for v in published]
     # `include_in_flight` (#3771): this is the one caller that decides
@@ -712,7 +712,7 @@ def plan(
     if not branch_version:
         blockers.append(
             f"{branch or '(no branch)'} is not a release branch -- a build is only ever cut "
-            "from the release line's tip (v3.0.0)"
+            "from the release line's tip (vX.Y.Z)"
         )
     elif not version_matches_branch:
         blockers.append(
@@ -876,7 +876,7 @@ def dispatch(branch: str, channel: str = "rc", number: int | None = None) -> dic
         )
     if not is_release_branch(branch):
         raise ReleaseCandidateError(
-            f"Refusing to publish from {branch!r} -- release branches (v3.0.0) only."
+            f"Refusing to publish from {branch!r} -- release branches (vX.Y.Z) only."
         )
 
     cfg = load_config()
@@ -1091,7 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Resolve the next PyPI version for a release branch and channel.",
     )
     parser.add_argument(
-        "--branch", required=True, help="Git ref the build is cut from, e.g. v3.0.0"
+        "--branch", required=True, help="Git ref the build is cut from: the release branch, vX.Y.Z"
     )
     parser.add_argument(
         "--channel",
