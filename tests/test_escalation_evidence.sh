@@ -320,8 +320,24 @@ STATE="$(release_head_state_json)"
 _assert_eq "an unreadable head leaves the key absent -> 'not checked'" "null" \
   "$(jq -r '.release_head_red' <<<"$STATE")"
 
+# The blast-radius report asks the same question through the same function,
+# and it is EXECUTED here: #4176 refactored its first question onto
+# `release_head_state_json`, and tests/test_gh_project_lib.sh stubs the whole
+# report out, so nothing else would notice if the refactor had emptied it.
+STUB_FAILING_CHECKS="test" STUB_CHECKS_RC=0
+REPORT="$(blast_radius_report 4176 "base-red:v9.9.9:test")"
+_assert_contains "the report still answers Q1 'yes' on a red head" "$REPORT" '**yes**'
+_assert_contains "and still names the failing check" "$REPORT" '`test`'
+_assert_contains "and is still a blast-radius report, not a fragment" "$REPORT" "### Blast radius"
+
+STUB_FAILING_CHECKS="" STUB_CHECKS_RC=1
+REPORT="$(blast_radius_report 4176 "developer-failure:Some step")"
+_assert_contains "an unreadable head still renders as 'not checked'" "$REPORT" "not checked."
+
 # And the headline must not call that red either -- the composition reads the
 # same JSON the report does.
+STUB_FAILING_CHECKS="" STUB_CHECKS_RC=1
+STATE="$(release_head_state_json)"
 HEADLINE="$(jq -n -c --argjson h "$STATE" \
   '{error_class: "unknown", base_branch: $h.release_branch, base_red: $h.release_head_red}' \
   | "$PYTHON" "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" headline)"

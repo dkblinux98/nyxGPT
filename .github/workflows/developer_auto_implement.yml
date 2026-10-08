@@ -3252,12 +3252,19 @@ jobs:
 
             const fs = require('fs');
 
+            // Both paths are env-overridable with the production value as the
+            // default, so escalation_script_probe.py can point them at its own
+            // fixtures and EXECUTE this script over hostile file content
+            // (#4176). The workflow sets neither.
+            const detailPath = process.env.FAILURE_DETAIL_FILE || '/tmp/failure_detail.txt';
+            const headlinePath = process.env.HEADLINE_FILE || '/tmp/escalation_headline.txt';
+
             // Read the concrete failing step + error excerpt captured by
             // Phase 1 (read from a file, not a GitHub Actions expression,
             // so arbitrary log content can never break out of this script).
             let failureDetail = '';
             try {
-              failureDetail = fs.readFileSync('/tmp/failure_detail.txt', 'utf8').trim();
+              failureDetail = fs.readFileSync(detailPath, 'utf8').trim();
             } catch (e) {}
 
             // The composed headline, from a file for the same reason: it is
@@ -3266,7 +3273,7 @@ jobs:
             // run -- say THAT, rather than inventing a diagnosis.
             let explanation = '';
             try {
-              explanation = fs.readFileSync('/tmp/escalation_headline.txt', 'utf8').trim();
+              explanation = fs.readFileSync(headlinePath, 'utf8').trim();
             } catch (e) {}
             if (!explanation) {
               explanation = `The escalation headline could not be composed (the "Compose the ` +

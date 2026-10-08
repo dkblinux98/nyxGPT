@@ -244,10 +244,33 @@ def test_the_run_sweep_actually_had_something_to_sweep() -> None:
 
 
 def test_escalation_step_passes_values_through_env(escalation_script: str) -> None:
-    """The escalation script reads its inputs from the environment."""
-    for name in ("ERROR_CLASS", "PHASE2_STATUS", "PHASE3_STATUS", "PHASE3_DIAGNOSIS"):
+    """The escalation script reads its inputs from the environment.
+
+    `PHASE3_DIAGNOSIS` is deliberately NOT in this list any more (#4176): the
+    diagnosis is no longer looked up in this script at all -- it is composed
+    from the run's evidence by the "Compose the escalation headline" step and
+    read from a file, which is why `probe_fixed` now injects its hostile text
+    through `HOSTILE_FILES`. What must stay true is the property, not the
+    channel: no `${{ }}` anywhere in the body.
+    """
+    for name in ("ERROR_CLASS", "PHASE2_STATUS", "PHASE3_STATUS", "HEADLINE_PHASE"):
         assert f"process.env.{name}" in escalation_script
     assert "${{" not in escalation_script
+
+
+def test_the_headline_is_read_from_a_file_not_looked_up(escalation_script: str) -> None:
+    """#4176: the error-class lookup that printed the generic sentence is gone.
+
+    The old body held `errorExplanations[errorClass]`, whose `unknown` entry is
+    the "Error type could not be determined. Manual investigation needed."
+    headline the owner kept receiving over runs whose cause the pipeline had
+    already found. If that table ever comes back here, the composition step
+    above it has been bypassed.
+    """
+    assert "errorExplanations" not in escalation_script
+    assert "Error type could not be determined" not in escalation_script
+    assert "fs.readFileSync" in escalation_script
+    assert "HEADLINE_FILE" in escalation_script
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
