@@ -1744,7 +1744,7 @@ def _unconfirmed_host_message(host_id: str) -> str:
     )
 
 
-def verify_mac_record(args: argparse.Namespace) -> dict[str, Any]:
+def verify_mac_record(args: argparse.Namespace | None = None) -> dict[str, Any]:
     """Confirm the recorded host against AWS and refresh what it has cost.
 
     The read-side counterpart to `reconcile_released_host`: same single
@@ -1755,7 +1755,12 @@ def verify_mac_record(args: argparse.Namespace) -> dict[str, Any]:
     `SPEND_REFRESH_SECONDS`, because Cost Explorer bills per request and its own
     granularity is a day -- a dashboard poll must not be able to turn an
     observability surface into a line item. Never raises.
+
+    `args` is optional so a status surface with no parsed flags can call it; the
+    region then comes from the record (which is where it belongs anyway) and the
+    profile from the saved settings.
     """
+    args = args if args is not None else argparse.Namespace()
     if reconcile_released_host(args):
         return {"host_present": False, "cleared": True}
     record = load_mac_record()
