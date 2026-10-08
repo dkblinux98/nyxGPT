@@ -500,8 +500,9 @@ command to *run* is always the wrapped one.
 Where the answer comes from follows the same rule as the substrate (see
 [Which machine is answering](#which-machine-is-answering-3804)): the deploy
 record on the workstation that deployed, the instance itself when the command
-runs there, and otherwise **unknown** — which is not the same as nothing
-being deployed. The connection target is reportable only in the first case;
+runs there, the cloud-deploy record in the cluster when it runs in an api Pod
+of a `--kubernetes` deployment (#4138), and otherwise **unknown** — which is
+not the same as nothing being deployed. The connection target is reportable only in the first case;
 on the instance the SSH user and key are the workstation's, and the command
 says so rather than printing a blank.
 
@@ -996,8 +997,9 @@ used:
 | Where the dashboard runs | Source | What it reports |
 | --- | --- | --- |
 | On the EC2 instance | Instance metadata (IMDSv2, `169.254.169.254`) | The running machine's own region, instance id and type, public IP, VPC, subnet, security groups and key pair. The deployment is read first-hand — the stack answering the request *is* the deployment |
+| In an api **Pod** of a `--kubernetes` deployment (#4138) | The `nyxgpt-cloud-deploy` ConfigMap in the `nyxgpt` namespace | The same substrate facts, recorded there by the `nyxgpt ops install --kubernetes` the deploy ran *on* the instance. The deployment is still read first-hand — a Pod of it is answering — and the card names the record it got the instance from |
 | On the workstation that provisioned it | The Terraform outputs in `~/.nyxGPT/cloud/state.json` | The substrate that machine created, plus its deploy record, tunnel state and history |
-| Neither | — | **Unknown.** Not "not provisioned": nothing on that machine has checked |
+| None of those | — | **Unknown.** Not "not provisioned": nothing on that machine has checked |
 
 This is why the panel exists in this shape. Deriving everything from Terraform
 state — which lives on the operator's workstation — made a dashboard served
@@ -1006,6 +1008,19 @@ machine Terraform had created minutes earlier (owner observation, rc12).
 Terraform state and the tunnel are likewise reported as *not on this machine*
 when the page is served from the instance, rather than as a local file that
 does not exist there.
+
+The third row is the same defect one substrate down (#4138, owner observation
+2026-10-03): on a `--kubernetes` cloud deployment the dashboard is served by an
+api **Pod**, which reaches neither IMDS (`169.254.169.254` is link-local and
+not routed into the Pod network) nor the host's `~/.nyxGPT/cloud` — so both
+cards read UNKNOWN while `nyxgpt cloud status` on that same instance printed
+the deployment in full. The answer is the one #3988 already used for the
+install mode: the install **records the facts in the cluster** and the API
+serves them from there. The Pod does not probe the host and no host path is
+mounted into it. Off EC2 nothing is recorded, so a local `kind` cluster's page
+still says unknown; off-cluster nothing is read, so a workstation spends no
+`kubectl` on a record about a machine it is not. See [The cloud deployment
+underneath the cluster](kubernetes.md#the-cloud-deployment-underneath-the-cluster-4138).
 
 The page and the CLI still call the same `nyxgpt.cloud_deploy` and
 `nyxgpt.cloud_infra` functions, and the commands it displays come from the
