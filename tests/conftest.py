@@ -295,6 +295,29 @@ def _no_instance_metadata_reads(monkeypatch):
     cloud_imds.reset_cache()
 
 
+@pytest.fixture(autouse=True)
+def _no_cluster_record_reads(monkeypatch):
+    """No test reads a cloud-deploy record it did not put there (#4138).
+
+    Same reasoning as `_no_instance_metadata_reads` above, one source over:
+    every cloud status read now also asks the cluster whether it carries a
+    cloud-deploy record, and that read is gated on `KUBERNETES_SERVICE_HOST`.
+    A runner that happens to set it (a self-hosted runner inside a cluster)
+    would make the assertions depend on where CI runs, so the default for the
+    whole suite is "not in a Pod", stated once here.
+
+    The cache reset matters as much as the env var: the record is cached for
+    five minutes at module level, so without this a test that stubs a record
+    would leak it into every test that ran after it.
+    """
+    from nyxgpt import cloud_cluster_record
+
+    monkeypatch.delenv(cloud_cluster_record.IN_CLUSTER_ENV, raising=False)
+    cloud_cluster_record.reset_cache()
+    yield
+    cloud_cluster_record.reset_cache()
+
+
 @pytest.fixture
 def cassandra_test_setup():
     """Fixture for tests that require Cassandra connection.
