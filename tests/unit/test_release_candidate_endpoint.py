@@ -29,6 +29,10 @@ def _offline(monkeypatch):
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
 
 
+# MERGE NOTE (#4167 <- v3.0.1): the release branch's inline `_declared_line`
+# fixture and this one are the same fix; see the note in
+# `test_release_candidate.py` for why the shared `release_line_pin` helper is
+# the one kept.
 @pytest.fixture(autouse=True)
 def _declared_release_line(monkeypatch, tmp_path_factory):
     """`PUBLISHED` above names the 3.0.0 line, so the declared version does too.

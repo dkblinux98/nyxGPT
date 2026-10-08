@@ -860,7 +860,7 @@ active lane). Three paths enforce it, all agent-side and all idempotent:
 | Path | Script | Covers |
 | --- | --- | --- |
 | Merge flow | `scripts/agents/review_accept_and_merge.sh` (via `close_pr_project_item`) | PRs the review agent merges |
-| Close event | `.github/workflows/pr_project_status_on_close.yml` -> `scripts/agents/pr_close_project_status.sh` | Any `pull_request: closed` — rejected/abandoned PRs, owner and ceremony merges |
+| Close event | `.github/workflows/pr_project_status_on_close.yml` -> `scripts/agents/pr_close_project_status.sh` | Any `pull_request_target: closed` — rejected/abandoned PRs, owner and ceremony merges, and **Dependabot's own supersede-closes**. It was `pull_request` until #4167's review round; GitHub withholds secrets from a Dependabot-actored run, so the stamp died at `require_gh_auth` for exactly the author whose cards #4167 started creating (ledger **D-062**) |
 | Sweep backstop | `.github/workflows/sweep_pr_status.yml` -> `scripts/agents/reconcile_pr_lane.sh` | Cards predating the invariant, plus any stamp lost to a flaky API. Runs daily and applies; manual dispatch is dry-run by default and can narrow to one lane via `SOURCE_STATUS` |
 
 The terminal lane is `STATUS_CLOSED` (config key, default `Closed`). Issues

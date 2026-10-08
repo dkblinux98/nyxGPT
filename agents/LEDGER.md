@@ -2413,12 +2413,31 @@ rather than mechanism, and nothing can enforce them.
   the run carries this repository's secrets on a branch an arbitrary author
   controls. Enforced by `tests/unit/test_pull_request_target_safety.py` over
   *every* such workflow, with `project-hygiene-smoke.yml`'s
-  `pr-head-guard-discriminates` job executing that guard against five broken
+  `pr-head-guard-discriminates` job executing that guard against eight broken
   copies so it cannot pass by being vacuous. One consequence: such a run is
   associated with the base commit, so the check stays `[not-required]`.
+  **Scope widened by #4170's review round, to two jobs and an enumerated
+  class.** The secret-withholding fault is not specific to `pr-hygiene`: it
+  afflicts every workflow on `pull_request` that reads a secret, and
+  `pr_project_status_on_close.yml` had it the whole time — the #4167 issue's
+  "only `pr-hygiene` is affected" was an observation of two `opened` events,
+  not a class search. It moved in the same change because fixing `pr-hygiene`
+  is what made it consequential: a Dependabot PR now gets a board card, and
+  Dependabot's own supersede-close is a Dependabot-actored `closed` event, so
+  a blank token there strands that card in `In Review` with no sweep backstop
+  (#3742 debris). **The discriminator for moving a workflow is whether a blank
+  token strands agent state** — a red check is a cost, debris is a defect; the
+  three that only lose a notification or a read-only check
+  (`notify-merge-conflicts.yml`, `claude-code-review.yml`,
+  `support-intake-smoke.yml`) stay on `pull_request` and are enumerated in
+  `DEPENDABOT_SECRETLESS_TOLERATED` in the same guard, with a stated reason
+  each and checked in both directions so the class cannot grow unexamined
+  again. Do not confuse it with the adjacent fault that Dependabot-actored
+  runs also get a read-only `GITHUB_TOKEN` whatever `permissions:` says.
   Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
   origin/v3.0.1` — run, not eyeballed.
-  Source: #4167; `agents/runbooks/developer-runbook.md` §3c;
+  Source: #4167; PR #4170 review round; `agents/runbooks/developer-runbook.md`
+  §3c and its "Dependabot secret-withholding class" table;
   `docs/live-verification-ci.md`.
 
 - **D-063** · 2026-10-08 · developer-agent (#4167) — **A unit test whose

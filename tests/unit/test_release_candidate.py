@@ -36,6 +36,18 @@ PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# MERGE NOTE (#4167 <- v3.0.1). The release branch and this branch fixed the
+# same D-063 defect independently and concurrently, so the merge brought in two
+# autouse fixtures patching the same seam. One is kept, and it is the shared one
+# below: the mainline's inline `_declared_line`/`FIXTURE_RELEASE` pair did the
+# identical thing per file, but wrote its pinned `pyproject.toml` into the
+# test's own `tmp_path` -- which a test writing its own `tmp_path/pyproject.toml`
+# collides with -- and left no guard against the `_checkout_pyproject` seam
+# being renamed. `release_line_pin` has its own `tmp_path_factory` dir and
+# `test_the_pinned_release_line_is_what_the_plan_reads` below. Nothing the
+# mainline fix achieved is lost; `TEST_RELEASE_LINE` is `FIXTURE_RELEASE` under
+# one name, in one place, used by both of the files that need it.
+
 
 @pytest.fixture(autouse=True)
 def _declared_release_line(monkeypatch, tmp_path_factory):

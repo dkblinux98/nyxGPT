@@ -479,8 +479,9 @@ and screenshots make verifiable in the review loop:
 - **Whether GitHub delivers a secret to a given trigger** (#4167). This one is
   short and narrow, and it is here because it is *structural*, not because
   running it is inconvenient. `ensure_project_hygiene.yml`'s `pr-hygiene` job
-  moved from `pull_request` to `pull_request_target` so that a
-  Dependabot-authored PR reaches a run that actually holds
+  and `pr_project_status_on_close.yml`'s `stamp-closed-lane` job both moved
+  from `pull_request` to `pull_request_target` so that a Dependabot-authored
+  PR reaches a run that actually holds
   `SCRUMMASTER_AGENT_TOKEN`. No job can demonstrate that on the PR that makes
   the change, for the same reason the change works: **`pull_request_target`
   runs the BASE branch's copy of the workflow**, so until the commit is on the
@@ -489,9 +490,17 @@ and screenshots make verifiable in the review loop:
   actor — the restriction keys on GitHub's own identity for the run, which no
   dispatch, token or payload can forge.
 
-  So the evidence for that half is a run **after** merge: the next
-  Dependabot-authored PR (or any PR opened/reopened on the release branch)
-  shows `pr-hygiene` green and the PR on the board in `In Review`. What is
+  So the evidence for that half is a run **after** merge, and it is now two
+  observations rather than one:
+
+  1. the next Dependabot-authored PR (or any PR opened/reopened on the release
+     branch) shows `pr-hygiene` green and the PR on the board in `In Review`;
+  2. a PR **closed** on the release branch shows `stamp-closed-lane` green and
+     its card at the terminal `Closed` status — the half #4167's own fix armed,
+     since a Dependabot supersede-close would otherwise strand the card that
+     (1) creates.
+
+  What is
   **not** deferred, and must not be: the safety property that makes the
   trigger acceptable. `pull_request_target` carries this repository's secrets
   on a branch an arbitrary author controls, and the only thing keeping that
@@ -499,12 +508,22 @@ and screenshots make verifiable in the review loop:
   `tests/unit/test_pull_request_target_safety.py` states that over every
   `pull_request_target` workflow, and
   [`project-hygiene-smoke.yml`](../.github/workflows/project-hygiene-smoke.yml)'s
-  `pr-head-guard-discriminates` job **executes** it against five deliberately
+  `pr-head-guard-discriminates` job **executes** it against eight deliberately
   broken copies — a head-SHA checkout, a `github.head_ref` checkout, a `gh pr
-  checkout`, a dependency install, and the trigger reverted to
-  `pull_request` — requiring a red guard on each. That is the injection this
+  checkout`, a dependency install, the trigger reverted to `pull_request`, the
+  *sibling's* trigger reverted, the sibling's checkout moved to the PR head,
+  and a newly planted `pull_request` workflow reading a secret — requiring a
+  red guard on each. That is the injection this
   document demands of a guard whose tree is already correct: a green run says
   something about the guard, not about the day it was written.
+
+  The same guard also enumerates what is deliberately *left* on `pull_request`
+  while reading a secret (`DEPENDABOT_SECRETLESS_TOLERATED`), each with the
+  reason a blank token is tolerable there. That is not deferred evidence: it is
+  a decision, recorded so the class cannot grow unexamined. See the
+  "Dependabot secret-withholding class" table in
+  [`agents/runbooks/developer-runbook.md`](../agents/runbooks/developer-runbook.md)
+  §3c.
 
 ## Verifying the gate
 

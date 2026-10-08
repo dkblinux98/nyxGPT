@@ -113,6 +113,16 @@ managed_forward_running() {
     nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
 }
 
+# What `nyxgpt ops status` tells the operator about reaching the SRE UIs
+# (#4135). Read from the command an operator actually runs, because the defect
+# was that this one line contradicted the install's own report about the same
+# cluster: it named a port-forward for four UIs the install had just published
+# on this node's ports and probed. Only a real cluster can answer it -- the
+# line is derived from what the live Services carry.
+sre_access_line() {
+    nyxgpt ops status 2>/dev/null | grep -m1 'Access: ' || true
+}
+
 cleanup() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -501,6 +511,29 @@ kubectl -n "$NAMESPACE" get svc grafana prometheus jaeger glitchtip \
     -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,NODEPORT:.spec.ports[*].nodePort'
 docker port nyxgpt-local-control-plane 2>/dev/null || true
 
+# And what the product SAYS about it (#4135). Reaching the UIs is only half of
+# "observable without a terminal": an operator who is told to open a forward
+# either spends the step or reads the line as "not reachable from here" and
+# goes looking for a fault that is not there. The install and `ops status` must
+# not describe one cluster two ways.
+if ! managed_forward_running; then
+    access="$(sre_access_line)"
+    echo "--- what ops status says about reaching them ---"
+    echo "${access:-<no Access line printed>}"
+    case "$access" in
+        *"port-forward --target observability"*)
+            fail "ops status tells the operator to port-forward SRE UIs this cluster \
+publishes on its node ports -- the install just reported them reachable (#4135)" ;;
+    esac
+    case "$access" in
+        *"no port-forward needed"*)
+            ok "ops status agrees with the install: published on the host, no forward needed" ;;
+        *)
+            fail "ops status does not report the published SRE UIs as reachable: \
+${access:-<no Access line printed>} (#4135)" ;;
+    esac
+fi
+
 step "8/19 Fault injection: ClusterIP SRE Services must break that, and the wrapped \
 commands must restore it"
 # Without this half, step 7 passes on any build. Returning the four Services
@@ -554,6 +587,28 @@ the Service-type injection does not apply, skipping"
 else
     inject_clusterip_sre
     ok "the shipped ClusterIP Services leave every SRE UI unreachable -- step 7 is load-bearing"
+
+    # The third branch, and the one a static answer cannot reach (#4135): the
+    # node still maps these four host ports, so a table of what WOULD be
+    # published still says "published" -- while nothing is behind them. The
+    # report has to call that mapped-and-dark and name the wrapped command
+    # that puts the node ports back, because a forward cannot bind a port the
+    # node container already holds.
+    access="$(sre_access_line)"
+    echo "--- what ops status says about the stripped Services ---"
+    echo "${access:-<no Access line printed>}"
+    case "$access" in
+        *"lost their node port"*)
+            ok "ops status reports the mapped-but-dark UIs as such, not as published" ;;
+        *)
+            fail "ops status does not report the stripped SRE Services as dark: \
+${access:-<no Access line printed>} -- it is answering from the mapping, not from the \
+Services (#4135)" ;;
+    esac
+    case "$access" in
+        *"ops observability --kubernetes"*) ;;
+        *) fail "ops status names no wrapped way to republish the stripped node ports (#4135)" ;;
+    esac
 
     # Way back 1: the command an operator's notes still name. It must repair
     # the access path, not report the dead mapping as "already published".

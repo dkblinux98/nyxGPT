@@ -67,7 +67,7 @@ fails if it drifts. Do not hand-edit.
 | `list_issues_by_status.yml` | workflow_dispatch | List Issues By Status |
 | `macos-brew-smoke.yml` | pull_request, workflow_dispatch, workflow_call | macOS Brew Smoke |
 | `notify-merge-conflicts.yml` | pull_request, push, workflow_dispatch | Notify Merge Conflicts |
-| `pr_project_status_on_close.yml` | pull_request | PR Project Status on Close |
+| `pr_project_status_on_close.yml` | pull_request_target | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
 | `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |

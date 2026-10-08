@@ -22,24 +22,6 @@ FAILURES=0
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-# The base branch every fixture PR targets. It MUST be a branch that is
-# permanently present on `origin`, and it must NOT be a release line.
-#
-# #3862's closure gate in review_accept_and_merge.sh does a real
-# `git fetch origin "$pr_base_branch"` and then resolves `origin/<base>`;
-# neither is stubbed, because the gate's whole point is that it reads real
-# content rather than trusting a reported exit code. This suite originally
-# hardcoded `v3.0.0`, which worked only while v3.0.0 was the live release
-# line -- the v3.0.1 release ceremony deleted that branch from `origin`, the
-# fetch started failing, and case 4 began reporting "the merge cannot be
-# verified" and exiting 1. That is a time bomb primed to fire on EVERY
-# ceremony, so the fixture is pinned to `master` instead: the ceremony
-# fast-forwards master, it never deletes it.
-#
-# tests/unit/test_pr_lane_hygiene.py pins this, so a later edit cannot
-# reintroduce a release-line branch name here.
-BASE_BRANCH="master"
-
 _ok() { echo "[ok] $1"; }
 _fail() {
   echo "[FAIL] $1" >&2
@@ -75,6 +57,23 @@ _assert_not_contains() {
 }
 
 # ---- config + stub wiring ----------------------------------------------
+# The release line THIS checkout is on, read from pyproject.toml rather than
+# frozen into the fixture. Case 4 below exercises #3862's content gate, which
+# really does `git fetch origin <the PR's base branch>` -- so the base branch
+# the stub reports has to be one that exists. A hardcoded `v3.0.0` stopped
+# being one the moment the ceremony cut v3.0.1 and retired it, and the suite
+# went red reporting "expected '0', got '1'" with nothing wrong in the code
+# under test. `v<declared version>` is the same answer
+# `release_candidate.default_branch()` gives, and the ceremony keeps the two
+# in step: it creates `vX.Y.Z` and bumps pyproject.toml to that version.
+RELEASE_BRANCH="v$(python3 -c '
+import re, sys, tomllib
+with open(sys.argv[1], "rb") as handle:
+    version = tomllib.load(handle)["project"]["version"]
+# Strip any pre-release suffix: a pinned `3.0.1rc4` is still the 3.0.1 line.
+print(re.match(r"\d+\.\d+\.\d+", version).group(0))
+' "$ROOT_DIR/pyproject.toml")"
+
 CONFIG="$TMP_ROOT/config.ini"
 cat > "$CONFIG" <<EOF
 REPO_OWNER=dkblinux98
@@ -90,14 +89,12 @@ STATUS_BACKLOG=Backlog
 STATUS_IN_PROGRESS=In Progress
 STATUS_IN_REVIEW=In Review
 STATUS_FOR_RELEASE=For Release
-RELEASE_BRANCH=$BASE_BRANCH
+RELEASE_BRANCH=$RELEASE_BRANCH
 EOF
 export NYXGPT_CONFIG_FILE="$CONFIG"
-
-# gh_stub_pr_lane.py answers `repos/.../branches/<name>` for this name only,
-# so the base branch looks live to the merge script and the (already deleted)
-# head branch does not.
-export STUB_BASE_BRANCH="$BASE_BRANCH"
+# The stub answers "does this base branch exist?" from the same value, so the
+# merge flow's existence check and its content check agree about one branch.
+export STUB_BASE_BRANCH="$RELEASE_BRANCH"
 
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
@@ -159,7 +156,7 @@ EOF
 # below is the other half.
 HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
-{"303": {"head": "feat/lane-invariant", "base": "$BASE_BRANCH", "merged": false, "state": "open",
+{"303": {"head": "feat/lane-invariant", "base": "$RELEASE_BRANCH", "merged": false, "state": "open",
          "head_sha": "$HEAD_SHA", "base_sha": "$HEAD_SHA"}}
 EOF
 
@@ -170,7 +167,7 @@ _assert_eq "merge flow exits 0" "$merge_rc" "0"
 _assert_contains "merge flow reports the lane stamp" "$merge_out" "project item -> Closed"
 _assert_eq "LANE INVARIANT: merged PR is not left in In Review" "$(_pr_lane 303)" "Closed"
 _assert_contains "the merge is verified by content, not by the merge command's exit code" \
-  "$merge_out" "is present on $BASE_BRANCH"
+  "$merge_out" "is present on $RELEASE_BRANCH"
 
 # ---- case 4b: a merge that cannot be verified does NOT close the issue --
 # #3862: #3789 and #3815 were both closed as `completed` while their fixes sat
@@ -182,7 +179,7 @@ cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"313": {"item_id": "PVTI_pr313", "status": "In Review"}}
 EOF
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
-{"313": {"head": "feat/unverifiable", "base": "$BASE_BRANCH", "merged": false, "state": "open",
+{"313": {"head": "feat/unverifiable", "base": "$RELEASE_BRANCH", "merged": false, "state": "open",
          "head_sha": "0000000000000000000000000000000000000000",
          "base_sha": "0000000000000000000000000000000000000000"}}
 EOF
@@ -192,7 +189,7 @@ unverified_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
 unverified_rc=$?
 _assert_eq "an unverifiable merge fails the run" "$unverified_rc" "1"
 _assert_contains "and says why, naming the branch it could not confirm" \
-  "$unverified_out" "NOT verifiably on $BASE_BRANCH"
+  "$unverified_out" "NOT verifiably on $RELEASE_BRANCH"
 _assert_not_contains "and never runs the issue close" \
   "$unverified_out" "Closing issue #3742"
 
@@ -201,7 +198,7 @@ _reset_stub case5
 cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"404": {"item_id": "PVTI_pr404", "status": "In Review"}}
 EOF
-echo "{\"404\": {\"head\": \"feat/x\", \"base\": \"$BASE_BRANCH\", \"merged\": false, \"state\": \"open\"}}" \
+echo "{\"404\": {\"head\": \"feat/x\", \"base\": \"$RELEASE_BRANCH\", \"merged\": false, \"state\": \"open\"}}" \
   > "$GH_STUB_DIR/pulls.json"
 dry_out="$(bash "$MERGE_SCRIPT" --dry-run 404 3742 2>&1)"
 _assert_contains "dry run plans the PR Status stamp" "$dry_out" "would: set PR #404 project Status -> 'Closed'"
@@ -214,8 +211,8 @@ cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
  "606": {"item_id": "PVTI_pr606", "status": "In Review"}}
 EOF
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
-{"505": {"head": "fix/rejected", "base": "$BASE_BRANCH", "merged": false, "state": "closed"},
- "606": {"head": "feat/still-open", "base": "$BASE_BRANCH", "merged": false, "state": "open"}}
+{"505": {"head": "fix/rejected", "base": "$RELEASE_BRANCH", "merged": false, "state": "closed"},
+ "606": {"head": "feat/still-open", "base": "$RELEASE_BRANCH", "merged": false, "state": "open"}}
 EOF
 
 bash "$CLOSE_SCRIPT" 505 >/dev/null 2>&1

@@ -38,14 +38,33 @@ import sys
 
 STUB_DIR = os.environ["GH_STUB_DIR"]
 PROJECT_ID = "PVT_project"
-
-# The base branch fixture PRs target, overridable with STUB_BASE_BRANCH.
-# Deliberately NOT a release line: #3862's closure gate does a real
-# `git fetch origin <base>`, so a fixture naming a release branch stops
-# working the moment the release ceremony deletes it -- which is what took
-# case 4 of the suite red after v3.0.1 shipped. `master` is never deleted.
-DEFAULT_BASE_BRANCH = os.environ.get("STUB_BASE_BRANCH", "master")
 STATUS_FIELD_ID = "PVTSSF_status"
+
+
+def _default_base_branch() -> str:
+    """The release branch this stub reports as existing.
+
+    The suite exports ``STUB_BASE_BRANCH``; the fallback is for anyone running
+    the stub by hand. It is derived from the checkout's declared version, not
+    frozen: the old hardcoded ``v3.0.0`` outlived its branch -- the v3.0.1
+    ceremony retired ``origin/v3.0.0``, and #3862's content gate then failed
+    to fetch the base branch the stub was still naming.
+    """
+    env = os.environ.get("STUB_BASE_BRANCH")
+    if env:
+        return env
+    import re
+    import tomllib
+
+    pyproject = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pyproject.toml"
+    )
+    with open(pyproject, "rb") as handle:
+        version = tomllib.load(handle)["project"]["version"]
+    return "v" + re.match(r"\d+\.\d+\.\d+", version).group(0)
+
+
+_STUB_BASE_BRANCH = _default_base_branch()
 
 #: Board Status options, mirroring the real single-select field.
 OPTIONS = {
@@ -263,7 +282,7 @@ def _rest(route: str, jq_filter: str | None) -> None:
             pr,
             {
                 "head": "feat/example",
-                "base": DEFAULT_BASE_BRANCH,
+                "base": _STUB_BASE_BRANCH,
                 "merged": False,
                 "state": "open",
             },
@@ -289,7 +308,7 @@ def _rest(route: str, jq_filter: str | None) -> None:
 
     if len(parts) >= 5 and parts[3] == "branches":
         branch = "/".join(parts[4:])
-        if branch == DEFAULT_BASE_BRANCH:
+        if branch == _STUB_BASE_BRANCH:
             _emit({"name": branch}, jq_filter)
         sys.exit(1)  # head branch already deleted
 

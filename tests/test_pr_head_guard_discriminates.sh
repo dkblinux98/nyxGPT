@@ -21,17 +21,41 @@
 #   5. the trigger reverted to `pull_request`, i.e. the Dependabot defect
 #      itself coming back
 #
+# Cases 6-8 measure the same guard over the CLASS rather than the one file,
+# which is what the #4167 review round added. `pr_project_status_on_close.yml`
+# carried the identical fault and was missed by the issue's "only pr-hygiene
+# is affected", so the guard now covers the second file and the enumeration of
+# what is left:
+#
+#   6. the close-stamp trigger reverted to `pull_request` (the fault returning
+#      in the sibling, which strands the board card pr-hygiene now creates)
+#   7. the close-stamp checkout moved to the PR head -- proof the general
+#      invariant really does reach a file other than the first one
+#   8. a NEW `pull_request` workflow reading a secret, added without being
+#      examined: the shape in which this whole class grew unnoticed
+#
 # Each must make the guard RED. The shipped tree must make it GREEN. A guard
-# that passes case 1 through 5 is asserting nothing and this script says so.
+# that passes case 1 through 8 is asserting nothing and this script says so.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WF="$ROOT_DIR/.github/workflows/ensure_project_hygiene.yml"
+CLOSE_WF="$ROOT_DIR/.github/workflows/pr_project_status_on_close.yml"
+# Case 8 plants a file rather than editing one, so it must not collide with a
+# real workflow name; `*.yml` is what the guard globs, so the name matters and
+# the extension does too.
+PLANTED_WF="$ROOT_DIR/.github/workflows/zz-pr-head-guard-injection.yml"
 GUARD="tests/unit/test_pull_request_target_safety.py"
 
 PRISTINE="$(mktemp)"
+CLOSE_PRISTINE="$(mktemp)"
 cp "$WF" "$PRISTINE"
-restore() { cp "$PRISTINE" "$WF"; rm -f "$PRISTINE"; }
+cp "$CLOSE_WF" "$CLOSE_PRISTINE"
+restore() {
+  cp "$PRISTINE" "$WF"
+  cp "$CLOSE_PRISTINE" "$CLOSE_WF"
+  rm -f "$PRISTINE" "$CLOSE_PRISTINE" "$PLANTED_WF"
+}
 trap restore EXIT
 
 FAILURES=0
@@ -69,12 +93,14 @@ _expect_red() {
   fi
 }
 
-# `sed -i` on the LAST match: the pr-hygiene job is the last job in the file,
-# so its checkout is the last `ref:` line. Asserted rather than assumed --
-# a silent no-op substitution would make every case below pass by accident.
+# Patch the LAST `ref:` in a workflow. In ensure_project_hygiene.yml the
+# pr-hygiene job is the last job, so its checkout is the last `ref:` line; in
+# pr_project_status_on_close.yml there is only one. Asserted rather than
+# assumed -- a silent no-op substitution would make every case below pass by
+# accident.
 _patch_last_ref() {
-  local replacement="$1"
-  python3 - "$WF" "$replacement" <<'PY'
+  local file="$1" replacement="$2"
+  python3 - "$file" "$replacement" <<'PY'
 import sys
 path, replacement = sys.argv[1], sys.argv[2]
 text = open(path, encoding="utf-8").read()
@@ -84,7 +110,7 @@ open(path, "w", encoding="utf-8").write(
     text[:i] + "          ref: " + replacement + text[i + len(needle):]
 )
 PY
-  grep -q -- "$replacement" "$WF" || { echo "::error::injection did not apply" >&2; exit 1; }
+  grep -q -- "$replacement" "$file" || { echo "::error::injection did not apply" >&2; exit 1; }
 }
 
 _patch_step_body() {
@@ -104,11 +130,11 @@ _expect_green "the guard passes on the tree as committed"
 
 echo "=== half 2: each way the safety property can be lost ==="
 
-_patch_last_ref '${{ github.event.pull_request.head.sha }}'
+_patch_last_ref "$WF" '${{ github.event.pull_request.head.sha }}'
 _expect_red "checkout moved to the PR head commit"
 cp "$PRISTINE" "$WF"
 
-_patch_last_ref '${{ github.head_ref }}'
+_patch_last_ref "$WF" '${{ github.head_ref }}'
 _expect_red "checkout moved to the PR head branch"
 cp "$PRISTINE" "$WF"
 
@@ -137,6 +163,49 @@ open(path, "w", encoding="utf-8").write(text)
 PY
 _expect_red "the trigger reverted to pull_request (the #4167 defect returning)"
 cp "$PRISTINE" "$WF"
+
+echo "=== half 3: the class, not just the first file ==="
+
+# The sibling that was missed once already. Reverting it strands the board card
+# pr-hygiene now creates: Dependabot's own supersede-close is Dependabot-actored,
+# so the stamp dies at require_gh_auth with the card already in `In Review`.
+python3 - "$CLOSE_WF" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+updated = text.replace("  pull_request_target:\n", "  pull_request:\n", 1)
+assert updated != text, "injection did not apply"
+open(path, "w", encoding="utf-8").write(updated)
+PY
+_expect_red "the close-stamp trigger reverted to pull_request"
+cp "$CLOSE_PRISTINE" "$CLOSE_WF"
+
+# Written over EVERY pull_request_target workflow is a claim about more than
+# one file; this is the case that measures it. If the guard only ever looked at
+# ensure_project_hygiene.yml, cases 1-5 would still all pass and this one would
+# not.
+_patch_last_ref "$CLOSE_WF" '${{ github.event.pull_request.head.sha }}'
+_expect_red "the close-stamp checkout moved to the PR head"
+cp "$CLOSE_PRISTINE" "$CLOSE_WF"
+
+# How the class grew unnoticed in the first place: a workflow on `pull_request`
+# reading a secret, nobody having asked what a Dependabot actor does to it.
+cat > "$PLANTED_WF" <<'YAML'
+name: Injected by tests/test_pr_head_guard_discriminates.sh
+on:
+  pull_request:
+    types: [opened]
+jobs:
+  injected:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Needs a secret GitHub will not give a Dependabot run
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: gh pr view "${{ github.event.pull_request.number }}"
+YAML
+_expect_red "a new pull_request workflow reading a secret, unexamined"
+rm -f "$PLANTED_WF"
 
 echo "=== restored ==="
 _expect_green "the guard passes again once the file is restored"

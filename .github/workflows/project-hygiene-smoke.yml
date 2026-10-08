@@ -47,8 +47,17 @@ name: Project Hygiene Smoke
 #    unsafe — or does it only pass because the tree is already correct?"
 #
 # Same reason as everything above: a guard written today passes today whatever
-# it asserts. `pr-head-guard-discriminates` runs it against five deliberately
-# broken copies of the workflow and requires it to go red on each.
+# it asserts. `pr-head-guard-discriminates` runs it against eight deliberately
+# broken copies of the tree and requires it to go red on each — five unsafe
+# shapes in `ensure_project_hygiene.yml`, and three over the CLASS the #4167
+# review round widened it to: the sibling `pr_project_status_on_close.yml`
+# reverted to `pull_request`, that sibling's checkout moved to the PR head
+# (proof the invariant really reaches a second file), and a newly planted
+# `pull_request` workflow reading a secret.
+#
+# `pr_project_status_on_close.yml` is therefore in the path filters below: it
+# is now one of the files the guard protects, so a change to it must run the
+# guard.
 
 on:
   push:
@@ -56,6 +65,7 @@ on:
       - "scripts/agents/ensure_issue_hygiene.sh"
       - "scripts/agents/lib/gh_project.sh"
       - ".github/workflows/ensure_project_hygiene.yml"
+      - ".github/workflows/pr_project_status_on_close.yml"
       - ".github/workflows/project-hygiene-smoke.yml"
       - "tests/test_issue_hygiene.sh"
       - "tests/gh_stub_issue_hygiene.py"
@@ -66,6 +76,7 @@ on:
       - "scripts/agents/ensure_issue_hygiene.sh"
       - "scripts/agents/lib/gh_project.sh"
       - ".github/workflows/ensure_project_hygiene.yml"
+      - ".github/workflows/pr_project_status_on_close.yml"
       - ".github/workflows/project-hygiene-smoke.yml"
       - "tests/test_issue_hygiene.sh"
       - "tests/gh_stub_issue_hygiene.py"
@@ -145,14 +156,20 @@ jobs:
         run: bash tests/test_issue_hygiene.sh
 
   pr-head-guard-discriminates:
-    # The executed half of #4167. `pr-hygiene` now runs on
-    # `pull_request_target`, which hands it this repository's secrets on a
+    # The executed half of #4167. `pr-hygiene` and `stamp-closed-lane` now run
+    # on `pull_request_target`, which hands them this repository's secrets on a
     # branch the PR's author controls; the only thing making that safe is that
-    # the job never resolves anything to the PR head. That is a property of a
-    # file, so it is guarded by a test -- and a guard over an
+    # neither job ever resolves anything to the PR head. That is a property of
+    # a file, so it is guarded by a test -- and a guard over an
     # already-correct tree is green whatever it asserts. This job injects the
     # unsafe shapes and requires the guard to go red on each, so "the guard
     # passed" is evidence about the guard rather than about the day.
+    #
+    # It also covers the class: the guard enumerates every workflow still on
+    # `pull_request` while reading a secret, and one of the injections plants a
+    # new such workflow. That is the shape in which this fault spread unseen --
+    # `pr_project_status_on_close.yml` had it the whole time and the issue said
+    # "only pr-hygiene is affected".
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

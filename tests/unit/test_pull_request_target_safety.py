@@ -29,6 +29,18 @@ be added by someone reading that it worked here. `project-hygiene-smoke.yml`'s
 `pr-head-guard-discriminates` job executes these assertions against a
 deliberately broken copy of the workflow, so the guard cannot pass by being
 vacuous.
+
+THE CLASS, NOT THE INSTANCE. The secret-withholding fault is not specific to
+`pr-hygiene`: it afflicts every workflow in this repository that runs on
+`pull_request` and reads a repository secret. `pr_project_status_on_close.yml`
+was the second one, and fixing `pr-hygiene` is what made it consequential --
+a Dependabot PR now gets a board card, and Dependabot closing its own PR
+(superseded version, dropped dependency) is a Dependabot-actored `closed`
+event, so the only job that would stamp that card `Closed` would have died at
+`require_gh_auth`, stranding the card in `In Review`. It moved in the same
+change. `TestTheDependabotSecretlessClassIsEnumerated` below holds the rest of
+the class enumerated with a stated reason each, in both directions, so the
+class cannot grow silently the way it did between #3742 and #4167.
 """
 
 from __future__ import annotations
@@ -44,7 +56,48 @@ pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 HYGIENE = WORKFLOWS / "ensure_project_hygiene.yml"
+CLOSE_STAMP = WORKFLOWS / "pr_project_status_on_close.yml"
 REQUIRED_CHECKS = ROOT / ".github" / "required-checks.txt"
+
+#: Workflows that still run on `pull_request` while reading a repository
+#: secret, i.e. that still carry the #4167 fault -- a Dependabot-actored run
+#: gets the empty Dependabot secret store instead and the step dies. Each is
+#: here because its failure mode was examined and found not to strand agent
+#: state; the reason is the entry's value, and the point of the mapping is
+#: that an UNLISTED one fails this file.
+#:
+#: Both of the workflows that DID strand state are absent on purpose:
+#: `ensure_project_hygiene.yml` (the card never got created) and
+#: `pr_project_status_on_close.yml` (the card never got stamped `Closed`) are
+#: on `pull_request_target` as of #4167.
+DEPENDABOT_SECRETLESS_TOLERATED = {
+    "claude-code-review.yml": (
+        "Gated out before it can fail: every `pull_request` path in `head-gate`'s "
+        "`if:` requires `vars.REVIEW_AGENT` to be a requested reviewer or an "
+        "assignee, and nothing puts the review agent on a Dependabot PR -- "
+        "`pr-hygiene`'s issue-less path writes Status/Priority/Effort and no "
+        "assignee. The job does not start, so the blank `REVIEW_AGENT_TOKEN` is "
+        "never read."
+    ),
+    "notify-merge-conflicts.yml": (
+        "Pre-existing and not armed by #4167: a conflicted Dependabot PR's "
+        "`resolve` job cannot authenticate, so that one notification is lost. It "
+        "strands nothing -- the lane is not written by this workflow -- and the "
+        "`push`-to-release-branch entry point re-sweeps every open PR with "
+        "secrets present, which is the trigger that creates base-moved conflicts "
+        "in the first place. Moving it is a behavior decision (it would dispatch "
+        "a developer-agent conflict round at a Dependabot PR), not a token fix, "
+        "so it is reported rather than changed here."
+    ),
+    "support-intake-smoke.yml": (
+        "Narrow and advisory: path-filtered to the support-intake files, which a "
+        "Dependabot PR reaches only via a github-actions security update "
+        "touching `support_intake_guard.yml` or this workflow. `label-exists` is "
+        "a read-only `gh label list`; a blank token makes the check red and "
+        "writes nothing. Classified `[not-required]`, so it cannot hold a head "
+        "out of review either."
+    ),
+}
 
 #: Expressions and commands that resolve to the pull request's HEAD -- i.e. to
 #: code the PR's author controls. Any of these inside a `pull_request_target`
@@ -123,6 +176,86 @@ class TestTheTriggerIsWhatTheFixRequires:
         jobs = _load(HYGIENE)["jobs"]
         for job_id in ("add-to-project", "closure-hygiene"):
             assert "github.event_name == 'issues'" in jobs[job_id]["if"], job_id
+
+
+class TestTheCloseStampReachesARunThatHoldsTheSecret:
+    """The other half of the lane, and the half #4167 itself armed.
+
+    `pr-hygiene` on `pull_request_target` puts every Dependabot PR on the
+    board in `In Review`. Dependabot closes its own PRs without merging when a
+    newer version supersedes them, and that `closed` event is
+    Dependabot-actored -- so if `pr_project_status_on_close.yml` stayed on
+    `pull_request` it would die at `require_gh_auth` with the card already
+    created, stranding it in `In Review` with nothing else to stamp it (the
+    only other `close_pr_project_item` callers are the review agent's merge
+    path and owner-actored merges). Fixing one trigger without the other
+    converts a red check into board debris.
+    """
+
+    def test_the_close_stamp_runs_on_pull_request_target(self):
+        triggers = _triggers(_load(CLOSE_STAMP))
+        assert "pull_request_target" in triggers, (
+            "pr_project_status_on_close.yml is back on a trigger GitHub strips "
+            "secrets from for Dependabot PRs; a Dependabot supersede-close now "
+            "strands its board card in In Review (#4167, #3742)."
+        )
+        assert "pull_request" not in triggers
+
+    def test_it_still_fires_on_closed_only(self):
+        types = _triggers(_load(CLOSE_STAMP))["pull_request_target"]["types"]
+        assert sorted(types) == ["closed"]
+
+    def test_the_job_still_calls_the_stamping_script(self):
+        """The trigger move must not have disturbed what the job does."""
+        job = _load(CLOSE_STAMP)["jobs"]["stamp-closed-lane"]
+        bodies = "\n".join(str(s.get("run") or "") for s in job["steps"])
+        assert "scripts/agents/pr_close_project_status.sh" in bodies
+
+
+class TestTheDependabotSecretlessClassIsEnumerated:
+    """#4167's fault is a class, and an unexamined member of it is the defect.
+
+    The issue said "only `pr-hygiene` is affected". That was an observation of
+    two `opened` events, not a search: `pr_project_status_on_close.yml` had the
+    identical shape and was missed. So the class is enumerated here instead of
+    rediscovered, and the enumeration is checked in BOTH directions -- a new
+    `pull_request`+secrets workflow fails until someone states why its blank
+    token is tolerable, and an entry that no longer applies fails too, so the
+    list cannot rot into a permanent excuse.
+    """
+
+    @staticmethod
+    def _pull_request_workflows_reading_a_secret() -> set[str]:
+        found = set()
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            if "pull_request" not in _triggers(_load(path)):
+                continue
+            if "secrets." in _uncommented(path):
+                found.add(path.name)
+        return found
+
+    def test_the_enumeration_matches_the_tree(self):
+        found = self._pull_request_workflows_reading_a_secret()
+        listed = set(DEPENDABOT_SECRETLESS_TOLERATED)
+        assert found == listed, (
+            "GitHub withholds Actions secrets from a Dependabot-actored "
+            "`pull_request` run, so each of these dies the way pr-hygiene did "
+            f"(#4167). Unexamined: {sorted(found - listed)}. Listed but no longer "
+            f"in that state (drop the entry): {sorted(listed - found)}."
+        )
+
+    def test_every_tolerated_entry_states_why(self):
+        for name, reason in DEPENDABOT_SECRETLESS_TOLERATED.items():
+            assert len(reason) > 80, f"{name}: a bare entry is not a reason"
+
+    def test_the_two_lane_writing_workflows_are_not_in_the_class(self):
+        """The discriminator is whether a blank token strands agent state."""
+        found = self._pull_request_workflows_reading_a_secret()
+        for name in ("ensure_project_hygiene.yml", "pr_project_status_on_close.yml"):
+            assert name not in found, (
+                f"{name} writes the project lane; on `pull_request` its token is "
+                "blank for Dependabot and the write never happens (#4167)."
+            )
 
 
 class TestNoPullRequestTargetJobTouchesPRCode:
