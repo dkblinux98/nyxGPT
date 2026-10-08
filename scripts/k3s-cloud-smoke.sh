@@ -1235,6 +1235,11 @@ for label, path in (
     ("deploy record", cloud_deploy.DEPLOY_STATE_FILE),
     ("deploy attempt", cloud_deploy.DEPLOY_ATTEMPT_FILE),
     ("substrate handoff", cloud_infra.CLOUD_STATE_FILE),
+    # Saved substrate settings also make "not provisioned" an answer this
+    # machine is entitled to give, which is not the UNKNOWN the (a) half
+    # below asserts. Named here so that failure reads as a dirty runner
+    # rather than as a broken product.
+    ("saved substrate settings", cloud_infra.SETTINGS_FILE),
 ):
     if Path(path).exists():
         sys.exit(f"this box has a {label} at {path} -- it would answer instead of the cluster")

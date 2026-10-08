@@ -21,8 +21,11 @@ Three properties matter to the callers:
   obtained by the `PUT /latest/api/token` handshake.
 * **Unreachable IMDS is "not on EC2", never an error.** A workstation, a
   container, a CI runner and a hop-limited pod all fail the same way, and
-  none of them is a fault to report; the caller falls back to Terraform
-  state (and, failing that, reports "unknown").
+  none of them is a fault to report; the caller falls back to the cloud-deploy
+  record in the cluster when it is a Pod of one (`cloud_cluster_record`,
+  #4138 -- a Pod *is* on the instance, and this read failing there is a fact
+  about Pod networking rather than about AWS), then to Terraform state, and
+  failing both reports "unknown".
 * **Answers are cached.** The link-local address black-holes rather than
   refusing on most non-EC2 machines, so an uncached miss costs the full
   timeout. Negative answers are cached exactly like positive ones -- the
