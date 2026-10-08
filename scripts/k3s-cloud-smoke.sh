@@ -148,7 +148,7 @@ if ! systemctl --user status >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-step "1/10  Execute the deploy's own k3s bootstrap"
+step "1/11  Execute the deploy's own k3s bootstrap"
 # ---------------------------------------------------------------------------
 python3 - > "$WORK/k3s-bootstrap.sh" <<'PY'
 from nyxgpt.cloud_deploy import render_k3s_bootstrap
@@ -219,7 +219,7 @@ NODE_IP="$(awk -F'[/:]+' '/server:/ {print $3; exit}' "$KUBECONFIG")"
 log "MEASURED: the kubeconfig points at https://${NODE_IP}:6443"
 
 # ---------------------------------------------------------------------------
-step "2/10  The access surface: #3503 says nothing but TCP 22"
+step "2/11  The access surface: #3503 says nothing but TCP 22"
 # ---------------------------------------------------------------------------
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
@@ -354,7 +354,7 @@ fi
 log "PASS: CoreDNS is Available with 0 restarts and no resolver loop"
 
 # ---------------------------------------------------------------------------
-step "3/10  k8s/*.yaml applies to k3s UNCHANGED"
+step "3/11  k8s/*.yaml applies to k3s UNCHANGED"
 # ---------------------------------------------------------------------------
 # Through the product's own resource sync and secret bootstrap, not a
 # hand-rolled copy: what a deploy applies is the PACKAGED manifests under
@@ -420,7 +420,7 @@ fi
 log "PASS: every Service is ClusterIP"
 
 # ---------------------------------------------------------------------------
-step "4/10  FAULT INJECTION: a docker-built image is invisible to k3s"
+step "4/11  FAULT INJECTION: a docker-built image is invisible to k3s"
 # ---------------------------------------------------------------------------
 # k3s runs its own containerd with its own image store, and every Deployment in
 # k8s/ pins `imagePullPolicy: IfNotPresent` against a `:local` tag that exists
@@ -499,7 +499,7 @@ kubectl -n "$NAMESPACE" wait --for=condition=Ready pod/import-probe-after --time
 log "PASS (fix proven): after _k3s_import_image the same Pod runs"
 
 # ---------------------------------------------------------------------------
-step "5/10  The access bridge, end to end"
+step "5/11  The access bridge, end to end"
 # ---------------------------------------------------------------------------
 # `k8s/`'s Services are ClusterIP-only, so nothing binds 127.0.0.1:8000 on the
 # instance the way the native services do -- and the SSH tunnel forwards to
@@ -543,7 +543,7 @@ log "MEASURED: 127.0.0.1:8000/health -> $bridged"
 log "PASS: systemd --user unit -> nyxgpt ops port-forward -> ClusterIP Service -> Pod"
 
 # ---------------------------------------------------------------------------
-step "6/10  FAULT INJECTION: the bridge is what was measured"
+step "6/11  FAULT INJECTION: the bridge is what was measured"
 # ---------------------------------------------------------------------------
 # Without this, step 5 would pass on any runner where something else happened
 # to be listening on 8000.
@@ -556,7 +556,7 @@ fi
 log "PASS: with the bridge stopped, 127.0.0.1:8000 is dead"
 
 # ---------------------------------------------------------------------------
-step "7/10  FAULT INJECTION: a corpse from a finished rollout fails the install"
+step "7/11  FAULT INJECTION: a corpse from a finished rollout fails the install"
 # ---------------------------------------------------------------------------
 # The 2026-08-26 acceptance blocker (#3956). A `--kubernetes` deploy applies
 # `k8s/` (whose ConfigMap carries the placeholder error-tracking DSN), brings
@@ -791,7 +791,7 @@ log "      self-heal and canary alike -- and one the current ReplicaSet owns sti
 log "      with its reason"
 
 # ---------------------------------------------------------------------------
-step "8/10  FAULT INJECTION: kubectl on a k3s node is not kubectl"
+step "8/11  FAULT INJECTION: kubectl on a k3s node is not kubectl"
 # ---------------------------------------------------------------------------
 # The second 2026-08-26 blocker. `/usr/local/bin/kubectl` on a k3s node is a
 # symlink to the `k3s` binary, whose shim defaults KUBECONFIG to the root-only
@@ -875,7 +875,7 @@ log "PASS: the product finds the kubeconfig kubectl would have, and a probe that
 log "      not ask never answers 'native'"
 
 # ---------------------------------------------------------------------------
-step "9/10  The applied image tags name the build and the version"
+step "9/11  The applied image tags name the build and the version"
 # ---------------------------------------------------------------------------
 # The third 2026-08-26 blocker: four build paths shared `nyxgpt-api:local` /
 # `nyxgpt-web:local`, so an instance running published 3.0.0rc14 reported its
@@ -927,7 +927,198 @@ diff -r --exclude=secret.yaml "$CHECKOUT/k8s" "$K8S_DIR" \
 log "PASS: the manifests are still byte-identical to k8s/ (secret.yaml aside)"
 
 # ---------------------------------------------------------------------------
-step "10/10  The --no-kubernetes transition actually moves the box"
+step "10/11  FAULT INJECTION: host-side probes must not answer for the cluster"
+# ---------------------------------------------------------------------------
+# #4137, and it needs a live k3s host rather than unit fixtures because the
+# whole defect is a property of this vantage point: a k3s host is NEITHER
+# in-cluster NOR Compose. `kubectl` here reaches the cluster perfectly well
+# while `docker compose ps` has nothing to answer about, so every gate written
+# as "am I inside a Pod?" falls through to Compose and reports a Compose
+# failure as the deployment's state. On the owner's instance:
+#
+#   Observability survey: CANNOT DETERMINE from here -- `docker compose ps`
+#   exited 125 ... querying /home/ec2-user/.nyxGPT/docker-compose.yml
+#    [OK] grafana-8686574f7b-d7vjf: state=Running health=ready
+#    ... 14 Pods, all Running and ready ...
+#
+#   nyxGPT ops doctor: FAIL
+#   - Missing local Cassandra container: nyxgpt-cassandra (run: nyxgpt ops install)
+#
+# with `cassandra-0: Running` three lines above the last one.
+#
+# The injection has two halves, and both are real conditions on this box:
+#   (a) real Pods carrying the labels the product keys on -- the cheap probe
+#       image imported in step 4, named and labelled as the cluster's own
+#       workloads. What is being proved is a READING, so the Cassandra process
+#       itself is not part of the claim; the Pod's identity in a real
+#       namespace, read through the product's own kubectl path, is.
+#   (b) an unanswerable Compose survey and no `nyxgpt-cassandra` container.
+#       NYXGPT_COMPOSE_FILE points at a path that does not exist, so every
+#       `docker compose ps` from these processes fails the way it failed on
+#       that instance -- and the host Cassandra check is asserted to produce
+#       its finding, so a regression to the host reading reinstates the FAIL.
+cluster_pod() {
+  # $1: pod name. $2..: `key: value` label lines.
+  local name="$1"
+  shift
+  {
+    cat <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  namespace: $NAMESPACE
+  labels:
+YAML
+    printf '    %s\n' "$@"
+    cat <<YAML
+spec:
+  containers:
+    - name: probe
+      image: $PROBE_IMAGE
+      imagePullPolicy: IfNotPresent
+YAML
+  } | kubectl apply -f - >/dev/null
+}
+
+# `cassandra-0` is the name Kubernetes gives a `statefulset/cassandra` replica,
+# and `app: cassandra` is the label k8s/statefulset-cassandra.yaml carries --
+# both are what the product matches on, so both are what this creates.
+cluster_pod cassandra-0 'app: cassandra'
+cluster_pod grafana-smoke 'tier: observability' 'app: grafana'
+for pod in cassandra-0 grafana-smoke; do
+  kubectl -n "$NAMESPACE" wait --for=condition=Ready "pod/$pod" --timeout=120s \
+    || fail "$pod never became Ready -- without a cluster that answers, this step
+             cannot tell a routing fix from a silenced check"
+done
+log "MEASURED: the Pods the product will be asked about:"
+kubectl -n "$NAMESPACE" get pods -o custom-columns=NAME:.metadata.name,PHASE:.status.phase \
+  --no-headers | sed 's/^/    | /'
+
+export NYXGPT_COMPOSE_FILE="$WORK/there-is-no-compose-stack-here/docker-compose.yml"
+set +e
+docker compose -f "$NYXGPT_COMPOSE_FILE" ps >/dev/null 2>&1
+compose_rc=$?
+set -e
+[[ $compose_rc -ne 0 ]] \
+  || fail "the Compose survey still answers from here -- the injection proves nothing"
+log "MEASURED (defect condition reproduced): \`docker compose ps\` exits $compose_rc here"
+docker ps -a --format '{{.Names}}' | grep -qx nyxgpt-cassandra \
+  && fail "this host really has a nyxgpt-cassandra container -- the doctor half of this
+           injection cannot reproduce the owner's condition"
+
+# --- the self-heal survey ---------------------------------------------------
+python3 - <<'PY'
+import sys
+
+from nyxgpt import self_heal
+
+payload = self_heal.status()
+source = payload["observability_source"]
+print(f"    | observability_source={source}")
+print(f"    | compose_probe_available={payload['compose_probe_available']}")
+print(f"    | compose_probe_applicable={payload['compose_probe_applicable']}")
+print(f"    | compose_probe_undetermined={payload['compose_probe_undetermined']}")
+print(f"    | compose_probe_reason={payload['compose_probe_reason']}")
+
+# The pre-#4137 reading, written out: this is literally the condition the CLI
+# used. It must still be True, or the injection is not live and nothing below
+# is evidence of anything.
+if payload["compose_probe_available"]:
+    sys.exit(
+        "FAULT INJECTION FAILED: the Compose probe reports available on a host with no "
+        "reachable Compose file, so the old reading would not have printed its banner"
+    )
+
+if source != "kubernetes":
+    sys.exit(f"the observability tier was surveyed as '{source}' on a live cluster")
+if payload["compose_probe_applicable"] or payload["compose_probe_undetermined"]:
+    sys.exit("a Compose answer is still being claimed as owed on this deployment")
+reason = payload["compose_probe_reason"]
+for leak in ("docker-compose.yml", "docker compose ps"):
+    if leak in reason:
+        sys.exit(f"the reason still names {leak!r} on a host with no Compose stack")
+pods = {c["service"]: c for c in payload["components"]}
+for name in ("cassandra-0", "grafana-smoke"):
+    row = pods.get(name)
+    if row is None:
+        sys.exit(f"{name} is not in the survey at all")
+    if not (row["known"] and row["healthy"]):
+        sys.exit(f"{name} read as known={row['known']} healthy={row['healthy']}")
+if payload["unknown_count"]:
+    sys.exit(f"{payload['unknown_count']} component(s) still report an undetermined state")
+print("    | every Pod read from the cluster; nothing reported unknown")
+PY
+log "PASS (fix proven): the survey routes to the cluster and names no Compose file"
+
+# The CLI's own text, because that is the surface the owner read.
+self_heal_out="$(python3 -c \
+  'import sys; from nyxgpt import cli; sys.exit(cli.cmd_self_heal_status(None))')"
+echo "$self_heal_out" | sed 's/^/    | /'
+if grep -q "CANNOT DETERMINE" <<<"$self_heal_out"; then
+  fail "\`nyxgpt self-heal status\` still prints CANNOT DETERMINE on a live cluster"
+fi
+if grep -q "docker-compose.yml" <<<"$self_heal_out"; then
+  fail "the CLI still names a docker-compose.yml on a host that has no Compose stack"
+fi
+grep -q "read from the cluster" <<<"$self_heal_out" \
+  || fail "the CLI does not say where the observability rows came from"
+grep -q "\[OK\] cassandra-0" <<<"$self_heal_out" \
+  || fail "the CLI does not report the cluster's Cassandra Pod as OK"
+log "PASS: no screen states both 'cannot determine the tier' and 'every component ready'"
+
+# --- ops doctor -------------------------------------------------------------
+# The marker is what turns doctor's cluster read on (it pays nothing for the
+# question on a machine that never deployed to Kubernetes), and a
+# `cloud deploy --kubernetes` writes it.
+python3 - <<'PY'
+from nyxgpt import install_mode, ops
+
+install_mode.write_install_mode(
+    install_mode.INSTALL_MODE_ARTIFACT, None, substrate=install_mode.SUBSTRATE_KUBERNETES
+)
+
+# Half (b), asserted rather than assumed: the host check really would fire here.
+host = ops._cassandra_deployment_issues()
+print(f"    | the host-side check on this box says: {host}")
+assert any(
+    "Missing local Cassandra container" in i for i in host
+), "FAULT INJECTION FAILED: the host check produces no finding, so routing past it proves nothing"
+
+probe = ops._k8s_deployment_probe()
+print(f"    | _k8s_deployment_probe -> {probe.summary}")
+assert probe.deployed, "doctor would not take the cluster branch on this box"
+cluster = ops._k8s_cassandra_deployment_issues(probe.pods)
+print(f"    | the cluster-side check says: {cluster}")
+assert not cluster, "the cluster-side check reports a problem with a Ready cassandra-0"
+PY
+
+set +e
+doctor_out="$(python3 -c \
+  'from types import SimpleNamespace; from nyxgpt import ops; raise SystemExit(ops.doctor(SimpleNamespace()))' 2>&1)"
+doctor_rc=$?
+set -e
+echo "$doctor_out" | sed 's/^/    | /'
+log "MEASURED: ops doctor exited $doctor_rc"
+if grep -q "Missing local Cassandra container" <<<"$doctor_out"; then
+  fail "doctor still reports a missing local Cassandra container on a cluster whose
+        cassandra-0 it lists as Running -- the #4137 FAIL"
+fi
+grep -q "Cassandra, model readiness, tracing wiring" <<<"$doctor_out" \
+  || fail "doctor does not name Cassandra among the cluster-scoped checks, so an operator
+           cannot tell which machine the finding below it is about"
+log "PASS (fix proven): the Cassandra check answers for the substrate that is serving"
+# Deliberately NOT asserted: doctor's exit status. A hosted runner is a
+# half-installed host -- no config.ini, no brew/systemd services, no venv for a
+# native api -- so it has real host-scoped findings of its own, and demanding
+# rc 0 here would be asserting something this box cannot be. The claim is
+# about which substrate each check answered for, and that is what is checked.
+
+unset NYXGPT_COMPOSE_FILE
+kubectl -n "$NAMESPACE" delete pod cassandra-0 grafana-smoke --now >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+step "11/11  The --no-kubernetes transition actually moves the box"
 # ---------------------------------------------------------------------------
 # `--no-kubernetes` is documented as moving a deployment back to the native
 # substrate. The failure this proves against is silent in the worst available
@@ -1006,7 +1197,8 @@ log "ALL PASS -- the k3s substrate a --kubernetes cloud deploy creates works, th
 log "manifests apply to it unchanged (with the image tags pinned from outside them),"
 log "nothing listens on the public interface, the product finds the cluster with no"
 log "KUBECONFIG exported, a finished rollout's leftover Pod no longer fails the"
-log "install, the --no-kubernetes transition really retires it -- and all five fault"
-log "injections reproduced the failures they guard against."
+log "install, no host-side probe answers for the cluster from this host, the"
+log "--no-kubernetes transition really retires it -- and all six fault injections"
+log "reproduced the failures they guard against."
 log "NOT covered here, by construction: a real EC2 instance, a real AWS security"
 log "group, and IMDSv2 -- see docs/live-verification-ci.md."

@@ -3385,7 +3385,7 @@ def status() -> dict[str, Any]:
         "enabled": is_enabled(),
         "mode": detected_mode(components),
         # Where the observability tier is read from this pass (#3828).
-        # "kubernetes" means it was queried in-cluster and the Compose probe
+        # "kubernetes" means the cluster answered for it and the Compose probe
         # says nothing about it -- the page must not then explain its
         # absence with the Compose "cannot determine from here" banner, which
         # is about a survey that has no bearing on this deployment.

@@ -49,7 +49,8 @@ type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
   // Where the observability tier was read from this pass (#3828):
-  // 'kubernetes' when it was queried in-cluster, 'compose' otherwise. Absent
+  // 'kubernetes' when the cluster answered for it, 'compose' otherwise -- chosen
+  // by what answers, not by where this process runs (#4137). Absent
   // from an older API, which only ever read it from Compose.
   observability_source?: 'compose' | 'kubernetes';
   compose_probe_available: boolean;
@@ -328,7 +329,7 @@ export default function SelfHealPage() {
                 border: '1px solid var(--border-color)',
               }}
             >
-              Observability tier: <strong>queried in-cluster</strong>. Grafana, Loki, Jaeger,
+              Observability tier: <strong>read from the cluster</strong>. Grafana, Loki, Jaeger,
               GlitchTip and the collectors run as Pods in this cluster (
               <code>k8s/observability</code>), so their rows below are read from the cluster
               itself and are healed like any other Pod. Their UIs are published on the host by

@@ -1585,10 +1585,32 @@ report `"kubernetes"` at all -- see
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode).
 
 `observability_source` says where the observability tier's rows came from
-this pass: `"kubernetes"` when it was read in-cluster (a Kubernetes
+this pass: `"kubernetes"` when the cluster answered for it (a Kubernetes
 deployment -- the `compose_probe_*` fields then say nothing about it and a
 client must not present them as a verdict on that tier), `"compose"`
-otherwise.
+otherwise. The choice is made by **what answers**, not by whether this
+process is itself inside a Pod (#4137): a k3s host is neither in-cluster nor
+Compose, and `kubectl` there reaches the cluster perfectly well.
+
+`compose_probe_applicable` and `compose_probe_undetermined` carry that same
+fact in the form a client needs to render it, and the second is the one to key
+a "cannot determine" banner off:
+
+| | `applicable` | `available` | `undetermined` | Render |
+| --- | --- | --- | --- | --- |
+| The survey ran | `true` | `true` | `false` | the Compose rows |
+| An answer was owed and could not be had | `true` | `false` | `true` | cannot determine, with `compose_probe_reason` |
+| No Compose tier here to survey | `false` | `false` | `false` | nothing, or the scope sentence in `compose_probe_reason` |
+
+`compose_probe_available: false` alone cannot tell the last two apart, and
+keying off it is what made `nyxgpt cloud ops self-heal` print
+`Observability survey: CANNOT DETERMINE from here -- \`docker compose ps\`
+exited 125 ...` on a k3s instance, naming a `docker-compose.yml` that
+deployment does not use, directly above fourteen Running, ready Pods -- while
+the Self-Heal page, which already read `observability_source`, printed the
+cluster's answer for the same deployment. Both keys are absent from an api
+older than #4137; fall back to `!compose_probe_available`, which is what that
+api meant.
 
 **Response:**
 
@@ -1598,6 +1620,8 @@ otherwise.
   "mode": "terraform",
   "observability_source": "compose",
   "compose_probe_available": true,
+  "compose_probe_applicable": true,
+  "compose_probe_undetermined": false,
   "compose_probe_reason": "",
   "components": [
     { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },

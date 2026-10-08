@@ -15784,9 +15784,9 @@ def _terraform_install_mode_issues() -> list[str]:
 #   host-scoped, and `doctor` says which is which out loud rather than leaving
 #   the operator to work it out from the wording of a failure.
 #
-# The shape to sweep for is the one the owner named: *reads host config, or
-# probes a host port, and then speaks about the deployment*. Exactly three
-# checks had it, and all three are branched here:
+# The shape #3987 swept for was the one the owner named then: *reads host
+# config, or probes a host port, and then speaks about the deployment*. Exactly
+# three checks had it, and all three are branched here:
 #
 #   _tracing_wiring_issue           -> _k8s_tracing_wiring_issue
 #   _prometheus_api_scrape_issue    -> _k8s_prometheus_api_scrape_issue
@@ -15797,13 +15797,34 @@ def _terraform_install_mode_issues() -> list[str]:
 # answering "is this deployment wired up" out of the other one's config is the
 # whole defect. The printed scope line says which machine answered.
 #
-# Everything else `doctor` runs is host-scoped BY CONSTRUCTION and correct as
-# it stands: tools on PATH, file permissions, the launchd/systemd units this
-# machine registered, this venv's packages, this host's Docker containers and
-# Terraform state. Three more read host config but are already gated on a
-# Compose stack actually running (`_log_aggregation_wiring_issue`, the Loki
-# log-volume block, `_glitchtip_secrets_doctor_issues`), so they cannot fire
-# about a Kubernetes deployment at all. The full table is in
+# **The shape was wider than that, and #4137 is the correction.** This block
+# used to end "everything else `doctor` runs is host-scoped BY CONSTRUCTION and
+# correct as it stands: ... this host's Docker containers and Terraform state."
+# That was wrong about one of them, and wrong in the way the sweep existed to
+# prevent. `doctor`'s Cassandra check *inspects a host container* and then
+# speaks about the deployment -- the same sentence as the three above with
+# "probes a host port" replaced -- and on a k3s instance it was `doctor`'s only
+# finding, exiting FAIL with "Missing local Cassandra container: nyxgpt-
+# cassandra (run: nyxgpt ops install)" three lines under `cassandra-0: Running`
+# in the cluster's own Pod list. So:
+#
+#   _cassandra_deployment_issues    -> _k8s_cassandra_deployment_issues
+#
+# Two things made it invisible. It read a container rather than config or a
+# port, so it did not match the shape as written; and it was an
+# `issues.append(...)` INSIDE `doctor`, so the guard -- which enumerates the
+# named helpers `doctor` calls -- could not hold it either. Every inline check
+# is now a named helper (see the block above `doctor`), and the shape to sweep
+# for is stated without naming a mechanism: *answers out of this host, and
+# speaks about the deployment*.
+#
+# Everything else is host-scoped BY CONSTRUCTION: tools on PATH, file
+# permissions, the launchd/systemd units this machine registered, this venv's
+# packages, this host's dev checkouts and Terraform state. Four more read host
+# state but are already gated on a Compose stack actually running
+# (`_log_aggregation_wiring_issue`, the Loki log-volume block,
+# `_glitchtip_secrets_doctor_issues`, `_compose_restart_loop_issues`), so they
+# cannot fire about a Kubernetes deployment at all. The full table is in
 # `docs/ops.md`, and `tests/unit/test_ops_doctor_substrate_scope.py` fails if
 # a check is added to `doctor` without being classified -- the next check with
 # this shape should not have to be found by an owner running the product.
