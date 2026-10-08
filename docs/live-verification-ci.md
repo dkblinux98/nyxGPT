@@ -508,12 +508,13 @@ and screenshots make verifiable in the review loop:
   `tests/unit/test_pull_request_target_safety.py` states that over every
   `pull_request_target` workflow, and
   [`project-hygiene-smoke.yml`](../.github/workflows/project-hygiene-smoke.yml)'s
-  `pr-head-guard-discriminates` job **executes** it against eight deliberately
+  `pr-head-guard-discriminates` job **executes** it against nine deliberately
   broken copies — a head-SHA checkout, a `github.head_ref` checkout, a `gh pr
   checkout`, a dependency install, the trigger reverted to `pull_request`, the
   *sibling's* trigger reverted, the sibling's checkout moved to the PR head,
-  and a newly planted `pull_request` workflow reading a secret — requiring a
-  red guard on each. That is the injection this
+  a newly planted `pull_request` workflow reading a secret, and a script
+  comment restored to identifying the close-stamp by its retired
+  `pull_request` trigger — requiring a red guard on each. That is the injection this
   document demands of a guard whose tree is already correct: a green run says
   something about the guard, not about the day it was written.
 

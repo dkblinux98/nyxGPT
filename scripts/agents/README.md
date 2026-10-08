@@ -68,7 +68,7 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 The invariant: no merged or closed PR's project card sits in an active lane.
 All three paths are agent-side (no reliance on the board's built-in "Pull
 request merged" automation) and idempotent, and none of them touch issues.
-- `pr_close_project_status.sh [--dry-run] <PR_NUMBER>` — stamps a merged/closed PR's card to `STATUS_CLOSED` (default `Closed`); no-op for an open PR. Run automatically by `pr_project_status_on_close.yml` on every `pull_request: closed`, covering rejected PRs and merges the review agent did not perform.
+- `pr_close_project_status.sh [--dry-run] <PR_NUMBER>` — stamps a merged/closed PR's card to `STATUS_CLOSED` (default `Closed`); no-op for an open PR. Run automatically by `pr_project_status_on_close.yml` on every `pull_request_target: closed`, covering rejected PRs, merges the review agent did not perform, and Dependabot-actored closes (the `pull_request_target` trigger is what makes that last case reachable — GitHub withholds this repo's secrets from a Dependabot-actored `pull_request` run, so the stamp died at `require_gh_auth`; #4167, ledger **D-062**).
 - `reconcile_pr_lane.sh` — backstop sweep for cards that predate the invariant or lost a stamp to a flaky API. `SOURCE_STATUS` narrows to one lane (blank = every active lane), `TARGET_STATUS` overrides the destination, `DRY_RUN=true` (default) lists only. Run daily in apply mode by `sweep_pr_status.yml`.
 
 ### branch hygiene

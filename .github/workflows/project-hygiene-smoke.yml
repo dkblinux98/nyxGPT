@@ -47,13 +47,17 @@ name: Project Hygiene Smoke
 #    unsafe — or does it only pass because the tree is already correct?"
 #
 # Same reason as everything above: a guard written today passes today whatever
-# it asserts. `pr-head-guard-discriminates` runs it against eight deliberately
+# it asserts. `pr-head-guard-discriminates` runs it against nine deliberately
 # broken copies of the tree and requires it to go red on each — five unsafe
-# shapes in `ensure_project_hygiene.yml`, and three over the CLASS the #4167
-# review round widened it to: the sibling `pr_project_status_on_close.yml`
+# shapes in `ensure_project_hygiene.yml`, three over the CLASS the #4167
+# review round widened it to (the sibling `pr_project_status_on_close.yml`
 # reverted to `pull_request`, that sibling's checkout moved to the PR head
-# (proof the invariant really reaches a second file), and a newly planted
-# `pull_request` workflow reading a secret.
+# — proof the invariant really reaches a second file — and a newly planted
+# `pull_request` workflow reading a secret), and one over the DOCUMENTATION
+# half the round after it added: a script comment put back to identifying the
+# close-stamp by its retired `pull_request` trigger. (Said that way round on
+# purpose — the guard scans the tree for the retired name, so spelling it out
+# here would make this very comment an offender.)
 #
 # `pr_project_status_on_close.yml` is therefore in the path filters below: it
 # is now one of the files the guard protects, so a change to it must run the

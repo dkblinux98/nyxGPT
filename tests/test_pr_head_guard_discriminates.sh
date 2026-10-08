@@ -34,8 +34,15 @@
 #   8. a NEW `pull_request` workflow reading a secret, added without being
 #      examined: the shape in which this whole class grew unnoticed
 #
+# Case 9 covers the documentation half, added by the round that found five
+# sentences across docs, scripts and a workflow header still calling the
+# close-stamp "the `pull_request: closed` handler" after its trigger moved:
+#
+#   9. the retired trigger name restored in a doc or script comment -- the
+#      claim the fix falsifies, coming back
+#
 # Each must make the guard RED. The shipped tree must make it GREEN. A guard
-# that passes case 1 through 8 is asserting nothing and this script says so.
+# that passes case 1 through 9 is asserting nothing and this script says so.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,14 +54,22 @@ CLOSE_WF="$ROOT_DIR/.github/workflows/pr_project_status_on_close.yml"
 PLANTED_WF="$ROOT_DIR/.github/workflows/zz-pr-head-guard-injection.yml"
 GUARD="tests/unit/test_pull_request_target_safety.py"
 
+# Case 9's target: one of the five files whose prose named the retired
+# trigger. A script comment rather than a doc, so the case also shows the scan
+# is not markdown-only.
+PROSE_FILE="$ROOT_DIR/scripts/agents/reconcile_pr_lane.sh"
+
 PRISTINE="$(mktemp)"
 CLOSE_PRISTINE="$(mktemp)"
+PROSE_PRISTINE="$(mktemp)"
 cp "$WF" "$PRISTINE"
 cp "$CLOSE_WF" "$CLOSE_PRISTINE"
+cp "$PROSE_FILE" "$PROSE_PRISTINE"
 restore() {
   cp "$PRISTINE" "$WF"
   cp "$CLOSE_PRISTINE" "$CLOSE_WF"
-  rm -f "$PRISTINE" "$CLOSE_PRISTINE" "$PLANTED_WF"
+  cp "$PROSE_PRISTINE" "$PROSE_FILE"
+  rm -f "$PRISTINE" "$CLOSE_PRISTINE" "$PROSE_PRISTINE" "$PLANTED_WF"
 }
 trap restore EXIT
 
@@ -206,6 +221,24 @@ jobs:
 YAML
 _expect_red "a new pull_request workflow reading a secret, unexamined"
 rm -f "$PLANTED_WF"
+
+echo "=== half 4: the claim the fix falsifies, coming back ==="
+
+# Five sentences in the tree identified the close-stamp by the trigger it no
+# longer has, and grep-after-review is the expensive way to find them. The
+# guard now fails the build instead, so this case checks it really does -- a
+# tree-wide text scan is exactly the kind of assertion that quietly stops
+# reaching anything (a filter, a skip-list, a renamed directory).
+python3 - "$PROSE_FILE" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+updated = text.replace("pull_request_target:closed", "pull_request:closed", 1)
+assert updated != text, "injection did not apply"
+open(path, "w", encoding="utf-8").write(updated)
+PY
+_expect_red "a script comment back to naming the pull_request:closed handler"
+cp "$PROSE_PRISTINE" "$PROSE_FILE"
 
 echo "=== restored ==="
 _expect_green "the guard passes again once the file is restored"

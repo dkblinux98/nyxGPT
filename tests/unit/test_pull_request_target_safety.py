@@ -347,6 +347,117 @@ class TestTheAgentPathIsUnaffected:
         assert body.index("sleep 60") < body.index("gained Status")
 
 
+#: Directories with nothing of ours in them (dependencies, build output, VCS).
+_SKIP_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    "coverage",
+    "htmlcov",
+}
+
+#: The prose form of a trigger this repository no longer has. `pr-hygiene` and
+#: `stamp-closed-lane` both moved to `pull_request_target`, so any sentence
+#: naming a "`pull_request: closed` handler" now describes a handler that does
+#: not exist. Written as a regex over the single-line form only: the two-line
+#: YAML shape (`pull_request:` then `types: [closed]`) is a real trigger a
+#: future workflow may legitimately use, and is not what this catches.
+_RETIRED_TRIGGER_PROSE = re.compile(r"pull_request: ?closed")
+
+_SCANNED_SUFFIXES = (".md", ".yml", ".yaml", ".sh", ".py", ".ts", ".tsx")
+
+#: The two files that have to spell the retired form out in order to test for
+#: it: this one (the pattern's positive cases) and the discriminates script
+#: (which injects it on purpose, case 9). Nothing else is exempt -- a guard
+#: that fails on its own fixtures is a guard the next person deletes, but an
+#: exemption list that grows is the guard being switched off one file at a
+#: time, so `test_only_the_guards_own_fixtures_are_exempt` pins it at these.
+_FIXTURE_EXEMPT = {
+    "tests/unit/test_pull_request_target_safety.py",
+    "tests/test_pr_head_guard_discriminates.sh",
+}
+
+
+def _scannable_files() -> list[Path]:
+    out = []
+    for path in ROOT.rglob("*"):
+        if path.suffix not in _SCANNED_SUFFIXES or not path.is_file():
+            continue
+        rel = path.relative_to(ROOT)
+        if _SKIP_DIRS & set(rel.parts):
+            continue
+        if rel.as_posix() in _FIXTURE_EXEMPT:
+            continue
+        out.append(path)
+    return sorted(out)
+
+
+class TestNothingStillDescribesTheRetiredTrigger:
+    """#1a: a claim this change makes false has to be fixed, not left to rot.
+
+    Moving the close-stamp to `pull_request_target` falsified five sentences
+    scattered across docs, scripts and a workflow header -- `scripts/agents/
+    README.md`, `docs/github-tokens.md`, `scripts/agents/lib/gh_project.sh`,
+    `scripts/agents/reconcile_pr_lane.sh` and `.github/workflows/
+    sweep_pr_status.yml` each identified the handler by a trigger it no longer
+    has. They were found by grep after review, which is the expensive way; the
+    cheap way is to fail the build. This guard is the pin the review noted was
+    missing, and it is the reason a later revert cannot quietly restore the
+    stale description along with the stale trigger.
+    """
+
+    def test_no_file_names_a_pull_request_closed_handler(self):
+        offenders = []
+        for path in _scannable_files():
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if _RETIRED_TRIGGER_PROSE.search(line):
+                    offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
+        assert not offenders, (
+            "the close-stamp and `pr-hygiene` run on `pull_request_target`; "
+            "these lines still describe a `pull_request: closed` handler, which "
+            "no longer exists (#4167): " + ", ".join(offenders)
+        )
+
+    def test_the_scan_actually_reaches_the_files_that_were_wrong(self):
+        """Otherwise the assertion above could be passing over an empty list
+        or a filtered-out directory -- the five files it is about must be in
+        the scanned set by name."""
+        scanned = {str(p.relative_to(ROOT)) for p in _scannable_files()}
+        for name in (
+            "scripts/agents/README.md",
+            "docs/github-tokens.md",
+            "scripts/agents/lib/gh_project.sh",
+            "scripts/agents/reconcile_pr_lane.sh",
+            ".github/workflows/sweep_pr_status.yml",
+        ):
+            assert name in scanned, name
+
+    def test_only_the_guards_own_fixtures_are_exempt(self):
+        """An exemption list is how a tree-wide scan stops reaching anything.
+        Both entries must still exist (a rename would silently un-exempt or,
+        worse, leave a dead entry covering a file someone later adds)."""
+        assert len(_FIXTURE_EXEMPT) == 2
+        for rel in _FIXTURE_EXEMPT:
+            assert (ROOT / rel).is_file(), rel
+
+    def test_the_pattern_does_not_condemn_the_legitimate_yaml_shape(self):
+        """A future workflow genuinely triggering on closed PRs writes it
+        across two lines. Condemning that would make the guard a nuisance
+        someone deletes rather than a rule someone keeps."""
+        assert not _RETIRED_TRIGGER_PROSE.search("  pull_request:\n    types: [closed]")
+        assert not _RETIRED_TRIGGER_PROSE.search("pull_request_target: closed")
+        assert _RETIRED_TRIGGER_PROSE.search("the `pull_request: closed` handler")
+        assert _RETIRED_TRIGGER_PROSE.search("the pull_request:closed handler")
+
+
 class TestTheCheckStaysOffTheHeadGate:
     """A `pull_request_target` run is associated with the BASE commit.
 

@@ -2413,7 +2413,7 @@ rather than mechanism, and nothing can enforce them.
   the run carries this repository's secrets on a branch an arbitrary author
   controls. Enforced by `tests/unit/test_pull_request_target_safety.py` over
   *every* such workflow, with `project-hygiene-smoke.yml`'s
-  `pr-head-guard-discriminates` job executing that guard against eight broken
+  `pr-head-guard-discriminates` job executing that guard against nine broken
   copies so it cannot pass by being vacuous. One consequence: such a run is
   associated with the base commit, so the check stays `[not-required]`.
   **Scope widened by #4170's review round, to two jobs and an enumerated

@@ -99,7 +99,7 @@ never be pushed to this side.
 | `SPRINT_FIELD` | `Sprint` | Project iteration field name for sprint scoping/reporting (#3480); optional, defaults to `Sprint` |
 | `STATUS_ACCEPTANCE_TESTING` | `Acceptance Testing` | Post-merge acceptance lane; optional, defaults to the literal name |
 | `STATUS_ACCEPTANCE_FAILED` | `Acceptance Failed` | Drain-gate holding lane (#3730); optional, defaults to the literal name — see `docs/acceptance-drain-gate.md` |
-| `STATUS_CLOSED` | `Closed` | Terminal lane for a merged/closed PR's own project card (#3742); optional, defaults to the literal name — the merge flow, the `pull_request: closed` handler and the daily sweep all stamp it |
+| `STATUS_CLOSED` | `Closed` | Terminal lane for a merged/closed PR's own project card (#3742); optional, defaults to the literal name — the merge flow, the `pull_request_target: closed` handler and the daily sweep all stamp it |
 | `DRAIN_GATE_BYPASS_LABELS` | `Agent` | Comma-separated labels that mark an issue as agent-process work, exempt from the drain gate (#3730) and from rc acceptance testing (#4134); optional — the default is the owner-created `Agent` label, set in `drain_gate.py` rather than passed by each workflow so a caller cannot forget it |
 | `AGENT_MODEL_DEV` | `claude-opus-5` | Model for the developer agent's implementation runs (`developer_auto_implement.yml`); optional, defaults to `claude-opus-5` |
 | `AGENT_MODEL_REVIEW` | `claude-fable-5` | Model for the review agent, the `@claude` entry point and the developer's failure-analysis step; optional, defaults to `claude-fable-5` |
