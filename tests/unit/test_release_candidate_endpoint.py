@@ -28,6 +28,20 @@ def _offline(monkeypatch):
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
 
 
+@pytest.fixture(autouse=True)
+def _declared_line(monkeypatch, tmp_path):
+    """Pin the declared release line to the `v3.0.0` these fixtures name.
+
+    Same reason as `tests/unit/test_release_candidate.py::_declared_line`, and
+    the same seam: without it the endpoint's plan is compared against whatever
+    version the checkout currently declares, so shipping a release turns these
+    cases red. See that fixture's docstring for the full rationale.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "nyxGPT"\nversion = "3.0.0"\n', encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "_checkout_pyproject", lambda: pyproject)
+
+
 def test_endpoint_returns_the_plan_the_cli_reports():
     response = TestClient(app).get("/api/v1/ops/release-candidate?branch=v3.0.0")
 
