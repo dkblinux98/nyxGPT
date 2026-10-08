@@ -214,17 +214,14 @@ def _write_state(state: dict[str, Any]) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state, indent=2) + "\n"
-    handle = tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=str(path.parent),
-        prefix=path.name + ".",
-        suffix=".tmp",
-        delete=False,
-    )
-    staged = Path(handle.name)
+    # Same directory as the target, so the `os.replace` below is a rename within
+    # one filesystem and therefore atomic. `mkstemp` creates it 0600 already,
+    # which matters for the window before the rename: the record names the
+    # operator's deployment.
+    descriptor, name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    staged = Path(name)
     try:
-        with handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -322,11 +319,7 @@ def _rewrite(
         )
     _archive(archived)
 
-    updated = {
-        key: value
-        for key, value in state.items()
-        if key not in keys and key not in stray
-    }
+    updated = {key: value for key, value in state.items() if key not in keys and key not in stray}
     updated.update(block)
     _write_state(updated)
     return dict(block)

@@ -2703,9 +2703,7 @@ def cloud_deploy_status(
     at AWS's answer or at a local record, so a caller that skips this still gets
     an honest payload rather than an unmarked stale one.
     """
-    return cloud_deploy_module.deploy_status(
-        probe_health=probe_health, verify_host=verify_host
-    )
+    return cloud_deploy_module.deploy_status(probe_health=probe_health, verify_host=verify_host)
 
 
 @api.post("/cloud/deploy")

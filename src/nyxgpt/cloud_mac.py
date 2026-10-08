@@ -39,6 +39,7 @@ and nothing here revisits it -- see docs/cloud.md, "EC2 Mac targets".
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -447,7 +448,9 @@ def lookup_host_spend(
     moment = (now or utc_now()).astimezone(UTC)
     # Cost Explorer's `End` is exclusive, so tomorrow is what includes today.
     end = (moment + timedelta(days=1)).date()
-    start = (since.astimezone(UTC).date() if since else None) or (moment - timedelta(days=30)).date()
+    start = (since.astimezone(UTC).date() if since else None) or (
+        moment - timedelta(days=30)
+    ).date()
     if start >= end:
         start = end - timedelta(days=1)
 
@@ -528,9 +531,7 @@ def record_findings(record: dict[str, Any]) -> list[str]:
     scheduled_at = parse_timestamp(str(record.get("mac_release_scheduled_at") or ""))
 
     if record.get("mac_allocated_at") and allocated_at is None:
-        findings.append(
-            f"mac_allocated_at ({record.get('mac_allocated_at')!r}) is not a timestamp"
-        )
+        findings.append(f"mac_allocated_at ({record.get('mac_allocated_at')!r}) is not a timestamp")
     if scheduled_at is not None and allocated_at is not None and scheduled_at < allocated_at:
         findings.append(
             f"mac_release_scheduled_at ({scheduled_at.isoformat()}) is EARLIER than "
@@ -672,9 +673,7 @@ def record_mac_host(values: dict[str, Any], *, reason: str = "") -> dict[str, An
     return load_mac_record()
 
 
-def amend_mac_record(
-    updates: dict[str, Any], *, host_id: str, reason: str = ""
-) -> dict[str, Any]:
+def amend_mac_record(updates: dict[str, Any], *, host_id: str, reason: str = "") -> dict[str, Any]:
     """Update fields of the recorded host, proving it is still that host.
 
     The gated merge. `host_id` is what the caller believes the block describes;
@@ -1778,7 +1777,11 @@ def verify_mac_record(args: argparse.Namespace | None = None) -> dict[str, Any]:
         _record_profile(args),
         since=parse_timestamp(str(record.get("mac_allocated_at") or "")),
     )
-    try:
+    # Suppressed: the only way this raises is `StaleRecordError`, meaning the
+    # block was replaced while the cost query was in flight. The figure then
+    # describes the previous host and must not be written over the new one --
+    # which is the whole point of the gate.
+    with contextlib.suppress(Exception):  # pragma: no cover - a record that moved under us
         amend_mac_record(
             {
                 "mac_spend_amount": spend.amount,
@@ -1790,8 +1793,6 @@ def verify_mac_record(args: argparse.Namespace | None = None) -> dict[str, Any]:
             host_id=host_id,
             reason="refreshed the Cost Explorer figure",
         )
-    except Exception:  # pragma: no cover - a record that moved under us
-        pass
     return {"host_present": record.get("mac_host_present"), "spend": spend.to_dict()}
 
 

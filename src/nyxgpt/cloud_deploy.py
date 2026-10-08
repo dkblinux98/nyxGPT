@@ -3633,7 +3633,9 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     # a host that had been released three days earlier, because the record was
     # the only thing it asked.
     if mac_host.get("verified_at"):
-        heading = f"EC2 Mac Dedicated Host (still billing -- AWS confirmed {mac_host['verified_at']})"
+        heading = (
+            f"EC2 Mac Dedicated Host (still billing -- AWS confirmed {mac_host['verified_at']})"
+        )
     else:
         heading = (
             "EC2 Mac Dedicated Host (recorded here; NOT confirmed at AWS in this run -- "

@@ -124,6 +124,44 @@ def test_resolve_security_group_id_falls_back_to_state_file(tmp_path):
     assert cloud._resolve_security_group_id(args) == "sg-from-state"
 
 
+def test_auto_discovery_finds_the_ec2_macs_group_after_a_macos_deploy(tmp_path):
+    """#3993's criterion -- "allow-ip auto-discovery works flag-free after ANY
+    deploy" -- was still false for the deploys it was written about, and #4136
+    found it. A macOS deploy records `mac_security_group_id` and never writes the
+    Linux substrate's `security_group_id`, so auto-discovery found nothing at
+    all. This command matters at exactly one moment: when the operator is locked
+    out of the box and debugging it.
+    """
+    cloud.CLOUD_STATE_FILE.parent.mkdir(parents=True)
+    cloud.CLOUD_STATE_FILE.write_text(
+        json.dumps(
+            {
+                "mac_host_id": "h-0c8f9957132fb0794",
+                "mac_security_group_id": "sg-0e3cde668e9c66292",
+                "mac_region": "us-east-1",
+            }
+        )
+    )
+    args = argparse.Namespace(security_group_id=None, region=None)
+
+    assert cloud._resolve_security_group_id(args) == "sg-0e3cde668e9c66292"
+    # And in the right region: looking the group up in whatever region came next
+    # finds nothing, which is the same dead end by another route.
+    assert cloud._resolve_region(args) == "us-east-1"
+
+
+def test_the_linux_substrates_group_still_wins_when_both_are_recorded(tmp_path):
+    """Both blocks are live while a Mac and a Linux box coexist. The substrate's
+    own group is the one `allow-ip` has always meant."""
+    cloud.CLOUD_STATE_FILE.parent.mkdir(parents=True)
+    cloud.CLOUD_STATE_FILE.write_text(
+        json.dumps({"security_group_id": "sg-linux", "mac_security_group_id": "sg-mac"})
+    )
+    args = argparse.Namespace(security_group_id=None)
+
+    assert cloud._resolve_security_group_id(args) == "sg-linux"
+
+
 def test_resolve_security_group_id_raises_when_unresolvable():
     args = argparse.Namespace(security_group_id=None)
     with pytest.raises(cloud.CloudCommandError):

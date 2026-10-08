@@ -1015,3 +1015,598 @@ def test_pending_release_reports_the_security_group_and_address_it_records(monke
     assert pending["security_group_id"] == "sg-0e3cde668e9c66292"
     assert pending["public_ip"] == "98.93.96.217"
     assert pending["instance_type"] == "mac2.metal"
+
+
+# --- #4136: the record is never the sole basis for a billable decision ----
+#
+# 2026-10-03. `state.json` held a RELEASED host's id, its release time and its
+# "release scheduled" flag beside the NEW instance's id and IP -- a new instance
+# stapled to a dead host. `nyxgpt cloud deploy --os macos` believed the host
+# still existed, skipped the priced disclosure and the `allocate` consent
+# prompt, announced "no new 24-hour minimum", and allocated a new host.
+#
+# It was not that nothing asked AWS. `reconcile_released_host` made exactly the
+# right call and AWS gave exactly the right answer -- `InvalidHostID.NotFound`
+# -- and `host_still_allocated` caught it as "could not ask".
+
+#: The record the owner's machine actually held after that deploy, verbatim.
+#: Two fields describe the new substrate; four describe a host AWS released
+#: three days earlier; the last is detectably impossible with no API call --
+#: 78 seconds BEFORE the host it describes was allocated (19:27:05Z).
+STALE_2026_10_03 = {
+    "mac_instance_id": "i-00e566c3560462cd4",
+    "mac_public_ip": "34.201.63.175",
+    "mac_host_id": "h-06c438d25077be888",
+    "mac_allocated_at": "2026-09-30T15:49:43+00:00",
+    "mac_release_at": "2026-10-01T16:19:43+00:00",
+    "mac_release_scheduled": True,
+    "mac_release_scheduled_at": "2026-10-03T19:25:47.725000+00:00",
+}
+
+
+class _StubEc2:
+    """An EC2 client that answers DescribeHosts however the test needs.
+
+    `describe_hosts` either returns a payload or raises a botocore-shaped
+    `ClientError` -- a plain exception carrying a `response` dict, which is what
+    `_aws_error_code` reads, because importing `botocore.exceptions` would break
+    this module on an install without the cloud extra.
+    """
+
+    def __init__(self, *, hosts=None, error_code="", zones=("us-east-1a", "us-east-1c")):
+        self.hosts = hosts
+        self.error_code = error_code
+        self.zones = zones
+        self.describe_hosts_calls: list[list[str]] = []
+
+    def describe_hosts(self, HostIds):  # noqa: N803 - boto3's parameter name
+        self.describe_hosts_calls.append(list(HostIds))
+        if self.error_code:
+            raise _client_error(self.error_code)
+        return {"Hosts": self.hosts or []}
+
+    def get_paginator(self, _name):
+        zones = self.zones
+
+        class _Paginator:
+            def paginate(self, **_kwargs):
+                return [
+                    {"InstanceTypeOfferings": [{"Location": zone} for zone in zones]},
+                ]
+
+        return _Paginator()
+
+
+def _client_error(code: str) -> Exception:
+    exc = Exception(f"An error occurred ({code})")
+    exc.response = {"Error": {"Code": code, "Message": "no such host"}}
+    return exc
+
+
+def _stub_clients(monkeypatch, ec2, *, price="0.6500000000", cost=None):
+    """Route `cloud_mac._client` to a per-service stub."""
+    pricing = _StubPricing([_price_document(price)] if price else [])
+    explorer = _StubCostExplorer(cost if cost is not None else {})
+
+    def _dispatch(service, *_a, **_k):
+        if service == "ec2":
+            return ec2
+        if service == "pricing":
+            return pricing
+        if service == "ce":
+            return explorer
+        raise AssertionError(f"unexpected AWS client {service!r}")
+
+    monkeypatch.setattr(cloud_mac, "_client", _dispatch)
+    return pricing, explorer
+
+
+class _StubCostExplorer:
+    def __init__(self, response):
+        self.response = response
+        self.requests: list[dict] = []
+
+    def get_cost_and_usage(self, **kwargs):
+        self.requests.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def _settings(monkeypatch):
+    monkeypatch.setattr(
+        cloud_mac.cloud_infra,
+        "resolve_settings",
+        lambda _args: SimpleNamespace(
+            aws_region="us-east-1",
+            aws_profile="",
+            owner_ip_cidr="198.51.100.5/32",
+            ssh_key_name="",
+            ssh_public_key="",
+            name_prefix="nyxgpt-tf",
+        ),
+    )
+
+
+def test_a_host_aws_has_no_record_of_is_gone_not_unknown(monkeypatch):
+    """The single line that cost the money. `InvalidHostID.NotFound` is EC2
+    saying the host does not exist -- the clearest possible no -- and it arrives
+    as a ClientError, so catching every exception as "could not ask" turned it
+    into the one answer that leaves a stale record in place."""
+    ec2 = _StubEc2(error_code="InvalidHostID.NotFound")
+    _stub_clients(monkeypatch, ec2)
+
+    assert cloud_mac.host_still_allocated("h-06c438d25077be888", "us-east-1") is False
+
+
+@pytest.mark.parametrize("code", ["InvalidHostId.NotFound", "INVALIDHOSTID.NOTFOUND"])
+def test_the_not_found_code_is_matched_however_aws_spells_it(monkeypatch, code):
+    _stub_clients(monkeypatch, _StubEc2(error_code=code))
+
+    assert cloud_mac.host_still_allocated("h-0abc", "us-east-1") is False
+
+
+def test_expired_credentials_are_still_unknown_rather_than_gone(monkeypatch):
+    """The other half, unchanged and load-bearing: a record deleted on the
+    strength of an auth failure would hide a host that is still billing."""
+    _stub_clients(monkeypatch, _StubEc2(error_code="AuthFailure"))
+
+    assert cloud_mac.host_still_allocated("h-0abc", "us-east-1") is None
+
+
+def test_a_deploy_whose_recorded_host_aws_released_takes_the_full_consent_path(monkeypatch, capsys):
+    """The 2026-10-03 run, end to end, with AWS's real answer.
+
+    Asserted through the real `confirm_allocation` and a real refusal at the
+    prompt, not a stub: the claim is that a billable allocation cannot happen
+    without the disclosure AND the typed word, so the test has to be able to
+    fail by the prompt not appearing.
+    """
+    cloud_mac.record_mac_host(STALE_2026_10_03)
+    _mac_state()
+    _settings(monkeypatch)
+    ec2 = _StubEc2(error_code="InvalidHostID.NotFound")
+    _stub_clients(monkeypatch, ec2)
+    monkeypatch.setattr(
+        cloud_mac, "apply_mac_host", lambda plan: pytest.fail("nothing may be applied")
+    )
+    # Declines at the prompt. The prompt existing at all is the thing under
+    # test -- on 2026-10-03 it never appeared.
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+
+    with pytest.raises(CloudCommandError, match="nothing was allocated and nothing is billed"):
+        cloud_mac.allocate(_args(mac_instance_type=None, instance_type=None), assume_yes=False)
+
+    out = capsys.readouterr().out
+    # AWS was asked about the recorded host, and its answer was acted on.
+    assert ec2.describe_hosts_calls == [["h-06c438d25077be888"]]
+    assert "h-06c438d25077be888 has been released" in out
+    # The priced disclosure, with the live rate and the minimum charge.
+    assert "$0.6500/hour" in out
+    assert "$15.60 for the 24-hour minimum" in out
+    # And NOT the sentence that was the whole defect.
+    assert "no new host, no new 24-hour minimum" not in out
+    # The stale block is gone from the file that means "current", not relabelled.
+    assert cloud_mac.load_mac_record() == {}
+    assert cloud_mac.pending_release() == {}
+
+
+def test_a_reconcile_is_refused_when_aws_cannot_be_asked_in_this_run(monkeypatch):
+    """ "No command claims 'no new host, no new 24-hour minimum' without having
+    confirmed the host exists at AWS in that run." With no confirmation there is
+    no claim and no apply -- an apply that cannot verify its own premise is how
+    an unannounced 24-hour minimum started."""
+    _record_host()
+    _mac_state("h-0abc")
+    _settings(monkeypatch)
+    _stub_clients(monkeypatch, _StubEc2(error_code="AuthFailure"))
+    monkeypatch.setattr(
+        cloud_mac, "apply_mac_host", lambda plan: pytest.fail("nothing may be applied")
+    )
+
+    with pytest.raises(CloudCommandError, match="could not be asked"):
+        cloud_mac.allocate(_args(), assume_yes=True)
+
+    # The record is left alone: "we could not ask" is not "it is gone".
+    assert cloud_mac.load_mac_record()["mac_host_id"] == "h-0abc"
+
+
+def test_terraform_state_naming_a_released_host_does_not_suppress_the_disclosure(
+    monkeypatch, capsys
+):
+    """#4122 adopts a host Terraform's state holds without re-disclosing it.
+    That is still right -- but only for a host that EXISTS. State outlives the
+    resource it names just as the record does."""
+    _mac_state("h-06c438d25077be888")
+    _settings(monkeypatch)
+    _stub_clients(monkeypatch, _StubEc2(error_code="InvalidHostID.NotFound"))
+    monkeypatch.setattr(
+        cloud_mac, "apply_mac_host", lambda plan: pytest.fail("nothing may be applied")
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+
+    with pytest.raises(CloudCommandError, match="nothing was allocated"):
+        cloud_mac.allocate(_args(mac_instance_type=None, instance_type=None), assume_yes=False)
+
+    out = capsys.readouterr()
+    assert "AWS has released it" in out.err
+    assert "Minimum charge" in out.out
+    assert not cloud_mac.MAC_TFSTATE_FILE.exists()
+
+
+def test_a_confirmed_host_is_reconciled_and_its_whole_block_is_rewritten(monkeypatch):
+    """The second half of the defect: the reconcile wrote five of the block's
+    fields and left the rest naming the previous host. Every key is asserted
+    here, not only the ones the apply produced."""
+    cloud_mac.record_mac_host(
+        {
+            **STALE_2026_10_03,
+            "mac_host_id": "h-0abc",
+            "mac_region": "us-east-1",
+            "mac_availability_zone": "us-east-1c",
+            "mac_instance_type": "mac2.metal",
+            "mac_allocated_at": "2026-10-03T19:27:05+00:00",
+            "mac_release_at": "2026-10-04T19:57:05+00:00",
+            "mac_release_scheduled": False,
+            "mac_release_scheduled_at": None,
+            "mac_hourly_rate": 0.65,
+        }
+    )
+    _mac_state("h-0abc")
+    _settings(monkeypatch)
+    _stub_clients(
+        monkeypatch,
+        _StubEc2(hosts=[{"HostId": "h-0abc", "State": "available"}]),
+    )
+    monkeypatch.setattr(
+        cloud_mac,
+        "apply_mac_host",
+        lambda plan: {
+            "host_id": "h-0abc",
+            "instance_id": "i-0new",
+            "public_ip": "34.201.63.175",
+            "security_group_id": "sg-0new",
+            "ami_id": "ami-booted",
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "availability_zone": "us-east-1c",
+        },
+    )
+
+    result = cloud_mac.allocate(_args(), assume_yes=True)
+
+    assert result["reconciled"] is True
+    record = cloud_mac.load_mac_record()
+    # Nothing from the previous run survives unexamined: every key is either a
+    # value this reconcile decided or absent.
+    assert record == {
+        "mac_host_id": "h-0abc",
+        "mac_instance_id": "i-0new",
+        "mac_instance_type": "mac2.metal",
+        "mac_region": "us-east-1",
+        "mac_availability_zone": "us-east-1c",
+        "mac_public_ip": "34.201.63.175",
+        "mac_security_group_id": "sg-0new",
+        "mac_ami_id": "ami-booted",
+        "mac_root_volume_size": 200,
+        "mac_allocated_at": "2026-10-03T19:27:05+00:00",
+        "mac_release_at": "2026-10-04T19:57:05+00:00",
+        "mac_hourly_rate": 0.65,
+        "mac_release_scheduled": False,
+        "mac_verified_at": record["mac_verified_at"],
+        "mac_host_present": True,
+    }
+    # The impossible field is gone, and nothing re-derived it.
+    assert "mac_release_scheduled_at" not in record
+    assert cloud_mac.record_findings(record) == []
+
+
+def test_a_reconcile_that_somehow_allocated_a_new_host_records_it_loudly(monkeypatch, capsys):
+    """Unreachable through `allocate`, which proves the host exists at AWS and
+    in Terraform's state before it gets here. Reported rather than trusted not
+    to happen: if it ever does, a non-refundable minimum has started with no
+    disclosure, and the record saying so is how the operator finds out."""
+    _record_host()
+    monkeypatch.setattr(
+        cloud_mac,
+        "apply_mac_host",
+        lambda plan: {"host_id": "h-0c8f9957132fb0794", "instance_id": "i-0new"},
+    )
+    _settings(monkeypatch)
+
+    cloud_mac._reconcile_existing(_args(), cloud_mac.load_mac_record())
+
+    err = capsys.readouterr().err
+    assert "A NEW host has been allocated" in err
+    record = cloud_mac.load_mac_record()
+    assert record["mac_host_id"] == "h-0c8f9957132fb0794"
+    # The previous host's timing fields describe the previous host, so they are
+    # recomputed rather than carried across -- and the record stays coherent.
+    assert record["mac_allocated_at"] != "2026-08-22T18:00:00+00:00"
+    assert cloud_mac.record_findings(record) == []
+    # And the superseded block is retrievable, under its own name.
+    assert cloud_mac.cloud_record.load_archive()[0]["block"]["mac_host_id"] == "h-0abc"
+
+
+# --- Free internal-consistency checks ------------------------------------
+
+
+def test_a_release_scheduled_before_its_host_was_allocated_is_reported():
+    """Detectable with no API call at all, and true of the 2026-10-03 record:
+    `release_scheduled_at` was 78 seconds BEFORE the host it described was
+    allocated."""
+    record = {
+        "mac_host_id": "h-0c8f9957132fb0794",
+        "mac_allocated_at": "2026-10-03T19:27:05+00:00",
+        "mac_release_at": "2026-10-04T19:57:05+00:00",
+        "mac_release_scheduled_at": "2026-10-03T19:25:47.725000+00:00",
+    }
+
+    findings = cloud_mac.record_findings(record)
+
+    assert any("EARLIER than" in finding for finding in findings)
+
+
+def test_a_release_time_that_is_not_the_allocation_plus_the_minimum_is_reported():
+    record = {
+        "mac_host_id": "h-0abc",
+        "mac_allocated_at": "2026-10-03T19:27:05+00:00",
+        # The previous host's window, three days stale.
+        "mac_release_at": "2026-10-01T16:19:43+00:00",
+    }
+
+    findings = cloud_mac.record_findings(record)
+
+    assert any("is not mac_allocated_at +" in finding for finding in findings)
+
+
+def test_a_scheduled_release_with_no_schedule_is_reported():
+    """`aws scheduler list-schedules` was empty while the record claimed the
+    release was scheduled. The local half of that is free to check."""
+    findings = cloud_mac.record_findings({"mac_host_id": "h-0abc", "mac_release_scheduled": True})
+
+    assert any("no release schedule exists" in finding for finding in findings)
+
+
+def test_a_schedule_for_a_different_host_is_reported():
+    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text(
+        'host_id = "h-06c438d25077be888"\n', encoding="utf-8"
+    )
+
+    findings = cloud_mac.record_findings(
+        {"mac_host_id": "h-0c8f9957132fb0794", "mac_release_scheduled": True}
+    )
+
+    assert any("rather than h-0c8f9957132fb0794" in finding for finding in findings)
+
+
+def test_a_coherent_record_reports_nothing():
+    allocated = datetime(2026, 10, 3, 19, 27, 5, tzinfo=UTC)
+    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text('host_id = "h-0abc"\n', encoding="utf-8")
+
+    assert (
+        cloud_mac.record_findings(
+            {
+                "mac_host_id": "h-0abc",
+                "mac_allocated_at": allocated.isoformat(),
+                "mac_release_at": cloud_mac.release_time(allocated).isoformat(),
+                "mac_release_scheduled": True,
+                "mac_release_scheduled_at": "2026-10-03T19:30:00+00:00",
+            }
+        )
+        == []
+    )
+
+
+def test_the_incoherence_is_reported_on_the_status_surface():
+    """Reported rather than used -- a surface that printed those rows as if they
+    agreed is what told the operator a release window had "passed" for a host
+    allocated hours later."""
+    _record_host(
+        mac_allocated_at="2026-10-03T19:27:05+00:00",
+        mac_release_at="2026-10-01T16:19:43+00:00",
+    )
+
+    assert cloud_mac.pending_release()["incoherent"]
+
+
+# --- The spend figure comes from AWS -------------------------------------
+
+
+def _ce_response(days):
+    return {
+        "ResultsByTime": [
+            {
+                "TimePeriod": {"Start": day, "End": day},
+                "Groups": [
+                    {
+                        "Keys": ["HostUsage:mac2"],
+                        "Metrics": {"UnblendedCost": {"Amount": str(amount), "Unit": "USD"}},
+                    }
+                ],
+            }
+            for day, amount in days
+        ]
+    }
+
+
+def test_the_spend_is_what_cost_explorer_billed_not_rate_times_elapsed(monkeypatch):
+    """Observed: the display read $48.44 for a host AWS billed $12.02 for and
+    had stopped charging for two days earlier. `rate * (now - allocated_at)`
+    cannot stop counting, because neither of its inputs knows the host is gone.
+    """
+    _, explorer = _stub_clients(
+        monkeypatch,
+        _StubEc2(),
+        cost=_ce_response(
+            [
+                ("2026-09-30", "3.90"),
+                ("2026-10-01", "8.12"),
+                ("2026-10-02", "0"),
+                ("2026-10-03", "0"),
+            ]
+        ),
+    )
+
+    spend = cloud_mac.lookup_host_spend(
+        "mac2.metal",
+        "us-east-1",
+        since=datetime(2026, 9, 30, tzinfo=UTC),
+        now=datetime(2026, 10, 3, 19, 0, tzinfo=UTC),
+    )
+
+    assert spend.amount == pytest.approx(12.02)
+    assert spend.currency == "USD"
+    assert spend.through == "2026-10-03"
+    assert spend.error == ""
+    # Scoped to the family and the region, and asked for daily so the figure can
+    # be seen to have stopped moving.
+    request = explorer.requests[0]
+    assert request["Granularity"] == "DAILY"
+    assert request["TimePeriod"] == {"Start": "2026-09-30", "End": "2026-10-04"}
+
+
+def test_a_later_query_returns_the_same_figure_once_the_charges_stop(monkeypatch):
+    """ "Stops changing once the host is released" -- the property the local
+    estimate could not have."""
+    days = [("2026-09-30", "3.90"), ("2026-10-01", "8.12"), ("2026-10-02", "0")]
+    _stub_clients(monkeypatch, _StubEc2(), cost=_ce_response(days))
+    first = cloud_mac.lookup_host_spend(
+        "mac2.metal",
+        "us-east-1",
+        since=datetime(2026, 9, 30, tzinfo=UTC),
+        now=datetime(2026, 10, 2, 12, 0, tzinfo=UTC),
+    )
+
+    _stub_clients(monkeypatch, _StubEc2(), cost=_ce_response(days + [("2026-10-03", "0")]))
+    later = cloud_mac.lookup_host_spend(
+        "mac2.metal",
+        "us-east-1",
+        since=datetime(2026, 9, 30, tzinfo=UTC),
+        now=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
+    )
+
+    assert first.amount == later.amount == pytest.approx(12.02)
+
+
+def test_another_host_familys_charges_are_not_counted_as_this_ones(monkeypatch):
+    """`mac2` and `mac2-m2` are different hardware at different prices, so a
+    prefix match would add one bill to the other."""
+    _stub_clients(
+        monkeypatch,
+        _StubEc2(),
+        cost={
+            "ResultsByTime": [
+                {
+                    "TimePeriod": {"Start": "2026-10-01", "End": "2026-10-02"},
+                    "Groups": [
+                        {
+                            "Keys": ["USE1-HostUsage:mac2"],
+                            "Metrics": {"UnblendedCost": {"Amount": "8.12", "Unit": "USD"}},
+                        },
+                        {
+                            "Keys": ["USE1-HostUsage:mac2-m2pro"],
+                            "Metrics": {"UnblendedCost": {"Amount": "40.00", "Unit": "USD"}},
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    spend = cloud_mac.lookup_host_spend("mac2.metal", "us-east-1")
+
+    assert spend.amount == pytest.approx(8.12)
+
+
+def test_a_cost_explorer_failure_is_reported_not_replaced_with_a_guess(monkeypatch):
+    _stub_clients(monkeypatch, _StubEc2(), cost=RuntimeError("AccessDeniedException"))
+
+    spend = cloud_mac.lookup_host_spend("mac2.metal", "us-east-1")
+
+    assert spend.amount is None
+    assert "AccessDeniedException" in spend.error
+
+
+def test_no_matching_charges_is_an_explained_absence_not_zero(monkeypatch):
+    """Zero and "AWS has not billed this yet" are different answers, and
+    reporting the second as the first would say a host allocated an hour ago is
+    free."""
+    _stub_clients(monkeypatch, _StubEc2(), cost={"ResultsByTime": []})
+
+    spend = cloud_mac.lookup_host_spend("mac2.metal", "us-east-1")
+
+    assert spend.amount is None
+    assert "no Dedicated Host charges" in spend.error
+
+
+# --- Verification is recorded, and cached ---------------------------------
+
+
+def test_verifying_the_record_writes_down_what_aws_said_and_what_it_cost(monkeypatch):
+    _record_host()
+    _settings(monkeypatch)
+    _stub_clients(
+        monkeypatch,
+        _StubEc2(hosts=[{"HostId": "h-0abc", "State": "available"}]),
+        cost=_ce_response([("2026-10-01", "8.12")]),
+    )
+
+    cloud_mac.verify_mac_record(_args())
+
+    record = cloud_mac.load_mac_record()
+    assert record["mac_host_present"] is True
+    assert record["mac_verified_at"]
+    assert record["mac_spend_amount"] == pytest.approx(8.12)
+    pending = cloud_mac.pending_release()
+    assert pending["accrued_cost"] == pytest.approx(8.12)
+    assert pending["accrued_source"] == "aws-cost-explorer"
+
+
+def test_verifying_a_released_host_clears_the_block_rather_than_labelling_it(monkeypatch):
+    """ "A host AWS reports as absent is not described as 'still billing'" -- and
+    the way to guarantee that is for there to be no block to describe."""
+    _record_host()
+    _settings(monkeypatch)
+    _stub_clients(monkeypatch, _StubEc2(error_code="InvalidHostID.NotFound"))
+
+    result = cloud_mac.verify_mac_record(_args())
+
+    assert result == {"host_present": False, "cleared": True}
+    assert cloud_mac.pending_release() == {}
+
+
+def test_the_cost_query_is_not_repeated_on_every_poll(monkeypatch):
+    """Cost Explorer bills per request and its granularity is a day, so a
+    dashboard poll must not be able to turn an observability surface into a line
+    item."""
+    _record_host()
+    _settings(monkeypatch)
+    _, explorer = _stub_clients(
+        monkeypatch,
+        _StubEc2(hosts=[{"HostId": "h-0abc", "State": "available"}]),
+        cost=_ce_response([("2026-10-01", "8.12")]),
+    )
+
+    cloud_mac.verify_mac_record(_args())
+    cloud_mac.verify_mac_record(_args())
+
+    assert len(explorer.requests) == 1
+
+
+def test_a_record_the_run_did_not_confirm_is_not_treated_as_confirmed():
+    _record_host(mac_host_present=True, mac_verified_at="2026-08-22T18:00:00+00:00")
+
+    assert (
+        cloud_mac.host_confirmed_this_run(
+            cloud_mac.load_mac_record(), now=datetime(2026, 10, 3, tzinfo=UTC)
+        )
+        is False
+    )
+
+
+def test_a_fresh_confirmation_counts():
+    now = datetime(2026, 10, 3, 19, 30, tzinfo=UTC)
+    _record_host(mac_host_present=True, mac_verified_at=now.isoformat())
+
+    assert cloud_mac.host_confirmed_this_run(cloud_mac.load_mac_record(), now=now) is True
