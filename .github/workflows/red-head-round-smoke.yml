@@ -127,7 +127,13 @@ jobs:
             esac
           }
 
-          OUT="$(old_phase2 ci_red)"; RC=$?
+          # `|| RC=$?`, not `; RC=$?`: this step's shell carries `-e` from
+          # GitHub's own shell arguments, and a failing command substitution in
+          # an assignment aborts the step before the assertion can read it --
+          # which is a step that fails for the wrong reason, on the one job
+          # whose purpose is to prove a failure happens.
+          RC=0
+          OUT="$(old_phase2 ci_red)" || RC=$?
           if [[ "$RC" != "1" || "$OUT" != *"STATUS=FATAL"* ]]; then
             echo "::error::the pre-#4179 case did NOT escalate ci_red -- this job's premise is wrong."
             exit 1
