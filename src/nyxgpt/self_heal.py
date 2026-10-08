@@ -1694,7 +1694,6 @@ def component_survey() -> ComponentSurvey:
     )
     kubernetes_active = kubernetes_mode_active(kubernetes_statuses)
 
-    desired_services = _desired_compose_services(_enabled_observability_profiles())
     if kubernetes_active:
         # Kubernetes mode: the observability tier runs *in-cluster* (#3787)
         # and is already reported above, Pod by Pod, by the same survey. The
@@ -1703,11 +1702,13 @@ def component_survey() -> ComponentSurvey:
         # they rendered as a screen of "can't check"/"absent" rows for
         # workloads that were up and queryable all along (#3828). Since #4137
         # the probe behind them is not run at all, rather than run and
-        # discarded.
+        # discarded -- nor is the config read that says which of them would
+        # have been desired, which is a question about the other substrate.
         probe = _compose_not_applicable_probe()
         compose_statuses: list[ComponentStatus] = []
         undetermined_statuses: list[ComponentStatus] = []
     else:
+        desired_services = _desired_compose_services(_enabled_observability_profiles())
         probe = compose_probe()
         compose_statuses = _mark_disabled_present_services(list(probe.statuses), desired_services)
         compose_managed = {s.service for s in probe.statuses}

@@ -135,6 +135,26 @@ def test_the_compose_probe_is_not_run_at_all_when_the_cluster_holds_the_tier(
 
 
 @pytest.mark.unit
+def test_nor_is_the_config_read_that_says_which_compose_services_were_wanted(
+    monkeypatch, _k3s_host
+):
+    """First principle 1, on a survey that runs every 15 seconds.
+
+    Which observability profiles are enabled is a question about the Compose
+    substrate. Reading `config.ini` for it on a deployment that has no Compose
+    tier buys nothing, and the answer was being discarded anyway.
+    """
+    monkeypatch.setattr(self_heal, "compose_probe", lambda: pytest.fail("not asked"))
+    monkeypatch.setattr(
+        self_heal,
+        "_enabled_observability_profiles",
+        lambda: pytest.fail("no Compose tier here: nothing for a desired-service list to mean"),
+    )
+
+    assert self_heal.component_survey().compose_probe.applicable is False
+
+
+@pytest.mark.unit
 def test_the_not_applicable_reason_names_no_compose_file_and_no_exit_code(monkeypatch, _k3s_host):
     """AC6. The reason is what sent the operator looking for a Compose stack
     that was never meant to exist on that instance."""
