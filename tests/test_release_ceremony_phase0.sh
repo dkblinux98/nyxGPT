@@ -121,6 +121,10 @@ case "$args" in
   *"releases?per_page"*) echo "$FAKE_DRAFT"; exit 0 ;;
   *"releases/999001"*) echo "true"; exit 0 ;;
   *"git/ref/tags/"*) exit 1 ;;
+  # the --phase4-only resume's proof that Phases 0-3 completed
+  *"/commits/3.0.1"*) [[ -n "${FAKE_RESUME:-}" ]] || exit 1; echo "deadbeefcafe"; exit 0 ;;
+  *"releases/tags/3.0.1"*) [[ -n "${FAKE_RESUME:-}" ]] || exit 1; echo "false"; exit 0 ;;
+  *"/compare/3.0.1...master"*) echo "ahead"; exit 0 ;;
   *"contents/.github/workflows/"*) echo "{}"; exit 0 ;;
   "issue view"*labels*) echo "true"; exit 0 ;;
   "issue view"*milestone*) echo "Phase 6.5 (v3.0.1)"; exit 0 ;;
@@ -214,6 +218,17 @@ out="$(_run --dry-run)"; rc=$?
 _assert_eq "the dry run succeeds" "0" "$rc"
 _assert_contains "it says what it would provision" "$out" "DRY-RUN: would provision"
 _assert_eq "nothing was mutated" "" "$(cat "$MUTATIONS")"
+
+echo
+echo "=== Case 6: the --phase4-only resume inventories the line prerequisites too"
+# Before #4166 a resume skipped Phase 0 entirely and met the missing
+# milestone/sprint at Phase 4's line gate -- after the release was public.
+# Driven with --dry-run so Phase 4 itself mutates nothing.
+out="$(FAKE_SPRINT_FIELD="$SPRINT_NONE" FAKE_RESUME=1   NYXGPT_CONFIG_FILE="$WORK/none.ini" NYXGPT_CEREMONY_PAT="fake"   bash "$SCRIPT" 3.0.1 --unattended --phase4-only --dry-run 2>&1)"
+_assert_contains "the resume runs the line inventory" "$out" "Phase 0 (line prerequisites only, --phase4-only)"
+_assert_contains "the resume sees the missing sprint" "$out" "no active or upcoming Sprint iteration"
+_assert_contains "the resume sees the missing next-line milestone" "$out" "Placeholder — next line (v3.0.2)"
+_assert_contains "the resume reports what it would provision" "$out" "DRY-RUN: would provision"
 
 echo
 if [[ "$FAILURES" -eq 0 ]]; then

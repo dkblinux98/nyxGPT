@@ -148,6 +148,9 @@ if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then REL_TYPE="major"; else REL_TYPE="poi
 # The next line is resolved in Phase 4 (from the open milestones) unless
 # given explicitly, so an unattended run needs no next-line arguments.
 NEXT_VERSION="${NEXT_BRANCH#v}"
+# Whether the next line was NAMED by the caller: Phase 0's milestone
+# derivation must defer to it rather than relabel it (#4166).
+NEXT_BRANCH_EXPLICIT="$NEXT_BRANCH"
 
 # --- credentials ---
 ini_get() { # ini_get SECTION KEY
@@ -290,6 +293,27 @@ provisioned() { # provisioned "description"
   if [[ $DRY -eq 1 ]]; then log "  DRY-RUN: would provision $1"; else log "  provisioned: $1"; fi
 }
 
+# What Phase 0 put in place: on the release issue, and in the log line the
+# ceremony watcher greps for its completion comment. Called on the full Phase 0
+# path AND on the --phase4-only resume, which provisions the line prerequisites
+# too -- the first cut reported only on the former, so a resume that created a
+# milestone said nothing about it anywhere.
+report_provisioned() {
+  if [[ ${#PROVISIONED[@]} -eq 0 ]]; then
+    log "  nothing to provision: every provisionable prerequisite was already in place"
+    return 0
+  fi
+  # `IFS='; '` would join on ';' alone -- IFS joins with its FIRST character.
+  log "PROVISIONED $(printf '%s; ' "${PROVISIONED[@]}" | sed 's/; $//')"
+  [[ $DRY -eq 0 && -n "${RELEASE_ISSUE:-}" ]] || return 0
+  gh issue comment "$RELEASE_ISSUE" -R "$REPO" --body "🧰 **Release ceremony ${VERSION} — Phase 0 provisioned the missing prerequisites** (#4166)
+
+$(printf -- '- %s\n' "${PROVISIONED[@]}")
+
+Every one was re-verified by query. A placeholder milestone is the ceremony's stand-in so Phase 4 had a line to cut — rename and re-scope it for the real next line." >/dev/null \
+    || log "  WARN: could not post the Phase 0 provisioning note on #${RELEASE_ISSUE}"
+}
+
 # `gh api graphql -F` coerces its value to a scalar, so it cannot carry the
 # nested iteration list. Build the request body instead.
 graphql() { # graphql QUERY VARIABLES_JSON [JQ_FILTER]
@@ -340,14 +364,25 @@ inventory_line() {
     prereq next-line-milestone gate false "could not list open milestones -- GitHub API unreachable?"
   else
     picked="$(printf '%s' "$titles" | python3 "$PREREQS" next-line "$VERSION")"
-    if [[ -n "$picked" ]]; then
-      [[ -n "$NEXT_BRANCH" ]] || NEXT_BRANCH="${picked%%$'\t'*}"
+    if [[ -n "$NEXT_BRANCH_EXPLICIT" ]]; then
+      # --next-branch overrides the derivation, so the milestone that matters
+      # is the one naming THAT version -- not whatever the derivation picked,
+      # which would mis-title the next release issue and draft.
+      NEXT_MS_TITLE="$(printf '%s' "$titles" \
+        | jq -r --arg v "${NEXT_BRANCH#v}" '[.[] | select(test("v" + ($v | gsub("\\."; "\\."))))][0] // empty')"
+      if [[ -n "$NEXT_MS_TITLE" ]]; then
+        prereq next-line-milestone provision true "next line ${NEXT_BRANCH} (--next-branch), milestone '${NEXT_MS_TITLE}'"
+      else
+        prereq next-line-milestone gate false "--next-branch ${NEXT_BRANCH} was given but no open milestone mentions v${NEXT_BRANCH#v} -- the placeholder is only derived for the next patch version, so create or name the right milestone"
+      fi
+    elif [[ -n "$picked" ]]; then
+      NEXT_BRANCH="${picked%%$'\t'*}"
       NEXT_MS_TITLE="${picked#*$'\t'}"
       prereq next-line-milestone provision true "next line ${NEXT_BRANCH} named by open milestone '${NEXT_MS_TITLE}'"
     else
       NEED_NEXT_MILESTONE=1
       NEXT_MS_TITLE="$(python3 "$PREREQS" placeholder-title "$VERSION")"
-      [[ -n "$NEXT_BRANCH" ]] || NEXT_BRANCH="v$(python3 "$PREREQS" next-patch "$VERSION")"
+      NEXT_BRANCH="v$(python3 "$PREREQS" next-patch "$VERSION")"
       prereq next-line-milestone provision false \
         "no open milestone names a version above ${VERSION} as \"(vX.Y.Z)\" -- will create the placeholder '${NEXT_MS_TITLE}' for ${NEXT_BRANCH} (rename/re-scope it afterwards)"
     fi
@@ -444,10 +479,12 @@ esac
 # Phase 4's line gate with the milestone/sprint still missing -- the exact
 # late-discovery shape #4166 removed.
 log "Phase 0 (line prerequisites only, --phase4-only):"
+RELEASE_ISSUE=$(gh variable get RELEASE_ISSUE_NUMBER -R "$REPO" 2>/dev/null || true)
 inventory_line
 LINE_GATE_OK=1
 prereq_report || LINE_GATE_OK=0
 provision_line
+report_provisioned
 [[ $LINE_GATE_OK -eq 1 ]] || fail "line prerequisite gate failed -- fix the GATE FAIL items above and re-dispatch (Phases 0-3 are not repeated)"
 pause_agent_flags
 else
@@ -662,23 +699,7 @@ if [[ "${NEED_RI_MILESTONE:-0}" -eq 1 ]]; then
 fi
 
 provision_line
-
-# What was put in place, on the release issue and in the log the watcher reads.
-if [[ ${#PROVISIONED[@]} -gt 0 ]]; then
-  # `IFS='; '` would join on ';' alone -- IFS joins with its FIRST character.
-  PROVISIONED_LINE="$(printf '%s; ' "${PROVISIONED[@]}" | sed 's/; $//')"
-  log "PROVISIONED ${PROVISIONED_LINE}"
-  if [[ $DRY -eq 0 && -n "$RELEASE_ISSUE" ]]; then
-    gh issue comment "$RELEASE_ISSUE" -R "$REPO" --body "🧰 **Release ceremony ${VERSION} — Phase 0 provisioned the missing prerequisites** (#4166)
-
-$(printf -- '- %s\n' "${PROVISIONED[@]}")
-
-Every one was re-verified by query. A placeholder milestone is the ceremony's stand-in so Phase 4 had a line to cut — rename and re-scope it for the real next line." >/dev/null \
-      || log "  WARN: could not post the Phase 0 provisioning note on #${RELEASE_ISSUE}"
-  fi
-else
-  log "  nothing to provision: every provisionable prerequisite was already in place"
-fi
+report_provisioned
 
 [[ $GATE_OK -eq 1 ]] || fail "entry gate failed — the GATE FAIL items above cannot be provisioned by automation. Nothing irreversible has run: no master push, no tag, no publish. Fix them and re-dispatch; anything Phase 0 provisioned stays in place."
 log "Phase 0 gate: PASS"
