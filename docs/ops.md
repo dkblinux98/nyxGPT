@@ -773,6 +773,21 @@ Reports:
   observability tier to ask. See [observability in the
   cluster](kubernetes.md#observability-in-the-cluster) for what each line asks
   and why the credential question has a line of its own.
+
+  That section's **`Access:`** line says how the SRE UIs are reached *from
+  this machine*, and it is read from the cluster rather than asserted
+  (#4135): on a cluster nyxGPT provisioned it names the published URLs and
+  that no port-forward is needed, on a bring-your-own cluster it names
+  `nyxgpt ops port-forward --target observability`, and where the node maps a
+  host port whose Service has lost its node port it says so and names
+  `nyxgpt ops observability --kubernetes`, which puts the node port back — a
+  forward cannot bind a port the node container already holds. The
+  discriminator is what the **live Service** carries, never the install mode,
+  which is what keeps `ops status` from contradicting the install's own
+  "`SRE UIs reachable at …` -- no port-forward needed" about the same
+  cluster. Served from inside a Pod the line names both paths and claims
+  neither, for the same reason the dashboard's card does: a Pod can see
+  neither the node's port mappings nor the Services (#3988).
 - **Terraform component state** for each `nyxgpt-tf-*` core container, when any are
   running. If a component is reported running under Terraform *and* under native/Compose
   at the same time, `status` prints a second **WARNING** — this means an incomplete mode

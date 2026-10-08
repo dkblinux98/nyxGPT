@@ -261,7 +261,9 @@ def test_status_on_a_published_cluster_names_the_urls(monkeypatch, tmp_path, cap
     assert "port-forward --target observability" not in out
 
 
-def test_status_on_a_bring_your_own_cluster_names_the_forward(monkeypatch, tmp_path, capsys) -> None:
+def test_status_on_a_bring_your_own_cluster_names_the_forward(
+    monkeypatch, tmp_path, capsys
+) -> None:
     _fake_cluster(monkeypatch, mapped=set(), node_ports={})
     _stub_status(monkeypatch, tmp_path)
     monkeypatch.setattr(ops, "_kubectl_context", lambda: "docker-desktop")
