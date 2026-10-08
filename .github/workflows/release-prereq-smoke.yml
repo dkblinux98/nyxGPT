@@ -1,0 +1,123 @@
+name: Release Prereq Smoke
+
+# Executed evidence for #4166's Phase 0 prerequisite inventory.
+#
+# Two questions, and both are answered by RUNNING rather than by reading:
+#
+# 1. `phase0` — does Phase 0 inventory every prerequisite in one pass,
+#    provision the provisionable ones BEFORE deciding the gate, and stop
+#    before Phase 1 when a gate fails? `tests/test_release_ceremony_phase0.sh`
+#    drives the real `scripts/release_ceremony.sh` against a fake `gh` and
+#    `git`, so every mutation it would make is recorded instead of made. The
+#    ordering is the part no unit test can see and a refactor silently
+#    inverts: moving the gate's `fail` above the provisioning block passes
+#    every unit test and still logs sensibly.
+#
+# 2. `iteration-preservation` — does the sprint-creation mutation preserve
+#    board item values? `updateProjectV2Field(iterationConfiguration:)`
+#    REPLACES the whole iteration list, and the same mutation family with
+#    `singleSelectOptions` wiped Status on all 1018 board items on 2026-08-10.
+#    #4166 made proving this binding before any ceremony code touched the
+#    owner's project. The job runs the proof against a THROWAWAY project under
+#    the token's own account (never the owner's), and is fault-injected
+#    (#3753's template): it shows that dropping the iteration ids, or dropping
+#    the completed iterations the GraphQL `configuration { iterations }` field
+#    does not return, DOES wipe the values -- so a pass means the ids worked,
+#    not that the API ignored the payload.
+#
+# The second job needs the `project` scope, which the job token does not have;
+# it runs as the developer agent. It is `workflow_dispatch` plus path-filtered
+# pushes only: it creates and deletes a project, so it must not fan out over
+# unrelated commits.
+
+on:
+  pull_request:
+    paths:
+      - "scripts/release_ceremony.sh"
+      - "scripts/agents/lib/release_prereqs.py"
+      - "scripts/agents/release_ceremony_watch.sh"
+      - "scripts/sprint-iteration-preservation-proof.sh"
+      - "tests/test_release_ceremony_phase0.sh"
+      - "tests/test_release_ceremony_watch.sh"
+      - "tests/unit/test_release_prereqs.py"
+      - ".github/workflows/release-prereq-smoke.yml"
+  push:
+    paths:
+      - "scripts/release_ceremony.sh"
+      - "scripts/agents/lib/release_prereqs.py"
+      - "scripts/agents/release_ceremony_watch.sh"
+      - "scripts/sprint-iteration-preservation-proof.sh"
+      - "tests/test_release_ceremony_phase0.sh"
+      - "tests/test_release_ceremony_watch.sh"
+      - "tests/unit/test_release_prereqs.py"
+      - ".github/workflows/release-prereq-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-prereq-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase0:
+    name: Phase 0 inventories, provisions, then gates — in that order
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Phase 0 behaviour against a fake gh/git
+        run: bash tests/test_release_ceremony_phase0.sh
+
+      - name: The ceremony trigger's guardrails still hold
+        run: bash tests/test_release_ceremony_watch.sh
+
+      - name: Prove the ordering guard bites when the ordering is inverted
+        # Without this the job passes on any implementation that happens to
+        # look right: it has to fail on the inversion to mean anything.
+        run: |
+          set -uo pipefail
+          cp scripts/release_ceremony.sh /tmp/ceremony.orig
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("scripts/release_ceremony.sh")
+          t = p.read_text()
+          broken = t.replace(
+              'GATE_OK=1\nprereq_report || GATE_OK=0',
+              'prereq_report || fail "entry gate failed"\nGATE_OK=1',
+              1,
+          )
+          assert broken != t, "fault anchor not found -- update this injection"
+          p.write_text(broken)
+          PY
+          if bash tests/test_release_ceremony_phase0.sh >/tmp/inverted.log 2>&1; then
+            cp /tmp/ceremony.orig scripts/release_ceremony.sh
+            echo "::error::the Phase 0 tests PASSED with provisioning moved after the gate decision -- they do not guard the ordering"
+            exit 1
+          fi
+          cp /tmp/ceremony.orig scripts/release_ceremony.sh
+          echo "ok: the inverted ordering fails the tests"
+          grep -E '^\[FAIL\]' /tmp/inverted.log | head
+
+  iteration-preservation:
+    name: Adding a sprint iteration does not wipe board item values
+    runs-on: ubuntu-latest
+    env:
+      # The `project` scope the proof needs to create its own scratch project.
+      # It is created under the TOKEN'S account and deleted on exit; the
+      # owner's project 2 is never touched.
+      GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prove preservation, and prove the proof discriminates
+        run: bash scripts/sprint-iteration-preservation-proof.sh
