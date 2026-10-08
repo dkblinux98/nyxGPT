@@ -391,7 +391,7 @@ The #3687 count-of-2 dispatch pause is retired (ledger **S-009**).
 - If a label/milestone/field option is needed, ASK the user first
 
 **One standing exception, and it is the release ceremony's alone (owner
-decision 2026-10-07, #4166; ledger D-062).** `scripts/release_ceremony.sh`
+decision 2026-10-07, #4166; ledger D-065).** `scripts/release_ceremony.sh`
 Phase 0 may create, without asking:
 
 - **the next line's milestone**, and only as a placeholder titled
@@ -452,7 +452,7 @@ owner's `~/.nyxGPT/config.ini` `[github] RELEASE_BRANCH`/`RELEASE_ISSUE_NUMBER`
 to the new repo variables — those keys sync *to* the repo, so a stale mirror
 would push the old line back. The owner types nothing; there is no `repoint`
 confirmation in an unattended run. **No prerequisite is the owner's to
-prepare** (owner decision 2026-10-07, ledger D-062, #4166): Phase 0 checks
+prepare** (owner decision 2026-10-07, ledger D-065, #4166): Phase 0 checks
 every prerequisite for all five phases in one pass and puts in place whatever
 is missing — the next line's `(vX.Y.Z)` milestone (as a self-named
 placeholder, named for the next patch version, which the owner renames and

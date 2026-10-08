@@ -49,10 +49,18 @@ type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
   // Where the observability tier was read from this pass (#3828):
-  // 'kubernetes' when it was queried in-cluster, 'compose' otherwise. Absent
+  // 'kubernetes' when the cluster answered for it, 'compose' otherwise -- chosen
+  // by what answers, not by where this process runs (#4137). Absent
   // from an older API, which only ever read it from Compose.
   observability_source?: 'compose' | 'kubernetes';
   compose_probe_available: boolean;
+  // Whether a Compose answer was owed here and could not be had (#4137) --
+  // the only condition the banner below may render as "cannot determine".
+  // `compose_probe_available` is also false for a probe this deployment never
+  // had reason to run, which is why keying off it made the CLI print a
+  // cannot-determine verdict on a k3s instance while this page did not.
+  // Optional so an api process from before #4137 still renders.
+  compose_probe_undetermined?: boolean;
   // Why the Compose survey could not run, when it could not (#3812), e.g.
   // "`docker compose ps` exited 125: permission denied while trying to
   // connect to the Docker daemon socket ...".
@@ -321,7 +329,7 @@ export default function SelfHealPage() {
                 border: '1px solid var(--border-color)',
               }}
             >
-              Observability tier: <strong>queried in-cluster</strong>. Grafana, Loki, Jaeger,
+              Observability tier: <strong>read from the cluster</strong>. Grafana, Loki, Jaeger,
               GlitchTip and the collectors run as Pods in this cluster (
               <code>k8s/observability</code>), so their rows below are read from the cluster
               itself and are healed like any other Pod. Their UIs are published on the host by
@@ -330,7 +338,8 @@ export default function SelfHealPage() {
             </p>
           )}
 
-          {status.observability_source !== 'kubernetes' && !status.compose_probe_available && (
+          {status.observability_source !== 'kubernetes' &&
+            (status.compose_probe_undetermined ?? !status.compose_probe_available) && (
             <p
               style={{
                 fontSize: '0.875rem',

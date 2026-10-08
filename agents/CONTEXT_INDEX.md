@@ -34,6 +34,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
 | `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
+| `cloud-stale-record-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Stale Record Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
@@ -46,7 +47,7 @@ fails if it drifts. Do not hand-edit.
 | `delete_branch_on_pr_close.yml` | pull_request | Delete Branch on PR Close Without Merge |
 | `developer_auto_implement.yml` | issues | Developer Agent Auto-Implement |
 | `developer_pull_next_issue.yml` | repository_dispatch | Developer Agent - Pull Next Issue |
-| `ensure_project_hygiene.yml` | issues, pull_request | Ensure Project Hygiene |
+| `ensure_project_hygiene.yml` | issues, pull_request_target | Ensure Project Hygiene |
 | `escalation-label-smoke.yml` | push, pull_request, workflow_dispatch | Escalation and Label Smoke |
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
@@ -67,7 +68,7 @@ fails if it drifts. Do not hand-edit.
 | `list_issues_by_status.yml` | workflow_dispatch | List Issues By Status |
 | `macos-brew-smoke.yml` | pull_request, workflow_dispatch, workflow_call | macOS Brew Smoke |
 | `notify-merge-conflicts.yml` | pull_request, push, workflow_dispatch | Notify Merge Conflicts |
-| `pr_project_status_on_close.yml` | pull_request | PR Project Status on Close |
+| `pr_project_status_on_close.yml` | pull_request_target | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
 | `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |
@@ -144,5 +145,5 @@ fails if it drifts. Do not hand-edit.
 | `snapshot_safe_add.sh` | Stages uncommitted work for the developer workflow's "Snapshot uncommitted implementation work" step without a blanket `git add -A |
 | `sweep_parked_blocked_issues.sh` | Batch-promotes merged-but-blocked issues parked in "In Review" (owner process rule, 2026-08-04, #3631): review_accept_and_merge.sh |
 | `sweep_stranded_residue.sh` | The one-off, repo-wide answer to "is any branch carrying work that was pushed |
-| `validate-web-routes.sh` | Validate that web proxy routes exist for all frontend API calls |
+| `validate-web-routes.sh` | Validate that web proxy routes exist for all frontend API calls, AND that each one forwards the query parameters its caller sends |
 | `verify_phase6_fields.sh` | Verify (and optionally repair) the project fields of the Phase 6 issue set (#3500-#3516, filed 2026-07-31 by create_phase6.sh via |

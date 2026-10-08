@@ -57,8 +57,25 @@ _assert_not_contains() {
 }
 
 # ---- config + stub wiring ----------------------------------------------
+# The release line THIS checkout is on, read from pyproject.toml rather than
+# frozen into the fixture. Case 4 below exercises #3862's content gate, which
+# really does `git fetch origin <the PR's base branch>` -- so the base branch
+# the stub reports has to be one that exists. A hardcoded `v3.0.0` stopped
+# being one the moment the ceremony cut v3.0.1 and retired it, and the suite
+# went red reporting "expected '0', got '1'" with nothing wrong in the code
+# under test. `v<declared version>` is the same answer
+# `release_candidate.default_branch()` gives, and the ceremony keeps the two
+# in step: it creates `vX.Y.Z` and bumps pyproject.toml to that version.
+RELEASE_BRANCH="v$(python3 -c '
+import re, sys, tomllib
+with open(sys.argv[1], "rb") as handle:
+    version = tomllib.load(handle)["project"]["version"]
+# Strip any pre-release suffix: a pinned `3.0.1rc4` is still the 3.0.1 line.
+print(re.match(r"\d+\.\d+\.\d+", version).group(0))
+' "$ROOT_DIR/pyproject.toml")"
+
 CONFIG="$TMP_ROOT/config.ini"
-cat > "$CONFIG" <<'EOF'
+cat > "$CONFIG" <<EOF
 REPO_OWNER=dkblinux98
 REPO_NAME=nyxGPT
 PROJECT_OWNER=dkblinux98
@@ -72,9 +89,12 @@ STATUS_BACKLOG=Backlog
 STATUS_IN_PROGRESS=In Progress
 STATUS_IN_REVIEW=In Review
 STATUS_FOR_RELEASE=For Release
-RELEASE_BRANCH=v3.0.0
+RELEASE_BRANCH=$RELEASE_BRANCH
 EOF
 export NYXGPT_CONFIG_FILE="$CONFIG"
+# The stub answers "does this base branch exist?" from the same value, so the
+# merge flow's existence check and its content check agree about one branch.
+export STUB_BASE_BRANCH="$RELEASE_BRANCH"
 
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
@@ -102,8 +122,10 @@ _reset_stub() {
 # failing, and the gate correctly refused the merge case 4 expects to succeed.
 # Bumping the literal each release just re-arms the same trap, because every
 # release retires a branch name. So these cases get their own repo and their
-# own bare origin, and depend on no remote that anything else can delete.
-BASE_BRANCH=v3.0.0
+# own bare origin, and depend on no remote that anything else can delete. The
+# fixture branch takes the derived release line's name rather than a literal,
+# so the stub's PR base, the config's RELEASE_BRANCH and the fixture agree.
+BASE_BRANCH="$RELEASE_BRANCH"
 FIXTURE_ORIGIN="$TMP_ROOT/origin.git"
 FIXTURE_REPO="$TMP_ROOT/repo"
 git init --quiet --bare --initial-branch="$BASE_BRANCH" "$FIXTURE_ORIGIN"
@@ -163,7 +185,7 @@ EOF
 # Case 4b below is the other half.
 HEAD_SHA="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
-{"303": {"head": "feat/lane-invariant", "base": "$BASE_BRANCH", "merged": false, "state": "open",
+{"303": {"head": "feat/lane-invariant", "base": "$RELEASE_BRANCH", "merged": false, "state": "open",
          "head_sha": "$HEAD_SHA", "base_sha": "$HEAD_SHA"}}
 EOF
 
@@ -174,7 +196,7 @@ _assert_eq "merge flow exits 0" "$merge_rc" "0"
 _assert_contains "merge flow reports the lane stamp" "$merge_out" "project item -> Closed"
 _assert_eq "LANE INVARIANT: merged PR is not left in In Review" "$(_pr_lane 303)" "Closed"
 _assert_contains "the merge is verified by content, not by the merge command's exit code" \
-  "$merge_out" "is present on v3.0.0"
+  "$merge_out" "is present on $RELEASE_BRANCH"
 
 # ---- case 4b: a merge that cannot be verified does NOT close the issue --
 # #3862: #3789 and #3815 were both closed as `completed` while their fixes sat
@@ -186,7 +208,7 @@ cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"313": {"item_id": "PVTI_pr313", "status": "In Review"}}
 EOF
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
-{"313": {"head": "feat/unverifiable", "base": "$BASE_BRANCH", "merged": false, "state": "open",
+{"313": {"head": "feat/unverifiable", "base": "$RELEASE_BRANCH", "merged": false, "state": "open",
          "head_sha": "0000000000000000000000000000000000000000",
          "base_sha": "0000000000000000000000000000000000000000"}}
 EOF
@@ -196,7 +218,7 @@ unverified_out="$(cd "$FIXTURE_REPO" && CI=true GITHUB_ACTIONS=true STUB_ISSUE=3
 unverified_rc=$?
 _assert_eq "an unverifiable merge fails the run" "$unverified_rc" "1"
 _assert_contains "and says why, naming the branch it could not confirm" \
-  "$unverified_out" "NOT verifiably on v3.0.0"
+  "$unverified_out" "NOT verifiably on $RELEASE_BRANCH"
 _assert_not_contains "and never runs the issue close" \
   "$unverified_out" "Closing issue #3742"
 
@@ -205,7 +227,7 @@ _reset_stub case5
 cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"404": {"item_id": "PVTI_pr404", "status": "In Review"}}
 EOF
-echo '{"404": {"head": "feat/x", "base": "v3.0.0", "merged": false, "state": "open"}}' \
+echo "{\"404\": {\"head\": \"feat/x\", \"base\": \"$RELEASE_BRANCH\", \"merged\": false, \"state\": \"open\"}}" \
   > "$GH_STUB_DIR/pulls.json"
 dry_out="$(bash "$MERGE_SCRIPT" --dry-run 404 3742 2>&1)"
 _assert_contains "dry run plans the PR Status stamp" "$dry_out" "would: set PR #404 project Status -> 'Closed'"
@@ -217,9 +239,9 @@ cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"505": {"item_id": "PVTI_pr505", "status": "In Review"},
  "606": {"item_id": "PVTI_pr606", "status": "In Review"}}
 EOF
-cat > "$GH_STUB_DIR/pulls.json" <<'EOF'
-{"505": {"head": "fix/rejected", "base": "v3.0.0", "merged": false, "state": "closed"},
- "606": {"head": "feat/still-open", "base": "v3.0.0", "merged": false, "state": "open"}}
+cat > "$GH_STUB_DIR/pulls.json" <<EOF
+{"505": {"head": "fix/rejected", "base": "$RELEASE_BRANCH", "merged": false, "state": "closed"},
+ "606": {"head": "feat/still-open", "base": "$RELEASE_BRANCH", "merged": false, "state": "open"}}
 EOF
 
 bash "$CLOSE_SCRIPT" 505 >/dev/null 2>&1

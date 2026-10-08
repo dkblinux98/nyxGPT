@@ -2,7 +2,7 @@ name: Sweep PR Status
 
 # Backstop half of the #3742 PR lane invariant. PRs get Status "In Review"
 # at creation (PR hygiene, #3307); the merge flow and the
-# pull_request:closed handler now stamp them to "Closed" on the way out.
+# pull_request_target:closed handler now stamp them to "Closed" on the way out.
 # This sweep catches what those two cannot reach: cards that predate the
 # invariant (13 + 3 hand-swept on 2026-08-10, 10 on 2026-08-13) and any
 # stamp that lost to a flaky API. Issues are never touched.

@@ -2388,7 +2388,7 @@ rather than mechanism, and nothing can enforce them.
   release issue and draft release, bumps `pyproject.toml`, repoints the
   default branch and both repo variables, and restores the flags. A re-dispatch
   resumes at Phase 4 once the release tag exists. Prerequisite (owner): the
-  next line's milestone and a sprint iteration. *(Retired by **D-062**: Phase
+  next line's milestone and a sprint iteration. *(Retired by **D-065**: Phase
   0 now checks and provisions both, so no prerequisite is the owner's.)*
   Found while doing it for
   3.0.0: `--phase4-only` had been parsed and never used, Phase 4 read the
@@ -2400,7 +2400,104 @@ rather than mechanism, and nothing can enforce them.
   Source: owner instruction 2026-10-07; `scripts/release_ceremony.sh`;
   `scripts/agents/release_ceremony_watch.sh`; `CLAUDE.md` §Branch Rules.
 
-- **D-062** · 2026-10-07 · owner — **Phase 0 checks every ceremony
+- **D-062** · 2026-10-08 · developer-agent (#4167) — **`pull_request_target`
+  is permitted in this repo for a job that never resolves anything to the PR
+  head, and for nothing else.** `pr-hygiene` needed it: GitHub treats a
+  Dependabot-authored `pull_request` run as a fork PR, withholding Actions
+  secrets, so `SCRUMMASTER_AGENT_TOKEN` was blank and the job — the one that
+  puts an issue-less PR on the board in `In Review`, i.e. the only way the
+  review agent sees one — died at `require_gh_auth` on every Dependabot PR.
+  Rejected alternative: copying the PAT into the Dependabot secret store,
+  which hands a `workflow`-scoped token to jobs that install the PR's
+  dependency tree. The permission is conditional, not general: a
+  `pull_request_target` job may not use a PR-head `ref`, `github.head_ref`,
+  `refs/pull/*`, `gh pr checkout`, or any build/dependency install, because
+  the run carries this repository's secrets on a branch an arbitrary author
+  controls. Enforced by `tests/unit/test_pull_request_target_safety.py` over
+  *every* such workflow, with `project-hygiene-smoke.yml`'s
+  `pr-head-guard-discriminates` job executing that guard against nine broken
+  copies so it cannot pass by being vacuous. One consequence: such a run is
+  associated with the base commit, so the check stays `[not-required]`.
+  **Scope widened by #4170's review round, to two jobs and an enumerated
+  class.** The secret-withholding fault is not specific to `pr-hygiene`: it
+  afflicts every workflow on `pull_request` that reads a secret, and
+  `pr_project_status_on_close.yml` had it the whole time — the #4167 issue's
+  "only `pr-hygiene` is affected" was an observation of two `opened` events,
+  not a class search. It moved in the same change because fixing `pr-hygiene`
+  is what made it consequential: a Dependabot PR now gets a board card, and
+  Dependabot's own supersede-close is a Dependabot-actored `closed` event, so
+  a blank token there strands that card in `In Review` with no sweep backstop
+  (#3742 debris). **The discriminator for moving a workflow is whether a blank
+  token strands agent state** — a red check is a cost, debris is a defect; the
+  three that only lose a notification or a read-only check
+  (`notify-merge-conflicts.yml`, `claude-code-review.yml`,
+  `support-intake-smoke.yml`) stay on `pull_request` and are enumerated in
+  `DEPENDABOT_SECRETLESS_TOLERATED` in the same guard, with a stated reason
+  each and checked in both directions so the class cannot grow unexamined
+  again. Do not confuse it with the adjacent fault that Dependabot-actored
+  runs also get a read-only `GITHUB_TOKEN` whatever `permissions:` says.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4167; PR #4170 review round; `agents/runbooks/developer-runbook.md`
+  §3c and its "Dependabot secret-withholding class" table;
+  `docs/live-verification-ci.md`.
+
+- **D-063** · 2026-10-08 · developer-agent (#4167) — **A unit test whose
+  fixtures name a release line supplies the declared version itself; it does
+  not read the checkout's.** `release_candidate.plan()` compares the branch it
+  is given against `pyproject.toml`'s `project.version` (via
+  `declared_version()` -> `_checkout_pyproject()`), so the publish-pipeline
+  tests — written against the `3.0.0` line, with `PUBLISHED` and the expected
+  `3.0.0rc3`/`3.0.0rc2` as arithmetic on it — passed only while the repo sat
+  on that line. The v3.0.1 ceremony bump (`ae64a2cd`) therefore turned 28
+  tests in `tests/unit/test_release_candidate.py` and
+  `test_release_candidate_endpoint.py` red **on the release branch itself**,
+  all on `branch v3.0.0 names release 3.0.0, but pyproject.toml declares
+  3.0.1`. Found as collateral on #4167's verification gate, not caused by it
+  (reproduced on a clean `origin/v3.0.1` worktree). Rewriting the literals to
+  `3.0.1` was rejected: it clears the symptom and re-arms it for v3.0.2
+  (first principle 2). `tests/unit/release_line_pin.py` pins the seam
+  instead, and `test_the_pinned_release_line_is_what_the_plan_reads` fails
+  first if that seam is renamed. Every release ceremony bumps this version —
+  treat any test that reads it as on this list.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4167; `tests/unit/release_line_pin.py`.
+
+- **D-064** · 2026-10-08 · owner — **`~/.nyxGPT/cloud/state.json` reports
+  current state and nothing else, and no local record is the sole basis for a
+  decision that spends money.** Stale data is useless data, and labelling it
+  does not help because every consumer has to honour the label and they do not.
+  So: one substrate *block* per write, replaced whole and atomically
+  (`src/nyxgpt/cloud_record.py`) — a field the write does not mention is
+  dropped, not left holding the previous substrate's answer; a superseded block
+  moves to `state-archive.jsonl` under a different name; an in-place field
+  update must name the resource it believes the block describes and is refused
+  if the record has moved; and reconcile-vs-allocate, release scheduling and
+  destroy each confirm the resource at AWS before deciding, while `allow-ip`
+  reads the Mac's block for its defaults so a gone group errors at AWS instead
+  of silently targeting the wrong one (#3993). Third occurrence of one
+  mechanism (#3993 → #4122 → #4136), and the lesson for tests: all three
+  passed a green suite, because the tests asserted the fields the write
+  *mentioned*. A block is now asserted key by key over the whole key set,
+  and the same seam-blindness had a second form — the dashboard asked for the
+  AWS confirmation and its Next.js proxy dropped the parameter, with the page
+  tests mocking the proxy and the backend tests bypassing it, so
+  `validate-web-routes.sh` now fails on a proxy that drops a parameter its
+  caller sends. The executed evidence
+  (`.github/workflows/cloud-stale-record-smoke.yml`) runs its negative control
+  first. Corollary: `InvalidHostID.NotFound` is an *answer*, not a failure —
+  catching every botocore exception as "could not ask" is what turned AWS's
+  clearest possible no into an unknown and cost a 24-hour Dedicated Host
+  minimum with no disclosure. Spend figures come from Cost Explorer, never from
+  `rate × (now − allocated_at)`, which cannot stop counting when the charges do.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed, after the v3.0.1 mainline allocated
+  D-062/D-063 to #4167 while this entry was in review.
+  Source: #4136 (owner, 2026-10-03); #3993; docs/cloud.md §"`state.json` holds
+  current state and nothing else".
+
+- **D-065** · 2026-10-07 · owner — **Phase 0 checks every ceremony
   prerequisite and provisions what it can; no prerequisite is the owner's to
   prepare.** Amends **D-061**, whose "Prerequisite (owner): the next line's
   milestone and a sprint iteration" is retired. Those two were checked in
@@ -2448,7 +2545,8 @@ rather than mechanism, and nothing can enforce them.
   one is the trap a reasonable implementation falls into, so the list is built
   in one place (`release_prereqs.iteration_resubmit`) and nowhere else.
   Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
-  origin/v3.0.1` — run, not eyeballed.
+  origin/v3.0.1` — run, not eyeballed; renumbered from D-062 when v3.0.1
+  was merged in, after #4167 and #4136 allocated D-062–D-064.
   Source: #4166; owner instruction 2026-10-07; amends **D-061**;
   `scripts/release_ceremony.sh` Phase 0; `CLAUDE.md` §Tooling, §Branch Rules;
   `docs/acceptance-drain-gate.md`.

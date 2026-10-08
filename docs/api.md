@@ -51,7 +51,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/cloud/infra/apply` | POST | Provision/reconcile the AWS substrate and record its ids |
 | `/api/v1/cloud/infra/destroy` | POST | Tear the AWS substrate down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/state` | GET | Terraform state backend: local file, or S3 with DynamoDB locking |
-| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, health, deploy history, localhost URLs (no AWS call unless `?probe_health=true`) |
+| `/api/v1/cloud/deploy` | GET | Cloud deployment status: installed version, instance, tunnel, health, deploy history, localhost URLs (no AWS call and no connection to the instance unless `?probe_health=true` or `?verify_host=true`) |
 | `/api/v1/cloud/deploy` | POST | Provision AWS and deploy the full stack onto it (idempotent) |
 | `/api/v1/cloud/deploy/destroy` | POST | Close the tunnel and tear the deployment down (requires `{"confirm": true}`) |
 | `/api/v1/ops/cloud-artifact-smoke` | GET | Last containerized artifact-install smoke (verdict, defect class, diagnostics), whether one is in flight, and what a green run does not cover |
@@ -1552,15 +1552,22 @@ Such a row is never `giving_up`: nothing was tried. `heal_key` is the
 identity the restart budget is kept under -- the service name for most
 components, the owning ReplicaSet (`kubernetes/replicaset/<name>`) for a Pod,
 because healing a Pod replaces it. `compose_probe_available: false` means the
-`docker compose ps` survey couldn't be run from this vantage point at all --
-no `docker`, an unreachable daemon, or a compose file that isn't there. It is
-answered by *running* the survey, not by checking that a binary and a file
-exist (#3812), and `compose_probe_reason` carries the cause as one operator-
-facing line (e.g. ``` `docker compose ps` exited 125: permission denied while
-trying to connect to the Docker daemon socket ... ```), empty when the probe
-is available. A caller reads this as "can't check the observability tier from
-here", never as "the observability tier isn't running" -- see
-[self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container).
+`docker compose ps` survey did **not** run -- for one of two reasons, and
+`compose_probe_applicable`/`compose_probe_undetermined` are what tell them
+apart (see the table below, and key any "cannot determine" banner off the
+second flag, never off `available` alone): either an answer was owed and could
+not be had (no `docker`, an unreachable daemon, or a compose file that isn't
+there), or this deployment keeps no Compose tier for the survey to be about
+and the probe was deliberately never asked (#4137). It is answered by
+*running* the survey, not by checking that a binary and a file exist (#3812),
+and `compose_probe_reason` carries the cause -- or, in the never-asked case,
+the scope sentence -- as one operator-facing line (e.g. ``` `docker compose
+ps` exited 125: permission denied while trying to connect to the Docker daemon
+socket ... ```), empty when the survey ran. Neither reading is ever "the
+observability tier isn't running": where an answer was owed a caller reads
+`false` as "can't check the observability tier from here" -- see
+[self-healing.md#docker-access-from-inside-the-api-container](self-healing.md#docker-access-from-inside-the-api-container)
+-- and where none was owed, as "this question is not about this deployment".
 A socket-access failure is retried once through the `docker` group (`sg
 docker`) before the flag goes `false`, so on the common cause -- a service
 session that predates its group membership -- the survey runs and this stays
@@ -1585,10 +1592,32 @@ report `"kubernetes"` at all -- see
 [self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode).
 
 `observability_source` says where the observability tier's rows came from
-this pass: `"kubernetes"` when it was read in-cluster (a Kubernetes
+this pass: `"kubernetes"` when the cluster answered for it (a Kubernetes
 deployment -- the `compose_probe_*` fields then say nothing about it and a
 client must not present them as a verdict on that tier), `"compose"`
-otherwise.
+otherwise. The choice is made by **what answers**, not by whether this
+process is itself inside a Pod (#4137): a k3s host is neither in-cluster nor
+Compose, and `kubectl` there reaches the cluster perfectly well.
+
+`compose_probe_applicable` and `compose_probe_undetermined` carry that same
+fact in the form a client needs to render it, and the second is the one to key
+a "cannot determine" banner off:
+
+| | `applicable` | `available` | `undetermined` | Render |
+| --- | --- | --- | --- | --- |
+| The survey ran | `true` | `true` | `false` | the Compose rows |
+| An answer was owed and could not be had | `true` | `false` | `true` | cannot determine, with `compose_probe_reason` |
+| No Compose tier here to survey | `false` | `false` | `false` | nothing, or the scope sentence in `compose_probe_reason` |
+
+`compose_probe_available: false` alone cannot tell the last two apart, and
+keying off it is what made `nyxgpt cloud ops self-heal` print
+`Observability survey: CANNOT DETERMINE from here -- \`docker compose ps\`
+exited 125 ...` on a k3s instance, naming a `docker-compose.yml` that
+deployment does not use, directly above fourteen Running, ready Pods -- while
+the Self-Heal page, which already read `observability_source`, printed the
+cluster's answer for the same deployment. Both keys are absent from an api
+older than #4137; fall back to `!compose_probe_available`, which is what that
+api meant.
 
 **Response:**
 
@@ -1598,6 +1627,8 @@ otherwise.
   "mode": "terraform",
   "observability_source": "compose",
   "compose_probe_available": true,
+  "compose_probe_applicable": true,
+  "compose_probe_undetermined": false,
   "compose_probe_reason": "",
   "components": [
     { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true, "known": true, "tier": "", "healable": true, "restart_count": 0, "giving_up": false },
@@ -1842,14 +1873,16 @@ log (`cloud_deploy.deploy`/`.destroy`).
 ### `GET /api/v1/cloud/deploy`
 
 Report what is deployed, whether the access tunnel is open, and what has
-happened to this deployment. Reads recorded state only — no AWS call and no
-connection to the instance — so it is cheap to poll.
+happened to this deployment. The default reads recorded state only — no AWS
+call and no connection to the instance — so it is cheap to poll. Both network
+calls are opt-in query parameters.
 
 **Query parameters**
 
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `probe_health` | `false` | Also make one short request to the tunneled API health endpoint. Opt-in so the polled default stays free of network calls; skipped with a reason when no tunnel is open, since a probe would only time out. |
+| `verify_host` | `false` | Also ask AWS whether the recorded EC2 Mac Dedicated Host still exists, and refresh what Cost Explorer says it has cost (#4136). One `DescribeHosts` plus an hourly-cached `GetCostAndUsage`, and only when a host is recorded. This is what makes the `mac_host` block AWS's answer rather than the local record read back; the block reports which of the two it is either way. Never fails the request — expired credentials leave the block labelled as unconfirmed. |
 
 Like the substrate read it names its source (#3804): `deploy-record` on the
 machine that ran the deploy, `local-instance` when this process *is* the

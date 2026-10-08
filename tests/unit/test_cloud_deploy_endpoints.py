@@ -48,8 +48,9 @@ def test_status_endpoint_returns_module_status():
 
     assert response.status_code == 200
     assert response.json() == expected
-    # Default is the cheap, side-effect-free read the dashboard can poll.
-    mock.assert_called_once_with(probe_health=False)
+    # Default is the cheap, side-effect-free read the dashboard can poll --
+    # neither the health probe nor the #4136 Dedicated Host confirmation.
+    mock.assert_called_once_with(probe_health=False, verify_host=False)
 
 
 def test_status_endpoint_forwards_an_explicit_health_probe():
@@ -59,7 +60,20 @@ def test_status_endpoint_forwards_an_explicit_health_probe():
         response = client.get("/api/v1/cloud/deploy?probe_health=true")
 
     assert response.status_code == 200
-    mock.assert_called_once_with(probe_health=True)
+    mock.assert_called_once_with(probe_health=True, verify_host=False)
+
+
+def test_status_endpoint_forwards_an_explicit_host_verification():
+    """#4136. The page asks AWS whether the recorded Dedicated Host exists, and
+    what Cost Explorer billed for it, on the same explicit load as the health
+    probe -- because answering "still billing" from a local record is how this
+    panel came to describe a host released three days earlier."""
+    with patch("nyxgpt.app.cloud_deploy_module.deploy_status", return_value={}) as mock:
+        client = TestClient(app)
+        response = client.get("/api/v1/cloud/deploy?probe_health=true&verify_host=true")
+
+    assert response.status_code == 200
+    mock.assert_called_once_with(probe_health=True, verify_host=True)
 
 
 def test_deploy_endpoint_passes_dashboard_inputs_through():

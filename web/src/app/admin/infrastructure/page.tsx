@@ -109,6 +109,15 @@ type InfraStatus = {
   // page can name the cause ("`docker compose ps` exited 125: permission
   // denied ...") instead of only saying it can't tell.
   compose_probe_reason?: string;
+  // Whether a Compose survey is a question about this deployment AT ALL, as
+  // distinct from one that could not be answered (#4137). Two vantage points
+  // are out of scope, not one: inside a Pod (#3988) and on a Kubernetes
+  // *host*, which is neither in-cluster nor Compose. Keying the badge off
+  // `inCluster` recognised only the first, so a k3s instance reached over the
+  // wrapped tunnel showed CANNOT DETERMINE above its own running Pods.
+  // Optional so an api process from before #4137 still renders.
+  compose_in_scope?: boolean;
+  compose_out_of_scope_reason?: string;
   conflicts: string[];
   terraform: {
     // Answered by whether the container reads happened, not by whether a
@@ -328,10 +337,31 @@ type MacHost = {
   allocated_at: string;
   release_at: string;
   release_scheduled: boolean;
+  release_scheduled_at?: string;
   hourly_rate: number | null;
+  // What AWS billed, from Cost Explorer, and nothing else (#4136). `null` means
+  // nobody has asked AWS -- it is never quietly replaced by the local estimate,
+  // which is carried separately below. The old "Accrued" row computed
+  // `rate * (now - allocated_at)` and read $48.44 for a $12.02 bill that had
+  // stopped two days earlier, because a local clock keeps counting after the
+  // charges do not.
   accrued_cost: number | null;
+  accrued_source?: string;
+  estimated_cost?: number | null;
+  spend_through?: string;
+  spend_as_of?: string;
+  spend_error?: string;
   currency: string;
   releasable_now: boolean;
+  // When AWS last confirmed this host exists. Empty means no run has, which is
+  // a different claim from "it is gone" -- and the reason this panel does not
+  // say "still billing" on the strength of the record alone.
+  verified_at?: string;
+  host_present?: boolean | null;
+  // Free internal-consistency findings. Non-empty means the record's fields
+  // were written by different runs about different hosts, so none of them can
+  // be read together.
+  incoherent?: string[];
   billing: boolean;
 };
 
@@ -586,11 +616,17 @@ export default function InfrastructurePage() {
   // answers right now". It costs one short request through the tunnel, and the
   // backend skips it when there is no tunnel to probe through -- so it is
   // asked for on load and on an explicit refresh, never on a timer.
+  //
+  // `verify_host=true` does the same for the Dedicated Host (#4136): one
+  // `DescribeHosts` plus an hourly-cached Cost Explorer read, so this panel can
+  // say "AWS confirmed this host" and show the figure AWS actually billed
+  // rather than repeating a local record and a local multiplication back. On
+  // the same explicit load, for the same reason.
   const loadCloud = useCallback(async () => {
     setCloudError(null);
     try {
       const [deployRes, stateRes] = await Promise.all([
-        fetch('/api/v1/cloud/deploy?probe_health=true', { cache: 'no-store' }),
+        fetch('/api/v1/cloud/deploy?probe_health=true&verify_host=true', { cache: 'no-store' }),
         fetch('/api/v1/cloud/state', { cache: 'no-store' }),
       ]);
       const deployData = await deployRes.json();
@@ -636,6 +672,12 @@ export default function InfrastructurePage() {
   // real "nothing running", and conflating the two is the defect.
   const inCluster = status?.in_cluster === true;
   const nativeOutOfScope = status?.install_mode?.in_scope === false || inCluster;
+  // Same shape for the Compose card, with the api's explicit verdict first
+  // (#4137): a Kubernetes HOST is out of scope for Compose while being very
+  // much not in-cluster, so `inCluster` can only be the fallback here, never
+  // the test. Without that, a k3s instance read "CANNOT DETERMINE" and named
+  // a `docker-compose.yml` it does not use, above its own list of ready Pods.
+  const composeOutOfScope = status?.compose_in_scope === false || inCluster;
 
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
@@ -919,21 +961,28 @@ export default function InfrastructurePage() {
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Docker Compose</h2>
               {!status.compose_probe_available && (
                 <span style={badgeStyle(false, true)}>
-                  {inCluster ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'}
+                  {composeOutOfScope ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'}
                 </span>
               )}
             </div>
 
             {/* Two different unknowns, and #3988 is about telling them apart.
-                From a host, "could not run the survey" is a probe failure and
-                its cause belongs on screen. From inside a Pod there is no
-                survey to run at all -- no host filesystem, no Docker socket --
-                and the old rendering leaked the CONTAINER's own
-                `/root/.nyxGPT/docker-compose.yml` to the operator as the
-                reason for a verdict about their machine. */}
-            {inCluster ? (
+                From a host that runs Compose, "could not run the survey" is a
+                probe failure and its cause belongs on screen. Where there is
+                no Compose tier to survey at all there is no such verdict to
+                reach -- and the old rendering leaked a `docker-compose.yml`
+                path to the operator as the reason for a verdict about a
+                deployment that does not use one (inside a Pod, the
+                CONTAINER's own `/root/.nyxGPT/...`, #3988; on a k3s host,
+                `/home/ec2-user/.nyxGPT/...`, #4137).
+
+                The gate is the API's own scope verdict rather than
+                `inCluster`, because in-cluster is only one of the two vantage
+                points it is true of -- see `compose_in_scope`. */}
+            {composeOutOfScope ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                {status.compose_probe_reason ??
+                {status.compose_out_of_scope_reason ??
+                  status.compose_probe_reason ??
                   'Not in scope from here: this API is running inside a Kubernetes Pod, which has no host filesystem and no Docker socket.'}
               </p>
             ) : !status.compose_probe_available ? (
@@ -1700,8 +1749,15 @@ export default function InfrastructurePage() {
               command that schedules it when it is not. */}
           {cloud?.mac_host?.host_id && (
             <div style={{ marginTop: '1rem' }}>
+              {/* #4136. "Still billing" is a claim about AWS, so it is only made
+                  when AWS confirmed the host. An unconfirmed record says so
+                  instead: this panel reported "still billing" over a host that
+                  had been released three days earlier, because the local record
+                  was the only thing anything asked. */}
               <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-                EC2 Mac Dedicated Host — still billing
+                {cloud.mac_host.verified_at
+                  ? 'EC2 Mac Dedicated Host — still billing'
+                  : 'EC2 Mac Dedicated Host — recorded here, not confirmed at AWS'}
               </h3>
               <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
                 AWS bills an allocated Dedicated Host for a 24-hour minimum and refuses to release
@@ -1709,6 +1765,22 @@ export default function InfrastructurePage() {
                 Mac immediately and defers only the host release. This host outlives the instance
                 and the deploy record by design.
               </p>
+              {!cloud.mac_host.verified_at && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  Nothing has asked AWS about this host yet, so every row below is what was
+                  recorded rather than what is true. <code>nyxgpt cloud status</code> asks, and
+                  clears the block if the host is gone.
+                </p>
+              )}
+              {(cloud.mac_host.incoherent?.length ?? 0) > 0 && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--danger, #c0392b)', marginBottom: '0.5rem' }}>
+                  This record is internally inconsistent, so its fields were written by different
+                  runs about different hosts and cannot be read together:
+                  {' '}
+                  {cloud.mac_host.incoherent?.join('; ')}. Run{' '}
+                  <code>nyxgpt cloud status</code>, which asks AWS and rebuilds it.
+                </p>
+              )}
               <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                 <Row
                   label="Host"
@@ -1735,7 +1807,7 @@ export default function InfrastructurePage() {
                   label="Release"
                   value={
                     cloud.mac_host.release_scheduled && cloud.mac_host.releasable_now
-                      ? 'the scheduled release has fired — Slack has the outcome. Not “released”: nothing here watched it, and the row clears on the next lifecycle command, which asks AWS'
+                      ? 'the scheduled release has fired — Slack has the outcome. Not “released”: nothing here watched it. The block clears as soon as AWS confirms the host is gone, which `nyxgpt cloud status` asks'
                       : cloud.mac_host.release_scheduled
                       ? 'scheduled — a one-shot AWS schedule releases it and reports the outcome to Slack'
                       : `not scheduled yet — \`${
@@ -1744,11 +1816,33 @@ export default function InfrastructurePage() {
                   }
                 />
                 <Row
-                  label="Accrued"
+                  label="Confirmed at AWS"
                   value={
-                    cloud.mac_host.accrued_cost !== null && cloud.mac_host.hourly_rate
-                      ? `$${cloud.mac_host.accrued_cost.toFixed(2)} at $${cloud.mac_host.hourly_rate.toFixed(4)}/hour (the 24-hour minimum is charged either way)`
-                      : 'unknown — no rate was recorded for this host'
+                    cloud.mac_host.verified_at
+                      ? cloud.mac_host.verified_at
+                      : 'never — nothing here has asked AWS whether this host exists'
+                  }
+                />
+                {/* #4136. AWS's figure when there is one, and the local
+                    estimate named as an estimate when there is not. A number
+                    that is not the bill may be shown; it may not be shown as
+                    the bill. */}
+                <Row
+                  label="Spend"
+                  value={
+                    cloud.mac_host.accrued_cost !== null && cloud.mac_host.accrued_cost !== undefined
+                      ? `${cloud.mac_host.currency || 'USD'} ${cloud.mac_host.accrued_cost.toFixed(2)} from AWS Cost Explorer${
+                          cloud.mac_host.spend_through ? ` through ${cloud.mac_host.spend_through}` : ''
+                        } (as of ${cloud.mac_host.spend_as_of || 'unknown'})`
+                      : cloud.mac_host.estimated_cost !== null &&
+                        cloud.mac_host.estimated_cost !== undefined &&
+                        cloud.mac_host.hourly_rate
+                      ? `no AWS figure (${
+                          cloud.mac_host.spend_error || 'AWS has not been asked yet'
+                        }). Local ESTIMATE only: ${cloud.mac_host.currency || 'USD'} ${cloud.mac_host.estimated_cost.toFixed(
+                          2,
+                        )} at $${cloud.mac_host.hourly_rate.toFixed(4)}/hour, counted from the recorded allocation time — it keeps counting whether or not AWS is still charging`
+                      : 'unknown — no AWS figure and no rate was recorded for this host'
                   }
                 />
               </ul>

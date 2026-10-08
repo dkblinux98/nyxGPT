@@ -248,8 +248,36 @@ jobs:
           case "$services" in *grafana*) ;; *)
             echo "::error::expected per-service labels in Loki, got $services"; exit 1;; esac
 
-      - name: nyxgpt ops status reports the layer
-        run: nyxgpt ops status | grep -A 12 'Kubernetes observability'
+      - name: nyxgpt ops status reports the layer -- and agrees with the install (#4135)
+        run: |
+          set -uo pipefail
+          status=$(nyxgpt ops status)
+          echo "$status" | grep -A 14 'Kubernetes observability'
+          # The defect this step exists for: `ops status` told the operator to
+          # open a port-forward for the four UIs the install had just
+          # published on this cluster's node ports and probed -- two messages
+          # in one product contradicting each other, which costs either a
+          # wasted step or a hunt for a fault that is not there. Executed
+          # rather than inspected (#3775): only a real cluster can say what
+          # its Services carry.
+          access=$(echo "$status" | grep -m1 'Access: ') || {
+            echo "::error::ops status printed no Access line for the SRE UIs"; exit 1; }
+          echo "$access"
+          case "$access" in
+            *"port-forward --target observability"*)
+              echo "::error::ops status asks for a port-forward on a cluster that publishes the SRE UIs on its node ports (#4135)"
+              exit 1;;
+          esac
+          case "$access" in
+            *"no port-forward needed"*) ;;
+            *) echo "::error::ops status does not report the published UIs as reachable (#4135)"; exit 1;;
+          esac
+          for port in 3001 8080 9090 16686; do
+            case "$access" in
+              *"127.0.0.1:$port"*) ;;
+              *) echo "::error::the Access line never names http://127.0.0.1:$port -- the install did"; exit 1;;
+            esac
+          done
 
       - name: Dump diagnostics on failure
         if: failure()
@@ -415,6 +443,31 @@ jobs:
           check "jaeger UI" http://127.0.0.1:16686/ 200
           check "glitchtip UI" http://127.0.0.1:8080/ 200
           exit $fail
+
+      - name: nyxgpt ops status still names the forward on this cluster (#4135)
+        # The other half of #4135, and the reason the fix is a question rather
+        # than a deletion: here the Services really are ClusterIP and the
+        # forward really is the only way in, so `ops status` must keep naming
+        # the wrapped command. Same cluster-shaped question as the published
+        # job above, opposite answer -- which is what "keyed on what the live
+        # Service carries" means in practice, and neither job can prove it
+        # alone.
+        run: |
+          set -uo pipefail
+          status=$(nyxgpt ops status)
+          echo "$status" | grep -A 14 'Kubernetes observability'
+          access=$(echo "$status" | grep -m1 'Access: ') || {
+            echo "::error::ops status printed no Access line for the SRE UIs"; exit 1; }
+          echo "$access"
+          case "$access" in
+            *"port-forward --target observability"*) ;;
+            *) echo "::error::ops status no longer names the forward on a bring-your-own cluster, where it is the only way in (#4135)"; exit 1;;
+          esac
+          case "$access" in
+            *"NodePorts published by the cluster"*)
+              echo "::error::ops status claims published node ports on a cluster whose Services are ClusterIP (#4135)"
+              exit 1;;
+          esac
 
       - name: nyxgpt ops port-forward --stop releases every host port
         # The other half of an access path nyxGPT establishes: it has to be

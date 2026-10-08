@@ -33,7 +33,8 @@
 # it does not apply. This is what keeps the list safe to extend: naming a check
 # here costs nothing on the PRs it does not run on.
 #
-# MAINTENANCE. Every job of every `pull_request`-triggered workflow must appear
+# MAINTENANCE. Every job of every `pull_request`- or
+# `pull_request_target`-triggered workflow must appear
 # in exactly one of the two sections below — `tests/unit/test_required_checks.py`
 # fails otherwise, in both directions (a name here that matches no job, and a
 # job that this file never classified). A new smoke workflow therefore cannot
@@ -86,6 +87,7 @@ artifact-install
 session-backend-fault-injection
 cloud-dev-deploy-smoke
 cloud-imds-smoke
+cloud-stale-record-smoke
 cloud-status-smoke
 cloud-target-os-smoke
 gate-behavior
@@ -130,6 +132,16 @@ Install the published candidate from the real tap
 # that broke it.
 Upgrade one candidate to the next with the stack running
 no-clobber
+# project-hygiene-smoke.yml's `pr-head-guard-discriminates` job (#4167). The
+# executed evidence that the guard protecting the two `pull_request_target`
+# triggers (`ensure_project_hygiene.yml`, `pr_project_status_on_close.yml`) is
+# not vacuous: it goes red on a PR-head checkout, a `gh pr checkout`, a
+# dependency install, a revert to `pull_request` in either file, and a newly
+# planted `pull_request` workflow reading a secret. Required and path-filtered,
+# so it is absent (and free) on essentially every PR; when it does run, a red
+# one means the only thing standing between an arbitrary author's branch and a
+# `workflow`-scoped PAT has stopped working.
+pr-head-guard-discriminates
 Collections list/create on an empty Cassandra
 restart-activation-smoke
 stamps
@@ -224,6 +236,12 @@ execute-review-decision
 # not hold a green PR out of review.
 add-to-project
 closure-hygiene
+# `pr-hygiene` and `stamp-closed-lane` are also the two `pull_request_target`
+# jobs (#4167), and such a run is associated with the BASE commit rather than
+# the PR head. `required_check_state` matches names against the head's check
+# runs, so requiring either would hold every head at `absent`/`pending`. They
+# were already bookkeeping; this is a second, independent reason not to flip
+# them.
 pr-hygiene
 delete-abandoned-branch
 link-revert-to-issue

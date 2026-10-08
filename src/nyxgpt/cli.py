@@ -1557,10 +1557,25 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
     """
     data = self_heal_mod.status()
     print(f"Self-heal watchdog: {'enabled' if data['enabled'] else 'disabled'}")
+    # Where the observability tier was read from, before its rows (#4137).
+    # Said out loud on a Kubernetes deployment rather than left implicit: this
+    # line used to be the cannot-determine verdict below, printed directly
+    # above fourteen Running, ready observability Pods.
+    if data.get("observability_source") == "kubernetes":
+        print(
+            "Observability survey: read from the cluster -- Grafana, Loki, Jaeger, GlitchTip "
+            "and the collectors run as Pods here, and their rows below are the cluster's own "
+            "answer."
+        )
     # An unqueryable probe is reported before the rows it explains, so the
     # `??` markers below read as "could not check" rather than as an outage
-    # (#3812).
-    if not data.get("compose_probe_available", True):
+    # (#3812). Gated on `compose_probe_undetermined`, never on
+    # `compose_probe_available` alone: a probe this deployment had no reason to
+    # run is also "not available", and keying off that is what made the CLI
+    # contradict the Self-Heal page about the same instance (#4137). The `.get`
+    # default keeps an older api's payload -- which carries neither key --
+    # reading exactly as it did.
+    elif data.get("compose_probe_undetermined", not data.get("compose_probe_available", True)):
         reason = data.get("compose_probe_reason") or "reason unavailable"
         print(f"Observability survey: CANNOT DETERMINE from here -- {reason}")
     if not data["components"]:
@@ -3102,8 +3117,10 @@ def cli(argv: list[str] | None = None) -> int:
         "--no-probe",
         action="store_true",
         help=(
-            "Do not health-check the deployment through an open tunnel "
-            "(the probe is skipped anyway when no tunnel is open)"
+            "Make no network calls: no health check through an open tunnel "
+            "(skipped anyway when no tunnel is open) and no AWS check on the "
+            "recorded EC2 Mac Dedicated Host, whose rows are then labelled as "
+            "unconfirmed rather than reported as current"
         ),
     )
 

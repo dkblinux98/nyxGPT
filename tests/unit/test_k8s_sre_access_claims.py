@@ -56,6 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OPS_DOC = REPO_ROOT / "docs" / "ops.md"
 UI_DOC = REPO_ROOT / "docs" / "ui.md"
 INFRA_PAGE = REPO_ROOT / "web" / "src" / "app" / "admin" / "infrastructure" / "page.tsx"
+OPS_MODULE = REPO_ROOT / "src" / "nyxgpt" / "ops.py"
 OBSERVABILITY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "k8s-observability-smoke.yml"
 
 # Every spelling the falsified fact had in the three files it lived in. Each one
@@ -145,6 +146,33 @@ def test_the_card_renders_no_raw_command_of_its_own() -> None:
             "the infrastructure card renders a raw command string "
             f"({line.strip()!r}) -- name the cause, not the command (#3986)"
         )
+
+
+def test_no_reporting_command_asserts_a_forward_unconditionally() -> None:
+    """The same claim class in the product's own output (#4135).
+
+    #4126 swept the docs and the dashboard card; two `print`s in `ops.py` were
+    not swept with them, and they are the ones the operator reads on a cluster
+    nyxGPT provisioned -- `ops status`'s observability header and `nyxgpt up
+    --kubernetes`'s closing line, both naming a forward for UIs the install had
+    just published on the host and probed.
+
+    Quoted, not paraphrased, for the same reason the guard above is: the
+    defect is a sentence. Both are now printed from
+    `_k8s_observability_host_access`, which asks the live Service, so a
+    regression here is a re-introduced literal.
+    """
+    text = OPS_MODULE.read_text(encoding="utf-8")
+    for claim in (
+        "Kubernetes observability (in-cluster -- reach the UIs with",
+        "`nyxgpt ops port-forward --target observability` publishes all four",
+    ):
+        assert claim not in text, (
+            f"src/nyxgpt/ops.py prints {claim!r} unconditionally -- ask "
+            "`_k8s_observability_host_access` instead, which keys the answer on what the "
+            "live Service carries (#4135)"
+        )
+    assert "_k8s_observability_host_access(" in text
 
 
 def _workflow_jobs() -> dict:

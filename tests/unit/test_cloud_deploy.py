@@ -2797,7 +2797,14 @@ def test_the_status_summary_prints_the_pending_host_when_nothing_is_deployed(mon
             "release_at": "2026-08-23T18:30:00+00:00",
             "release_scheduled": True,
             "hourly_rate": 0.65,
+            # #4136: `accrued_cost` is AWS's figure and nothing else, and
+            # "still billing" is only printed over a host AWS confirmed.
             "accrued_cost": 15.6,
+            "accrued_source": "aws-cost-explorer",
+            "spend_through": "2026-08-23",
+            "spend_as_of": "2026-08-23T06:00:00+00:00",
+            "verified_at": "2026-08-23T06:00:00+00:00",
+            "host_present": True,
             "releasable_now": False,
             "billing": True,
         },
@@ -2808,8 +2815,8 @@ def test_the_status_summary_prints_the_pending_host_when_nothing_is_deployed(mon
     out = capsys.readouterr().out
     assert "h-0abc" in out
     assert "2026-08-23T18:30:00+00:00" in out
-    assert "$15.60" in out
-    assert "still billing" in out
+    assert "USD 15.60 from AWS Cost Explorer" in out
+    assert "still billing -- AWS confirmed" in out
 
 
 def test_a_linux_deployment_prints_no_dedicated_host_block(capsys):
@@ -3050,7 +3057,7 @@ def test_a_failed_macos_deploy_still_names_the_dedicated_host(monkeypatch, capsy
     # The three things the owner found missing.
     assert "h-06c438d25077be888" in out
     assert "2026-10-01T16:19:55+00:00" in out
-    assert "$1.30" in out
+    assert "USD 1.30 from AWS Cost Explorer" in out
     # And the two it reported wrongly: the Linux substrate's default instance
     # type, and "not recorded" over a security group state.json was holding.
     assert "mac2.metal" in out

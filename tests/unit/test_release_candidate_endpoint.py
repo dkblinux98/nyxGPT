@@ -13,6 +13,7 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
+from release_line_pin import pin_declared_release_line
 
 from nyxgpt import release_candidate
 from nyxgpt.app import app
@@ -24,8 +25,22 @@ PUBLISHED = ["2.1.0", "3.0.0rc1"]
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    """No test reaches pypi.org."""
+    """No test reaches pypi.org. The declared line is pinned by `_declared_line`."""
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
+
+
+# MERGE NOTE (#4167 <- v3.0.1): the release branch's inline `_declared_line`
+# fixture and this one are the same fix; see the note in
+# `test_release_candidate.py` for why the shared `release_line_pin` helper is
+# the one kept.
+@pytest.fixture(autouse=True)
+def _declared_release_line(monkeypatch, tmp_path_factory):
+    """`PUBLISHED` above names the 3.0.0 line, so the declared version does too.
+
+    See `release_line_pin`: read from the checkout instead, these payload
+    assertions break on the next release ceremony's version bump (#4167).
+    """
+    pin_declared_release_line(monkeypatch, tmp_path_factory)
 
 
 def test_endpoint_returns_the_plan_the_cli_reports():

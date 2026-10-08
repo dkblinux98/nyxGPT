@@ -4026,8 +4026,8 @@ set_pr_status() {
 
 # The lane invariant itself: move a merged/closed PR's card to
 # STATUS_CLOSED. Idempotent -- re-stamping an already-Closed card is a
-# no-op write, so the merge flow, the pull_request:closed handler and the
-# periodic sweep can all run over the same PR safely.
+# no-op write, so the merge flow, the pull_request_target:closed handler and
+# the periodic sweep can all run over the same PR safely.
 close_pr_project_item() {
   local pr_number="$1"
   local current

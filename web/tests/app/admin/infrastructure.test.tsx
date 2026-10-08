@@ -432,6 +432,76 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
   });
 
+  it('scopes the Compose card out on a Kubernetes HOST, rather than saying it cannot determine (#4137)', async () => {
+    // The owner's k3s instance, reached over the wrapped tunnel: NOT
+    // in-cluster (the api answering is on the host), a cluster holding every
+    // Pod, and a Docker socket this session cannot reach. The badge used to
+    // be chosen by `inCluster ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'`, so this
+    // landed on CANNOT DETERMINE and printed
+    // `/home/ec2-user/.nyxGPT/docker-compose.yml` as the cause -- directly
+    // above its own list of ready Pods.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusComposeCannotDetermine,
+          mode: 'kubernetes',
+          in_cluster: false,
+          terraform: { probe_available: true, deployed: false, containers: {} },
+          compose_in_scope: false,
+          compose_out_of_scope_reason:
+            'Not in scope for this deployment: nyxGPT runs as Kubernetes Pods here (14 in the nyxgpt namespace -- see the Kubernetes card), and the Compose survey could not be run from this process, so there is no Compose state this deployment is missing.',
+          compose_probe_reason:
+            'Not in scope for this deployment: nyxGPT runs as Kubernetes Pods here (14 in the nyxgpt namespace -- see the Kubernetes card), and the Compose survey could not be run from this process, so there is no Compose state this deployment is missing.',
+          kubernetes: {
+            ...mockStatusComposeCannotDetermine.kubernetes,
+            deployed: true,
+            pods: ['cassandra-0   1/1 Running'],
+            pod_states: [
+              { name: 'cassandra-0', state: 'ready', summary: '1/1 Running', details: '' },
+            ],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT IN SCOPE')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('CANNOT DETERMINE')).not.toBeInTheDocument();
+    expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/the Compose survey could not be run from wherever/)
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/nyxGPT runs as Kubernetes Pods here/)).toBeInTheDocument();
+  });
+
+  it('keeps the Compose card in scope when its survey actually answered, cluster or not (#4137)', async () => {
+    // A host that runs both has a real Compose answer, and hiding it would
+    // hide the dual-stack conflict next to it.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusComposeCannotDetermine,
+          compose: { grafana: 'running' },
+          compose_probe_available: true,
+          compose_probe_reason: '',
+          compose_in_scope: true,
+          compose_out_of_scope_reason: '',
+          kubernetes: { ...mockStatusComposeCannotDetermine.kubernetes, deployed: true },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('NOT IN SCOPE')).not.toBeInTheDocument();
+  });
+
   it('says the native Cassandra row is unknown, not absent, when the container read was denied (#4022)', async () => {
     // The owner's EC2 instance: the API process's `systemd --user` session
     // predates its `docker` group, so `docker ps` is denied -- and until #4022
@@ -2695,8 +2765,20 @@ describe('InfrastructurePage', () => {
         release_at: '2026-10-02T09:50:00Z',
         releasable_now: false,
         release_scheduled: false,
+        // #4136: `accrued_cost` is Cost Explorer's figure and nothing else, and
+        // `verified_at` is what lets the panel say "still billing" at all. The
+        // fixture carries both, so the tests below exercise the confirmed case;
+        // the unconfirmed one gets its own tests.
         accrued_cost: 15.6,
+        accrued_source: 'aws-cost-explorer',
+        spend_through: '2026-10-02',
+        spend_as_of: '2026-10-02T10:00:00Z',
+        estimated_cost: 15.6,
         hourly_rate: 0.65,
+        currency: 'USD',
+        verified_at: '2026-10-02T10:00:00Z',
+        host_present: true,
+        incoherent: [],
         ...over,
       },
     });
@@ -2712,12 +2794,19 @@ describe('InfrastructurePage', () => {
       });
     };
 
-    it('names the host, its type, location, allocation and accrued charge', async () => {
+    it('names the host, its type, location, allocation and what AWS billed', async () => {
       await renderWith();
       expect(screen.getByText('h-0abc123def456 (mac2.metal)')).toBeInTheDocument();
       expect(screen.getByText('us-east-1 / us-east-1a')).toBeInTheDocument();
       expect(screen.getByText('2026-10-01T09:50:00Z')).toBeInTheDocument();
-      expect(screen.getByText(/\$15\.60 at \$0\.6500\/hour/)).toBeInTheDocument();
+      // #4136: the figure, and where it came from. The row this replaced read
+      // `$48.44` for a host AWS had billed $12.02 for and had stopped charging
+      // for two days earlier, because it multiplied a local clock by a local
+      // rate -- and the 15 tests here asserted that number was rendered
+      // correctly, never that it was true.
+      expect(
+        screen.getByText(/USD 15\.60 from AWS Cost Explorer through 2026-10-02/)
+      ).toBeInTheDocument();
     });
 
     it('falls back to the bare host id and unknown location when AWS reported neither', async () => {
@@ -2758,6 +2847,62 @@ describe('InfrastructurePage', () => {
       expect(screen.getByText(/nothing here watched it/)).toBeInTheDocument();
     });
 
+    // #4136. The heading is a claim about AWS, so it is only made when AWS made
+    // it. This panel said "still billing" over a host that had been released
+    // three days earlier, because the local record was all anything asked.
+    it('does not say still billing over a host AWS has not confirmed', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(
+        http.get('/api/v1/cloud/deploy', () => HttpResponse.json(macHost({ verified_at: '' })))
+      );
+      render(<InfrastructurePage />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', {
+            name: /EC2 Mac Dedicated Host — recorded here, not confirmed at AWS/,
+          })
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByText(/Nothing has asked AWS about this host yet/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/never — nothing here has asked AWS whether this host exists/)
+      ).toBeInTheDocument();
+    });
+
+    it('names the moment AWS confirmed the host', async () => {
+      await renderWith();
+      // Twice on the page -- in the heading and in its own row -- so the row is
+      // found by its label rather than by the timestamp alone.
+      expect(screen.getAllByText('2026-10-02T10:00:00Z').length).toBeGreaterThan(0);
+      expect(screen.getByText('Confirmed at AWS')).toBeInTheDocument();
+    });
+
+    // #4136. Reported, not used: each of these is detectable with no API call,
+    // and means the block's fields came from different runs about different
+    // hosts -- so no two rows below can be read together.
+    it('reports an incoherent record instead of presenting it as agreed', async () => {
+      await renderWith({
+        incoherent: [
+          'mac_release_scheduled_at (2026-10-03T19:25:47+00:00) is EARLIER than ' +
+            'mac_allocated_at (2026-10-03T19:27:05+00:00)',
+        ],
+      });
+      expect(screen.getByText(/This record is internally inconsistent/)).toBeInTheDocument();
+      expect(screen.getByText(/is EARLIER than/)).toBeInTheDocument();
+    });
+
+    it('labels the local figure as an estimate when AWS has no answer', async () => {
+      await renderWith({
+        accrued_cost: null,
+        estimated_cost: 48.44,
+        spend_error: 'Cost Explorer reported no Dedicated Host charges',
+      });
+      expect(screen.getByText(/Local ESTIMATE only: USD 48\.44/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/it keeps counting whether or not AWS is still charging/)
+      ).toBeInTheDocument();
+    });
+
     // The `|| 'unknown'` fallbacks on the Releasable row (:1497, :1498). A host
     // AWS returned without a release timestamp still has to render both sides of
     // the window, because "we do not know when" is the case most worth seeing.
@@ -2795,9 +2940,11 @@ describe('InfrastructurePage', () => {
       ).toBeInTheDocument();
     });
 
-    it('says the accrued charge is unknown when no rate was recorded', async () => {
-      await renderWith({ accrued_cost: null, hourly_rate: null });
-      expect(screen.getByText(/unknown — no rate was recorded for this host/)).toBeInTheDocument();
+    it('says the spend is unknown when there is neither an AWS figure nor a rate', async () => {
+      await renderWith({ accrued_cost: null, estimated_cost: null, hourly_rate: null });
+      expect(
+        screen.getByText(/unknown — no AWS figure and no rate was recorded for this host/)
+      ).toBeInTheDocument();
     });
 
     it('omits the panel entirely when no Mac host is allocated', async () => {

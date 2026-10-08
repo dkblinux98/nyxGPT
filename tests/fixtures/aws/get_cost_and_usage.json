@@ -1,0 +1,89 @@
+{
+  "ResultsByTime": [
+    {
+      "TimePeriod": {
+        "Start": "2026-09-30",
+        "End": "2026-10-01"
+      },
+      "Total": {},
+      "Groups": [
+        {
+          "Keys": [
+            "HostUsage:mac2"
+          ],
+          "Metrics": {
+            "UnblendedCost": {
+              "Amount": "3.9000000000",
+              "Unit": "USD"
+            }
+          }
+        }
+      ],
+      "Estimated": false
+    },
+    {
+      "TimePeriod": {
+        "Start": "2026-10-01",
+        "End": "2026-10-02"
+      },
+      "Total": {},
+      "Groups": [
+        {
+          "Keys": [
+            "HostUsage:mac2"
+          ],
+          "Metrics": {
+            "UnblendedCost": {
+              "Amount": "8.1200000000",
+              "Unit": "USD"
+            }
+          }
+        }
+      ],
+      "Estimated": false
+    },
+    {
+      "TimePeriod": {
+        "Start": "2026-10-02",
+        "End": "2026-10-03"
+      },
+      "Total": {},
+      "Groups": [
+        {
+          "Keys": [
+            "HostUsage:mac2"
+          ],
+          "Metrics": {
+            "UnblendedCost": {
+              "Amount": "0",
+              "Unit": "USD"
+            }
+          }
+        }
+      ],
+      "Estimated": false
+    },
+    {
+      "TimePeriod": {
+        "Start": "2026-10-03",
+        "End": "2026-10-04"
+      },
+      "Total": {},
+      "Groups": [
+        {
+          "Keys": [
+            "HostUsage:mac2"
+          ],
+          "Metrics": {
+            "UnblendedCost": {
+              "Amount": "0",
+              "Unit": "USD"
+            }
+          }
+        }
+      ],
+      "Estimated": false
+    }
+  ],
+  "DimensionValueAttributes": []
+}
