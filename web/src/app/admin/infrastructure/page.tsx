@@ -265,9 +265,13 @@ type InfraStatus = {
 // --- AWS substrate + deployment (information only, #3804) ---
 
 // Which source answered. `imds` = read from the instance this dashboard is
-// running on; `terraform-state` = read from the state file on this machine;
-// `none` = neither, which is *unknown* and never "not provisioned".
-type SubstrateSource = 'imds' | 'terraform-state' | 'none';
+// running on; `cluster-record` = read from the cloud-deploy record the install
+// wrote into the cluster this page is served from a Pod of (#4138 — a Pod can
+// reach neither IMDS nor the host's ~/.nyxGPT/cloud, so this is the only
+// source it has, and it is the instance's own facts); `terraform-state` = read
+// from the state file on this machine; `none` = none of those, which is
+// *unknown* and never "not provisioned".
+type SubstrateSource = 'imds' | 'cluster-record' | 'terraform-state' | 'none';
 
 type CloudInfraStatus = {
   source: SubstrateSource;
@@ -366,7 +370,17 @@ type MacHost = {
 };
 
 type CloudDeployStatus = {
-  source: 'deploy-record' | 'local-instance' | 'deploy-attempt' | 'substrate-record' | 'none';
+  // 'cluster-record' (#4138) is the api Pod of a --kubernetes cloud
+  // deployment: on the instance, so the version is still first-hand, but the
+  // instance's identity comes from the record the install wrote into the
+  // cluster rather than from an IMDS read a Pod cannot make.
+  source:
+    | 'deploy-record'
+    | 'local-instance'
+    | 'cluster-record'
+    | 'deploy-attempt'
+    | 'substrate-record'
+    | 'none';
   known: boolean;
   // The last deploy this machine started, whatever became of it (#3993).
   // Absent on a payload from before that existed; `{}` means none was ever
@@ -1543,9 +1557,18 @@ export default function InfrastructurePage() {
           ) : (
             <>
               <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
-                {cloud.on_instance
-                  ? 'Read first-hand: this dashboard is served by the deployed stack itself, so the release below is the one answering this request.'
-                  : 'What `nyxgpt cloud deploy` last put on the instance: a published nyxGPT release — or, under --dev, a copy of an operator’s working tree — and the observability profiles it enabled. The instance clones no repository either way.'}
+                {/* #4138: three vantage points, named rather than conflated.
+                    A Pod of the deployment's own cluster IS the deployed stack
+                    answering — so the release below is first-hand — but the
+                    instance it names was read from the record the install
+                    wrote into the cluster, because a Pod reaches neither IMDS
+                    nor the host's deploy record. Saying "read first-hand"
+                    flatly there would claim an IMDS read nothing made. */}
+                {cloud.source === 'cluster-record'
+                  ? 'Read from inside the deployment: this dashboard is served by an api Pod of the cluster on the instance, so the release below is the one answering this request. The instance it runs on comes from the cloud-deploy record `nyxgpt ops install --kubernetes` wrote into this cluster from the instance itself.'
+                  : cloud.on_instance
+                    ? 'Read first-hand: this dashboard is served by the deployed stack itself, so the release below is the one answering this request.'
+                    : 'What `nyxgpt cloud deploy` last put on the instance: a published nyxGPT release — or, under --dev, a copy of an operator’s working tree — and the observability profiles it enabled. The instance clones no repository either way.'}
               </p>
               <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
                 <Row label="Installed version" value={cloud.version} />

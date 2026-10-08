@@ -1811,6 +1811,84 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/Terraform state lives on the machine that provisioned the substrate/)).toBeInTheDocument();
   });
 
+  it('reports the cloud deployment from inside the cluster serving the page (#4138)', async () => {
+    // The owner's 2026-10-03 observation on the EC2 k3s instance: both cards
+    // read UNKNOWN -- "it is neither an EC2 instance" -- while `nyxgpt cloud
+    // status` on that same box printed the instance in full. The api Pod
+    // serving this page reaches neither IMDS (link-local is not routed into
+    // the Pod network) nor the host's ~/.nyxGPT/cloud, so the install records
+    // the facts in the cluster and the API serves them from there.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'cluster-record',
+          known: true,
+          on_instance: true,
+          deployed: true,
+          version: '3.0.0rc17',
+          host: '184.193.4.58',
+          instance_id: 'i-081ec19e9a96fa4ff',
+          instance_type: 'm5.xlarge',
+          region: 'us-east-1',
+          substrate: 'kubernetes',
+          os_family: 'linux',
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'cluster-record',
+            source_label:
+              'the cloud-deploy record in this cluster (configmap/nyxgpt-cloud-deploy in namespace nyxgpt) -- this page is served from a Pod inside the cluster on the instance, and `nyxgpt ops install --kubernetes` wrote these facts there from the instance’s own metadata',
+            on_ec2: true,
+            known: true,
+            provisioned: true,
+            region: 'us-east-1',
+            instance_id: 'i-081ec19e9a96fa4ff',
+            instance_type: 'm5.xlarge',
+            public_ip: '184.193.4.58',
+            vpc_id: 'vpc-0def456',
+            subnet_id: 'subnet-0aaa111',
+            security_group_id: 'sg-0bbb222',
+            ssh_key_name: 'nyxgpt-owner',
+            owner_ip_cidr: '',
+            access_model: { ...CLOUD_DEPLOY_UNKNOWN.infra.access_model, open_ports: [22] },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    // AC1: real values, not UNKNOWN, on both cards.
+    await waitFor(() => {
+      expect(screen.getByText('PROVISIONED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+    expect(screen.queryByText(/neither an EC2 instance/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/no deploy has been recorded here and this is not the instance/)
+    ).not.toBeInTheDocument();
+    // AC2: the values `nyxgpt cloud status` prints on the instance.
+    expect(screen.getAllByText('i-081ec19e9a96fa4ff').length).toBeGreaterThan(0);
+    expect(screen.getByText('i-081ec19e9a96fa4ff (m5.xlarge)')).toBeInTheDocument();
+    expect(screen.getAllByText('184.193.4.58').length).toBeGreaterThan(0);
+    expect(screen.getByText('3.0.0rc17')).toBeInTheDocument();
+    expect(screen.getAllByText('us-east-1').length).toBeGreaterThan(0);
+    // AC3: the vantage point is named, as #3988's Kubernetes card names its own
+    // -- and it names the record, not an IMDS read nothing made.
+    expect(screen.getByText(/configmap\/nyxgpt-cloud-deploy/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/served by an api Pod of the cluster on the instance/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Read first-hand: this dashboard is served by the deployed stack itself/)).not.toBeInTheDocument();
+    // Unchanged from the IMDS vantage point, because it is equally true in a
+    // Pod: the security-group rule is not metadata, Terraform state is not
+    // here, and the tunnel is the operator's.
+    expect(screen.getByText(/not visible from the instance/)).toBeInTheDocument();
+    expect(screen.getByText('NOT ON THIS MACHINE')).toBeInTheDocument();
+    expect(screen.getByText(/not applicable — the tunnel is opened/)).toBeInTheDocument();
+  });
+
   it('shows Terraform-state-derived facts, the open tunnel and the remote backend on the operator workstation', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     server.use(

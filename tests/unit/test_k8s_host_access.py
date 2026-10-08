@@ -33,7 +33,7 @@ import httpx
 import pytest
 import yaml
 
-from nyxgpt import canary, install_mode, ops
+from nyxgpt import canary, cloud_cluster_record, install_mode, ops
 
 pytestmark = pytest.mark.unit
 
@@ -1393,11 +1393,13 @@ def test_read_k8s_install_record_treats_an_unreadable_record_as_no_record(monkey
 
 
 def test_rbac_grants_the_install_record_read_by_name_only():
-    """The read AC2 asks for, declared in `k8s/` and no wider (#3988).
+    """The read AC2 asks for, declared in `k8s/` and no wider (#3988, #4138).
 
     Scoped with `resourceNames` rather than opening the namespace's ConfigMaps:
     `k8s/configmap.yaml` and the deployment's Secret must stay unreadable
-    through this Role, which is what its own comment promises.
+    through this Role, which is what its own comment promises. Two names now,
+    the deployment's own two records -- the install mode (#3988) and the cloud
+    deployment it runs on (#4138) -- and still read-only.
     """
     role = next(
         doc
@@ -1407,7 +1409,10 @@ def test_rbac_grants_the_install_record_read_by_name_only():
     rule = next(r for r in role["rules"] if "configmaps" in r["resources"])
 
     assert rule["verbs"] == ["get"]
-    assert rule["resourceNames"] == [ops.K8S_INSTALL_RECORD_CONFIGMAP]
+    assert set(rule["resourceNames"]) == {
+        ops.K8S_INSTALL_RECORD_CONFIGMAP,
+        cloud_cluster_record.CLOUD_DEPLOY_CONFIGMAP,
+    }
 
 
 # --- #3991: the canary resting contract -------------------------------------

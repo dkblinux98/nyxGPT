@@ -432,8 +432,8 @@ and screenshots make verifiable in the review loop:
   frees `127.0.0.1:8000`, uninstalls k3s, frees 6443, and is a no-op on a
   second pass (which is what every first deploy runs). That last one is only
   meaningful with a cluster actually running, which is why it is here and not
-  in a unit test. Five of its ten steps carry fault injections rather than happy
-  paths -- an overlapping VPC network is proved to be refused with nothing
+  in a unit test. Seven of its twelve steps carry fault injections rather than
+  happy paths -- an overlapping VPC network is proved to be refused with nothing
   installed, a Pod referencing a docker-built image is proved to fail before
   `_k3s_import_image` and to run after it, stopping the bridge is proved to
   kill `127.0.0.1:8000`, and (since the 2026-08-26 acceptance round) a real
@@ -443,7 +443,19 @@ and screenshots make verifiable in the review loop:
   cluster -- so no assertion can pass by luck. Those last two each need a live
   cluster for a reason inspection cannot supply: Kubernetes has to actually
   leave a terminated Pod attached to a ReplicaSet it scaled to zero, and that
-  kubeconfig has to actually be root-only. The same job also renders and
+  kubeconfig has to actually be root-only.
+
+  The two most recent injections are both about a **vantage point**, which is
+  the class of defect a live box is the only way to reach. #4137's is a k3s
+  host, which is neither in-cluster nor Compose. #4138's is the inverse -- an
+  api Pod of the deployment, which reaches neither IMDS nor the host's
+  `~/.nyxGPT/cloud` -- and its step proves both halves against the real
+  cluster: with nothing recorded an in-cluster read must still say UNKNOWN,
+  and after the product's own writer records the instance into the cluster both
+  status surfaces must report it. It also asks the **real API server** whether
+  the `nyxgpt-api` ServiceAccount may read that one ConfigMap and no other,
+  which is the authorization a real Pod depends on and the one thing a
+  simulated in-cluster read cannot stand in for. The same job also renders and
   server-side-applies the generated image overlay, because only a real cluster
   can say whether kubectl's *embedded* kustomize accepts it. What is
   genuinely left to owner acceptance is the part that requires being in AWS:

@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_infra, cloud_mac
+from nyxgpt import cloud_cluster_record, cloud_infra, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.config import VALID_SESSION_BACKENDS
 
@@ -3170,6 +3170,15 @@ CANARY_FLAGS: dict[str, tuple[str, ...]] = {
 # a dashboard served from the instance has to answer from what it *is*.
 SOURCE_DEPLOY_RECORD = "deploy-record"
 SOURCE_LOCAL_INSTANCE = "local-instance"
+# The api Pod of a `--kubernetes` cloud deployment (#4138). It is on the
+# instance -- so, like `local-instance`, the stack answering the request IS the
+# deployment and its version is first-hand -- but it reads the instance's
+# identity from the cloud-deploy record the install wrote into the cluster
+# rather than from IMDS, which a Pod cannot reach. Named separately from
+# `local-instance` so the card can say which of the two answered; the facts
+# come from different places and an operator reading "read first-hand" is
+# entitled to know where "first-hand" was.
+SOURCE_CLUSTER_RECORD = "cluster-record"
 # No deploy has ever completed here, but this machine started one and it did
 # not finish (#3993). A real, first-hand source -- this workstation wrote the
 # record -- and a state distinct from both "deployed" and "unknown": something
@@ -3284,6 +3293,11 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
       serving the request is the deployment, so its version and address are
       known first-hand even though no deploy record exists there
       (`source: local-instance`);
+    * the cloud-deploy record in the cluster, when this process is an api Pod
+      of a `--kubernetes` deployment (`source: cluster-record`, #4138) -- the
+      answering stack is still the deployment, so the version is still
+      first-hand, but the instance's identity comes from what the install
+      recorded in the cluster rather than from an IMDS read a Pod cannot make;
     * the record of a deploy this machine *started* and did not finish
       (`source: deploy-attempt`, `deployed: False`) -- a provision that dies
       partway is the state an operator most needs described, and it was the
@@ -3325,6 +3339,22 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
     attempt = load_deploy_attempt()
     infra = cloud_infra.infra_status()
     on_instance = bool(infra.get("on_ec2"))
+    # #4138. True when the substrate above was answered by the cloud-deploy
+    # record in this cluster, i.e. this process is an api Pod of the
+    # deployment. `on_instance` is true then too -- a Pod of the single-node
+    # cluster IS on the instance -- so this is checked first below, to name the
+    # vantage point that actually answered rather than the one it resembles.
+    #
+    # The record is read here as well as inside `infra_status` for the
+    # deployment-level fields the substrate payload has no business carrying
+    # (version, substrate, target OS). Both reads hit the same five-minute
+    # cache in `cloud_cluster_record`, so this costs no second `kubectl`.
+    cluster_record = (
+        cloud_cluster_record.read_cloud_deploy_record()
+        if infra.get("source") == cloud_infra.SOURCE_CLUSTER_RECORD
+        else {}
+    )
+    from_cluster_record = bool(cluster_record)
     profiles = [str(p) for p in (record.get("profiles") or [])]
     tunnel = tunnel_status()
 
@@ -3339,6 +3369,18 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         deployed = True
         version = str(record.get("version") or "")
         host = str(record.get("host") or "")
+    elif from_cluster_record:
+        # #4138. Before `on_instance`, which is also true here: both describe
+        # the instance, and this one says which record answered.
+        source = SOURCE_CLUSTER_RECORD
+        deployed = True
+        # First-hand, exactly as for `local-instance`: this api process is a
+        # Pod of this deployment, so its own version is the one serving. The
+        # record carries a version too -- what the install was built from --
+        # and this deliberately prefers the running process over it, the same
+        # precedence `ops._k8s_version_report` uses one card over (#3988).
+        version = installed_version() or cluster_record.get("version", "")
+        host = str(infra.get("public_ip") or "")
     elif on_instance:
         source = SOURCE_LOCAL_INSTANCE
         deployed = True
@@ -3369,7 +3411,7 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         host = ""
 
     health: dict[str, Any] = {"checked": False, "healthy": False, "status": 0, "reason": ""}
-    if probe_health and source == SOURCE_LOCAL_INSTANCE:
+    if probe_health and source in (SOURCE_LOCAL_INSTANCE, SOURCE_CLUSTER_RECORD):
         health["reason"] = (
             "this dashboard is served from the instance -- the stack answering this request "
             "is the deployment, so there is nothing to probe through a tunnel"
@@ -3425,7 +3467,12 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         # Empty rather than "native" when nothing was recorded: a deploy from
         # before this flag existed, or no deploy at all, is not the same
         # claim as "this box runs the native stack".
-        "substrate": str(record.get("substrate") or ""),
+        #
+        # #4138: in a Pod the deploy record is unreachable, and the cluster's
+        # own record answers instead -- with the strongest possible evidence,
+        # since the process reading it is running on the substrate in
+        # question.
+        "substrate": str(record.get("substrate") or cluster_record.get("substrate") or ""),
         # Whether the instance is running a shipped working tree rather than
         # the published release `version` names (#3950). Reported because it
         # is otherwise invisible: a dev deploy and an artifact deploy of the
@@ -3442,8 +3489,9 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         # dashboard reports it and names `nyxgpt cloud deploy --os`, and never
         # drives a re-provision itself. Empty when nothing was recorded -- a
         # deploy from before #3867, or no deploy at all -- which is not the
-        # same claim as "linux".
-        "os_family": str(record.get("os_family") or ""),
+        # same claim as "linux". The cluster record carries the host's own
+        # platform, read on the instance by the install (#4138).
+        "os_family": str(record.get("os_family") or cluster_record.get("os_family") or ""),
         # #3995. The EC2 Mac Dedicated Host outlives both the instance and the
         # deploy record by construction: `destroy` terminates the Mac at once
         # but AWS refuses to release the host for 24 hours, so between those
@@ -3917,7 +3965,18 @@ def _print_status_summary(status: dict[str, Any]) -> None:
     tunnel = status.get("tunnel") or {}
 
     print("nyxGPT cloud deployment: DEPLOYED")
-    if status["on_instance"]:
+    if status["source"] == SOURCE_CLUSTER_RECORD:
+        # #4138. Named apart from the plain on-instance line because the
+        # evidence is different: the release below is still the one answering
+        # (this process is a Pod of it), but the instance it names was read
+        # from the record the install wrote into the cluster, not from IMDS.
+        print(
+            "  (read from inside the deployment: this process is an api Pod of the cluster on "
+            "the instance, so the release below is the one answering; the instance it is on "
+            f"comes from the cloud-deploy record in the cluster, "
+            f"configmap/{cloud_cluster_record.CLOUD_DEPLOY_CONFIGMAP})\n"
+        )
+    elif status["on_instance"]:
         print(
             "  (read first-hand: this process is running on the instance, so the release "
             "below is the one answering)\n"
@@ -3941,7 +4000,7 @@ def _print_status_summary(status: dict[str, Any]) -> None:
             f"working tree shipped from {status.get('source_dir') or 'an unrecorded checkout'} "
             f"(--dev) -- not a published {status['version']} release",
         )
-    elif status.get("source") == SOURCE_LOCAL_INSTANCE:
+    elif status.get("source") in (SOURCE_LOCAL_INSTANCE, SOURCE_CLUSTER_RECORD):
         _print_row(
             "Build source",
             "not recorded here -- the deploy record lives on the workstation that ran the deploy",

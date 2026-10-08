@@ -47,7 +47,7 @@ Quick reference of all 82 available endpoints:
 | `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
 | `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
 | `/api/v1/self-heal/logs` | GET | Recent logs for one component, mode-dispatched (e.g. GlitchTip's registration link) |
-| `/api/v1/cloud/infra` | GET | AWS substrate status: what's provisioned and how it's reachable, read from instance metadata on EC2 and from Terraform state otherwise (no AWS call) |
+| `/api/v1/cloud/infra` | GET | AWS substrate status: what's provisioned and how it's reachable, read from instance metadata on EC2, from the cloud-deploy record in the cluster inside an api Pod, and from Terraform state otherwise (no AWS call) |
 | `/api/v1/cloud/infra/apply` | POST | Provision/reconcile the AWS substrate and record its ids |
 | `/api/v1/cloud/infra/destroy` | POST | Tear the AWS substrate down (requires `{"confirm": true}`) |
 | `/api/v1/cloud/state` | GET | Terraform state backend: local file, or S3 with DynamoDB locking |
@@ -1769,11 +1769,19 @@ API process is running, and says which (#3804):
 | `source` | Where it read from | `known` |
 | --- | --- | --- |
 | `imds` | Instance metadata (IMDSv2) — this process is *on* the instance | `true` |
+| `cluster-record` | The `nyxgpt-cloud-deploy` ConfigMap in the `nyxgpt` namespace (#4138) — this process is an api Pod of a `--kubernetes` cloud deployment, which reaches neither IMDS nor the host's `~/.nyxGPT/cloud`, so the install recorded the instance's own facts in the cluster | `true` |
 | `terraform-state` | The Terraform outputs recorded on this machine | `true` |
-| `none` | Neither is available | `false` — the caller must report *unknown*, not "not provisioned" |
+| `none` | None of those is available | `false` — the caller must report *unknown*, not "not provisioned" |
 
-`owner_ip_cidr` is empty under `imds`: which CIDR the security group admits
-is a rule, not metadata, and an instance cannot see it.
+`on_ec2` means "this process is running on the provisioned instance", which
+is true of both `imds` and `cluster-record`; `source` is what says how it was
+learned. The cluster read happens only inside a Pod (gated on
+`KUBERNETES_SERVICE_HOST`) and is cached for five minutes, so a polled
+endpoint on a workstation spends no `kubectl` on it.
+
+`owner_ip_cidr` is empty under `imds` and `cluster-record`: which CIDR the
+security group admits is a rule, not metadata, and neither an instance nor a
+Pod on it can see it.
 
 ```json
 {
@@ -1887,10 +1895,14 @@ calls are opt-in query parameters.
 Like the substrate read it names its source (#3804): `deploy-record` on the
 machine that ran the deploy, `local-instance` when this process *is* the
 deployment (the instance has no deploy record — the stack answering the
-request is the answer), and `none` on a machine that is neither, where
-`known` is `false` and the caller must report *unknown*. The health probe is
-skipped with a reason under `local-instance`: the tunnel is not the access
-path there, and the prober would be the probed.
+request is the answer), `cluster-record` when this process is an api Pod of a
+`--kubernetes` cloud deployment (#4138 — still the deployment answering, so
+`version` is still the process's own, but the instance it names comes from the
+`nyxgpt-cloud-deploy` ConfigMap rather than from an IMDS read a Pod cannot
+make), and `none` on a machine that is none of those, where `known` is `false`
+and the caller must report *unknown*. The health probe is skipped with a
+reason under `local-instance` and `cluster-record`: the tunnel is not the
+access path there, and the prober would be the probed.
 
 ```json
 {

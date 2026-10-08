@@ -1204,6 +1204,49 @@ pods`/`kubectl delete pod`, see
 identically regardless of which cluster backs the current context -- they
 operate on whatever `kubectl` is pointed at, kind-provisioned or not.
 
+### The cloud deployment underneath the cluster (#4138)
+
+A second record, written by the same install and for the same reason one
+question over: **which EC2 instance this cluster is running on.** The page's
+*AWS substrate* and *Cloud deployment* cards used to read `UNKNOWN` — "it is
+neither an EC2 instance nor one that has provisioned the substrate" — on the
+dashboard a `nyxgpt cloud deploy --kubernetes` instance was itself serving,
+while `nyxgpt cloud status` on that same box printed the instance id, type,
+region, public IP and version in full. Both of the things the CLI reads there
+are out of a Pod's reach: IMDS (`169.254.169.254` is link-local and not routed
+into the Pod network) and `~/.nyxGPT/cloud/`, which is the host's filesystem.
+
+So `nyxgpt ops install --kubernetes` — which a `--kubernetes` cloud deploy runs
+*on the instance* — writes a `nyxgpt-cloud-deploy` ConfigMap into the `nyxgpt`
+namespace carrying the instance's own IMDS facts (id, type, region,
+availability zone, public and private IP, VPC, subnet, security group, key
+pair) plus the version, substrate and target OS the install knows first-hand.
+The api Pod reads it back through the same Role (`get`, that one extra name)
+and both cards report real values, naming the record as the vantage point they
+answered from. Nothing probes the host from inside a Pod and no host path is
+mounted into one — that coupling is what #3987/#4137 are about, and this
+deliberately does not reintroduce it.
+
+Three properties bound it:
+
+- **Off EC2 nothing is written.** The install hands the IMDS facts in rather
+  than letting the record decide; no facts, no ConfigMap. A local
+  `kind`/minikube `--kubernetes --local` install records nothing and the cards
+  keep saying unknown, which is #3804's case working as designed.
+- **Off-cluster nothing is read.** The read is gated on
+  `KUBERNETES_SERVICE_HOST`, so a workstation spends no `kubectl` on a record
+  about a machine it is not — it has IMDS, the deploy record and Terraform
+  state, each better evidence than someone else's ConfigMap.
+- **A partial record is no record.** A `data` block with no `instance_id` reads
+  back as nothing at all, so an unknown is never rendered as a determinate
+  instance (D-032).
+
+In-cluster the deployment's **version** is still the answering api process's
+own, not the recorded one — a Pod of the deployment cannot be out of date
+about itself — and the record's version is the fallback. `source` on both
+`/api/v1/cloud/infra` and `/api/v1/cloud/deploy` reads `cluster-record` when
+this is what answered.
+
 ## Canary Deployment
 
 Canary is the sole deployment model (#3409 retired blue/green -- a separate
