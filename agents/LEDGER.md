@@ -2398,6 +2398,30 @@ rather than mechanism, and nothing can enforce them.
   Source: owner instruction 2026-10-07; `scripts/release_ceremony.sh`;
   `scripts/agents/release_ceremony_watch.sh`; `CLAUDE.md` §Branch Rules.
 
+- **D-062** · 2026-10-08 · owner — **`~/.nyxGPT/cloud/state.json` reports
+  current state and nothing else, and no local record is the sole basis for a
+  decision that spends money.** Stale data is useless data, and labelling it
+  does not help because every consumer has to honour the label and they do not.
+  So: one substrate *block* per write, replaced whole and atomically
+  (`src/nyxgpt/cloud_record.py`) — a field the write does not mention is
+  dropped, not left holding the previous substrate's answer; a superseded block
+  moves to `state-archive.jsonl` under a different name; an in-place field
+  update must name the resource it believes the block describes and is refused
+  if the record has moved; and reconcile-vs-allocate, `allow-ip` discovery,
+  release scheduling and destroy each verify against AWS first. Third
+  occurrence of one mechanism (#3993 → #4122 → #4136), and the lesson for
+  tests: all three passed a green suite, because the tests asserted the fields
+  the write *mentioned*. A block is now asserted key by key over the whole key
+  set, and the executed evidence
+  (`.github/workflows/cloud-stale-record-smoke.yml`) runs its negative control
+  first. Corollary: `InvalidHostID.NotFound` is an *answer*, not a failure —
+  catching every botocore exception as "could not ask" is what turned AWS's
+  clearest possible no into an unknown and cost a 24-hour Dedicated Host
+  minimum with no disclosure. Spend figures come from Cost Explorer, never from
+  `rate × (now − allocated_at)`, which cannot stop counting when the charges do.
+  Source: #4136 (owner, 2026-10-03); #3993; docs/cloud.md §"`state.json` holds
+  current state and nothing else".
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

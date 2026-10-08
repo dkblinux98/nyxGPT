@@ -424,30 +424,52 @@ Two details that would otherwise make the report a lie, and are handled:
 
 **Watching it.** `nyxgpt cloud status` shows the host until it is gone — id,
 region and AZ, when it was allocated, when it becomes releasable, whether the
-release is scheduled, and the accrued cost at the recorded rate. It shows it
-*after* the deployment is destroyed too, which is the whole point: that is the
-state where the host is the only thing still costing money.
+release is scheduled, when AWS last confirmed the host exists, and what Cost
+Explorer says it has cost. It shows it *after* the deployment is destroyed too,
+which is the whole point: that is the state where the host is the only thing
+still costing money.
 
 ```
-EC2 Mac Dedicated Host (still billing)
-  Host           h-0abc1234 (mac2.metal)
-  Location       us-east-1 / us-east-1a
-  Allocated      2026-08-22T18:00:00+00:00
-  Releasable at  2026-08-23T18:30:00+00:00 (AWS's 24-hour minimum)
-  Release        scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack
-  Accrued        $15.60 at $0.6500/hour (the 24-hour minimum is charged either way)
+EC2 Mac Dedicated Host (still billing -- AWS confirmed 2026-08-23T06:00:00+00:00)
+  Host              h-0abc1234 (mac2.metal)
+  Location          us-east-1 / us-east-1a
+  Allocated         2026-08-22T18:00:00+00:00
+  Releasable at     2026-08-23T18:30:00+00:00 (AWS's 24-hour minimum)
+  Confirmed at AWS  2026-08-23T06:00:00+00:00
+  Release           scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack
+  Spend             USD 15.60 from AWS Cost Explorer through 2026-08-23 (as of 2026-08-23T06:00:00+00:00)
 ```
 
 The same block appears on the admin dashboard's Infrastructure page, and on
 both surfaces it is *observed*, never driven — the release is already
 scheduled in AWS and there is nothing for a page to press.
 
+**Every row is AWS's answer or is labelled as not being one (#4136).**
+`nyxgpt cloud status` makes one `DescribeHosts` call and (at most hourly, since
+Cost Explorer bills per request) one `GetCostAndUsage`:
+
+- The heading says **still billing** only when AWS confirmed the host in that
+  run. Without a confirmation it reads *recorded here, not confirmed at AWS*,
+  and the rows below are what was written down rather than what is true.
+- **Spend is Cost Explorer's figure**, not `rate × elapsed`. The old
+  calculation could not stop counting when the charges did: it read $48.44 for
+  a host AWS had billed $12.02 for and had not charged for in two days. When
+  AWS has no figure yet the row says so and offers the local number explicitly
+  as an *estimate*.
+- A host AWS reports as **released** does not get a weaker row — its record
+  leaves `state.json` entirely, so there is nothing left to describe.
+- `INCOHERENT` rows appear when the record contradicts itself (a release
+  scheduled before its host was allocated, a release window that is not
+  allocation + 24h30m, a scheduled release with no schedule). Those are
+  detectable with no API call, and they mean the fields came from more than one
+  run, so none of them can be read together.
+
 Once the fire time passes, the row says the schedule **has fired** rather than
 that the host is released: nothing on your machine watched it, so claiming the
 charge has stopped would be an assertion nobody checked. Slack has the real
-answer. The next `nyxgpt cloud destroy --yes` or
-`nyxgpt cloud deploy --os macos` asks AWS whether the host is really gone and
-clears the row if it is — and keeps it if the question could not be asked,
+answer. `nyxgpt cloud status`, `nyxgpt cloud deploy --os macos` and
+`nyxgpt cloud destroy --yes` each ask AWS whether the host is really gone and
+clear the block if it is — and keep it if the question could not be asked,
 because a record deleted on the strength of expired credentials would hide a
 resource that is still billing.
 
@@ -1220,18 +1242,42 @@ below for why a re-apply is not the way to change it.
 | `~/.nyxGPT/cloud/terraform.tfvars` | generated from your flags, mode 0600 |
 | `~/.nyxGPT/cloud/infra.json` | remembered settings, mode 0600 |
 | `~/.nyxGPT/cloud/backend.json` | where remote state lives, once migrated, mode 0600 |
-| `~/.nyxGPT/cloud/state.json` | the ids `allow-ip` (and later `cloud deploy`) read |
+| `~/.nyxGPT/cloud/state.json` | **what is deployed now** — the ids `allow-ip` and `cloud deploy` read |
+| `~/.nyxGPT/cloud/state-archive.jsonl` | superseded records, newest last, capped. Diagnosis only; nothing reads it to make a decision |
 
-`state.json` is **replaced**, not merged, on every apply (#3993). An apply
-writes each of its own keys (`region`, `vpc_id`, `security_group_id`,
-`instance_id`, `instance_type`, `public_ip`, `private_ip`, `ssh_key_name`)
-from the new outputs and *drops* any it did not produce; keys other
-`nyxgpt cloud` commands own are left alone. The merge this replaced kept a
-prior substrate's value for any key the new outputs did not carry, so the
-file could describe two substrates at once — observed live as the new
-instance's id sitting beside a destroyed substrate's `security_group_id`,
-which sent `nyxgpt cloud allow-ip`'s auto-discovery at a group that no longer
-existed, exactly while the operator was locked out and depending on it.
+#### `state.json` holds current state and nothing else (#4136)
+
+The file is a set of **per-substrate blocks** in one flat namespace: the Linux
+substrate owns `region`, `vpc_id`, `security_group_id`, `instance_id`,
+`instance_type`, `public_ip`, `private_ip`, `ssh_key_name`; the EC2 Mac owns the
+`mac_*` keys. Three rules, enforced in one place
+(`src/nyxgpt/cloud_record.py`) rather than in each command:
+
+- **A block is replaced whole, never merged into.** A write decides *every* key
+  the substrate owns; one it does not mention is **dropped**. "This substrate
+  has no such id" is an honest answer, and a stale id is worse than a missing
+  one because every consumer treats it as current.
+- **A superseded block leaves this file.** It is appended to
+  `state-archive.jsonl` — a different file under a different name — so nothing
+  reading `state.json` ever has to ask which run a value came from. Keys
+  belonging to no substrate are archived and dropped too: nothing can refresh
+  them, so they can only get staler.
+- **The write is atomic** (temp file plus `os.replace`), so a killed command
+  cannot leave half a record behind for the next one to read as current.
+
+An in-place field update is the one exception, and it is gated: it must name the
+resource it believes the block describes, and the write is refused if the record
+now names a different one. Recording "the release is scheduled" against whatever
+host happened to be in the file is how a `mac_release_scheduled_at` **78 seconds
+earlier** than the `mac_allocated_at` of the host it described got written.
+
+Why all of this: the file was merged field by field for three releases running.
+A deploy that provisioned a new substrate wrote the fields it produced and left
+the rest naming the previous one — a new instance stapled to a released
+Dedicated Host, a combination that never existed. #3993 saw it send
+`nyxgpt cloud allow-ip` at a destroyed security group while the operator was
+locked out; #4136 saw it skip a priced disclosure and start an unannounced
+24-hour billing minimum.
 
 The one thing that does **not** rewrite it is an apply whose outputs could
 not be read at all. `terraform output` returning nothing means "cannot
@@ -1418,8 +1464,10 @@ What it does:
 1. Detects the caller's current public IP (via `https://checkip.amazonaws.com`,
    AWS's own IP-echo endpoint -- no third-party dependency).
 2. Resolves the target security group: `--security-group-id` if given,
-   otherwise `~/.nyxGPT/cloud/state.json`'s `security_group_id` (written by
-   `nyxgpt cloud deploy`).
+   otherwise `~/.nyxGPT/cloud/state.json`'s `security_group_id`, then its
+   `mac_security_group_id` (written by `nyxgpt cloud deploy` — the second is
+   what a `--os macos` deploy records, and reading only the first is why
+   auto-discovery found nothing at all after one, #4136).
 3. Revokes every existing port-22 ingress CIDR that doesn't match the new
    IP, and authorizes the new one -- unless it's already the only allowed
    source, in which case the command is a no-op (idempotent).
@@ -1430,8 +1478,8 @@ What it does:
 | Flag | Description |
 | --- | --- |
 | `--ip <addr>` | Use this IP or CIDR instead of auto-detecting the caller's current public IP. A bare address (no `/`) is scoped to `/32`; an explicit CIDR is kept as passed. `0.0.0.0/0` is always refused. |
-| `--security-group-id <id>` | Security group to update. Defaults to `~/.nyxGPT/cloud/state.json`'s `security_group_id`. |
-| `--region <region>` | AWS region. Defaults to `~/.nyxGPT/cloud/state.json`'s `region`, then the last `cloud infra apply`'s, then config.ini `[cloud] region`, then boto3's normal region resolution (`AWS_REGION`/`AWS_DEFAULT_REGION`/profile config). |
+| `--security-group-id <id>` | Security group to update. Defaults to `~/.nyxGPT/cloud/state.json`'s `security_group_id`, then its `mac_security_group_id` (#4136). |
+| `--region <region>` | AWS region. Defaults to `~/.nyxGPT/cloud/state.json`'s `region`, then its `mac_region` (#4136), then the last `cloud infra apply`'s, then config.ini `[cloud] region`, then boto3's normal region resolution (`AWS_REGION`/`AWS_DEFAULT_REGION`/profile config). |
 | `--profile <name>` | AWS profile to authenticate with. Defaults to the profile the last `nyxgpt cloud infra apply` used, then config.ini `[cloud] profile`, then `AWS_PROFILE`, then boto3's default chain (#3993). |
 
 ### Example

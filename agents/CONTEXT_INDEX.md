@@ -34,6 +34,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
 | `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
+| `cloud-stale-record-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Stale Record Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |

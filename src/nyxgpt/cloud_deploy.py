@@ -4178,8 +4178,8 @@ def _print_mac_teardown(mac: dict[str, Any]) -> None:
             f"{mac.get('release_at') or 'its 24-hour minimum closes'} -- AWS refuses to release "
             "one before that. A one-shot AWS schedule releases it then and posts the outcome "
             f"to Slack{where}."
-            "\n`nyxgpt cloud status` reports the host, its release time and the accrued cost "
-            "until it is gone."
+            "\n`nyxgpt cloud status` reports the host, its release time and what AWS has "
+            "billed for it until it is gone."
         )
     else:
         print(

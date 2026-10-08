@@ -1384,9 +1384,10 @@ def _heal_orphaned_record(
     this records *now*, which is deliberately conservative in the only
     direction that is safe: a release time later than the true one never asks
     AWS to release a host inside its 24-hour minimum, whereas an earlier one
-    burns the one-shot schedule on a rejection. The accrued cost printed from
-    it is a lower bound for the same reason, and the disclosure that follows
-    says so.
+    burns the one-shot schedule on a rejection. The disclosure that follows says
+    the release time is a lower bound; what the host has *cost* does not inherit
+    that uncertainty, because since #4136 it comes from Cost Explorer rather than
+    from this timestamp.
 
     The instance type and zone come from the plan this machine would allocate,
     which is where the tfvars that created the host came from, so a reconcile
@@ -1400,9 +1401,9 @@ def _heal_orphaned_record(
         f"Dedicated Host {host_id} is already allocated from this machine -- Terraform's state "
         "holds it, but an earlier run failed before recording it. Adopting it: no new host, no "
         "new 24-hour minimum, and no second charge.\n"
-        "Its allocation time could not be recovered, so the release time and accrued cost "
-        f"reported from here are measured from now ({allocated_at.isoformat()}) and are a lower "
-        "bound on the age of the host.",
+        "Its allocation time could not be recovered, so the release time reported from here is "
+        f"measured from now ({allocated_at.isoformat()}) and is a lower bound on the age of the "
+        "host. What it has cost comes from AWS Cost Explorer and does not depend on that.",
         file=sys.stderr,
     )
     # Both timestamps come from the *same* moment, so the record cannot end up

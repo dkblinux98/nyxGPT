@@ -77,6 +77,7 @@ artifact-install
 session-backend-fault-injection
 cloud-dev-deploy-smoke
 cloud-imds-smoke
+cloud-stale-record-smoke
 cloud-status-smoke
 cloud-target-os-smoke
 gate-behavior
