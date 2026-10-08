@@ -159,6 +159,23 @@ classify_error() {
     return
   fi
 
+  # Final Verification recording its own reason (#4176). MUST come before the
+  # generic test-failure signature below: the detail file names the failing
+  # node IDs ("FAILED tests/unit/test_x.py::test_y"), which that signature
+  # matches, and `retriable:test_failure` would send the 3-attempt fix loop
+  # round again on a gate that has ALREADY exhausted it -- Final Verification
+  # runs after attempt 3. The class is specific so the escalation headline can
+  # name the gate instead of printing "error type could not be determined":
+  # see scripts/agents/run_final_verification.sh and
+  # scripts/agents/lib/escalation_evidence.py, which own the format this reads.
+  if echo "$error_text" | grep -q "Final Verification failed: gate="; then
+    local _gate
+    _gate="$(echo "$error_text" \
+      | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
+    echo "verification_failed:${_gate:-unknown}"
+    return
+  fi
+
   if echo "$error_text" | grep -qE "test.*failed|pytest.*FAILED|FAILED.*test"; then
     # Test failures - let the 3-attempt fix loop handle these
     echo "retriable:test_failure"
@@ -2481,6 +2498,75 @@ _release_head_failing_checks() {
     || return 1
 }
 
+# The release branch head's check state, as one JSON object (#4176):
+#
+#   {release_branch, release_head_sha, release_head_red, red_checks}
+#
+# `release_head_red` and `red_checks` are ABSENT when the head's checks could
+# not be read -- "not checked" is a third answer, and collapsing it into "no"
+# is how an unreadable head gets reported as green. `release_head_sha` is
+# absent when the head itself could not be resolved.
+#
+# ONE definition, two consumers: `blast_radius_report`'s first question and the
+# escalation headline's base-red finding (#4176 asked for the detection to be
+# computed once and passed in, rather than re-derived in the comment-writing
+# step, which is how the #4166 escalation ended up asserting "yes -- `test`
+# failing" in its blast radius and "could not be determined" in its headline).
+release_head_state_json() {
+  local branch="${1:-$(get_release_branch 2>/dev/null || echo "")}"
+  require_cmd jq
+  local state checks sha
+  state="$(jq -n -c --arg b "$branch" '{release_branch: $b}')"
+  [[ -n "$branch" ]] || { printf '%s' "$state"; return 0; }
+
+  if sha="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${branch}" --jq '.sha' 2>/dev/null)" \
+    && [[ -n "$sha" ]]; then
+    state="$(jq -c --arg s "$sha" '. + {release_head_sha: $s}' <<<"$state")"
+  fi
+
+  if checks="$(_release_head_failing_checks "$branch")"; then
+    local checks_json
+    checks_json="$(printf '%s' "$checks" | jq -R -n -c '[inputs | select(length > 0)]')"
+    state="$(jq -c --argjson k "${checks_json:-[]}" \
+      '. + {release_head_red: (($k | length) > 0), red_checks: $k}' <<<"$state")"
+  fi
+  printf '%s' "$state"
+  return 0
+}
+
+# The first error-looking line in `log_text` after the LAST line naming
+# `marker`, or nothing (#4176).
+#
+# Used to answer "why did Phase 3 itself fail?" -- a question the escalation
+# previously could not even ask, because `claude_result` is gated on
+# `claude_analysis.conclusion == 'success'` and a skipped step's outputs are
+# empty, which is indistinguishable from a step that ran and concluded
+# nothing.
+#
+# AFTER THE LAST OCCURRENCE, not the first, because the marker that identifies
+# the step in a job log is the action it runs (`claude-code-action`) and this
+# workflow invokes it up to four times in one job. Anchoring on the first
+# occurrence would report the initial implementation's first error line as
+# Phase 3's -- a confident wrong answer, which is the defect class this whole
+# issue is about. Phase 3 is the last invocation on the failure path, so the
+# last marker is its.
+#
+# Pure text in, text out, so the parsing is testable without a run.
+first_error_after_marker() {
+  local log_text="$1" marker="$2"
+  [[ -n "$log_text" && -n "$marker" ]] || return 0
+  printf '%s\n' "$log_text" \
+    | awk -v marker="$marker" '
+        index($0, marker) { seen = 1; found = ""; next }
+        seen && found == "" && (/fatal:/ || /\[error\]/ || /^Error:/ || /ERROR:/ || /Error:/) {
+          line = $0
+          sub(/^[0-9][0-9-]*T[0-9:.]*Z? /, "", line)
+          found = line
+        }
+        END { if (found != "") print found }'
+  return 0
+}
+
 # "<short sha> <subject>" for the most recent commits on `branch`, newest
 # first. Read over the API rather than from git: the escalating run is not
 # guaranteed to have a checkout of the release branch (the handlers do not).
@@ -2506,17 +2592,26 @@ blast_radius_report() {
   require_cmd jq
   require_cmd python3
 
-  local branch findings checks commits release_issue same
+  local branch findings commits release_issue same
   branch="$(get_release_branch 2>/dev/null || echo "")"
   findings="$(jq -n -c --arg c "$cause" --arg s "$signature" --arg b "$branch" \
     '{cause: $c, signature: $s, release_branch: $b}')"
 
-  # Q1: is the release branch head red?
-  if checks="$(_release_head_failing_checks "$branch")"; then
-    local checks_json
-    checks_json="$(printf '%s' "$checks" | jq -R -n -c '[inputs | select(length > 0)]')"
-    findings="$(jq -c --argjson k "${checks_json:-[]}" \
-      '. + {release_head_red: (($k | length) > 0), red_checks: $k}' <<<"$findings")"
+  # Q1: is the release branch head red? Answered by release_head_state_json,
+  # which is also what the escalation headline reads -- one definition, so the
+  # report and the headline cannot disagree about the base (#4176).
+  local head_state merged
+  head_state="$(release_head_state_json "$branch")" || head_state=""
+  if [[ -n "$head_state" ]]; then
+    # Into a temporary, then checked: a failed merge must leave `findings`
+    # intact. Assigning the failed substitution's empty output directly would
+    # blank the findings and silently empty the whole report -- the investigation
+    # must never be swallowed by a failure inside the investigation (#4134).
+    if merged="$(jq -c --argjson h "$head_state" '. + $h' <<<"$findings")" && [[ -n "$merged" ]]; then
+      findings="$merged"
+    else
+      _warn "blast_radius_report: could not merge the release-head state (Q1 renders as not checked)"
+    fi
   fi
 
   # Q2 and Q3 both read the release tracking issue's registries, so its
