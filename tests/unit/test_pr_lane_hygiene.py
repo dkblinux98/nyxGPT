@@ -14,6 +14,7 @@ Two halves:
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -42,6 +43,40 @@ class TestShellSuite:
             timeout=300,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_fixtures_do_not_hardcode_a_release_line_branch(self):
+        """The suite's base branch must outlive the release ceremony.
+
+        #3862's closure gate in `review_accept_and_merge.sh` is deliberately
+        unstubbed: it runs a real `git fetch origin <base>` and resolves
+        `origin/<base>`, because its whole purpose is to read content rather
+        than trust a reported exit code. So whatever branch the fixtures name
+        has to exist on `origin` forever.
+
+        The suite originally hardcoded `v3.0.0`. That held only while v3.0.0
+        was the live release line -- the v3.0.1 ceremony deleted the branch,
+        the fetch began failing, and case 4 went red reporting "the merge
+        cannot be verified". The next ceremony would have done it again, so
+        the fixtures are pinned to `master`, which the ceremony
+        fast-forwards and never deletes.
+        """
+        release_line = re.compile(r"\bv\d+\.\d+\.\d+\b")
+        for path in (
+            ROOT / "tests" / "test_pr_lane_hygiene.sh",
+            ROOT / "tests" / "gh_stub_pr_lane.py",
+        ):
+            offenders = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                # Prose explaining the history is allowed to name the version.
+                if release_line.search(line) and not line.lstrip().startswith("#")
+            ]
+            assert not offenders, (
+                f"{path.name} names a release-line branch in executable code: "
+                f"{offenders}. Use the BASE_BRANCH/DEFAULT_BASE_BRANCH constant "
+                "-- a release branch is deleted by the ceremony and the closure "
+                "gate's real `git fetch` then fails."
+            )
 
 
 class TestLibraryHelpers:

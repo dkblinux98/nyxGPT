@@ -38,6 +38,13 @@ import sys
 
 STUB_DIR = os.environ["GH_STUB_DIR"]
 PROJECT_ID = "PVT_project"
+
+# The base branch fixture PRs target, overridable with STUB_BASE_BRANCH.
+# Deliberately NOT a release line: #3862's closure gate does a real
+# `git fetch origin <base>`, so a fixture naming a release branch stops
+# working the moment the release ceremony deletes it -- which is what took
+# case 4 of the suite red after v3.0.1 shipped. `master` is never deleted.
+DEFAULT_BASE_BRANCH = os.environ.get("STUB_BASE_BRANCH", "master")
 STATUS_FIELD_ID = "PVTSSF_status"
 
 #: Board Status options, mirroring the real single-select field.
@@ -253,7 +260,13 @@ def _rest(route: str, jq_filter: str | None) -> None:
     if len(parts) >= 5 and parts[3] == "pulls":
         pr = parts[4]
         entry = _read_json("pulls.json", {}).get(
-            pr, {"head": "feat/example", "base": "v3.0.0", "merged": False, "state": "open"}
+            pr,
+            {
+                "head": "feat/example",
+                "base": DEFAULT_BASE_BRANCH,
+                "merged": False,
+                "state": "open",
+            },
         )
         default_sha = os.environ.get("STUB_HEAD_SHA", "HEAD")
         _emit(
@@ -276,7 +289,7 @@ def _rest(route: str, jq_filter: str | None) -> None:
 
     if len(parts) >= 5 and parts[3] == "branches":
         branch = "/".join(parts[4:])
-        if branch == os.environ.get("STUB_BASE_BRANCH", "v3.0.0"):
+        if branch == DEFAULT_BASE_BRANCH:
             _emit({"name": branch}, jq_filter)
         sys.exit(1)  # head branch already deleted
 
