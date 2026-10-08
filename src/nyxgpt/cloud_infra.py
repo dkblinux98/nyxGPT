@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_imds
+from nyxgpt import cloud_cluster_record, cloud_imds
 from nyxgpt import config as config_mod
 from nyxgpt.cloud import (
     CLOUD_STATE_FILE,
@@ -765,14 +765,33 @@ def test_infra() -> dict[str, Any]:
 # deriving facts from state alone made it report "not provisioned" while
 # running on the provisioned machine.
 SOURCE_IMDS = "imds"
+# #4138. The third vantage point, and the one that had no source at all: the
+# api Pod of a `--kubernetes` cloud deployment. It is ON the instance, but it
+# can read neither IMDS (link-local is not routed into the Pod network) nor
+# the host's `~/.nyxGPT/cloud/` -- so it reported "neither an EC2 instance nor
+# one that has provisioned the substrate" about the instance serving the page.
+# The install writes the facts into the cluster instead; see
+# `nyxgpt.cloud_cluster_record`.
+SOURCE_CLUSTER_RECORD = "cluster-record"
 SOURCE_TERRAFORM_STATE = "terraform-state"
 SOURCE_UNKNOWN = "none"
 
 SOURCE_LABELS = {
     SOURCE_IMDS: "instance metadata (this dashboard is running on the instance)",
+    SOURCE_CLUSTER_RECORD: cloud_cluster_record.record_source_label(),
     SOURCE_TERRAFORM_STATE: "Terraform state on this machine",
     SOURCE_UNKNOWN: "no source available on this machine",
 }
+
+# The sources that mean "this process is running on the provisioned instance"
+# -- directly (IMDS), or in a Pod of the single-node cluster the instance runs
+# (#4138). `on_ec2` is derived from this rather than from `SOURCE_IMDS` alone
+# because every consumer of that flag asks the same question of it: is the
+# machine serving this page the instance? The SSH allowed-from rule is equally
+# invisible from a Pod, Terraform state is equally absent, and the access
+# tunnel is equally somebody else's -- so answering those three from the
+# cluster record gives exactly the renderings IMDS does.
+ON_INSTANCE_SOURCES = frozenset({SOURCE_IMDS, SOURCE_CLUSTER_RECORD})
 
 
 def infra_status() -> dict[str, Any]:
@@ -783,29 +802,44 @@ def infra_status() -> dict[str, Any]:
     * **On an EC2 instance** -- instance metadata (IMDSv2), which describes
       the machine this process is running on rather than a state file's
       intent, and is available with no checkout, tfstate or credential.
+    * **In a Pod of the cluster that instance runs** (#4138) -- the
+      cloud-deploy record `nyxgpt ops install --kubernetes` wrote into the
+      cluster from the instance. A Pod reaches neither IMDS nor the host's
+      `~/.nyxGPT/cloud/`, so until that record existed the dashboard a
+      `--kubernetes` cloud deployment serves could not report the deployment
+      it was part of. See `nyxgpt.cloud_cluster_record`.
     * **On the workstation that provisioned it** -- the Terraform outputs
       recorded in `~/.nyxGPT/cloud/state.json`. This is the only source that
       knows about an instance the local machine is not itself.
-    * **Neither** -- `known` is False and the caller must say *unknown*. A
-      machine that has never provisioned anything and is not an instance has
+    * **None of those** -- `known` is False and the caller must say *unknown*.
+      A machine that has never provisioned anything and is not an instance has
       no answer to give, and reporting "not provisioned" there would be an
-      assertion about AWS that nothing here checked.
+      assertion about AWS that nothing here checked. That is #3804's case and
+      it is unchanged.
 
-    Both sources are local reads, so this stays cheap enough for the
-    dashboard to poll and still answers when credentials have expired.
+    Every source is a local read (the cluster one, a single bounded
+    `kubectl get configmap` cached for five minutes, and skipped outright
+    off-cluster), so this stays cheap enough for the dashboard to poll and
+    still answers when credentials have expired.
     """
     settings = load_settings()
     facts = cloud_imds.instance_facts()
+    # Only ever non-empty inside a Pod, and then only for a deployment an
+    # install on an EC2 instance recorded -- so a local kind cluster cannot
+    # start answering questions about AWS. Consulted after IMDS because IMDS is
+    # first-hand and a record is a record.
+    cluster_record = cloud_cluster_record.read_cloud_deploy_record() if facts is None else {}
 
-    if facts is not None:
-        source = SOURCE_IMDS
+    if facts is not None or cluster_record:
+        source = SOURCE_IMDS if facts is not None else SOURCE_CLUSTER_RECORD
         known = True
         provisioned = True
-        # The instance can see everything about itself except which CIDR its
-        # security group admits -- that is a rule, not metadata. Left empty
-        # and reported as not-visible rather than guessed at.
+        # Neither vantage point can see which CIDR the security group admits
+        # -- that is a rule, not metadata, and not something the install knows
+        # either. Left empty and reported as not-visible rather than guessed
+        # at.
         owner_ip_cidr = ""
-        values: dict[str, Any] = dict(facts)
+        values: dict[str, Any] = dict(facts if facts is not None else cluster_record)
     else:
         state = _load_cloud_state()
         source = SOURCE_TERRAFORM_STATE
@@ -832,7 +866,10 @@ def infra_status() -> dict[str, Any]:
     return {
         "source": source,
         "source_label": SOURCE_LABELS[source],
-        "on_ec2": source == SOURCE_IMDS,
+        # "this process is running on the provisioned instance", not "IMDS
+        # answered" (#4138) -- see ON_INSTANCE_SOURCES for why the two
+        # vantage points render identically everywhere this flag is read.
+        "on_ec2": source in ON_INSTANCE_SOURCES,
         "known": known,
         "provisioned": provisioned,
         "config_synced": TERRAFORM_DIR.is_dir(),

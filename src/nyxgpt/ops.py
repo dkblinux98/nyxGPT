@@ -48,6 +48,8 @@ from nacl import public as nacl_public
 
 from nyxgpt import (
     brew_services,
+    cloud_cluster_record,
+    cloud_imds,
     docker_access,
     model_bootstrap,
     release_tarball,
@@ -12493,6 +12495,68 @@ def _write_k8s_install_record(mode: str, checkout: Path | str | None) -> OpsResu
     )
 
 
+def _record_k8s_cloud_deploy() -> list[OpsResult]:
+    """Record the *cloud deployment* this cluster is, in the cluster (#4138).
+
+    The companion to `_write_k8s_install_record` and the same move one question
+    over: that one records which build the deployment runs, this one records
+    which EC2 instance it runs on. The api Pod serving the Infrastructure page
+    can read neither from the host -- IMDS is not routed into the Pod network
+    and `~/.nyxGPT/cloud/` is the host's filesystem -- so the page reported
+    "it is neither an EC2 instance nor one that has provisioned the substrate"
+    about a deployment that identified itself correctly one process away.
+
+    Runs on the instance, as part of `nyxgpt ops install --kubernetes` -- which
+    a `--kubernetes` cloud deploy executes there -- so the facts are the host's
+    own IMDS reads, first-hand. Nothing probes the host from inside a Pod and
+    no host path is mounted into one; that coupling is what #3987/#4137 are
+    about and this deliberately does not reintroduce it.
+
+    Returns `[]` -- no step output at all -- when this machine is not an EC2
+    instance. A local `kind`/minikube install is not a cloud deployment, so
+    there is nothing to record and nothing to report, and the page's UNKNOWN
+    for that vantage point is #3804's case working as designed.
+    """
+    facts = cloud_imds.instance_facts()
+    record = cloud_cluster_record.build_record(
+        facts,
+        version=_reportable_version(running_version()),
+        substrate=SUBSTRATE_KUBERNETES,
+        # The host's own platform, read here rather than taken from a deploy
+        # flag: this process IS the instance, so it does not have to be told.
+        os_family="macos" if _is_macos() else "linux",
+    )
+    if not record:
+        logger.debug(
+            "ops: not an EC2 instance -- no cloud-deploy record written into the cluster",
+            extra={"component": "ops", "action": "install-kubernetes"},
+        )
+        return []
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "apply", "-f", "-"],
+        check=False,
+        input=json.dumps(cloud_cluster_record.configmap_manifest(record)),
+    )
+    if cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Could not record the cloud deployment in the cluster -- the Infrastructure "
+                "page served by this deployment will report its AWS substrate and cloud "
+                "deployment as unknown",
+                _cp_details(cp),
+            )
+        ]
+    return [
+        OpsResult(
+            True,
+            "Recorded the cloud deployment in the cluster "
+            f"(configmap/{cloud_cluster_record.CLOUD_DEPLOY_CONFIGMAP})",
+            f"instance={record['instance_id']} region={record.get('region') or 'unknown'}",
+        )
+    ]
+
+
 def _read_k8s_install_record() -> dict[str, str]:
     """The install record the cluster carries, or `{}` when there is none (#3988).
 
@@ -12758,6 +12822,10 @@ def _install_kubernetes_steps(
         ("build/load web image", lambda: _build_and_load_k8s_web_image(dev=dev)),
         ("apply kustomization", lambda: _kubectl_apply_kustomization(dev)),
         ("record install mode", lambda: _record_k8s_install_mode(dev)),
+        # #4138. Beside the install-mode record and for the same reason: an
+        # api Pod cannot read IMDS or the host's deploy record, so the facts
+        # have to be put where it can. A no-op off EC2.
+        ("record cloud deployment", _record_k8s_cloud_deploy),
         ("wait for data/LLM tier", _wait_for_k8s_data_tier),
         # The api/web Pods depend on the tier above for their readiness
         # probes, so they are waited on after it -- and they ARE waited on

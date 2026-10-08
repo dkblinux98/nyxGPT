@@ -18,7 +18,7 @@ metadata:
   # namespace's nyxgpt-api Pods and delete one to force its
   # Deployment/ReplicaSet to recreate it. No broader cluster access than
   # that -- in particular, no access to Secrets, no resource outside this
-  # namespace, and of this namespace's ConfigMaps exactly one, by name (see
+  # namespace, and of this namespace's ConfigMaps exactly two, by name (see
   # `nyxgpt-install-mode` below). (Blue/green's Service-selector patch
   # permission was retired along with deploy.py -- see #3409.)
   #
@@ -37,15 +37,27 @@ metadata:
   # detect the cluster and then render every observability workload
   # "absent", which is the same false negative one card over.
   #
-  # `configmaps` (get) is scoped to the single name `nyxgpt-install-mode` --
-  # the deployment's own install record (#3988, second round). The marker file
-  # that used to be the only record lives in the installing machine's
-  # `~/.nyxGPT`, which is exactly what an api Pod cannot see, so a `--dev`
-  # cluster reported its install mode as "unrecorded" on the page while
-  # `nyxgpt ops status` on the host said "dev". `resourceNames` keeps this to
-  # one ConfigMap by name rather than opening the namespace's ConfigMaps --
-  # `k8s/configmap.yaml` and `k8s/secret.yaml` stay unreadable through this
-  # Role, which is the property the paragraph above promises.
+  # `configmaps` (get) is scoped by name to the deployment's own two records,
+  # and to nothing else:
+  #
+  # * `nyxgpt-install-mode` -- which build this deployment runs (#3988, second
+  #   round). The marker file that used to be the only record lives in the
+  #   installing machine's `~/.nyxGPT`, which is exactly what an api Pod cannot
+  #   see, so a `--dev` cluster reported its install mode as "unrecorded" on
+  #   the page while `nyxgpt ops status` on the host said "dev".
+  # * `nyxgpt-cloud-deploy` -- which EC2 instance this deployment runs ON
+  #   (#4138). Same shape, one question over: a Pod reaches neither IMDS (the
+  #   link-local address is not routed into the Pod network) nor the host's
+  #   `~/.nyxGPT/cloud/`, so the Infrastructure page said "it is neither an EC2
+  #   instance" about a deployment running on one. `nyxgpt ops install
+  #   --kubernetes` writes it from the instance; this grant is what lets the
+  #   page read it back. Read-only, so the page can report the deployment and
+  #   can no more change it than before (D-017).
+  #
+  # `resourceNames` keeps this to those two ConfigMaps by name rather than
+  # opening the namespace's ConfigMaps -- `k8s/configmap.yaml` and
+  # `k8s/secret.yaml` stay unreadable through this Role, which is the property
+  # the paragraph above promises.
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -64,7 +76,7 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["nyxgpt-install-mode"]
+    resourceNames: ["nyxgpt-install-mode", "nyxgpt-cloud-deploy"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
