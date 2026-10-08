@@ -2421,6 +2421,28 @@ rather than mechanism, and nothing can enforce them.
   Source: #4167; `agents/runbooks/developer-runbook.md` §3c;
   `docs/live-verification-ci.md`.
 
+- **D-063** · 2026-10-08 · developer-agent (#4167) — **A unit test whose
+  fixtures name a release line supplies the declared version itself; it does
+  not read the checkout's.** `release_candidate.plan()` compares the branch it
+  is given against `pyproject.toml`'s `project.version` (via
+  `declared_version()` -> `_checkout_pyproject()`), so the publish-pipeline
+  tests — written against the `3.0.0` line, with `PUBLISHED` and the expected
+  `3.0.0rc3`/`3.0.0rc2` as arithmetic on it — passed only while the repo sat
+  on that line. The v3.0.1 ceremony bump (`ae64a2cd`) therefore turned 28
+  tests in `tests/unit/test_release_candidate.py` and
+  `test_release_candidate_endpoint.py` red **on the release branch itself**,
+  all on `branch v3.0.0 names release 3.0.0, but pyproject.toml declares
+  3.0.1`. Found as collateral on #4167's verification gate, not caused by it
+  (reproduced on a clean `origin/v3.0.1` worktree). Rewriting the literals to
+  `3.0.1` was rejected: it clears the symptom and re-arms it for v3.0.2
+  (first principle 2). `tests/unit/release_line_pin.py` pins the seam
+  instead, and `test_the_pinned_release_line_is_what_the_plan_reads` fails
+  first if that seam is renamed. Every release ceremony bumps this version —
+  treat any test that reads it as on this list.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4167; `tests/unit/release_line_pin.py`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

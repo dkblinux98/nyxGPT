@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from release_line_pin import TEST_RELEASE_LINE, pin_declared_release_line
 
 from nyxgpt import release_candidate as rc
 
@@ -34,6 +35,28 @@ pytestmark = pytest.mark.unit
 PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _declared_release_line(monkeypatch, tmp_path_factory):
+    """Every `v3.0.0` below names `TEST_RELEASE_LINE`, not the checkout's line.
+
+    See `release_line_pin`: without this, a release ceremony's version bump
+    turns this whole file red (#4167).
+    """
+    pin_declared_release_line(monkeypatch, tmp_path_factory)
+
+
+def test_the_pinned_release_line_is_what_the_plan_reads():
+    """Guards the fixture, not the product.
+
+    `pin_declared_release_line` patches `rc._checkout_pyproject`. Rename or
+    inline that seam and the patch becomes a no-op -- the tests below would go
+    back to reading the checkout's version and would fail, one release
+    ceremony later, for a reason that has nothing to do with the code they
+    cover. This fails first, and says why.
+    """
+    assert rc.declared_version() == TEST_RELEASE_LINE
 
 
 def _args(**overrides) -> argparse.Namespace:
