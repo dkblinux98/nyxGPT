@@ -60,6 +60,10 @@ on:
 
 permissions:
   contents: read
+  # Q1 asks for this run's own log archive, so the answer must be about the
+  # archive rather than about permission -- `actions: read` is what makes a 403
+  # here mean "there is no archive yet" instead of "you may not ask".
+  actions: read
 
 jobs:
   the-4138-round-reproduced:
@@ -87,7 +91,15 @@ jobs:
       - name: The run-log archive really is unavailable mid-run
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `github.token`, NOT `secrets.GITHUB_TOKEN`. They are the same token,
+          # but reading it through `secrets.` puts this workflow in the
+          # Dependabot-secretless class #4167 enumerates: a Dependabot-actored
+          # `pull_request` run gets a BLANK `secrets.*`, and this job would then
+          # go red with a 401 that looks exactly like the 403 it exists to
+          # observe. `github.token` is the job's own installation token and is
+          # never withheld. `tests/unit/test_pull_request_target_safety.py`
+          # enforces the distinction.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           if gh run view "${GITHUB_RUN_ID}" --log > /tmp/midrun.log 2>/tmp/midrun.err; then
