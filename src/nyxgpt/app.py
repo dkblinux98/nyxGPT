@@ -2583,9 +2583,13 @@ def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
 def cloud_infra_status(_request: Request) -> dict[str, Any]:
     """What AWS substrate is provisioned, and how it is reachable.
 
-    Cheap and side-effect free -- answers from instance metadata when this
-    process runs on the instance, and from the recorded Terraform outputs
-    otherwise -- so the dashboard can poll it.
+    Cheap and side-effect free, so the dashboard can poll it. Three sources,
+    and the reply's `source`/`source_label` say which answered: instance
+    metadata when this process runs on the instance; the cloud-deploy record
+    in the cluster when it is an api Pod of a `--kubernetes` cloud deployment,
+    which reaches neither IMDS nor the host's `~/.nyxGPT/cloud` (#4138); and
+    the recorded Terraform outputs otherwise. None of the three available is
+    *unknown*, never "not provisioned" (#3804).
     """
     return cloud_infra_module.infra_status()
 
@@ -2691,8 +2695,10 @@ def cloud_deploy_status(
     """What is deployed, at what version, whether the tunnel is open, and its history.
 
     Side-effect free by default -- reads the recorded deploy/tunnel state and
-    the lifecycle history rather than calling AWS or the instance -- so the
-    dashboard can poll it. `probe_health=true` adds one short request to the
+    the lifecycle history rather than calling AWS or the instance, plus, inside
+    an api Pod, one bounded and five-minute-cached read of the cluster's own
+    cloud-deploy record (#4138) -- so the dashboard can poll it.
+    `probe_health=true` adds one short request to the
     tunneled API health endpoint, which is what the Cloud Deployment page asks
     for on an explicit load or refresh.
 
