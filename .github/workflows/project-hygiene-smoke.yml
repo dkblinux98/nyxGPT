@@ -40,6 +40,16 @@ name: Project Hygiene Smoke
 # board without mutating production state. The stub reproduces the ordering
 # that live race depends on, which is the part that was untestable before.
 
+# And, since #4167:
+#
+#   "Would the guard that keeps `ensure_project_hygiene.yml`'s
+#    `pull_request_target` trigger safe actually catch an edit that made it
+#    unsafe — or does it only pass because the tree is already correct?"
+#
+# Same reason as everything above: a guard written today passes today whatever
+# it asserts. `pr-head-guard-discriminates` runs it against five deliberately
+# broken copies of the workflow and requires it to go red on each.
+
 on:
   push:
     paths:
@@ -49,6 +59,8 @@ on:
       - ".github/workflows/project-hygiene-smoke.yml"
       - "tests/test_issue_hygiene.sh"
       - "tests/gh_stub_issue_hygiene.py"
+      - "tests/test_pr_head_guard_discriminates.sh"
+      - "tests/unit/test_pull_request_target_safety.py"
   pull_request:
     paths:
       - "scripts/agents/ensure_issue_hygiene.sh"
@@ -57,6 +69,8 @@ on:
       - ".github/workflows/project-hygiene-smoke.yml"
       - "tests/test_issue_hygiene.sh"
       - "tests/gh_stub_issue_hygiene.py"
+      - "tests/test_pr_head_guard_discriminates.sh"
+      - "tests/unit/test_pull_request_target_safety.py"
   workflow_dispatch:
 
 permissions:
@@ -129,3 +143,32 @@ jobs:
       - name: "Both directions: the race clobbers without the guard, survives with it"
         shell: bash
         run: bash tests/test_issue_hygiene.sh
+
+  pr-head-guard-discriminates:
+    # The executed half of #4167. `pr-hygiene` now runs on
+    # `pull_request_target`, which hands it this repository's secrets on a
+    # branch the PR's author controls; the only thing making that safe is that
+    # the job never resolves anything to the PR head. That is a property of a
+    # file, so it is guarded by a test -- and a guard over an
+    # already-correct tree is green whatever it asserts. This job injects the
+    # unsafe shapes and requires the guard to go red on each, so "the guard
+    # passed" is evidence about the guard rather than about the day.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # pytest + PyYAML only: the guard reads workflow YAML off disk and the
+      # script runs it with `--noconftest`, so this job does not install the
+      # project to answer a question about a `.github/workflows` file.
+      - name: Install the guard's dependencies
+        run: python -m pip install --quiet pytest pyyaml
+
+      - name: "Both directions: the guard is red on every unsafe shape, green on the shipped one"
+        shell: bash
+        run: bash tests/test_pr_head_guard_discriminates.sh

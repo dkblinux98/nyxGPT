@@ -33,7 +33,8 @@
 # it does not apply. This is what keeps the list safe to extend: naming a check
 # here costs nothing on the PRs it does not run on.
 #
-# MAINTENANCE. Every job of every `pull_request`-triggered workflow must appear
+# MAINTENANCE. Every job of every `pull_request`- or
+# `pull_request_target`-triggered workflow must appear
 # in exactly one of the two sections below — `tests/unit/test_required_checks.py`
 # fails otherwise, in both directions (a name here that matches no job, and a
 # job that this file never classified). A new smoke workflow therefore cannot
@@ -121,6 +122,15 @@ Install the published candidate from the real tap
 # that broke it.
 Upgrade one candidate to the next with the stack running
 no-clobber
+# project-hygiene-smoke.yml's `pr-head-guard-discriminates` job (#4167). The
+# executed evidence that the guard protecting `ensure_project_hygiene.yml`'s
+# `pull_request_target` trigger is not vacuous: it goes red on a PR-head
+# checkout, a `gh pr checkout`, a dependency install and a revert to
+# `pull_request`. Required and path-filtered, so it is absent (and free) on
+# essentially every PR; when it does run, a red one means the only thing
+# standing between an arbitrary author's branch and a `workflow`-scoped PAT
+# has stopped working.
+pr-head-guard-discriminates
 Collections list/create on an empty Cassandra
 restart-activation-smoke
 stamps

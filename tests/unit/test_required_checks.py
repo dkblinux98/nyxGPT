@@ -8,13 +8,13 @@ neither. That design has exactly one failure mode, and it is silent both ways:
 * a name that matches no job any more (a renamed job, a deleted workflow) is a
   gate that can never fire -- the list still *looks* like it covers that
   ground, and nothing goes red to say otherwise;
-* a new `pull_request` job that nobody added to the list is a real gate the
-  review never waits for, so the reviewer sees a green-looking head while the
-  job is still running or already red.
+* a new `pull_request` (or `pull_request_target`) job that nobody added to the
+  list is a real gate the review never waits for, so the reviewer sees a
+  green-looking head while the job is still running or already red.
 
 So the invariant is stronger than "the names resolve": every job of every
-`pull_request`-triggered workflow must be classified as required or explicitly
-not-required. Adding a smoke workflow therefore forces the decision instead of
+`pull_request`- or `pull_request_target`-triggered workflow must be classified
+as required or explicitly not-required. Adding a smoke workflow therefore forces the decision instead of
 defaulting to "not a gate", which is the direction that fails quietly.
 
 The `not-required` section is not an escape hatch to be widened casually --
@@ -65,7 +65,14 @@ def _check_names(pull_request_only: bool) -> dict[str, str]:
     `pull_request` trigger at all -- `execute-review-decision` arrives by
     `issue_comment`, and ci-tests' jobs arrive by `push` and report as
     skipped -- and classifying those is legitimate, not a dangling name.
+
+    `pull_request_target` counts for the completeness question too (#4167).
+    It reports a check run against the PR like `pull_request` does, so a job
+    on that trigger is a gate the review could be racing just the same; the
+    difference that matters to the gate is which commit the run is associated
+    with, not whether it was classified.
     """
+    pr_triggers = ("pull_request", "pull_request_target")
     names: dict[str, str] = {}
     for path in sorted(WORKFLOW_DIR.glob("*.yml")):
         data = yaml.safe_load(path.read_text())
@@ -75,7 +82,7 @@ def _check_names(pull_request_only: bool) -> dict[str, str]:
         triggers = data.get("on", data.get(True))
         if not isinstance(triggers, dict):
             continue
-        if pull_request_only and "pull_request" not in triggers:
+        if pull_request_only and not any(t in triggers for t in pr_triggers):
             continue
         for job_id, job in (data.get("jobs") or {}).items():
             job = job or {}
