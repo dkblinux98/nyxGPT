@@ -529,7 +529,18 @@ def installed_version() -> str:
         return ""
 
 
-def _recorded_instance(state: dict[str, Any], record: dict[str, Any]) -> dict[str, str]:
+#: An instance nothing on this machine has a record of.
+_NO_INSTANCE: dict[str, str] = {
+    "host": "",
+    "instance_id": "",
+    "region": "",
+    "security_group_id": "",
+}
+
+
+def _recorded_instance(
+    state: dict[str, Any], record: dict[str, Any], os_family: str = ""
+) -> dict[str, str]:
     """Return the address and ids of the instance this machine last worked on.
 
     **One instance, two vocabularies** (#4161). `~/.nyxGPT/cloud/state.json`
@@ -551,58 +562,88 @@ def _recorded_instance(state: dict[str, Any], record: dict[str, Any]) -> dict[st
     never stale (that is #4136's defect class); the reader was looking up the
     wrong word.
 
-    Precedence, and why:
+    **Which family, and who says so.** `os_family` is the family of the
+    deployment the *caller* is in the middle of, and it wins over the recorded
+    one whenever it is given. Only `_deploy` passes it, and it has to: it
+    resolves through here immediately after `apply_infra`, when `deploy.json`
+    still describes the *previous* deploy. Without the pin, a Linux deploy
+    following a macOS one read the Mac's family off that stale record, took
+    the Mac's address, and ran `wait_for_ssh` and the remote install against a
+    working Mac -- `ssh_user` is `ec2-user` on both substrates, so it would
+    have connected -- while the Linux instance this run had just paid for sat
+    empty. `resolve_plan` already treats a family switch as a real case (the
+    session backend and `kubernetes` are deliberately not carried across one),
+    so the record's family is a *default*, never an override.
 
-    1. **`deploy.json`'s `os_family: macos` pins the Mac vocabulary.** One
-       `state.json` can carry both key sets -- a workstation that deployed
-       Linux before deploying a Mac has the old `public_ip` beside the new
-       `mac_public_ip` -- so the recorded deployment, not key presence, is
-       what says which instance the operator means.
-    2. **Otherwise the bare substrate keys**, which is the Linux happy path
-       and the one `_deploy` itself resolves through immediately after an
-       apply: `deploy.json` there still names the *previous* deploy, so it
-       must never outrank this run's fresh substrate outputs.
-    3. **Then `deploy.json`'s plain `host`**, which is what `cloud status` and
+    **Each candidate is taken whole**, not field by field. The address and the
+    ids have to come from the same place or a host ends up wearing another
+    machine's instance id, region and security group. In order:
+
+    1. **The substrate block for the family in play** -- the `mac_` keys for a
+       Mac, the bare keys otherwise. This is both the Linux happy path and the
+       freshly-applied outputs `_deploy` depends on, so nothing below may
+       outrank it.
+    2. **`deploy.json`'s plain `host`**, which is what `cloud status` and
        `cloud screen` already trust. It covers the `--host` box nyxGPT did not
-       provision, whose address appears in no substrate record at all.
-    4. **Then the `mac_` keys**, so a Mac that was allocated but whose deploy
-       did not finish -- no `deploy.json`, hence no `os_family` -- is still
-       reachable by the inspections an operator runs to find out why.
+       provision, whose address appears in no substrate record at all -- and
+       which correspondingly has no security group of ours, so the record
+       carries none and this returns none. Skipped entirely when the caller
+       pinned a family the record contradicts: a Linux deploy whose Terraform
+       outputs were unreadable (#3993) must refuse rather than fall through to
+       the Mac the record still names.
+    3. **The `mac_` keys**, when no family is known at all -- a Mac that was
+       allocated but whose deploy never finished has no `deploy.json`, hence
+       no `os_family`, and is still reachable by the inspections an operator
+       runs to find out why.
 
     Both files are removed by `cloud destroy`, so nothing here can resurrect
     an instance that is gone.
     """
-    if str(record.get("os_family") or "") == OS_FAMILY_MACOS:
-        return {
-            "host": str(record.get("host") or state.get("mac_public_ip") or ""),
-            "instance_id": str(state.get("mac_instance_id") or record.get("instance_id") or ""),
-            "region": str(state.get("mac_region") or record.get("region") or ""),
-            "security_group_id": str(state.get("mac_security_group_id") or ""),
-        }
-    return {
-        "host": str(
-            state.get("public_ip") or record.get("host") or state.get("mac_public_ip") or ""
-        ),
-        "instance_id": str(state.get("instance_id") or state.get("mac_instance_id") or ""),
-        "region": str(state.get("region") or state.get("mac_region") or ""),
-        "security_group_id": str(
-            state.get("security_group_id") or state.get("mac_security_group_id") or ""
-        ),
+    recorded_family = str(record.get("os_family") or "")
+    family = os_family or recorded_family
+    mac = {
+        "host": str(state.get("mac_public_ip") or ""),
+        "instance_id": str(state.get("mac_instance_id") or ""),
+        "region": str(state.get("mac_region") or ""),
+        "security_group_id": str(state.get("mac_security_group_id") or ""),
     }
+    linux = {
+        "host": str(state.get("public_ip") or ""),
+        "instance_id": str(state.get("instance_id") or ""),
+        "region": str(state.get("region") or ""),
+        "security_group_id": str(state.get("security_group_id") or ""),
+    }
+    candidates = [mac if family == OS_FAMILY_MACOS else linux]
+    if not (os_family and recorded_family and os_family != recorded_family):
+        candidates.append(
+            {
+                "host": str(record.get("host") or ""),
+                "instance_id": str(record.get("instance_id") or ""),
+                "region": str(record.get("region") or ""),
+                "security_group_id": "",
+            }
+        )
+    if not family:
+        candidates.append(mac)
+    for candidate in candidates:
+        if candidate["host"]:
+            return candidate
+    return dict(_NO_INSTANCE)
 
 
-def resolve_target(args: argparse.Namespace) -> DeployTarget:
+def resolve_target(args: argparse.Namespace, os_family: str = "") -> DeployTarget:
     """Locate the provisioned instance and how to SSH to it.
 
     Reads `~/.nyxGPT/cloud/state.json` -- the handoff `cloud infra apply`
     writes, and the one `cloud_mac.allocate` writes its `mac_`-prefixed
     equivalents into -- plus the deploy record, so no flag is needed on the
     happy path for either target OS. `_recorded_instance` holds that lookup
-    and the reasoning for its precedence (#4161).
+    and the reasoning for its precedence (#4161), including why a caller that
+    knows which family it is deploying (only `_deploy`) must say so.
     """
     state = _cloud_state()
     record = load_deploy_state()
-    found = _recorded_instance(state, record)
+    found = _recorded_instance(state, record, os_family)
     requested = str(getattr(args, "host", None) or "")
     host = requested or found["host"]
     if requested and requested != found["host"]:
@@ -610,7 +651,7 @@ def resolve_target(args: argparse.Namespace) -> DeployTarget:
         # recorded ids describe a different box. Reporting them beside this
         # host would attribute an instance id, region and security group to a
         # machine that has none of them (#4161).
-        found = {"host": host, "instance_id": "", "region": "", "security_group_id": ""}
+        found = {**_NO_INSTANCE, "host": host}
     if not host:
         raise CloudCommandError(
             "No provisioned instance found in "
@@ -2633,7 +2674,13 @@ def _deploy(
             }
         )
 
-        target = resolve_target(args)
+        # `plan.os_family` is passed, not inferred: `deploy.json` still
+        # describes the *previous* deploy at this point, and if that one was a
+        # Mac its `os_family` would steer this resolution onto the Mac's
+        # `mac_public_ip` -- installing a Linux stack over SSH onto a working
+        # EC2 Mac while the instance this run just applied sits empty and
+        # billing. See `_recorded_instance` (#4161).
+        target = resolve_target(args, os_family=plan.os_family)
         if plan.identity_file:
             target.identity_file = str(Path(plan.identity_file).expanduser())
         target.user = plan.ssh_user

@@ -617,11 +617,11 @@ Terraform outputs land in `public_ip`/`instance_id`/`region`, while an EC2 Mac
 command shares (`resolve_target`, used by `cloud ops`, `cloud tunnel`,
 `cloud credentials`, `cloud canary` and `cloud smoke`) reads **both**, so:
 
-| What is on record | Where the address comes from |
+| What is on record | Where the address and its ids come from |
 | --- | --- |
-| A Linux deploy | `state.json` `public_ip` |
-| A macOS deploy (`deploy.json` says `os_family: macos`) | `deploy.json` `host`, then `state.json` `mac_public_ip` |
-| An EC2 Mac allocated by a deploy that did not finish | `state.json` `mac_public_ip` |
+| A Linux deploy | `state.json`'s bare block (`public_ip`, `instance_id`, …) |
+| A macOS deploy (`deploy.json` says `os_family: macos`) | `state.json`'s `mac_` block, then `deploy.json` `host` |
+| An EC2 Mac allocated by a deploy that did not finish | `state.json`'s `mac_` block |
 | A box supplied with `--host` (no substrate record of it) | `deploy.json` `host` |
 | `--host` on this invocation | the flag, always |
 
@@ -632,9 +632,24 @@ unreachable without re-typing `--host` on each command. The values were never
 stale; the reader was looking up the wrong word. (Stale values are a
 different defect, fixed in #4136.)
 
-When `--host` names a machine that is *not* the one on record, the recorded
-instance id, region and security group are dropped rather than reported beside
-it: they describe a different box.
+Two rules keep that lookup from reaching the *wrong* machine:
+
+- **Each row is taken whole.** The address and the ids come from one record or
+  from none, so a host is never reported wearing another machine's instance
+  id, region or security group. A `--host` box nyxGPT did not provision
+  therefore shows no security group — it has none of ours. When `--host` names
+  a machine that is not the one on record, the recorded ids are dropped for the
+  same reason.
+- **A deploy in flight names its own target OS, and that wins.** `cloud
+  deploy` resolves through this resolver immediately after applying the
+  substrate, when `deploy.json` still describes the *previous* deploy. A plain
+  `nyxgpt cloud deploy` after a macOS one is a Linux deploy (the family comes
+  from the instance type unless `--host` names the recorded box), so the Mac's
+  `os_family: macos` is stale — and reading the family off it would have sent
+  the Linux install over SSH onto a working EC2 Mac while the instance that run
+  had just paid for sat empty. If the pinned substrate has no address to give
+  (an apply whose Terraform outputs were unreadable, #3993), the deploy
+  refuses rather than crossing to the other family's record.
 
 #### If you SSH in yourself (#3993)
 

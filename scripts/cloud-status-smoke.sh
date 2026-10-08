@@ -8,7 +8,7 @@
 # entry point resolves them, and whether they read the state files at the
 # paths the deploy actually writes.
 #
-# Nine phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
+# Ten phases, so a pass cannot be vacuous (the #3753 fault-injection rule):
 #
 #   1.  No deploy record         -> UNKNOWN, and explicitly not "not deployed"
 #   1b. A failed deploy attempt  -> NOT COMPLETED, naming the phase and the
@@ -25,8 +25,11 @@
 #   4c. Both substrate blocks    -> the deploy record decides, so a Mac
 #                                   deployed after a Linux box is the target
 #   4d. The same Mac, `tunnel`   -> the shared resolver fixed it there too
+#   4e. A Linux deploy after it  -> the deploy's own family wins over that
+#                                   stale record, so the install cannot land
+#                                   on the Mac
 #
-# 4a-4d are the #4161 half: on a live `mac2.metal` during v3.0.0 acceptance
+# 4a-4e are the #4161 half: on a live `mac2.metal` during v3.0.0 acceptance
 # testing, every `nyxgpt cloud ops` subcommand answered "No provisioned
 # instance found" about a Mac the same CLI had just deployed, because the
 # resolver read `public_ip` and a macOS deploy writes `mac_public_ip`.
@@ -328,6 +331,39 @@ else
     # failure must be about the tunnel, not about finding the instance.
     contains "$OUT" "Could not open the SSH tunnel"
 fi
+
+echo
+echo '== Phase 4e: a Linux deploy after a Mac one must not target the Mac (#4161) =='
+# The other half of the same resolution, and the dangerous one. `cloud deploy`
+# resolves its install target through this resolver immediately after applying
+# the substrate -- at which point deploy.json still describes the PREVIOUS
+# deploy. Phase 4c is the inspection case, where that stale record is exactly
+# right. Here it is exactly wrong: a plain `nyxgpt cloud deploy` after a macOS
+# one is a Linux deploy (the family comes from the instance type), so taking
+# `os_family: macos` off the record would send the Linux install over SSH onto
+# a working EC2 Mac -- `ec2-user` on both substrates, so it connects -- while
+# the instance this run just paid for sits empty.
+#
+# Driven through the installed package rather than `nyxgpt cloud deploy`,
+# which would need AWS and a real apply. The resolver is still the shipped
+# one, read from the wheel in the venv, against the same real files on disk.
+#
+# The state.json below is what phase 4c left: both blocks, Mac deployed last.
+# 203.0.113.10 is the Linux box this run would have just applied.
+python - <<'PY' >"$OUT" 2>&1
+import argparse
+
+from nyxgpt import cloud_deploy
+
+args = argparse.Namespace(host=None, ssh_user=None, identity_file=None)
+print("deploying-linux:", cloud_deploy.resolve_target(args, os_family="linux").host)
+print("inspecting:", cloud_deploy.resolve_target(args).host)
+PY
+cat "$OUT"
+contains "$OUT" "deploying-linux: 203.0.113.10"
+# ...and with nobody pinning a family, the Mac is still what an inspection
+# resolves, so the fix above did not simply disable the record.
+contains "$OUT" "inspecting: 203.0.113.21"
 
 echo
 echo "All phases passed."
