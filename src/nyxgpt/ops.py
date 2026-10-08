@@ -8494,6 +8494,28 @@ K8S_IMAGE_NAMES: dict[str, str] = {"api": "nyxgpt-api", "web": "nyxgpt-web"}
 K8S_OLLAMA_WORKLOAD = "statefulset/ollama"
 K8S_OLLAMA_BASE_URL = f"http://ollama.{K8S_NAMESPACE}.svc.cluster.local:11434"
 
+# Cassandra's twin, named for the same reason (#4137): `ops doctor`'s Cassandra
+# check is a claim about THE DEPLOYMENT, and on a Kubernetes deployment the
+# subject is this StatefulSet -- never the host's `nyxgpt-cassandra` container.
+# The Pod prefix is Kubernetes' own StatefulSet naming rule (`<name>-<ordinal>`,
+# so `cassandra-0`), which is what `_k8s_cassandra_deployment_issues` matches on.
+K8S_CASSANDRA_WORKLOAD = "statefulset/cassandra"
+K8S_CASSANDRA_POD_PREFIX = "cassandra-"
+K8S_OLLAMA_POD_PREFIX = "ollama-"
+
+# The four core tiers' Pod-name prefixes, as distinct from the observability
+# overlay that shares the namespace (#4137). The name twin of
+# `self_heal.K8S_CORE_POD_APPS`, matched on name rather than on the `app`
+# label because `_k8s_pod_states` carries names: one `kubectl get pods` answers
+# the Pod list, the badges and this question at once, and asking again with
+# `-l` would buy a second notion of "is the core tier here" on the same screen.
+# The two StatefulSets are matched by Kubernetes' `<name>-<ordinal>` rule.
+K8S_CORE_POD_PREFIXES: tuple[str, ...] = (
+    *K8S_APP_POD_PREFIXES,
+    K8S_CASSANDRA_POD_PREFIX,
+    K8S_OLLAMA_POD_PREFIX,
+)
+
 # The deployment's data/LLM tier (#3786): the in-cluster Cassandra that holds
 # chat sessions for every api replica and the in-cluster Ollama that answers
 # them (k8s/statefulset-cassandra.yaml, k8s/statefulset-ollama.yaml). The
@@ -10178,6 +10200,27 @@ def _k8s_app_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
     return any(name.startswith(K8S_APP_POD_PREFIXES) for name in (s.name for s in pod_states))
 
 
+def _k8s_core_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
+    """Whether the cluster holds this deployment's *core* tier.
+
+    The question "is this a Kubernetes deployment?", and not the same question
+    as `bool(pod_states)` (#4137). `nyxgpt ops observability --kubernetes` can
+    put the observability overlay on a cluster while api/web/Cassandra/Ollama
+    run natively on the host; that deployment's core components are native
+    ones, so a namespace holding only observability Pods must not make a
+    host-scoped card read "not in scope for this deployment".
+
+    The `ops.py` twin of `self_heal.kubernetes_mode_active`, which draws the
+    same line from the same four tiers (`K8S_CORE_POD_APPS`) -- deliberately,
+    because the Infrastructure page and the Self-Heal page describe one
+    deployment and two notions of Kubernetes-mode is how they end up
+    contradicting each other (#3827). Wider than `_k8s_app_pods_present`,
+    which asks only about api/web because its subject is the *image* identity
+    of those two Deployments.
+    """
+    return any(name.startswith(K8S_CORE_POD_PREFIXES) for name in (s.name for s in pod_states))
+
+
 def _k8s_workload_selector(ref: str) -> str:
     """`app=x,track=y` for a `deploy/…`-style ref -- how to find *its* Pods.
 
@@ -11488,7 +11531,7 @@ def _ensure_k8s_observability_host_access() -> list[OpsResult]:
         for host, entry in K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()
         if entry.service in present
     }
-    urls = [f"http://127.0.0.1:{host}" for host in sorted(publishable)]
+    urls = _k8s_host_urls(publishable)
 
     provisioned = _kubectl_context() == KIND_CONTEXT and _kind_cluster_publishes_host_ports(
         mappings=K8S_OBSERVABILITY_HOST_PORT_MAPPINGS
@@ -13214,6 +13257,137 @@ def _republish_stale_host_ports(stale: list[tuple[int, K8sPublishedService]]) ->
     return _emit_results("port-forward", results)
 
 
+class _K8sObservabilityAccess(NamedTuple):
+    """How the SRE UIs are reachable from THIS machine, per the live cluster.
+
+    `served` and `stripped` are host ports, so a caller can name URLs or count
+    them; `note` is the one phrase the reporting commands print, and is what
+    stops them contradicting the install about the same cluster (#4135).
+    """
+
+    served: list[int]
+    stripped: list[int]
+    note: str
+
+
+def _k8s_host_urls(host_ports: Iterable[int]) -> list[str]:
+    """`http://127.0.0.1:<port>` for each host port, in port order."""
+    return [f"http://127.0.0.1:{port}" for port in sorted(host_ports)]
+
+
+def _k8s_observability_host_access(*, context: str | None = None) -> _K8sObservabilityAccess:
+    """Ask the cluster how the SRE UIs are reached, instead of asserting one answer (#4135).
+
+    `ops status` printed "reach the UIs with `nyxgpt ops port-forward --target
+    observability`" unconditionally -- minutes after the install on the same
+    cluster had reported the four NodePort URLs and probed them. Two messages
+    in one product about one cluster, and only one of them true: the operator
+    either spends a step on a forward they do not need, or reads the header as
+    "these are not reachable from here" and goes looking for a fault that does
+    not exist.
+
+    That is the #4126 finding in a second location, and the fix is the helper
+    #4126 added. A mapped host port is only being *served* when the Service
+    really carries the node port it maps to -- `kubectl apply -k k8s/`
+    re-asserts the shipped `type: ClusterIP` and strips the patched-on node
+    port, leaving the host port held by the node container with nothing behind
+    it. So the question goes to the live Service
+    (`_k8s_service_node_ports`), never to the install mode and never to
+    `K8S_OBSERVABILITY_PUBLISHED_SERVICES` alone -- that table records what
+    *would* be published, which is the claim being checked, not evidence for
+    it.
+
+    Four answers, the same four `_ensure_k8s_observability_host_access`
+    establishes and in the same order, so the install and the commands
+    reporting on it cannot disagree:
+
+    * **In a Pod** -- the access path belongs to the machine the operator
+      browses from, and a Pod can see neither the node's port mappings nor the
+      Services (#3988). Both paths named, neither claimed, exactly as the
+      dashboard's own observability card does.
+    * **A cluster nyxGPT provisioned** -- the URLs, in the install's own
+      words. A mapped host port whose Service lost its node port is named as
+      mapped-but-dark with the wrapped command that puts it back; a forward
+      cannot fix those, since the node container already holds the port.
+    * **The cloud k3s instance**, where the supervised access bridge owns
+      these ports and a forward started here would win a bind race it must
+      lose.
+    * **Anything else** -- a bring-your-own cluster, where the forward is the
+      only way in and the pointer is correct. When the install already
+      started one, say so rather than asking for it again.
+
+    `context` is kubectl's current context when the caller has already paid
+    for it (`status` has), so reporting does not cost a second
+    `kubectl config current-context`.
+    """
+    forward_pointer = "reach the UIs with `nyxgpt ops port-forward --target observability`"
+    if _in_cluster():
+        return _K8sObservabilityAccess(
+            [],
+            [],
+            "reach the UIs from the machine you browse from -- published on the host where "
+            "nyxGPT provisioned the cluster, otherwise with `nyxgpt ops port-forward "
+            "--target observability` (a Pod can see neither the node's port mappings nor "
+            "the Services)",
+        )
+
+    if (_kubectl_context() if context is None else context) == KIND_CONTEXT:
+        mapped = _kind_published_host_ports()
+        # Only Services that are actually there: an absent Service carries no
+        # node port either, and calling that "lost its node port" would be a
+        # fresh wrong message of exactly the kind this issue is about. One
+        # `kubectl get svc` for the set, then one read per mapped Service.
+        present = _k8s_services_present(
+            {entry.service for entry in K8S_OBSERVABILITY_PUBLISHED_SERVICES.values()}
+        )
+        served: list[int] = []
+        stripped: list[int] = []
+        for host, entry in sorted(K8S_OBSERVABILITY_PUBLISHED_SERVICES.items()):
+            if host not in mapped or entry.service not in present:
+                continue
+            if entry.node_port in _k8s_service_node_ports(entry.service):
+                served.append(host)
+            else:
+                stripped.append(host)
+        notes = []
+        if served:
+            notes.append(
+                f"SRE UIs reachable at {', '.join(_k8s_host_urls(served))} -- NodePorts "
+                "published by the cluster, no port-forward needed, and they survive Pod "
+                "replacement"
+            )
+        if stripped:
+            notes.append(
+                f"the cluster maps {', '.join(_k8s_host_urls(stripped))} but the Service(s) "
+                "behind them lost their node port -- `nyxgpt ops observability --kubernetes` "
+                "publishes them again"
+            )
+        if notes:
+            return _K8sObservabilityAccess(served, stripped, "; ".join(notes))
+        # A `nyxgpt-local` created before the SRE host ports were mapped: its
+        # node publishes none of them and they cannot be added to a running
+        # cluster, so the forward below is the answer here too.
+
+    if _k8s_access_bridge_owns_host_ports():
+        return _K8sObservabilityAccess(
+            [],
+            [],
+            "the SRE UIs are held by the Kubernetes access bridge on this instance -- reach "
+            "them from your workstation with `nyxgpt cloud tunnel`",
+        )
+
+    if port_forward_status()["running"]:
+        return _K8sObservabilityAccess(
+            [],
+            [],
+            "reached by the managed background port-forward the install started "
+            "(`nyxgpt ops port-forward --status` / `--stop`; `nyxgpt ops port-forward "
+            "--target observability` re-establishes it)",
+        )
+
+    return _K8sObservabilityAccess([], [], forward_pointer)
+
+
 @dataclass
 class _PortForwardArgs:
     """The two fields `_port_forward_plan` reads, for in-process callers.
@@ -13662,6 +13836,20 @@ def infra_status() -> dict[str, Any]:
     ...") so the operator does not have to go looking in a log for it --
     see `self_heal.compose_probe`.
 
+    `compose_in_scope`/`compose_out_of_scope_reason` separate the third state
+    from those two (#4137): a Compose survey that was never a question about
+    this deployment. There are two such vantage points, not one. #3988 found
+    the first -- inside a Pod -- and scoped the card on `in_cluster`; the
+    second is a Kubernetes *host*, which is neither in-cluster nor Compose,
+    where `kubectl` answers for fourteen Pods and every `docker compose ps`
+    exits 125. On that instance the card read CANNOT DETERMINE and named
+    `/home/ec2-user/.nyxGPT/docker-compose.yml` as the cause, directly above
+    its own list of running Pods. The gate is now what *answers*, not where
+    this process runs -- specifically, whether the cluster holds the **core**
+    tier (`_k8s_core_pods_present`), because a namespace holding only the
+    observability overlay belongs to a deployment whose core stack is
+    somewhere else and still owes a Compose answer.
+
     `native_probe_available`/`native_probe_reason` are the same pair for the
     **native** card, and `terraform.probe_available` was rebuilt on the same
     rule (#4022). Native Cassandra is the one native component read out of
@@ -13676,7 +13864,6 @@ def infra_status() -> dict[str, Any]:
     and every call was denied.
     """
     mode_info = detect_deployment_mode()
-    compose_probe = self_heal.compose_probe()
 
     docker_available = _which("docker") is not None
     tf_state = terraform_stack_state()
@@ -13731,6 +13918,11 @@ def infra_status() -> dict[str, Any]:
     pods: list[str] = []
     pod_states: list[dict[str, str]] = []
     unschedulable: list[str] = []
+    # Whether api/web/Cassandra/Ollama are the cluster's, which is the question
+    # the Compose card's scope turns on -- not merely whether the namespace
+    # holds Pods (#4137). Captured here because the classified read below is
+    # the only place that can answer it.
+    core_pods_in_cluster = False
     # No kubeconfig context AND no in-cluster credentials means no cluster was
     # ever configured here -- that's a confidently-determined NOT DEPLOYED
     # (#3468), not the CANNOT DETERMINE state reserved for a *configured*
@@ -13762,6 +13954,7 @@ def infra_status() -> dict[str, Any]:
             # that has simply not been placed *yet* is PENDING, and is not
             # named here.
             unschedulable = [s.name for s in states if s.summary == K8S_SUMMARY_UNSCHEDULABLE]
+            core_pods_in_cluster = _k8s_core_pods_present(states)
     # The in-cluster observability layer (#3787), reported per workload so the
     # Infrastructure page can say *which* piece is missing rather than just
     # "observability: no". Only probed when the cluster answered at all --
@@ -13923,8 +14116,16 @@ def infra_status() -> dict[str, Any]:
         },
     }
 
-    compose_probe_available = compose_probe.available
-    compose_probe_reason = compose_probe.reason
+    # Not run inside a Pod at all (#3988): there is no host filesystem and no
+    # Docker socket there, so the survey has no subject and the probe's own
+    # container-internal path was being shown to the operator as the reason.
+    compose_probe = self_heal.compose_probe() if not in_cluster else None
+    compose_probe_available = compose_probe.available if compose_probe else False
+    compose_probe_reason = compose_probe.reason if compose_probe else ""
+    # Whether a Compose survey is a question about this deployment at all, as
+    # distinct from one that could not be answered (#4137 / #3988). Empty
+    # string means it is in scope and the two flags above stand.
+    compose_out_of_scope_reason = ""
     if in_cluster:
         # A Compose survey run from inside a Pod is not a question with an
         # answer (#3988). The container has no host filesystem and no Docker
@@ -13932,16 +14133,57 @@ def infra_status() -> dict[str, Any]:
         # to the operator as the reason -- a container-internal path, about a
         # machine the page cannot see. Replaced by a scope statement: this
         # vantage point does not cover Compose at all.
-        compose_probe_available = False
-        compose_probe_reason = (
+        compose_out_of_scope_reason = (
             "Not in scope from here: this API is running inside a Kubernetes Pod, which has "
             "no host filesystem and no Docker socket. Run `nyxgpt ops status` on the host to "
             "survey a Docker Compose deployment there."
         )
-        # Same for the native install identity: whatever marker the container
-        # image happens to carry describes a different machine, and the
-        # remedies the card offers (`nyxgpt up`, `nyxgpt ops doctor`) are
-        # aimed at a host this process cannot reach.
+    elif core_pods_in_cluster and kubernetes_probe_available and not compose_probe_available:
+        # The #4137 case, and the reason the gate above could not cover it: a
+        # k3s host is neither in-cluster nor Compose. `kubectl` there reaches
+        # the cluster perfectly well -- the Pod list below this card is proof
+        # -- while every `docker compose ps` exits 125 against a daemon socket
+        # that user cannot reach. Scoping on `in_cluster` alone, the card
+        # landed on CANNOT DETERMINE and named
+        # `/home/ec2-user/.nyxGPT/docker-compose.yml` as the cause, sending
+        # the operator to look for a Compose stack that was never meant to
+        # exist on that instance.
+        #
+        # `core_pods_in_cluster`, not `bool(pods)`: the namespace also holds
+        # the observability overlay, and `nyxgpt ops observability
+        # --kubernetes` can put that there while api/web/Cassandra/Ollama run
+        # natively. On that host a Compose answer IS owed -- its core stack
+        # could genuinely be a Compose one -- so an unreadable probe is a
+        # probe failure to report, not a question to withdraw. Keyed on the
+        # same four tiers as `self_heal.kubernetes_mode_active`, so this card
+        # and the Self-Heal page cannot disagree about one deployment (#3827).
+        #
+        # Gated on the probe having actually failed, deliberately: a host that
+        # runs a Compose stack *and* a cluster still has a real Compose answer,
+        # and hiding it would also hide a dual-stack conflict (see
+        # `conflicts`). This replaces an unanswerable question, never an
+        # answered one.
+        compose_out_of_scope_reason = (
+            f"Not in scope for this deployment: nyxGPT runs as Kubernetes Pods here "
+            f"({len(pods)} in the {K8S_NAMESPACE} namespace -- see the Kubernetes card), and "
+            "the Compose survey could not be run from this process, so there is no Compose "
+            "state this deployment is missing. If this host also runs a Compose stack, survey "
+            "it with `nyxgpt ops status` from a session that can reach the Docker daemon."
+        )
+    if compose_out_of_scope_reason:
+        compose_probe_available = False
+        compose_probe_reason = compose_out_of_scope_reason
+    # The native install's scope is a SEPARATE question, and it turns on
+    # `in_cluster` alone (#3988) -- not on the Compose verdict above. Inside a
+    # Pod, whatever marker the container image happens to carry describes a
+    # different machine, and the remedies the card offers (`nyxgpt up`,
+    # `nyxgpt ops doctor`) are aimed at a host this process cannot reach. On a
+    # Kubernetes *host* the opposite holds: `infra_status` is only ever served
+    # by the api itself (see `running_build` below), so a process answering
+    # from outside a Pod IS the native install, and marking it out of scope
+    # would hide the one install this page can speak for -- while telling the
+    # operator it is "running inside a Kubernetes Pod", which it is not.
+    if in_cluster:
         install_mode["in_scope"] = False
         install_mode["out_of_scope_reason"] = (
             "Not in scope from here: this API is running inside a Kubernetes Pod. The "
@@ -13981,6 +14223,13 @@ def infra_status() -> dict[str, Any]:
         "native_probe_reason": mode_info.docker_probe_reason,
         "compose": mode_info.compose,
         "compose_probe_available": compose_probe_available,
+        # Whether a Compose answer is owed here at all (#4137). The page keys
+        # its NOT IN SCOPE / CANNOT DETERMINE badge off this instead of off
+        # `in_cluster`, which could only ever recognise one of the two
+        # out-of-scope vantage points and left the other reading as a probe
+        # failure on a healthy Kubernetes instance.
+        "compose_in_scope": not compose_out_of_scope_reason,
+        "compose_out_of_scope_reason": compose_out_of_scope_reason,
         "compose_probe_reason": compose_probe_reason,
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
@@ -14376,10 +14625,14 @@ def up(args) -> int:
         # so this is a URL, not homework.
         print(f"nyxGPT is up: {WEB_URL}")
         if not skip_observability:
+            # The same claim the install just established, read back from the
+            # cluster rather than asserted (#4135): this line used to name a
+            # port-forward unconditionally, two screens below the install's
+            # own "[OK] SRE UIs reachable at ... -- no port-forward needed"
+            # on the same cluster. The comment above is the rule it broke.
             print(
                 "Observability (Grafana, Prometheus, Jaeger, GlitchTip) runs in the cluster "
-                "too -- `nyxgpt ops port-forward --target observability` publishes all four "
-                "on the ports the admin dashboard links to."
+                f"too -- {_k8s_observability_host_access().note}."
             )
     else:
         print(f"nyxGPT is up: {WEB_URL}")
@@ -14963,10 +15216,15 @@ def status(_args) -> int:
 
             observability_state = _k8s_observability_workload_state()
             if any(state != "absent" for state in observability_state.values()):
-                print(
-                    "\nKubernetes observability (in-cluster -- reach the UIs with "
-                    "`nyxgpt ops port-forward --target observability`):"
-                )
+                print("\nKubernetes observability (in-cluster):")
+                # Asked of the cluster, not asserted (#4135). This header used
+                # to tell every operator to open a port-forward -- including
+                # the one whose install had just published those four UIs on
+                # the host and probed them, which is two messages in one
+                # product contradicting each other about one cluster. The
+                # context is the one already read above, so the answer costs
+                # no second `kubectl config current-context`.
+                print(f"  Access: {_k8s_observability_host_access(context=context).note}")
                 # `0/1 ready` is PENDING here too, not a bare count the
                 # operator has to interpret against the labelled Pod lines
                 # printed just above it (#3827).
@@ -15726,9 +15984,9 @@ def _terraform_install_mode_issues() -> list[str]:
 #   host-scoped, and `doctor` says which is which out loud rather than leaving
 #   the operator to work it out from the wording of a failure.
 #
-# The shape to sweep for is the one the owner named: *reads host config, or
-# probes a host port, and then speaks about the deployment*. Exactly three
-# checks had it, and all three are branched here:
+# The shape #3987 swept for was the one the owner named then: *reads host
+# config, or probes a host port, and then speaks about the deployment*. Exactly
+# three checks had it, and all three are branched here:
 #
 #   _tracing_wiring_issue           -> _k8s_tracing_wiring_issue
 #   _prometheus_api_scrape_issue    -> _k8s_prometheus_api_scrape_issue
@@ -15739,13 +15997,34 @@ def _terraform_install_mode_issues() -> list[str]:
 # answering "is this deployment wired up" out of the other one's config is the
 # whole defect. The printed scope line says which machine answered.
 #
-# Everything else `doctor` runs is host-scoped BY CONSTRUCTION and correct as
-# it stands: tools on PATH, file permissions, the launchd/systemd units this
-# machine registered, this venv's packages, this host's Docker containers and
-# Terraform state. Three more read host config but are already gated on a
-# Compose stack actually running (`_log_aggregation_wiring_issue`, the Loki
-# log-volume block, `_glitchtip_secrets_doctor_issues`), so they cannot fire
-# about a Kubernetes deployment at all. The full table is in
+# **The shape was wider than that, and #4137 is the correction.** This block
+# used to end "everything else `doctor` runs is host-scoped BY CONSTRUCTION and
+# correct as it stands: ... this host's Docker containers and Terraform state."
+# That was wrong about one of them, and wrong in the way the sweep existed to
+# prevent. `doctor`'s Cassandra check *inspects a host container* and then
+# speaks about the deployment -- the same sentence as the three above with
+# "probes a host port" replaced -- and on a k3s instance it was `doctor`'s only
+# finding, exiting FAIL with "Missing local Cassandra container: nyxgpt-
+# cassandra (run: nyxgpt ops install)" three lines under `cassandra-0: Running`
+# in the cluster's own Pod list. So:
+#
+#   _cassandra_deployment_issues    -> _k8s_cassandra_deployment_issues
+#
+# Two things made it invisible. It read a container rather than config or a
+# port, so it did not match the shape as written; and it was an
+# `issues.append(...)` INSIDE `doctor`, so the guard -- which enumerates the
+# named helpers `doctor` calls -- could not hold it either. Every inline check
+# is now a named helper (see the block above `doctor`), and the shape to sweep
+# for is stated without naming a mechanism: *answers out of this host, and
+# speaks about the deployment*.
+#
+# Everything else is host-scoped BY CONSTRUCTION: tools on PATH, file
+# permissions, the launchd/systemd units this machine registered, this venv's
+# packages, this host's dev checkouts and Terraform state. Four more read host
+# state but are already gated on a Compose stack actually running
+# (`_log_aggregation_wiring_issue`, the Loki log-volume block,
+# `_glitchtip_secrets_doctor_issues`, `_compose_restart_loop_issues`), so they
+# cannot fire about a Kubernetes deployment at all. The full table is in
 # `docs/ops.md`, and `tests/unit/test_ops_doctor_substrate_scope.py` fails if
 # a check is added to `doctor` without being classified -- the next check with
 # this shape should not have to be found by an owner running the product.
@@ -16073,6 +16352,335 @@ def _k8s_error_tracking_dsn_drift_issue() -> str | None:
     )
 
 
+# --- The checks `doctor` used to run inline (#4137) ---
+#
+# #3987's sweep classified every check `doctor` called THROUGH A NAMED HELPER,
+# and `tests/unit/test_ops_doctor_substrate_scope.py` fails the build if a new
+# one of those lands unclassified. The container, file, tool and service checks
+# were written as `issues.append(...)` straight inside `doctor`, so the sweep
+# could not see them and the guard could not hold them -- which is how a check
+# for a host-local `nyxgpt-cassandra` Docker container survived a sweep whose
+# whole subject was host-side probes answering for a cluster, and exited FAIL on
+# a k3s instance whose Cassandra is `cassandra-0: Running` in the same report:
+#
+#   nyxGPT ops doctor: FAIL
+#   - Missing local Cassandra container: nyxgpt-cassandra (run: nyxgpt ops install)
+#
+# They are named functions below so the guard covers them too. Extraction is the
+# deliverable, not a tidy-up: the rule ("a finding about THE DEPLOYMENT THAT IS
+# SERVING must ask the substrate that is serving") can only be enforced over
+# checks something can enumerate.
+
+
+def _dev_install_checkout_issues(mode: InstallModeState) -> list[str]:
+    """A dev-mode native install whose checkout has moved or lost its deps (#3789).
+
+    Host-scoped by construction: the subject is the tree THIS machine's
+    api/web services exec, and the remedies run here.
+    """
+    if not mode.is_dev:
+        return []
+    checkout = Path(mode.checkout) if mode.checkout else None
+    if checkout is None or not checkout.is_dir():
+        return [
+            "Dev-mode install recorded, but its checkout is missing "
+            f"({mode.checkout or 'no path recorded'}) -- the api/web services "
+            "point at a tree that is no longer there. Re-run `nyxgpt up --dev` from a "
+            "checkout, or `nyxgpt up` to return to the artifact path."
+        ]
+    if not (checkout / "web" / "node_modules").is_dir():
+        return [
+            f"Dev-mode web service has no dependencies installed ({checkout}/web/"
+            "node_modules is missing) -- the Next dev server cannot start "
+            "(run: nyxgpt up --dev)"
+        ]
+    return []
+
+
+def _k8s_dev_install_checkout_issues(mode: InstallModeState) -> list[str]:
+    """The same question asked of the Kubernetes deployment's images (#3834).
+
+    A claim about the cluster, which is why it is gated on the Kubernetes
+    marker and not on this host's: the images in the cluster were built from a
+    checkout, and a missing one means they cannot be rebuilt.
+    """
+    if not mode.is_dev:
+        return []
+    checkout = Path(mode.checkout) if mode.checkout else None
+    if checkout is not None and checkout.is_dir():
+        return []
+    return [
+        "Dev-mode Kubernetes deployment recorded, but its checkout is missing "
+        f"({mode.checkout or 'no path recorded'}) -- the images in "
+        "the cluster were built from a tree that is no longer there and cannot "
+        "be rebuilt. Re-run `nyxgpt ops install --kubernetes` (add "
+        "--dev from a checkout to stay on the working tree)."
+    ]
+
+
+def _host_config_doctor_issues() -> tuple[list[str], ConfigParser | None]:
+    """`~/.nyxGPT/config.ini`: present, and parseable? Plus the parse, for reuse.
+
+    Returns `(issues, parser)` -- the second element is the parsed config the
+    config-dependent checks below need, so one read answers both and they
+    cannot disagree about what the file says. `None` means it could not be
+    parsed, and every consumer treats that as "skip", never as "empty".
+
+    Host-scoped: this is the file THIS machine's api and every `nyxgpt`
+    command read. A Kubernetes deployment's config of record is the
+    `nyxgpt-config` ConfigMap -- see `_k8s_deployment_config`, which is what
+    the cluster-scoped checks read instead.
+    """
+    cfg = Path.home() / ".nyxGPT" / "config.ini"
+    if not cfg.exists():
+        return [f"Missing config {cfg}"], None
+    try:
+        parsed = ConfigParser()
+        parsed.read(cfg)
+        return [], parsed
+    except configparser.Error as e:
+        # A doctor that only logs "Failed to parse <path>" and moves on is
+        # not actionable: this is the single fault that takes the whole API
+        # down (every request loads config.ini), and the user needs the
+        # line to fix it (#3944). Report it as an issue, with the line.
+        #
+        # This is the one caller that opts into quoting the file's own text
+        # (`include_line_text`), and it is the reason the default is off:
+        # doctor is a local command, run by the owner of the file, printing
+        # to their terminal. The API's rendering of the same fault is
+        # redacted because it is reachable pre-auth, and it points here.
+        return [describe_config_parse_error(cfg, e, include_line_text=True)], None
+    except Exception as e:
+        logger.warning(
+            "Failed to read %s, skipping config-dependent doctor checks: %s",
+            cfg,
+            e,
+            extra={"component": "ops"},
+        )
+        return [], None
+
+
+def _ops_script_permission_issues() -> list[str]:
+    """The ops-managed helper scripts under `~/.nyxGPT/scripts` must be executable.
+
+    Host-scoped: these files are on this machine and are exec'd by this
+    machine's services.
+    """
+    issues: list[str] = []
+    for name in (
+        "run-web.sh",
+        "follow-cassandra-logs.sh",
+        "follow-ollama-logs.sh",
+        "set-ollama-models-env.sh",
+    ):
+        p = Path.home() / ".nyxGPT" / "scripts" / name
+        if p.exists() and not os.access(p, os.X_OK):
+            issues.append(f"Script not executable {p}")
+    return issues
+
+
+def _missing_native_tool_issues() -> list[str]:
+    """Tools the local-first install needs on THIS host's PATH.
+
+    Host-scoped by construction -- PATH is the most host-local fact there is.
+    Not narrowed for a Kubernetes deployment: `nyxgpt ops` itself shells out to
+    `docker` on every substrate (image builds and loads, the Cassandra
+    container, the Compose observability profiles), so a missing one is a real
+    finding about this machine wherever the workloads happen to run.
+    """
+    if _is_linux():
+        required: tuple[str, ...] = ("systemctl", "docker")
+    elif _is_macos():
+        required = ("brew", "docker")
+    else:
+        required = ("docker",)
+    return [f"Missing tool in PATH: {tool}" for tool in required if _which(tool) is None]
+
+
+def _cassandra_deployment_issues() -> list[str]:
+    """Cassandra, as the local-first deployment runs it: one `docker run` container.
+
+    The host-side half of the pair #4137 split. The question -- "is this
+    deployment's Cassandra there?" -- is a claim about the DEPLOYMENT, so it
+    has to be asked of the substrate that is serving; `doctor` calls this half
+    only when that substrate is this host (see `_k8s_cassandra_deployment_
+    issues` for the other).
+    """
+    if _which("docker") is None:
+        return []
+    # Two different findings, kept apart (#4022). "Missing" is a claim
+    # about the container; a denied Docker socket is a claim about this
+    # session, and telling the operator to re-run `ops install` because a
+    # read was refused sends them to fix a machine that is fine.
+    cassandra_probe = _docker_container_probe(CASSANDRA_CONTAINER_NAME)
+    if not cassandra_probe.known:
+        user = getpass.getuser()
+        return [
+            f"Cannot read Docker container state from this session ({cassandra_probe.reason}) "
+            f"-- container status is unknown, not absent (run: sudo usermod -aG docker "
+            f"{user}, then sudo loginctl terminate-user {user})"
+        ]
+    if cassandra_probe.state == "absent":
+        return [
+            f"Missing local Cassandra container: {CASSANDRA_CONTAINER_NAME} "
+            "(run: nyxgpt ops install)"
+        ]
+    return []
+
+
+def _k8s_cassandra_deployment_issues(pods: Sequence[K8sWorkloadState]) -> list[str]:
+    """Cassandra, as a Kubernetes deployment runs it: the `cassandra` StatefulSet.
+
+    The cluster-side half, and the #4137 fix. On the owner's k3s instance the
+    host half reported "Missing local Cassandra container: nyxgpt-cassandra
+    (run: nyxgpt ops install)" -- `doctor`'s only finding, and the reason it
+    exited FAIL -- three lines under its own `nyxgpt namespace: 14/14 pod(s)
+    ready`, one of which was `cassandra-0: Running`. Every clause was false
+    about the deployment, and the remedy would have been the wrong action on
+    that instance.
+
+    Branched rather than silenced: a cluster whose Cassandra is genuinely not
+    there, or not ready, is still a finding, with the Kubernetes remedy. A
+    branch that could only ever return an empty list would trade a false
+    positive for a blind spot (the lesson `_k8s_tracing_wiring_issue` was
+    built on).
+
+    Takes the Pod list `doctor` has already read rather than probing again.
+    Two reasons, and the second is the stronger: it costs no extra `kubectl`
+    (first principle 1), and it is structurally incapable of contradicting the
+    `nyxgpt namespace: N/M pod(s) ready` line printed above it -- which is
+    exactly what the finding this replaces did. A Pod of a StatefulSet is
+    always `<name>-<ordinal>`, so the prefix is the cluster's own naming rule
+    and not a guess.
+    """
+    cassandra_pods = [p for p in pods if p.name.startswith(K8S_CASSANDRA_POD_PREFIX)]
+    if not cassandra_pods:
+        return [
+            f"The {K8S_NAMESPACE} deployment has no Cassandra Pod "
+            f"({K8S_CASSANDRA_WORKLOAD}) -- the api has no session store to reach "
+            "(run: nyxgpt ops install --kubernetes)"
+        ]
+    broken = [p for p in cassandra_pods if p.state == K8S_STATE_FAILED]
+    if not broken:
+        # Ready, or Pending. Pending is not a failure here for the same reason
+        # it is not one anywhere else in this module: a Cassandra booting an
+        # empty data directory is doing what it is supposed to.
+        return []
+    return [
+        f"The {K8S_NAMESPACE} deployment's Cassandra is not serving: "
+        + ", ".join(f"{p.name}: {p.summary}" for p in broken)
+        + " (run: nyxgpt ops status --kubernetes to see why)"
+    ]
+
+
+def _compose_restart_loop_issues() -> list[str]:
+    """Compose services stuck restarting -- a crash loop, not a slow start.
+
+    Compose-gated: it reads the running Compose stack and can produce no
+    finding unless one is up, so it structurally cannot speak about a
+    Kubernetes deployment (a stuck Pod is reported by the Kubernetes block,
+    and healed by self-heal).
+    """
+    if _which("docker") is None:
+        return []
+    restarting = sorted(
+        service for service, state in _compose_stack_snapshot().items() if state == "restarting"
+    )
+    if not restarting:
+        return []
+    return [
+        "Compose service(s) stuck in a restart/crash loop: "
+        f"{', '.join(restarting)} (run: nyxgpt ops logs <service> to see why it's "
+        "failing to start)"
+    ]
+
+
+def _web_dependency_doctor_issues() -> list[str]:
+    """The Node toolchain and `web/node_modules` of a checkout on THIS host.
+
+    Host-scoped, and self-gated on a checkout being present: an artifact
+    install has no `web/` to check, and a container or Pod carries its own
+    dependencies in its image.
+    """
+    web_dir = REPO_ROOT / "web"
+    if not web_dir.exists():
+        return []
+
+    def _can_resolve(pkg: str) -> bool:
+        try:
+            cp = subprocess.run(
+                ["node", "-p", f"require.resolve('{pkg}')"],
+                cwd=str(web_dir),
+                text=True,
+                capture_output=True,
+            )
+            return cp.returncode == 0
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve node package %r, assuming missing: %s",
+                pkg,
+                e,
+                extra={"component": "ops"},
+            )
+            return False
+
+    issues: list[str] = []
+    if _which("node") is None:
+        issues.append("Missing tool in PATH: node")
+    if _which("npm") is None:
+        issues.append("Missing tool in PATH: npm")
+    if not (web_dir / "node_modules").exists():
+        issues.append(f"Missing web deps: {web_dir / 'node_modules'} (run: nyxgpt ops install)")
+    elif not _can_resolve("undici"):
+        issues.append("Missing web dependency: undici (run: nyxgpt ops install)")
+    return issues
+
+
+def _stale_terraform_state_issues() -> list[str]:
+    """Terraform state on this host with none of its containers running.
+
+    Host-scoped and self-gated on this machine's `terraform.tfstate`: the
+    state file, the containers and the remedy are all local.
+    """
+    if not TERRAFORM_DIR.joinpath("terraform.tfstate").exists():
+        return []
+    if not _terraform_state_has_resources():
+        return []
+    if not all(state == "absent" for state in terraform_stack_state().values()):
+        return []
+    return [
+        "Terraform state exists but no nyxgpt-tf-* containers are running "
+        "(run: nyxgpt ops install --terraform, or nyxgpt ops down --terraform "
+        "to clean up the stale state)"
+    ]
+
+
+def _dual_stack_conflict_issues() -> list[str]:
+    """One core component running under both native/Compose and Terraform here.
+
+    Host-scoped: both stacks in the comparison are this machine's, contending
+    for this machine's ports.
+    """
+    try:
+        conflicts = detect_deployment_mode().terraform_conflicts
+    except Exception as e:  # never let dual-stack detection block the rest of doctor
+        logger.warning(
+            "ops: dual-stack detection failed, skipping: %s: %s",
+            type(e).__name__,
+            e,
+            extra={"component": "ops", "action": "doctor"},
+        )
+        return []
+    if not conflicts:
+        return []
+    return [
+        ", ".join(sorted(conflicts))
+        + " reported running under BOTH native/Compose and Terraform at once -- an "
+        "incomplete mode switch left two core stacks up (run: nyxgpt ops down "
+        "--terraform, or nyxgpt ops down, to drop the mode you don't want)"
+    ]
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
@@ -16104,12 +16712,23 @@ def doctor(_args) -> int:
     rather than silently omitting the log volume line (#3438). Prints each
     issue found.
 
-    When a Kubernetes deployment is present, the four checks whose finding is
-    a claim about the *deployment* -- model readiness, tracing wiring, the
-    Prometheus scrape and the error-tracking DSN -- ask the cluster instead of
-    this host, and the report says so. Every other check is host-scoped by
+    When a Kubernetes deployment is present, the checks whose finding is a
+    claim about the *deployment* -- Cassandra, model readiness, tracing wiring,
+    the Prometheus scrape and the error-tracking DSN -- ask the cluster instead
+    of this host, and the report says so. Every other check is host-scoped by
     construction. See "Which machine a `doctor` check is about" above
-    `_k8s_deployment_config` for the rule and the sweep behind it (#3987).
+    `_k8s_deployment_config` for the rule and the sweep behind it (#3987,
+    extended to the container/file/tool/service checks by #4137).
+
+    Every finding this prints comes from a NAMED helper, and that is a
+    requirement rather than a style (#4137): `tests/unit/test_ops_doctor_
+    substrate_scope.py` enumerates the helpers `doctor` calls and fails the
+    build on one that is not classified by which machine it answers for. The
+    container, file, tool and service checks were written inline here, so
+    #3987's sweep could not see them -- which is how a check for a host-local
+    `nyxgpt-cassandra` container survived a sweep of host-side probes and
+    exited FAIL on a cluster that was serving. Do not add an `issues.append`
+    to this function; add a `_..._issue(s)` helper and classify it.
 
     Returns 0 if no issues were found, else 2.
     """
@@ -16153,77 +16772,26 @@ def doctor(_args) -> int:
         # is declared as what it is.
         print(
             (
-                "  Model readiness, tracing wiring, the Prometheus scrape and the "
-                "error-tracking DSN are reported against the cluster, not this host."
+                "  Cassandra, model readiness, tracing wiring, the Prometheus scrape and "
+                "the error-tracking DSN are reported against the cluster, not this host."
                 "\n  Every other check below is about this host -- its tools, files, "
                 "services and venv (docs/ops.md)."
             )
             if k8s_deployed
             else "  The checks below report on this host."
         )
-        if k8s_install_mode.is_dev:
-            k8s_checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
-            if k8s_checkout is None or not k8s_checkout.is_dir():
-                issues.append(
-                    "Dev-mode Kubernetes deployment recorded, but its checkout is missing "
-                    f"({k8s_install_mode.checkout or 'no path recorded'}) -- the images in "
-                    "the cluster were built from a tree that is no longer there and cannot "
-                    "be rebuilt. Re-run `nyxgpt ops install --kubernetes` (add "
-                    "--dev from a checkout to stay on the working tree)."
-                )
+        issues += _k8s_dev_install_checkout_issues(k8s_install_mode)
         issues.extend(_k8s_access_bridge_issues())
-    if install_mode.is_dev:
-        checkout = Path(install_mode.checkout) if install_mode.checkout else None
-        if checkout is None or not checkout.is_dir():
-            issues.append(
-                "Dev-mode install recorded, but its checkout is missing "
-                f"({install_mode.checkout or 'no path recorded'}) -- the api/web services "
-                "point at a tree that is no longer there. Re-run `nyxgpt up --dev` from a "
-                "checkout, or `nyxgpt up` to return to the artifact path."
-            )
-        elif not (checkout / "web" / "node_modules").is_dir():
-            issues.append(
-                f"Dev-mode web service has no dependencies installed ({checkout}/web/"
-                "node_modules is missing) -- the Next dev server cannot start "
-                "(run: nyxgpt up --dev)"
-            )
+    issues += _dev_install_checkout_issues(install_mode)
 
     issues += _foreign_native_service_issues(install_mode.identity)
     issues += _terraform_install_mode_issues()
     issues += _running_api_build_doctor_issues()
 
-    cfg = Path.home() / ".nyxGPT" / "config.ini"
-    if not cfg.exists():
-        issues.append(f"Missing config {cfg}")
+    config_issues, cfg_parser = _host_config_doctor_issues()
+    issues += config_issues
 
     volume_info: str | None = None
-    cfg_parser: ConfigParser | None = None
-    if cfg.exists():
-        try:
-            parsed = ConfigParser()
-            parsed.read(cfg)
-            cfg_parser = parsed
-        except configparser.Error as e:
-            # A doctor that only logs "Failed to parse <path>" and moves on is
-            # not actionable: this is the single fault that takes the whole API
-            # down (every request loads config.ini), and the user needs the
-            # line to fix it (#3944). Report it as an issue, with the line.
-            #
-            # This is the one caller that opts into quoting the file's own text
-            # (`include_line_text`), and it is the reason the default is off:
-            # doctor is a local command, run by the owner of the file, printing
-            # to their terminal. The API's rendering of the same fault is
-            # redacted because it is reachable pre-auth, and it points here.
-            issues.append(describe_config_parse_error(cfg, e, include_line_text=True))
-            cfg_parser = None
-        except Exception as e:
-            logger.warning(
-                "Failed to read %s, skipping config-dependent doctor checks: %s",
-                cfg,
-                e,
-                extra={"component": "ops"},
-            )
-            cfg_parser = None
     if (
         cfg_parser is not None
         and get_log_aggregation_enabled(cfg_parser)
@@ -16236,85 +16804,22 @@ def doctor(_args) -> int:
         if loki_issue is not None:
             issues.append(loki_issue)
 
-    for name in (
-        "run-web.sh",
-        "follow-cassandra-logs.sh",
-        "follow-ollama-logs.sh",
-        "set-ollama-models-env.sh",
-    ):
-        p = Path.home() / ".nyxGPT" / "scripts" / name
-        if p.exists() and not os.access(p, os.X_OK):
-            issues.append(f"Script not executable {p}")
+    issues += _ops_script_permission_issues()
+    issues += _missing_native_tool_issues()
 
-    if _is_linux():
-        required_native_tools: tuple[str, ...] = ("systemctl", "docker")
-    elif _is_macos():
-        required_native_tools = ("brew", "docker")
-    else:
-        required_native_tools = ("docker",)
-    for tool in required_native_tools:
-        if _which(tool) is None:
-            issues.append(f"Missing tool in PATH: {tool}")
+    # Substrate-branched (#4137). Cassandra is part of the deployment, so the
+    # question "is this deployment's Cassandra there?" goes to the substrate
+    # that is serving -- a host `docker ps` on a cluster whose Cassandra is
+    # `cassandra-0: Running` is the #3987 defect wearing a container's clothes,
+    # and it was `doctor`'s only finding on a healthy k3s instance.
+    issues += (
+        _k8s_cassandra_deployment_issues(k8s.pods)
+        if k8s_deployed
+        else _cassandra_deployment_issues()
+    )
 
-    if _which("docker") is not None:
-        # Two different findings, kept apart (#4022). "Missing" is a claim
-        # about the container; a denied Docker socket is a claim about this
-        # session, and telling the operator to re-run `ops install` because a
-        # read was refused sends them to fix a machine that is fine.
-        cassandra_probe = _docker_container_probe(CASSANDRA_CONTAINER_NAME)
-        if not cassandra_probe.known:
-            user = getpass.getuser()
-            issues.append(
-                f"Cannot read Docker container state from this session ({cassandra_probe.reason}) "
-                f"-- container status is unknown, not absent (run: sudo usermod -aG docker "
-                f"{user}, then sudo loginctl terminate-user {user})"
-            )
-        elif cassandra_probe.state == "absent":
-            issues.append(
-                f"Missing local Cassandra container: {CASSANDRA_CONTAINER_NAME} "
-                "(run: nyxgpt ops install)"
-            )
-
-    if _which("docker") is not None:
-        restarting = sorted(
-            service for service, state in _compose_stack_snapshot().items() if state == "restarting"
-        )
-        if restarting:
-            issues.append(
-                "Compose service(s) stuck in a restart/crash loop: "
-                f"{', '.join(restarting)} (run: nyxgpt ops logs <service> to see why it's "
-                "failing to start)"
-            )
-
-    web_dir = REPO_ROOT / "web"
-    if web_dir.exists():
-
-        def _can_resolve(pkg: str) -> bool:
-            try:
-                cp = subprocess.run(
-                    ["node", "-p", f"require.resolve('{pkg}')"],
-                    cwd=str(web_dir),
-                    text=True,
-                    capture_output=True,
-                )
-                return cp.returncode == 0
-            except Exception as e:
-                logger.warning(
-                    "Failed to resolve node package %r, assuming missing: %s",
-                    pkg,
-                    e,
-                    extra={"component": "ops"},
-                )
-                return False
-
-        if _which("node") is None:
-            issues.append("Missing tool in PATH: node")
-        if _which("npm") is None:
-            issues.append("Missing tool in PATH: npm")
-        if not (web_dir / "node_modules").exists():
-            issues.append(f"Missing web deps: {web_dir / 'node_modules'} (run: nyxgpt ops install)")
-        elif not _can_resolve("undici"):
-            issues.append("Missing web dependency: undici (run: nyxgpt ops install)")
+    issues += _compose_restart_loop_issues()
+    issues += _web_dependency_doctor_issues()
 
     log_issue = _log_aggregation_wiring_issue()
     if log_issue:
@@ -16375,35 +16880,8 @@ def doctor(_args) -> int:
     if error_tracking_drift_issue:
         issues.append(error_tracking_drift_issue)
     issues += _stale_venv_doctor_issues()
-
-    if (
-        TERRAFORM_DIR.joinpath("terraform.tfstate").exists()
-        and _terraform_state_has_resources()
-        and all(state == "absent" for state in terraform_stack_state().values())
-    ):
-        issues.append(
-            "Terraform state exists but no nyxgpt-tf-* containers are running "
-            "(run: nyxgpt ops install --terraform, or nyxgpt ops down --terraform "
-            "to clean up the stale state)"
-        )
-
-    try:
-        dual_stack_conflicts = detect_deployment_mode().terraform_conflicts
-    except Exception as e:  # never let dual-stack detection block the rest of doctor
-        logger.warning(
-            "ops: dual-stack detection failed, skipping: %s: %s",
-            type(e).__name__,
-            e,
-            extra={"component": "ops", "action": "doctor"},
-        )
-        dual_stack_conflicts = []
-    if dual_stack_conflicts:
-        issues.append(
-            ", ".join(sorted(dual_stack_conflicts))
-            + " reported running under BOTH native/Compose and Terraform at once -- an "
-            "incomplete mode switch left two core stacks up (run: nyxgpt ops down "
-            "--terraform, or nyxgpt ops down, to drop the mode you don't want)"
-        )
+    issues += _stale_terraform_state_issues()
+    issues += _dual_stack_conflict_issues()
 
     if issues:
         print("nyxGPT ops doctor: FAIL")

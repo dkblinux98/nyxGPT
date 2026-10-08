@@ -964,7 +964,9 @@ describe('SelfHealPage', () => {
     render(<SelfHealPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/queried in-cluster/)).toBeInTheDocument();
+      // Exact, not a regex: the body sentence below the badge repeats the
+      // phrase, and a loose match finds both.
+      expect(screen.getByText('read from the cluster')).toBeInTheDocument();
     });
     // The Compose banner is about a survey this deployment does not use.
     expect(screen.queryByText(/cannot determine from here/)).not.toBeInTheDocument();
@@ -1081,6 +1083,34 @@ describe('SelfHealPage', () => {
     // the session does (#3812 re-test).
     expect(screen.queryByText(/nyxgpt ops restart all/)).not.toBeInTheDocument();
     expect(screen.getByText(/loginctl terminate-user/)).toBeInTheDocument();
+  });
+
+  it('keeps the banner off when the api says no Compose answer was owed (#4137)', async () => {
+    // The second guard, beside `observability_source`: `compose_probe_available`
+    // is also false for a probe that was deliberately never run, and keying off
+    // it alone is what made `nyxgpt cloud ops self-heal` print a
+    // cannot-determine verdict on a k3s instance while this page did not. Two
+    // surfaces must not disagree about one fact (#3827).
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatusProbeUnavailable,
+          compose_probe_applicable: false,
+          compose_probe_undetermined: false,
+          compose_probe_reason:
+            'Not applicable to this deployment: the core stack runs as Kubernetes Pods, so the observability tier was read from the cluster (see the rows below) and `docker compose` has no bearing on it.',
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Detected mode/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/cannot determine from here/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
   });
 
   it('omits the reason sentence when the API reports no reason', async () => {

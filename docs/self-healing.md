@@ -527,8 +527,31 @@ unknown](#present-absent-unknown-three-states-not-two)). A Kubernetes
 deployment does not
 use that survey at all: `status()` reports `observability_source:
 "kubernetes"`, the Compose desired-service placeholders are dropped, and the
-page states that the tier is queried in-cluster instead of explaining the
+page states that the tier was read from the cluster instead of explaining the
 absence of a Compose stack this deployment never had.
+
+**The cluster is asked first, and "this mode" means a cluster that answers**
+(#4137). The survey used to run `docker compose ps` before it knew the
+deployment mode and then discard the result — paying for a probe it could not
+use on every 15-second pass, and logging its failure, naming a
+`docker-compose.yml`, each time. More importantly the *choice* was being made
+from where the process runs rather than from what answers, which cannot see
+the case that matters: a k3s host is neither in-cluster nor Compose.
+`kubectl` there reaches the cluster perfectly well while every `docker compose
+ps` exits 125 against a daemon socket that user cannot reach. On the owner's
+instance that produced
+
+```
+Observability survey: CANNOT DETERMINE from here -- `docker compose ps` exited 125: ...
+ [OK] grafana-8686574f7b-d7vjf: state=Running health=ready
+ ... 14 Pods, all Running and ready ...
+```
+
+— one screen saying it could not determine the tier's state while listing
+every component of that tier as ready. The probe is now skipped entirely in
+this mode and reported as **not applicable** rather than unavailable, which
+are different claims: see
+[Applicable, available, undetermined](#applicable-available-undetermined).
 
 Healing deletes the Pod (`kubectl delete pod`); its Deployment's
 ReplicaSet then recreates it. This is **on top of, not instead of**:
@@ -652,7 +675,13 @@ action when **enabled** — controlled at runtime, not by editing
   unknown](#present-absent-unknown-three-states-not-two)). A component
   tagged `(not auto-healable)` prints the cluster's own reason on the next
   line — see [Pending Pods are reported, not
-  deleted](#pending-pods-are-reported-not-deleted).
+  deleted](#pending-pods-are-reported-not-deleted). On a Kubernetes
+  deployment the line above the list says the tier was *read from the
+  cluster* rather than that it could not be determined (#4137, see
+  [Applicable, available,
+  undetermined](#applicable-available-undetermined)) — the same answer
+  `/admin/self-heal` gives for that deployment, which is the point: the two
+  surfaces used to disagree.
 - **API**: `GET /api/v1/self-heal/status`, `POST
   /api/v1/self-heal/toggle`, `POST /api/v1/self-heal/heal` — see
   [api.md](api.md#self-heal-watchdog).
@@ -745,6 +774,51 @@ cause as one line for the page to show. The `/admin/self-heal` and
 `compose_probe_available` / `compose_probe_reason`) dashboards both show an
 explicit note naming that reason instead of silently omitting the tier when
 this is `false`.
+
+That flag is **not** the one to key a "cannot determine" banner off, and
+#4137 is why — see [Applicable, available,
+undetermined](#applicable-available-undetermined) immediately below.
+
+### Applicable, available, undetermined
+
+`compose_probe_available` answers "did the survey run?". It does **not**
+answer "was a Compose survey a question about this deployment at all", and
+the two are not shades of each other. `status()` therefore reports both
+`compose_probe_applicable` and `compose_probe_undetermined`, and the second
+is the one a surface's "cannot determine" banner keys off (#4137):
+
+| | `applicable` | `available` | `undetermined` | What a surface shows |
+| --- | --- | --- | --- | --- |
+| The survey ran | `true` | `true` | `false` | the Compose rows |
+| An answer was owed and could not be had | `true` | `false` | `true` | cannot determine, with the reason |
+| No Compose tier here to survey | `false` | `false` | `false` | where the answer *did* come from |
+
+The middle row is #3812's honest degradation and is correct — a host with
+neither a cluster nor a readable Compose stack still reports its observability
+components `unknown`, with the reason, and never `absent`.
+
+The bottom row is #4137's. Its `compose_probe_reason` is a *scope* sentence,
+and deliberately names no Compose file and no exit code: on a Kubernetes
+deployment the operator's next step is to read the Pod rows, not to go looking
+for a `docker-compose.yml` that instance does not use. `nyxgpt ops self-heal`
+prints where the tier was read from instead of a verdict it cannot reach.
+
+The distinction exists because `compose_probe_available: false` was the whole
+gate on three surfaces, and it cannot tell the bottom two rows apart. The
+Self-Heal page already read `observability_source` and got the k3s case right;
+`nyxgpt cloud ops self-heal` and the Infrastructure page did not, so two
+surfaces disagreed about one deployment — which is its own defect (#3827).
+
+**What puts a deployment in the bottom row is the cluster holding the *core*
+tier** — api, web, Cassandra, Ollama (`self_heal.kubernetes_mode_active`, and
+`ops._k8s_core_pods_present` for the Infrastructure page's Compose card) — not
+merely the namespace holding Pods. `nyxgpt ops observability --kubernetes` can
+put the observability overlay on a cluster while the core stack runs natively
+on the host, and that deployment's core components are native ones: a Compose
+answer is still owed there, so an unreadable survey is the middle row (cannot
+determine, with the reason) and not a question to withdraw. Both surfaces draw
+that line from the same four tiers, deliberately — two notions of "Kubernetes
+mode" on one deployment is how two screens end up contradicting each other.
 
 ### Present, absent, unknown: three states, not two
 

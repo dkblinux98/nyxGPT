@@ -543,6 +543,34 @@ def scenario_pre_fix() -> None:
         server.shutdown()
 
 
+#: The modules every scenario's subprocess needs before it can test anything.
+#: `nyxgpt` is the product under test; `boto3` is how it asks AWS, and without
+#: it the deploy legitimately reports that AWS could not be asked.
+REQUIRED_IN_SUBPROCESS = ("nyxgpt", "boto3")
+
+
+def _preflight_imports() -> str | None:
+    """The first of `REQUIRED_IN_SUBPROCESS` a scenario subprocess cannot import.
+
+    `None` means the environment is sound. The check runs under the same `_env`
+    the scenarios use -- same `$HOME` override, same stripped `PATH` -- so it
+    answers for the environment that actually matters rather than this one.
+    """
+    with tempfile.TemporaryDirectory() as probe_home:
+        env = _env(Path(probe_home), "http://127.0.0.1:1")
+        for module in REQUIRED_IN_SUBPROCESS:
+            probe = subprocess.run(
+                [sys.executable, "-c", f"import {module}"],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if probe.returncode != 0:
+                return module
+    return None
+
+
 def main() -> int:
     """Run the requested scenarios, failing the job on the first broken claim."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -554,21 +582,29 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Preflight, before any scenario runs. The decision under test is made by a
-    # boto3 call, so without boto3 the deploy takes its "AWS could not be asked"
-    # branch and every scenario fails with a message about the deploy's
-    # behaviour -- `the deploy never asked AWS about the recorded host` -- which
-    # sends the reader into cloud_mac.py after a defect that is not there. Name
-    # the real cause here instead: the environment is missing the dependency the
-    # job's own install step provides (`pip install "<wheel>[cloud]"`).
-    try:
-        import boto3  # noqa: F401
-    except ImportError:
+    # Preflight, before any scenario runs -- and run in the SUBPROCESS
+    # environment, not this process's. The decision under test is made by a
+    # boto3 call inside a `nyxgpt` subprocess, so an import that fails there
+    # makes the deploy take its "AWS could not be asked" branch and every
+    # scenario then fails with a message about the deploy's behaviour --
+    # `the deploy never asked AWS about the recorded host`, or the control's
+    # `the pre-fix behaviour did not reproduce the defect` -- which sends the
+    # reader into cloud_mac.py after a defect that is not there.
+    #
+    # Checking `import boto3` here would miss half of it: `_env` overrides
+    # `HOME`, which is what makes the subprocess environment differ from this
+    # one. Python derives the per-user site directory from `$HOME`, so a
+    # `pip install --user` / no-virtualenv checkout imports fine in this
+    # process and not in the child. Ask the child.
+    if (failure := _preflight_imports()) is not None:
         print(
-            "cloud-stale-record-smoke: boto3 is not importable, so nyxGPT cannot ask AWS "
-            "anything and no scenario below would be testing what it claims to test.\n"
-            "Install the cloud extra first -- `pip install 'nyxgpt[cloud]'`, or the "
-            "wheel-into-a-venv step this job uses -- and re-run.",
+            f"cloud-stale-record-smoke: {failure} is not importable by the subprocess "
+            "the scenarios drive, so nyxGPT cannot ask AWS anything there and no "
+            "scenario below would be testing what it claims to test.\n"
+            "Install into an environment the subprocess can see -- the wheel-into-a-venv "
+            "step this job uses, or `pip install -e '.[cloud]'` inside a virtualenv. "
+            "A `--user` install is NOT enough: this harness overrides $HOME, which "
+            "moves the per-user site directory out from under it.",
             file=sys.stderr,
         )
         return 2

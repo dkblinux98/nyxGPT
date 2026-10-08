@@ -182,6 +182,20 @@ def run_injected_half(root: Path) -> None:
     if not desired:
         die("no observability services are desired -- the check would be vacuous")
 
+    # The precondition #4137 added, stated rather than assumed. Since the survey
+    # routes by what answers, a reachable cluster holding the core tier would
+    # make the Compose probe NOT APPLICABLE here -- which is the correct answer
+    # for that deployment and the wrong input for this check. `linux-native-
+    # smoke.yml` runs this on a runner with no cluster, so it does not arise;
+    # said out loud so a future runner that does have one fails legibly instead
+    # of looking like a #3812 regression.
+    if self_heal.kubernetes_mode_active(self_heal.list_component_status()):
+        die(
+            "this host's core tier is running in Kubernetes, so the Compose survey is not "
+            "applicable here (#4137) and cannot be the subject of #3812's check -- run this "
+            "on a host with no cluster"
+        )
+
     # 3. The pre-fix rendering, run for real: with the survey empty and the
     #    flag saying "available", every desired service was marked absent and
     #    counted unhealthy. This is the "11 unhealthy" the owner saw.

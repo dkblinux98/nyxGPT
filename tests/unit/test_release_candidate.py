@@ -35,26 +35,36 @@ PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: Every fixture below describes the `3.0.0` line, so the suite declares that
-#: line itself rather than inheriting whichever one the checkout happens to be
-#: on. `plan()` falls back to the checkout's `pyproject.toml` when no path is
-#: given (`declared_version` -> `_checkout_pyproject`), so without this the
-#: whole file reddened the moment a release ceremony bumped the declared
-#: version past the fixtures: the 3.0.0 -> 3.0.1 bump broke 28 tests here at
-#: once, none of which is about which line the repo is on. The
-#: branch-disagrees-with-pyproject guard is still covered, deliberately, by
-#: `test_plan_refuses_a_branch_that_disagrees_with_the_declared_version`.
-DECLARED_LINE = "3.0.0"
+#: The release line this suite's fixtures are written against. Every branch,
+#: candidate and formula asserted below names it, and `PUBLISHED` above is the
+#: PyPI history of that one line.
+FIXTURE_RELEASE = "3.0.0"
 
 
 @pytest.fixture(autouse=True)
-def _declares_the_fixture_line(monkeypatch, tmp_path):
-    declared = tmp_path / "declared" / "pyproject.toml"
-    declared.parent.mkdir(parents=True, exist_ok=True)
-    declared.write_text(
-        f'[project]\nname = "nyxGPT"\nversion = "{DECLARED_LINE}"\n', encoding="utf-8"
+def _declared_line(monkeypatch, tmp_path):
+    """Pin the declared release line to `FIXTURE_RELEASE`, not the repo's own.
+
+    `plan()` compares the branch it is given against `declared_version()`,
+    which reads the *checkout's* pyproject.toml -- so with nothing pinned this
+    suite silently asserted that the repo's current version is whatever its
+    fixtures happen to say. It isn't, the moment a release ships: the v3.0.1
+    ceremony bumped pyproject.toml to 3.0.1 and all 27 `v3.0.0` cases here
+    went red on the branch-vs-declared guard, having found nothing wrong with
+    the code under test.
+
+    A unit test of version arithmetic has to supply its own version. Patching
+    `_checkout_pyproject` is the seam that does it without weakening anything:
+    `declared_version`'s real work -- parse the TOML, strip the pre-release
+    suffix -- still runs, and only "which checkout" is answered by the
+    fixture. Tests that deliberately read the shipped pyproject.toml go
+    through `REPO_ROOT` and are unaffected.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f'[project]\nname = "nyxGPT"\nversion = "{FIXTURE_RELEASE}"\n', encoding="utf-8"
     )
-    monkeypatch.setattr(rc, "_checkout_pyproject", lambda: declared)
+    monkeypatch.setattr(rc, "_checkout_pyproject", lambda: pyproject)
 
 
 def _args(**overrides) -> argparse.Namespace:
