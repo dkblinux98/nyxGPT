@@ -1,0 +1,109 @@
+name: Cloud Stale Record Smoke
+
+# One job, answering one question about `~/.nyxGPT/cloud/state.json` (#4136):
+#
+#   cloud-stale-record-smoke  When the record names an EC2 Mac Dedicated Host
+#                             that AWS has released, does `nyxgpt cloud deploy
+#                             --os macos` actually ask AWS, act on the answer,
+#                             and take the full priced-disclosure-plus-consent
+#                             path -- run the way an operator runs it, from the
+#                             installed wheel, against the ~/.nyxGPT layout the
+#                             owner's machine really held on 2026-10-03?
+#
+#                             On that date it did not. It made the
+#                             `DescribeHosts` call, got `InvalidHostID.NotFound`
+#                             for a host released three days earlier, read that
+#                             exception as "could not ask AWS", announced "no
+#                             new host, no new 24-hour minimum", and allocated
+#                             one. A new 24-hour minimum began with no
+#                             disclosure and no prompt.
+#
+#                             Unit tests could not see it, and did not: this was
+#                             the third occurrence of the same mechanism
+#                             (#3993, #4122, #4136), and the suite was green
+#                             through all three. The defect lives in the seam
+#                             between boto3's error parsing, one function's
+#                             except clause, and a record merged field by
+#                             field -- so the evidence has to be a run that
+#                             crosses all of it.
+#
+#                             Injects the condition rather than hoping for it
+#                             (#3753's rule). Four scenarios, differing only in
+#                             the recorded AWS response or the code under it:
+#                             `pre-fix` restores the old behaviour at the
+#                             boundary and REQUIRES the defect to reproduce;
+#                             `released` requires the disclosure and the
+#                             `allocate` prompt; `allocated` requires a
+#                             confirmed host to be reconciled with no second
+#                             disclosure (#4122); `status` requires the spend
+#                             figure to be Cost Explorer's rather than
+#                             `rate * elapsed`. A build that ignores AWS's
+#                             answer cannot pass all four.
+#
+# No AWS account, no credentials, no spend: boto3 is pointed at a local server
+# replaying the recorded responses in tests/fixtures/aws/. What is real is
+# everything else -- the installed console script, argparse, the deploy flow,
+# botocore's own error parsing, the consent prompt and the files under
+# ~/.nyxGPT/cloud.
+#
+# What it does NOT cover: a real Dedicated Host allocating or releasing. EC2 Mac
+# hardware is on docs/live-verification-ci.md's short list of things no CI job
+# can run, and the 24-hour minimum is exactly why.
+
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_record.py'
+      - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cloud.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud_stale_record_smoke.py'
+      - 'tests/fixtures/aws/**'
+      - '.github/workflows/cloud-stale-record-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_record.py'
+      - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cloud.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud_stale_record_smoke.py'
+      - 'tests/fixtures/aws/**'
+      - '.github/workflows/cloud-stale-record-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives a local smoke against a
+# loopback HTTP server. It never writes to the repository or its APIs, and it
+# never reaches AWS.
+permissions:
+  contents: read
+
+jobs:
+  cloud-stale-record-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # From the wheel, not `pip install -e .`: the question is what an
+      # operator's installed `nyxgpt` does, and an editable install answers it
+      # from the checkout instead. `[cloud]` because the decision under test is
+      # made by a boto3 call.
+      - name: Build and install the wheel into a clean venv
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m venv /tmp/stale-record-venv
+          /tmp/stale-record-venv/bin/pip install --upgrade pip
+          WHEEL="$(ls dist/*.whl | head -1)"
+          /tmp/stale-record-venv/bin/pip install "${WHEEL}[cloud]"
+
+      - name: Run the stale-record smoke (negative control first)
+        run: /tmp/stale-record-venv/bin/python scripts/cloud_stale_record_smoke.py
