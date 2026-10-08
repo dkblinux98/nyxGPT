@@ -26,7 +26,23 @@ So this module holds two things:
    `doctor` runs, with the reason it is scoped the way it is. The first test
    fails if `doctor` grows a check that is not in it, so the *next* check with
    this shape is caught here instead of by an owner running the product.
-2. Behaviour tests for the three branches the sweep found, in both modes.
+2. Behaviour tests for the branches the sweep found, in both modes.
+
+**#4137 widened the sweep, and the reason it had to is the guard's own blind
+spot.** The sweep above enumerated the checks `doctor` called through a NAMED
+helper. The container, file, tool and service checks were written as
+`issues.append(...)` straight inside `doctor`, so they were invisible to it --
+and one of them was a probe for a host-local `nyxgpt-cassandra` Docker
+container. On the owner's k3s instance that was `doctor`'s ONLY finding:
+
+    nyxGPT ops doctor: FAIL
+    - Missing local Cassandra container: nyxgpt-cassandra (run: nyxgpt ops install)
+
+printed under its own `Kubernetes deployment: nyxgpt namespace: 14/14 pod(s)
+ready`, one of which was `cassandra-0: Running`. The #3987 branch was present
+and correct; the check was simply not one the sweep could see. So every inline
+check is now a named helper, classified below, and `doctor`'s docstring says
+not to add another `issues.append` to it.
 """
 
 from __future__ import annotations
@@ -94,6 +110,17 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
         "asks the running api Pod for its DSN, then compares the Secret's against "
         "the in-cluster GlitchTip's live keys",
     ),
+    # --- the one the #4137 sweep found, and its cluster twin ---
+    "_cassandra_deployment_issues": (
+        NATIVE_HALF,
+        "probes this host for the ops-managed `nyxgpt-cassandra` Docker container, which is "
+        "how the local-first deployment runs its session store",
+    ),
+    "_k8s_cassandra_deployment_issues": (
+        CLUSTER_HALF,
+        "reads the Cassandra StatefulSet's Pods out of the same namespace read `doctor` "
+        "already printed, so it cannot contradict the pod-count line above it",
+    ),
     # --- already substrate-aware before this change ---
     "_missing_required_models_issue": (
         PARAMETERISED,
@@ -103,7 +130,45 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
         CLUSTER,
         "reports the cloud access bridge's units for a Kubernetes deployment only",
     ),
+    "_k8s_dev_install_checkout_issues": (
+        CLUSTER,
+        "a claim about the images in the cluster, self-gated on the Kubernetes marker; not "
+        "the native half's twin -- the two deployments have separate markers and `doctor` "
+        "asks each about its own, rather than choosing between them",
+    ),
     # --- host-scoped by construction: the finding IS about this machine ---
+    "_dev_install_checkout_issues": (
+        HOST,
+        "the checkout THIS machine's api/web services exec, self-gated on its own marker",
+    ),
+    "_host_config_doctor_issues": (
+        HOST,
+        "`~/.nyxGPT/config.ini` -- the file this host's api and every `nyxgpt` command read; "
+        "a Kubernetes deployment's config of record is the nyxgpt-config ConfigMap, which "
+        "`_k8s_deployment_config` reads instead",
+    ),
+    "_ops_script_permission_issues": (
+        HOST,
+        "the exec bit on this host's ~/.nyxGPT/scripts helpers",
+    ),
+    "_missing_native_tool_issues": (
+        HOST,
+        "this host's PATH; `nyxgpt ops` shells out to these on every substrate, so a missing "
+        "one is a real finding about this machine wherever the workloads run",
+    ),
+    "_web_dependency_doctor_issues": (
+        HOST,
+        "the Node toolchain and node_modules of a checkout on this host, self-gated on one "
+        "being present; a container or Pod carries its dependencies in its image",
+    ),
+    "_stale_terraform_state_issues": (
+        HOST,
+        "this host's terraform.tfstate against this host's nyxgpt-tf-* containers",
+    ),
+    "_dual_stack_conflict_issues": (
+        HOST,
+        "two of this host's own stacks contending for this host's ports",
+    ),
     "_foreign_native_service_issues": (
         HOST,
         "compares the brew/systemd services registered here against this host's marker",
@@ -141,6 +206,11 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
         "declared dependencies missing from the interpreter running this command",
     ),
     # --- read host config, but cannot fire without a running Compose stack ---
+    "_compose_restart_loop_issues": (
+        COMPOSE_GATED,
+        "names only services the running Compose stack reports as restarting, so it cannot "
+        "fire on a Kubernetes deployment (a stuck Pod is the Kubernetes block's finding)",
+    ),
     "_log_aggregation_wiring_issue": (
         COMPOSE_GATED,
         "returns None unless the Compose promtail container is running",

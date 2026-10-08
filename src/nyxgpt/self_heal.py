@@ -417,11 +417,63 @@ class ComposeProbe:
     whole point (#3812). When `available` is `False`, `statuses` is empty and
     means nothing: it is the absence of an answer, not an answer of absence.
     `reason` is a short operator-facing sentence, empty when available.
+
+    `applicable` is the third state #4137 added, and it is not a shade of
+    `available`: it says whether a Compose survey was a question worth asking
+    about *this* deployment at all. On a Kubernetes deployment the
+    observability tier is a set of Pods, so there is nothing for `docker
+    compose ps` to be the answer to -- and "unavailable" there is a
+    cannot-determine claim about a tier the cluster can state exactly. An
+    operator read "CANNOT DETERMINE from here -- `docker compose ps` exited
+    125 ... querying /home/ec2-user/.nyxGPT/docker-compose.yml" directly above
+    fourteen Running, ready Pods, and went looking for a Compose file that was
+    never meant to exist.
+
+    So the two unknowns are kept apart the way #3988 kept them apart on the
+    Infrastructure page: `undetermined` (an answer was owed and could not be
+    had) is the only one that may render as "cannot determine", and
+    `applicable=False` carries a scope statement in `reason` rather than a
+    Docker failure.
     """
 
     available: bool
     reason: str = ""
     statuses: tuple[ComponentStatus, ...] = ()
+    applicable: bool = True
+
+    @property
+    def undetermined(self) -> bool:
+        """True only when a Compose answer was owed here and could not be had.
+
+        The condition every surface's "cannot determine" banner must key off,
+        instead of `not available` -- which is also true of a probe that was
+        deliberately never run because this deployment has no Compose tier
+        (#4137).
+        """
+        return self.applicable and not self.available
+
+
+# The `reason` carried by a probe that was never run because the deployment's
+# observability tier is in the cluster (#4137). Deliberately names no Compose
+# file and no exit code: the operator's next step here is to read the Pod rows,
+# not to go looking for a `docker-compose.yml` this deployment does not use.
+COMPOSE_NOT_APPLICABLE_REASON = (
+    "Not applicable to this deployment: the core stack runs as Kubernetes Pods, so the "
+    "observability tier was read from the cluster (see the rows below) and `docker compose` "
+    "has no bearing on it."
+)
+
+
+def _compose_not_applicable_probe() -> ComposeProbe:
+    """The probe stand-in for a deployment whose observability tier is in-cluster.
+
+    Returned *instead of* calling `compose_probe()`, not alongside it: on the
+    owner's k3s instance every `docker compose ps` exited 125 against a daemon
+    socket that user cannot reach, and each one also logged a warning naming a
+    Compose file nothing on that host uses. A probe that cannot inform any
+    answer should not be paid for either (first principle 1).
+    """
+    return ComposeProbe(available=False, reason=COMPOSE_NOT_APPLICABLE_REASON, applicable=False)
 
 
 @dataclass(frozen=True)
@@ -1618,34 +1670,58 @@ def component_survey() -> ComponentSurvey:
     When the probe could not run, the desired observability services are
     reported unknown-with-reason (`_unknown_desired_statuses`) rather than
     absent -- an unqueryable stack is never rendered as a definite negative.
+
+    **The cluster is asked first, and that order is the fix for #4137.** Which
+    substrate holds the observability tier is decided by what *answers*, never
+    by where this process happens to be running: `kubectl` on a k3s host
+    reaches the cluster perfectly well, and the host is neither in-cluster nor
+    Compose. The earlier order ran `docker compose ps` before it knew the
+    mode, so a k3s instance paid for a probe whose result it then discarded --
+    and still reported that probe's failure, naming a `docker-compose.yml`
+    nothing on that host uses, as the observability tier's state.
     """
-    probe = compose_probe()
-    compose_statuses = list(probe.statuses)
-    compose_managed = {s.service for s in compose_statuses}
-
-    desired_services = _desired_compose_services(_enabled_observability_profiles())
-    compose_statuses = _mark_disabled_present_services(compose_statuses, desired_services)
-    if probe.available:
-        undetermined_statuses = _absent_desired_statuses(compose_managed, desired_services)
-    else:
-        undetermined_statuses = _unknown_desired_statuses(desired_services, probe.reason)
-
     native_statuses = _list_native_component_status()
     terraform_statuses = _list_terraform_component_status()
-    core_statuses = _resolve_core_component_conflicts(
-        compose_statuses + native_statuses + terraform_statuses
+    # Asked before the Compose probe so the probe can be skipped entirely when
+    # the cluster owns the tier. `already_managed` is only a guard against a
+    # Pod name colliding with a resolved core component's name, and Pod names
+    # (`nyxgpt-api-stable-7c9f...`, `cassandra-0`) never collide with the
+    # Compose service names not yet in hand here -- the full `core_managed`
+    # filter is still applied below, so nothing a collision would have dropped
+    # survives into the result.
+    kubernetes_statuses = _list_kubernetes_component_status(
+        {s.service for s in native_statuses + terraform_statuses}
     )
-    core_managed = {s.service for s in core_statuses}
-    kubernetes_statuses = _list_kubernetes_component_status(core_managed)
+    kubernetes_active = kubernetes_mode_active(kubernetes_statuses)
 
-    if kubernetes_mode_active(kubernetes_statuses):
+    if kubernetes_active:
         # Kubernetes mode: the observability tier runs *in-cluster* (#3787)
         # and is already reported above, Pod by Pod, by the same survey. The
         # Compose placeholders assert that the enabled profiles ought to be
         # running as Compose services here, which is false in this mode --
         # they rendered as a screen of "can't check"/"absent" rows for
-        # workloads that were up and queryable all along (#3828).
-        undetermined_statuses = []
+        # workloads that were up and queryable all along (#3828). Since #4137
+        # the probe behind them is not run at all, rather than run and
+        # discarded -- nor is the config read that says which of them would
+        # have been desired, which is a question about the other substrate.
+        probe = _compose_not_applicable_probe()
+        compose_statuses: list[ComponentStatus] = []
+        undetermined_statuses: list[ComponentStatus] = []
+    else:
+        desired_services = _desired_compose_services(_enabled_observability_profiles())
+        probe = compose_probe()
+        compose_statuses = _mark_disabled_present_services(list(probe.statuses), desired_services)
+        compose_managed = {s.service for s in probe.statuses}
+        if probe.available:
+            undetermined_statuses = _absent_desired_statuses(compose_managed, desired_services)
+        else:
+            undetermined_statuses = _unknown_desired_statuses(desired_services, probe.reason)
+
+    core_statuses = _resolve_core_component_conflicts(
+        compose_statuses + native_statuses + terraform_statuses
+    )
+    core_managed = {s.service for s in core_statuses}
+    kubernetes_statuses = [s for s in kubernetes_statuses if s.service not in core_managed]
 
     all_statuses = core_statuses + kubernetes_statuses + undetermined_statuses
 
@@ -3259,11 +3335,20 @@ def status() -> dict[str, Any]:
     operator (#3575).
 
     `observability_source` names where the observability tier's rows came
-    from: `"kubernetes"` when it was read in-cluster (see
+    from: `"kubernetes"` when the cluster answered for it (see
     `kubernetes_mode_active`), `"compose"` otherwise. The page keys the
     Compose "cannot determine from here" banner off it, so a Kubernetes
     deployment is never told its in-cluster tier is unreadable because a
     `docker compose ps` it does not use could not run (#3828).
+
+    `compose_probe_applicable` is the same fact in the form every *other*
+    surface needs (#4137). `compose_probe_available` alone cannot carry it: a
+    probe that was never run is `available=False`, and the CLI keyed its
+    "Observability survey: CANNOT DETERMINE from here" line off exactly that,
+    so `nyxgpt cloud ops self-heal` printed a cannot-determine verdict on a
+    k3s instance while the Self-Heal page -- which already read
+    `observability_source` -- printed the cluster's answer for the same
+    deployment. Two surfaces must not disagree about one fact (#3827).
 
     Components come in three states, not two (#3812): present, absent, and
     unknown (`known=False`, `state="unknown"`). `unhealthy_count` counts only
@@ -3301,12 +3386,17 @@ def status() -> dict[str, Any]:
         "enabled": is_enabled(),
         "mode": detected_mode(components),
         # Where the observability tier is read from this pass (#3828).
-        # "kubernetes" means it was queried in-cluster and the Compose probe
+        # "kubernetes" means the cluster answered for it and the Compose probe
         # says nothing about it -- the page must not then explain its
         # absence with the Compose "cannot determine from here" banner, which
         # is about a survey that has no bearing on this deployment.
         "observability_source": ("kubernetes" if kubernetes_mode_active(components) else "compose"),
         "compose_probe_available": survey.compose_probe.available,
+        # Whether a Compose survey was a question about this deployment at all
+        # (#4137). `available=False` plus `applicable=False` is "never asked,
+        # and rightly so"; only `undetermined` may render as cannot-determine.
+        "compose_probe_applicable": survey.compose_probe.applicable,
+        "compose_probe_undetermined": survey.compose_probe.undetermined,
         "compose_probe_reason": survey.compose_probe.reason,
         "components": component_dicts,
         "unhealthy_count": unhealthy_count,

@@ -432,6 +432,76 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
   });
 
+  it('scopes the Compose card out on a Kubernetes HOST, rather than saying it cannot determine (#4137)', async () => {
+    // The owner's k3s instance, reached over the wrapped tunnel: NOT
+    // in-cluster (the api answering is on the host), a cluster holding every
+    // Pod, and a Docker socket this session cannot reach. The badge used to
+    // be chosen by `inCluster ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'`, so this
+    // landed on CANNOT DETERMINE and printed
+    // `/home/ec2-user/.nyxGPT/docker-compose.yml` as the cause -- directly
+    // above its own list of ready Pods.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusComposeCannotDetermine,
+          mode: 'kubernetes',
+          in_cluster: false,
+          terraform: { probe_available: true, deployed: false, containers: {} },
+          compose_in_scope: false,
+          compose_out_of_scope_reason:
+            'Not in scope for this deployment: nyxGPT runs as Kubernetes Pods here (14 in the nyxgpt namespace -- see the Kubernetes card), and the Compose survey could not be run from this process, so there is no Compose state this deployment is missing.',
+          compose_probe_reason:
+            'Not in scope for this deployment: nyxGPT runs as Kubernetes Pods here (14 in the nyxgpt namespace -- see the Kubernetes card), and the Compose survey could not be run from this process, so there is no Compose state this deployment is missing.',
+          kubernetes: {
+            ...mockStatusComposeCannotDetermine.kubernetes,
+            deployed: true,
+            pods: ['cassandra-0   1/1 Running'],
+            pod_states: [
+              { name: 'cassandra-0', state: 'ready', summary: '1/1 Running', details: '' },
+            ],
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT IN SCOPE')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('CANNOT DETERMINE')).not.toBeInTheDocument();
+    expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/the Compose survey could not be run from wherever/)
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/nyxGPT runs as Kubernetes Pods here/)).toBeInTheDocument();
+  });
+
+  it('keeps the Compose card in scope when its survey actually answered, cluster or not (#4137)', async () => {
+    // A host that runs both has a real Compose answer, and hiding it would
+    // hide the dual-stack conflict next to it.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusComposeCannotDetermine,
+          compose: { grafana: 'running' },
+          compose_probe_available: true,
+          compose_probe_reason: '',
+          compose_in_scope: true,
+          compose_out_of_scope_reason: '',
+          kubernetes: { ...mockStatusComposeCannotDetermine.kubernetes, deployed: true },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('NOT IN SCOPE')).not.toBeInTheDocument();
+  });
+
   it('says the native Cassandra row is unknown, not absent, when the container read was denied (#4022)', async () => {
     // The owner's EC2 instance: the API process's `systemd --user` session
     // predates its `docker` group, so `docker ps` is denied -- and until #4022

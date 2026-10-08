@@ -1219,8 +1219,16 @@ Checks include:
 - Native service-manager availability (`brew` on macOS, `systemctl` on Linux)
 - Running services
 - Docker daemon availability
-- Local Cassandra container presence (flags a missing `nyxgpt-cassandra`
-  container and suggests `nyxgpt ops install` to create it)
+- Cassandra presence, asked of the substrate that is serving (#4137). On the
+  local-first deployment that is the `nyxgpt-cassandra` Docker container, and a
+  missing one is reported with `nyxgpt ops install` to create it. **On a
+  Kubernetes deployment the `cassandra` StatefulSet's Pods are read instead**,
+  out of the same namespace read whose pod count `doctor` prints above — so
+  the finding cannot contradict that line, which is exactly what the host
+  check did on a k3s instance whose `cassandra-0` was `Running`. A cluster
+  genuinely missing Cassandra, or whose Pod has failed, is still a finding,
+  with `nyxgpt ops install --kubernetes` / `nyxgpt ops status --kubernetes` as
+  the remedy; a Pod that is merely `Pending` is not one
 - Required-model presence: whether Ollama actually holds the configured chat
   and embedding models. A missing one is reported with the `nyxgpt` command
   that fixes it (`nyxgpt ops install`, or `nyxgpt models pull <model>`) —
@@ -1344,8 +1352,8 @@ When a Kubernetes deployment is present, `doctor` prints
 
 ```
 Kubernetes deployment: nyxgpt namespace: 14/14 pod(s) ready
-  Model readiness, tracing wiring, the Prometheus scrape and the
-  error-tracking DSN are reported against the cluster, not this host.
+  Cassandra, model readiness, tracing wiring, the Prometheus scrape and
+  the error-tracking DSN are reported against the cluster, not this host.
   Every other check below is about this host -- its tools, files,
   services and venv (docs/ops.md).
 ```
@@ -1354,13 +1362,14 @@ The sweep behind that line, with every check classified:
 
 | Scope | Checks | Why |
 |---|---|---|
-| **Asks the cluster** when a deployment is present | required-model presence, tracing wiring, the Prometheus `nyxgpt-api` scrape, the error-tracking DSN | their finding is a claim about the deployment, and each read host config or probed a host port to make it |
-| **Host-scoped by construction** | foreign native services, the Terraform install mode, OTel packages in this venv, the native API bind posture, `OLLAMA_MODELS` drift, the Linux `ollama.service` port conflict, Docker socket access, observability volume ownership, stale-venv dependencies, tools on `PATH`, `~/.nyxGPT` file permissions, the local Cassandra container, web dependencies | the finding *is* about this machine. A Kubernetes deployment does not change whether `brew` is installed or whether this venv can import its dependencies |
-| **Gated on a running Compose stack** | promtail native-log wiring, the Loki 24h log-volume line, the GlitchTip secrets directory/token | they read host config, but return nothing unless the Compose container they are about is actually running — so they cannot speak about a cluster |
+| **Asks the cluster** when a deployment is present | Cassandra, required-model presence, tracing wiring, the Prometheus `nyxgpt-api` scrape, the error-tracking DSN | their finding is a claim about the deployment, and each read host config, probed a host port or inspected a host container to make it |
+| **Host-scoped by construction** | foreign native services, the Terraform install mode, the native/Kubernetes dev checkouts, `~/.nyxGPT/config.ini`, OTel packages in this venv, the native API bind posture, `OLLAMA_MODELS` drift, the Linux `ollama.service` port conflict, Docker socket access, observability volume ownership, stale-venv dependencies, tools on `PATH`, `~/.nyxGPT` file permissions, web dependencies, stale Terraform state, dual-stack conflicts | the finding *is* about this machine. A Kubernetes deployment does not change whether `brew` is installed or whether this venv can import its dependencies |
+| **Gated on a running Compose stack** | promtail native-log wiring, the Loki 24h log-volume line, the GlitchTip secrets directory/token, Compose services stuck restarting | they read host config, but return nothing unless the Compose container they are about is actually running — so they cannot speak about a cluster |
 
 The two halves of each branched check are separate functions
-(`_tracing_wiring_issue` / `_k8s_tracing_wiring_issue`, and so on) and are
-deliberately **not merged or fallen back between**, the same call
+(`_tracing_wiring_issue` / `_k8s_tracing_wiring_issue`,
+`_cassandra_deployment_issues` / `_k8s_cassandra_deployment_issues`, and so
+on) and are deliberately **not merged or fallen back between**, the same call
 `required_models_status` documents: a machine with both a native stack and a
 cluster has two of everything, and answering "is this deployment wired up"
 out of the other one's config is the defect itself.
@@ -1369,6 +1378,24 @@ out of the other one's config is the defect itself.
 code and fails when a check is added to `doctor` without being classified,
 so the next check with this shape is caught there rather than by an operator
 running the product.
+
+**Every check is a named function, and #4137 is why.** The first sweep
+enumerated only the checks `doctor` called through a named helper; the
+container, file, tool and service checks were written inline in `doctor` and
+were invisible to it. One of them probed this host for a `nyxgpt-cassandra`
+container, and on a k3s instance it was `doctor`'s only finding —
+
+```
+nyxGPT ops doctor: FAIL
+- Missing local Cassandra container: nyxgpt-cassandra (run: nyxgpt ops install)
+```
+
+— printed three lines under `cassandra-0: Running` in the cluster's own Pod
+list, prescribing an action that would have been wrong on that machine for a
+problem that did not exist. All eleven inline checks are now named helpers
+covered by the guard, and the rule for adding one is: write a
+`_..._issue`/`_..._issues` function and classify it. An `issues.append(...)`
+inside `doctor` is unreviewable by the thing that exists to review it.
 
 **The cluster's error-tracking check asks the Pods, not only the Secret**
 (#3990). Its original question was whether the DSN in `nyxgpt-secrets` still

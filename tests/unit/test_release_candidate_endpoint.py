@@ -24,7 +24,7 @@ PUBLISHED = ["2.1.0", "3.0.0rc1"]
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    """No test reaches pypi.org."""
+    """No test reaches pypi.org. The declared line is pinned by `_declared_line`."""
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
 
 
