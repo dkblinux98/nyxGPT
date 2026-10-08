@@ -28,8 +28,9 @@ would have failed had it stayed.
 
 The rule was written down and drifted anyway, three times over. What protects
 it is a check that runs. This is that check, and it runs in `ci-tests.yml`
-with the rest of pytest -- unlike `check_no_hardcoded_release_branch.sh`,
-whose equivalent rule is enforced by a script that no workflow invokes.
+with the rest of pytest -- the lesson of `check_no_hardcoded_release_branch.sh`,
+whose equivalent rule sat in a script no workflow invoked until it was
+replaced by `test_no_hardcoded_release_version.py`.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 The version a user sees must be the version that is running, so it is read
 from installed package metadata rather than from any configuration value
 (see #3716, where the web UI badge showed the agent tooling's
-`[github] RELEASE_BRANCH` setting and drifted to a stale `v1.0.0`).
+`[github] RELEASE_BRANCH` setting and drifted to a stale branch name from an earlier line).
 """
 
 from __future__ import annotations

@@ -36,7 +36,7 @@ not run (bad revision range, not a git tree) -- never "found something".
 
 Usage:
     scripts/agents/inverse_claims_sweep.py                  # origin/<release>...HEAD
-    scripts/agents/inverse_claims_sweep.py --base origin/v3.0.0 --head HEAD
+    scripts/agents/inverse_claims_sweep.py --base origin/<release-branch> --head HEAD
     scripts/agents/inverse_claims_sweep.py --json
     scripts/agents/inverse_claims_sweep.py --markdown       # for a PR comment
 """
@@ -485,7 +485,7 @@ def default_base(root: Path) -> str:
     env = os.environ.get("RELEASE_BRANCH")
     if env:
         return f"origin/{env}"
-    for candidate in ("origin/v3.0.0", "origin/HEAD"):
+    for candidate in ("origin/HEAD",):
         try:
             _git(["rev-parse", "--verify", "--quiet", candidate], root)
         except RuntimeError:

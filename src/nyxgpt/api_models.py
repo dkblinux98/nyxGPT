@@ -34,7 +34,7 @@ class RuntimeBuildInfo(BaseModel):
     the serving process's own `sys` (`nyxgpt.running_build`). They exist
     because every other version surface is derived from what is installed on
     disk, and a process can outlive the build it was started from -- a `brew
-    upgrade` during v3.0.0 acceptance left the api serving from a deleted
+    upgrade` during the 3.0.0 acceptance round left the api serving from a deleted
     python3.11 venv while `ops install` reported `[OK]` and `ops status`
     reported the new keg's version.
 

@@ -1318,7 +1318,7 @@ def info(request: Request) -> InfoResponse:
     `runtime` is the half neither of those can supply (#4133): which *build*
     this process is executing, read from its own `sys.prefix`. Every other
     version surface is derived from what is installed on disk, and a process
-    outlives the build it was started from -- a `brew upgrade` during v3.0.0
+    outlives the build it was started from -- a `brew upgrade` during the 3.0.0
     acceptance left this endpoint reporting a plausible `release_version`
     while the interpreter serving it came from a venv the upgrade had
     deleted. `nyxgpt ops install`/`status`/`doctor` read this field and
