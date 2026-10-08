@@ -13283,8 +13283,9 @@ def _k8s_observability_host_access(*, context: str | None = None) -> _K8sObserva
             [],
             [],
             "reach the UIs from the machine you browse from -- published on the host where "
-            f"nyxGPT provisioned the cluster, otherwise {forward_pointer} (a Pod can see "
-            "neither the node's port mappings nor the Services)",
+            "nyxGPT provisioned the cluster, otherwise with `nyxgpt ops port-forward "
+            "--target observability` (a Pod can see neither the node's port mappings nor "
+            "the Services)",
         )
 
     if (_kubectl_context() if context is None else context) == KIND_CONTEXT:
