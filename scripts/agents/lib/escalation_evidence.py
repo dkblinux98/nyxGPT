@@ -3,9 +3,14 @@
 Owner report, 2026-10-08: developer-agent escalations routinely arrive headed
 **"Error type could not be determined. Manual investigation needed."** -- "the
 usual unhelpful reason" -- while the same comment's own blast-radius section
-says, three lines further down, *"Is `v3.0.1` red? yes -- `test` failing.
-Everything built on this head is affected"*. The pipeline knew the cause and
-printed the sentence for not knowing it.
+says, three lines further down, *"Is `<release branch>` red? yes -- `test`
+failing. Everything built on this head is affected"*. The pipeline knew the
+cause and printed the sentence for not knowing it.
+
+(The release line is written as `<release branch>` throughout, not as the
+literal it was: `tests/unit/test_no_hardcoded_release_version.py` scans
+docstrings, because a docstring is what readers copy. The run link below is
+where the concrete line is recorded.)
 
 The worked example is #4166 (run 37709148793). Three independent defects, each
 sufficient on its own, and this module exists because of the third:
@@ -17,8 +22,8 @@ sufficient on its own, and this module exists because of the third:
      `write_agent_error_detail`, and by `classify_error`'s
      `verification_failed:<gate>` branch.
   2. Phase 3 -- which exists to diagnose `unknown`s -- died in the action's own
-     branch setup (`fatal: 'v3.0.1' is already used by worktree at
-     '/tmp/base-wt'`), so no diagnosis existed at all. A Phase 3 that CRASHED
+     branch setup (`fatal: '<release branch>' is already used by worktree
+     at '/tmp/base-wt'`), so no diagnosis existed at all. A Phase 3 that CRASHED
      read identically to one that concluded "unknown". Fixed by
      `scripts/agents/prune_stray_worktrees.sh` and by `phase3_crash_sentence`.
   3. **The headline was a lookup on the error class, not a composition of the
@@ -294,8 +299,8 @@ def cause_key(ev: dict[str, Any]) -> str:
     one escalation for the base, with the later issues linking to it, which is
     CLAUDE.md's "one systemic cause gets ONE escalation". Keyed on the branch
     and the failing check names rather than the head sha: the fault is "`test`
-    is failing on v3.0.1", and it is the same fault after the next commit lands
-    on the branch still red.
+    is failing on the release branch", and it is the same fault after the next
+    commit lands on a branch that is still red.
 
     Without a red base the key stays what it was -- the failed step -- because
     then the evidence really is specific to this run.
