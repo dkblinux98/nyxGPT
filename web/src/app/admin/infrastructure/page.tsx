@@ -109,6 +109,15 @@ type InfraStatus = {
   // page can name the cause ("`docker compose ps` exited 125: permission
   // denied ...") instead of only saying it can't tell.
   compose_probe_reason?: string;
+  // Whether a Compose survey is a question about this deployment AT ALL, as
+  // distinct from one that could not be answered (#4137). Two vantage points
+  // are out of scope, not one: inside a Pod (#3988) and on a Kubernetes
+  // *host*, which is neither in-cluster nor Compose. Keying the badge off
+  // `inCluster` recognised only the first, so a k3s instance reached over the
+  // wrapped tunnel showed CANNOT DETERMINE above its own running Pods.
+  // Optional so an api process from before #4137 still renders.
+  compose_in_scope?: boolean;
+  compose_out_of_scope_reason?: string;
   conflicts: string[];
   terraform: {
     // Answered by whether the container reads happened, not by whether a
@@ -636,6 +645,12 @@ export default function InfrastructurePage() {
   // real "nothing running", and conflating the two is the defect.
   const inCluster = status?.in_cluster === true;
   const nativeOutOfScope = status?.install_mode?.in_scope === false || inCluster;
+  // Same shape for the Compose card, with the api's explicit verdict first
+  // (#4137): a Kubernetes HOST is out of scope for Compose while being very
+  // much not in-cluster, so `inCluster` can only be the fallback here, never
+  // the test. Without that, a k3s instance read "CANNOT DETERMINE" and named
+  // a `docker-compose.yml` it does not use, above its own list of ready Pods.
+  const composeOutOfScope = status?.compose_in_scope === false || inCluster;
 
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
@@ -919,21 +934,28 @@ export default function InfrastructurePage() {
               <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Docker Compose</h2>
               {!status.compose_probe_available && (
                 <span style={badgeStyle(false, true)}>
-                  {inCluster ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'}
+                  {composeOutOfScope ? 'NOT IN SCOPE' : 'CANNOT DETERMINE'}
                 </span>
               )}
             </div>
 
             {/* Two different unknowns, and #3988 is about telling them apart.
-                From a host, "could not run the survey" is a probe failure and
-                its cause belongs on screen. From inside a Pod there is no
-                survey to run at all -- no host filesystem, no Docker socket --
-                and the old rendering leaked the CONTAINER's own
-                `/root/.nyxGPT/docker-compose.yml` to the operator as the
-                reason for a verdict about their machine. */}
-            {inCluster ? (
+                From a host that runs Compose, "could not run the survey" is a
+                probe failure and its cause belongs on screen. Where there is
+                no Compose tier to survey at all there is no such verdict to
+                reach -- and the old rendering leaked a `docker-compose.yml`
+                path to the operator as the reason for a verdict about a
+                deployment that does not use one (inside a Pod, the
+                CONTAINER's own `/root/.nyxGPT/...`, #3988; on a k3s host,
+                `/home/ec2-user/.nyxGPT/...`, #4137).
+
+                The gate is the API's own scope verdict rather than
+                `inCluster`, because in-cluster is only one of the two vantage
+                points it is true of -- see `compose_in_scope`. */}
+            {composeOutOfScope ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                {status.compose_probe_reason ??
+                {status.compose_out_of_scope_reason ??
+                  status.compose_probe_reason ??
                   'Not in scope from here: this API is running inside a Kubernetes Pod, which has no host filesystem and no Docker socket.'}
               </p>
             ) : !status.compose_probe_available ? (
