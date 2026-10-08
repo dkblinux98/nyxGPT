@@ -304,7 +304,16 @@ report_provisioned() {
     return 0
   fi
   # `IFS='; '` would join on ';' alone -- IFS joins with its FIRST character.
-  log "PROVISIONED $(printf '%s; ' "${PROVISIONED[@]}" | sed 's/; $//')"
+  #
+  # The marker is tense-correct: a dry run has created nothing, and
+  # `PROVISIONED` is a factual claim that it did. Two readers depend on that
+  # -- `release_ceremony_watch.sh` greps `^\[ceremony\] PROVISIONED ` to carry
+  # the list into its completion comment, and the owner reads the log. A dry
+  # run that logged `PROVISIONED` contradicted the `DRY-RUN: would provision`
+  # lines immediately above it.
+  local marker="PROVISIONED"
+  [[ $DRY -eq 0 ]] || marker="WOULD-PROVISION"
+  log "${marker} $(printf '%s; ' "${PROVISIONED[@]}" | sed 's/; $//')"
   [[ $DRY -eq 0 && -n "${RELEASE_ISSUE:-}" ]] || return 0
   gh issue comment "$RELEASE_ISSUE" -R "$REPO" --body "🧰 **Release ceremony ${VERSION} — Phase 0 provisioned the missing prerequisites** (#4166)
 

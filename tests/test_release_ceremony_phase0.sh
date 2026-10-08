@@ -202,6 +202,10 @@ _assert_contains "the missing sprint is reported" "$out" "no active or upcoming 
 _assert_contains "the new sprint continues the numbering" "$out" "Sprint 10"
 _assert_contains "the resubmit carries the existing iteration" "$out" "2 iteration(s) resubmitted with their ids"
 _assert_contains "the sprint field was updated" "$(cat "$MUTATIONS")" "update-sprint-field"
+# The marker release_ceremony_watch.sh greps for, on the path that really did
+# provision. Asserted here as well as negated in Case 5 so the tense fix
+# cannot quietly take the real one away too.
+_assert_contains "a real run emits the marker the watcher greps" "$out" "] PROVISIONED "
 
 echo
 echo "=== Case 4b: the sprint create is re-verified by query, and the verify bites"
@@ -218,6 +222,11 @@ out="$(_run --dry-run)"; rc=$?
 _assert_eq "the dry run succeeds" "0" "$rc"
 _assert_contains "it says what it would provision" "$out" "DRY-RUN: would provision"
 _assert_eq "nothing was mutated" "" "$(cat "$MUTATIONS")"
+# The summary marker is tense-correct, because the watcher greps `PROVISIONED`
+# to report in its completion comment what Phase 0 put in place -- and because
+# a dry run claiming it provisioned contradicts its own lines above.
+_assert_contains "the dry run's summary is in the conditional" "$out" "WOULD-PROVISION "
+_assert_not_contains "the dry run does not claim it provisioned" "$out" "] PROVISIONED "
 
 echo
 echo "=== Case 6: the --phase4-only resume inventories the line prerequisites too"
