@@ -30,9 +30,9 @@ def _checkout_steps() -> list[dict]:
 
 
 def test_the_ceremony_has_a_checkout_to_check():
-    assert _checkout_steps(), (
-        "release_ceremony.yml has no actions/checkout step -- update this guard"
-    )
+    assert (
+        _checkout_steps()
+    ), "release_ceremony.yml has no actions/checkout step -- update this guard"
 
 
 def test_checkout_does_not_persist_the_job_token():

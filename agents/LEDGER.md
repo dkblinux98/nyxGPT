@@ -2388,7 +2388,9 @@ rather than mechanism, and nothing can enforce them.
   release issue and draft release, bumps `pyproject.toml`, repoints the
   default branch and both repo variables, and restores the flags. A re-dispatch
   resumes at Phase 4 once the release tag exists. Prerequisite (owner): the
-  next line's milestone and a sprint iteration. Found while doing it for
+  next line's milestone and a sprint iteration. *(Retired by **D-062**: Phase
+  0 now checks and provisions both, so no prerequisite is the owner's.)*
+  Found while doing it for
   3.0.0: `--phase4-only` had been parsed and never used, Phase 4 read the
   project owner from a `[github]` section the runner's config lacks, a
   forward-port conflict logged and carried on to the repoint, and the
@@ -2397,6 +2399,59 @@ rather than mechanism, and nothing can enforce them.
   `RELEASE_ISSUE_NUMBER` after a run (those keys sync TO the repo).
   Source: owner instruction 2026-10-07; `scripts/release_ceremony.sh`;
   `scripts/agents/release_ceremony_watch.sh`; `CLAUDE.md` §Branch Rules.
+
+- **D-062** · 2026-10-07 · owner — **Phase 0 checks every ceremony
+  prerequisite and provisions what it can; no prerequisite is the owner's to
+  prepare.** Amends **D-061**, whose "Prerequisite (owner): the next line's
+  milestone and a sprint iteration" is retired. Those two were checked in
+  **Phase 4** — after master had been fast-forwarded, the tag and GitHub
+  Release published and `stable` pushed to PyPI — so a missing one produced a
+  half-finished ceremony with the agent flags paused instead of an up-front
+  "not ready" (runs 37569589877, 37569759241). Phase 0 now inventories every
+  prerequisite for all five phases in ONE pass and reports *every* gap, in
+  exactly two classes:
+  - **provisionable** — the next line's milestone (a placeholder titled
+    `Placeholder — next line (vX.Y.Z)` for the next *patch* version when the
+    owner has made none; Phase 4's own derivation picks it up), the next
+    `Sprint <N+1>` iteration, this release's draft release (previously a
+    FATAL), and the release issue's `Release Management` label and milestone.
+    Each is created, re-verified by query, and listed in a note on the
+    release issue.
+  - **gate-only** — open issues in the release milestone, unchecked
+    release-issue tasks, open critical/high code-scanning alerts, a
+    `pyproject.toml` mismatch, an existing tag, an absent release milestone
+    (an unscoped release must be reported, not papered over), a missing
+    publish pipeline, unresolvable project coordinates, and — under
+    `--unattended` only — the tap and Slack wiring the automated path needs
+    *after* the publish. The run stops before Phase 1.
+
+  **This entry is the owner's permission for the ceremony, and only the
+  ceremony, to create a milestone** (`CLAUDE.md` §Tooling otherwise forbids
+  it); `tests/unit/test_release_prereqs.py` fails the build if a second caller
+  appears. Provisioning runs *before* the gate decision, so a gate failure
+  leaves the provisioned objects in place and the re-dispatch starts from
+  them; `pause_agent_flags` moved after it. The `--phase4-only` resume path
+  runs the line inventory too, because it skips Phase 0 entirely.
+
+  **Sprint creation was gated on evidence, and the evidence is in.** The only
+  API is `updateProjectV2Field(iterationConfiguration:)`, which replaces the
+  whole iteration list — the same mutation family with `singleSelectOptions`
+  wiped Status on all 1018 board items on 2026-08-10 (recorded in #4166's
+  body by the owner; it has no ledger entry of its own). Proven
+  2026-10-08 on a throwaway user project, re-runnable as
+  `scripts/sprint-iteration-preservation-proof.sh` and in
+  `release-prereq-smoke.yml`: resubmitting every iteration **with its `id`**,
+  plus the new one, preserves every item value; omitting the ids recreates the
+  iterations and wipes all of them; and keeping the ids while omitting
+  `completedIterations` — which `configuration { iterations }` **does not
+  return** — wipes exactly the items in those completed iterations. That last
+  one is the trap a reasonable implementation falls into, so the list is built
+  in one place (`release_prereqs.iteration_resubmit`) and nowhere else.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4166; owner instruction 2026-10-07; amends **D-061**;
+  `scripts/release_ceremony.sh` Phase 0; `CLAUDE.md` §Tooling, §Branch Rules;
+  `docs/acceptance-drain-gate.md`.
 
 ## Parked
 

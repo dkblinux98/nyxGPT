@@ -390,6 +390,32 @@ The #3687 count-of-2 dispatch pause is retired (ledger **S-009**).
 - Do NOT add options to project field dropdowns (Module, Phase, Status, etc.)
 - If a label/milestone/field option is needed, ASK the user first
 
+**One standing exception, and it is the release ceremony's alone (owner
+decision 2026-10-07, #4166; ledger D-062).** `scripts/release_ceremony.sh`
+Phase 0 may create, without asking:
+
+- **the next line's milestone**, and only as a placeholder titled
+  `Placeholder — next line (vX.Y.Z)` for the next *patch* version, when no
+  open milestone already names a version above the release. The owner renames
+  and re-scopes it; Phase 4 derives the next branch from it either way.
+- **the next `Sprint <N+1>` iteration** on the project's `Sprint` field, when
+  none is active or upcoming. **Only** via
+  `release_prereqs.iteration_resubmit`, which resubmits *every* existing
+  iteration — completed ones included — carrying its `id`. The mutation
+  replaces the whole list: omitting the ids, or omitting the completed
+  iterations the GraphQL `configuration { iterations }` field does not return,
+  clears the `Sprint` value on the affected items. Proven both ways on a
+  throwaway project by `scripts/sprint-iteration-preservation-proof.sh`.
+- **this release's draft release**, and the `Release Management` label and
+  milestone on the release issue (the label already exists — applied with
+  `gh issue edit --add-label`, never the REST endpoint that would create it).
+
+The exception is scoped to the ceremony, not to agents generally: #4166 is the
+owner's permission for *that script*, because a release signed off at
+`For Release` should not die half-way for want of an object automation can
+make. `tests/unit/test_release_prereqs.py` fails the build if any other
+script or workflow starts creating milestones.
+
 ## Branch Rules
 
 - **NEVER merge to master/main** - All merges go to the active release branch (e.g., v1.0.0)
@@ -425,10 +451,18 @@ release issue, draft release, repo vars, flags restored). Then reconcile the
 owner's `~/.nyxGPT/config.ini` `[github] RELEASE_BRANCH`/`RELEASE_ISSUE_NUMBER`
 to the new repo variables — those keys sync *to* the repo, so a stale mirror
 would push the old line back. The owner types nothing; there is no `repoint`
-confirmation in an unattended run. The one prerequisite is the owner's: the
-next line's milestone (`... (vX.Y.Z)`) and a sprint iteration must exist. A
-failed run leaves the agent flags paused on purpose; re-dispatching resumes
-(Phases 0-3 are skipped once the release tag exists) and restores them.
+confirmation in an unattended run. **No prerequisite is the owner's to
+prepare** (owner decision 2026-10-07, ledger D-062, #4166): Phase 0 checks
+every prerequisite for all five phases in one pass and puts in place whatever
+is missing — the next line's `(vX.Y.Z)` milestone (as a self-named
+placeholder, named for the next patch version, which the owner renames and
+re-scopes afterwards), the next `Sprint <N+1>` iteration, this release's draft
+release, and the release issue's `Release Management` label and milestone.
+Anything automation cannot create stops the run **before Phase 1** with every
+gap listed at once and nothing irreversible done. A failed run leaves the
+agent flags paused on purpose; re-dispatching resumes (Phases 0-3 are skipped
+once the release tag exists) and restores them, and anything Phase 0
+provisioned stays in place.
 
 Nothing else may push master: agents still never merge to master, and the
 ceremony reaches it only through that one signed-off path.

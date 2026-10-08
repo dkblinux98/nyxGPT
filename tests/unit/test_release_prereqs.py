@@ -165,7 +165,9 @@ class TestNextSprintPlanDecision:
     def test_a_field_with_no_default_duration_is_gate_only_not_guessed(self):
         """Inventing a cadence would silently reshape the owner's sprints, so
         this is the one sprint case Phase 0 reports instead of provisioning."""
-        plan = next_sprint_plan(_config(completed=[_iter("a", "Sprint 9", "2026-09-01")], duration=0), TODAY)
+        plan = next_sprint_plan(
+            _config(completed=[_iter("a", "Sprint 9", "2026-09-01")], duration=0), TODAY
+        )
         assert plan["needed"] is True
         assert plan["provisionable"] is False
         assert "new" not in plan
@@ -195,7 +197,9 @@ class TestNextSprintPlanDerivations:
         assert plan["new"]["title"] == "Sprint 1"
 
     def test_the_duration_is_the_field_s_own_default(self):
-        plan = next_sprint_plan(_config(completed=[_iter("i1", "Sprint 1", "2026-08-09", 7)], duration=7), TODAY)
+        plan = next_sprint_plan(
+            _config(completed=[_iter("i1", "Sprint 1", "2026-08-09", 7)], duration=7), TODAY
+        )
         assert plan["new"]["duration"] == 7
 
     def test_it_starts_today_when_the_last_iteration_has_already_ended(self):
@@ -244,7 +248,9 @@ class TestIterationResubmitPayload:
         assert "Sprint 8" in titles and "Sprint 9" in titles
 
     def test_the_new_iteration_comes_last_and_carries_no_id(self):
-        payload = iteration_resubmit(self.CONFIG, [{"title": "Sprint 11", "startDate": "2026-10-24"}])
+        payload = iteration_resubmit(
+            self.CONFIG, [{"title": "Sprint 11", "startDate": "2026-10-24"}]
+        )
         assert payload[-1] == {"title": "Sprint 11", "startDate": "2026-10-24"}
         assert "id" not in payload[-1]
 
@@ -255,12 +261,19 @@ class TestIterationResubmitPayload:
     def test_an_iteration_with_no_id_is_dropped_rather_than_sent_id_less(self):
         """A half-read config would otherwise be resubmitted as a NEW
         iteration, which is the wipe."""
-        config = _config(completed=[{"title": "Sprint 8", "startDate": "2026-08-09", "duration": 18}])
+        config = _config(
+            completed=[{"title": "Sprint 8", "startDate": "2026-08-09", "duration": 18}]
+        )
         assert iteration_resubmit(config, []) == []
 
     def test_the_plan_payload_is_the_full_resubmit_list(self):
         plan = next_sprint_plan(
-            _config(completed=[_iter("c1", "Sprint 8", "2026-08-09"), _iter("c2", "Sprint 9", "2026-08-27")]),
+            _config(
+                completed=[
+                    _iter("c1", "Sprint 8", "2026-08-09"),
+                    _iter("c2", "Sprint 9", "2026-08-27"),
+                ]
+            ),
             TODAY,
         )
         ids = [it.get("id") for it in plan["iterations"]]
@@ -331,7 +344,10 @@ class TestCli:
         assert _run(["next-patch", "3.0.1"]).stdout.strip() == "3.0.2"
 
     def test_placeholder_title_prints_the_title(self):
-        assert _run(["placeholder-title", "3.0.1"]).stdout.strip() == "Placeholder — next line (v3.0.2)"
+        assert (
+            _run(["placeholder-title", "3.0.1"]).stdout.strip()
+            == "Placeholder — next line (v3.0.2)"
+        )
 
     def test_next_line_prints_branch_tab_title(self):
         out = _run(["next-line", "3.0.1"], json.dumps(["Phase 7 — nyxAgent (v3.1.0)"])).stdout
@@ -382,9 +398,9 @@ class TestCeremonyWiring:
         until the provisionable prerequisites are in place."""
         body = CEREMONY.read_text(encoding="utf-8")
         phase0 = body[body.index("Phase 0: prerequisite inventory") :]
-        assert phase0.index("\nprovision_line\n") < phase0.index("\npause_agent_flags\n"), (
-            "pause_agent_flags must come after provisioning in Phase 0"
-        )
+        assert phase0.index("\nprovision_line\n") < phase0.index(
+            "\npause_agent_flags\n"
+        ), "pause_agent_flags must come after provisioning in Phase 0"
 
     def test_the_gate_decision_is_not_fatal_before_provisioning(self):
         """A gate failure must leave the provisioned objects in place, so the

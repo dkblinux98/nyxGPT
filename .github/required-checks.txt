@@ -63,6 +63,15 @@ claim-decision
 # owner, or the rule the owner set about labels, is broken on this head.
 escalation-step
 label-guard-fails-when-it-should
+# release-prereq-smoke.yml (#4166). Both required. The first is the executed
+# evidence that Phase 0 provisions BEFORE it decides the gate and stops before
+# Phase 1 when it cannot -- the ordering is what keeps a signed-off release
+# from dying after master, the tag and PyPI are already public. The second is
+# the proof that adding a sprint iteration does not wipe the owner's board,
+# which the owner made binding before any ceremony code was allowed to touch
+# project 2; a red one means that permission no longer holds.
+Phase 0 inventories, provisions, then gates — in that order
+Adding a sprint iteration does not wipe board item values
 The guard refuses the branch that holds the only copy
 A merge that cannot be verified does not close its issue
 A failed verification continues the work, it does not restart it
