@@ -35,6 +35,27 @@ PUBLISHED = ("2.1.0", "3.0.0rc1", "3.0.0rc2", "1.0.0", "3.0.0.dev5")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: Every fixture below describes the `3.0.0` line, so the suite declares that
+#: line itself rather than inheriting whichever one the checkout happens to be
+#: on. `plan()` falls back to the checkout's `pyproject.toml` when no path is
+#: given (`declared_version` -> `_checkout_pyproject`), so without this the
+#: whole file reddened the moment a release ceremony bumped the declared
+#: version past the fixtures: the 3.0.0 -> 3.0.1 bump broke 28 tests here at
+#: once, none of which is about which line the repo is on. The
+#: branch-disagrees-with-pyproject guard is still covered, deliberately, by
+#: `test_plan_refuses_a_branch_that_disagrees_with_the_declared_version`.
+DECLARED_LINE = "3.0.0"
+
+
+@pytest.fixture(autouse=True)
+def _declares_the_fixture_line(monkeypatch, tmp_path):
+    declared = tmp_path / "declared" / "pyproject.toml"
+    declared.parent.mkdir(parents=True, exist_ok=True)
+    declared.write_text(
+        f'[project]\nname = "nyxGPT"\nversion = "{DECLARED_LINE}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(rc, "_checkout_pyproject", lambda: declared)
+
 
 def _args(**overrides) -> argparse.Namespace:
     base = {

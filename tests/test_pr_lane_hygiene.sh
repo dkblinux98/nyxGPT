@@ -126,21 +126,41 @@ _assert_eq "PR missing from the board is added to it" \
 _assert_contains "the added item is stamped Closed" \
   "$(cat "$GH_STUB_DIR/mutations.log")" "PVTI_added_PR_node_202	opt_closed	Closed"
 
+# ---- a hermetic `origin` for the merge path -----------------------------
+# #3862's content gate runs `git fetch origin <base>` in the CWD, so running
+# the merge script from this checkout pointed that fetch at the real GitHub
+# remote and made the suite depend on a branch outside its control: the
+# v3.0.0 release ceremony deleted `origin/v3.0.0`, and from that moment the
+# fetch failed and case 4 reported an unverifiable merge for reasons that had
+# nothing to do with the lane invariant this suite is about. The remote is now
+# local and carries exactly the branch the fixtures name, so the next
+# ceremony cannot redden it either.
+ORIGIN="$TMP_ROOT/origin.git"
+CHECKOUT="$TMP_ROOT/checkout"
+git init --quiet --bare "$ORIGIN"
+git init --quiet "$CHECKOUT"
+# `symbolic-ref` rather than `init --initial-branch`, which needs git >= 2.28.
+git -C "$CHECKOUT" symbolic-ref HEAD refs/heads/v3.0.0
+git -C "$CHECKOUT" -c user.email=suite@nyxgpt.invalid -c user.name=suite \
+  commit --quiet --allow-empty -m "release base"
+git -C "$CHECKOUT" remote add origin "$ORIGIN"
+git -C "$CHECKOUT" push --quiet origin v3.0.0
+
 # ---- case 4: the merge path itself leaves no PR in In Review -----------
 _reset_stub case4
 cat > "$GH_STUB_DIR/pr_items.json" <<'EOF'
 {"303": {"item_id": "PVTI_pr303", "status": "In Review"}}
 EOF
-# head_sha/base_sha are the checkout's own HEAD, so #3862's closure gate sees
-# a PR whose content is trivially already on the base and verifies it. Case 4b
-# below is the other half.
-HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+# head_sha/base_sha are the hermetic checkout's own HEAD, so #3862's closure
+# gate sees a PR whose content is trivially already on the base and verifies
+# it. Case 4b below is the other half.
+HEAD_SHA="$(git -C "$CHECKOUT" rev-parse HEAD)"
 cat > "$GH_STUB_DIR/pulls.json" <<EOF
 {"303": {"head": "feat/lane-invariant", "base": "v3.0.0", "merged": false, "state": "open",
          "head_sha": "$HEAD_SHA", "base_sha": "$HEAD_SHA"}}
 EOF
 
-merge_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
+merge_out="$(cd "$CHECKOUT" && CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
   bash "$MERGE_SCRIPT" 303 3742 2>&1)"
 merge_rc=$?
 _assert_eq "merge flow exits 0" "$merge_rc" "0"
@@ -164,7 +184,7 @@ cat > "$GH_STUB_DIR/pulls.json" <<'EOF'
          "base_sha": "0000000000000000000000000000000000000000"}}
 EOF
 
-unverified_out="$(CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
+unverified_out="$(cd "$CHECKOUT" && CI=true GITHUB_ACTIONS=true STUB_ISSUE=3742 \
   bash "$MERGE_SCRIPT" 313 3742 2>&1)"
 unverified_rc=$?
 _assert_eq "an unverifiable merge fails the run" "$unverified_rc" "1"

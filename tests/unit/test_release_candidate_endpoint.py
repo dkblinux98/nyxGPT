@@ -21,11 +21,23 @@ pytestmark = pytest.mark.unit
 
 PUBLISHED = ["2.1.0", "3.0.0rc1"]
 
+#: The fixtures here all name `v3.0.0`, so the suite declares that line rather
+#: than inheriting the checkout's -- see the same note in
+#: `test_release_candidate.py`, where a release ceremony's version bump turned
+#: the whole file red.
+DECLARED_LINE = "3.0.0"
+
 
 @pytest.fixture(autouse=True)
-def _offline(monkeypatch):
-    """No test reaches pypi.org."""
+def _offline(monkeypatch, tmp_path):
+    """No test reaches pypi.org, and none depends on the checkout's version."""
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
+    declared = tmp_path / "declared" / "pyproject.toml"
+    declared.parent.mkdir(parents=True, exist_ok=True)
+    declared.write_text(
+        f'[project]\nname = "nyxGPT"\nversion = "{DECLARED_LINE}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(release_candidate, "_checkout_pyproject", lambda: declared)
 
 
 def test_endpoint_returns_the_plan_the_cli_reports():
