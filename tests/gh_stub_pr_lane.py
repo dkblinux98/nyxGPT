@@ -40,6 +40,32 @@ STUB_DIR = os.environ["GH_STUB_DIR"]
 PROJECT_ID = "PVT_project"
 STATUS_FIELD_ID = "PVTSSF_status"
 
+
+def _default_base_branch() -> str:
+    """The release branch this stub reports as existing.
+
+    The suite exports ``STUB_BASE_BRANCH``; the fallback is for anyone running
+    the stub by hand. It is derived from the checkout's declared version, not
+    frozen: the old hardcoded ``v3.0.0`` outlived its branch -- the v3.0.1
+    ceremony retired ``origin/v3.0.0``, and #3862's content gate then failed
+    to fetch the base branch the stub was still naming.
+    """
+    env = os.environ.get("STUB_BASE_BRANCH")
+    if env:
+        return env
+    import re
+    import tomllib
+
+    pyproject = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pyproject.toml"
+    )
+    with open(pyproject, "rb") as handle:
+        version = tomllib.load(handle)["project"]["version"]
+    return "v" + re.match(r"\d+\.\d+\.\d+", version).group(0)
+
+
+_STUB_BASE_BRANCH = _default_base_branch()
+
 #: Board Status options, mirroring the real single-select field.
 OPTIONS = {
     "Backlog": "opt_backlog",
@@ -51,17 +77,6 @@ OPTIONS = {
     "Closed": "opt_closed",
 }
 OPTION_NAMES = {v: k for k, v in OPTIONS.items()}
-
-
-def _base_branch() -> str:
-    """The release branch this stub pretends the repo has.
-
-    `STUB_BASE_BRANCH` is set by the callers (`tests/test_pr_lane_hygiene.sh`)
-    from the checkout's declared version, because the merge script's closure
-    gate (#3862) fetches this branch from the real origin -- a literal here
-    goes stale the moment a release ceremony retires the line it names.
-    """
-    return os.environ.get("STUB_BASE_BRANCH", "v3.0.0")
 
 
 def _path(name: str) -> str:
@@ -264,7 +279,13 @@ def _rest(route: str, jq_filter: str | None) -> None:
     if len(parts) >= 5 and parts[3] == "pulls":
         pr = parts[4]
         entry = _read_json("pulls.json", {}).get(
-            pr, {"head": "feat/example", "base": _base_branch(), "merged": False, "state": "open"}
+            pr,
+            {
+                "head": "feat/example",
+                "base": _STUB_BASE_BRANCH,
+                "merged": False,
+                "state": "open",
+            },
         )
         default_sha = os.environ.get("STUB_HEAD_SHA", "HEAD")
         _emit(
@@ -287,7 +308,7 @@ def _rest(route: str, jq_filter: str | None) -> None:
 
     if len(parts) >= 5 and parts[3] == "branches":
         branch = "/".join(parts[4:])
-        if branch == _base_branch():
+        if branch == _STUB_BASE_BRANCH:
             _emit({"name": branch}, jq_filter)
         sys.exit(1)  # head branch already deleted
 

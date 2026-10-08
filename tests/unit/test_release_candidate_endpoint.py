@@ -24,17 +24,22 @@ PUBLISHED = ["2.1.0", "3.0.0rc1"]
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    """No test reaches pypi.org, and no test reads the checkout's version.
-
-    `plan` blocks a branch whose name disagrees with the declared version, so
-    the `v3.0.0` these tests ask about has to be the line the backend thinks
-    it is on. Reading it from the checkout coupled the endpoint's payload shape
-    to whichever line the repo happens to be on, and the 3.0.0 -> 3.0.1
-    ceremony bump turned the payload into a list of blockers. Pin it, the same
-    way `tests/unit/test_release_candidate.py` does.
-    """
+    """No test reaches pypi.org. The declared line is pinned by `_declared_line`."""
     monkeypatch.setattr(release_candidate, "fetch_published_versions", lambda *a, **k: PUBLISHED)
-    monkeypatch.setattr(release_candidate, "declared_version", lambda *a, **k: "3.0.0")
+
+
+@pytest.fixture(autouse=True)
+def _declared_line(monkeypatch, tmp_path):
+    """Pin the declared release line to the `v3.0.0` these fixtures name.
+
+    Same reason as `tests/unit/test_release_candidate.py::_declared_line`, and
+    the same seam: without it the endpoint's plan is compared against whatever
+    version the checkout currently declares, so shipping a release turns these
+    cases red. See that fixture's docstring for the full rationale.
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "nyxGPT"\nversion = "3.0.0"\n', encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "_checkout_pyproject", lambda: pyproject)
 
 
 def test_endpoint_returns_the_plan_the_cli_reports():

@@ -56,25 +56,24 @@ _assert_not_contains() {
   fi
 }
 
-# The release line this checkout is on, read from pyproject.toml rather than
-# written here as a literal. Case 4 drives the real #3862 closure gate, which
-# fetches the PR's base branch from origin and diffs the content against it --
-# so the base this fixture names has to be the branch origin actually serves.
-# Hard-coding `v3.0.0` made the suite a hostage of the release ceremony: the
-# 3.0.0 -> 3.0.1 bump retired `v3.0.0` on origin and case 4 began failing on
-# "Could not fetch v3.0.0" with nothing in the code under test changed.
-RELEASE_BRANCH="v$(python3 - "$ROOT_DIR/pyproject.toml" <<'PY'
-import re, sys, tomllib, pathlib
-declared = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-version = str(declared["project"]["version"]).strip()
-# Strip any pre-release suffix: a pinned `3.0.1rc4` still lives on `v3.0.1`.
-print(re.match(r"\d+\.\d+\.\d+", version).group(0))
-PY
-)"
-# The `gh` stub answers "does this branch exist?" for exactly one branch.
-export STUB_BASE_BRANCH="$RELEASE_BRANCH"
-
 # ---- config + stub wiring ----------------------------------------------
+# The release line THIS checkout is on, read from pyproject.toml rather than
+# frozen into the fixture. Case 4 below exercises #3862's content gate, which
+# really does `git fetch origin <the PR's base branch>` -- so the base branch
+# the stub reports has to be one that exists. A hardcoded `v3.0.0` stopped
+# being one the moment the ceremony cut v3.0.1 and retired it, and the suite
+# went red reporting "expected '0', got '1'" with nothing wrong in the code
+# under test. `v<declared version>` is the same answer
+# `release_candidate.default_branch()` gives, and the ceremony keeps the two
+# in step: it creates `vX.Y.Z` and bumps pyproject.toml to that version.
+RELEASE_BRANCH="v$(python3 -c '
+import re, sys, tomllib
+with open(sys.argv[1], "rb") as handle:
+    version = tomllib.load(handle)["project"]["version"]
+# Strip any pre-release suffix: a pinned `3.0.1rc4` is still the 3.0.1 line.
+print(re.match(r"\d+\.\d+\.\d+", version).group(0))
+' "$ROOT_DIR/pyproject.toml")"
+
 CONFIG="$TMP_ROOT/config.ini"
 cat > "$CONFIG" <<EOF
 REPO_OWNER=dkblinux98
@@ -90,9 +89,12 @@ STATUS_BACKLOG=Backlog
 STATUS_IN_PROGRESS=In Progress
 STATUS_IN_REVIEW=In Review
 STATUS_FOR_RELEASE=For Release
-RELEASE_BRANCH=${RELEASE_BRANCH}
+RELEASE_BRANCH=$RELEASE_BRANCH
 EOF
 export NYXGPT_CONFIG_FILE="$CONFIG"
+# The stub answers "does this base branch exist?" from the same value, so the
+# merge flow's existence check and its content check agree about one branch.
+export STUB_BASE_BRANCH="$RELEASE_BRANCH"
 
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
