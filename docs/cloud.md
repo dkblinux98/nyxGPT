@@ -573,7 +573,7 @@ identical to one running the release you thought you just shipped.
 
 ### `nyxgpt cloud ops` — inspecting the instance (#3813)
 
-Container state on the instance, without a hand-rolled `ssh` and a raw
+What the instance is running, without a hand-rolled `ssh` and a raw
 `docker compose ps`:
 
 ```bash
@@ -598,6 +598,43 @@ The SSH user and identity file the deploy recorded are reused automatically,
 so a deployment made with a non-default key does not need `--identity-file`
 re-typed on every inspection; `--ssh-user`, `--identity-file` and `--host`
 still override.
+
+`nyxgpt ops status` reports whatever tier the instance has — systemd `--user`
+units plus the Cassandra and observability containers on Linux, `brew
+services` on an EC2 Mac, which [has no Docker daemon](#docker-on-the-instance)
+to report on. The instance's own output is streamed back unchanged, so the
+report names what it found rather than the shape one substrate happens to
+have.
+
+#### Finding the instance on either target OS (#4161)
+
+No flag is needed on a macOS deployment either. `~/.nyxGPT/cloud/state.json`
+holds [one block per substrate](#statejson-holds-current-state-and-nothing-else-4136),
+and the two blocks use different names for the same fact: a Linux deploy's
+Terraform outputs land in `public_ip`/`instance_id`/`region`, while an EC2 Mac
+— which never applies that substrate — records `mac_public_ip`,
+`mac_instance_id` and `mac_region`. The resolver every instance-reaching
+command shares (`resolve_target`, used by `cloud ops`, `cloud tunnel`,
+`cloud credentials`, `cloud canary` and `cloud smoke`) reads **both**, so:
+
+| What is on record | Where the address comes from |
+| --- | --- |
+| A Linux deploy | `state.json` `public_ip` |
+| A macOS deploy (`deploy.json` says `os_family: macos`) | `deploy.json` `host`, then `state.json` `mac_public_ip` |
+| An EC2 Mac allocated by a deploy that did not finish | `state.json` `mac_public_ip` |
+| A box supplied with `--host` (no substrate record of it) | `deploy.json` `host` |
+| `--host` on this invocation | the flag, always |
+
+It used to read `public_ip` alone, so every one of those commands answered
+`No provisioned instance found` on a Mac whose current address was sitting in
+that very file under the other name — the whole wrapped-ops surface
+unreachable without re-typing `--host` on each command. The values were never
+stale; the reader was looking up the wrong word. (Stale values are a
+different defect, fixed in #4136.)
+
+When `--host` names a machine that is *not* the one on record, the recorded
+instance id, region and security group are dropped rather than reported beside
+it: they describe a different box.
 
 #### If you SSH in yourself (#3993)
 
@@ -988,7 +1025,7 @@ at the wrapped commands below for everything that changes state:
 | Run the end-to-end cloud test (deploys, verifies, tears down) | `nyxgpt cloud smoke` |
 | Test the artifact install path locally, without AWS | `nyxgpt cloud smoke --container` |
 | Show the same state from a terminal | `nyxgpt cloud status` |
-| Inspect the containers running on the instance | `nyxgpt cloud ops status` |
+| Inspect what the instance is running | `nyxgpt cloud ops status` |
 | Diagnose the instance | `nyxgpt cloud ops doctor` |
 | Read the observability logins | `nyxgpt cloud credentials` |
 | Open or close the access tunnel | `nyxgpt cloud tunnel` / `nyxgpt cloud tunnel --stop` |

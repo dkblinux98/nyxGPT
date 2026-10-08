@@ -37,6 +37,16 @@ name: Cloud Status Smoke
 #                       them, from the same binary and the same $HOME, is what
 #                       proves the new verdicts are not printed unconditionally.
 #
+#                       Phases 4a-4d (#4161) inject the macOS shape of
+#                       `~/.nyxGPT/cloud/state.json` -- only `mac_`-prefixed
+#                       keys, no bare `public_ip` -- and assert that every
+#                       `cloud ops` inspection and `cloud tunnel` resolve the
+#                       Mac with no `--host`. On a live `mac2.metal` they all
+#                       answered "No provisioned instance found" about a Mac
+#                       the same CLI had just deployed. 4a asserts the refusal
+#                       is still printed when nothing is recorded at all, so
+#                       4b-4d cannot pass by resolving anything at all.
+#
 # What it does NOT cover: a real EC2 instance answering `nyxgpt cloud ops`
 # (that needs a billed deployment -- `nyxgpt cloud smoke` is the command that
 # does it), and the React rendering of the cloud page (covered by
@@ -50,6 +60,9 @@ on:
       # (`state.json`, `infra.json`), so a change to either can change what it
       # reports without touching cloud_deploy.py at all.
       - 'src/nyxgpt/cloud_infra.py'
+      # #4161: this one writes the `mac_*` block of `state.json` that the
+      # shared resolver reads for a macOS target.
+      - 'src/nyxgpt/cloud_mac.py'
       - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud-status-smoke.sh'
@@ -61,6 +74,9 @@ on:
       # (`state.json`, `infra.json`), so a change to either can change what it
       # reports without touching cloud_deploy.py at all.
       - 'src/nyxgpt/cloud_infra.py'
+      # #4161: this one writes the `mac_*` block of `state.json` that the
+      # shared resolver reads for a macOS target.
+      - 'src/nyxgpt/cloud_mac.py'
       - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud-status-smoke.sh'

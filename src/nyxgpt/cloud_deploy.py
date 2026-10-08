@@ -529,19 +529,94 @@ def installed_version() -> str:
         return ""
 
 
+def _recorded_instance(state: dict[str, Any], record: dict[str, Any]) -> dict[str, str]:
+    """Return the address and ids of the instance this machine last worked on.
+
+    **One instance, two vocabularies** (#4161). `~/.nyxGPT/cloud/state.json`
+    holds both, because both writers use it:
+
+    * a **Linux** deploy applies the Terraform substrate, and
+      `cloud_infra.apply_infra` records its outputs under the bare keys --
+      `public_ip`, `instance_id`, `region`, `security_group_id`;
+    * a **macOS** deploy never applies that substrate (an EC2 Mac needs a
+      Dedicated Host, which `cloud_mac.allocate` owns), and
+      `cloud_mac.record_mac_host` records the same facts under `mac_`-prefixed
+      keys -- `mac_public_ip`, `mac_instance_id`, `mac_region`,
+      `mac_security_group_id`.
+
+    Reading only the bare keys -- which is what every `cloud ops`, `tunnel`,
+    `credentials` and `canary` invocation did until this existed -- therefore
+    reports "No provisioned instance found" for a Mac whose correct, current
+    address is sitting in that very file under the other name. The values were
+    never stale (that is #4136's defect class); the reader was looking up the
+    wrong word.
+
+    Precedence, and why:
+
+    1. **`deploy.json`'s `os_family: macos` pins the Mac vocabulary.** One
+       `state.json` can carry both key sets -- a workstation that deployed
+       Linux before deploying a Mac has the old `public_ip` beside the new
+       `mac_public_ip` -- so the recorded deployment, not key presence, is
+       what says which instance the operator means.
+    2. **Otherwise the bare substrate keys**, which is the Linux happy path
+       and the one `_deploy` itself resolves through immediately after an
+       apply: `deploy.json` there still names the *previous* deploy, so it
+       must never outrank this run's fresh substrate outputs.
+    3. **Then `deploy.json`'s plain `host`**, which is what `cloud status` and
+       `cloud screen` already trust. It covers the `--host` box nyxGPT did not
+       provision, whose address appears in no substrate record at all.
+    4. **Then the `mac_` keys**, so a Mac that was allocated but whose deploy
+       did not finish -- no `deploy.json`, hence no `os_family` -- is still
+       reachable by the inspections an operator runs to find out why.
+
+    Both files are removed by `cloud destroy`, so nothing here can resurrect
+    an instance that is gone.
+    """
+    if str(record.get("os_family") or "") == OS_FAMILY_MACOS:
+        return {
+            "host": str(record.get("host") or state.get("mac_public_ip") or ""),
+            "instance_id": str(state.get("mac_instance_id") or record.get("instance_id") or ""),
+            "region": str(state.get("mac_region") or record.get("region") or ""),
+            "security_group_id": str(state.get("mac_security_group_id") or ""),
+        }
+    return {
+        "host": str(
+            state.get("public_ip") or record.get("host") or state.get("mac_public_ip") or ""
+        ),
+        "instance_id": str(state.get("instance_id") or state.get("mac_instance_id") or ""),
+        "region": str(state.get("region") or state.get("mac_region") or ""),
+        "security_group_id": str(
+            state.get("security_group_id") or state.get("mac_security_group_id") or ""
+        ),
+    }
+
+
 def resolve_target(args: argparse.Namespace) -> DeployTarget:
     """Locate the provisioned instance and how to SSH to it.
 
     Reads `~/.nyxGPT/cloud/state.json` -- the handoff `cloud infra apply`
-    writes -- so no flag is needed on the happy path.
+    writes, and the one `cloud_mac.allocate` writes its `mac_`-prefixed
+    equivalents into -- plus the deploy record, so no flag is needed on the
+    happy path for either target OS. `_recorded_instance` holds that lookup
+    and the reasoning for its precedence (#4161).
     """
     state = _cloud_state()
-    host = str(getattr(args, "host", None) or state.get("public_ip") or "")
+    record = load_deploy_state()
+    found = _recorded_instance(state, record)
+    requested = str(getattr(args, "host", None) or "")
+    host = requested or found["host"]
+    if requested and requested != found["host"]:
+        # `--host` names a machine that is not the one on record, so the
+        # recorded ids describe a different box. Reporting them beside this
+        # host would attribute an instance id, region and security group to a
+        # machine that has none of them (#4161).
+        found = {"host": host, "instance_id": "", "region": "", "security_group_id": ""}
     if not host:
         raise CloudCommandError(
             "No provisioned instance found in "
-            f"{cloud_infra.CLOUD_STATE_FILE} -- run `nyxgpt cloud deploy` (which provisions "
-            "first) or `nyxgpt cloud infra apply`, or pass --host to target an existing box."
+            f"{cloud_infra.CLOUD_STATE_FILE} or {DEPLOY_STATE_FILE} -- run `nyxgpt cloud "
+            "deploy` (which provisions first) or `nyxgpt cloud infra apply`, or pass --host "
+            "to target an existing box."
         )
     saved = cloud_infra.load_settings()
     # No identity file means "let ssh use its own defaults and agent", which
@@ -555,9 +630,9 @@ def resolve_target(args: argparse.Namespace) -> DeployTarget:
         host=host,
         user=str(getattr(args, "ssh_user", None) or DEFAULT_SSH_USER),
         identity_file=identity,
-        region=str(state.get("region") or saved.get("aws_region") or ""),
-        instance_id=str(state.get("instance_id") or ""),
-        security_group_id=str(state.get("security_group_id") or ""),
+        region=str(found["region"] or saved.get("aws_region") or ""),
+        instance_id=str(found["instance_id"]),
+        security_group_id=str(found["security_group_id"]),
     )
 
 
@@ -2921,8 +2996,11 @@ LIFECYCLE_COMMANDS: dict[str, str] = {
 
 # The read-only inspections `nyxgpt cloud ops <name>` runs *on* the instance
 # over the same wrapped SSH path `nyxgpt cloud credentials` uses (#3813), so
-# checking container state never needs a hand-rolled `ssh` followed by a raw
-# `docker compose ps` (CLAUDE.md's wrapper requirement). Deliberately an
+# checking what the instance is running never needs a hand-rolled `ssh`
+# followed by a raw `docker compose ps` (CLAUDE.md's wrapper requirement).
+# What `status` reports is whatever tier that instance has -- systemd units
+# plus containers on Linux, `brew services` on an EC2 Mac, which has no
+# Docker daemon to report on (#4161). Deliberately an
 # allowlist of reads: changing what runs on the instance is `nyxgpt cloud
 # deploy`, which is idempotent and records what it did.
 REMOTE_OPS_COMMANDS: dict[str, str] = {
@@ -3470,9 +3548,15 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     # again -- the address, the SSH target, the tunnel state -- so an
     # operator never has to reconstruct it from a terminal's scrollback
     # (#3813).
+    # "What it is running", not "its containers" (#4161): on a macOS target
+    # the sentence four lines above has just said no Docker daemon can exist
+    # there, so promising a container report in the closing pointer
+    # contradicted the same output -- and did it in the line an operator is
+    # most likely to act on. `ops status` reports whatever tier the instance
+    # has, which is what this now says.
     print(
         f"\nAsk for all of this again at any time with `{LIFECYCLE_COMMANDS['status']}`, and "
-        f"check the instance's own containers with `{LIFECYCLE_COMMANDS['ops_status']}`."
+        f"check what the instance itself is running with `{LIFECYCLE_COMMANDS['ops_status']}`."
     )
 
 
@@ -3905,7 +3989,9 @@ def _print_status_summary(status: dict[str, Any]) -> None:
                 if status.get("os_family") == OS_FAMILY_MACOS
                 else ()
             ),
-            ("Containers on the instance", "ops_status"),
+            # Not "Containers on the instance" (#4161): an EC2 Mac runs the
+            # stack as `brew services` and can host no containers at all.
+            ("What the instance is running", "ops_status"),
             ("Diagnose the instance", "doctor"),
             ("Observability logins", "credentials"),
             ("Redeploy (idempotent)", "redeploy"),
@@ -3997,8 +4083,8 @@ def remote_ops(target: DeployTarget, inspection: str) -> int:
     """Run one read-only `nyxgpt` inspection *on* the instance, over wrapped SSH.
 
     The same access path `remote_credentials` uses, for the same reason:
-    checking what containers the deployment is running should not require an
-    operator to hand-roll `ssh` and then a raw `docker compose ps` (#3813).
+    checking what the deployment is running should not require an operator to
+    hand-roll `ssh` and then a raw `docker compose ps` (#3813).
     The instance's own output is streamed through unchanged -- this is the
     remote command's answer, not a re-formatting of it.
 

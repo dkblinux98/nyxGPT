@@ -112,6 +112,96 @@ def test_resolve_target_honours_an_explicit_host_and_identity(_isolated_cloud_ho
     assert target.identity_file == str(key)
 
 
+def _write_macos_state(cloud_dir, **overrides):
+    """Write the `state.json` a *macOS* deploy leaves behind (#4161).
+
+    The shape matters as much as the values: a Mac deploy never applies the
+    Linux substrate, so there is no bare `public_ip` key at all -- only the
+    `mac_`-prefixed block `cloud_mac.record_mac_host` writes.
+    """
+    state = {
+        "mac_host_id": "h-0a34ad0272012a987",
+        "mac_instance_id": "i-0a1bd7690f11507d6",
+        "mac_public_ip": "98.88.75.21",
+        "mac_region": "us-east-1",
+        "mac_security_group_id": "sg-0mac",
+    }
+    state.update(overrides)
+    (cloud_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return state
+
+
+def test_resolve_target_finds_a_macos_instance_from_the_mac_keys(_isolated_cloud_home):
+    """#4161: `cloud ops`/`tunnel` on a Mac must not need `--host`.
+
+    `resolve_target` read `public_ip` alone, which a macOS deploy never
+    writes -- so every command that goes through it refused a Mac whose
+    correct, current address was in `state.json` under `mac_public_ip`.
+    """
+    _write_macos_state(_isolated_cloud_home)
+    target = cloud_deploy.resolve_target(_args())
+    assert target.host == "98.88.75.21"
+    assert target.instance_id == "i-0a1bd7690f11507d6"
+    assert target.region == "us-east-1"
+    assert target.security_group_id == "sg-0mac"
+
+
+def test_resolve_target_prefers_the_mac_when_the_deploy_record_says_macos(_isolated_cloud_home):
+    """One `state.json` can carry both blocks; the deploy record breaks the tie.
+
+    A workstation that deployed Linux before deploying a Mac has the old
+    `public_ip` sitting beside the new `mac_public_ip`, and reading the bare
+    key first would send every inspection at the wrong machine.
+    """
+    _write_cloud_state(_isolated_cloud_home)  # the earlier Linux substrate
+    _write_macos_state(_isolated_cloud_home, public_ip="198.51.100.10", instance_id="i-0abc")
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "98.88.75.21", "os_family": "macos", "ssh_user": "ec2-user"}),
+        encoding="utf-8",
+    )
+    target = cloud_deploy.resolve_target(_args())
+    assert target.host == "98.88.75.21"
+    assert target.instance_id == "i-0a1bd7690f11507d6"
+
+
+def test_resolve_target_falls_back_to_the_deploy_records_host(_isolated_cloud_home):
+    """A `--host` box appears in no substrate record, but the deploy recorded it."""
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "203.0.113.7", "os_family": "linux"}), encoding="utf-8"
+    )
+    assert cloud_deploy.resolve_target(_args()).host == "203.0.113.7"
+
+
+def test_resolve_target_keeps_the_fresh_substrate_ahead_of_the_deploy_record(_isolated_cloud_home):
+    """`_deploy` resolves through this right after an apply (#4161).
+
+    At that moment `deploy.json` still names the *previous* deploy's box, so
+    the substrate handoff this run just wrote has to win or the deploy would
+    install onto the wrong machine.
+    """
+    _write_cloud_state(_isolated_cloud_home, public_ip="198.51.100.77")
+    (_isolated_cloud_home / "deploy.json").write_text(
+        json.dumps({"host": "198.51.100.10"}), encoding="utf-8"
+    )
+    assert cloud_deploy.resolve_target(_args()).host == "198.51.100.77"
+
+
+def test_resolve_target_does_not_attribute_recorded_ids_to_another_host(_isolated_cloud_home):
+    """`--host` names a different box, so the recorded ids are not its (#4161)."""
+    _write_macos_state(_isolated_cloud_home)
+    target = cloud_deploy.resolve_target(_args(host="203.0.113.9"))
+    assert target.host == "203.0.113.9"
+    assert (target.instance_id, target.security_group_id) == ("", "")
+
+
+def test_resolve_target_error_names_both_records_it_read(_isolated_cloud_home):
+    with pytest.raises(CloudCommandError) as excinfo:
+        cloud_deploy.resolve_target(_args())
+    message = str(excinfo.value)
+    assert "state.json" in message
+    assert "deploy.json" in message
+
+
 def test_resolve_plan_defaults_to_every_observability_profile():
     plan = cloud_deploy.resolve_plan(_args())
     assert plan.profiles == ["monitoring", "logging", "tracing", "errors"]
@@ -1891,6 +1981,52 @@ def test_the_macos_caveat_covers_the_container_tier_and_not_the_model_backend(ca
     container_caveat, _, rest = out.partition("Docker daemon can exist on it.")
     assert "self-heal" not in container_caveat, container_caveat
     assert "self-heal" in rest
+
+
+def test_the_macos_deploy_never_points_at_containers_on_the_instance(capsys):
+    """#4161: the closing pointer must not promise what this target cannot have.
+
+    It said "check the instance's own containers with `nyxgpt cloud ops
+    status`" -- four lines after the same output had correctly explained that
+    no Docker daemon can exist on an EC2 Mac. The last line of a deploy is the
+    one an operator acts on, so it is the worst place to assert a shape the
+    machine does not have.
+    """
+    cloud_deploy._print_deploy_summary(
+        {
+            "target": {"instance_id": "i-0abc", "host": "203.0.113.5"},
+            "plan": {"version": "3.0.0", "os_family": cloud_deploy.OS_FAMILY_MACOS},
+            "steps": [],
+            "tunnel": {"running": False},
+            "urls": {},
+        }
+    )
+
+    out = capsys.readouterr().out
+    _, _, pointer = out.rpartition("Ask for all of this again")
+
+    assert "nyxgpt cloud ops status" in pointer
+    assert "container" not in pointer.lower(), pointer
+
+
+def test_the_wrapped_ops_help_names_services_rather_than_containers(capsys):
+    """The same claim in `cloud ops --help`, which is substrate-independent (#4161).
+
+    The help is one string for every target OS, so it cannot promise the Linux
+    layout's containers: on an EC2 Mac the stack is `brew services` and no
+    Docker daemon can exist. It names services instead, and the instance's own
+    streamed output is what says which tier was actually found.
+    """
+    from nyxgpt import cli
+
+    with pytest.raises(SystemExit):
+        cli.cli(["cloud", "ops", "--help"])
+
+    out = capsys.readouterr().out
+
+    assert "nyxgpt ops status" in out
+    assert "services" in out
+    assert "container" not in out.lower(), out
 
     # And the sentence that used to absorb the model backend is gone.
     assert "No observability stack and no self-heal watchdog" not in out

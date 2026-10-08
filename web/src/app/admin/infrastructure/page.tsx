@@ -1977,7 +1977,9 @@ export default function InfrastructurePage() {
                   ] as Array<[string, string]>)
                 : []),
               [
-                'Inspect the containers running on the instance',
+                // Not "containers" (#4161): an EC2 Mac target runs the stack
+                // as `brew services` and can host no Docker daemon at all.
+                'Inspect what the instance is running',
                 cloud?.commands?.ops_status ?? 'nyxgpt cloud ops status',
               ],
               ['Diagnose the instance', cloud?.commands?.doctor ?? 'nyxgpt cloud ops doctor'],
