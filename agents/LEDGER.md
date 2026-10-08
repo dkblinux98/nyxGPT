@@ -2471,18 +2471,27 @@ rather than mechanism, and nothing can enforce them.
   dropped, not left holding the previous substrate's answer; a superseded block
   moves to `state-archive.jsonl` under a different name; an in-place field
   update must name the resource it believes the block describes and is refused
-  if the record has moved; and reconcile-vs-allocate, `allow-ip` discovery,
-  release scheduling and destroy each verify against AWS first. Third
-  occurrence of one mechanism (#3993 → #4122 → #4136), and the lesson for
-  tests: all three passed a green suite, because the tests asserted the fields
-  the write *mentioned*. A block is now asserted key by key over the whole key
-  set, and the executed evidence
+  if the record has moved; and reconcile-vs-allocate, release scheduling and
+  destroy each confirm the resource at AWS before deciding, while `allow-ip`
+  reads the Mac's block for its defaults so a gone group errors at AWS instead
+  of silently targeting the wrong one (#3993). Third occurrence of one
+  mechanism (#3993 → #4122 → #4136), and the lesson for tests: all three
+  passed a green suite, because the tests asserted the fields the write
+  *mentioned*. A block is now asserted key by key over the whole key set,
+  and the same seam-blindness had a second form — the dashboard asked for the
+  AWS confirmation and its Next.js proxy dropped the parameter, with the page
+  tests mocking the proxy and the backend tests bypassing it, so
+  `validate-web-routes.sh` now fails on a proxy that drops a parameter its
+  caller sends. The executed evidence
   (`.github/workflows/cloud-stale-record-smoke.yml`) runs its negative control
   first. Corollary: `InvalidHostID.NotFound` is an *answer*, not a failure —
   catching every botocore exception as "could not ask" is what turned AWS's
   clearest possible no into an unknown and cost a 24-hour Dedicated Host
   minimum with no disclosure. Spend figures come from Cost Explorer, never from
   `rate × (now − allocated_at)`, which cannot stop counting when the charges do.
+  Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed, after the v3.0.1 mainline allocated
+  D-062/D-063 to #4167 while this entry was in review.
   Source: #4136 (owner, 2026-10-03); #3993; docs/cloud.md §"`state.json` holds
   current state and nothing else".
 

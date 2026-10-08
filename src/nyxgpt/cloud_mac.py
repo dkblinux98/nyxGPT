@@ -1320,7 +1320,7 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
             print(
                 f"\nWARNING: Dedicated Host {stranded} WAS allocated before this failure and is "
                 "billing. It has been recorded, so `nyxgpt cloud status` names it, its release "
-                "time and its accrued cost, and re-running the deploy reconciles it rather than "
+                "time and what it has cost, and re-running the deploy reconciles it rather than "
                 "allocating a second one.",
                 file=sys.stderr,
             )

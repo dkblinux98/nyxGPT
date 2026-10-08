@@ -497,12 +497,20 @@ scrollback:
 ```bash
 nyxgpt cloud status            # the operator summary (default)
 nyxgpt cloud status --json     # the machine-readable payload
-nyxgpt cloud status --no-probe # don't health-check through an open tunnel
+nyxgpt cloud status --no-probe # don't health-check through an open tunnel,
+                               # and don't ask AWS about the Dedicated Host
 ```
 
-It answers from recorded state alone — no AWS call, no connection to the
-instance — so it is safe to run at any time and still answers when your AWS
-credentials have expired. The summary carries the installed release, the
+The deploy, substrate and tunnel facts come from recorded state alone — no AWS
+call, no connection to the instance — so the command is safe to run at any
+time and still answers when your AWS credentials have expired. **The EC2 Mac
+Dedicated Host block is the one exception (#4136):** when a host is recorded,
+the command asks AWS about it (one `DescribeHosts`, plus an hourly-cached
+`GetCostAndUsage`) because a host id is a claim about money, and the row is
+labelled *recorded here, not confirmed at AWS* rather than reported as current
+when the question cannot be asked — see *Every row is AWS's answer or is
+labelled as not being one* above. `--no-probe` suppresses both network calls,
+which is what makes it the poll-safe form. The summary carries the installed release, the
 instance id and type, the region, the public IP, the security group's single
 ingress rule, the enabled observability profiles, the tunnel's state, a
 health verdict, the localhost URLs and, most importantly, the **connection
@@ -1049,9 +1057,13 @@ status` report DEPLOYED for a stack that was never installed. A teardown
 deletes both — once the substrate is gone, "a deploy stopped at `provision`"
 describes an instance that no longer does.
 
-All of them are read-only inputs to `nyxgpt cloud status`, which
-answers without calling AWS or touching the instance — safe to poll, and it
-still answers when your AWS credentials have expired.
+All of them are read-only inputs to `nyxgpt cloud status`, which answers the
+deploy, substrate and tunnel questions from these files alone — no AWS call,
+no connection to the instance — so it still answers when your AWS credentials
+have expired. The exception is the EC2 Mac Dedicated Host block, which
+`status` verifies against AWS whenever one is recorded (#4136); `--no-probe`
+turns that call off along with the tunnel health check, and is the form to
+poll.
 
 The history is appended by `deploy` and `destroy` themselves rather than by
 whichever surface invoked them, so a deploy run from a terminal shows up on

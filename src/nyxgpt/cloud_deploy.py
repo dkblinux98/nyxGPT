@@ -3143,10 +3143,12 @@ def _screen_status() -> dict[str, Any]:
 
 
 def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict[str, Any]:
-    """Report the deployment's state without touching AWS or the instance.
+    """Report the deployment's state; both network calls are opt-in.
 
-    Cheap enough for the dashboard to poll, and still answers on a machine
-    whose AWS credentials have expired.
+    The default touches neither AWS nor the instance, so it is cheap enough
+    for the dashboard to poll and still answers on a machine whose AWS
+    credentials have expired. `probe_health` and `verify_host` each add one
+    call, and are described below.
 
     Like the substrate status it wraps, this answers from whichever source
     can see the deployment from here:
@@ -3323,8 +3325,9 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         # two moments the only thing that still costs money is the one thing
         # every other field here has stopped describing. Empty dict when
         # nothing is outstanding. Read from `~/.nyxGPT/cloud/state.json`, so
-        # it still answers after `deploy.json` is gone -- and, like everything
-        # else on this surface, with no AWS call.
+        # it still answers after `deploy.json` is gone. The read itself makes
+        # no AWS call; `verify_host=True` above is what asks AWS, and the
+        # block says which of the two the reader is looking at (#4136).
         "mac_host": cloud_mac.pending_release(),
         "connection": connection_status(on_instance),
         "infra": infra,

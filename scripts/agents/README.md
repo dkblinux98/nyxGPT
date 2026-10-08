@@ -77,7 +77,7 @@ request merged" automation) and idempotent, and none of them touch issues.
 - `sweep_stranded_residue.sh [--open-prs] [base_branch]` — on-demand **report** of branches carrying commits pushed **after their own pull request merged**, which are therefore on `base_branch` in no form at all (#4151). `developer_ensure_pr_exists.sh` detects this at the end of the run that causes it (disposition `merged-residue` → a draft residue PR plus a loud comment on the originating issue); this sweep is for the ones already on the remote, and is dispatchable as `stranded_residue_sweep.yml` so the question can be answered without a terminal. Report-only unless `--open-prs`. Nothing schedules it: the event now has a guard on it (ledger D-013, first principle 1). A squash-merged branch reports unmerged commits forever and is **not** stranded — the classifier (`lib/branch_residue.py`) clears a branch only on a positive blob-level proof that its content is on `base_branch`.
 
 ### validation
-- `validate-web-routes.sh` — validates that web proxy routes exist for all backend API endpoints
+- `validate-web-routes.sh` — validates that web proxy routes exist for all backend API endpoints, and that each one forwards the query parameters its caller sends (#4136 — a hand-picked subset fails invisibly, since page tests mock the proxy and backend tests bypass it)
 
 ## Troubleshooting
 - Run with `DEBUG=1` to print GraphQL responses and commands.

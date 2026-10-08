@@ -177,6 +177,21 @@ This script:
 - Scans all `fetch()` calls in the frontend
 - Checks if corresponding web proxy routes exist
 - Reports missing routes
+- Checks that each route forwards the **query parameters** its caller sends —
+  a route satisfies this either by forwarding the whole incoming query string
+  (`new URL(request.url).search`) or by naming each parameter
+
+That last check exists because a proxy that forwards a hand-picked subset of
+parameters fails invisibly (#4136): the page tests mock the proxy and the
+backend tests call FastAPI directly, so nothing sits on the seam where the
+parameter is dropped. The Infrastructure page asked for
+`?probe_health=true&verify_host=true` for two days while its route forwarded
+`probe_health` alone, and the only symptom was a dashboard that said it had
+never asked AWS about a billing Dedicated Host. **When you add a query
+parameter to an endpoint, forward it in the proxy and add a route test
+asserting the backend URL carries it** (`web/tests/app/api/v1/.../route.test.ts`
+— assert the whole URL; a substring check passes on a URL missing your
+parameter).
 
 ## Common Issues
 
