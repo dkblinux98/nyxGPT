@@ -97,6 +97,16 @@ DEPENDABOT_SECRETLESS_TOLERATED = {
         "writes nothing. Classified `[not-required]`, so it cannot hold a head "
         "out of review either."
     ),
+    "release-prereq-smoke.yml": (
+        "Path-filtered to the release ceremony's own files (#4166), which a "
+        "Dependabot PR reaches only via a github-actions security update that "
+        "touches this workflow. Only `iteration-preservation` reads a secret; a "
+        "blank `DEVELOPER_AGENT_TOKEN` cannot create the scratch project, so the "
+        "check goes red having written nothing -- it never reaches project 2. "
+        "Unlike `support-intake-smoke.yml` that check is REQUIRED, so such a PR is "
+        "held out of merge rather than merged unproven: a visible stop, which is "
+        "the safe direction for a check guarding the owner's board."
+    ),
 }
 
 #: Expressions and commands that resolve to the pull request's HEAD -- i.e. to

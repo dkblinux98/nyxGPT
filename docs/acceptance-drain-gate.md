@@ -214,9 +214,13 @@ loop, and now reaches a release only through this one signed-off path.
 
 ### What runs, unattended
 
-1. **Phase 0** entry gate (read-only): milestone fully closed, release issue
-   task list clean, no open critical/high code-scanning alerts, draft release
-   present, tag not already taken.
+1. **Phase 0** prerequisite inventory → provision → entry gate (#4166): it
+   checks every prerequisite for all five phases in one pass, creates the ones
+   automation can (see **Prerequisites** below), and stops before Phase 1 —
+   listing *every* gap, not the first — if anything it cannot create is
+   missing: milestone not fully closed, release issue task list unclean, open
+   critical/high code-scanning alerts, a `pyproject.toml` version mismatch, a
+   tag already taken.
 2. **Phase 1** master fast-forward → normalize and publish the draft release
    (tag created on master).
 3. **Phase 2** `stable` publish, delegated to the single publish pipeline
@@ -244,11 +248,25 @@ loop, and now reaches a release only through this one signed-off path.
 Phase 4 restores them after the repoint, so the agents resume on the new line.
 A run that stops part-way leaves them paused deliberately.
 
+**Prerequisites.** Phase 0 checks every prerequisite for all five phases in
+one pass and provisions what it can (#4166): the next line's `(vX.Y.Z)`
+milestone — as a `Placeholder — next line (vX.Y.Z)` for the next patch
+version, for the owner to rename — the next `Sprint <N+1>` iteration, this
+release's draft release, and the release issue's `Release Management` label
+and milestone. Each is re-verified by query and listed in a note on the
+release issue. Anything automation cannot create (open issues in the release
+milestone, unchecked release-issue tasks, open critical/high code-scanning
+alerts, a `pyproject.toml` version mismatch, an existing tag, missing
+tap/Slack wiring) stops the run before Phase 1, with every gap listed. The
+milestone and sprint used to be checked only in Phase 4, i.e. after the
+release was already published.
+
 **Resume.** Re-dispatching after a failure needs no `force` once the release
 tag exists: the watcher runs `--phase4-only`, which verifies Phases 0-3
-completed and runs only Phase 4. The only owner prerequisite is the next
-line's milestone and a sprint iteration; the session that dispatched the run
-reconciles the owner's local `config.ini` mirror afterwards.
+completed, re-runs the line-prerequisite inventory, and runs only Phase 4.
+Anything Phase 0 provisioned is idempotent and stays in place. The session
+that dispatched the run reconciles the owner's local `config.ini` mirror
+afterwards.
 
 ### Guardrails
 

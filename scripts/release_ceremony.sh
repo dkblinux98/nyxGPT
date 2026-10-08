@@ -2,7 +2,8 @@
 # release_ceremony.sh — owner-run release ceremony for nyxGPT.
 #
 # Encodes the ceremony agreed 2026-08-06 (owner + assistant walkthrough):
-#   Phase 0  Entry gate (read-only checks)            -> STOP: "ship it"
+#   Phase 0  Prerequisite inventory + provisioning + entry gate
+#            -> STOP: "ship it"
 #   Phase 1  master fast-forward, then publish the draft release
 #            (master is always the authoritative latest release; the
 #            release tag is created on master AFTER the fast-forward)
@@ -20,6 +21,30 @@
 #            release is forward-ported into it), its release issue and draft
 #            release are created, and the default branch / RELEASE_BRANCH /
 #            RELEASE_ISSUE_NUMBER are repointed to it.
+#
+# Phase 0 checks EVERY prerequisite for all five phases in ONE pass and puts
+# in place whatever is missing (owner requirement, 2026-10-07, #4166). Before
+# that, the next line's "(vX.Y.Z)" milestone and the Sprint iteration were
+# only checked in Phase 4 -- after master had been fast-forwarded, the tag and
+# GitHub Release published and `stable` pushed to PyPI -- so a missing one
+# produced a half-finished ceremony with the agent flags paused instead of an
+# up-front "not ready" (runs 37569589877, 37569759241). Two kinds, and only
+# two:
+#   provisionable  the next-line milestone (a self-named placeholder for the
+#                  next patch version if the owner has not made one), the next
+#                  Sprint iteration, this release's draft release, and the
+#                  release issue's `Release Management` label and milestone.
+#                  Created, then re-verified by query, and listed in a note on
+#                  the release issue.
+#   gate-only      everything automation must not invent: open issues in the
+#                  release milestone, unchecked release-issue tasks, open
+#                  critical/high code-scanning alerts, a pyproject version
+#                  mismatch, an existing tag, missing tap/Slack wiring. The run
+#                  stops before Phase 1 with EVERY gate failure listed.
+# Provisioning runs BEFORE the gate decision on purpose: a gate failure then
+# leaves the provisioned objects in place (all idempotent) and the run
+# resumable. Phase 4 keeps a cheap re-verify of the line prerequisites, but it
+# is no longer where a missing one is discovered.
 #
 # Agent pause (owner requirement, 2026-10-07): Phase 0 sets AGENTS_ENABLED,
 # SPRINT_AUTOPILOT and CLAUDE_REVIEW_ENABLED to false so nothing merges into
@@ -73,7 +98,8 @@
 # tag, (2) create its release issue, (3) create its draft release, and
 # verify (4) phase milestone(s) and (5) sprint iteration(s) exist for the
 # new line. Only then do the GitHub vars, default branch, and config.ini
-# get repointed.
+# get repointed. (4) and (5) are now Phase 0's job to check AND provision;
+# Phase 4 only re-verifies them.
 #
 # Every mutation is re-verified by querying GitHub/PyPI afterwards — never
 # assume success from a non-error response (house rule).
@@ -84,6 +110,12 @@ REPO_OWNER="dkblinux98"
 REPO_NAME="nyxGPT"
 REPO="${REPO_OWNER}/${REPO_NAME}"
 CONFIG_FILE="${NYXGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Every derivation Phase 0 and Phase 4 share -- next patch version, placeholder
+# milestone title, next sprint title/start/duration, the iteration resubmit
+# payload, and the gate/provision classification -- lives in one unit-tested
+# module so the two phases cannot disagree about what "ready" means (#4166).
+PREREQS="${DIR}/agents/lib/release_prereqs.py"
 
 log()  { echo "[ceremony] $*"; }
 fail() { echo "[ceremony] FATAL: $*" >&2; exit 1; }
@@ -93,6 +125,7 @@ VERSION="${1:-}"; [[ -n "$VERSION" ]] || { grep -E '^#( |$)' "$0" | sed 's/^# \{
 shift
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "VERSION must be x.y.z, got: $VERSION"
 NEXT_BRANCH=""; NEXT_RELEASE_ISSUE=""; NEXT_TITLE=""; SKIP_SCAN=0; SKIP_PYPI=0; DRY=0; PHASE4_ONLY=0
+NEXT_MS_TITLE=""
 UNATTENDED=0; STOP_AFTER_PHASE=4
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -115,6 +148,9 @@ if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then REL_TYPE="major"; else REL_TYPE="poi
 # The next line is resolved in Phase 4 (from the open milestones) unless
 # given explicitly, so an unattended run needs no next-line arguments.
 NEXT_VERSION="${NEXT_BRANCH#v}"
+# Whether the next line was NAMED by the caller: Phase 0's milestone
+# derivation must defer to it rather than relabel it (#4166).
+NEXT_BRANCH_EXPLICIT="$NEXT_BRANCH"
 
 # --- credentials ---
 ini_get() { # ini_get SECTION KEY
@@ -215,6 +251,90 @@ resume_agent_flags() {
   log "  verified: agent flags restored (${saved})"
 }
 
+# =====================================================================
+# Prerequisite inventory (#4166)
+#
+# Phase 0 used to be a partial gate: the next line's milestone and the Sprint
+# iteration were only checked in Phase 4, i.e. AFTER master had been
+# fast-forwarded, the tag and GitHub Release published and `stable` pushed to
+# PyPI. A missing one surfaced as a half-finished ceremony with the agent flags
+# paused (runs 37569589877, 37569759241) rather than an up-front "not ready".
+#
+# So the inventory now covers every prerequisite for all five phases, reports
+# EVERY gap in one pass, and splits them into exactly two kinds:
+#
+#   gate       automation cannot create it. The run stops before Phase 1 with
+#              all gate failures listed.
+#   provision  automation creates it, then re-verifies it by query.
+#
+# Reporting all of them matters more than it looks: stopping at the first gap
+# means the owner fixes one thing, re-dispatches, and discovers the next.
+# =====================================================================
+PREREQ_FINDINGS=""
+PROVISIONED=()
+
+prereq() { # prereq KEY KIND(gate|provision) OK(true|false) DETAIL
+  PREREQ_FINDINGS+="$(jq -n -c --arg key "$1" --arg kind "$2" --argjson ok "$3" --arg detail "$4" \
+    '{key:$key, kind:$kind, ok:$ok, detail:$detail}')"$'\n'
+}
+
+# Prints the inventory and returns 1 if any GATE prerequisite is unmet. It is
+# deliberately NOT fatal: provisioning runs first, so a gate failure leaves
+# the provisioned objects in place (all idempotent) and the run resumable.
+prereq_report() {
+  printf '%s' "$PREREQ_FINDINGS" | jq -s -c . | python3 "$PREREQS" report
+}
+
+# Recorded in both modes so --dry-run reports exactly what it WOULD create
+# (the first cut logged the dry-run lines separately and then claimed there
+# was "nothing to provision", which is the opposite of what it had just said).
+provisioned() { # provisioned "description"
+  PROVISIONED+=("$1")
+  if [[ $DRY -eq 1 ]]; then log "  DRY-RUN: would provision $1"; else log "  provisioned: $1"; fi
+}
+
+# What Phase 0 put in place: on the release issue, and in the log line the
+# ceremony watcher greps for its completion comment. Called on the full Phase 0
+# path AND on the --phase4-only resume, which provisions the line prerequisites
+# too -- the first cut reported only on the former, so a resume that created a
+# milestone said nothing about it anywhere.
+report_provisioned() {
+  if [[ ${#PROVISIONED[@]} -eq 0 ]]; then
+    log "  nothing to provision: every provisionable prerequisite was already in place"
+    return 0
+  fi
+  # `IFS='; '` would join on ';' alone -- IFS joins with its FIRST character.
+  #
+  # The marker is tense-correct: a dry run has created nothing, and
+  # `PROVISIONED` is a factual claim that it did. Two readers depend on that
+  # -- `release_ceremony_watch.sh` greps `^\[ceremony\] PROVISIONED ` to carry
+  # the list into its completion comment, and the owner reads the log. A dry
+  # run that logged `PROVISIONED` contradicted the `DRY-RUN: would provision`
+  # lines immediately above it.
+  local marker="PROVISIONED"
+  [[ $DRY -eq 0 ]] || marker="WOULD-PROVISION"
+  log "${marker} $(printf '%s; ' "${PROVISIONED[@]}" | sed 's/; $//')"
+  [[ $DRY -eq 0 && -n "${RELEASE_ISSUE:-}" ]] || return 0
+  gh issue comment "$RELEASE_ISSUE" -R "$REPO" --body "🧰 **Release ceremony ${VERSION} — Phase 0 provisioned the missing prerequisites** (#4166)
+
+$(printf -- '- %s\n' "${PROVISIONED[@]}")
+
+Every one was re-verified by query. A placeholder milestone is the ceremony's stand-in so Phase 4 had a line to cut — rename and re-scope it for the real next line." >/dev/null \
+    || log "  WARN: could not post the Phase 0 provisioning note on #${RELEASE_ISSUE}"
+}
+
+# `gh api graphql -F` coerces its value to a scalar, so it cannot carry the
+# nested iteration list. Build the request body instead.
+graphql() { # graphql QUERY VARIABLES_JSON [JQ_FILTER]
+  local body
+  body="$(jq -n --arg q "$1" --argjson v "$2" '{query: $q, variables: $v}')"
+  if [[ -n "${3:-}" ]]; then
+    printf '%s' "$body" | gh api graphql --input - --jq "$3"
+  else
+    printf '%s' "$body" | gh api graphql --input - >/dev/null
+  fi
+}
+
 # Ends the run cleanly after the last phase the caller asked for.
 phase_boundary() { # phase_boundary N
   if [[ $STOP_AFTER_PHASE -le $1 ]]; then
@@ -223,9 +343,135 @@ phase_boundary() { # phase_boundary N
   fi
 }
 
+# --- the Phase 4 line prerequisites, inventoried in Phase 0 -----------
+# Both are PROVISIONABLE, so an unprepared next line no longer stops a
+# ceremony half-way through. The owner's own milestone is still preferred and
+# is never touched; a placeholder is created only when none exists.
+SPRINT_FIELD_ID=""; SPRINT_CONFIG=""; SPRINT_PLAN=""
+NEED_NEXT_MILESTONE=0; NEED_SPRINT=0
+
+read_sprint_field() {
+  # One query for the field id AND the full configuration. The completed
+  # iterations are NOT optional: `configuration { iterations }` omits them, and
+  # resubmitting the list without them clears the Sprint value on every item
+  # assigned to a completed sprint (proven in
+  # scripts/sprint-iteration-preservation-proof.sh, TEST 2).
+  graphql 'query($owner:String!,$num:Int!){ user(login:$owner){ projectV2(number:$num){
+      field(name:"Sprint"){ ... on ProjectV2IterationField { id
+        configuration { duration startDay
+          iterations { id title startDate duration }
+          completedIterations { id title startDate duration } } } } } } }' \
+    "$(jq -n --arg owner "$1" --argjson num "${2:-0}" '{owner: $owner, num: $num}')" \
+    '.data.user.projectV2.field'
+}
+
+inventory_line() {
+  # (a) the next line's milestone -- Phase 4 names the next branch from it
+  local titles picked
+  titles="$(gh api "repos/${REPO}/milestones?state=open&per_page=100" --jq '[.[].title]' 2>/dev/null || true)"
+  if [[ -z "$titles" ]]; then
+    prereq next-line-milestone gate false "could not list open milestones -- GitHub API unreachable?"
+  else
+    picked="$(printf '%s' "$titles" | python3 "$PREREQS" next-line "$VERSION")"
+    if [[ -n "$NEXT_BRANCH_EXPLICIT" ]]; then
+      # --next-branch overrides the derivation, so the milestone that matters
+      # is the one naming THAT version -- not whatever the derivation picked,
+      # which would mis-title the next release issue and draft. Matched by the
+      # same anchored `(vX.Y.Z)` parser Phase 4 uses, not a substring search:
+      # a version string also appears inside a longer patch number, and in
+      # any prose mention of it elsewhere in a title.
+      NEXT_MS_TITLE="$(printf '%s' "$titles" \
+        | python3 "$PREREQS" milestone-for "${NEXT_BRANCH#v}")"
+      if [[ -n "$NEXT_MS_TITLE" ]]; then
+        prereq next-line-milestone provision true "next line ${NEXT_BRANCH} (--next-branch), milestone '${NEXT_MS_TITLE}'"
+      else
+        prereq next-line-milestone gate false "--next-branch ${NEXT_BRANCH} was given but no open milestone names it as \"(v${NEXT_BRANCH#v})\" -- the placeholder is only derived for the next patch version, so create or name the right milestone"
+      fi
+    elif [[ -n "$picked" ]]; then
+      NEXT_BRANCH="${picked%%$'\t'*}"
+      NEXT_MS_TITLE="${picked#*$'\t'}"
+      prereq next-line-milestone provision true "next line ${NEXT_BRANCH} named by open milestone '${NEXT_MS_TITLE}'"
+    else
+      NEED_NEXT_MILESTONE=1
+      NEXT_MS_TITLE="$(python3 "$PREREQS" placeholder-title "$VERSION")"
+      NEXT_BRANCH="v$(python3 "$PREREQS" next-patch "$VERSION")"
+      prereq next-line-milestone provision false \
+        "no open milestone names a version above ${VERSION} as \"(vX.Y.Z)\" -- will create the placeholder '${NEXT_MS_TITLE}' for ${NEXT_BRANCH} (rename/re-scope it afterwards)"
+    fi
+  fi
+  NEXT_VERSION="${NEXT_BRANCH#v}"
+
+  # (b) an active or upcoming Sprint iteration -- Phase 4's line gate needs one
+  local field
+  if [[ -z "$PROJ_OWNER" || -z "$PROJ_NUM" ]]; then
+    prereq next-sprint gate false "PROJECT_OWNER/PROJECT_NUMBER not resolvable -- cannot check or create the Sprint iteration"
+    return 0
+  fi
+  field="$(read_sprint_field "$PROJ_OWNER" "$PROJ_NUM" 2>/dev/null || true)"
+  if [[ -z "$field" || "$field" == "null" ]]; then
+    prereq next-sprint gate false "could not read the project's Sprint iteration field (GraphQL error or rate limit) -- retry when the limit resets"
+    return 0
+  fi
+  SPRINT_FIELD_ID="$(jq -r '.id' <<<"$field")"
+  SPRINT_CONFIG="$(jq -c '.configuration' <<<"$field")"
+  SPRINT_PLAN="$(printf '%s' "$SPRINT_CONFIG" | python3 "$PREREQS" sprint-plan)"
+  if [[ "$(jq -r '.needed' <<<"$SPRINT_PLAN")" != "true" ]]; then
+    prereq next-sprint provision true \
+      "active/upcoming sprint iteration(s): $(jq -r '.existing | join(", ")' <<<"$SPRINT_PLAN")"
+  elif [[ "$(jq -r '.provisionable // false' <<<"$SPRINT_PLAN")" != "true" ]]; then
+    # The one sprint case automation must not guess at: no default duration to
+    # inherit means no honest cadence to pick, so it becomes gate-only.
+    prereq next-sprint gate false \
+      "$(jq -r '.reason' <<<"$SPRINT_PLAN") -- create it by hand: $(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from release_prereqs import SPRINT_MANUAL_STEPS; print(SPRINT_MANUAL_STEPS)' "$(dirname "$PREREQS")")"
+  else
+    NEED_SPRINT=1
+    prereq next-sprint provision false \
+      "$(jq -r '.reason' <<<"$SPRINT_PLAN") -- will create '$(jq -r '.new.title' <<<"$SPRINT_PLAN")' starting $(jq -r '.new.startDate' <<<"$SPRINT_PLAN") for $(jq -r '.new.duration' <<<"$SPRINT_PLAN") days"
+  fi
+}
+
+provision_line() {
+  if [[ $NEED_NEXT_MILESTONE -eq 1 ]]; then
+    if [[ $DRY -eq 0 ]]; then
+      # The ONE sanctioned exception to "agents do not create milestones"
+      # (CLAUDE.md §Tooling): #4166 is the owner's permission, scoped to the
+      # ceremony and to a placeholder that names itself as one.
+      gh api -X POST "repos/${REPO}/milestones" -f title="$NEXT_MS_TITLE" \
+        -f description="Placeholder created by the release ceremony for ${VERSION} (#4166) so Phase 4 had a line to cut. Rename and re-scope it for the real next line." \
+        --silent || fail "could not create the placeholder milestone '${NEXT_MS_TITLE}'"
+      [[ "$(gh api "repos/${REPO}/milestones?state=open&per_page=100" \
+            --jq "[.[] | select(.title == \"${NEXT_MS_TITLE}\")] | length")" == "1" ]] \
+        || fail "verify failed: placeholder milestone '${NEXT_MS_TITLE}' not readable after create"
+    fi
+    provisioned "milestone '${NEXT_MS_TITLE}' (placeholder for ${NEXT_BRANCH} -- rename it)"
+  fi
+
+  if [[ $NEED_SPRINT -eq 1 ]]; then
+    local title
+    title="$(jq -r '.new.title' <<<"$SPRINT_PLAN")"
+    if [[ $DRY -eq 0 ]]; then
+      # The whole list, every existing iteration carrying its id. Anything less
+      # clears item values -- see release_prereqs.iteration_resubmit and the
+      # proof script's TEST 2/TEST 3.
+      graphql 'mutation($fid:ID!,$cfg:ProjectV2IterationFieldConfigurationInput!){
+          updateProjectV2Field(input:{fieldId:$fid, iterationConfiguration:$cfg}){
+            projectV2Field { ... on ProjectV2IterationField { id } } } }' \
+        "$(jq -n --arg fid "$SPRINT_FIELD_ID" \
+             --argjson cfg "$(jq -c '{startDate, duration, iterations}' <<<"$SPRINT_PLAN")" \
+             '{fid: $fid, cfg: $cfg}')" \
+        || fail "could not create the sprint iteration '${title}'"
+      read_sprint_field "$PROJ_OWNER" "$PROJ_NUM" \
+        | jq -e --arg t "$title" '[.configuration.iterations[].title] | index($t) != null' >/dev/null \
+        || fail "verify failed: sprint iteration '${title}' is not active/upcoming after create"
+    fi
+    provisioned "sprint iteration '${title}' (start $(jq -r '.new.startDate' <<<"$SPRINT_PLAN"), $(jq -r '.new.duration' <<<"$SPRINT_PLAN") days; $(jq '.iterations | length' <<<"$SPRINT_PLAN") iteration(s) resubmitted with their ids)"
+  fi
+}
+
 # =====================================================================
 log "Release $VERSION ($REL_TYPE release) — branch $REL_BRANCH"
 git fetch origin --tags --quiet
+PROJ_OWNER="$(project_setting PROJECT_OWNER)"; PROJ_NUM="$(project_setting PROJECT_NUMBER)"
 
 if [[ $PHASE4_ONLY -eq 1 ]]; then
 # --- Phases 0-3 already ran: verify that, then go straight to Phase 4 ---
@@ -240,73 +486,236 @@ case "$(gh api "repos/${REPO}/compare/${VERSION}...master" --jq .status 2>/dev/n
   identical|ahead) log "  ok: master contains ${VERSION}" ;;
   *) fail "master does not contain tag ${VERSION} -- Phase 1 has not completed" ;;
 esac
+# The line prerequisites are inventoried and provisioned on the resume path
+# too: --phase4-only skips Phase 0, so without this a resume would reach
+# Phase 4's line gate with the milestone/sprint still missing -- the exact
+# late-discovery shape #4166 removed.
+log "Phase 0 (line prerequisites only, --phase4-only):"
+RELEASE_ISSUE=$(gh variable get RELEASE_ISSUE_NUMBER -R "$REPO" 2>/dev/null || true)
+inventory_line
+LINE_GATE_OK=1
+prereq_report || LINE_GATE_OK=0
+provision_line
+report_provisioned
+[[ $LINE_GATE_OK -eq 1 ]] || fail "line prerequisite gate failed -- fix the GATE FAIL items above and re-dispatch (Phases 0-3 are not repeated)"
 pause_agent_flags
 else
 
-# --- Phase 0: entry gate (read-only apart from pausing the agents) ---
-log "Phase 0: entry gate"
-pause_agent_flags
-GATE_FAIL=0
+# --- Phase 0: prerequisite inventory, provisioning, and entry gate ---
+#
+# Order matters and is the owner's (#4166): inventory (read-only) ->
+# provision -> gate decision -> pause the agents. Provisioning before the
+# gate decision means a gate failure leaves the provisioned objects in place
+# -- all idempotent on re-run -- instead of making the owner's re-dispatch
+# start from nothing.
+log "Phase 0: prerequisite inventory (every prerequisite for all five phases)"
 
-TIP=$(git rev-parse "origin/${REL_BRANCH}" 2>/dev/null) || fail "origin/${REL_BRANCH} not found"
-log "  release tip: $TIP"
-
-# 0.4 version sanity on the branch tip
-PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" | awk -F'"' '/^version =/{print $2; exit}')
-if [[ "$PY_VER" != "$VERSION" ]]; then log "  GATE FAIL: pyproject version on tip is '$PY_VER', expected '$VERSION'"; GATE_FAIL=1
-else log "  ok: pyproject version = $VERSION"; fi
-
-# release issue number first — the milestone gate must exclude it (the
-# release issue itself stays open until Phase 3 closes it)
 RELEASE_ISSUE=$(gh variable get RELEASE_ISSUE_NUMBER -R "$REPO" 2>/dev/null || true)
-[[ -n "$RELEASE_ISSUE" ]] || fail "RELEASE_ISSUE_NUMBER repo variable not readable"
+if [[ -n "$RELEASE_ISSUE" ]]; then
+  prereq release-issue-var gate true "release issue #${RELEASE_ISSUE} (RELEASE_ISSUE_NUMBER)"
+else
+  prereq release-issue-var gate false "RELEASE_ISSUE_NUMBER repo variable not readable"
+fi
 
-# 0.1 milestone: every issue closed (except the release issue itself)
+# `--verify -q` is required, not tidiness: bare `git rev-parse <unknown-ref>`
+# ECHOES THE REF to stdout and exits 1, so `$(... || true)` would set TIP to
+# the literal "origin/v9.9.9" and the branch gate would pass on a branch that
+# does not exist.
+TIP=$(git rev-parse --verify -q "origin/${REL_BRANCH}" 2>/dev/null || true)
+if [[ -n "$TIP" ]]; then
+  prereq release-branch gate true "release tip ${REL_BRANCH} -> ${TIP}"
+  # version sanity on the branch tip
+  PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" | awk -F'"' '/^version =/{print $2; exit}')
+  if [[ "$PY_VER" == "$VERSION" ]]; then
+    prereq pyproject-version gate true "pyproject version on the tip = ${VERSION}"
+  else
+    prereq pyproject-version gate false "pyproject version on the tip is '${PY_VER}', expected '${VERSION}'"
+  fi
+else
+  prereq release-branch gate false "origin/${REL_BRANCH} not found"
+fi
+
+# the release milestone, and whether it has drained
 MILESTONE_JSON=$(gh api "repos/${REPO}/milestones?state=all&per_page=100" \
-  --jq "[.[] | select(.title | test(\"v${VERSION}\"))][0]")
-[[ -n "$MILESTONE_JSON" && "$MILESTONE_JSON" != "null" ]] || fail "no milestone matching v${VERSION}"
-MS_NUM=$(jq -r .number <<<"$MILESTONE_JSON"); MS_TITLE=$(jq -r .title <<<"$MILESTONE_JSON")
-MS_OPEN_LIST=$(gh api "repos/${REPO}/issues?milestone=${MS_NUM}&state=open&per_page=100" \
-  --jq "[.[] | select(.number != ${RELEASE_ISSUE})] | .[] | \"    #\(.number) \(.title)\"")
-if [[ -n "$MS_OPEN_LIST" ]]; then
-  log "  GATE FAIL: milestone '$MS_TITLE' has open issue(s) besides the release issue:"
-  echo "$MS_OPEN_LIST"
-  GATE_FAIL=1
-else log "  ok: milestone '$MS_TITLE' fully closed (release issue #$RELEASE_ISSUE excluded)"; fi
+  --jq "[.[] | select(.title | test(\"v${VERSION}\"))][0]" 2>/dev/null || true)
+MS_NUM=""; MS_TITLE=""
+if [[ -n "$MILESTONE_JSON" && "$MILESTONE_JSON" != "null" ]]; then
+  MS_NUM=$(jq -r .number <<<"$MILESTONE_JSON"); MS_TITLE=$(jq -r .title <<<"$MILESTONE_JSON")
+  prereq release-milestone gate true "release milestone '${MS_TITLE}' (#${MS_NUM})"
+  # Open issues besides the release issue itself, which stays open until
+  # Phase 3 closes it.
+  MS_OPEN_LIST=$(gh api "repos/${REPO}/issues?milestone=${MS_NUM}&state=open&per_page=100" \
+    --jq "[.[] | select(.number != ${RELEASE_ISSUE:-0})] | map(\"#\(.number) \(.title)\") | join(\"; \")")
+  if [[ -n "$MS_OPEN_LIST" ]]; then
+    prereq release-milestone-drained gate false "milestone '${MS_TITLE}' has open issue(s) besides the release issue: ${MS_OPEN_LIST}"
+  else
+    prereq release-milestone-drained gate true "milestone '${MS_TITLE}' fully closed (release issue #${RELEASE_ISSUE:-?} excluded)"
+  fi
+else
+  # Deliberately NOT provisioned: an absent release milestone means the
+  # release was never scoped, and creating an empty one would hide that
+  # rather than report it.
+  prereq release-milestone gate false "no milestone matching v${VERSION} -- the release was never scoped"
+fi
 
-# 0.2 release issue: no unchecked issue-reference tasks
-UNCHECKED=$(gh api "repos/${REPO}/issues/${RELEASE_ISSUE}" --jq .body \
-  | grep -cE '^\s*- \[ \] #[0-9]+' || true)
-if [[ "$UNCHECKED" != "0" ]]; then
-  log "  GATE FAIL: release issue #$RELEASE_ISSUE has $UNCHECKED unchecked issue task(s)"; GATE_FAIL=1
-else log "  ok: release issue #$RELEASE_ISSUE task list clean"; fi
+if [[ -n "$RELEASE_ISSUE" ]]; then
+  RI_JSON=$(gh api "repos/${REPO}/issues/${RELEASE_ISSUE}" 2>/dev/null || echo '{}')
+  # no unchecked issue-reference tasks
+  UNCHECKED=$(jq -r '.body // ""' <<<"$RI_JSON" | grep -cE '^\s*- \[ \] #[0-9]+' || true)
+  if [[ "$UNCHECKED" == "0" ]]; then
+    prereq release-issue-tasks gate true "release issue #${RELEASE_ISSUE} task list clean"
+  else
+    prereq release-issue-tasks gate false "release issue #${RELEASE_ISSUE} has ${UNCHECKED} unchecked issue task(s)"
+  fi
+  # `Release Management` label -- the drain gate, the promotion sweep and the
+  # ceremony watcher all read it, so a release issue without it quietly
+  # breaks the release machinery. Provisionable: the label is the owner's and
+  # already exists; only the application is ours.
+  NEED_RM_LABEL=0
+  if [[ "$(jq -r '[.labels[].name] | index("Release Management") != null' <<<"$RI_JSON")" == "true" ]]; then
+    prereq release-issue-label provision true "release issue #${RELEASE_ISSUE} carries the Release Management label"
+  else
+    NEED_RM_LABEL=1
+    prereq release-issue-label provision false "release issue #${RELEASE_ISSUE} is missing the Release Management label -- will add it"
+  fi
+  # ...and its milestone, which Phase 3 closes around it.
+  NEED_RI_MILESTONE=0
+  RI_MS="$(jq -r '.milestone.title // ""' <<<"$RI_JSON")"
+  if [[ -n "$RI_MS" ]]; then
+    prereq release-issue-milestone provision true "release issue #${RELEASE_ISSUE} milestone '${RI_MS}'"
+  elif [[ -n "$MS_TITLE" ]]; then
+    NEED_RI_MILESTONE=1
+    prereq release-issue-milestone provision false "release issue #${RELEASE_ISSUE} has no milestone -- will set '${MS_TITLE}'"
+  else
+    prereq release-issue-milestone gate false "release issue #${RELEASE_ISSUE} has no milestone and there is no v${VERSION} milestone to set"
+  fi
+fi
 
-# 0.3 code-scanning gate (skippable)
+# code-scanning gate (skippable)
 if [[ $SKIP_SCAN -eq 1 ]]; then
-  log "  skipped: code-scanning gate (--skip-scan-gate)"
+  prereq code-scanning gate true "code-scanning gate skipped (--skip-scan-gate)"
 else
   ALERTS=$(gh api "repos/${REPO}/code-scanning/alerts?state=open&ref=refs/heads/${REL_BRANCH}&per_page=100" \
     --jq '[.[] | select(.rule.security_severity_level=="critical" or .rule.security_severity_level=="high")] | length' 2>/dev/null || echo "ERR")
-  if [[ "$ALERTS" == "ERR" ]]; then log "  GATE FAIL: could not query code-scanning alerts"; GATE_FAIL=1
-  elif [[ "$ALERTS" != "0" ]]; then log "  GATE FAIL: $ALERTS open critical/high code-scanning alert(s) on $REL_BRANCH"; GATE_FAIL=1
-  else log "  ok: no open critical/high code-scanning alerts"; fi
+  if [[ "$ALERTS" == "ERR" ]]; then
+    prereq code-scanning gate false "could not query code-scanning alerts for ${REL_BRANCH}"
+  elif [[ "$ALERTS" != "0" ]]; then
+    prereq code-scanning gate false "${ALERTS} open critical/high code-scanning alert(s) on ${REL_BRANCH}"
+  else
+    prereq code-scanning gate true "no open critical/high code-scanning alerts"
+  fi
 fi
 
-# draft release located (by intended name match among drafts)
+# the draft release Phase 1 publishes. Provisionable -- this used to be a
+# FATAL ("no draft release matching vX.Y.Z found"), which stopped a signed-off
+# release over an artifact the ceremony is perfectly able to create.
 DRAFT_JSON=$(gh api "repos/${REPO}/releases?per_page=30" \
-  --jq "[.[] | select(.draft==true) | select(.name | test(\"v${VERSION}\"))][0]")
-[[ -n "$DRAFT_JSON" && "$DRAFT_JSON" != "null" ]] || fail "no draft release matching v${VERSION} found"
-DRAFT_ID=$(jq -r .id <<<"$DRAFT_JSON")
-log "  ok: draft release found (id $DRAFT_ID, tag='$(jq -r .tag_name <<<"$DRAFT_JSON")', target='$(jq -r .target_commitish <<<"$DRAFT_JSON")')"
+  --jq "[.[] | select(.draft==true) | select(.name | test(\"v${VERSION}\"))][0]" 2>/dev/null || true)
+DRAFT_ID=""; NEED_DRAFT=0
+if [[ -n "$DRAFT_JSON" && "$DRAFT_JSON" != "null" ]]; then
+  DRAFT_ID=$(jq -r .id <<<"$DRAFT_JSON")
+  prereq release-draft provision true \
+    "draft release id ${DRAFT_ID} (tag='$(jq -r .tag_name <<<"$DRAFT_JSON")', target='$(jq -r .target_commitish <<<"$DRAFT_JSON")')"
+else
+  NEED_DRAFT=1
+  prereq release-draft provision false "no draft release matching v${VERSION} -- will create one targeting ${REL_BRANCH}"
+fi
 
-# tag must not already exist
+# tag must not already exist: it is the proof Phases 0-3 ran, and the resume
+# path (--phase4-only) is how a second run is meant to continue.
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null 2>&1 \
    || gh api "repos/${REPO}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
-  fail "tag ${VERSION} already exists — ceremony already ran?"
+  prereq release-tag-absent gate false "tag ${VERSION} already exists -- the ceremony already ran; resume with --phase4-only"
+else
+  prereq release-tag-absent gate true "tag ${VERSION} does not exist yet"
 fi
 
-[[ $GATE_FAIL -eq 0 ]] || fail "entry gate failed — fix the items above and re-run"
+# Phase 2's publish pipeline has to be on the branch it will be dispatched on.
+if [[ $SKIP_PYPI -eq 1 ]]; then
+  prereq publish-pipeline gate true "publish-pipeline check skipped (--skip-pypi)"
+elif gh api "repos/${REPO}/contents/.github/workflows/${PUBLISH_WORKFLOW}?ref=${REL_BRANCH}" >/dev/null 2>&1; then
+  prereq publish-pipeline gate true "${PUBLISH_WORKFLOW} present on ${REL_BRANCH}"
+else
+  prereq publish-pipeline gate false "${PUBLISH_WORKFLOW} is not on ${REL_BRANCH} -- Phase 2 would have nothing to dispatch"
+fi
+
+# Phase 3 sets statuses to Done and Phase 4 reads/writes the Sprint field;
+# both need the project coordinates.
+if [[ -n "$PROJ_OWNER" && -n "$PROJ_NUM" ]]; then
+  prereq project-config gate true "project ${PROJ_OWNER}/#${PROJ_NUM}"
+else
+  prereq project-config gate false "PROJECT_OWNER/PROJECT_NUMBER not resolvable from ${CONFIG_FILE} or the repo variables"
+fi
+
+# Wiring the AUTOMATED ceremony needs after Phase 1 is irreversible. These are
+# only gated under --unattended: a local run by the owner retires no formulas
+# and sends no DMs, so demanding its tap and Slack credentials would block a
+# hand-run release for no reason.
+if [[ $UNATTENDED -eq 1 ]]; then
+  if [[ -n "${TAP_REPO:-}" && -n "${TAP_TOKEN:-}" ]]; then
+    prereq tap-wiring gate true "tap wiring present (${TAP_REPO}) -- retire_rc_formulas.sh can run after the publish"
+  else
+    prereq tap-wiring gate false "TAP_REPO/TAP_TOKEN not configured (HOMEBREW_TAP_REPO / HOMEBREW_TAP_TOKEN) -- the ${VERSION}rc* retirement would fail AFTER the release is published"
+  fi
+  if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_USER_ID:-}" ]]; then
+    prereq slack-wiring gate true "owner DM channel configured -- a mid-ceremony failure will be reported"
+  else
+    prereq slack-wiring gate false "SLACK_BOT_TOKEN/SLACK_USER_ID not configured -- a failure after Phase 1 would be silent to the owner"
+  fi
+fi
+
+# the Phase 4 line prerequisites, checked HERE rather than after the publish
+inventory_line
+
+GATE_OK=1
+prereq_report || GATE_OK=0
+
+# --- provisioning (idempotent; nothing here is irreversible) ---
+if [[ $NEED_DRAFT -eq 1 ]]; then
+  if [[ $DRY -eq 0 ]]; then
+    # draft => no tag is created yet; Phase 1 PATCHes tag_name/target and
+    # publishes it, exactly as it does an owner-prepared draft.
+    DRAFT_ID="$(gh api -X POST "repos/${REPO}/releases" \
+      -f tag_name="${VERSION}" -f target_commitish="${REL_BRANCH}" \
+      -f name="nyxGPT Release v${VERSION}" \
+      -f body="Draft created by the release ceremony's Phase 0 (#4166) because none existed." \
+      -F draft=true --jq .id)" || fail "could not create the draft release for v${VERSION}"
+    # Verify by the id the create returned, not by re-listing: the releases
+    # list lags a write (v3.0.0's Phase 4 hit exactly that, run 37569589877).
+    [[ "$(gh api "repos/${REPO}/releases/${DRAFT_ID}" --jq .draft 2>/dev/null)" == "true" ]] \
+      || fail "verify failed: draft release ${DRAFT_ID:-?} for v${VERSION} not readable after create"
+  fi
+  provisioned "draft release for v${VERSION} targeting ${REL_BRANCH}${DRAFT_ID:+ (id ${DRAFT_ID})}"
+fi
+
+if [[ "${NEED_RM_LABEL:-0}" -eq 1 ]]; then
+  if [[ $DRY -eq 0 ]]; then
+    # `gh issue edit --add-label`, never the REST endpoint: REST silently
+    # CREATES a missing label, and labels are the owner's (CLAUDE.md §Tooling).
+    gh issue edit "$RELEASE_ISSUE" -R "$REPO" --add-label "Release Management" >/dev/null \
+      || fail "could not add the Release Management label to #${RELEASE_ISSUE}"
+    [[ "$(gh issue view "$RELEASE_ISSUE" -R "$REPO" --json labels --jq '[.labels[].name] | index("Release Management") != null')" == "true" ]] \
+      || fail "verify failed: #${RELEASE_ISSUE} still lacks the Release Management label"
+  fi
+  provisioned "Release Management label on #${RELEASE_ISSUE}"
+fi
+
+if [[ "${NEED_RI_MILESTONE:-0}" -eq 1 ]]; then
+  if [[ $DRY -eq 0 ]]; then
+    gh issue edit "$RELEASE_ISSUE" -R "$REPO" --milestone "$MS_TITLE" >/dev/null \
+      || fail "could not set #${RELEASE_ISSUE}'s milestone to '${MS_TITLE}'"
+    [[ "$(gh issue view "$RELEASE_ISSUE" -R "$REPO" --json milestone --jq '.milestone.title // ""')" == "$MS_TITLE" ]] \
+      || fail "verify failed: #${RELEASE_ISSUE} milestone is not '${MS_TITLE}'"
+  fi
+  provisioned "milestone '${MS_TITLE}' on #${RELEASE_ISSUE}"
+fi
+
+provision_line
+report_provisioned
+
+[[ $GATE_OK -eq 1 ]] || fail "entry gate failed — the GATE FAIL items above cannot be provisioned by automation. Nothing irreversible has run: no master push, no tag, no publish. Fix them and re-dispatch; anything Phase 0 provisioned stays in place."
 log "Phase 0 gate: PASS"
+pause_agent_flags
 confirm "ship it"
 phase_boundary 0
 
@@ -397,7 +806,6 @@ if [[ $DRY -eq 1 ]]; then
   log "  DRY-RUN: would set milestone issues -> Done, close milestone $MS_NUM, close issue #$RELEASE_ISSUE"
 else
   # statuses -> Done via the project lib (agent scripts' own path; run as owner)
-  DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   # The config file is required too: load_config aborts without one, and an
   # unattended run (#3730) that got this far has already published the
   # release — it must degrade to the WARN below, not die at the close-out.
@@ -430,67 +838,49 @@ fi  # end: Phases 0-3 (skipped under --phase4-only)
 # --- Phase 4: next-line preparation + repoint ---
 log "Phase 4: next-line preparation"
 
-# 4.0 name the next line. Nothing to type in an unattended run: the owner
-# prepares the next line's milestone ("... (vX.Y.Z)"), and that IS the
-# decision. Several open lines -> the lowest version above this release.
-NEXT_MS_TITLE=""
+# 4.0 the next line's name. Phase 0 derived it (and created a placeholder
+# milestone if the owner had not made one), so there is nothing to derive
+# here in a normal run -- the `-z` branch is for a direct Phase 4 invocation.
 if [[ -z "$NEXT_BRANCH" ]]; then
   NEXT_PICK="$(gh api "repos/${REPO}/milestones?state=open&per_page=100" --jq '[.[].title]' \
-    | python3 -c '
-import json, re, sys
-cur = tuple(int(x) for x in sys.argv[1].split("."))
-best = None
-for t in json.load(sys.stdin):
-    m = re.search(r"\(v(\d+)\.(\d+)\.(\d+)\)", t)
-    if not m:
-        continue
-    v = tuple(int(x) for x in m.groups())
-    if v > cur and (best is None or v < best[0]):
-        best = (v, t)
-if best:
-    print("v" + ".".join(map(str, best[0])) + "\t" + best[1])
-' "$VERSION")"
-  [[ -n "$NEXT_PICK" ]] || fail "no open milestone names a version above ${VERSION} as \"(vX.Y.Z)\" -- create the next line's milestone (it names the next branch), then re-run"
+    | python3 "$PREREQS" next-line "$VERSION")"
+  [[ -n "$NEXT_PICK" ]] || fail "no open milestone names a version above ${VERSION} as \"(vX.Y.Z)\" -- Phase 0 should have created a placeholder; re-run from Phase 0 or pass --next-branch"
   NEXT_BRANCH="${NEXT_PICK%%$'\t'*}"; NEXT_MS_TITLE="${NEXT_PICK#*$'\t'}"
-  log "  next line: ${NEXT_BRANCH} (from milestone '${NEXT_MS_TITLE}')"
 fi
+log "  next line: ${NEXT_BRANCH} (from milestone '${NEXT_MS_TITLE:-?}')"
 NEXT_VERSION="${NEXT_BRANCH#v}"
 if [[ -z "$NEXT_MS_TITLE" ]]; then
   NEXT_MS_TITLE="$(gh api "repos/${REPO}/milestones?state=open&per_page=100" \
     --jq "[.[] | select(.title | test(\"v${NEXT_VERSION}\"))][0].title // empty")"
 fi
 if [[ -z "$NEXT_TITLE" && -n "$NEXT_MS_TITLE" ]]; then
-  NEXT_TITLE="$(sed -E -e 's/[[:space:]]*\(v[0-9]+\.[0-9]+\.[0-9]+\)[[:space:]]*$//' \
-    -e 's/^Phase[[:space:]]+[0-9.]+[[:space:]]*[—-][[:space:]]*//' <<<"$NEXT_MS_TITLE")"
+  NEXT_TITLE="$(python3 "$PREREQS" next-release-title "$NEXT_MS_TITLE")"
 fi
 
-# 4-pre: readiness gates for the next line -- checked BEFORE any change.
+# 4-pre: a CHEAP re-verify of the line prerequisites, not a discovery.
+# Phase 0 inventoried and provisioned both before anything irreversible ran
+# (#4166), so reaching a failure here means something changed under the
+# ceremony mid-run -- which is worth catching, but is no longer the normal
+# way a missing milestone or sprint is found.
 LINE_GATE_FAIL=0
 if [[ -z "$NEXT_MS_TITLE" ]]; then
-  log "  LINE GATE FAIL: no open milestone mentions v${NEXT_VERSION} -- prepare the phase milestone first"
+  log "  LINE GATE FAIL: no open milestone mentions v${NEXT_VERSION} (Phase 0 saw one or created it -- was it closed since?)"
   LINE_GATE_FAIL=1
 else
   log "  ok: open milestone for v${NEXT_VERSION}: ${NEXT_MS_TITLE}"
 fi
-PROJ_OWNER="$(project_setting PROJECT_OWNER)"; PROJ_NUM="$(project_setting PROJECT_NUMBER)"
-SPRINTS_RAW=$(gh api graphql -f owner="$PROJ_OWNER" -F num="${PROJ_NUM:-0}" -f query='
-  query($owner:String!,$num:Int!){ user(login:$owner){ projectV2(number:$num){
-    field(name:"Sprint"){ ... on ProjectV2IterationField {
-      configuration { iterations { title startDate } } } } } } }' 2>&1) || SPRINTS_RAW="QUERY_ERROR: $SPRINTS_RAW"
-if grep -qE 'QUERY_ERROR|"errors"|RATE_LIMIT' <<<"$SPRINTS_RAW"; then
-  log "  LINE GATE FAIL: could not verify Sprint iterations (GraphQL error/rate limit) -- retry when the limit resets:"
-  head -2 <<<"$SPRINTS_RAW" | sed 's/^/    /'
+SPRINT_FIELD_RECHECK="$(read_sprint_field "$PROJ_OWNER" "${PROJ_NUM:-0}" 2>/dev/null || true)"
+SPRINTS="$(jq -r '[.configuration.iterations[].title] | join(" ")' <<<"${SPRINT_FIELD_RECHECK:-null}" 2>/dev/null || true)"
+if [[ -z "$SPRINT_FIELD_RECHECK" || "$SPRINT_FIELD_RECHECK" == "null" ]]; then
+  log "  LINE GATE FAIL: could not re-verify the Sprint field (GraphQL error/rate limit) -- retry when the limit resets"
+  LINE_GATE_FAIL=1
+elif [[ -z "$SPRINTS" ]]; then
+  log "  LINE GATE FAIL: no active/upcoming Sprint iteration (Phase 0 saw one or created it -- was it removed since?)"
   LINE_GATE_FAIL=1
 else
-  SPRINTS=$(jq -r '.data.user.projectV2.field.configuration.iterations[].title' <<<"$SPRINTS_RAW" 2>/dev/null || true)
-  if [[ -z "$SPRINTS" ]]; then
-    log "  LINE GATE FAIL: no active/upcoming Sprint iteration on the project -- prepare the sprint first"
-    LINE_GATE_FAIL=1
-  else
-    log "  ok: active/upcoming sprint iteration(s): $(echo "$SPRINTS" | tr '\n' ' ')"
-  fi
+  log "  ok: active/upcoming sprint iteration(s): ${SPRINTS}"
 fi
-[[ $LINE_GATE_FAIL -eq 0 || $DRY -eq 1 ]] || fail "next-line readiness gate failed -- prepare the milestone/sprint, then re-run (Phases 0-3 are not repeated)"
+[[ $LINE_GATE_FAIL -eq 0 || $DRY -eq 1 ]] || fail "next-line readiness re-verify failed -- see above (Phases 0-3 are not repeated)"
 
 if [[ $DRY -eq 1 ]]; then
   log "  DRY-RUN: would create ${NEXT_BRANCH} at ${VERSION} (or forward-port into it if it exists), find/create its release issue and draft release, and bump its pyproject to ${NEXT_VERSION}"
