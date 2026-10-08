@@ -183,7 +183,15 @@ jobs:
       # ---------------------------------------------------------------
       - name: The workflow's decision, evaluated over a ci_red round's outputs
         shell: bash
-        run: python -m pytest tests/unit/test_red_head_round_wiring.py tests/unit/test_error_classes.py -q
+        # `--noconftest`: `tests/conftest.py` imports the `nyxgpt` package (and
+        # moves $HOME into a sandbox), so collecting through it would mean
+        # installing the whole application to answer a question about two
+        # workflow `if:` expressions. Neither module below uses a fixture from
+        # it. `ci-tests.yml` runs them again WITH the conftest, over the
+        # installed package, so this shortcut cannot hide a collection error.
+        run: |
+          python -m pytest tests/unit/test_red_head_round_wiring.py \
+            tests/unit/test_error_classes.py -q --noconftest -p no:cacheprovider
 
       - name: Summarise what ran
         if: always()
