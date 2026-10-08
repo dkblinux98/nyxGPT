@@ -79,7 +79,9 @@ jobs:
 
       - name: Install the suites' own dependencies
         shell: bash
-        run: python -m pip install --quiet pytest pyyaml
+        # psutil is not used by anything here -- `tests/conftest.py` imports it
+        # (through `log_guard`), so pytest cannot even collect without it.
+        run: python -m pip install --quiet pytest pyyaml psutil
 
       # ---------------------------------------------------------------
       # Q1: the premise -- the run-log API cannot answer mid-run
