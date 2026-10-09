@@ -566,6 +566,14 @@ jobs:
               receipt standing, or its sweep does not account for a surface the
               issue's "Defect class and surfaces" section named (class-sweep
               gate, review-runbook §1e, #4183)
+            - A nyxGPT user feature ships with no web-interface surface, or
+              ops/SRE state it produces is not observable from the SRE/admin
+              dashboard — unless the issue explicitly scopes the work
+              backend-only with owner approval and a linked frontend follow-up
+              issue. In the other direction, a NEW ACTING CONTROL on a
+              substrate the dashboard itself runs on is equally a finding
+              (Definition of Done, CLAUDE.md; review-runbook §1; owner
+              decision 2026-08-16, #3804 — observable, not operable)
 
             Do not APPROVE until tests are updated AND documentation is
             complete. CI is not on that list: the gate already answered it.
@@ -776,6 +784,14 @@ jobs:
             - Class-sweep gate (§1e): the fix covers the class, not the
               instance the issue named, and the PR's "## Class sweep" section
               accounts for every surface the issue listed
+            - End-to-end usability (Definition of Done, CLAUDE.md;
+              review-runbook §1): a nyxGPT user feature is usable from the WEB
+              INTERFACE, and ops/SRE state is OBSERVABLE from the SRE/admin
+              dashboard while its lifecycle stays a CLI command the dashboard
+              names as a text pointer. A backend-only implementation is a
+              Medium finding unless the issue scopes it backend-only with
+              owner approval and a linked follow-up; so is a new acting
+              control on a substrate the dashboard runs on (#3804)
             - Reasonable maintainability
 
             Additional quality checks:

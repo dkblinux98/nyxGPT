@@ -104,6 +104,17 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - No architecture boundary violations
 - No secrets committed
 - Documentation updated for user-facing changes
+- End-to-end usability (Definition of Done, CLAUDE.md; runbook §1): a nyxGPT
+  user feature must be usable from the WEB INTERFACE, and ops/SRE state must be
+  OBSERVABLE from the SRE/admin dashboard -- while ops/SRE *lifecycle* stays a
+  CLI command the dashboard names as a text pointer (owner decision 2026-08-16,
+  #3804: a UI cannot safely drive the substrate it runs on). A backend-only
+  implementation is a Medium (blocking) finding unless the issue explicitly
+  scopes it backend-only with owner approval and a linked frontend follow-up
+  issue; a NEW ACTING CONTROL on a substrate the dashboard itself runs on is
+  equally a finding. Found by #4183's own class sweep: this finding was stated
+  in CLAUDE.md and the runbook and asked of the review agent nowhere, which is
+  the #4174 pattern -- a rule stated and not enforced (D-011).
 - Inverse-claims check (#3744, runbook §1a): the change does not leave
   falsified claims elsewhere in the tree. Ask what this change makes UNTRUE,
   grep the whole tree (README.md, docs/, agents/, CLAUDE.md,

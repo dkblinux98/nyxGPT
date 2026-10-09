@@ -259,13 +259,16 @@ def test_developer_runbook_defines_the_sweep(developer_runbook: str) -> None:
 def test_minimality_is_measured_against_the_class(
     developer_runbook: str, implement_workflow: str
 ) -> None:
-    """"Make the minimal change" is what invited the narrow patch.
+    """ "Make the minimal change" is what invited the narrow patch.
 
     Both places that ask for a minimal change must say minimal *against the
     class* -- otherwise the implement instruction contradicts the gate that
     reviews it, and the instruction is the one the developer reads first.
     """
-    for name, text in (("developer-runbook.md", developer_runbook), ("implement prompt", implement_workflow)):
+    for name, text in (
+        ("developer-runbook.md", developer_runbook),
+        ("implement prompt", implement_workflow),
+    ):
         flowed = _flowed(text)
         assert "measured against the class" in flowed, (
             f"{name} asks for a minimal/smallest change without saying it is "
@@ -278,8 +281,7 @@ def test_developer_charter_and_prompt_carry_the_obligation() -> None:
     for path in (DEVELOPER_CHARTER, DEVELOPER_PROMPT):
         flowed = _flowed(_read(path))
         assert "class" in flowed.lower() and "sweep" in flowed.lower(), (
-            f"{path.relative_to(REPO_ROOT)} must carry the class-sweep "
-            "obligation (#4183)"
+            f"{path.relative_to(REPO_ROOT)} must carry the class-sweep " "obligation (#4183)"
         )
         assert "consolidat" in flowed.lower(), (
             f"{path.relative_to(REPO_ROOT)} must carry the one-source-per-"
@@ -405,8 +407,7 @@ def test_review_runbook_generality_gate_reads_the_artifact(review_runbook: str) 
 def test_review_surfaces_make_an_unswept_fix_blocking(path: Path) -> None:
     flowed = _flowed(_read(path))
     assert "Class sweep" in flowed, (
-        f"{path.relative_to(REPO_ROOT)} must name the PR section the reviewer "
-        "reads (#4183)"
+        f"{path.relative_to(REPO_ROOT)} must name the PR section the reviewer " "reads (#4183)"
     )
     assert "Medium (blocking)" in flowed
     assert "§1e" in flowed or "1e" in flowed, (
@@ -430,7 +431,9 @@ def test_review_prompt_has_the_gate_and_the_report_section(review_workflow: str)
         "the review prompt must instruct the reviewer to run the class-sweep "
         "gate, the way it already does for §1a and §1c"
     )
-    template = review_workflow.split("### Class Sweep", 1)[1].split("### Executed Verification", 1)[0]
+    template = review_workflow.split("### Class Sweep", 1)[1].split("### Executed Verification", 1)[
+        0
+    ]
     for field in (
         "Class this change belongs to",
         "section present in the PR body",
@@ -470,6 +473,52 @@ def test_the_decision_is_in_the_ledger() -> None:
     flowed = _flowed(entry)
     assert "#4183" in flowed, "the entry must cite its issue"
     assert "Source:" in entry, "a decision entry carries its Source line (ledger entry schema)"
+
+
+# --------------------------------------------------------------------------
+# 5. The sweep's own finding, applied to this change (#4183's class)
+# --------------------------------------------------------------------------
+
+
+def test_definition_of_done_is_asked_of_the_reviewer() -> None:
+    """Found by running #4183's own sweep on #4183.
+
+    The class is "a rule this project states but does not enforce" (#4174's
+    pattern). Sweeping it across the review contract turned up a live instance:
+    the **Definition of Done** finding -- a user feature with no web surface, or
+    ops state not observable from the dashboard -- was a Medium (blocking)
+    finding in `CLAUDE.md` and review-runbook §1, and was asked of the review
+    agent **nowhere**. Its two sibling findings in the same checklist
+    (inverse-claims §1a, executed-verification §1c) are both in the prompts and
+    both guarded. "A finding the review agent is never told to make is not
+    enforced" is ledger **D-011**; this test is the guard that half of the rule
+    was missing.
+    """
+    workflow = _read(REVIEW_WORKFLOW)
+    mandatory = workflow.split("MANDATORY: You MUST REQUEST_CHANGES if:", 1)[1]
+    mandatory = mandatory.split("Do not APPROVE until", 1)[0]
+    flowed_mandatory = _flowed(mandatory)
+    assert "web-interface surface" in flowed_mandatory or "web interface" in flowed_mandatory, (
+        "the review prompt's REQUEST_CHANGES list must carry the Definition of "
+        "Done finding: a nyxGPT user feature with no web surface blocks"
+    )
+    assert "dashboard" in flowed_mandatory, (
+        "the same finding covers ops/SRE state that is not observable from the "
+        "SRE/admin dashboard"
+    )
+    assert "#3804" in flowed_mandatory, (
+        "the prompt must carry the observable-not-operable direction too "
+        "(#3804): a new acting control on the substrate the dashboard runs on "
+        "is itself a finding, and without the citation the next session "
+        "rebuilds the screens #3804 removed"
+    )
+
+    prompt = _flowed(_read(REVIEW_PROMPT))
+    assert "Definition of Done" in prompt and "WEB INTERFACE" in prompt, (
+        "agents/prompts/review-agent.prompt.md's REVIEW CRITERIA must list the "
+        "Definition of Done criterion beside the gates it already lists"
+    )
+    assert "#3804" in prompt
 
 
 @pytest.mark.parametrize("path", ISSUE_CITERS, ids=lambda p: p.name)

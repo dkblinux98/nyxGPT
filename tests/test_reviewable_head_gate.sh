@@ -420,6 +420,37 @@ OUT="$(_run_submit 'security-scan=success
 k8s-artifact-smoke=success')"
 _assert_contains "a green head submits" "$(cat "$TMP/gh.log")" "gh pr create"
 
+# --- The class sweep reaches the PR body, EXECUTED (#4183) ------------
+# scripts/agents/lib/class_sweep.py's decision is unit-tested; what is
+# executed here is the WIRING -- that the submit script actually calls it, on
+# the body it is about to send, before `gh pr create` reads the file. That is
+# the half inspection cannot see: a helper nobody invokes is exactly the
+# #4174 shape this gate was created to stop (owner decision 2026-10-09).
+printf '%s\n' '**Class:** the rule, stated generally' \
+  '**Search:** `grep -rn thing`' > "$TMP/class-sweep.md"
+export NYXGPT_CLASS_SWEEP_FILE="$TMP/class-sweep.md"
+OUT="$(_run_submit 'security-scan=success
+k8s-artifact-smoke=success')"
+BODY="$(cat "$TMP/pr-body.md" 2>/dev/null || echo "")"
+_assert_contains "a recorded class sweep reaches the PR body" "$BODY" \
+  "<!-- nyxgpt-class-sweep -->"
+_assert_contains "carrying the developer's own text" "$BODY" \
+  "**Class:** the rule, stated generally"
+
+# ...and its ABSENCE is stated rather than silent. This is the case that
+# matters: #4136 reached its third occurrence through reviews that had no
+# artifact to miss, so "no sweep" must arrive as a visible block.
+export NYXGPT_CLASS_SWEEP_FILE="$TMP/no-such-sweep.md"
+OUT="$(_run_submit 'security-scan=success
+k8s-artifact-smoke=success')"
+BODY="$(cat "$TMP/pr-body.md" 2>/dev/null || echo "")"
+_assert_contains "a missing class sweep is stated in the PR body" "$BODY" "NOT PROVIDED"
+_assert_contains "under its own marker, for the reviewer" "$BODY" \
+  "<!-- nyxgpt-no-class-sweep -->"
+_assert_not_contains "and a receipt never reads as a completed sweep" "$BODY" \
+  "<!-- nyxgpt-class-sweep -->"
+unset NYXGPT_CLASS_SWEEP_FILE
+
 # --- Red head + override: submits, and the reason is in the PR body ---
 OUT="$(_run_submit 'security-scan=failure' --ci-override 'security-scan fails identically on v9.9.9 (run 123)')"
 _assert_contains "an override submits over the red check" "$(cat "$TMP/gh.log")" "gh pr create"

@@ -32,6 +32,18 @@ name: Reviewable Head Smoke
 # order out of developer_auto_implement.yml and asserts the recorded reason
 # outranks it -- which is why that workflow is in the path filters below.
 #
+# A second question, same fixture (#4183): "does the developer's CLASS SWEEP
+# actually reach the PR body -- and when none was recorded, does the body
+# actually say so?" The decision is unit-tested in
+# tests/unit/test_class_sweep.py; what needs EXECUTING is the wiring, that
+# developer_submit_for_review.sh really calls
+# scripts/agents/lib/class_sweep.py on the body it is about to send, before
+# `gh pr create` reads the file. A helper nobody invokes is the #4174 shape
+# the class-sweep gate exists to stop, and inspection cannot tell the two
+# apart. This harness already executes that script end to end against a stub
+# `gh` that captures the body, so the cases live here rather than in a second
+# job with its own fixture (first principle 1).
+#
 # What it does not cover, and cannot: GitHub's own delivery of the
 # `review_requested` event, and the wall-clock behaviour of a real 60-minute
 # wait. The agent loop exercises both on every submission.
@@ -41,6 +53,7 @@ on:
     paths:
       - "scripts/agents/lib/gh_project.sh"
       - "scripts/agents/developer_submit_for_review.sh"
+      - "scripts/agents/lib/class_sweep.py"
       - "scripts/agents/review_head_gate_action.sh"
       - "tests/test_reviewable_head_gate.sh"
       - "tests/unit/test_required_checks.py"
@@ -53,6 +66,7 @@ on:
     paths:
       - "scripts/agents/lib/gh_project.sh"
       - "scripts/agents/developer_submit_for_review.sh"
+      - "scripts/agents/lib/class_sweep.py"
       - "scripts/agents/review_head_gate_action.sh"
       - "tests/test_reviewable_head_gate.sh"
       - "tests/unit/test_required_checks.py"

@@ -73,7 +73,7 @@ def render_section(sweep: str | None, sweep_path: str | Path = DEFAULT_SWEEP_PAT
                 f"`{sweep_path}`, see `agents/runbooks/developer-runbook.md` §3i).",
                 "",
                 "**Reviewer:** this is the #4183 finding, stated rather than left to be",
-                "noticed. Read the issue's \"Defect class and surfaces\" section, run the",
+                'noticed. Read the issue\'s "Defect class and surfaces" section, run the',
                 "search yourself, and treat a class that was never swept as a Medium",
                 "(blocking) finding (`agents/runbooks/review-runbook.md` §1e). If this",
                 "change has no defect behind it, that is the one-line answer the sweep",

@@ -49,9 +49,7 @@ def sweep_file(tmp_path: Path) -> Path:
 
 
 def test_recorded_sweep_lands_under_the_marker(sweep_file: Path) -> None:
-    body, outcome = class_sweep.apply_to_body(
-        BODY, class_sweep.read_sweep(sweep_file), sweep_file
-    )
+    body, outcome = class_sweep.apply_to_body(BODY, class_sweep.read_sweep(sweep_file), sweep_file)
     assert outcome == "attached"
     assert class_sweep.SECTION_MARKER in body
     assert "**Class:** the rule" in body
@@ -124,18 +122,14 @@ def test_a_fresh_sweep_replaces_an_earlier_receipt(tmp_path: Path, sweep_file: P
     assert class_sweep.SECTION_MARKER in fixed
 
 
-def test_a_written_sweep_is_never_downgraded_to_a_receipt(
-    tmp_path: Path, sweep_file: Path
-) -> None:
+def test_a_written_sweep_is_never_downgraded_to_a_receipt(tmp_path: Path, sweep_file: Path) -> None:
     """A later round with no file must not manufacture the finding.
 
     The review-fix path runs on every re-request, including rounds that touched
     nothing about the sweep. If "no file this time" overwrote the section, the
     reviewer would be handed a NOT PROVIDED block for a sweep that exists.
     """
-    with_sweep, _ = class_sweep.apply_to_body(
-        BODY, class_sweep.read_sweep(sweep_file), sweep_file
-    )
+    with_sweep, _ = class_sweep.apply_to_body(BODY, class_sweep.read_sweep(sweep_file), sweep_file)
     unchanged, outcome = class_sweep.apply_to_body(with_sweep, None, tmp_path / "nope.md")
     assert outcome == "kept"
     assert unchanged == with_sweep
@@ -161,9 +155,7 @@ def test_a_trailing_section_does_not_swallow_following_headings(sweep_file: Path
         "<!-- nyxgpt-ci-override -->\n"
         "the reason\n"
     )
-    out, outcome = class_sweep.apply_to_body(
-        body, class_sweep.read_sweep(sweep_file), sweep_file
-    )
+    out, outcome = class_sweep.apply_to_body(body, class_sweep.read_sweep(sweep_file), sweep_file)
     assert outcome == "attached"
     assert "old sweep" not in out
     assert "## CI override (developer)" in out and "the reason" in out
