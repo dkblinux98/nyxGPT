@@ -25,7 +25,7 @@ from nyxgpt import (
     cloud_mac,
     cloud_screen,
 )
-from nyxgpt.cloud import CloudCommandError
+from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 
 
 @pytest.fixture(autouse=True)
@@ -3469,3 +3469,199 @@ def test_deploy_status_says_not_recorded_here_rather_than_leaving_a_blank(
     monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
 
     assert cloud_deploy.deploy_status()["aws_account_label"] == "not recorded here"
+
+
+# --- #4181: no claim this run did not establish ---------------------------
+
+
+def test_a_declined_consent_is_not_reported_as_an_unfinished_deploy(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """Finding 5, at the surface the owner read it on.
+
+    Typing `no` at the EC2 Mac disclosure wrote `"status": "failed"`, so this
+    command said "a deploy started here and did not finish" and prescribed
+    re-running it -- over a run whose own recorded error read "nothing was
+    allocated and nothing is billed". Nothing was created; there is nothing to
+    finish.
+    """
+    _write_attempt(
+        _isolated_cloud_home,
+        status=cloud_deploy.ATTEMPT_DECLINED,
+        phase="mac-allocate",
+        instance_id="",
+        host="",
+        error="Not confirmed -- nothing was allocated and nothing is billed.",
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+
+    code = cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "NOT COMPLETED" not in out
+    assert "did not finish" not in out
+    # It is still the answer to "what happened when I ran that command".
+    assert "DECLINED at the `mac-allocate` phase" in out
+    assert "nothing was created and nothing is billed" in out
+
+
+def test_a_declined_consent_closes_the_attempt_as_declined(monkeypatch, _isolated_cloud_home):
+    """The write side of the same finding, at the one place that records it."""
+    monkeypatch.setattr(
+        cloud_deploy,
+        "_deploy",
+        lambda *a, **k: (_ for _ in ()).throw(ConsentDeclined("nothing was allocated")),
+    )
+
+    with pytest.raises(ConsentDeclined):
+        cloud_deploy.deploy(_args(cloud_cmd="deploy"))
+
+    attempt = cloud_deploy.load_deploy_attempt()
+    assert attempt["status"] == cloud_deploy.ATTEMPT_DECLINED
+    assert cloud_deploy.ATTEMPT_DECLINED not in cloud_deploy.ATTEMPT_UNFINISHED
+
+
+def test_a_real_failure_is_still_recorded_as_a_failure(monkeypatch, _isolated_cloud_home):
+    """The discrimination has to cut both ways, or it is just a renaming."""
+    monkeypatch.setattr(
+        cloud_deploy,
+        "_deploy",
+        lambda *a, **k: (_ for _ in ()).throw(CloudCommandError("terraform apply failed")),
+    )
+
+    with pytest.raises(CloudCommandError):
+        cloud_deploy.deploy(_args(cloud_cmd="deploy"))
+
+    assert cloud_deploy.load_deploy_attempt()["status"] == cloud_deploy.ATTEMPT_FAILED
+
+
+def test_the_deploy_attempt_report_labels_an_unconfirmed_mac_id_as_recorded(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """Finding 3's second half.
+
+    This report filled its instance rows from an incoherent Mac block -- the
+    October 4 instance -- and presented them as describing the deploy it was
+    reporting on, three rows below its own INCOHERENT warnings about the same
+    block. The values are still shown (that was #4122's fix and it stands);
+    what changed is that they say where they came from.
+    """
+    _write_attempt(_isolated_cloud_home, instance_id="", host="")
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+    monkeypatch.setattr(
+        cloud_mac,
+        "pending_release",
+        lambda *a, **k: {
+            "host_id": "h-0abc",
+            "instance_id": "i-0a1bd7690f11507d6",
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "usable": False,
+            "billing": False,
+            "incoherent": ["mac_release_scheduled_at is EARLIER than mac_allocated_at"],
+            "provenance": "recorded on this machine; NOT confirmed at AWS -- boto3 is missing",
+        },
+    )
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert "i-0a1bd7690f11507d6 (recorded here, NOT confirmed at AWS)" in out
+    assert "an instance exists and is being billed" not in out
+    assert "nothing confirmed it at AWS in this run" in out
+
+
+def test_the_billing_claim_is_made_once_aws_confirms_the_host(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """And the gate has to open, or it is a gate that says no to everything."""
+    _write_attempt(_isolated_cloud_home, instance_id="", host="")
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+    monkeypatch.setattr(
+        cloud_mac,
+        "pending_release",
+        lambda *a, **k: {
+            "host_id": "h-0abc",
+            "instance_id": "i-0mac",
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "release_at": "2026-10-10T09:50:00+00:00",
+            "usable": True,
+            "billing": True,
+            "incoherent": [],
+            "provenance": "confirmed at AWS in nyxgpt (066835328281) at 2026-10-09T12:00:00+00:00",
+        },
+    )
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    assert "AWS confirmed in this run" in out
+    assert "still billing -- confirmed at AWS in nyxgpt (066835328281)" in out
+    assert "recorded here, NOT confirmed at AWS" not in out
+
+
+def test_the_unconfirmed_heading_names_the_reason_not_the_command_printing_it(monkeypatch, capsys):
+    """Finding 6, exactly as the owner read it.
+
+    The heading said "NOT confirmed at AWS in this run -- `nyxgpt cloud status`
+    asks" while being that very command; the actual reason was that boto3 was
+    not installed.
+    """
+    cloud_deploy._print_pending_mac_host(
+        {
+            "host_id": "h-0abc",
+            "usable": False,
+            "billing": False,
+            "release_scheduled": True,
+            "releasable_now": True,
+            "provenance": (
+                "recorded on this machine; NOT confirmed at AWS -- boto3 is not installed, "
+                "so nothing here can ask AWS"
+            ),
+            "observation": {"reason": "boto3 is not installed, so nothing here can ask AWS"},
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "boto3 is not installed" in out
+    assert "`nyxgpt cloud status` asks" not in out
+    # And the release conclusion is withdrawn with the rest (finding 3).
+    assert "the scheduled release has fired" not in out
+    assert "recorded as scheduled -- not verified in this run" in out
+
+
+def test_a_read_only_status_verifies_both_substrates_and_changes_neither(monkeypatch):
+    """Findings 1-4 together, at the command's own seam.
+
+    The Linux substrate asserts "an instance exists and is being billed" from
+    `state.json` exactly as the Mac block did, so verifying only the Mac would
+    have left the identical defect one substrate over -- the narrow-patch
+    pattern #4183 exists to stop. Neither call may change AWS.
+    """
+    called: list[str] = []
+    monkeypatch.setattr(cloud_mac, "verify_mac_record", lambda *a, **k: called.append("mac"))
+    monkeypatch.setattr(
+        cloud_infra, "verify_substrate_record", lambda *a, **k: called.append("substrate")
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+    monkeypatch.setattr(cloud_mac, "pending_release", lambda *a, **k: {})
+
+    cloud_deploy.deploy_status(verify_host=True)
+
+    assert called == ["mac", "substrate"]
+
+
+def test_a_substrate_verification_failure_never_fails_the_status(monkeypatch):
+    """An observability surface must not break because credentials expired."""
+    monkeypatch.setattr(cloud_mac, "verify_mac_record", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cloud_infra,
+        "verify_substrate_record",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("expired token")),
+    )
+    monkeypatch.setattr(cloud_infra, "infra_status", lambda: {"provisioned": False})
+    monkeypatch.setattr(cloud_mac, "pending_release", lambda *a, **k: {})
+
+    assert cloud_deploy.deploy_status(verify_host=True)["known"] is False

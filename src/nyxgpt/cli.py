@@ -3181,6 +3181,29 @@ def cli(argv: list[str] | None = None) -> int:
             "unconfirmed rather than reported as current"
         ),
     )
+    # #4181. The flag arm of the credential chain was unreachable from the one
+    # command the owner was reading it on: `cloud status` asks AWS (the Mac host
+    # check, the Cost Explorer figure, the substrate check) and had no way to be
+    # told which account to ask, so a report that says "the last answer came
+    # from the wrong account" left the operator with no command to correct it.
+    # Read-only: naming an account changes which account is *asked*, never what
+    # is in it.
+    cloud_status_p.add_argument(
+        "--profile",
+        help=(
+            "AWS profile to ask with (default: the account this machine recorded for the "
+            "deployment, then config.ini [cloud] profile, then AWS_PROFILE). An AWS account "
+            "reports every resource it does not own as absent, so the account asked is part "
+            "of what the answer means"
+        ),
+    )
+    cloud_status_p.add_argument(
+        "--region",
+        help=(
+            "AWS region to ask in (default: the region the resource was recorded in, then "
+            "config.ini [cloud] region, then AWS_REGION)"
+        ),
+    )
 
     # `cloud ops` (#3813): read-only inspections run *on* the instance over the
     # same wrapped SSH path `cloud credentials` uses, so checking what the
