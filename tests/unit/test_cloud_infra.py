@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud, cloud_infra
+from nyxgpt import cloud, cloud_identity, cloud_infra
 from nyxgpt.cloud import CloudCommandError
 
 REPO_TERRAFORM_AWS = "terraform/aws"
@@ -35,10 +35,17 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     # config.ini's [cloud] section is a *fallback* source for region/profile;
-    # a developer's real one must not leak into these assertions.
+    # a developer's real one must not leak into these assertions. Since #4186
+    # that chain lives in `nyxgpt.cloud_identity`, so this neutralises it
+    # there -- along with the one STS call the resolver makes to label the
+    # account, which a unit suite must not attempt, and the operator's real
+    # `~/.ssh`, which would otherwise decide what the SSH default is.
     monkeypatch.setattr(
-        cloud_infra, "_configured_cloud_reference", lambda: {"profile": "", "region": ""}
+        cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}
     )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "")
+    monkeypatch.setattr(cloud_identity, "SSH_DIR", tmp_path / "no-such-ssh-dir")
+    monkeypatch.setattr(cloud_identity, "ec2_key_pairs", lambda profile, region: [])
     for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"):
         monkeypatch.delenv(var, raising=False)
     return cloud_dir
@@ -117,8 +124,18 @@ def test_resolve_settings_refuses_a_world_open_owner_ip():
 
 
 def test_resolve_settings_requires_an_ssh_key():
-    with pytest.raises(CloudCommandError, match="No SSH key configured"):
+    """With no key, no candidate and no terminal, the failure names both flags (#4186).
+
+    It used to name a `product_management/` decision record, which the
+    operator reading it has no checkout to open (#4182), and it never said
+    that running from a terminal would have asked instead.
+    """
+    with pytest.raises(CloudCommandError) as excinfo:
         cloud_infra.resolve_settings(_args(ssh_key_name=None, ssh_public_key=None))
+    message = str(excinfo.value)
+    assert "--ssh-key-name" in message
+    assert "--ssh-public-key" in message
+    assert "product_management/" not in message
 
 
 def test_resolve_settings_refuses_both_ssh_key_inputs(tmp_path):
@@ -265,8 +282,8 @@ def test_the_cli_help_names_the_shipped_default(capsys):
 
 def test_resolve_settings_falls_back_to_configured_region(monkeypatch):
     monkeypatch.setattr(
-        cloud_infra,
-        "_configured_cloud_reference",
+        cloud_identity,
+        "configured_reference",
         lambda: {"profile": "nyxgpt", "region": "ap-southeast-2"},
     )
     settings = cloud_infra.resolve_settings(_args())

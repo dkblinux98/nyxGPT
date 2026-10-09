@@ -664,7 +664,15 @@ def resolve_target(args: argparse.Namespace, os_family: str = "") -> DeployTarge
     # is the right behaviour both for an `--ssh-key-name` setup and for the
     # common case where the registered public key's private half is one of
     # ssh's standard `~/.ssh/id_*` candidates.
-    identity = str(getattr(args, "identity_file", None) or "")
+    #
+    # #4186 adds one fallback behind the flag: the private half the SSH
+    # resolver recorded alongside the key pair it chose. An operator who
+    # accepted a matched EC2 key pair at the prompt has already said which
+    # local key it is, and re-asking for `--identity-file` on every later
+    # command would be the resolver forgetting its own answer. Still only a
+    # fallback -- the flag wins, and an empty recorded value keeps the
+    # ssh-defaults behaviour above.
+    identity = str(getattr(args, "identity_file", None) or saved.get("ssh_identity_file") or "")
     if identity:
         identity = str(Path(identity).expanduser())
     return DeployTarget(
@@ -924,8 +932,15 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         ssh_user=str(
             getattr(args, "ssh_user", None) or previous.get("ssh_user") or DEFAULT_SSH_USER
         ),
+        # Flag, then the last deploy's answer, then the private half the SSH
+        # resolver recorded for the key pair it chose (#4186) -- so accepting a
+        # matched key pair at the deploy prompt is also the login key, with no
+        # second flag.
         identity_file=str(
-            getattr(args, "identity_file", None) or previous.get("identity_file") or ""
+            getattr(args, "identity_file", None)
+            or previous.get("identity_file")
+            or cloud_infra.load_settings().get("ssh_identity_file")
+            or ""
         ),
         open_tunnel=not getattr(args, "no_tunnel", False),
         health_timeout=float(getattr(args, "health_timeout", None) or 900.0),
@@ -3450,6 +3465,16 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         ),
         "instance_type": str(infra.get("instance_type") or ""),
         "region": str(record.get("region") or attempt.get("region") or infra.get("region") or ""),
+        # #4186. Which AWS account and SSH key pair this deployment was made
+        # with, surfaced at the top level so `nyxgpt cloud status` and the
+        # dashboard's cloud card can report them without digging into the
+        # substrate payload. Both are local reads of what the resolver
+        # recorded -- no credential, no STS call -- and both are empty on a
+        # machine that did not run the deploy, which is the same "no source
+        # here can answer" the `source` field already describes.
+        "aws_profile": str(infra.get("aws_profile") or ""),
+        "aws_account_id": str(infra.get("aws_account_id") or ""),
+        "ssh_key_name": str(infra.get("ssh_key_name") or ""),
         "profiles": profiles,
         # Where this deployment's chat sessions live (#3865). Observable
         # rather than operable, per the Definition of Done: the dashboard
@@ -3925,6 +3950,23 @@ def _screen_label(screen: dict[str, Any], commands: dict[str, str]) -> str:
     return f"not set up -- `{commands.get('screen', 'nyxgpt cloud screen')}` opens one"
 
 
+def _account_row(profile: str, account_id: str) -> str:
+    """Render the AWS account row for `nyxgpt cloud status` (#4186).
+
+    Shared with the dashboard's wording so the two never disagree: the profile
+    name and the account id it resolved to, or an explicit "not recorded here"
+    when neither was -- which is the honest answer on the instance and in a
+    Pod, where no `infra.json` exists to have recorded them.
+    """
+    if profile and account_id:
+        return f"{profile} ({account_id})"
+    if account_id:
+        return f"{account_id} (boto3's default credential chain)"
+    if profile:
+        return f"{profile} (account id not recorded)"
+    return "not recorded here"
+
+
 def _print_status_summary(status: dict[str, Any]) -> None:
     """Print `nyxgpt cloud status` in the form an operator reads (#3813).
 
@@ -4018,6 +4060,17 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         instance = f"{instance} ({status['instance_type']})"
     _print_row("Instance", instance)
     _print_row("Region", status["region"] or "unknown")
+    # #4186. The account a deployment was made in was the one input no surface
+    # ever reported, so an operator with two AWS accounts could not tell which
+    # one their instance was in without an STS call of their own. Profile *and*
+    # account id, because either alone is ambiguous; "not recorded here" when
+    # this machine did not run the deploy, rather than a blank that reads as
+    # "no profile".
+    _print_row(
+        "AWS account",
+        _account_row(status.get("aws_profile", ""), status.get("aws_account_id", "")),
+    )
+    _print_row("SSH key pair", status.get("ssh_key_name") or "not recorded here")
     _print_row("Public IP", status["host"] or "unknown")
     _print_row("Profiles", ", ".join(status["profiles"]) or "none (core stack only)")
     # #3956. "unknown" rather than "native" when nothing was recorded: a

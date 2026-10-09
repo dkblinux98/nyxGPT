@@ -287,6 +287,14 @@ type CloudInfraStatus = {
   subnet_id: string;
   security_group_id: string;
   ssh_key_name: string;
+  // Which AWS account the substrate was provisioned in (#4186): the profile
+  // name and the account id it resolved to, recorded by the resolver at
+  // provision time so reporting it here needs no credential. Both empty on a
+  // machine that did not provision it — the instance, or an api Pod — which is
+  // the same "no source here can answer" `known` already covers.
+  aws_profile: string;
+  aws_account_id: string;
+  ssh_identity_file: string;
   owner_ip_cidr: string;
   access_model: { open_ports: number[]; ssh_only: boolean; reachability: string };
 };
@@ -398,6 +406,13 @@ type CloudDeployStatus = {
   instance_id: string;
   instance_type: string;
   region: string;
+  // The AWS account and SSH key pair this deployment was made with (#4186),
+  // lifted to the top level of the payload so this card can show them without
+  // reaching into the substrate block. Local reads of what the resolver
+  // recorded; empty on a machine that did not run the deploy.
+  aws_profile: string;
+  aws_account_id: string;
+  ssh_key_name: string;
   profiles: string[];
   // Where the deployment's chat sessions live (#3865). Empty when the deploy
   // record predates the flag, which is not the same claim as 'file'.
@@ -496,6 +511,19 @@ function historyLabel(entry: DeployHistoryEntry): string {
   const when = Number.isFinite(entry.ts) ? new Date(entry.ts * 1000).toLocaleString() : '';
   const what = entry.version ? `${entry.action} ${entry.version}` : entry.action;
   return `${when} · ${what} · ${entry.outcome}`;
+}
+
+// The AWS account a deployment was made in, as the profile name and the
+// account id it resolved to (#4186). The same wording `nyxgpt cloud status`
+// prints (`cloud_deploy._account_row`), so the two surfaces never disagree
+// about what an empty value means: 'not recorded here' is the honest answer on
+// the instance and in an api Pod, where no infra.json exists to have recorded
+// it — never a blank that reads as 'no profile'.
+function awsAccountLabel(profile: string, accountId: string): string {
+  if (profile && accountId) return `${profile} (${accountId})`;
+  if (accountId) return `${accountId} (boto3’s default credential chain)`;
+  if (profile) return `${profile} (account id not recorded)`;
+  return 'not recorded here';
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -1451,6 +1479,14 @@ export default function InfrastructurePage() {
                 <Row label="VPC" value={substrate.vpc_id} />
                 <Row label="Subnet" value={substrate.subnet_id} />
                 <Row label="Security group" value={substrate.security_group_id} />
+                {/* #4186: the account was the one provisioning input no screen
+                    ever showed, so an operator with more than one AWS account
+                    could not tell which held their instance. Profile and
+                    account id together — either alone is ambiguous. */}
+                <Row
+                  label="AWS account"
+                  value={awsAccountLabel(substrate.aws_profile, substrate.aws_account_id)}
+                />
                 <Row label="SSH key pair" value={substrate.ssh_key_name} />
                 <Row
                   label="SSH allowed from"
@@ -1597,6 +1633,14 @@ export default function InfrastructurePage() {
                   }
                 />
                 <Row label="Region" value={cloud.region} />
+                {/* #4186. Same pair as the substrate card above, repeated here
+                    because this is the card an operator reads after a deploy
+                    and "which account is this in?" is part of the answer. */}
+                <Row
+                  label="AWS account"
+                  value={awsAccountLabel(cloud.aws_profile, cloud.aws_account_id)}
+                />
+                <Row label="SSH key pair" value={cloud.ssh_key_name} />
                 {/* #3867: the two target OSes are provisioned by different
                     bootstraps and do not leave the instance in the same
                     shape — an EC2 Mac runs the Homebrew formulas under

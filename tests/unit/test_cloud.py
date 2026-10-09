@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from nyxgpt import cloud, cloud_infra
+from nyxgpt import cloud, cloud_identity, cloud_infra
 
 
 class _FakeEC2Client:
@@ -53,9 +53,20 @@ def _isolated_cloud_state(tmp_path, monkeypatch):
     # other source it now consults has to be neutralised here too -- otherwise
     # the suite answers from the developer's own infra.json, config.ini and
     # AWS_PROFILE, and passes or fails according to their AWS setup.
+    # #4186 moved that resolution into `nyxgpt.cloud_identity` -- the one
+    # resolver both this module and the substrate commands now call -- so the
+    # neutralising happens at that seam. The account-id lookup is stubbed out
+    # too: it is one STS call made to label the account in the prompt and the
+    # announcement, and a unit suite must not reach AWS to find out that it has
+    # no credentials.
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", tmp_path / "cloud" / "infra.json")
-    monkeypatch.setattr(cloud, "_configured_cloud_reference", lambda: {"profile": "", "region": ""})
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}
+    )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
 
 # --- normalize_cidr -----------------------------------------------------
@@ -398,9 +409,9 @@ class _NotFoundEC2Client:
 
 
 def test_resolve_profile_prefers_the_explicit_flag(monkeypatch):
-    monkeypatch.setattr(cloud, "_saved_infra_settings", lambda: {"aws_profile": "from-infra"})
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "from-infra"})
     monkeypatch.setattr(
-        cloud, "_configured_cloud_reference", lambda: {"profile": "from-config", "region": ""}
+        cloud_identity, "configured_reference", lambda: {"profile": "from-config", "region": ""}
     )
     monkeypatch.setenv("AWS_PROFILE", "from-env")
 
@@ -408,9 +419,9 @@ def test_resolve_profile_prefers_the_explicit_flag(monkeypatch):
 
 
 def test_resolve_profile_falls_back_to_the_last_applied_substrate(monkeypatch):
-    monkeypatch.setattr(cloud, "_saved_infra_settings", lambda: {"aws_profile": "from-infra"})
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "from-infra"})
     monkeypatch.setattr(
-        cloud, "_configured_cloud_reference", lambda: {"profile": "from-config", "region": ""}
+        cloud_identity, "configured_reference", lambda: {"profile": "from-config", "region": ""}
     )
 
     assert cloud._resolve_profile(argparse.Namespace(profile=None)) == "from-infra"
@@ -419,7 +430,7 @@ def test_resolve_profile_falls_back_to_the_last_applied_substrate(monkeypatch):
 def test_resolve_profile_falls_back_to_config_ini(monkeypatch):
     """The owner's exact configuration: `[cloud] profile` set and nothing else."""
     monkeypatch.setattr(
-        cloud, "_configured_cloud_reference", lambda: {"profile": "nyxgpt", "region": ""}
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": ""}
     )
 
     assert cloud._resolve_profile(argparse.Namespace(profile=None)) == "nyxgpt"
@@ -466,7 +477,7 @@ def test_allow_ip_authenticates_with_the_configured_profile(monkeypatch):
     account the workstation's default profile names.
     """
     monkeypatch.setattr(
-        cloud, "_configured_cloud_reference", lambda: {"profile": "nyxgpt", "region": ""}
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": ""}
     )
     monkeypatch.setattr(cloud, "detect_current_public_ip", lambda: "203.0.113.5")
 
@@ -572,7 +583,7 @@ def test_describe_credential_context_survives_an_sts_failure(monkeypatch):
 
 def test_resolve_region_falls_back_to_config_ini(monkeypatch):
     monkeypatch.setattr(
-        cloud, "_configured_cloud_reference", lambda: {"profile": "", "region": "eu-west-1"}
+        cloud_identity, "configured_reference", lambda: {"profile": "", "region": "eu-west-1"}
     )
 
     assert cloud._resolve_region(argparse.Namespace(region=None)) == "eu-west-1"
