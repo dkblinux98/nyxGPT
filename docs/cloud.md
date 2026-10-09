@@ -1463,6 +1463,15 @@ Use `nyxgpt cloud state bootstrap` to create the AWS resources *without*
 switching the backend — useful when the person with permission to create
 buckets isn't the person who runs the migration.
 
+`bootstrap` and `migrate` authenticate to S3 and DynamoDB, so they resolve the
+AWS account through the same resolver every other `nyxgpt cloud` command uses
+and are subject to the same rules as
+[Which account, and which SSH key](#which-account-and-which-ssh-key-4186):
+without `--profile` you are asked, with the resolved value as the default, and
+`--yes` (or no terminal) takes it and prints it. The one difference is that
+`backend.json`'s own saved profile and region come first, above `infra.json` —
+they describe the bucket and lock table this command is about to touch.
+
 After migrating, `nyxgpt cloud infra plan/apply/destroy` work exactly as
 before. The difference is that a second concurrent apply now blocks on the
 lock instead of racing.
@@ -1650,12 +1659,21 @@ same profile: `[secrets] profile` when set, otherwise `[cloud] profile`.
 Every `nyxgpt cloud` command needs two answers before it can do anything: the
 AWS identity to authenticate as, and the SSH key that will be the only way
 into the instance afterwards. Both are resolved in **one** place —
-`nyxgpt.cloud_identity` — so `deploy`, `infra`, `destroy`, `status`, `tunnel`,
-`allow-ip`, `ops`, `credentials` and `canary` cannot disagree about either
-one.
+`nyxgpt.cloud_identity` — so `deploy`, `infra`, `state`, `destroy`, `status`,
+`tunnel`, `allow-ip`, `ops`, `credentials` and `canary` cannot disagree about
+either one.
 
 The order is the same for both, and it is the order above: **flag →
 `~/.nyxGPT/cloud/infra.json` → `config.ini [cloud]` → environment**.
+
+One command inserts a record of its own: `nyxgpt cloud state bootstrap`/
+`migrate` consult `~/.nyxGPT/cloud/backend.json`'s saved profile and region
+directly below their flags and above `infra.json`, because that record
+describes the bucket and lock table they are about to touch. The four steps
+below it are still the shared ones, not a copy — which is the fix for state
+commands having authenticated through a chain that skipped
+`config.ini [cloud]` entirely, i.e. exactly where
+`nyxgpt cloud credentials-setup` writes the profile.
 
 ### You are asked, with a default
 
@@ -1665,7 +1683,7 @@ default is one keypress away:
 
 ```
 $ nyxgpt cloud deploy
-AWS profile [nyxgpt (066835328281)]:
+AWS profile (or - to use boto3's default credential chain) [nyxgpt (066835328281)]:
 
 SSH key for the instance (SSH is the only way in):
   1) EC2 key pair 'nyxgpt-smoke-key' (already in this account; fingerprint matches ~/.ssh/id_rsa.pub)  (default)
@@ -1678,7 +1696,10 @@ AWS account: nyxgpt (066835328281) | region: us-east-1 | SSH key: EC2 key pair '
 The account prompt shows the profile **and the account id it resolves to**,
 because the name alone is not an answer: two sensibly-named profiles can point
 at any two accounts, and a run in the wrong one is how a security group that
-plainly exists comes back `InvalidGroup.NotFound`.
+plainly exists comes back `InvalidGroup.NotFound`. Type a different profile
+name to use it instead, or `-` to use no named profile at all and let boto3's
+own credential chain decide — which the prompt says, since Enter means "keep
+the one shown".
 
 The SSH candidates are offered in this order:
 
@@ -1712,7 +1733,7 @@ Two ways to ask for that explicitly:
 
 | | Meaning |
 | --- | --- |
-| `--yes` | On `cloud infra plan`/`apply` it means only "do not ask". On `cloud infra destroy`, `cloud deploy`, `cloud destroy` and `cloud smoke` it keeps its existing confirmation meaning *and* takes the defaults |
+| `--yes` | On `cloud infra plan`/`apply` and `cloud state bootstrap`/`migrate` it means only "do not ask". On `cloud infra destroy`, `cloud deploy`, `cloud destroy` and `cloud smoke` it keeps its existing confirmation meaning *and* takes the defaults |
 | `NYXGPT_CLOUD_NONINTERACTIVE=1` | The same, for every `nyxgpt cloud` command — including the read-only ones that have no `--yes`. For a wrapper script that runs with a terminal attached but no human in front of it |
 
 With no usable default, the run fails rather than waiting, and the message
@@ -1741,15 +1762,17 @@ credentials and no API call:
 
 * `nyxgpt cloud status` prints an **AWS account** row (`nyxgpt (066835328281)`)
   and an **SSH key pair** row;
-* `nyxgpt cloud infra status` carries `aws_profile`, `aws_account_id` and
-  `ssh_key_name`;
+* `nyxgpt cloud infra status` carries `aws_profile`, `aws_account_id`,
+  `aws_account_label` and `ssh_key_name`;
 * the dashboard's Infrastructure page shows both on the AWS substrate card and
   on the cloud deployment card.
 
 All three say `not recorded here` rather than leaving a blank when the question
 is asked from somewhere that cannot answer it — on the instance, or from an api
 Pod, where no `infra.json` exists. That is a different claim from "no profile",
-and the surfaces keep them apart.
+and the surfaces keep them apart. They cannot word it differently, either: the
+row is rendered once in Python (`aws_account_label` in both status payloads) and
+displayed as-is by the CLI and by the dashboard.
 
 ---
 

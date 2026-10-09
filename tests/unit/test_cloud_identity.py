@@ -184,6 +184,118 @@ def test_nothing_configured_resolves_to_boto3s_own_chain():
     assert "default credential chain" in account.label
 
 
+# The `prior` layer: a calling command's own record, below its flags and above
+# everything shared. `nyxgpt cloud state` is the one that has one
+# (`backend.json`), and hand-rolling the four steps beneath it is what left it
+# two steps short of the documented order.
+
+
+def test_a_caller_owned_prior_sits_below_the_flag_and_above_the_record(monkeypatch):
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "recorded"})
+    prior = cloud_identity.AccountChoice(profile="prior", region="ap-south-1")
+
+    # Below the flag.
+    assert cloud_identity.account_default(_args(profile="flag"), prior=prior).profile == "flag"
+    # Above infra.json.
+    resolved = cloud_identity.account_default(_args(), prior=prior)
+    assert (resolved.profile, resolved.region) == ("prior", "ap-south-1")
+
+
+def test_a_prior_that_names_nothing_changes_nothing(monkeypatch):
+    """`nyxgpt cloud state` with no `backend.json` yet must get the plain chain."""
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "configured", "region": ""}
+    )
+    empty = cloud_identity.AccountChoice()
+
+    resolved = cloud_identity.account_default(_args(), prior=empty)
+
+    assert resolved.profile == "configured"
+    assert resolved.source == cloud_identity.SOURCE_CONFIG
+
+
+def test_clearing_the_profile_is_named_in_the_prompt_rather_than_being_a_secret(monkeypatch):
+    """`-` is the only way to say 'no named profile' where Enter keeps one.
+
+    Undocumented, it is a magic value the operator has to be told about; named
+    in the prompt, it is an option they can see (review of #4187).
+    """
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "recorded"})
+    asked: list[str] = []
+
+    def fake_ask(prompt, default=""):
+        asked.append(prompt)
+        return "-"
+
+    monkeypatch.setattr(cloud_identity, "ask", fake_ask)
+
+    assert cloud_identity.resolve_account(_args()).profile == ""
+    assert "- to use boto3's default credential chain" in asked[0]
+
+
+def test_nothing_recorded_means_no_profile_to_clear_and_no_such_offer(monkeypatch):
+    """The inverse: the wording is only shown where it would do something."""
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+    asked: list[str] = []
+    monkeypatch.setattr(
+        cloud_identity, "ask", lambda prompt, default="": asked.append(prompt) or ""
+    )
+
+    cloud_identity.resolve_account(_args())
+
+    assert "- to use" not in asked[0]
+    assert "Enter to use boto3's default credential chain" in asked[0]
+
+
+def test_a_prior_value_is_still_offered_for_confirmation(monkeypatch):
+    """Only a flag skips the question -- a record is a default, however close."""
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+    monkeypatch.setattr(cloud_identity, "ask", lambda prompt, default="": "typed")
+
+    resolved = cloud_identity.resolve_account(
+        _args(), prior=cloud_identity.AccountChoice(profile="prior")
+    )
+
+    assert resolved.profile == "typed"
+
+
+# --- The recorded-account label (one copy of four branches, D-066) --------
+
+
+def test_the_recorded_account_label_names_the_profile_and_the_id():
+    assert cloud_identity.recorded_account_label("nyxgpt", "066835328281") == (
+        "nyxgpt (066835328281)"
+    )
+
+
+def test_the_recorded_account_label_is_explicit_about_what_it_does_not_know():
+    """A blank reads as 'no profile', which is a claim about the deployment.
+
+    'not recorded here' is a claim about *this machine's knowledge* of it,
+    which is the true one on the instance and in an api Pod.
+    """
+    assert cloud_identity.recorded_account_label("", "") == "not recorded here"
+    assert cloud_identity.recorded_account_label("nyxgpt", "") == "nyxgpt (account id not recorded)"
+    assert "default credential chain" in cloud_identity.recorded_account_label("", "066835328281")
+
+
+def test_the_recorded_label_is_not_the_resolve_time_label():
+    """Two different claims, deliberately worded differently.
+
+    `AccountChoice.label` says "account id not resolved" -- an STS call was
+    made and failed. The recorded form says "not recorded" -- nobody here ever
+    wrote one down. Collapsing them would report a failed lookup as a missing
+    record and vice versa.
+    """
+    resolved = cloud_identity.AccountChoice(profile="nyxgpt").label
+    recorded = cloud_identity.recorded_account_label("nyxgpt", "")
+
+    assert "not resolved" in resolved
+    assert "not recorded" in recorded
+    assert resolved != recorded
+
+
 def test_a_recorded_account_id_is_only_reused_for_the_profile_it_was_recorded_for(monkeypatch):
     """An id recorded for one profile describes a different account than another.
 
@@ -231,7 +343,9 @@ def test_the_account_prompt_offers_the_resolved_value_as_the_default(monkeypatch
     account = cloud_identity.resolve_account(_args(), interactive=True)
 
     assert account.profile == "nyxgpt"
-    assert prompts == ["AWS profile [nyxgpt (066835328281)]: "]
+    assert prompts == [
+        "AWS profile (or - to use boto3's default credential chain) " "[nyxgpt (066835328281)]: "
+    ]
 
 
 def test_the_prompt_says_in_words_what_enter_does_with_no_profile_resolved(monkeypatch):

@@ -3406,6 +3406,19 @@ def test_the_account_row_is_explicit_about_what_it_does_not_know():
     assert "default credential chain" in cloud_deploy._account_row("", "066835328281")
 
 
+def test_the_cli_row_and_the_payload_label_are_the_same_string():
+    """One decision, one copy (D-066).
+
+    The CLI row, the API payloads and both dashboard cards show this wording.
+    It was briefly rendered twice -- here and in the dashboard's TypeScript --
+    and the two had already drifted on the apostrophe before either shipped.
+    """
+    for profile, account in (("nyxgpt", "066835328281"), ("nyxgpt", ""), ("", "0668"), ("", "")):
+        assert cloud_deploy._account_row(profile, account) == (
+            cloud_identity.recorded_account_label(profile, account)
+        )
+
+
 def test_deploy_status_carries_the_account_and_key_for_the_status_surfaces(
     _isolated_cloud_home, monkeypatch
 ):
@@ -3430,3 +3443,16 @@ def test_deploy_status_carries_the_account_and_key_for_the_status_surfaces(
     assert status["aws_profile"] == "nyxgpt"
     assert status["aws_account_id"] == "066835328281"
     assert status["ssh_key_name"] == "nyxgpt-smoke-key"
+    # Rendered server-side so the dashboard displays rather than reassembles
+    # it -- the TypeScript copy of these four branches is gone.
+    assert status["aws_account_label"] == "nyxgpt (066835328281)"
+
+
+def test_deploy_status_says_not_recorded_here_rather_than_leaving_a_blank(
+    _isolated_cloud_home, monkeypatch
+):
+    """The inverse: no infra.json at all, which is the instance's own vantage point."""
+    _write_cloud_state(_isolated_cloud_home)
+    monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
+
+    assert cloud_deploy.deploy_status()["aws_account_label"] == "not recorded here"

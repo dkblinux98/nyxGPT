@@ -6,10 +6,11 @@ way into the instance afterwards. Before this module there was no single
 place that answered either one:
 
 * **The account was chosen invisibly.** `cloud_infra.resolve_settings`,
-  `cloud._resolve_profile` and `cloud_mac._record_profile` each walked their
-  own version of the same chain and none of them ever *said* what they had
-  picked. A command that ran against the wrong account reported the symptom
-  of that choice (`InvalidGroup.NotFound`) and never the choice itself.
+  `cloud._resolve_profile`, `cloud_mac._record_profile` and
+  `cloud_state.resolve_backend_settings` each walked their own version of the
+  same chain and none of them ever *said* what they had picked. A command that
+  ran against the wrong account reported the symptom of that choice
+  (`InvalidGroup.NotFound`) and never the choice itself.
 * **The SSH key was a wall, not a question.** With no `--ssh-key-name` /
   `--ssh-public-key` the deploy stopped dead -- while, in the owner's
   2026-10-09 acceptance round, the usable answer was already on the machine:
@@ -21,7 +22,10 @@ So this module owns the resolution order -- **flag -> `infra.json` ->
 it still does not know (offering the resolved value as a default the operator
 takes with Enter), and prints what it settled on. It is deliberately the only
 copy: #4181 extends this resolver rather than adding a second one, and
-`cloud._resolve_profile` / `cloud_mac._record_profile` now delegate here.
+`cloud._resolve_profile`, `cloud_mac._record_profile` and
+`cloud_state.resolve_backend_settings` all delegate here -- the last of them
+through `prior`, which lets a command keep one record of its own on top of the
+shared chain without restating the chain (`account_default`).
 
 Three rules the surrounding system depends on:
 
@@ -70,6 +74,7 @@ PREFERRED_KEY_FILES = ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub")
 # Source tags on a resolved answer. Reported rather than inferred so a caller
 # (and a test) can tell "the operator typed this" from "we guessed well".
 SOURCE_FLAG = "flag"
+SOURCE_PRIOR = "prior"
 SOURCE_RECORD = "record"
 SOURCE_CONFIG = "config"
 SOURCE_ENVIRONMENT = "environment"
@@ -176,6 +181,34 @@ class SshChoice:
         if self.public_key_path:
             return f"register {_tilde(self.public_key_path)} as a new EC2 key pair"
         return "register the given public key as a new EC2 key pair"
+
+
+def recorded_account_label(profile: str, account_id: str) -> str:
+    """Render a *recorded* account for a status surface (#4186).
+
+    `AccountChoice.label` is the resolve-time form: it describes a choice this
+    process just made, so "account id not resolved" means an STS call was tried
+    and failed. This is the read-time form, for `nyxgpt cloud status`,
+    `cloud infra status`, the API payloads and the dashboard cards, where the
+    values come out of `infra.json` and both can be absent because *this
+    machine never provisioned anything* -- on the instance itself, or in an api
+    Pod. "not recorded here" is the honest answer there, and is deliberately
+    not a blank: a blank row reads as "no profile", which is a claim about the
+    deployment rather than about this machine's knowledge of it.
+
+    This is the only copy of the four branches, and the API ships the string it
+    returns. It was briefly two -- here and `awsAccountLabel` in the
+    dashboard's `page.tsx` -- which drifted on the apostrophe before either had
+    shipped; the same decision in two languages is two places for the next
+    divergence (D-066).
+    """
+    if profile and account_id:
+        return f"{profile} ({account_id})"
+    if account_id:
+        return f"{account_id} (boto3's default credential chain)"
+    if profile:
+        return f"{profile} (account id not recorded)"
+    return "not recorded here"
 
 
 def _tilde(path: str) -> str:
@@ -596,27 +629,45 @@ def matching_key_pairs(
 # --- Resolution ----------------------------------------------------------
 
 
-def account_default(args: argparse.Namespace | None = None) -> AccountChoice:
+def account_default(
+    args: argparse.Namespace | None = None,
+    *,
+    prior: AccountChoice | None = None,
+) -> AccountChoice:
     """Resolve the account/region by the documented order, making no AWS call.
 
-    flag -> `infra.json` -> `config.ini [cloud]` -> environment. The account
-    id is taken from what a previous run recorded, so this stays a local read;
-    `resolve_account` is what will look one up when there is none.
+    flag -> `prior` -> `infra.json` -> `config.ini [cloud]` -> environment. The
+    account id is taken from what a previous run recorded, so this stays a
+    local read; `resolve_account` is what will look one up when there is none.
+
+    `prior` is a layer the *calling command* owns, consulted directly below its
+    own flags and above everything shared. It exists so a command with a record
+    of its own can still get the rest of the chain from here instead of
+    restating it: `nyxgpt cloud state` remembers the profile and region of the
+    backend it provisioned in `backend.json`, and that record describes the
+    bucket and lock table this command is about to touch, so it outranks
+    `infra.json`. Hand-rolling the four steps below it is what left that
+    command two steps short of the documented order -- no `config.ini [cloud]`,
+    which is where `nyxgpt cloud credentials-setup` writes the answer.
     """
     recorded = recorded_settings()
     reference = configured_reference()
 
     flag_profile = str(getattr(args, "profile", None) or "") if args is not None else ""
     flag_region = str(getattr(args, "region", None) or "") if args is not None else ""
+    prior_profile = str(prior.profile or "") if prior is not None else ""
+    prior_region = str(prior.region or "") if prior is not None else ""
 
     profile = (
         flag_profile
+        or prior_profile
         or str(recorded.get("aws_profile") or "")
         or str(reference.get("profile") or "")
         or os.environ.get("AWS_PROFILE", "")
     )
     region = (
         flag_region
+        or prior_region
         or str(recorded.get("aws_region") or "")
         or str(reference.get("region") or "")
         or os.environ.get("AWS_REGION", "")
@@ -624,6 +675,8 @@ def account_default(args: argparse.Namespace | None = None) -> AccountChoice:
     )
     if flag_profile or flag_region:
         source = SOURCE_FLAG
+    elif prior_profile or prior_region:
+        source = prior.source if prior is not None and prior.source else SOURCE_PRIOR
     elif recorded.get("aws_profile") or recorded.get("aws_region"):
         source = SOURCE_RECORD
     elif reference.get("profile") or reference.get("region"):
@@ -648,6 +701,7 @@ def resolve_account(
     *,
     interactive: bool | None = None,
     lookup_account_id: bool = True,
+    prior: AccountChoice | None = None,
 ) -> AccountChoice:
     """Resolve the AWS account, asking for it (with a default) when nothing named it.
 
@@ -658,9 +712,12 @@ def resolve_account(
 
     `lookup_account_id=False` suppresses the STS call for a caller that only
     wants the names (the non-interactive announcement on a path where the id
-    is already recorded).
+    is already recorded). `prior` inserts the calling command's own record
+    directly below its flags -- see `account_default`. Like `infra.json`, a
+    `prior` value is a *default* and is still offered for confirmation; only a
+    flag skips the question, because only a flag is this invocation saying so.
     """
-    default = account_default(args)
+    default = account_default(args, prior=prior)
     if interactive is None:
         interactive = prompting_enabled(args)
 
@@ -689,9 +746,14 @@ def resolve_account(
     # point at any two accounts. With no profile resolved there is no label to
     # show, so the prompt says in words what Enter will do instead of offering
     # `[(none)]` and leaving the operator to guess.
+    # `-` is the only way to say "use no named profile" at a prompt whose Enter
+    # means "keep the recorded one", so the prompt itself names it rather than
+    # leaving it a magic value the operator has to be told about (review of
+    # #4187). With nothing resolved there is no profile to clear, so that
+    # wording is only offered where it does something.
     label = account.label if account.profile else ""
     prompt = (
-        "AWS profile"
+        "AWS profile (or - to use boto3's default credential chain)"
         if account.profile
         else "AWS profile (Enter to use boto3's default credential chain)"
     )
@@ -917,6 +979,7 @@ def announce(account: AccountChoice, ssh: SshChoice | None = None) -> str:
 
 __all__ = [
     "NONINTERACTIVE_ENV",
+    "SOURCE_PRIOR",
     "AccountChoice",
     "KeyPairMatch",
     "SshChoice",
@@ -935,6 +998,7 @@ __all__ = [
     "prompting_enabled",
     "public_key_blob",
     "public_key_fingerprints",
+    "recorded_account_label",
     "recorded_settings",
     "reset_prompt_cache",
     "resolve_account",

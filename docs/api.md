@@ -1790,6 +1790,12 @@ STS call. They are empty for the same reason and under the same sources: a
 machine that did not provision the substrate has no record of which account it
 is in. See [cloud.md](cloud.md#which-account-and-which-ssh-key-4186).
 
+`aws_account_label` is those two rendered for display — `"nyxgpt
+(066835328281)"`, or `"not recorded here"` when neither was recorded. It is
+built server-side on purpose: the CLI row, this payload and the dashboard's
+cloud cards all show that wording, and rendering it in each of them is one
+decision in three places. Clients display it rather than reassembling it.
+
 ```json
 {
   "source": "terraform-state",
@@ -1806,6 +1812,7 @@ is in. See [cloud.md](cloud.md#which-account-and-which-ssh-key-4186).
   "ssh_key_name": "owner-pair",
   "aws_profile": "nyxgpt",
   "aws_account_id": "066835328281",
+  "aws_account_label": "nyxgpt (066835328281)",
   "ssh_identity_file": "/Users/owner/.ssh/id_rsa",
   "owner_ip_cidr": "198.51.100.7/32",
   "access_model": {

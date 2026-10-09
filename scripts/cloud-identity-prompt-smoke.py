@@ -504,6 +504,104 @@ def case_matching_key_pair_is_offered() -> None:
     shutil.rmtree(home, ignore_errors=True)
 
 
+# --- 6. `cloud state`, the fourth copy of the chain ----------------------
+
+
+def case_cloud_state_resolves_through_the_shared_resolver() -> None:
+    """`cloud state bootstrap` asks, and the scripted form never waits.
+
+    Added in the review of #4187, which found `cloud_state.resolve_backend_
+    settings` still hand-rolling the account chain -- and skipping
+    `config.ini [cloud]`, the step `nyxgpt cloud credentials-setup` writes. It
+    now delegates, which makes it a second command whose prompts are a property
+    of a run: the same hang that no unit test stubbing `input` can observe, on
+    a command that reaches S3 and DynamoDB.
+
+    These commands have no stub-able Terraform stop, so the pre-AWS stop here
+    is the deliberately-absent boto3: `_client` refuses before any call is
+    made. The announcement is printed before that, which is the point -- the
+    account is named whether or not the command can go on to use it.
+    """
+    section("6. cloud state: delegates to the shared resolver, and never waits either")
+    home = make_home(with_ssh_key=True)
+
+    # Interactive: a real pty, and Enter alone must satisfy it. The account is
+    # the only question here -- state commands need no SSH identity.
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, "-m", "nyxgpt", "cloud", "state", "bootstrap"],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=command_env(home),
+        close_fds=True,
+    )
+    os.close(slave)
+    transcript = b""
+    deadline = time.time() + 90.0
+    sent = 0
+    while time.time() < deadline:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        transcript += chunk
+        if sent < 2 and transcript.rstrip(b" ").endswith(b":"):
+            os.write(master, b"\n")
+            sent += 1
+    try:
+        process.wait(timeout=20)
+        killed = False
+    except subprocess.TimeoutExpired:
+        process.kill()
+        killed = True
+    interactive = transcript.decode(errors="replace")
+    print("\n".join("      | " + line for line in interactive.splitlines()))
+    check("`cloud state bootstrap` asked for the AWS profile", "AWS profile" in interactive)
+    check("it announced the account it settled on", "AWS account:" in interactive, interactive)
+    check("it did not have to be killed", not killed)
+
+    # Non-interactive: the shape a CI pipeline or `nyxgpt cloud ops` over SSH
+    # runs it in. The hard timeout IS the assertion.
+    for label, flags, extra in (
+        ("--yes", ["--yes"], {}),
+        ("no terminal (a pipe)", [], {}),
+        ("NYXGPT_CLOUD_NONINTERACTIVE set", [], {"NYXGPT_CLOUD_NONINTERACTIVE": "1"}),
+    ):
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "nyxgpt", "cloud", "state", "bootstrap", *flags],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=command_env(home, **extra),
+                timeout=60,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            check(f"cloud state, {label}: did not wait for input", False, "timed out after 60s")
+            continue
+        elapsed = time.monotonic() - started
+        output = completed.stdout + completed.stderr
+        print("\n".join("      | " + line for line in output.splitlines()))
+        check(f"cloud state, {label}: finished without waiting", elapsed < 60, f"{elapsed:.1f}s")
+        check(
+            f"cloud state, {label}: printed the account it chose",
+            "AWS account:" in output,
+            output,
+        )
+        check(f"cloud state, {label}: asked nothing", "AWS profile" not in output, output)
+        check(
+            f"cloud state, {label}: cites no repository path",
+            "product_management/" not in output,
+            output,
+        )
+    shutil.rmtree(home, ignore_errors=True)
+
+
 def main() -> int:
     """Run every case and report."""
     print("cloud-identity-prompt-smoke: executed evidence for #4186")
@@ -516,6 +614,7 @@ def main() -> int:
     case_no_usable_default()
     case_fingerprints_match_the_tools()
     case_matching_key_pair_is_offered()
+    case_cloud_state_resolves_through_the_shared_resolver()
 
     print(f"\n{checks} checks run.")
     if failures:

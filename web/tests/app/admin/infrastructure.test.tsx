@@ -2012,6 +2012,141 @@ describe('InfrastructurePage', () => {
     expect(screen.getByText(/nyxgpt cloud ops session-backend/)).toBeInTheDocument();
   });
 
+  it('shows which AWS account and key pair a deployment used, on both cloud cards (#4186)', async () => {
+    // The acceptance criterion this row answers: "the choice is visible
+    // afterwards". The account was the one provisioning input no screen ever
+    // showed, so an operator with more than one AWS account could not tell
+    // which of them held their instance -- and the same acceptance round found
+    // commands running against the wrong one (#4181).
+    //
+    // The *string* is rendered by Python (`aws_account_label`, from
+    // `cloud_identity.recorded_account_label`) and displayed here as-is, so
+    // this asserts it is displayed rather than reassembled: the four branches
+    // of that wording were briefly written out again in this file's TypeScript
+    // and had already drifted on the apostrophe (ledger D-066).
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.1rc1',
+          region: 'us-east-1',
+          aws_profile: 'nyxgpt',
+          aws_account_id: '066835328281',
+          aws_account_label: 'nyxgpt (066835328281)',
+          ssh_key_name: 'nyxgpt-smoke-key',
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'terraform-state',
+            source_label: 'Terraform state on this machine',
+            known: true,
+            provisioned: true,
+            instance_id: 'i-0abc123',
+            ssh_key_name: 'nyxgpt-smoke-key',
+            aws_profile: 'nyxgpt',
+            aws_account_id: '066835328281',
+            aws_account_label: 'nyxgpt (066835328281)',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+    });
+    // Once on the substrate card, once on the cloud deployment card -- the
+    // card an operator reads after a deploy, where "which account is this in?"
+    // is part of the answer.
+    expect(screen.getAllByText('AWS account')).toHaveLength(2);
+    expect(screen.getAllByText('nyxgpt (066835328281)')).toHaveLength(2);
+    // The key pair, likewise on both: SSH is the only way into the instance.
+    expect(screen.getAllByText('SSH key pair')).toHaveLength(2);
+    expect(screen.getAllByText('nyxgpt-smoke-key')).toHaveLength(2);
+  });
+
+  it('says "not recorded here" rather than leaving the account rows blank (#4186)', async () => {
+    // The inverse, and the case that is easy to get wrong. On the instance
+    // itself, or in an api Pod, no `infra.json` exists to have recorded the
+    // account -- that is a claim about *this machine's knowledge*, not a claim
+    // that the deployment has no profile, and a blank row would read as the
+    // latter (D-018). The wording is pinned by docs/cloud.md for both this
+    // surface and `nyxgpt cloud status`.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'imds',
+          known: true,
+          on_instance: true,
+          deployed: true,
+          version: '3.0.1rc1',
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            source: 'imds',
+            source_label: 'instance metadata (this dashboard is running on the instance)',
+            on_ec2: true,
+            known: true,
+            provisioned: true,
+            instance_id: 'i-0abc123',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('not recorded here')).toHaveLength(2);
+  });
+
+  it('still renders the account rows when the api predates the rendered label (#4186)', async () => {
+    // Version skew during an upgrade: an api older than this page sends no
+    // `aws_account_label` at all. The page must not render `undefined`, and it
+    // must not rebuild the wording from the two raw fields either -- there is
+    // nothing to rebuild it from, since an api without the label has no
+    // account fields to offer.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    const cloudWithoutLabel: Record<string, unknown> = { ...CLOUD_DEPLOY_UNKNOWN };
+    delete cloudWithoutLabel.aws_account_label;
+    const infraWithoutLabel: Record<string, unknown> = { ...CLOUD_DEPLOY_UNKNOWN.infra };
+    delete infraWithoutLabel.aws_account_label;
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...cloudWithoutLabel,
+          source: 'deploy-record',
+          known: true,
+          deployed: true,
+          version: '3.0.1rc1',
+          infra: {
+            ...infraWithoutLabel,
+            source: 'terraform-state',
+            source_label: 'Terraform state on this machine',
+            known: true,
+            provisioned: true,
+            instance_id: 'i-0abc123',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DEPLOYED')).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('not recorded here')).toHaveLength(2);
+    expect(screen.queryByText('undefined')).not.toBeInTheDocument();
+  });
+
   it('says when the cloud instance is running a shipped working tree rather than a release (#3950)', async () => {
     // Every other field on this card reads identically for a `--dev` deploy
     // and an artifact deploy of the same version -- version, host, instance,

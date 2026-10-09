@@ -292,8 +292,12 @@ type CloudInfraStatus = {
   // provision time so reporting it here needs no credential. Both empty on a
   // machine that did not provision it — the instance, or an api Pod — which is
   // the same "no source here can answer" `known` already covers.
+  // `aws_account_label` is the rendered form, built by the one Python copy of
+  // that wording and read here as-is. Optional: an api older than this page
+  // does not send it.
   aws_profile: string;
   aws_account_id: string;
+  aws_account_label?: string;
   ssh_identity_file: string;
   owner_ip_cidr: string;
   access_model: { open_ports: number[]; ssh_only: boolean; reachability: string };
@@ -410,8 +414,10 @@ type CloudDeployStatus = {
   // lifted to the top level of the payload so this card can show them without
   // reaching into the substrate block. Local reads of what the resolver
   // recorded; empty on a machine that did not run the deploy.
+  // `aws_account_label` is the rendered form — see `CloudInfraStatus`.
   aws_profile: string;
   aws_account_id: string;
+  aws_account_label?: string;
   ssh_key_name: string;
   profiles: string[];
   // Where the deployment's chat sessions live (#3865). Empty when the deploy
@@ -514,16 +520,18 @@ function historyLabel(entry: DeployHistoryEntry): string {
 }
 
 // The AWS account a deployment was made in, as the profile name and the
-// account id it resolved to (#4186). The same wording `nyxgpt cloud status`
-// prints (`cloud_deploy._account_row`), so the two surfaces never disagree
-// about what an empty value means: 'not recorded here' is the honest answer on
-// the instance and in an api Pod, where no infra.json exists to have recorded
-// it — never a blank that reads as 'no profile'.
-function awsAccountLabel(profile: string, accountId: string): string {
-  if (profile && accountId) return `${profile} (${accountId})`;
-  if (accountId) return `${accountId} (boto3’s default credential chain)`;
-  if (profile) return `${profile} (account id not recorded)`;
-  return 'not recorded here';
+// account id it resolved to (#4186). The *string* is rendered server-side by
+// `cloud_identity.recorded_account_label` and shipped in both status payloads,
+// so this surface and `nyxgpt cloud status` cannot word it differently — the
+// four branches used to be written out again here in TypeScript and had
+// already drifted on the apostrophe (ledger D-066).
+//
+// The fallback covers one case only: an api older than this page, which has no
+// such field. It is the empty-knowledge wording, not a second copy of the
+// decision — there is nothing to decide from, since neither input is present
+// either.
+function awsAccountLabel(label: string | undefined): string {
+  return label || 'not recorded here';
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -1483,10 +1491,7 @@ export default function InfrastructurePage() {
                     ever showed, so an operator with more than one AWS account
                     could not tell which held their instance. Profile and
                     account id together — either alone is ambiguous. */}
-                <Row
-                  label="AWS account"
-                  value={awsAccountLabel(substrate.aws_profile, substrate.aws_account_id)}
-                />
+                <Row label="AWS account" value={awsAccountLabel(substrate.aws_account_label)} />
                 <Row label="SSH key pair" value={substrate.ssh_key_name} />
                 <Row
                   label="SSH allowed from"
@@ -1636,10 +1641,7 @@ export default function InfrastructurePage() {
                 {/* #4186. Same pair as the substrate card above, repeated here
                     because this is the card an operator reads after a deploy
                     and "which account is this in?" is part of the answer. */}
-                <Row
-                  label="AWS account"
-                  value={awsAccountLabel(cloud.aws_profile, cloud.aws_account_id)}
-                />
+                <Row label="AWS account" value={awsAccountLabel(cloud.aws_account_label)} />
                 <Row label="SSH key pair" value={cloud.ssh_key_name} />
                 {/* #3867: the two target OSes are provisioned by different
                     bootstraps and do not leave the instance in the same

@@ -2856,6 +2856,19 @@ def cli(argv: list[str] | None = None) -> int:
             "--profile",
             help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
         )
+        # These two authenticate to S3/DynamoDB and read the account id to name
+        # the bucket, so they resolve the account through the shared resolver
+        # and can ask for it (#4186). `--yes` is the same opt-out the substrate
+        # commands have, so a script never meets a prompt it cannot answer.
+        parser.add_argument(
+            "--yes",
+            action="store_true",
+            help=(
+                "Do not ask for the AWS profile -- take the resolved default and print it. "
+                "Already implied with no terminal (CI, `nyxgpt cloud ops` over SSH) or with "
+                "NYXGPT_CLOUD_NONINTERACTIVE set"
+            ),
+        )
 
     cloud_state_status = cloud_state_sub.add_parser(
         "status", help="Report where the substrate's state lives and how it is locked"

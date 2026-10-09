@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_infra, cloud_mac
+from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.config import VALID_SESSION_BACKENDS
 
@@ -3474,6 +3474,11 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         # here can answer" the `source` field already describes.
         "aws_profile": str(infra.get("aws_profile") or ""),
         "aws_account_id": str(infra.get("aws_account_id") or ""),
+        # Rendered server-side, by the one copy of the four branches, so the
+        # CLI row and the dashboard card cannot word it differently (D-066).
+        "aws_account_label": cloud_identity.recorded_account_label(
+            str(infra.get("aws_profile") or ""), str(infra.get("aws_account_id") or "")
+        ),
         "ssh_key_name": str(infra.get("ssh_key_name") or ""),
         "profiles": profiles,
         # Where this deployment's chat sessions live (#3865). Observable
@@ -3953,18 +3958,12 @@ def _screen_label(screen: dict[str, Any], commands: dict[str, str]) -> str:
 def _account_row(profile: str, account_id: str) -> str:
     """Render the AWS account row for `nyxgpt cloud status` (#4186).
 
-    Shared with the dashboard's wording so the two never disagree: the profile
-    name and the account id it resolved to, or an explicit "not recorded here"
-    when neither was -- which is the honest answer on the instance and in a
-    Pod, where no `infra.json` exists to have recorded them.
+    Delegates to `cloud_identity.recorded_account_label`, which is the one copy
+    of the four branches: the status payloads ship the same string, so the CLI,
+    the API and both dashboard cards cannot disagree about what an absent value
+    means.
     """
-    if profile and account_id:
-        return f"{profile} ({account_id})"
-    if account_id:
-        return f"{account_id} (boto3's default credential chain)"
-    if profile:
-        return f"{profile} (account id not recorded)"
-    return "not recorded here"
+    return cloud_identity.recorded_account_label(profile, account_id)
 
 
 def _print_status_summary(status: dict[str, Any]) -> None:

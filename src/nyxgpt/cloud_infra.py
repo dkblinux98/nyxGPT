@@ -900,6 +900,13 @@ def infra_status() -> dict[str, Any]:
         # the same "no source here can answer" `known` already describes.
         "aws_profile": settings.get("aws_profile") or "",
         "aws_account_id": settings.get("aws_account_id") or "",
+        # Rendered here rather than by each reader: the four branches ("profile
+        # (id)" / id only / profile only / "not recorded here") are one
+        # decision, and a second copy in the dashboard's TypeScript had already
+        # drifted on the apostrophe before it shipped (D-066).
+        "aws_account_label": cloud_identity.recorded_account_label(
+            str(settings.get("aws_profile") or ""), str(settings.get("aws_account_id") or "")
+        ),
         "ssh_identity_file": settings.get("ssh_identity_file") or "",
         "owner_ip_cidr": owner_ip_cidr,
         # The access model is a property of the configuration, not of a live

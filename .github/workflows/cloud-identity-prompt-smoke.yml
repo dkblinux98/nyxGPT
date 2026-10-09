@@ -8,7 +8,8 @@ name: Cloud Identity Prompt Smoke
 #                       Enter -- and does the same command finish without
 #                       waiting when there is no terminal? Drives
 #                       scripts/cloud-identity-prompt-smoke.py, which runs the
-#                       shipped `nyxgpt cloud infra plan` five ways on a
+#                       shipped `nyxgpt cloud infra plan` five ways -- and
+#                       `nyxgpt cloud state bootstrap` four more -- on a
 #                       synthetic HOME with no `~/.nyxGPT/cloud/infra.json`:
 #                         1. under a real pty, typing nothing but newlines;
 #                         2. three non-interactive shapes (`--yes`, a pipe,
@@ -27,7 +28,13 @@ name: Cloud Identity Prompt Smoke
 #                         5. a key pair already in the account offered by name
 #                            with the local file it matches -- the owner's
 #                            2026-10-09 case, which took a manual fingerprint
-#                            comparison to find.
+#                            comparison to find;
+#                         6. `cloud state bootstrap`, the fourth copy of the
+#                            chain, found by the review of #4187 and now
+#                            delegating: it asks under a pty and takes the
+#                            default under all three scripted shapes. Its
+#                            pre-AWS stop is the deliberately-absent boto3,
+#                            since state commands reach no Terraform first.
 #                       A pty cannot be faked with a pipe (the resolver asks
 #                       whether stdin/stdout are terminals), and a hang cannot
 #                       be seen by a unit test that stubs `input` -- so both
@@ -50,6 +57,7 @@ on:
       - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cloud_state.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud-identity-prompt-smoke.py'
       - '.github/workflows/cloud-identity-prompt-smoke.yml'
@@ -60,6 +68,7 @@ on:
       - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cloud_state.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud-identity-prompt-smoke.py'
       - '.github/workflows/cloud-identity-prompt-smoke.yml'

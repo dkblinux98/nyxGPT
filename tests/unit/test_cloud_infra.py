@@ -839,7 +839,7 @@ def test_resolve_settings_prompts_for_the_account_with_the_resolved_default(monk
     # later with no credential and no STS call.
     assert settings.aws_account_id == "066835328281"
     # The bracketed default carries the account id, not just the name (#4186).
-    assert any("AWS profile [nyxgpt (066835328281)]" in p for p in prompts)
+    assert any("AWS profile" in p and "[nyxgpt (066835328281)]" in p for p in prompts)
 
 
 def test_resolve_settings_prompts_for_an_ssh_key_instead_of_refusing(monkeypatch, tmp_path):
@@ -930,6 +930,17 @@ def test_infra_status_reports_the_account_the_substrate_was_provisioned_in(monke
     assert status["aws_profile"] == "nyxgpt"
     assert status["aws_account_id"] == "066835328281"
     assert status["ssh_key_name"] == "nyxgpt-smoke-key"
+    # Rendered once, in Python, and displayed as-is by the CLI and the
+    # dashboard -- the TypeScript copy of these four branches is gone (D-066).
+    assert status["aws_account_label"] == "nyxgpt (066835328281)"
+
+
+def test_infra_status_says_not_recorded_here_when_this_machine_did_not_provision_it(monkeypatch):
+    """The inverse: no infra.json, which is the instance's and the Pod's vantage point."""
+    monkeypatch.setattr(cloud_infra, "_load_cloud_state", lambda: {"instance_id": "i-123"})
+    monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
+
+    assert cloud_infra.infra_status()["aws_account_label"] == "not recorded here"
 
 
 def test_no_operator_facing_field_cites_a_repository_path():
