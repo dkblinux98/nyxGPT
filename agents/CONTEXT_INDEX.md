@@ -33,6 +33,7 @@ fails if it drifts. Do not hand-edit.
 | `cli-locality-smoke.yml` | pull_request, push, workflow_dispatch | CLI Locality Smoke |
 | `cloud-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Artifact Smoke |
 | `cloud-dev-deploy-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Dev Deploy Smoke |
+| `cloud-identity-prompt-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Identity Prompt Smoke |
 | `cloud-imds-smoke.yml` | pull_request, push, workflow_dispatch | Cloud IMDS Smoke |
 | `cloud-stale-record-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Stale Record Smoke |
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |

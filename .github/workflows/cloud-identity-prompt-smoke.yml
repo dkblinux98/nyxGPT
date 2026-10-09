@@ -1,0 +1,95 @@
+name: Cloud Identity Prompt Smoke
+
+# One job, answering the question unit tests structurally cannot (#3775):
+#
+#   cloud-identity-prompt-smoke  When an operator runs a `nyxgpt cloud`
+#                       command that needs an AWS account and an SSH key, do
+#                       they get asked -- with a default they can take with
+#                       Enter -- and does the same command finish without
+#                       waiting when there is no terminal? Drives
+#                       scripts/cloud-identity-prompt-smoke.py, which runs the
+#                       shipped `nyxgpt cloud infra plan` five ways on a
+#                       synthetic HOME with no `~/.nyxGPT/cloud/infra.json`:
+#                         1. under a real pty, typing nothing but newlines;
+#                         2. three non-interactive shapes (`--yes`, a pipe,
+#                            NYXGPT_CLOUD_NONINTERACTIVE), each under a hard
+#                            60s timeout -- the timeout IS the assertion, since
+#                            a resolver that prompts on a closed stdin hangs;
+#                         3. the inverse, with nothing to default to, which
+#                            must FAIL and name both flags (so case 2 cannot
+#                            pass vacuously);
+#                         4. the fingerprints recomputed by `ssh-keygen -lf`
+#                            and `openssl pkey -pubin -outform DER | openssl
+#                            md5 -c` -- the second being exactly the arithmetic
+#                            EC2 performs for an imported RSA key pair, and the
+#                            only check that is not `cloud_identity`'s
+#                            hand-rolled DER re-encoding agreeing with itself;
+#                         5. a key pair already in the account offered by name
+#                            with the local file it matches -- the owner's
+#                            2026-10-09 case, which took a manual fingerprint
+#                            comparison to find.
+#                       A pty cannot be faked with a pipe (the resolver asks
+#                       whether stdin/stdout are terminals), and a hang cannot
+#                       be seen by a unit test that stubs `input` -- so both
+#                       halves of this issue's behaviour claim need a run.
+#
+# Nothing reaches AWS and nothing is created: a stub `terraform` first on PATH
+# stops every run at a known pre-AWS point, well before anything bills. The one
+# call CI genuinely cannot make is a live `describe_key_pairs` (there is no AWS
+# account here -- docs/live-verification-ci.md); case 5 fakes only that
+# transport while taking the fingerprint it returns from `openssl`, so the
+# match itself is still executed rather than asserted.
+#
+# Scoped to the resolver and its call sites: this is a fast job, but running it
+# on every unrelated push buys nothing.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/cloud_identity.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud.py'
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud-identity-prompt-smoke.py'
+      - '.github/workflows/cloud-identity-prompt-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/cloud_identity.py'
+      - 'src/nyxgpt/cloud_infra.py'
+      - 'src/nyxgpt/cloud.py'
+      - 'src/nyxgpt/cloud_deploy.py'
+      - 'src/nyxgpt/cloud_mac.py'
+      - 'src/nyxgpt/cli.py'
+      - 'scripts/cloud-identity-prompt-smoke.py'
+      - '.github/workflows/cloud-identity-prompt-smoke.yml'
+  workflow_dispatch:
+
+# Read-only workflow: it checks out the repo and drives the CLI against a
+# temporary HOME; it never writes to the repository or its APIs
+# (actions/missing-workflow-permissions, same pattern as linux-native-smoke).
+permissions:
+  contents: read
+
+jobs:
+  cloud-identity-prompt-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e .
+
+      # boto3 is in the `[cloud]` extra and is deliberately NOT installed: the
+      # resolver must degrade to "account id not resolved" and an empty
+      # key-pair list rather than failing, and this is the shape that proves it
+      # on the install an operator who has not added the extra actually has.
+      - name: Drive the prompts, the scripted paths, and the fingerprints
+        run: python scripts/cloud-identity-prompt-smoke.py

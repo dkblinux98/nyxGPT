@@ -651,10 +651,22 @@ def resolve_account(
     if not interactive or default.source == SOURCE_FLAG:
         return account
 
-    answer = ask("AWS profile", account.profile or "(none)")
-    chosen = "" if answer in ("", "(none)", "none") else answer
-    if chosen == account.profile:
+    # The default shown in the brackets is the *label* -- profile plus the
+    # account id it resolves to -- because the profile name alone is what made
+    # a wrong-account run invisible (#4181): two sensibly-named profiles can
+    # point at any two accounts. With no profile resolved there is no label to
+    # show, so the prompt says in words what Enter will do instead of offering
+    # `[(none)]` and leaving the operator to guess.
+    label = account.label if account.profile else ""
+    prompt = (
+        "AWS profile"
+        if account.profile
+        else "AWS profile (Enter to use boto3's default credential chain)"
+    )
+    answer = ask(prompt, label)
+    if answer in ("", label, account.profile):
         return account
+    chosen = "" if answer == "-" else answer
     return AccountChoice(
         profile=chosen,
         region=account.region,
@@ -807,9 +819,14 @@ def resolve_ssh(
             ]
         )
 
-    if not interactive or len(candidates) == 1:
+    if not interactive:
         return candidates[0]
 
+    # Asked even when there is only one candidate. The key is the only way
+    # into the instance and it is about to be registered against it, so
+    # "there was nothing to choose between" is not a reason to install it
+    # without the operator seeing it -- which is the invisibility this issue
+    # is about. One Enter is the whole cost.
     print("\nSSH key for the instance (SSH is the only way in):")
     index = ask_choice("Choice", [c.label for c in candidates])
     chosen = candidates[index]

@@ -363,8 +363,23 @@ def resolve_settings(args: argparse.Namespace, *, announce: bool = True) -> Infr
     """
     saved = load_settings()
 
-    account = cloud_identity.resolve_account(args)
-    region = account.region or "us-east-1"
+    resolved = cloud_identity.resolve_account(args)
+    # Re-stamped with the region actually used, so the announced account and
+    # the provisioned one can never disagree: the resolver reports "" when
+    # nothing named a region, and this module's own last-resort default is
+    # `us-east-1`. Announcing the resolver's empty value would print no region
+    # beside an apply that used one.
+    account = (
+        resolved
+        if resolved.region
+        else cloud_identity.AccountChoice(
+            profile=resolved.profile,
+            region="us-east-1",
+            account_id=resolved.account_id,
+            source=resolved.source,
+        )
+    )
+    region = account.region
 
     explicit_ip = getattr(args, "owner_ip", None)
     owner_ip_cidr = normalize_cidr(explicit_ip if explicit_ip else detect_current_public_ip())
