@@ -44,6 +44,7 @@ from pathlib import Path
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.cloud_deploy import DEFAULT_SESSION_BACKEND
 from nyxgpt.config import VALID_SESSION_BACKENDS
+from nyxgpt.doc_links import see_doc
 
 VERSION_PLACEHOLDER = "__NYXGPT_VERSION__"
 SESSION_BACKEND_PLACEHOLDER = "__NYXGPT_SESSION_BACKEND__"
@@ -228,7 +229,7 @@ def render_user_data(
     if backend not in VALID_SESSION_BACKENDS:
         raise CloudCommandError(
             f"Unsupported --session-backend {session_backend!r} -- choose one of: "
-            f"{', '.join(VALID_SESSION_BACKENDS)} (see docs/session-storage.md)"
+            f"{', '.join(VALID_SESSION_BACKENDS)} ({see_doc('docs/session-storage.md')})"
         )
     template_path = _template_root() / _TEMPLATE_FILENAMES[os_family]
     if not template_path.is_file():

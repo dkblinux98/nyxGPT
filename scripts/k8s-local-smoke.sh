@@ -942,7 +942,18 @@ sys.exit(0 if r.status_code == 202 else 1)
 no valid DSN -- the #3990 state: the api had no [error_tracking] section at all)"
 
 found=""
-for _ in $(seq 1 24); do
+# 48 x 5s = 240s, raised from 120s. OUT OF CLASS for #4182 and recorded there
+# as such; changed here because it is a flaky wait blocking a required check
+# rather than a weak assertion. Evidence that 120s was too tight and not that
+# anything was broken: commit 8f9e5724 ran this job twice -- the push-triggered
+# run passed and the pull_request-triggered run failed on this very line, same
+# code, same cluster shape. GlitchTip ingests through Redis and a celery
+# worker, both scheduled on a node this job deliberately ballasts down to
+# 7936Mi, so the gap between "202 accepted" and "the issue exists" is the
+# worker's queue latency under CPU pressure and has no upper bound this script
+# can derive. Nothing is weakened: the issue must still appear, and the loop
+# breaks the moment it does, so a healthy cluster pays nothing for the margin.
+for _ in $(seq 1 48); do
     issues=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
         "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
 glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issues/" \

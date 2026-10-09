@@ -5890,6 +5890,15 @@ def test_ops_doctor_web_deps_present_and_undici_resolves(monkeypatch, capsys, tm
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # doctor asks the service manager whether a native api/web is registered,
+    # so a marker with nothing behind it prints as history rather than as a
+    # present-tense claim (#4182). Both reads are stubbed rather than left to
+    # this test's narrow `subprocess.run` stand-in, which is for the node
+    # resolve probe alone -- and which used to make `detect_deployment_mode`
+    # raise inside `_dual_stack_conflict_issues`'s try/except, so the
+    # dual-stack check was skipped here rather than answered.
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     # doctor now probes whether the docker daemon is actually reachable (#3632);
     # this test's narrow subprocess.run stub is only for the node resolve probe.
     monkeypatch.setattr(ops, "_docker_daemon_reachable", lambda: True)
@@ -5919,6 +5928,15 @@ def test_ops_doctor_web_deps_present_but_undici_unresolvable(monkeypatch, capsys
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # doctor asks the service manager whether a native api/web is registered,
+    # so a marker with nothing behind it prints as history rather than as a
+    # present-tense claim (#4182). Both reads are stubbed rather than left to
+    # this test's narrow `subprocess.run` stand-in, which is for the node
+    # resolve probe alone -- and which used to make `detect_deployment_mode`
+    # raise inside `_dual_stack_conflict_issues`'s try/except, so the
+    # dual-stack check was skipped here rather than answered.
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
     monkeypatch.setattr(
         ops.subprocess,
         "run",
@@ -5945,6 +5963,15 @@ def test_ops_doctor_can_resolve_handles_exception(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_probe", lambda name: ops.ContainerProbe("running"))
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # doctor asks the service manager whether a native api/web is registered,
+    # so a marker with nothing behind it prints as history rather than as a
+    # present-tense claim (#4182). Both reads are stubbed rather than left to
+    # this test's narrow `subprocess.run` stand-in, which is for the node
+    # resolve probe alone -- and which used to make `detect_deployment_mode`
+    # raise inside `_dual_stack_conflict_issues`'s try/except, so the
+    # dual-stack check was skipped here rather than answered.
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
 
     def raise_run(cmd, cwd=None, text=True, capture_output=True):
         raise OSError("boom")

@@ -11,7 +11,7 @@ actually run on, in a local container, for free.
 
 ```bash
 nyxgpt cloud smoke --container                       # install the latest published release
-nyxgpt cloud smoke --container --version 3.0.0rc9    # install exactly that release
+nyxgpt cloud smoke --container --version <version>   # install exactly that release
 nyxgpt cloud smoke --container --status              # what the last run found
 ```
 

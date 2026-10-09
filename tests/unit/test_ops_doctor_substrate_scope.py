@@ -702,7 +702,7 @@ def _doctor_on_a_bare_host(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "no-checkout")
     monkeypatch.setattr(ops, "_stale_venv_doctor_issues", lambda: [])
     monkeypatch.setattr(ops, "_foreign_native_service_issues", lambda _identity: [])
-    monkeypatch.setattr(ops, "_terraform_install_mode_issues", lambda: [])
+    monkeypatch.setattr(ops, "_terraform_install_mode_issues", lambda _history=None: [])
     monkeypatch.setattr(ops, "_k8s_access_bridge_issues", lambda: [])
     monkeypatch.setattr(ops, "_observability_volume_doctor_issues", lambda: [])
     monkeypatch.setattr(ops, "_glitchtip_secrets_doctor_issues", lambda: [])

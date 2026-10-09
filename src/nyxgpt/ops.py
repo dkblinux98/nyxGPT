@@ -76,6 +76,7 @@ from nyxgpt.config import (
     read_grafana_admin_password,
     resolve_grafana_admin_password,
 )
+from nyxgpt.doc_links import doc_url, see_doc
 from nyxgpt.install_mode import (
     CHANNEL_CANDIDATE,
     CHANNEL_DEV,
@@ -88,11 +89,13 @@ from nyxgpt.install_mode import (
     MANAGER_SYSTEMD,
     MANAGER_UNKNOWN,
     SUBSTRATE_KUBERNETES,
+    SUBSTRATE_NATIVE,
     SUBSTRATE_TERRAFORM,
     InstallIdentity,
     InstallModeState,
     clear_install_mode,
     install_mode_file,
+    install_mode_recorded_at,
     read_install_mode,
     write_install_mode,
 )
@@ -130,6 +133,7 @@ from nyxgpt.running_build import (
     BuildDrift,
     RuntimeBuild,
     local_runtime_build,
+    native_build_scope,
 )
 from nyxgpt.running_build import classify as classify_build_drift
 from nyxgpt.subprocess_bounds import (
@@ -2718,8 +2722,8 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
         detail += (
             f"\nCandidate channel: the service is named {formula} after its formula "
             f"(not {name}), which is what `brew services list` shows and what "
-            "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by. "
-            "See docs/homebrew.md#candidate-channel."
+            "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by -- "
+            f"{see_doc('docs/homebrew.md#candidate-channel')}."
         )
     results = [
         OpsResult(
@@ -2777,25 +2781,76 @@ _BREW_SOFT_FAILURE_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Everything Homebrew wraps around the text of an error line, so the marker
+#: match below is made against the message and never against its decoration.
+#: `onoe` has three renderings of one sentence and ops must read all three
+#: (#4182):
+#:
+#: * plain -- `Error: Failed to fix install linkage`;
+#: * coloured -- `\x1b[31mError\x1b[0m: ...`, which brew emits whenever
+#:   `HOMEBREW_COLOR` is set or it believes it has a terminal, so a captured
+#:   `stderr` is decorated more often than not;
+#: * a GitHub Actions annotation -- `::error::...` (`Homebrew::EnvConfig
+#:   .github_actions?`, set from the runner's own `GITHUB_ACTIONS`), with the
+#:   newlines percent-escaped onto one line.
+#:
+#: The third is why this exists. `macos-brew-smoke.yml`'s #3861 fault
+#: injection reproduces the soft failure correctly on the runner, brew reports
+#: it as `::error::Failed to fix install linkage`, and a parser that only knew
+#: `Error:` read it as "brew reported no post-install soft failure" -- so ops
+#: raised a real install failure over a complete keg, which is the very defect
+#: #3861 fixed, reappearing in the one environment the evidence for it runs in.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+#: Deliberately case-sensitive and colon-anchored. A pip build log carried in
+#: brew's own output is full of lowercase `error: subprocess-exited-with-error`
+#: lines, and loosening either half would let one of those be read as a verdict
+#: Homebrew reached.
+_BREW_ERROR_LINE_RE = re.compile(r"^(?:Error\s*:|::error\b[^:]*::)\s*")
+#: Homebrew's annotation escaping, undone so a marker that brew folded onto one
+#: line still starts the message (`GitHub::Actions::Annotation#escape`).
+_GITHUB_ANNOTATION_UNESCAPE: tuple[tuple[str, str], ...] = (
+    ("%0A", "\n"),
+    ("%0D", "\r"),
+    ("%25", "%"),
+)
+
+
+def _brew_error_message(line: str) -> str | None:
+    """The message of one Homebrew error `line`, or None if it is not one.
+
+    Reads past the decoration described on `_ANSI_ESCAPE_RE` so that the three
+    renderings of `onoe` produce the same message. Returning None for every
+    other line is what keeps an incidental mention in a caveats block or a
+    build log from being read as an error brew raised.
+    """
+    stripped = _ANSI_ESCAPE_RE.sub("", line).strip()
+    match = _BREW_ERROR_LINE_RE.match(stripped)
+    if match is None:
+        return None
+    message = stripped[match.end() :].strip()
+    for escaped, raw in _GITHUB_ANNOTATION_UNESCAPE:
+        message = message.replace(escaped, raw)
+    return message.strip()
+
+
 def _brew_soft_failure_reason(output: str) -> str | None:
     """The Homebrew post-install soft failure `output` reports, or None.
 
     Matches only the `ofail` wordings listed in `_BREW_SOFT_FAILURE_MARKERS`,
-    and only on a line brew itself marked as an error (`Error: ...`), so an
-    incidental mention in a caveats block or in a formula's own build log
+    and only on a line brew itself marked as an error (`_brew_error_message`),
+    so an incidental mention in a caveats block or in a formula's own build log
     cannot be read as one. If Homebrew rewords one of these, this returns None
     and the caller falls back to treating the exit as fatal -- the safe
     direction, and a visible one, because the operator then sees the raw
     Homebrew text in the failure detail.
     """
     for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("Error:"):
+        detail = _brew_error_message(line)
+        if detail is None:
             continue
-        detail = stripped[len("Error:") :].strip()
         for marker in _BREW_SOFT_FAILURE_MARKERS:
             if detail.startswith(marker):
-                return detail
+                return detail.splitlines()[0].strip()
     return None
 
 
@@ -4515,8 +4570,8 @@ def _takeover_system_ollama_service() -> tuple[bool, list[OpsResult]]:
             True,
             "Stopped and disabled system-wide ollama.service",
             "Freed 127.0.0.1:11434 for nyxgpt-ollama.service, which nyxgpt manages "
-            "itself (pointed at the shared ~/.nyxGPT/volumes/ollama/models store). "
-            "See docs/systemd.md#ollama.",
+            "itself (pointed at the shared ~/.nyxGPT/volumes/ollama/models store) -- "
+            f"{see_doc('docs/systemd.md#ollama')}.",
         )
     )
     # `disable --now` returns as soon as systemd accepts the job; the socket
@@ -5319,12 +5374,24 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     precisely the case where disk and process disagree. Only the process can
     say what the process is running, so it is asked.
 
-    `/api/v1/info` is behind the API-key middleware when `[auth] enabled`, so
-    the configured key is sent -- an operator who hardened their install must
-    not lose this check as a side effect. Any failure to get an answer
-    returns `None` plus the reason, which is reported as "could not
-    determine": a probe that cannot reach the api has learned nothing about
-    which build is running, and reporting that as a match is the defect.
+    `/api/v1/info` is behind the API-key middleware when the *serving* api has
+    auth on, so the configured key is sent whenever one is configured at all
+    -- an operator who hardened their install must not lose this check as a
+    side effect. Deliberately NOT gated on this config's `[auth] enabled`
+    (#4182): that flag describes the file this command just read, and the
+    process answering on :8000 is a different thing -- a Pod reading a
+    Secret, a Compose container reading the mounted config, or a native api
+    started before the flag was turned off. Sending a key an unauthenticated
+    api ignores costs one header; withholding one it requires cost the owner
+    the whole check, and `ops status` reported "CANNOT DETERMINE -- answered
+    HTTP 401" with the key sitting in the config it had already loaded.
+
+    Any failure to get an answer returns `None` plus the reason, which is
+    reported as "could not determine": a probe that cannot reach the api has
+    learned nothing about which build is running, and reporting that as a
+    match is the defect. A refusal is phrased as a refusal and names the
+    repair, because "HTTP 401" tells an operator what happened and nothing
+    about what to do.
     """
     from nyxgpt.config import get_api_port, get_auth_api_key
 
@@ -5336,14 +5403,31 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     url = f"http://127.0.0.1:{port}/api/v1/info"
     headers: dict[str, str] = {}
     try:
-        if cfg.getboolean("auth", "enabled", fallback=False):
-            headers[cfg.get("auth", "header", fallback="X-API-Key")] = get_auth_api_key(cfg)
+        key = get_auth_api_key(cfg)
+        if key:
+            headers[cfg.get("auth", "header", fallback="X-API-Key")] = key
     except Exception as e:  # pragma: no cover - malformed [auth] is its own report
         return None, f"could not read [auth] to authenticate the probe ({type(e).__name__}: {e})"
     try:
         resp = httpx.get(url, headers=headers, timeout=_RUNNING_BUILD_PROBE_TIMEOUT)
     except Exception as e:
         return None, f"{url} did not answer ({type(e).__name__}: {e})"
+    if resp.status_code in (401, 403):
+        # Said as the actionable thing it is. Which of the two cases applies
+        # is knowable from here -- a key was sent or it was not -- and they
+        # need different repairs, so neither is reported as the other.
+        if headers:
+            return None, (
+                f"{url} refused the probe (HTTP {resp.status_code}): the api answering there "
+                f"does not accept the key in {NATIVE_CONFIG_HINT}. Repair: set [auth] api_key "
+                "to the key that api is running with (a Kubernetes deployment reads it from "
+                "the nyxgpt secret, a Compose one from the mounted config)."
+            )
+        return None, (
+            f"{url} requires an API key (HTTP {resp.status_code}) and none is configured. "
+            f"Repair: set [auth] api_key in {NATIVE_CONFIG_HINT} to the key that api is "
+            "running with."
+        )
     if resp.status_code != 200:
         return None, f"{url} answered HTTP {resp.status_code}"
     try:
@@ -5362,7 +5446,46 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     return build, ""
 
 
-def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
+def _api_image_substrate(
+    mode: DeploymentMode | None = None, *, kubernetes: bool | None = None
+) -> str:
+    """Which image-based substrate holds the api on this host, or `""` for none.
+
+    Scoped to the api, which is the component the running-build check is
+    about. Asking "is ANY core component containerised" would mark a native
+    api out of scope because web or Cassandra happens to be Compose-managed,
+    and silence is the one outcome that check must not reach by accident.
+
+    Kubernetes is in this list since #4182, and its absence was a latent
+    false accusation of the same shape the Compose gate exists to prevent: on
+    a kind cluster whose node publishes :8000 the api answering is a Pod, so
+    comparing its in-image `sys.prefix` to a host keg path reports MISMATCH on
+    a correct deployment. `_k8s_access_bridge_owns_host_ports` covered only
+    the k3s bridge -- one topology of three.
+
+    `mode`/`kubernetes` let a caller that has already surveyed this host pass
+    its own answers in rather than paying for a second `docker compose ps` or
+    `kubectl get pods` (`status` holds both).
+    """
+    survey = mode if mode is not None else detect_deployment_mode()
+    if "api" in compose_core_components(survey):
+        return "compose"
+    if _container_deployed(survey.terraform.get("api", "absent")):
+        return "terraform"
+    if _k8s_access_bridge_owns_host_ports():
+        return "kubernetes"
+    # api/web Pods, not merely Pods: a namespace holding only the in-cluster
+    # observability workloads has no api serving anything, and calling that
+    # out of scope would silence the check on a host where it applies -- the
+    # same distinction `_k8s_app_pods_present` draws for the status block.
+    if kubernetes is None:
+        kubernetes = _k8s_app_pods_present(_k8s_deployment_probe().pods)
+    return "kubernetes" if kubernetes else ""
+
+
+def _native_api_build_drift(
+    mode: DeploymentMode | None = None, *, kubernetes: bool | None = None
+) -> BuildDrift:
     """Is the api answering on this host running the build the installed service execs?
 
     Gated on the vantage point, which is the one way this check could produce
@@ -5371,7 +5494,8 @@ def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
     comparing it to a host keg path would report drift on a correctly deployed
     stack. Each of those is reported `not_applicable` with the reason -- the
     same scope statement `infra_status` makes for a Compose survey run from
-    inside a Pod (#3988).
+    inside a Pod (#3988), and from #4182 literally the same function
+    (`native_build_scope`) rather than a second copy of the reasoning.
 
     Note what it is deliberately NOT gated on: whether the native service is
     currently *running*. "The registered service is stopped" is precisely the
@@ -5381,63 +5505,58 @@ def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
     native api INSTALLED here", answered by `_expected_native_api_venv`
     finding a venv on disk.
 
-    The probe runs FIRST, and that ordering is a cost decision as much as a
-    logical one (first principle 1). If nothing is answering there is no
-    running build to compare, so the answer is already settled -- and settling
-    it with one 5s loopback read is far cheaper than the work the gates below
-    need: `detect_deployment_mode` runs `docker compose ps`, and the macOS
-    expectation costs two `brew` calls. `status`, `install` and `doctor` all
-    call this, so on a machine with the api down it now costs one refused
-    connection apiece. One consequence is named in `docs/ops.md` rather than
-    hidden: a Compose/Kubernetes host with nothing answering :8000 reports
-    "could not determine" instead of "not applicable", because the cheap read
-    settles it before the scoping gates are consulted.
+    **No scope answer is ever derived from how the probe went, and that is
+    #4182's fix.** The probe used to run first and its failure was reported as
+    the answer: `ops status` on a Kubernetes host printed `CANNOT DETERMINE --
+    answered HTTP 401` about a native keg comparison that machine had no
+    subject for. Both scope gates below are now decided from the machine --
+    `_in_cluster()`, a venv on disk, which substrate holds the port -- and a
+    `not_applicable` verdict is returned whatever the probe said or failed to
+    say.
 
-    `mode` lets a caller that has already surveyed this host pass its own
-    `DeploymentMode` in rather than paying for a second `docker compose ps`
-    (`status` holds one). Omitted, the survey is taken here -- and only if the
-    probe got an answer, so the usual cost is zero.
+    Be precise about the ordering, because it is not uniform and claiming
+    otherwise would be this issue's own defect in a docstring (#4182 review
+    round 2). The *first* gate -- "is a native api installed here at all" --
+    genuinely precedes the probe, and that is also what makes this cheaper
+    than the old arrangement: `_expected_native_api_venv` is an `is_dir()` on
+    Linux and two `brew` calls on macOS, so a Compose-only or cluster-only
+    host pays no loopback read whatsoever. The *second* -- "is an image
+    substrate holding :8000" -- runs after the probe, because it costs a
+    `docker compose ps` and the `kubernetes` survey, and on a host that does
+    have a native venv the common case is that the native api is the thing
+    answering. On that path the probe's result is simply discarded, which is
+    the behavior that matters: it is never reported.
     """
-    build, why_not = _probe_running_api_runtime()
-    if build is None:
+    expected, source = _expected_native_api_venv()
+    scope = native_build_scope(
+        in_cluster=_in_cluster(), native_venv=expected, native_venv_reason=source
+    )
+    if not scope.applicable:
+        # No native api venv on this machine (or this process is a Pod), so
+        # whatever answers :8000 is not one and there is nothing to compare it
+        # to. Settled without probing: an unanswerable question costs nothing.
         return BuildDrift(
-            state=BUILD_UNDETERMINED,
+            state=BUILD_NOT_APPLICABLE,
             running=None,
             expected_prefix="",
             expected_source="",
-            detail=why_not,
-            remediation=_RUNNING_BUILD_REMEDIATION,
-        )
-    expected, source = _expected_native_api_venv()
-    if not expected:
-        # No native api venv on this machine, so whatever answers :8000 is not
-        # one and there is nothing to compare it to.
-        return BuildDrift(
-            state=BUILD_NOT_APPLICABLE,
-            running=build,
-            expected_prefix="",
-            expected_source="",
-            detail=source or "there is no native api service on this machine",
+            detail=scope.detail,
             remediation="",
         )
-    survey = mode if mode is not None else detect_deployment_mode()
-    # Scoped to the api, which is the component this check is about. Asking
-    # "is ANY core component containerised" would mark a native api
-    # not_applicable because web or Cassandra happens to be Compose-managed,
-    # and silence is the one outcome this check must not reach by accident.
-    container_api = "api" in compose_core_components(survey) or _container_deployed(
-        survey.terraform.get("api", "absent")
+    build, why_not = _probe_running_api_runtime()
+    substrate_scope = native_build_scope(
+        in_cluster=False,
+        image_substrate=_api_image_substrate(mode, kubernetes=kubernetes),
+        native_venv=expected,
+        native_venv_reason=source,
     )
-    if container_api or _k8s_access_bridge_owns_host_ports():
+    if not substrate_scope.applicable:
         return BuildDrift(
             state=BUILD_NOT_APPLICABLE,
             running=build,
             expected_prefix=expected,
             expected_source=source,
-            detail=(
-                "the api port on this host is held by a container/cluster deployment, whose "
-                "interpreter lives in its image -- a native keg/venv comparison does not apply"
-            ),
+            detail=substrate_scope.detail,
             remediation="",
         )
     return classify_build_drift(
@@ -7412,7 +7531,7 @@ CLOUD_DEPLOY_POINTER = (
     "cloud deployment is `nyxgpt cloud infra apply` to provision the AWS substrate "
     "and `nyxgpt cloud deploy` to deploy this stack onto it -- add --kubernetes there "
     "for a single-node k3s cluster running these same k8s/*.yaml manifests (#3956); "
-    "see docs/cloud.md and docs/kubernetes.md"
+    f"{see_doc('docs/cloud.md')}, and {see_doc('docs/kubernetes.md')}"
 )
 
 
@@ -14178,6 +14297,24 @@ def infra_status() -> dict[str, Any]:
         "checkout": install_mode_state.checkout,
         "label": install_mode_state.label(),
         "components": sorted(DEV_LAUNCHD_LABELS),
+        # Whether this marker describes anything that is REGISTERED here, and
+        # when it was written (#4182). Without the pair the card renders
+        # `ARTIFACT INSTALL` over a keg that was uninstalled months ago -- the
+        # same defect `ops status` had, on the page the CLI is supposed to
+        # agree with. `live: false` is not out-of-scope: the record is real
+        # and worth showing, it is just history, and the page says so.
+        "live": any(
+            mode_info.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
+        ),
+        # Whether a marker exists at all, which `live: false` alone cannot say
+        # (#4182 review round 2). `read_install_mode()` falls back to the
+        # documented artifact default, so a host that has never run a native
+        # install reads back `mode: artifact` -- and a card that branched on
+        # `live === false` alone called that "a record of the last native
+        # install" on a machine where there was none. The CLI gates its own
+        # history line on the same field.
+        "recorded": install_mode_state.recorded,
+        "recorded_at": install_mode_recorded_at(SUBSTRATE_NATIVE),
         # Which build, not merely which mode (#3861). `known: false` is the
         # honest answer for a machine whose marker predates identities -- the
         # page says so rather than presenting the mode as if it identified
@@ -14322,7 +14459,11 @@ def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
     where the serving process IS a native one. Inside a Pod or a Compose
     container the interpreter lives in the image and a host keg path is not
     the thing it should equal, so those answer `not_applicable` with the
-    reason rather than reporting drift on a correct deployment.
+    reason rather than reporting drift on a correct deployment. The scope
+    decision itself is `native_build_scope`, shared with `ops status` since
+    #4182 -- two copies of it had already drifted into opposite orderings,
+    which is why one surface stayed quiet on a cluster-served host and the
+    other printed CANNOT DETERMINE about the same machine.
 
     `running_mode` is the page's own verdict about what is serving, reused
     here rather than re-derived, so the card cannot contradict the mode
@@ -14339,32 +14480,30 @@ def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
     real other subject (`compose`/`terraform`/`kubernetes`) stays out of
     scope.
     """
-    if in_cluster:
-        return BuildDrift(
-            state=BUILD_NOT_APPLICABLE,
-            running=local_runtime_build(),
-            expected_prefix="",
-            expected_source="",
-            detail=(
-                "Not in scope from here: this api runs inside a Kubernetes Pod, whose "
-                "interpreter lives in the deployed image. The Kubernetes card above "
-                "reports that deployment's build."
-            ),
-            remediation="",
-        )
-    if running_mode not in ("native", "none"):
-        return BuildDrift(
-            state=BUILD_NOT_APPLICABLE,
-            running=local_runtime_build(),
-            expected_prefix="",
-            expected_source="",
-            detail=(
-                f"Not in scope from here: the serving deployment is `{running_mode}`, not a "
-                "native install, so there is no keg/venv for this process to match."
-            ),
-            remediation="",
-        )
     expected, source = _expected_native_api_venv()
+    scope = native_build_scope(
+        in_cluster=in_cluster,
+        # `"none"` is mapped to no substrate deliberately -- see the paragraph
+        # above: a surviving pre-upgrade process is registered nowhere, so the
+        # page's own verdict is `none` while that process is serving this
+        # request.
+        image_substrate=running_mode if running_mode != "none" else "",
+        native_venv=expected,
+        native_venv_reason=source,
+        # With a native service registered as started, a venv this process
+        # cannot locate is an anomaly, not an absent subject -- reported as
+        # "cannot determine" below rather than as silence.
+        missing_venv_is_out_of_scope=running_mode != "native",
+    )
+    if not scope.applicable:
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=local_runtime_build(),
+            expected_prefix="",
+            expected_source="",
+            detail=f"Not in scope from here: {scope.detail}",
+            remediation="",
+        )
     return classify_build_drift(
         local_runtime_build(),
         expected or None,
@@ -14893,6 +15032,49 @@ def _print_required_models_status(
             )
 
 
+#: The heading every surface prints install *records* under. One constant
+#: because the whole point is that a reader meets these lines in one place,
+#: clearly separated from what is running, and after it -- never before it.
+INSTALL_HISTORY_HEADING = (
+    "Install history -- records of past installs. NOTHING below is running on this machine:"
+)
+
+
+def install_history_entry(heading: str, label: str, substrate: str = "") -> str:
+    """One `Install history` line: a dated record, never a present-tense claim.
+
+    The single renderer for a recorded-but-not-live install (#4182), called by
+    `ops status` and `ops doctor` so the two cannot present the same marker
+    differently. Both used to lead their output with `Install mode (native
+    api/web): artifact ... version 3.0.0rc17` and then say, underneath, that
+    this was only a record -- and the owner's acceptance report is exactly
+    what that ordering produces: "an operator reading top-down meets wrong
+    information before the right information." A caveat under a claim does
+    not unmake the claim; moving the record out of the claim's position does.
+
+    `substrate` is the marker to date the record from (`install_mode_file`'s
+    argument). Omitted -- or absent, as the Kubernetes record is, since it
+    lives in a ConfigMap rather than a file -- the entry simply carries no
+    date rather than inventing one.
+    """
+    when = install_mode_recorded_at(substrate) if substrate else ""
+    stamp = f" [recorded {when}]" if when else ""
+    return f"  {heading}: {label}{stamp}"
+
+
+def _print_install_history(entries: Sequence[str]) -> None:
+    """Print the `Install history` block, or nothing when there is no history."""
+    if not entries:
+        return
+    print(f"\n{INSTALL_HISTORY_HEADING}")
+    for entry in entries:
+        print(entry)
+    print(
+        "  A marker is only rewritten by `nyxgpt ops install`, so an upgrade or an "
+        "uninstall since that date is not reflected here."
+    )
+
+
 def _print_running_api_build(drift: BuildDrift) -> None:
     """Print the running-build block `status` shows under its install-mode lines (#4133).
 
@@ -14907,12 +15089,21 @@ def _print_running_api_build(drift: BuildDrift) -> None:
     one with no native install there is no question here, and a line saying
     so on every such machine is noise that teaches operators to skip the
     block that matters.
+
+    Where the installed path is a symlink -- which on macOS it always is, by
+    design -- what it resolves to is named beside it, by the shared
+    `installed_prefix_phrase` rather than by a format string of this block's
+    own (#4182). The `opt` path is the one the service execs and so the one
+    worth naming, but it carries no version: an operator reading `installed:
+    /opt/homebrew/opt/nyxgpt-api@3.0.0rc/libexec/venv` has been shown a path
+    that reads exactly the same before and after the upgrade they just ran,
+    which does not answer the question this block is here to answer.
     """
     if drift.state == BUILD_NOT_APPLICABLE:
         return
     print("\nRunning api build (read from the process, not the keg):")
     if drift.state == BUILD_MATCH:
-        print(f"  OK -- executing {drift.expected_prefix}")
+        print(f"  OK -- executing {drift.installed_prefix_phrase}")
         if drift.expected_source:
             print(f"      ({drift.expected_source})")
         return
@@ -14921,7 +15112,7 @@ def _print_running_api_build(drift: BuildDrift) -> None:
         return
     print("  MISMATCH -- the api answering on this host is NOT the installed build.")
     print(f"      running:   {drift.running_prefix}")
-    print(f"      installed: {drift.expected_prefix}")
+    print(f"      installed: {drift.installed_prefix_phrase}")
     print(f"      {drift.detail}")
     print(
         "      The install-mode and version lines above describe what is INSTALLED. "
@@ -14987,29 +15178,48 @@ def status(_args) -> int:
     # dev install that had long since been torn down. The Terraform line
     # below and the Kubernetes section further down report those deployments'
     # own recorded modes (#3835, #3834).
+    #
+    # A marker with nothing live behind it is HISTORY, and since #4182 it is
+    # printed as history -- in the trailing section, not in this leading
+    # position with a caveat underneath. The caveat was there and it was not
+    # enough: the owner's acceptance report says "an operator reading
+    # top-down meets wrong information before the right information", about
+    # output whose first two lines described a keg that had been uninstalled
+    # and a Terraform deployment that was not there.
+    install_history: list[str] = []
     install_mode = read_install_mode()
     native_installed = any(
         mode.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
     )
-    print(f"\nInstall mode (native api/web): {install_mode.label()}")
     if not native_installed:
-        print(
-            "  No native api/web on this machine -- that is a record of the last native "
-            "install, not a statement about whatever is serving now."
-        )
-    elif install_mode.is_dev:
-        checkout = Path(install_mode.checkout) if install_mode.checkout else None
-        if checkout is not None and not checkout.exists():
-            print(
-                f"  WARNING: that checkout no longer exists ({checkout}) -- api/web are "
-                "running code that may be gone. Re-run `nyxgpt up --dev` from a checkout, "
-                "or `nyxgpt up` to return to the artifact path."
+        # Gated on the MARKER, not merely on "nothing is live" (#4182 review
+        # round 2). `read_install_mode()` returns the documented artifact
+        # default when no marker exists at all, so an ungated branch printed
+        # `Install history ... native api/web: artifact (published/vendored
+        # build -- the repo-less default)`, undated, on a Kubernetes- or
+        # Compose-only host -- a record of a past install that never happened,
+        # which is the same class as the record this section was built to
+        # reposition. No record, no history line. The sibling Terraform and
+        # Kubernetes branches already gate this way.
+        if install_mode.recorded:
+            install_history.append(
+                install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
             )
-        print(
-            "  api/web run the working tree (editable venv + Next dev server); "
-            "restart a service to pick up new code. Artifact-path behavior "
-            "(published tap/tarball) is NOT what is being exercised here."
-        )
+    else:
+        print(f"\nInstall mode (native api/web): {install_mode.label()}")
+        if install_mode.is_dev:
+            checkout = Path(install_mode.checkout) if install_mode.checkout else None
+            if checkout is not None and not checkout.exists():
+                print(
+                    f"  WARNING: that checkout no longer exists ({checkout}) -- api/web are "
+                    "running code that may be gone. Re-run `nyxgpt up --dev` from a checkout, "
+                    "or `nyxgpt up` to return to the artifact path."
+                )
+            print(
+                "  api/web run the working tree (editable venv + Next dev server); "
+                "restart a service to pick up new code. Artifact-path behavior "
+                "(published tap/tarball) is NOT what is being exercised here."
+            )
 
     # Which build the api is ACTUALLY executing, read from the process rather
     # than from the Cellar (#4133). Printed directly under the install-mode
@@ -15019,40 +15229,43 @@ def status(_args) -> int:
     # version are both compatible with a pre-upgrade process serving from a
     # deleted venv, which is the state no surface could distinguish from a
     # correct one.
-    _print_running_api_build(_native_api_build_drift(mode))
+    # Both surveys this command already holds are handed in, so the scope
+    # decision costs nothing extra and -- more importantly -- cannot disagree
+    # with the Kubernetes section printed further down about whether a cluster
+    # is serving this host (#4182).
+    _print_running_api_build(
+        _native_api_build_drift(mode, kubernetes=_k8s_app_pods_present(k8s_pods))
+    )
 
     terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
-    if terraform_deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists():
+    if terraform_deployed:
         # Attributed the same way as the native line above, and printed only
         # when there is a Terraform deployment to describe (#3835). `deployed`
         # matters here: a running stack with no marker is reported as not
         # recorded rather than as the artifact default, which for Terraform
         # would assert the opposite of the truth.
-        print(
-            f"Install mode (terraform): {terraform_install_mode.label(deployed=terraform_deployed)}"
-        )
-        if not terraform_deployed:
-            # The marker alone is enough to print the line above, so this
-            # branch is reached whenever a Terraform install ran on this
-            # machine at some point -- including one that failed, or one that
-            # has since been torn down. Saying so is the whole point (#3989):
-            # the dev follow-up below used to be printed unconditionally and
-            # asserted, in the present tense, that api/web containers exist
-            # and describes what they were built from, on a machine where
-            # `docker cassandra: absent` and every Terraform component
-            # `absent` appeared three lines later. Mirrors the native block
-            # above, which has always drawn this distinction.
-            print(
-                "  No Terraform deployment on this machine -- that is a record of the "
-                "last Terraform install, not a statement about whatever is serving now."
-            )
-        elif terraform_install_mode.is_dev:
+        print(f"Install mode (terraform): {terraform_install_mode.label(deployed=True)}")
+        if terraform_install_mode.is_dev:
             print(
                 "  the api/web containers were built from that working tree, not from "
                 "published images -- artifact-path behavior is NOT what is being "
                 "exercised here."
             )
+    elif install_mode_file(SUBSTRATE_TERRAFORM).exists():
+        # A Terraform install ran on this machine at some point -- including
+        # one that failed, or one that has since been torn down -- and
+        # nothing from it is up. #3989 said so in a caveat under the claim;
+        # #4182 moves the record itself out of the claim's position, because
+        # the owner read `Install mode (terraform): dev (... working tree)`
+        # as a description of a deployment they did not have.
+        install_history.append(
+            install_history_entry(
+                "terraform",
+                terraform_install_mode.label(deployed=False),
+                SUBSTRATE_TERRAFORM,
+            )
+        )
 
     print("\nDeployment mode:")
     for component in ("api", "web", "ollama"):
@@ -15263,17 +15476,31 @@ def status(_args) -> int:
             k8s_install_mode, _k8s_mode_source = _k8s_recorded_install_state(
                 _read_k8s_install_record(), in_cluster=_in_cluster()
             )
-            print(f"  Install mode: {k8s_install_mode.label()}")
-            if not _k8s_app_pods_present(pod_states):
-                # Same distinction the native and Terraform lines draw
-                # (#3989): the marker records what the last install built,
-                # and a namespace with no api/web Pods in it is not running
-                # any of it.
-                print(
-                    "  No nyxGPT api/web Pods in this namespace -- that is a record of the "
-                    "last Kubernetes install, not a statement about whatever is serving now."
-                )
-            elif k8s_install_mode.is_dev:
+            # Asked once and kept: the answer is read three times below and a
+            # second `_k8s_app_pods_present` call cannot return anything
+            # different, so paying for it twice bought nothing (#4182 review).
+            k8s_app_pods = _k8s_app_pods_present(pod_states)
+            if not k8s_app_pods:
+                # Same distinction the native and Terraform records draw, and
+                # since #4182 the same placement: the marker records what the
+                # last install built, a namespace with no api/web Pods in it
+                # is not running any of it, and a record belongs under the
+                # history heading rather than above a Pod list as `Install
+                # mode:`. No `substrate` to date it from -- the Kubernetes
+                # record lives in a ConfigMap, not a marker file.
+                #
+                # Gated on `recorded` for the reason the native branch is: with
+                # nothing recorded there is no past install to report, and an
+                # `unrecorded (no install-mode marker for this cluster)` line
+                # printed under `records of past installs` is a non-record
+                # dressed as one.
+                if k8s_install_mode.recorded:
+                    install_history.append(
+                        install_history_entry("kubernetes", k8s_install_mode.label())
+                    )
+            else:
+                print(f"  Install mode: {k8s_install_mode.label()}")
+            if k8s_app_pods and k8s_install_mode.is_dev:
                 checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
                 if checkout is not None and not checkout.exists():
                     print(
@@ -15341,6 +15568,11 @@ def status(_args) -> int:
                         f"stable={c['stable']['state']} ({c['stable']['version'] or 'n/a'}) | "
                         f"canary={c['canary']['state']} ({c['canary']['version'] or 'n/a'})"
                     )
+
+    # LAST, and that position is the fix (#4182): every line above describes
+    # something this machine is actually doing, and every line below is a
+    # record of something it did.
+    _print_install_history(install_history)
 
     print(
         "\nCleanup: `nyxgpt ops stop <target>` stops one component (native and/or Compose), "
@@ -15454,7 +15686,8 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     return (
         f"Log aggregation is enabled and native-mode logs exist under {native_log_dir}, "
         "but the running promtail container has no bind mount for them -- "
-        "native logs are not reaching Loki. See docs/docker-compose.md#log-aggregation."
+        "native logs are not reaching Loki -- "
+        f"{see_doc('docs/docker-compose.md#log-aggregation')}."
     )
 
 
@@ -15501,8 +15734,8 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
         f"Tracing is enabled ([tracing] otlp_endpoint={endpoint}) but nothing is "
         "listening there -- spans are being silently dropped and Jaeger will stay "
         "empty. Confirm the otel-collector Compose service (tracing profile) is "
-        "running and publishes that port to the host (nyxgpt ops observability). "
-        "See docs/docker-compose.md#distributed-tracing."
+        "running and publishes that port to the host (nyxgpt ops observability) -- "
+        f"{see_doc('docs/docker-compose.md#distributed-tracing')}."
     )
 
 
@@ -15577,7 +15810,7 @@ def _prometheus_api_scrape_issue(cfg_path: Path | None = None) -> str | None:
         "Prometheus cannot scrape the API's /metrics endpoint "
         f"(job nyxgpt-api is down: {last_error}) -- every Grafana dashboard will render "
         f"empty even though the stack looks healthy.{hint} "
-        "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+        f"{see_doc('docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux')}."
     )
 
 
@@ -15588,8 +15821,8 @@ HOST_RELAY_REVERT_REMEDIATION = (
     "The host-api-relay service (#3721) now gives Prometheus a route to a "
     "loopback-bound API, so widening the bind is no longer necessary for "
     "observability: set `[api] host = 127.0.0.1` in ~/.nyxGPT/config.ini, then run "
-    "`nyxgpt ops env-sync && nyxgpt ops observability && nyxgpt ops restart api`. "
-    "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+    "`nyxgpt ops env-sync && nyxgpt ops observability && nyxgpt ops restart api` -- "
+    f"{see_doc('docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux')}."
 )
 
 
@@ -15972,8 +16205,13 @@ def _foreign_native_service_issues(identity: InstallIdentity) -> list[str]:
     ]
 
 
-def _terraform_install_mode_issues() -> list[str]:
+def _terraform_install_mode_issues(history: list[str] | None = None) -> list[str]:
     """Print the Terraform deployment's install mode and return its issues (#3835).
+
+    `history` is `doctor`'s install-history list (#4182). With nothing
+    deployed, the recorded mode is appended there instead of printed here:
+    this function runs in the middle of `doctor`'s checks, so a record printed
+    inline lands above live findings and reads as one.
 
     Separate from the native install mode `doctor` reports just above the
     call: it is a different deployment, installed independently, and
@@ -16003,17 +16241,19 @@ def _terraform_install_mode_issues() -> list[str]:
     if not (deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists()):
         return []
     state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
-    print(f"Install mode (terraform): {state.label(deployed=deployed)}")
     if not deployed:
         # Reached whenever a marker exists and nothing is up -- a torn-down
-        # or failed Terraform install. Printed, never raised: a record of a
-        # past install is not a fault. Said out loud because the line above
-        # otherwise reads as a description of a running stack (#3989).
-        print(
-            "  No Terraform deployment on this machine -- that is a record of the "
-            "last Terraform install, not a statement about whatever is serving now."
-        )
+        # or failed Terraform install. Recorded, never raised: a record of a
+        # past install is not a fault. #3989 printed it here with a caveat
+        # under it; #4182 moves it to the history block, because a caveat
+        # under a present-tense claim does not unmake the claim.
+        entry = install_history_entry("terraform", state.label(deployed=False), SUBSTRATE_TERRAFORM)
+        if history is None:
+            print(f"\n{INSTALL_HISTORY_HEADING}\n{entry}")
+        else:
+            history.append(entry)
         return []
+    print(f"Install mode (terraform): {state.label(deployed=True)}")
     if not state.recorded:
         print(
             "  (nothing recorded what these containers were built from -- redeploy with "
@@ -16820,8 +17060,27 @@ def doctor(_args) -> int:
     # deployments' own modes reported beside it when there are any (#3834,
     # #3835): they are separate installs and one line cannot speak for all of
     # them.
+    # A marker with nothing live behind it is history here too, and printed
+    # under the same heading `status` uses, by the same renderer (#4182) --
+    # two commands an operator runs side by side must not present the same
+    # marker one way and the other way.
+    install_history: list[str] = []
     install_mode = read_install_mode()
-    print(f"Install mode (native api/web): {install_mode.label()}")
+    # `_native_services_snapshot`, not `detect_deployment_mode`: the question
+    # is only "is a native api/web registered here", and the full survey would
+    # add a `docker compose ps` and a Terraform read to a command that does
+    # not otherwise take them (first principle 1).
+    native_services = _native_services_snapshot()
+    if any(native_services.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS):
+        print(f"Install mode (native api/web): {install_mode.label()}")
+    elif install_mode.recorded:
+        # `install_mode.recorded`, for the reason spelled out at the same
+        # branch in `status` (#4182): with no marker on the machine the
+        # default mode is a default, not a record, and printing it under
+        # `Install history` claims an install that never ran.
+        install_history.append(
+            install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
+        )
     k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
     # Whether the checks below should be asking the cluster rather than this
     # host (#3987). Gated on the marker so a machine that has never deployed
@@ -16836,7 +17095,15 @@ def doctor(_args) -> int:
     )
     k8s_deployed = k8s.deployed
     if k8s_install_mode.recorded:
-        print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
+        if k8s_deployed:
+            print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
+        else:
+            # The marker outlives the deployment, so a torn-down cluster left
+            # `doctor` naming an install mode for Pods that are not there --
+            # and then reporting on this host instead (#4182).
+            install_history.append(
+                install_history_entry("kubernetes", k8s_install_mode.label(), SUBSTRATE_KUBERNETES)
+            )
         # Said out loud, next to the mode, so the checks below are read
         # against the right machine (#3987) -- doctor otherwise names a
         # Kubernetes install mode and then reports exclusively on this host.
@@ -16851,7 +17118,7 @@ def doctor(_args) -> int:
                 "  Cassandra, model readiness, tracing wiring, the Prometheus scrape and "
                 "the error-tracking DSN are reported against the cluster, not this host."
                 "\n  Every other check below is about this host -- its tools, files, "
-                "services and venv (docs/ops.md)."
+                f"services and venv ({see_doc('docs/ops.md')})."
             )
             if k8s_deployed
             else "  The checks below report on this host."
@@ -16861,7 +17128,7 @@ def doctor(_args) -> int:
     issues += _dev_install_checkout_issues(install_mode)
 
     issues += _foreign_native_service_issues(install_mode.identity)
-    issues += _terraform_install_mode_issues()
+    issues += _terraform_install_mode_issues(install_history)
     issues += _running_api_build_doctor_issues()
 
     config_issues, cfg_parser = _host_config_doctor_issues()
@@ -16965,6 +17232,11 @@ def doctor(_args) -> int:
             print(f"- {i}")
         if volume_info is not None:
             print(f"Log volume (last 24h) by logger: {volume_info}")
+        # After the verdict and every finding, which is the whole point
+        # (#4182): on a machine with nothing installed the checks above print
+        # very little, so a history block sited "after the checks" was still
+        # the first thing an operator read. It goes after the REPORT.
+        _print_install_history(install_history)
         logger.warning(
             "ops: doctor found %d issue(s): %s",
             len(issues),
@@ -16976,6 +17248,7 @@ def doctor(_args) -> int:
     print("nyxGPT ops doctor: OK")
     if volume_info is not None:
         print(f"Log volume (last 24h) by logger: {volume_info}")
+    _print_install_history(install_history)
     logger.info(
         "ops: doctor found no issues",
         extra={"component": "ops", "action": "doctor", "ok": True, "issues": []},
@@ -19476,7 +19749,8 @@ def _start_observability_stack(
                 "Skipped observability stack (Docker not found)",
                 "Grafana/Loki/Jaeger/GlitchTip only ship as Docker Compose profiles -- "
                 "install Docker, then re-run `nyxgpt ops install` (or `nyxgpt ops "
-                "observability`) to get dashboards. See docs/docker-compose.md.",
+                "observability`) to get dashboards -- "
+                f"{see_doc('docs/docker-compose.md')}.",
             )
         ]
 
@@ -20610,8 +20884,8 @@ def sync_variables_to_github_actions(
             OpsResult(
                 True,
                 "No mapped variables have a value set in config.ini -- nothing to sync",
-                "Set the [github]/[homebrew]/[monitoring] keys listed in "
-                "docs/github-tokens.md, then retry.",
+                "Set the [github]/[homebrew]/[monitoring] keys listed at "
+                f"{doc_url('docs/github-tokens.md')}, then retry.",
             )
         ]
 

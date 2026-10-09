@@ -469,6 +469,47 @@ jobs:
               exit 1;;
           esac
 
+      - name: ops status says nothing about a native keg on a cluster-served host (#4182)
+        # #4182's finding 1, on a real cluster. `_native_api_build_drift` used
+        # to probe :8000 BEFORE deciding whether the native keg comparison had
+        # a subject here, so a probe that was refused or unanswered came out as
+        # "Running api build: CANNOT DETERMINE -- ... answered HTTP 401" on a
+        # machine whose api is a Pod. Scope is decided from the machine now --
+        # never from how the probe went -- and this cluster has no native keg
+        # at all, so the correct output is silence on that question, which only
+        # a run can show.
+        run: |
+          set -uo pipefail
+          rc=0
+          status=$(nyxgpt ops status) || rc=$?
+          # Every assertion below is an ABSENCE, so the command's own health
+          # has to be asserted first or the step passes on an empty string
+          # (#4182 review round 2). A crashed `ops status` would otherwise
+          # satisfy "says nothing about a native keg" perfectly.
+          if [ "$rc" != "0" ]; then
+            echo "$status"
+            echo "::error::nyxgpt ops status exited $rc -- the absence assertions below would pass vacuously"
+            exit 1
+          fi
+          case "$status" in
+            *"nyxGPT ops status"*) ;;
+            *)
+              echo "$status"
+              echo "::error::nyxgpt ops status printed no output of its own -- nothing was measured"
+              exit 1;;
+          esac
+          if echo "$status" | grep -q 'Running api build'; then
+            echo "$status" | grep -A 3 'Running api build'
+            echo "::error::ops status reported on a native keg/venv comparison on a host with no native install (#4182)"
+            exit 1
+          fi
+          if echo "$status" | grep -q 'CANNOT DETERMINE -- http'; then
+            echo "$status" | grep 'CANNOT DETERMINE'
+            echo "::error::ops status reported a probe failure as a fact about this host (#4182)"
+            exit 1
+          fi
+          echo "  no native-build claim on a cluster-served host"
+
       - name: nyxgpt ops port-forward --stop releases every host port
         # The other half of an access path nyxGPT establishes: it has to be
         # nyxGPT's to take back. A `--stop` that reported success while the

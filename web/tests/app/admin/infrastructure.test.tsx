@@ -733,6 +733,126 @@ describe('InfrastructurePage', () => {
     });
   });
 
+  // --- a marker is not an install (#4182) ---
+  //
+  // The owner's acceptance report: `ops status` led with `nyxgpt-api@3.0.0rc
+  // ... version 3.0.0rc17` for a keg that had been uninstalled, and this card
+  // badged the same marker `ARTIFACT INSTALL`. A marker outlives the install
+  // that wrote it, so three states have to be told apart here, and the badge
+  // and the paragraph under it must never disagree about which one it is:
+  // registered (the present-tense branches above), recorded-but-not-
+  // registered, and nothing either way.
+  const nativeMarkerOnly = (install_mode: Record<string, unknown>) => ({
+    ...mockStatusEmpty,
+    mode: 'none',
+    native: { api: 'none', web: 'none', ollama: 'none' },
+    install_mode: {
+      mode: 'artifact',
+      checkout: null,
+      label: 'artifact (published/vendored build -- the repo-less default)',
+      components: ['api', 'web'],
+      ...install_mode,
+    },
+  });
+
+  it('badges a marker with nothing registered as a dated RECORD ONLY (#4182)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeMarkerOnly({ live: false, recorded: true, recorded_at: '2026-10-09 18:06' })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('RECORD ONLY')).toBeInTheDocument();
+    });
+    expect(screen.getByText('record of the last native install')).toBeInTheDocument();
+    expect(screen.getByText(/recorded 2026-10-09 18:06/)).toBeInTheDocument();
+    expect(screen.getByText(/not a statement about whatever is serving now/)).toBeInTheDocument();
+    // The present-tense badge is the defect, so its absence is the assertion.
+    expect(screen.queryByText('ARTIFACT INSTALL')).not.toBeInTheDocument();
+    expect(screen.queryByText('DEV INSTALL')).not.toBeInTheDocument();
+  });
+
+  it('still says RECORD ONLY when the marker carries no readable date (#4182)', async () => {
+    // `install_mode_recorded_at` returns "" for a marker whose mtime cannot be
+    // read. Losing the date must not lose the record-vs-current distinction --
+    // the undated record is still a record, and still not a claim about now.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(nativeMarkerOnly({ live: false, recorded: true, recorded_at: '' }))
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('RECORD ONLY')).toBeInTheDocument();
+    });
+    expect(screen.getByText('record of the last native install')).toBeInTheDocument();
+    expect(screen.queryByText(/recorded 20/)).not.toBeInTheDocument();
+  });
+
+  it('badges a host that never ran a native install NOT INSTALLED (#4182)', async () => {
+    // `read_install_mode()` answers the documented artifact default when no
+    // marker exists, so `mode: 'artifact'` arrives here for a Kubernetes- or
+    // Compose-only host as well. Reading `live === false` alone called that a
+    // "record of the last native install" on a machine that has never had
+    // one -- a record of something that never happened, which is the same
+    // class of untrue-about-this-machine text the RECORD ONLY state fixes.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(nativeMarkerOnly({ live: false, recorded: false, recorded_at: '' }))
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('NOT INSTALLED')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/has recorded one here/)).toBeInTheDocument();
+    expect(screen.queryByText('record of the last native install')).not.toBeInTheDocument();
+    expect(screen.queryByText('RECORD ONLY')).not.toBeInTheDocument();
+    expect(screen.queryByText('ARTIFACT INSTALL')).not.toBeInTheDocument();
+  });
+
+  it('keeps the present-tense badge when the install IS registered (#4182)', async () => {
+    // The control for the three above: `live: true` must still render the
+    // old badge and copy, so the history branches cannot swallow the case
+    // they were carved out of.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({
+          ...mockStatusEmpty,
+          mode: 'native',
+          native: { api: 'started', web: 'started' },
+          install_mode: {
+            mode: 'artifact',
+            checkout: null,
+            label: 'artifact (published/vendored build -- the repo-less default)',
+            components: ['api', 'web'],
+            live: true,
+            recorded: true,
+            recorded_at: '2026-10-09 18:06',
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/repo-less default/)).toBeInTheDocument();
+    expect(screen.queryByText('RECORD ONLY')).not.toBeInTheDocument();
+    expect(screen.queryByText('NOT INSTALLED')).not.toBeInTheDocument();
+  });
+
   // --- the RUNNING build, not the installed one (#4133) ---
   //
   // Everything above is derived from disk -- a marker file and the Cellar --
@@ -787,9 +907,13 @@ describe('InfrastructurePage', () => {
         screen.getByText(/Running build does not match the installed build/)
       ).toBeInTheDocument();
     });
+    // `getAllBy`: the running prefix is named twice on purpose since #4182 --
+    // once as "this process is executing ...", and again in the acute
+    // paragraph, which now names its own subject instead of saying "that
+    // path" and meaning a different one.
     expect(
-      screen.getByText('/Users/owner/.nyxGPT/opt/nyxgpt-api/venv')
-    ).toBeInTheDocument();
+      screen.getAllByText('/Users/owner/.nyxGPT/opt/nyxgpt-api/venv').length
+    ).toBeGreaterThan(0);
     expect(
       screen.getByText('/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc17/libexec/venv')
     ).toBeInTheDocument();
@@ -799,8 +923,96 @@ describe('InfrastructurePage', () => {
     // a plausible version standing in for a statement about the process.
     expect(screen.getByText(/not this process/)).toBeInTheDocument();
     // The acute form: the running interpreter's venv is gone, so the next
-    // restart by any path cannot start the api.
-    expect(screen.getByText(/no longer exists/)).toBeInTheDocument();
+    // restart by any path cannot start the api. The sentence must name THAT
+    // venv (#4182): "That path no longer exists" followed the *installed*
+    // path in the paragraph above it, so it read as a claim about the one
+    // path here that certainly does exist.
+    const acute = screen.getByText(/no longer exists/);
+    expect(acute.textContent).toContain('/Users/owner/.nyxGPT/opt/nyxgpt-api/venv no longer');
+    expect(acute.textContent).not.toContain('That path no longer exists');
+    expect(acute.textContent).not.toContain(
+      '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc17/libexec/venv no longer'
+    );
+  });
+
+  it('names the keg a symlinked expectation resolves to (#4182)', async () => {
+    // macOS's expectation is `<prefix>/opt/<formula>/libexec/venv`, which is
+    // what the plist execs and therefore worth naming -- but it carries no
+    // version, so it reads identically before and after the upgrade that
+    // caused the mismatch. The resolved keg is what says WHICH build is
+    // installed, and the CLI prints the same pair.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithRunningBuild({
+            state: 'mismatch',
+            running: {
+              executable:
+                '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc0/libexec/venv/bin/python3',
+              prefix: '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc0/libexec/venv',
+              python: '3.12.14',
+              pid: 9265,
+              version: '3.0.0rc0',
+              prefix_exists: true,
+            },
+            expected_prefix: '/opt/homebrew/opt/nyxgpt-api@3.0.0rc/libexec/venv',
+            expected_resolved:
+              '/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc1/libexec/venv',
+            expected_source: "the nyxgpt-api@3.0.0rc keg's venv",
+            detail: 'pid 9265 is running the previous keg',
+            remediation: 'nyxgpt ops restart api',
+            summary: 'MISMATCH',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('/opt/homebrew/opt/nyxgpt-api@3.0.0rc/libexec/venv')
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('/opt/homebrew/Cellar/nyxgpt-api@3.0.0rc/3.0.0rc1/libexec/venv')
+    ).toBeInTheDocument();
+  });
+
+  it('prints no second path when the expectation is not a symlink (#4182)', async () => {
+    // Linux's expectation is a real directory, so `expected_resolved` is ''
+    // and repeating the same path as "now <same path>" would be noise on
+    // every Linux host.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithRunningBuild({
+            state: 'mismatch',
+            running: {
+              executable: '/tmp/old/venv/bin/python3',
+              prefix: '/tmp/old/venv',
+              python: '3.12.3',
+              pid: 7,
+              version: '3.0.0',
+              prefix_exists: true,
+            },
+            expected_prefix: '/home/op/.nyxGPT/opt/nyxgpt-api/venv',
+            expected_resolved: '',
+            expected_source: 'the venv the native api service wrapper execs',
+            detail: 'pid 7 is running another venv',
+            remediation: 'nyxgpt ops restart api',
+            summary: 'MISMATCH',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('/home/op/.nyxGPT/opt/nyxgpt-api/venv')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/\(now/)).not.toBeInTheDocument();
   });
 
   it('omits the deleted-venv warning when the running venv is still there (#4133)', async () => {

@@ -1946,6 +1946,20 @@ jobs:
             done
             return 1
           }
+          # "Is the job REGISTERED with launchd?" -- and `label` already
+          # answers it, because it asks `launchctl list` rather than looking
+          # at a file.
+          #
+          # Deliberately NOT `plist_path` (#4182). The two questions had been
+          # treated as one, and this Homebrew's boot-out separates them: it
+          # unloads the job and leaves `~/Library/LaunchAgents/<label>.plist`
+          # on disk. So a file test answered "still registered: yes" on a
+          # machine where `launchctl list` names nothing -- and the
+          # non-vacuity guard below failed with its own diagnostics printing
+          # "(no nyxgpt job loaded)" two lines above it. A gate that reports
+          # the opposite of what its own evidence shows is the class #4182 is
+          # about, and this step could not pass while it stood.
+          job_loaded() { label >/dev/null 2>&1; }
           api_pid() {
             local lbl
             lbl="$(label || true)"
@@ -2015,13 +2029,12 @@ jobs:
               echo "::error::the api keg did not answer $API/health after brew services start"
               err_log; exit 1
             }
-            PLIST="$(plist_path || true)"
-            test -n "$PLIST" || {
-              echo "::error::the api is answering but launchd has no plist for $KEG_NAME --"
+            job_loaded || {
+              echo "::error::the api is answering but launchd holds no job for $KEG_NAME --"
               echo "::error::nothing below could measure a registration"
               err_log; exit 1
             }
-            echo "api up: pid=$(api_pid) label=$(label) state=$(brew_state) plist=$PLIST"
+            echo "api up: pid=$(api_pid) label=$(label) state=$(brew_state) plist=$(plist_path || echo absent)"
           }
 
           # Non-vacuity, before anything is measured: if brew cannot run a
@@ -2088,15 +2101,20 @@ jobs:
             exit 1
           fi
           STATE_PRE="$(brew_state)"
-          PLIST_PRE=absent
-          if plist_path >/dev/null; then PLIST_PRE=present; fi
-          echo "reproduced: api down, brew state='$STATE_PRE', plist=$PLIST_PRE"
+          JOB_PRE=unloaded
+          if job_loaded; then JOB_PRE=loaded; fi
+          echo "reproduced: api down, brew state='$STATE_PRE', launchd job=$JOB_PRE," \
+               "plist file=$(plist_path || echo absent)"
           err_log
           # The owner's exact readings, asserted rather than just printed: the
           # boot-out de-registers the job, which is what removes the formula's
           # own `keep_alive true` safety net along with it.
-          test "$PLIST_PRE" = absent || {
-            echo "::error::the api is down but the job is still registered -- that is not"
+          #
+          # Asserted on LAUNCHD's answer, not on the plist file (#4182): brew
+          # leaves the file behind when it boots the job out, so the file is
+          # present in exactly the state this guard exists to confirm.
+          test "$JOB_PRE" = unloaded || {
+            echo "::error::the api is down but launchd still holds the job -- that is not"
             echo "::error::the failure #4043 describes (service left 'none'/unloaded), so the"
             echo "::error::mechanism here is something else"
             exit 1
@@ -2127,8 +2145,10 @@ jobs:
           }
           PID_AFTER="$(api_pid)"
           STATE_AFTER="$(brew_state)"
-          PLIST_AFTER="$(plist_path || true)"
-          echo "after: pid=$PID_AFTER (was $PID_BEFORE) state=$STATE_AFTER plist=${PLIST_AFTER:-absent}"
+          JOB_AFTER=unloaded
+          if job_loaded; then JOB_AFTER=loaded; fi
+          echo "after: pid=$PID_AFTER (was $PID_BEFORE) state=$STATE_AFTER launchd job=$JOB_AFTER," \
+               "plist file=$(plist_path || echo absent)"
           err_log
           fail=0
           # A restart, not a survival: an api that merely never went down
@@ -2143,8 +2163,8 @@ jobs:
             echo "::error::brew reports $KEG_NAME as '$STATE_AFTER' after the restart"
             fail=1
           fi
-          if [ -z "$PLIST_AFTER" ]; then
-            echo "::error::launchd has no plist for $KEG_NAME after the restart -- the job"
+          if [ "$JOB_AFTER" != loaded ]; then
+            echo "::error::launchd holds no job for $KEG_NAME after the restart -- it"
             echo "::error::was de-registered, which is what left the owner's machine"
             echo "::error::unrecoverable (D-032(d))"
             fail=1
@@ -2186,7 +2206,10 @@ jobs:
           # than assumed, since this step started a service the earlier ones
           # did not.
           brew services stop "$SPEC" 2>&1 | tail -5 || true
-          ! plist_path >/dev/null || {
+          # launchd's answer, not the file's: brew's stop unloads the job and
+          # may leave the plist on disk, and what matters to the steps below
+          # is that nothing is loaded to start a service on their ports.
+          ! job_loaded || {
             echo "::error::$KEG_NAME is still registered with launchd after 'brew services"
             echo "::error::stop' -- this step has left a service behind for the steps below"
             echo "::error::(D-032(d))"

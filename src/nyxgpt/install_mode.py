@@ -76,6 +76,7 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,28 @@ def install_mode_file(substrate: str = SUBSTRATE_NATIVE) -> Path:
     if substrate == SUBSTRATE_NATIVE:
         return INSTALL_MODE_FILE
     return NYXGPT_HOME / f"install-mode-{substrate}.json"
+
+
+def install_mode_recorded_at(substrate: str = SUBSTRATE_NATIVE) -> str:
+    """When `substrate`'s marker was last written, as `YYYY-MM-DD HH:MM`, or `""`.
+
+    How old a record is, which is the fact a record presented without it
+    cannot carry (#4182). The owner's `ops status` led with a keg identity
+    recording `version 3.0.0rc17` on a machine whose last install was rc21
+    and whose keg had since been uninstalled -- wrong about the present
+    *and* wrong as history, with nothing on screen to say when it was true.
+    A marker is only rewritten by `nyxgpt ops install`, so its mtime is
+    exactly "when this record was made"; a reader who can see that date can
+    weigh it against what they have done since, and one who cannot, cannot.
+
+    Never raises: a marker that is absent or unreadable has no date, and an
+    undated record is still a record (the caller prints it without one).
+    """
+    try:
+        stamp = install_mode_file(substrate).stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M")
 
 
 @dataclass

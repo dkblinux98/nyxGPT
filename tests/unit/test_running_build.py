@@ -193,6 +193,59 @@ class TestClassify:
         assert drift.state == BUILD_MISMATCH
         assert "no longer exists" not in drift.detail
 
+    def test_the_deleted_path_is_named_and_it_is_the_running_one(self, tmp_path):
+        """The acute sentence must name its subject (#4182).
+
+        It used to read "... the installed service execs <installed>. That
+        path no longer exists", where "that path" is the installed one by
+        every rule of English and the running one in the code. On an upgraded
+        machine the installed venv is the one path here that certainly DOES
+        exist, so the sentence asserted the opposite of the truth about it --
+        this issue's class exactly. Asserted on the string because the string
+        is the defect.
+        """
+        gone = tmp_path / "gone" / "venv"
+        installed = tmp_path / "new" / "venv"
+        installed.mkdir(parents=True)
+        drift = classify(_build(str(gone), exists=False), str(installed))
+        assert f"{gone} no longer exists" in drift.detail
+        assert f"{installed} no longer exists" not in drift.detail
+        assert "That path no longer exists" not in drift.detail
+
+    def test_a_symlinked_expectation_reports_what_it_resolves_to(self, tmp_path):
+        """`opt` is the path that runs; the keg behind it is which build it is.
+
+        macOS's expectation is `<prefix>/opt/<formula>/libexec/venv` by
+        design, and that path reads identically before and after an upgrade.
+        A surface that printed only it answered "which build is installed?"
+        with a string that cannot distinguish two answers (#4182).
+        """
+        keg = tmp_path / "Cellar" / "nyxgpt-api@3.0.0rc" / "3.0.0rc1" / "libexec" / "venv"
+        keg.mkdir(parents=True)
+        opt = tmp_path / "opt" / "nyxgpt-api@3.0.0rc"
+        opt.parent.mkdir(parents=True)
+        opt.symlink_to(keg.parent.parent)
+        expected = opt / "libexec" / "venv"
+
+        drift = classify(_build(str(tmp_path / "old" / "venv")), str(expected))
+        assert drift.state == BUILD_MISMATCH
+        assert drift.expected_prefix == str(expected)
+        assert drift.expected_resolved == str(keg)
+        assert str(keg) in drift.detail
+        assert drift.to_dict()["expected_resolved"] == str(keg)
+
+    def test_an_unsymlinked_expectation_reports_no_second_path(self, tmp_path):
+        """No symlink, nothing to resolve -- and no duplicate path printed.
+
+        Linux's expectation is a real directory, so repeating it as "now
+        <same path>" would be noise on every Linux host.
+        """
+        venv = tmp_path / "opt" / "nyxgpt-api" / "venv"
+        venv.mkdir(parents=True)
+        drift = classify(_build(str(tmp_path / "old")), str(venv))
+        assert drift.expected_resolved == ""
+        assert "now" not in drift.detail
+
     def test_no_report_is_undetermined_not_a_match(self, tmp_path):
         drift = classify(None, str(tmp_path / "venv"))
         assert drift.state == BUILD_UNDETERMINED

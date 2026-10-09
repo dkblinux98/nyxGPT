@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -49,6 +50,7 @@ from nyxgpt.config import (
     get_sessions_dir,
     load_config,
 )
+from nyxgpt.doc_links import see_doc
 from nyxgpt.logging import configure_logging, mint_correlation_id
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -1678,7 +1680,7 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
             "rather than pulling the published ones (#3834), and with --terraform the "
             "api/web images likewise (#3835). Requires a checkout. "
             "Where --dev is accepted: here (this machine, all three modes) and on "
-            "`nyxgpt cloud deploy` (the AWS EC2 target, #3950) -- see docs/cloud.md"
+            f"`nyxgpt cloud deploy` (the AWS EC2 target, #3950) -- {see_doc('docs/cloud.md')}"
         ),
     )
     parser.add_argument(
@@ -1701,7 +1703,7 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
             "kubectl is already configured, otherwise provisions a local kind cluster. "
             "The cloud path is a different command, not this flag: `nyxgpt cloud deploy` "
             "runs the stack on an AWS instance with Compose, or on a single-node k3s "
-            "cluster on that instance with --kubernetes (#3956) -- see docs/cloud.md"
+            f"cluster on that instance with --kubernetes (#3956) -- {see_doc('docs/cloud.md')}"
         ),
     )
     locality = parser.add_mutually_exclusive_group()
@@ -1775,6 +1777,41 @@ def _add_down_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+class _UnbrokenLinkHelpFormatter(argparse.HelpFormatter):
+    """Wrap `--help` text without splitting long words -- a URL must stay usable.
+
+    argparse's default wrapper has `break_long_words=True`, so a help string
+    carrying a URL comes out as `https://git` / `hub.com/...` across two lines
+    and cannot be clicked or copied. #4182 replaced every repo-relative
+    `docs/*.md` pointer in this file with a real link, which is what made the
+    defect visible; a pointer the reader cannot follow is the same class of
+    wrong as a pointer to a file that is not there.
+
+    `break_on_hyphens` goes with it: without that, `--session-backend` can be
+    wrapped as `--session-` / `backend`, which is not a flag anyone can type.
+    """
+
+    def _split_lines(self, text: str, width: int) -> list[str]:
+        """Wrap `text` to `width`, keeping URLs and flags in one piece."""
+        return textwrap.wrap(text, width, break_long_words=False, break_on_hyphens=False)
+
+
+class _NyxgptArgumentParser(argparse.ArgumentParser):
+    """`ArgumentParser` with the link-safe help formatter as its default.
+
+    Subclassed rather than passed per parser because `nyxgpt` builds 90-odd
+    subparsers: `add_subparsers` defaults `parser_class` to `type(self)`, so
+    every subcommand and sub-subcommand inherits this from the root parser,
+    and a new one cannot be added without it. A call site that wants a
+    different formatter still wins -- `setdefault`, not an override.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Construct as `ArgumentParser`, defaulting the help formatter."""
+        kwargs.setdefault("formatter_class", _UnbrokenLinkHelpFormatter)
+        super().__init__(*args, **kwargs)
+
+
 def cli(argv: list[str] | None = None) -> int:
     """Entry point for the `nyxgpt` command-line tool.
 
@@ -1790,7 +1827,7 @@ def cli(argv: list[str] | None = None) -> int:
     Returns:
         The invoked subcommand's exit code (0 for success by convention).
     """
-    parser = argparse.ArgumentParser(prog="nyxgpt")
+    parser = _NyxgptArgumentParser(prog="nyxgpt")
     parser.add_argument(
         "--config",
         type=Path,
@@ -2434,7 +2471,8 @@ def cli(argv: list[str] | None = None) -> int:
         "port-forward",
         help=(
             "Forward a Kubernetes Service (web, api, or an observability UI) to localhost "
-            "(wraps `kubectl port-forward` -- see `--kubernetes` in docs/kubernetes.md#4-verify)"
+            "(wraps `kubectl port-forward` -- for `--kubernetes`, "
+            f"{see_doc('docs/kubernetes.md#4-verify')})"
         ),
     )
     ops_port_forward.add_argument(
@@ -2656,7 +2694,7 @@ def cli(argv: list[str] | None = None) -> int:
         choices=list(VALID_SESSION_BACKENDS),
         help=(
             "Chat session storage backend to select on the instance (default: cassandra "
-            "on Linux, file on macOS) -- see docs/session-storage.md"
+            f"on Linux, file on macOS) -- {see_doc('docs/session-storage.md')}"
         ),
     )
     cloud_user_data.add_argument(
@@ -3066,7 +3104,8 @@ def cli(argv: list[str] | None = None) -> int:
             "Requires a source checkout and refuses without one; --version is ignored. "
             "Linux targets only -- refused with --os macos, whose Homebrew bootstrap has "
             "no working-tree source. Not inherited by the next deploy -- a plain "
-            "`nyxgpt cloud deploy` always installs a published release. See docs/cloud.md"
+            "`nyxgpt cloud deploy` always installs a published release; "
+            f"{see_doc('docs/cloud.md')}"
         ),
     )
     cloud_deploy_p.add_argument(
@@ -3087,7 +3126,7 @@ def cli(argv: list[str] | None = None) -> int:
         help=(
             "Chat session storage backend for the instance (default: cassandra on Linux, "
             "file on macOS, then whatever the last deploy of the same target OS used) -- "
-            "see docs/session-storage.md"
+            f"{see_doc('docs/session-storage.md')}"
         ),
     )
     # #3956, implementing #3506's owner-approved decision: EC2 single-box with
@@ -3110,7 +3149,8 @@ def cli(argv: list[str] | None = None) -> int:
             "Run the stack on a single-node k3s cluster on the instance, applying the "
             "same k8s/*.yaml manifests as a local Kubernetes install -- this is what "
             "makes `nyxgpt cloud canary` available (default: whatever the last deploy "
-            "used, else the native stack). See docs/cloud.md and docs/kubernetes.md"
+            f"used, else the native stack). {see_doc('docs/cloud.md')}, "
+            f"and {see_doc('docs/kubernetes.md')}"
         ),
     )
     cloud_deploy_p.add_argument(

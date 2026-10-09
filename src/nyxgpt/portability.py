@@ -61,6 +61,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nyxgpt.doc_links import REPO_URL, doc_url
+
 # Fetching source rather than installing a published artifact. Matched
 # case-insensitively against every command in a row: the whole point of the
 # repo-less requirement is that none of these can appear in a user-facing
@@ -189,7 +191,7 @@ TARGETS: tuple[Target, ...] = (
             "published on a companion <version>-homebrew release (a published "
             "release is immutable and can never gain an asset), or served from "
             "the version's own release when it already carries them -- "
-            "docs/homebrew.md#where-the-tarballs-are-published. The install "
+            f"{doc_url('docs/homebrew.md#where-the-tarballs-are-published')}. The install "
             "commands above are the stable channel's; a release candidate ships "
             "as `nyxgpt-api@<line>rc` / `nyxgpt-web@<line>rc` so that `brew "
             "install nyxgpt-api` can never resolve to a pre-release, and "
@@ -240,8 +242,8 @@ TARGETS: tuple[Target, ...] = (
         gaps=(
             "docker-compose.yml's api/web services carry a `build:` context (`.` and "
             "`./web`), so Compose builds them from a checkout instead of pulling the "
-            "published ghcr.io images -- see docs/docker-compose.md's container "
-            "images section. The Compose path is the one that still needs a "
+            "published ghcr.io images -- see the container-images section of "
+            f"{doc_url('docs/docker-compose.md')}. The Compose path is the one that still needs a "
             "CHECKOUT to build: `nyxgpt ops install --terraform` builds the same "
             "two images with no checkout at all, from the published nyxgpt-api/"
             "nyxgpt-web source tarballs (#3835, #3985).",
@@ -625,7 +627,14 @@ def _print_report(report: dict[str, Any]) -> None:
     for index, step in enumerate(report["acceptance_sequence"], start=1):
         print(f"  {index}. {step['command']}")
         print(f"     -> {step['expect']}")
-    print("\nFull runbook: docs/portability-matrix.md")
+    print(f"\nFull runbook: {doc_url('docs/portability-matrix.md')}")
+    # The evidence paths above cite repository artifacts -- workflows, source
+    # modules, documents -- and no installed artifact carries any of them
+    # (`_missing_evidence` resolves them against a checkout when there is one,
+    # and says so when there is not). Naming the hosted tree once makes every
+    # citation in this report followable from a machine with no checkout
+    # (#4182) without turning the matrix into a wall of URLs.
+    print(f"Evidence paths are repository-relative; browse them at {REPO_URL}/tree/master")
 
 
 def portability(args: argparse.Namespace) -> int:

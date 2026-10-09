@@ -144,6 +144,56 @@ def test_the_marker_must_be_on_an_error_line_brew_wrote():
     assert ops._brew_soft_failure_reason(caveats) is None
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Plain, as an interactive macOS terminal with colour off shows it.
+        "Error: Failed to fix install linkage",
+        # Coloured: `onoe` wraps the word itself, not the whole line, so the
+        # escape codes land between `Error` and the colon. brew emits these
+        # whenever it believes it has a terminal or `HOMEBREW_COLOR` is set,
+        # which is most of the time -- and a captured stderr keeps them.
+        "\x1b[31mError\x1b[0m: Failed to fix install linkage",
+        # A GitHub Actions annotation, which is what brew emits for the SAME
+        # `ofail` when `GITHUB_ACTIONS` is set. This is the rendering #4182
+        # was about: `macos-brew-smoke.yml`'s fault injection reproduced the
+        # soft failure correctly, brew reported it this way, and ops read
+        # "brew reported no post-install soft failure" and raised a real
+        # install failure over a complete keg -- #3861's own defect, back in
+        # the one environment the executed evidence for it runs in.
+        "::error::Failed to fix install linkage",
+        # The annotation with metadata attached, and with the continuation
+        # percent-escaped onto the one line an annotation has to be.
+        "::error title=nyxgpt-api::Failed to fix install linkage%0ASee the log above",
+        "  ::error::Failed to fix install linkage  ",
+    ],
+)
+def test_every_rendering_of_one_ofail_reads_as_the_same_soft_failure(line):
+    """One `ofail`, three renderings, one answer (#4182).
+
+    Which rendering arrives is a property of the *environment* -- a tty, a
+    colour setting, a CI runner -- and never of the install. A parser that
+    recognised only one of them therefore made ops' verdict depend on where
+    it was run, which is the class this issue is about: output that is not
+    true for the machine it is printed on.
+    """
+    assert ops._brew_soft_failure_reason(line) == "Failed to fix install linkage"
+
+
+@pytest.mark.unit
+def test_a_lowercase_error_line_from_a_build_log_is_not_brews_verdict():
+    """The negative half of reading the annotation form: stay case-sensitive.
+
+    brew's captured output carries the whole pip/maturin build log, which is
+    full of lowercase `error:` lines from tools that are not Homebrew. Those
+    are not verdicts brew reached, and matching them case-insensitively would
+    let a genuine build failure be tolerated as a post-install soft one.
+    """
+    assert ops._brew_soft_failure_reason("error: Failed to create /tmp/x\n") is None
+    assert ops._brew_soft_failure_reason("  error: Failed to fix install linkage\n") is None
+
+
 # --- _verify_brew_keg ---
 
 

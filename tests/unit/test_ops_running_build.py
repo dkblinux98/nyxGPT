@@ -56,6 +56,20 @@ def real_running_api_probe():
     return ops._probe_running_api_runtime
 
 
+@pytest.fixture(autouse=True)
+def real_expected_native_api_venv():
+    """Shadow the unit conftest's autouse stub of `_expected_native_api_venv`.
+
+    Same contract as the fixture above, same reason (#4182): that stub keeps
+    every other unit test off the developer's real Homebrew, and this module
+    is the one that tests the read and the comparison built on it. Every test
+    here either patches `ops._brew_path`/`platform.system` under a `tmp_path`
+    home or patches `_expected_native_api_venv` itself, so none of them reads
+    the real machine either.
+    """
+    return ops._expected_native_api_venv
+
+
 def _build(prefix: str, *, exists: bool = True, pid: int = 4133, version: str = "3.0.0rc17"):
     return RuntimeBuild(
         executable=f"{prefix}/bin/python3",
@@ -311,21 +325,85 @@ class TestNativeApiBuildDrift:
             terraform_conflicts=set(),
         )
 
-    def test_nothing_answering_settles_it_before_any_other_work(self):
-        """The probe runs first, and that is a cost decision as much as a
-        logical one: `detect_deployment_mode` runs `docker compose ps` and the
-        macOS expectation costs two `brew` calls, and neither can change the
-        answer once nothing is serving."""
+    def test_scope_is_settled_before_the_probe_and_costs_less(self):
+        """#4182 reverses the old probe-first ordering.
+
+        The ordering was a cost decision -- one 5s loopback read against a
+        `docker compose ps` plus two `brew` calls -- but a probe failure is
+        not a fact about scope, and reporting it as one printed
+        `CANNOT DETERMINE -- answered HTTP 401` on a Kubernetes host whose
+        native keg comparison had no subject at all. The cheapest gate turns
+        out to settle it: no native venv, no question, and the probe is not
+        made either. So this is *cheaper* than the ordering it replaced on
+        exactly the hosts that were being misreported."""
         with (
-            patch.object(ops, "_probe_running_api_runtime", return_value=(None, "did not answer")),
-            patch.object(ops, "_expected_native_api_venv") as expected,
+            patch.object(ops, "_in_cluster", return_value=False),
+            patch.object(ops, "_expected_native_api_venv", return_value=("", "no venv here")),
+            patch.object(ops, "_probe_running_api_runtime") as probe,
             patch.object(ops, "detect_deployment_mode") as mode,
         ):
             drift = ops._native_api_build_drift()
+        assert drift.state == BUILD_NOT_APPLICABLE
+        assert "no venv here" in drift.detail
+        probe.assert_not_called()
+        mode.assert_not_called()
+
+    def test_a_probe_failure_on_a_native_host_is_still_undetermined(self):
+        """The state the check exists for is unchanged: a native install whose
+        api is not answering has genuinely not told anyone what it runs."""
+        mode = self._mode()
+        with (
+            patch.object(ops, "_in_cluster", return_value=False),
+            patch.object(ops, "_probe_running_api_runtime", return_value=(None, "did not answer")),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+        ):
+            drift = ops._native_api_build_drift(mode, kubernetes=False)
         assert drift.state == BUILD_UNDETERMINED
         assert "did not answer" in drift.detail
-        expected.assert_not_called()
-        mode.assert_not_called()
+
+    def test_a_refused_probe_behind_a_cluster_is_not_applicable(self):
+        """#4182's reported failure, as a test.
+
+        The owner's kind deployment answered `/api/v1/info` with HTTP 401, and
+        `ops status` reported that as "could not determine which build the
+        native install is running" -- a question with no subject on a host
+        whose api is a Pod. The probe outcome must not reach the report at
+        all here."""
+        mode = self._mode(native_api="none")
+        with (
+            patch.object(ops, "_in_cluster", return_value=False),
+            patch.object(
+                ops, "_probe_running_api_runtime", return_value=(None, "answered HTTP 401")
+            ),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+        ):
+            drift = ops._native_api_build_drift(mode, kubernetes=True)
+        assert drift.state == BUILD_NOT_APPLICABLE
+        assert "kubernetes" in drift.detail
+        assert "401" not in drift.detail
+
+    def test_a_kubernetes_api_is_not_applicable_even_when_the_probe_answers(self):
+        """The latent half of the same defect: a kind node publishing :8000 is
+        answered by a Pod, whose in-image `sys.prefix` would have been
+        compared against a host keg path and reported as MISMATCH. Only the
+        k3s access bridge was gated before #4182 -- one topology of three."""
+        mode = self._mode(native_api="none")
+        with (
+            patch.object(ops, "_in_cluster", return_value=False),
+            patch.object(
+                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+            ),
+            patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
+            patch.object(ops, "compose_core_components", return_value=[]),
+            patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
+        ):
+            drift = ops._native_api_build_drift(mode, kubernetes=True)
+        assert drift.state == BUILD_NOT_APPLICABLE
+        assert "kubernetes" in drift.detail
 
     def test_no_native_api_venv_is_not_applicable(self):
         with (
@@ -915,7 +993,7 @@ class TestInfraRunningBuild:
     def test_a_non_native_serving_mode_is_out_of_scope(self):
         drift = ops._infra_running_build(in_cluster=False, running_mode="compose")
         assert drift.state == BUILD_NOT_APPLICABLE
-        assert "compose" in drift.detail
+        assert "`compose`" in drift.detail
 
     def test_a_native_mode_compares_this_process(self):
         with patch.object(

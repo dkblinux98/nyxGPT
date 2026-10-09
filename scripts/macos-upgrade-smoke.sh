@@ -352,6 +352,34 @@ if "--reconcile" in sys.argv:
 print(json.dumps(out, indent=2))
 PY
 
+# Run the driver, keeping its JSON and its DIAGNOSTICS in separate files.
+#
+# Every call site used to be `> file.json 2>&1`, and then parsed `file.json`
+# as JSON. `ops` logs to stderr, so any warning it emits while reconciling
+# prepends a line to the "JSON" -- which is exactly what happened on
+# 2026-10-09: two `Subprocess exited non-zero (rc=113): launchctl kickstart`
+# warnings from self-heal landed at the top of `repair.json` and the parse
+# died with `Expecting value: line 1 column 1`, with the `cat` above it
+# showing a perfectly good-looking payload. The merge was there so a driver
+# that dies has its traceback shown, which is worth keeping; what it must not
+# do is corrupt the data. $1 is the JSON path, the rest are driver arguments.
+run_driver() {
+  local json="$1"; shift
+  local log="${json%.json}.stderr.log"
+  if ! "$KEG_PY" "$WORK/drift_driver.py" "$@" > "$json" 2> "$log"; then
+    echo "--- driver stdout ---"; cat "$json"
+    echo "--- driver stderr ---"; cat "$log"
+    return 1
+  fi
+  # Shown, never merged: a warning here is diagnostic context for the
+  # assertions below, not part of their input.
+  if [ -s "$log" ]; then
+    echo "  driver diagnostics (stderr):"
+    sed 's/^/    /' "$log"
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # 4. The defect, injected: revert the comparison in the installed keg.
 #
@@ -385,8 +413,8 @@ PY
 "$KEG_PY" -c 'from nyxgpt.running_build import same_tree; assert same_tree("/a", "/b"), "the injection did not take"' \
   || die "the injection did not change the keg's behavior, so half 1 would pass by looking like half 2"
 
-"$KEG_PY" "$WORK/drift_driver.py" --reconcile > "$WORK/injected.json" 2>&1 \
-  || { cat "$WORK/injected.json"; die "the driver did not run under the injection"; }
+run_driver "$WORK/injected.json" --reconcile \
+  || die "the driver did not run under the injection"
 cat "$WORK/injected.json"
 INJECTED_STATE="$("$KEG_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["drift"]["state"])' "$WORK/injected.json")"
 if [ "$INJECTED_STATE" = "match" ]; then
@@ -425,9 +453,17 @@ if grep -qF "$STALE_PREFIX" "$WORK/status.log"; then
 else
   fail "nyxgpt ops status did not print the running prefix $STALE_PREFIX"
 fi
+# The CELLAR path, deliberately. What the installed service execs is
+# `<prefix>/opt/<formula>/libexec/venv` -- a symlink, by design, so that it
+# follows a relink -- and that string reads identically before and after the
+# upgrade this job just performed. So a `status` that named only it would
+# answer "which build is installed?" with something that cannot tell rc0 from
+# rc1, which is why the block now names what the symlink resolves to as well
+# (#4182). This assertion is what holds that: it is the version-bearing half.
 if grep -qF "$NEW_KEG" "$WORK/status.log"; then
-  pass "status names the installed keg's venv"
+  pass "status names the installed keg's venv, resolved to the version it is"
 else
+  sed -n '/Running api build/,/^$/p' "$WORK/status.log"
   fail "nyxgpt ops status did not print the installed prefix under $NEW_KEG"
 fi
 if grep -qF 'nyxgpt ops restart api' "$WORK/status.log"; then
@@ -441,8 +477,8 @@ fi
 #    NEW keg's -- verified by the process's own interpreter path.
 # ---------------------------------------------------------------------------
 log "the install step repairs the mismatch"
-"$KEG_PY" "$WORK/drift_driver.py" --reconcile > "$WORK/repair.json" 2>&1 \
-  || { cat "$WORK/repair.json"; die "the reconcile step itself failed to run"; }
+run_driver "$WORK/repair.json" --reconcile \
+  || die "the reconcile step itself failed to run"
 cat "$WORK/repair.json"
 
 "$KEG_PY" - "$WORK/repair.json" <<'PY' || FAILURES=$((FAILURES + 1))
@@ -518,8 +554,8 @@ echo "  survivor prefix: $STALE2_PREFIX (pid $STALE2_PID, prefix exists: $STALE2
 
 # Non-vacuity, asserted before the remediation runs: if the machine is not in
 # a mismatch state here, the assertions below pass without measuring anything.
-"$KEG_PY" "$WORK/drift_driver.py" > "$WORK/restage.json" 2>&1 \
-  || { cat "$WORK/restage.json"; die "the driver did not run against the re-staged survivor"; }
+run_driver "$WORK/restage.json" \
+  || die "the driver did not run against the re-staged survivor"
 RESTAGED_STATE="$("$KEG_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["drift"]["state"])' "$WORK/restage.json")"
 [ "$RESTAGED_STATE" = "mismatch" ] \
   || die "the re-staged machine reports state '$RESTAGED_STATE', not 'mismatch' -- the remediation below would have nothing to repair"
@@ -559,7 +595,7 @@ if kill -0 "$STALE2_PID" 2>/dev/null; then
 else
   pass "the re-staged survivor is gone"
 fi
-"$KEG_PY" "$WORK/drift_driver.py" > "$WORK/after-restart.json" 2>&1 || true
+run_driver "$WORK/after-restart.json" || true
 AFTER_STATE="$("$KEG_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["drift"]["state"])' "$WORK/after-restart.json" 2>/dev/null || echo unreadable)"
 if [ "$AFTER_STATE" = "match" ]; then
   pass "the comparison now reports a match"

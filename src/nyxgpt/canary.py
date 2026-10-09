@@ -57,6 +57,7 @@ from typing import Any
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
+from nyxgpt.doc_links import see_doc
 from nyxgpt.k8s_pod_state import (
     parse_retired_replicasets,
     pod_is_retired,
@@ -139,7 +140,7 @@ POD_REASON_MESSAGE_LIMIT = 300
 
 NOT_SUPPORTED_UNDER_COMPOSE = (
     "Canary deployment requires the Kubernetes deployment mode; not "
-    "available under docker-compose. See docs/kubernetes.md."
+    f"available under docker-compose. To read about it, {see_doc('docs/kubernetes.md')}."
 )
 
 # `web` net-new k8s workloads and component parameter (#3419, follow-up to
@@ -172,7 +173,8 @@ OLLAMA_UNSUPPORTED_REASON = (
     "stable/canary split means either a shared volume with concurrent "
     "writers racing to pull/evict the same model blobs, or duplicating "
     "multi-GB models per track -- both real costs for a local-first, "
-    "single-user target. See docs/kubernetes.md#ollama-canary-feasibility."
+    "single-user target. For the full writeup, "
+    f"{see_doc('docs/kubernetes.md#ollama-canary-feasibility')}."
 )
 
 

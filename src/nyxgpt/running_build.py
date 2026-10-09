@@ -67,10 +67,15 @@ __all__ = [
     "BUILD_MISMATCH",
     "BUILD_NOT_APPLICABLE",
     "BUILD_UNDETERMINED",
+    "IMAGE_SUBSTRATE_SUBJECTS",
     "BuildDrift",
+    "BuildScope",
     "RuntimeBuild",
     "classify",
+    "installed_prefix_phrase",
     "local_runtime_build",
+    "native_build_scope",
+    "resolved_expectation",
     "same_tree",
 ]
 
@@ -172,6 +177,95 @@ def local_runtime_build() -> RuntimeBuild:
     )
 
 
+#: Every substrate whose api interpreter lives in a deployed image rather
+#: than in a venv on this host, mapped to the sentence naming what reports on
+#: it instead. A native keg/venv comparison has no subject on any of them, so
+#: the question is `not_applicable` there however the probe went.
+IMAGE_SUBSTRATE_SUBJECTS: dict[str, str] = {
+    "compose": (
+        "the api port on this host is held by a `compose` container/cluster deployment, "
+        "whose interpreter lives in its image -- a native keg/venv comparison does not apply"
+    ),
+    "terraform": (
+        "the api port on this host is held by a `terraform` container/cluster deployment, "
+        "whose interpreter lives in its image -- a native keg/venv comparison does not apply"
+    ),
+    "kubernetes": (
+        "the api port on this host is held by a `kubernetes` container/cluster deployment, "
+        "whose interpreter lives in the deployed image -- a native keg/venv comparison does "
+        "not apply. The Kubernetes section reports that deployment's build"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class BuildScope:
+    """Whether the native running-build question has a subject here, and why not.
+
+    One type, one decision, because the two surfaces that ask it had drifted
+    into opposite orderings and #4182 is the bill for that. The Infrastructure
+    page settled applicability *first* (`_infra_running_build`) and so stayed
+    quiet on a cluster-served host; `ops status` probed first and reported the
+    probe's failure, so the one command an operator runs printed
+    `CANNOT DETERMINE -- http://127.0.0.1:8000/api/v1/info answered HTTP 401`
+    about a question that had no subject on that machine at all.
+
+    `detail` is only meaningful when `applicable` is False: it is the reason
+    the question does not apply, phrased for an operator.
+    """
+
+    applicable: bool
+    detail: str
+
+
+def native_build_scope(
+    *,
+    in_cluster: bool,
+    image_substrate: str = "",
+    native_venv: str = "",
+    native_venv_reason: str = "",
+    missing_venv_is_out_of_scope: bool = True,
+) -> BuildScope:
+    """Does "is the serving api the installed keg's venv?" have a subject here?
+
+    The single source for that decision (#4182). Three ways the answer is no,
+    and none of them depends on whether the api answered a probe -- which is
+    the whole point: "I could not reach it" is not a fact about scope, and
+    reporting it as one is how a Kubernetes host was told its native build
+    could not be determined.
+
+    * **`in_cluster`** -- this process is itself a Pod. Its `sys.prefix` comes
+      from the deployed image.
+    * **`image_substrate`** -- something in `IMAGE_SUBSTRATE_SUBJECTS` holds
+      the api on this host. Same reason, from the outside.
+    * **no native venv** -- nothing a native install ever created is on disk,
+      so whatever answers :8000 is not one and there is nothing to compare it
+      against. `native_venv_reason` carries the caller's own words for that
+      (`_expected_native_api_venv` returns them), because "no keg carrying a
+      libexec/venv was found" and "Homebrew not found" send an operator to
+      different places.
+
+    `missing_venv_is_out_of_scope=False` is for a caller that already knows a
+    native service IS registered and started: there, a venv that cannot be
+    located is an anomaly worth reporting as "cannot determine" rather than
+    as silence, and `classify()` renders it that way from an empty
+    expectation.
+    """
+    if in_cluster:
+        return BuildScope(
+            False,
+            "this api runs inside a Kubernetes Pod, whose interpreter lives in the deployed "
+            "image. The Kubernetes card reports that deployment's build.",
+        )
+    if image_substrate in IMAGE_SUBSTRATE_SUBJECTS:
+        return BuildScope(False, IMAGE_SUBSTRATE_SUBJECTS[image_substrate])
+    if not native_venv and missing_venv_is_out_of_scope:
+        return BuildScope(
+            False, native_venv_reason or "there is no native api service on this machine"
+        )
+    return BuildScope(True, "")
+
+
 def same_tree(running: str, expected: str) -> bool:
     """Whether `running` is `expected` or sits inside it, symlinks resolved.
 
@@ -207,6 +301,18 @@ class BuildDrift:
     expected_source: str
     detail: str
     remediation: str
+    #: What `expected_prefix` resolves to right now, when it is a symlink that
+    #: points somewhere else -- and `""` when it is not one.
+    #:
+    #: On macOS `expected_prefix` is `<brew prefix>/opt/<formula>/libexec/venv`
+    #: deliberately (`_expected_native_api_venv`): that is the path the plist
+    #: execs, so it follows an upgrade the moment the keg is relinked. It
+    #: carries no version, though, and "which build is installed" is the
+    #: question this whole block exists to answer -- so a surface that printed
+    #: only the `opt` path answered it with a path that reads identically
+    #: before and after the upgrade (#4182). Both are reported: the stable one
+    #: because it is what runs, the resolved one because it is what that is.
+    expected_resolved: str = ""
 
     @property
     def mismatched(self) -> bool:
@@ -218,6 +324,11 @@ class BuildDrift:
         """The live process's venv root, or "" when nothing answered."""
         return self.running.prefix if self.running is not None else ""
 
+    @property
+    def installed_prefix_phrase(self) -> str:
+        """This drift's installed venv, named the one agreed way."""
+        return installed_prefix_phrase(self.expected_prefix, self.expected_resolved)
+
     def summary(self) -> str:
         """One line fit for `ops status`, `doctor` and an `OpsResult` message.
 
@@ -228,11 +339,14 @@ class BuildDrift:
         rendering of this state.
         """
         if self.state == BUILD_MATCH:
-            return f"the running api is executing the installed build ({self.expected_prefix})"
+            return (
+                f"the running api is executing the installed build "
+                f"({self.installed_prefix_phrase})"
+            )
         if self.state == BUILD_MISMATCH:
             return (
                 f"MISMATCH: the running api is executing {self.running_prefix}, "
-                f"but the installed service execs {self.expected_prefix}"
+                f"but the installed service execs {self.installed_prefix_phrase}"
             )
         if self.state == BUILD_NOT_APPLICABLE:
             return f"not applicable here: {self.detail}"
@@ -244,11 +358,42 @@ class BuildDrift:
             "state": self.state,
             "running": self.running.to_dict() if self.running is not None else None,
             "expected_prefix": self.expected_prefix,
+            "expected_resolved": self.expected_resolved,
             "expected_source": self.expected_source,
             "detail": self.detail,
             "remediation": self.remediation,
             "summary": self.summary(),
         }
+
+
+def installed_prefix_phrase(expected_prefix: str, expected_resolved: str = "") -> str:
+    """The installed venv, named once for every surface that reports it.
+
+    `expected_prefix` alone where it is a real directory; `<prefix> (now
+    <target>)` where it is a symlink pointing elsewhere. One function so the
+    `ops status` block, `BuildDrift.summary()` (which reaches `OpsResult`
+    messages and `doctor`) and the Infrastructure page cannot answer one
+    question three ways -- the divergence D-066 is about, and the same reason
+    #4182 made `native_build_scope` the single source for scope.
+    """
+    if not expected_resolved:
+        return expected_prefix
+    return f"{expected_prefix} (now {expected_resolved})"
+
+
+def resolved_expectation(expected_prefix: str | None) -> str:
+    """Where `expected_prefix` points, or `""` when it points nowhere else.
+
+    Separate from `same_tree` (which resolves both sides only to compare them)
+    because this answer is *reported*, not just used: see
+    `BuildDrift.expected_resolved`. `realpath` rather than `resolve(strict=…)`
+    for the same reason as there -- a path that does not exist is a state to
+    report, not one to raise on.
+    """
+    if not expected_prefix:
+        return ""
+    real = os.path.realpath(expected_prefix)
+    return "" if real == expected_prefix else real
 
 
 def classify(
@@ -269,6 +414,7 @@ def classify(
     reporting `BUILD_MISMATCH` because the expectation could not be located
     would send an operator to restart a service that is fine.
     """
+    resolved = resolved_expectation(expected_prefix)
     if running is None:
         return BuildDrift(
             state=BUILD_UNDETERMINED,
@@ -278,6 +424,7 @@ def classify(
             detail=undetermined_detail
             or "the api did not report its runtime (not running, or an older build)",
             remediation=remediation,
+            expected_resolved=resolved,
         )
     if not expected_prefix:
         return BuildDrift(
@@ -297,11 +444,12 @@ def classify(
             expected_source=expected_source,
             detail="",
             remediation="",
+            expected_resolved=resolved,
         )
     detail = (
         f"pid {running.pid} is running python {running.python} from {running.prefix} "
         f"and reports version {running.version}; the installed service execs "
-        f"{expected_prefix}"
+        f"{installed_prefix_phrase(expected_prefix, resolved)}"
     )
     if not running.prefix_exists:
         # The acute form, and the one that makes this urgent rather than
@@ -309,9 +457,17 @@ def classify(
         # is alive only until something restarts it, and the next restart --
         # a reboot, self-heal, the admin Restart control -- leaves the api
         # down with a ModuleNotFoundError (#4133).
+        #
+        # The path is NAMED rather than called "that path" (#4182). "That
+        # path" sat immediately after the *installed* one in this sentence, so
+        # the acute warning read as a claim that the installed venv was gone.
+        # On an upgraded machine that is false -- the installed venv is the
+        # one thing here that certainly exists -- which is this issue's own
+        # class: text that is not true of the machine it is printed on. The
+        # venv that is missing is always the running process's.
         detail += (
-            ". That path no longer exists: the process is holding deleted files open and "
-            "the next restart by ANY path will fail to start it"
+            f". {running.prefix} no longer exists: the process is holding deleted files "
+            "open and the next restart by ANY path will fail to start it"
         )
     return BuildDrift(
         state=BUILD_MISMATCH,
@@ -320,4 +476,5 @@ def classify(
         expected_source=expected_source,
         detail=detail,
         remediation=remediation,
+        expected_resolved=resolved,
     )

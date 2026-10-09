@@ -100,6 +100,7 @@ fails if it drifts. Do not hand-edit.
 | `security-scan.yml` | pull_request, push | Security Scan |
 | `self-heal-unschedulable-smoke.yml` | pull_request, push, workflow_dispatch | Self-Heal Unschedulable Pod Smoke |
 | `slack-huddle-smoke.yml` | workflow_dispatch | Slack Huddle Smoke |
+| `status-truthfulness-smoke.yml` | pull_request, push | Status Truthfulness Smoke |
 | `stranded_residue_sweep.yml` | workflow_dispatch | Stranded Residue Sweep |
 | `support-intake-smoke.yml` | push, pull_request, workflow_dispatch | Support Intake Smoke |
 | `support_intake_guard.yml` | issues | Support Intake Guard |

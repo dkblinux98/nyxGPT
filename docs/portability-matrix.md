@@ -230,7 +230,7 @@ alongside the stable ones:
 ```bash
 brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt   # one-time per machine (docs/homebrew.md)
-brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+brew install nyxgpt-api@<release>rc nyxgpt-web@<release>rc
 ```
 
 `brew install nyxgpt-api` is unaffected and stays on the latest stable

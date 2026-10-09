@@ -2415,7 +2415,7 @@ cuts a new candidate.
 ```bash
 brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt   # one-time per machine (docs/homebrew.md)
-brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+brew install nyxgpt-api@<release>rc nyxgpt-web@<release>rc
 
 nyxgpt up
 ```
@@ -2444,10 +2444,17 @@ The provisioning templates already pin exactly, so a candidate needs no
 special handling -- pass it wherever a version goes:
 
 ```bash
-pip install nyxgpt==3.0.0rc3
-nyxgpt cloud user-data --os linux --version 3.0.0rc3
-nyxgpt cloud deploy --version 3.0.0rc3
+pip install nyxgpt==<version>
+nyxgpt cloud user-data --os linux --version <version>
+nyxgpt cloud deploy --version <version>
 ```
+
+`<version>` is the candidate's own version. It is deliberately not written
+out here -- a literal pin in an instruction is wrong the moment the next
+candidate is cut -- so read it from a living source: the
+[PyPI project page](https://pypi.org/project/nyxgpt/#history) lists every
+release and pre-release, and the round's release issue names the one under
+test.
 
 The exact `==` pin is what makes this work at all: pip excludes
 pre-releases from an unpinned requirement, so `pip install nyxgpt` keeps

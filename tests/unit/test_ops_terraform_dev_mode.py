@@ -626,7 +626,10 @@ def test_status_reports_each_deployment_s_own_mode(monkeypatch, capsys, tmp_path
     ops.status(Args())
     out = capsys.readouterr().out
 
-    assert "Install mode (native api/web):" in out
+    # The native marker has nothing live behind it here, so it is history
+    # (#4182); the Terraform deployment IS running, so it is stated.
+    assert "  native api/web: dev" in out.split(ops.INSTALL_HISTORY_HEADING, 1)[1]
+    assert "Install mode (native api/web):" not in out
     assert "Install mode (terraform):" in out
     # The terraform deployment is artifact-mode; the native services are dev.
     tf_line = next(ln for ln in out.splitlines() if "Install mode (terraform):" in ln)

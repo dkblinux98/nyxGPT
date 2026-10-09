@@ -15,9 +15,14 @@ on a machine whose very next lines reported every Terraform component
 with no check that anything was deployed at all.
 
 These tests pin the "marker present, nothing deployed" case for all three
-substrates: the mode line may still be printed (it is a real record), but
-nothing below it may describe containers, Pods or services in the present
-tense.
+substrates. #3989 settled that nothing below the mode line may describe
+containers, Pods or services in the present tense; #4182 settled WHERE the
+record goes, because the caveat was not enough. The owner's `ops status` led
+with two install records -- an uninstalled keg and an undeployed Terraform
+tree -- and their acceptance report reads: "They carry a 'this is a record'
+caveat, but an operator reading top-down meets wrong information before the
+right information." So a record now appears only under the trailing
+`Install history` heading, after every line that describes something live.
 """
 
 from __future__ import annotations
@@ -32,7 +37,18 @@ from nyxgpt import install_mode, ops
 
 pytestmark = pytest.mark.unit
 
-RECORD_NOT_STATEMENT = "not a statement about whatever is serving now"
+HISTORY_HEADING = ops.INSTALL_HISTORY_HEADING
+
+
+def _history_block(out: str) -> str:
+    """Everything printed under the `Install history` heading.
+
+    Asserting on this slice rather than on the whole output is the point: a
+    record in the history block is correct and a record anywhere above it is
+    the defect, and only a position-aware assertion can tell those apart.
+    """
+    assert HISTORY_HEADING in out, out
+    return out.split(HISTORY_HEADING, 1)[1]
 
 
 def _cp(returncode=0, stdout="", stderr=""):
@@ -73,12 +89,14 @@ def test_status_terraform_marker_with_nothing_deployed_is_reported_as_a_record(
     ops.status(SimpleNamespace())
     out = capsys.readouterr().out
 
-    tf_line = next(ln for ln in out.splitlines() if "Install mode (terraform):" in ln)
+    history = _history_block(out)
+    tf_line = next(ln for ln in history.splitlines() if ln.startswith("  terraform:"))
     assert "dev" in tf_line
     # The follow-up sentence asserts containers exist. None do.
     assert "the api/web containers were built from that working tree" not in out
-    assert "No Terraform deployment on this machine" in out
-    assert RECORD_NOT_STATEMENT in out
+    # And the record is BELOW everything live, not above it -- the whole of
+    # #4182's finding 2.
+    assert "Install mode (terraform):" not in out
 
 
 def test_status_terraform_marker_still_describes_a_deployment_that_is_running(
@@ -125,10 +143,12 @@ def test_status_native_marker_with_nothing_installed_is_reported_as_a_record(
     ops.status(SimpleNamespace())
     out = capsys.readouterr().out
 
-    assert "Install mode (native api/web): dev" in out
-    assert "No native api/web on this machine" in out
-    assert RECORD_NOT_STATEMENT in out
+    history = _history_block(out)
+    assert any(ln.startswith("  native api/web: dev") for ln in history.splitlines()), history
+    assert "Install mode (native api/web):" not in out
     assert "api/web run the working tree" not in out
+    # The live blocks come first, which is what "reading top-down" means.
+    assert out.index("Deployment mode:") < out.index(HISTORY_HEADING)
 
 
 def _k8s_status_stubs(monkeypatch, pods):
@@ -184,10 +204,11 @@ def test_status_kubernetes_marker_with_no_app_pods_is_reported_as_a_record(
     assert ops.status(SimpleNamespace()) == 0
     out = capsys.readouterr().out
 
-    assert "Install mode: dev (images built from the working tree" in out
+    history = _history_block(out)
+    assert "  kubernetes: dev (images built from the working tree" in history
     assert "The Pods run images built from that working tree" not in out
-    assert "No nyxGPT api/web Pods in this namespace" in out
-    assert RECORD_NOT_STATEMENT in out
+    # The record no longer sits above the Pod list as `Install mode:`.
+    assert "Install mode: dev (images built from the working tree" not in out
 
 
 def test_status_kubernetes_still_describes_pods_that_are_there(monkeypatch, capsys, tmp_path):
@@ -220,10 +241,158 @@ def test_doctor_terraform_marker_with_nothing_deployed_is_reported_as_a_record(
     issues = ops._terraform_install_mode_issues()
     out = capsys.readouterr().out
 
-    assert "Install mode (terraform): dev" in out
-    assert "No Terraform deployment on this machine" in out
-    assert RECORD_NOT_STATEMENT in out
+    history = _history_block(out)
+    assert any(ln.startswith("  terraform: dev") for ln in history.splitlines()), history
+    assert "Install mode (terraform):" not in out
     # A record of a past install is not a fault: nothing to fix, so nothing
     # to fail `ops verify` on. In particular the missing-checkout issue below
     # is about images that are *running*.
     assert issues == []
+
+
+def _infra_status_stubs(monkeypatch, *, native):
+    """`infra_status` stubs for a host with `native` component states."""
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: dict(native))
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
+    monkeypatch.setattr(
+        ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent", known=True)
+    )
+    monkeypatch.setattr(ops, "_which", lambda _tool: None)
+    monkeypatch.setattr(ops, "_in_cluster", lambda: False)
+    monkeypatch.setattr(ops.self_heal, "compose_probe", lambda: ops.self_heal.ComposeProbe(True))
+
+
+def test_infra_status_marks_a_marker_with_nothing_registered_as_a_record(monkeypatch, tmp_path):
+    """The Infrastructure page's Native card, which is the CLI's twin surface.
+
+    Without this the card rendered `ARTIFACT INSTALL` with the marker's label
+    under it on a host whose keg had been uninstalled -- the same defect
+    `ops status` had, on the page the CLI is supposed to agree with (#4182).
+    `live: false` is not out-of-scope: the record is real and worth showing,
+    it is history, and the payload says which.
+    """
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _infra_status_stubs(monkeypatch, native={"api": "none", "web": "none"})
+
+    payload = ops.infra_status()["install_mode"]
+
+    assert payload["live"] is False
+    # Dated, so a reader can weigh the record against what they have done
+    # since -- the owner's said rc17 on a machine last installed at rc21.
+    assert payload["recorded_at"]
+
+
+def test_infra_status_still_describes_a_native_install_that_is_registered(monkeypatch, tmp_path):
+    """The case the distinction must not swallow."""
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _infra_status_stubs(monkeypatch, native={"api": "started", "web": "started"})
+
+    assert ops.infra_status()["install_mode"]["live"] is True
+
+
+# --- no marker at all is not a record either (#4182, review round 2) ---
+#
+# Everything above writes a marker first, and the history block above is
+# correct for all of it. `read_install_mode()` answers the documented artifact
+# default when there is NO marker, though, so "nothing live" alone was enough
+# to print
+#
+#     Install history -- records of past installs. NOTHING below is running...
+#       native api/web: artifact (published/vendored build -- the repo-less default)
+#
+# undated, on a Kubernetes- or Compose-only host -- a record of an install that
+# never happened. That is the same class as the defect this section fixes, so
+# the record is gated on the marker, not on the absence of services.
+
+
+def test_status_prints_no_native_history_on_a_machine_that_never_installed_one(
+    monkeypatch, capsys, tmp_path
+):
+    """No marker, nothing live -- so nothing to say, and nothing said."""
+    _nothing_native_or_terraform(monkeypatch)
+    assert not install_mode.install_mode_file().exists()
+
+    ops.status(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    assert "native api/web:" not in out
+    assert "Install mode (native api/web):" not in out
+    # With no other substrate recorded either, the whole heading is absent:
+    # an empty "records of past installs" block is itself a claim there are
+    # some.
+    assert HISTORY_HEADING not in out
+
+
+def test_status_still_prints_the_native_history_when_a_marker_exists(monkeypatch, capsys, tmp_path):
+    """The control: the gate must not swallow the case it was carved out of."""
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _nothing_native_or_terraform(monkeypatch)
+
+    ops.status(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    history = _history_block(out)
+    assert any(ln.startswith("  native api/web: artifact") for ln in history.splitlines()), history
+
+
+def _doctor_stubs(monkeypatch, tmp_path):
+    """Enough of `doctor`'s machine to reach its install-mode branch cheaply."""
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops, "_which", lambda _tool: None)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "installed-package")
+    monkeypatch.setattr(ops, "_stale_venv_doctor_issues", lambda: [])
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {"api": "none", "web": "none"})
+
+
+def test_doctor_prints_no_native_history_on_a_machine_that_never_installed_one(
+    monkeypatch, capsys, tmp_path
+):
+    """`doctor`'s copy of the same branch, which had the same gap.
+
+    The two commands an operator runs side by side must not present the same
+    (absent) marker differently, so this is asserted on `doctor` too rather
+    than inferred from `status` passing.
+    """
+    _doctor_stubs(monkeypatch, tmp_path)
+    assert not install_mode.install_mode_file().exists()
+
+    ops.doctor(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    assert "native api/web:" not in out
+    assert "Install mode (native api/web):" not in out
+
+
+def test_doctor_still_prints_the_native_history_when_a_marker_exists(monkeypatch, capsys, tmp_path):
+    """The control for `doctor`."""
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _doctor_stubs(monkeypatch, tmp_path)
+
+    ops.doctor(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    history = _history_block(out)
+    assert any(ln.startswith("  native api/web: artifact") for ln in history.splitlines()), history
+
+
+def test_infra_status_says_whether_a_marker_exists_at_all(monkeypatch, tmp_path):
+    """The field the card's fourth state is read from.
+
+    `live: false` with `recorded: false` is "no native install here, and none
+    was ever recorded" -- which the page must not render as a record of the
+    last one.
+    """
+    _infra_status_stubs(monkeypatch, native={"api": "none", "web": "none"})
+    assert not install_mode.install_mode_file().exists()
+
+    payload = ops.infra_status()["install_mode"]
+
+    assert payload["live"] is False
+    assert payload["recorded"] is False
+    assert payload["recorded_at"] == ""
+
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    recorded_payload = ops.infra_status()["install_mode"]
+    assert recorded_payload["recorded"] is True
+    assert recorded_payload["recorded_at"]
