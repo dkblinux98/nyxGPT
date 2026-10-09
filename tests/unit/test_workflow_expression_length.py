@@ -23,6 +23,7 @@ string in the YAML, not to an output's value.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,25 @@ def test_no_expression_string_reaches_githubs_limit(workflow: Path) -> None:
         f"string reaches {MAX_EXPRESSION_STRING} characters -- {oversized}. State the rule "
         "once in its runbook and point the prompt at it, or render the prompt in an earlier "
         "step and pass it as an output."
+    )
+
+
+#: An empty expression -- GitHub fails the whole file with "An expression was
+#: expected". The fix for the limit above first reintroduced exactly this, by
+#: writing the two-brace syntax into prose inside the prompt (2026-10-09).
+EMPTY_EXPRESSION = re.compile(r"\$\{\{\s*\}\}")
+
+
+@pytest.mark.parametrize("workflow", sorted(WORKFLOWS.glob("*.yml")), ids=lambda p: p.name)
+def test_no_empty_expression(workflow: Path) -> None:
+    lines = [
+        number
+        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), 1)
+        if EMPTY_EXPRESSION.search(line) and not line.lstrip().startswith("#")
+    ]
+    assert not lines, (
+        f"{workflow.name}: empty expression at line(s) {lines} -- GitHub rejects the whole "
+        "file ('An expression was expected'). Don't write the two-brace syntax in prose."
     )
 
 

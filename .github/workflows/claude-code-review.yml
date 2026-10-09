@@ -623,8 +623,8 @@ jobs:
             ## Class-sweep gate (REQUIRED, review-runbook.md §1e, #4183)
 
             Run the check `agents/runbooks/review-runbook.md` §1e defines -- the
-            gate is stated there once, not here (this `${{ }}`-bearing prompt
-            must stay under GitHub's 21,000-character limit). Medium (blocking):
+            gate is stated there once, not here (this prompt carries expressions,
+            so GitHub caps it at 21,000 characters). Medium (blocking):
             a missing or incomplete "## Class sweep", an unfixed sibling cited
             as `file:line`, or a decision corrected in N copies without reason.
 
