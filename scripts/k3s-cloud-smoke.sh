@@ -1585,6 +1585,49 @@ log "PASS (fix proven): the declared substrate routes the surveys a deploy trigg
 # --- doctor's own text, on this box ----------------------------------------
 # The surface the owner read. Asserted on the OUTPUT rather than on a helper,
 # because the finding was a printed record and not a return value.
+#
+# Injected first, and this is the half that makes the absence assertion below
+# mean something: a bare runner has no native unit at all, so `Install mode
+# (native api/web):` would be missing whether the fix is present or not. A real
+# `systemd --user` unit under the name the product reads, actually started,
+# plus a native marker on disk, is exactly the state the owner's instance was
+# in -- and the pre-fix gate ("is a native unit registered here") prints the
+# line on it. The unit binds nothing: what is under test is a READING.
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/nyxgpt-api.service" <<'UNIT'
+[Unit]
+Description=k3s-cloud-smoke stand-in for a native nyxGPT api (#4184 fault injection)
+
+[Service]
+ExecStart=/bin/sleep infinity
+UNIT
+systemctl --user daemon-reload
+systemctl --user start nyxgpt-api.service
+systemctl --user is-active nyxgpt-api.service >/dev/null \
+  || fail "the injected native api unit did not start -- the absence assertion below would
+           pass on a box that simply has no native install, which proves nothing"
+python3 - <<'PY'
+from nyxgpt import install_mode, ops
+
+# A native marker, so the record EXISTS and the question is where it is
+# printed rather than whether there is one.
+install_mode.write_install_mode(
+    install_mode.INSTALL_MODE_ARTIFACT, None, substrate=install_mode.SUBSTRATE_NATIVE
+)
+# ...and no Kubernetes marker, which is the mid-deploy truth:
+# `_record_k8s_install_mode` is a later step of the install this run is in, so
+# the marker-gated block cannot speak for it. (Step 10 wrote one; this removes
+# it.) The declaration is what has to carry the routing here.
+install_mode.clear_install_mode(substrate=install_mode.SUBSTRATE_KUBERNETES)
+
+snapshot = ops._native_services_snapshot()
+print(f"    | native services as the product reads them: {snapshot}")
+assert snapshot.get("api") == "started", (
+    "FAULT INJECTION FAILED: the product does not see the injected unit as started, so "
+    "the pre-fix gate would not have printed its install-mode line"
+)
+PY
+
 set +e
 doctor_out="$(NYXGPT_SUBSTRATE=kubernetes python3 -c \
   'from types import SimpleNamespace; from nyxgpt import ops; raise SystemExit(ops.doctor(SimpleNamespace()))' 2>&1)"
@@ -1594,12 +1637,28 @@ if grep -q "^Install mode (native api/web):" <<<"$doctor_out"; then
   fail "doctor still prints a native install mode as the install mode on a box whose
         deployment is the cluster's -- the #4184 finding 2 record"
 fi
+# Not hidden, either: the record is real and is repositioned as dated history.
+grep -q "Install history" <<<"$doctor_out" \
+  || fail "the native record was dropped rather than repositioned -- an operator with a
+           real past install can no longer see it at all"
+# And the one case where silence would be wrong: this unit really is started.
+grep -q "native api still running on a host whose deployment is Kubernetes" <<<"$doctor_out" \
+  || fail "a started native api beside a serving cluster is not reported -- withdrawing the
+           claim must not mean going quiet about two stacks on one host's ports"
 if grep -q "Missing local Cassandra container" <<<"$doctor_out"; then
   fail "the host Cassandra check still answers for a Kubernetes run"
 fi
 grep -q "Substrate: kubernetes" <<<"$doctor_out" \
   || fail "doctor does not say which substrate its checks are about on a declared run"
-log "PASS (fix proven): no record is printed as a claim about a substrate that is not there"
+log "PASS (fix proven): no record is printed as a claim about a substrate that is not there,"
+log "                   the record survives as history, and the live conflict is reported"
+
+# Leave the box as step 14 expects to find it: that step's teardown is the
+# NATIVE section's, and a stand-in unit under a real product name is not
+# something to hand to it.
+systemctl --user stop nyxgpt-api.service >/dev/null 2>&1 || true
+rm -f "$HOME/.config/systemd/user/nyxgpt-api.service"
+systemctl --user daemon-reload
 unset NYXGPT_COMPOSE_FILE
 
 # ---------------------------------------------------------------------------
