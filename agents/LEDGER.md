@@ -2583,6 +2583,48 @@ rather than mechanism, and nothing can enforce them.
   `.github/workflows/red-head-round-smoke.yml`;
   `docs/escalation-evidence.md`; `docs/reviewable-head-gate.md`.
 
+- **D-067** · 2026-10-09 · owner — **A fix covers the defect CLASS, and the
+  process asks.** Owner, 2026-10-09: *"the process needs to understand not to
+  be so narrow in scope when fixing issues and think beyond the tunnel vision
+  we keep hitting."* First principle 2 already said a narrow patch on a general
+  defect has not finished the job (**D-012**); nothing enforced it, and the
+  mechanism was structural rather than careless — an issue states a symptom,
+  its criteria are written per symptom, the developer passes each one, and
+  review checks the criteria, so nobody is asked what *class* the defect
+  belongs to or where else that class lives. Four obligations, one per role:
+  issues carry a **"Defect class and surfaces"** section (`CLAUDE.md`
+  § Creating Issues, the scrummaster's grooming, and both acceptance handlers,
+  which file it as an unchecked checklist because the owner reports a symptom);
+  the developer sweeps every surface **before implementing** and hands the
+  result over as `/tmp/class-sweep.md` (developer-runbook §3i); the same
+  decision found in more than one place is **consolidated into one source**
+  rather than corrected N times; and a missing or incomplete sweep is a
+  **Medium (blocking)** review finding (review-runbook §1e, which absorbs the
+  #3821 generality gate rather than standing beside it). Out-of-class findings
+  are filed as their own issue and named, never silently fixed and never
+  dropped. **The sweep is an artifact, not a question someone must think to
+  ask**: `scripts/agents/lib/class_sweep.py` puts it in the PR body under
+  `<!-- nyxgpt-class-sweep -->` for both callers — the submit script and the
+  review-fix round's re-request — and writes a visible
+  `## Class sweep — NOT PROVIDED` block when none was recorded, the #4015
+  receipt shape. Evidence the old gate did not bind: #4136 was the THIRD
+  occurrence of one stale-cloud-record mechanism (three code paths choose the
+  AWS account, one of them `terraform`'s environment; the coherence check
+  landed in one printer), #4135 passed every criterion live and failed
+  acceptance on the rest of the same `ops status` output, #4179 added
+  `retriable:ci_red` to one of two copies of the classifier and red-head rounds
+  escalated as fatal for seven weeks, and #4174 shipped a rule whose guard
+  script no workflow ran — which makes "a rule this project states but does not
+  enforce" a class in its own right, swept by requiring a guard with every new
+  rule. `tests/unit/test_class_sweep_contract.py` fails the build if any
+  surface drops the requirement; `tests/unit/test_class_sweep.py` covers the
+  helper. Number from `python3 scripts/agents/lib/ledger_ids.py next D --base
+  origin/v3.0.1` — run, not eyeballed.
+  Source: #4183; owner instruction 2026-10-09; related #4136, #4135, #4179,
+  #4174, #4181, #4182; extends **D-012**, **D-066**; `CLAUDE.md` § "The class,
+  not the instance"; `agents/runbooks/developer-runbook.md` §3i;
+  `agents/runbooks/review-runbook.md` §1e.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -2667,6 +2709,31 @@ rather than mechanism, and nothing can enforce them.
   Source: #4043 round 3; the two **brew** reds on the same head *were* fixed
   there (the keg wrapper's indented shebang), because #4043's own executed
   evidence sits in the job they kill.
+
+- **P-007** · 2026-10-09 · developer-agent (#4183) — The **`/issue` skill's**
+  copy of the issue-body template (`.claude/skills/issue/SKILL.md`) does not
+  carry the required `## Defect class and surfaces` section that **D-067** adds
+  to `CLAUDE.md` § Creating Issues and to both acceptance handlers.
+  Reason: **agent sessions cannot write anywhere under `.claude/`.**
+  `claude-code-action` refuses `Edit`/`Write` on that path — the agent's own
+  skills, hooks and settings live there — and the refusal is a workspace guard,
+  not a missing permission to request or a bug to route around with `python3`
+  or `git apply`. Verified this session: the same session edited `CLAUDE.md`,
+  three charters, three runbooks, three prompt files and four workflows
+  successfully, and `.claude/skills/issue/SKILL.md` plus a scratch file in the
+  same directory were both refused. The rule still binds every issue filed —
+  `CLAUDE.md` is loaded into every agent run as project instructions
+  (**V-028**), and the skill defers to it for the body structure — so the gap
+  is a stale *copy*, not an unenforced rule. `test_class_sweep_contract.py`
+  deliberately does **not** assert on that file: a guard nothing in the
+  pipeline can satisfy reddens the build for everyone.
+  Revisit when: the owner (or any human-driven session, which is not subject to
+  the guard) applies the two-paragraph patch — the `## Defect class and
+  surfaces` block in the skill's "Body Structure" template plus the
+  how-to-write-it note. At that point add the skill to
+  `test_class_sweep_contract.py`'s `ISSUE_CITERS` and assert the section, and
+  retire this entry.
+  Source: #4183; `CLAUDE.md` § Creating Issues; **D-067**.
 
 ## Open questions
 

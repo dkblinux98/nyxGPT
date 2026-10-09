@@ -753,14 +753,15 @@ next divergence, which is exactly how #4179 survived seven weeks and what
 in scope by definition on a class-sweep fix; it is not scope creep, and the
 reviewer is told so.
 
-### Record it in the PR body
+### Record it: write `/tmp/class-sweep.md`
 
-The PR carries a **"Class sweep"** section under the marker
-`<!-- nyxgpt-class-sweep -->`:
+You do not own the PR body — `developer_submit_for_review.sh` builds it, and
+the implement prompts forbid you `gh pr edit`. So the sweep is handed over as a
+file, the same shape the review brief already uses via
+`/tmp/review-comments.txt`. Write it to `/tmp/class-sweep.md` (override with
+`NYXGPT_CLASS_SWEEP_FILE`):
 
 ```markdown
-## Class sweep
-<!-- nyxgpt-class-sweep -->
 **Class:** <the rule, stated generally>
 **Search:** <the greps/paths you actually ran>
 
@@ -775,10 +776,15 @@ The PR carries a **"Class sweep"** section under the marker
 **Out of class, filed:** #NNNN <one line each>, or "none"
 ```
 
-`developer_submit_for_review.sh` appends a **NOT PROVIDED** block under that
-marker when your body has no such section, exactly as it does for the
-inverse-claims sweep (#4015) — a skipped sweep is visible to the reviewer
-rather than silent. Write the section; do not let the receipt write it for you.
+`scripts/agents/lib/class_sweep.py` puts it into the PR body under the marker
+`<!-- nyxgpt-class-sweep -->`, which is what the review prompt greps for — on a
+fresh submission (via the submit script) and on a review-fix round (via the
+"Request review for existing PR" step, which refreshes the section so a
+re-review never reads the previous round's sweep). **If the file is empty or
+absent it appends a "## Class sweep — NOT PROVIDED" block instead**, exactly as
+the inverse-claims sweep does with its checklist (#4015): a skipped sweep is
+visible to the reviewer rather than silent, and the reviewer is told to treat
+it as the finding. Write the file; do not let the receipt speak for you.
 
 **Not a defect fix?** Say so in one line
 (`**Class:** n/a — feature work, no defect behind it`) and list the surfaces

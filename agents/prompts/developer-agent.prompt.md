@@ -35,11 +35,12 @@ CLASS SWEEP (#4183, runbook §3i)
   resolution, error classification, status computation), CONSOLIDATE it into
   one place every surface calls rather than correcting each copy. That is in
   scope by definition on a class-sweep fix.
-- Record it in the PR body under a "## Class sweep" section with the marker
-  `<!-- nyxgpt-class-sweep -->`: the class, the search you ran, a row per
-  surface (found / action), what you consolidated, and any OUT-OF-CLASS
-  finding filed as its own issue. `developer_submit_for_review.sh` appends a
-  NOT PROVIDED block if you leave it out, so a skipped sweep is visible.
+- Record it by WRITING `/tmp/class-sweep.md` (you do not own the PR body): the
+  class, the search you ran, a row per surface (found / action), what you
+  consolidated, and any OUT-OF-CLASS finding filed as its own issue.
+  `scripts/agents/lib/class_sweep.py` attaches it to the PR body under the
+  `<!-- nyxgpt-class-sweep -->` marker the reviewer greps for, and appends a
+  NOT PROVIDED block if you leave it empty -- so a skipped sweep is visible.
 - Feature work with no defect behind it says so in one line. The reviewer
   blocks on a missing or incomplete sweep (Medium, review-runbook §1e).
 

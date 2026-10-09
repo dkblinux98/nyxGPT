@@ -611,8 +611,10 @@ jobs:
                  made in several places CONSOLIDATE it into one place every
                  surface calls rather than correcting each copy;
                * file anything out of class as its own issue and name it;
-               * record all of it in the PR body under `## Class sweep` with
-                 the marker `<!-- nyxgpt-class-sweep -->`.
+               * write all of it to `/tmp/class-sweep.md` (Write tool) —
+                 `developer_submit_for_review.sh` attaches that file to the PR
+                 body under the `<!-- nyxgpt-class-sweep -->` marker, and
+                 appends a NOT PROVIDED block if you leave it empty.
                This is the acceptance round that most needs it: #4136 was the
                third occurrence of one mechanism and #4135 passed every
                criterion while the same output carried four other wrong
@@ -912,12 +914,14 @@ jobs:
                `if` arm, the other copy of the decision. Before you call a
                finding fixed, grep for the construct it describes and fix every
                instance, consolidating into one source where the same decision
-               is made more than once. Then update the PR body's
-               `## Class sweep` section (marker `<!-- nyxgpt-class-sweep -->`)
-               with what this round swept — if the reviewer's finding IS a
-               missing/incomplete class sweep, that section is the thing being
-               rejected and rewriting it is the fix, not an afterthought.
-               Anything out of class gets its own issue, named in the PR.
+               is made more than once. Then **rewrite `/tmp/class-sweep.md`**
+               (Write tool) with what this round swept — the workflow refreshes
+               the PR body's `## Class sweep` section from that file before it
+               hands the PR back to the reviewer, so you do not touch the PR
+               yourself. If the reviewer's finding IS a missing or incomplete
+               class sweep, that file is the thing being rejected and rewriting
+               it is the fix, not an afterthought. Anything out of class gets
+               its own issue, named in your summary.
 
             ### Step 2.5: Resolve merge conflicts with the release branch (if any)
             Conflicts are YOUR work, not the owner's (owner rule 2026-08-15,
@@ -1161,14 +1165,29 @@ jobs:
                belonging to a DIFFERENT class gets its own issue — report it in
                the PR body for the workflow to file; do not silently fix it
                here and do not forget it.
-            6. **Record it in the PR body** under a `## Class sweep` heading
-               carrying the marker `<!-- nyxgpt-class-sweep -->`: the class,
-               the search you actually ran, a row per surface (what was found /
-               what changed or why it is unaffected), what you consolidated,
-               and any out-of-class issue. `developer_submit_for_review.sh`
-               appends a **NOT PROVIDED** block when the body has no such
-               section, so a skipped sweep is visible to the reviewer rather
-               than silent — write the section yourself.
+            6. **Write the sweep to `/tmp/class-sweep.md`.** You do not own the
+               PR body — `developer_submit_for_review.sh` builds it, and it
+               attaches that file under the `<!-- nyxgpt-class-sweep -->`
+               marker the review prompt reads. Use the Write tool. Content:
+
+               ```markdown
+               **Class:** <the rule, stated generally>
+               **Search:** <the greps/paths you actually ran>
+
+               | Surface | Found | Action |
+               |---|---|---|
+               | `src/nyxgpt/ops.py:_account_id` | same precedence bug | fixed (now calls the one resolver) |
+               | `web/src/app/admin/cloud/page.tsx` | reads the API's flag already | unaffected — no change |
+               | `docs/terraform.md` | documents the old precedence | updated |
+
+               **Consolidated:** <the one place the decision now lives, or "n/a">
+               **Out of class, filed:** <one line each, or "none">
+               ```
+
+               If you leave that file empty the script appends a **NOT
+               PROVIDED** block instead, which the reviewer is told to treat as
+               the finding. A skipped sweep is visible either way — write the
+               file.
 
             A rule this project states but does not ENFORCE is itself a class
             (#4174): if your change adds a rule to `CLAUDE.md`, a charter, a
@@ -2132,6 +2151,33 @@ jobs:
                 echo "::warning::Failed to rewrite rescue PR body to 'Closes #${ISSUE}'"
             fi
             gh pr ready "$PR" || echo "::warning::Failed to mark PR #$PR ready for review"
+          fi
+
+          # Class sweep (#4183). This path does NOT call
+          # developer_submit_for_review.sh -- the PR already exists -- so
+          # without this step a re-review round keeps whatever sweep (or
+          # NOT PROVIDED receipt) the first submission left, while the reviewer
+          # is asked to decide on the rewritten change. The decision lives in
+          # ONE place for both paths, scripts/agents/lib/class_sweep.py, because
+          # two copies of a decision is the fault this gate exists to catch
+          # (ledger D-066, D-067). Advisory: a failure here never blocks the
+          # handoff, and an older PR branch without the helper reports `error`.
+          if gh pr view "$PR" --json body --jq '.body' > /tmp/existing-pr-body.md; then
+            sweep_outcome="$(python3 scripts/agents/lib/class_sweep.py apply \
+              --body-file /tmp/existing-pr-body.md \
+              --sweep "${NYXGPT_CLASS_SWEEP_FILE:-/tmp/class-sweep.md}" 2>/dev/null \
+              || echo error)"
+            case "$sweep_outcome" in
+              attached|not-provided)
+                gh pr edit "$PR" --body-file /tmp/existing-pr-body.md \
+                  || echo "::warning::Could not refresh PR #$PR's class-sweep section"
+                echo "::notice::Class sweep on PR #$PR: $sweep_outcome"
+                ;;
+              kept) echo "::notice::PR #$PR already carries a written class sweep" ;;
+              *) echo "::warning::Class-sweep helper did not run for PR #$PR (#4183)" ;;
+            esac
+          else
+            echo "::warning::Could not read PR #$PR's body; class-sweep section not refreshed"
           fi
 
           # Assign PR to review-agent
