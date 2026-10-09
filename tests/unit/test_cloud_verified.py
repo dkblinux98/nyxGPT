@@ -114,7 +114,25 @@ def test_a_definite_no_is_reported_as_gone_rather_than_as_unknown():
     observation = _observe(present=False)
 
     assert observation.usable is False
-    assert observation.reason == "AWS reported it as gone"
+    assert observation.reason == cloud_verified.REPORTED_GONE
+
+
+def test_a_definite_no_does_not_deny_that_aws_answered():
+    """A "no" from AWS is an answer, and `provenance` must not say otherwise.
+
+    The generic unconfirmed sentence read "recorded on this machine; NOT
+    confirmed at AWS -- AWS reported it as gone", which denies in its first
+    clause what it states in its second. Reached on the Linux substrate, whose
+    record deliberately survives a terminated instance; the Mac path clears its
+    block before anything renders it. Nothing about the gate changes -- a
+    resource AWS says is absent is still not usable.
+    """
+    observation = _observe(present=False)
+
+    assert observation.usable is False
+    assert "no longer exists" in observation.provenance
+    assert "confirmed at AWS in nyxgpt (066835328281)" not in observation.provenance
+    assert "NOT confirmed at AWS" not in observation.provenance
 
 
 def test_the_recorded_reason_is_preferred_over_a_generic_one():

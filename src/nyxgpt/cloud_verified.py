@@ -64,6 +64,13 @@ CONFIRMATION_MAX_AGE_SECONDS = 300.0
 #: that asked and could not get an answer, which carries its own reason.
 NOT_ASKED = "nothing on this machine has asked AWS about it in this run"
 
+#: The reason reported when AWS was asked, under this run's own credentials,
+#: and said the resource is not there. A *definite* answer, so `provenance`
+#: gives it its own sentence: the generic unconfirmed wording read "NOT
+#: confirmed at AWS -- AWS reported it as gone", which contradicts itself in
+#: the one case where AWS did answer.
+REPORTED_GONE = "AWS reported it as gone"
+
 
 def utc_now() -> datetime:
     """Current UTC time, as an aware datetime. A seam for the tests."""
@@ -188,6 +195,19 @@ class Observation:
                 "-- its fields were written by different runs about different resources, so "
                 "none of them may be read together"
             )
+        if self.reason == REPORTED_GONE:
+            # A definite "no" is not the same as "nobody could tell". AWS was
+            # asked, under this run's own credentials, and answered -- so the
+            # unconfirmed wording below ("NOT confirmed at AWS -- AWS reported
+            # it as gone") denied in its first clause what it stated in its
+            # second. Reached on the Linux substrate, which deliberately keeps
+            # a terminated instance's record; the Mac path clears the block
+            # before anything renders it.
+            where = f" in {self.account_label}" if self.account_label else ""
+            return (
+                f"AWS confirmed{where} at {self.confirmed_at} that it no longer exists -- the "
+                "rows below are what this machine recorded while it did"
+            )
         return f"recorded on this machine; NOT confirmed at AWS -- {self.reason}"
 
     def to_dict(self) -> dict[str, Any]:
@@ -263,7 +283,7 @@ def observe(
             "from the wrong account cannot tell a released resource from someone else's"
         )
     elif present is False:
-        detail = "AWS reported it as gone"
+        detail = REPORTED_GONE
     elif reason:
         detail = reason
     elif confirmed_at and not fresh:

@@ -24,6 +24,7 @@ from nyxgpt import (
     cloud_infra,
     cloud_mac,
     cloud_screen,
+    cloud_verified,
 )
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 
@@ -1895,12 +1896,113 @@ def test_status_describes_a_failed_deploy_instead_of_reporting_unknown(
     assert "i-0abc" in out
     # #4181: the billing sentence now needs AWS to have confirmed the instance
     # in this run. Nothing did here, so the report says what it actually knows
-    # -- the ids are recorded on this machine -- and names the command that
-    # asks. Saying "an instance exists and is being billed" from the record
-    # alone is how `cloud status` asserted a charge with AWS holding no
+    # -- the ids are recorded on this machine -- and names the reason nothing
+    # confirmed them. Saying "an instance exists and is being billed" from the
+    # record alone is how `cloud status` asserted a charge with AWS holding no
     # instances at all.
     assert "an instance exists and is being billed" not in out
     assert "nothing confirmed it at AWS in this run" in out
+
+
+def _records_name_sentence(out: str) -> str:
+    """The one line of `cloud status` that reports an unverified record (#4181).
+
+    Returned so an assertion lands on the sentence that makes the claim rather
+    than anywhere in the output -- the Dedicated Host heading above it carries
+    the same `provenance`, so a whole-output match would pass over a sentence
+    that still explains nothing.
+    """
+    for line in out.splitlines():
+        if "nothing confirmed it at AWS in this run" in line:
+            return line
+    raise AssertionError(f"no records-name-a-resource sentence in:\n{out}")
+
+
+def test_an_unconfirmed_summary_names_the_cause_and_not_itself(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """#4181 finding 6, in the sentence under the rows (review round 1).
+
+    The heading above the Dedicated Host rows was fixed to print the
+    observation's own reason; this sentence still ended "`nyxgpt cloud status`
+    asks AWS and clears what it no longer has" -- printed by `nyxgpt cloud
+    status`, the only command that reaches `_print_incomplete_summary`. So an
+    operator whose credentials had expired was told to re-run the command they
+    had just run, and never learned why it could not answer.
+    """
+    _write_attempt(_isolated_cloud_home)
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {
+            "provisioned": True,
+            "instance_id": "i-0abc",
+            "observation": {
+                "usable": False,
+                "reason": "AWS could not be asked: ExpiredToken",
+                "provenance": "recorded on this machine; NOT confirmed at AWS -- "
+                "AWS could not be asked: ExpiredToken",
+            },
+        },
+    )
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    sentence = _records_name_sentence(out)
+    # The cause this run actually hit, in the sentence that makes the claim --
+    # not merely somewhere in the output, which a heading elsewhere could
+    # satisfy without this sentence ever saying why.
+    assert "AWS could not be asked: ExpiredToken" in sentence
+    # ...and not the wording for "nobody has asked", which is the one cause
+    # that cannot apply inside the command that asks.
+    assert cloud_verified.NOT_ASKED not in out
+    # The remedies named are the ones that fix a cause. Re-running is offered
+    # only after fixing what the reason names, never as the fix itself.
+    assert "Fix what that reason names" in out
+
+
+def test_the_mac_reason_wins_over_the_substrate_reason_when_a_host_is_recorded(
+    monkeypatch, _isolated_cloud_home, capsys
+):
+    """One reason, chosen in one place -- `_unconfirmed_reason`.
+
+    A failed `--os macos` deploy records a Dedicated Host and never applies the
+    Linux substrate, so the substrate's "nobody asked" would be the wrong
+    explanation for a block whose own observation knows better. Two readers
+    picking their own reason is the shape of defect this issue is about, so the
+    precedence lives in one function both sentences call.
+    """
+    _write_attempt(_isolated_cloud_home)
+    monkeypatch.setattr(
+        cloud_infra,
+        "infra_status",
+        lambda: {
+            "provisioned": True,
+            "observation": {"usable": False, "reason": cloud_verified.NOT_ASKED},
+        },
+    )
+    monkeypatch.setattr(
+        cloud_mac,
+        "pending_release",
+        lambda args=None: {
+            "host_id": "h-0abc",
+            "instance_type": "mac2.metal",
+            "usable": False,
+            "provenance": "recorded on this machine; NOT confirmed at AWS -- boto3 is not "
+            "installed",
+            "observation": {"usable": False, "reason": "boto3 is not installed"},
+        },
+    )
+
+    cloud_deploy.deploy_command(_args(cloud_cmd="status", json=False, no_probe=True))
+
+    out = capsys.readouterr().out
+    # Asserted on the sentence, not on the whole output: the Dedicated Host
+    # heading above it already prints the Mac's provenance, so a build that
+    # named no reason here at all would pass a bare `in out`.
+    assert "boto3 is not installed" in _records_name_sentence(out)
+    assert cloud_verified.NOT_ASKED not in out
 
 
 def test_a_deploy_that_failed_before_the_substrate_claims_no_billing(
@@ -2011,6 +2113,12 @@ def test_a_completed_deployment_still_reports_a_later_failed_attempt(
     assert "DEPLOYED" in out, "a real deployment must not be downgraded by a later failure"
     assert "Last deploy attempt" in out
     assert "3.1.0" in out
+    # The label is 19 characters against a 16-wide column, so `{label:<16}`
+    # left no separator and the row read "Last deploy attempt3.1.0" -- two
+    # fields merged into what looks like one version string. Found by running
+    # this PR's own evidence harness, in a row this PR added.
+    assert "Last deploy attempt3.1.0" not in out
+    assert "Last deploy attempt  3.1.0" in out
 
 
 def test_destroy_clears_the_attempt_record(stubbed_deploy, _isolated_cloud_home, monkeypatch):

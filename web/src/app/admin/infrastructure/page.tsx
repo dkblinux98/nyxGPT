@@ -570,6 +570,25 @@ function awsAccountLabel(label: string | undefined): string {
   return label || 'not recorded here';
 }
 
+// Why nothing in the run confirmed the resource this card names (#4181).
+//
+// The mirror of `cloud_deploy._unconfirmed_reason`, and deliberately only a
+// *selection* between two server-rendered sentences — the Mac's observation
+// when a Dedicated Host is recorded, the Linux substrate's otherwise. The
+// wording itself is still decided once, in Python, for exactly the reason
+// D-066 records: a second copy of the branches in TypeScript is how this card
+// came to word the same state differently from `nyxgpt cloud status`.
+//
+// The fallback is the empty-knowledge sentence, for an api older than this
+// page that ships no observation at all.
+function unconfirmedReason(cloud: CloudDeployStatus): string {
+  return (
+    cloud.mac_host?.observation?.reason ||
+    cloud.infra?.observation?.reason ||
+    'nothing on this machine has asked AWS about it in this run'
+  );
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <li style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', padding: '2px 0' }}>
@@ -1650,9 +1669,20 @@ export default function InfrastructurePage() {
                 cloud.instance_type ||
                 cloud.mac_host?.host_id ? (
                 <>
+                  {/* #4181 finding 6, on the card rather than in the CLI
+                      heading: an operator told only that nothing confirmed the
+                      record cannot act on it. The cause is already decided
+                      server-side (expired credentials, no boto3, an answer from
+                      the wrong account, a self-contradicting record), so this
+                      prints that `reason` rather than re-deriving one or
+                      offering the remedy for a cause nobody checked. Naming the
+                      CLI command is still right HERE -- a dashboard observes and
+                      points at the command (Definition of Done); it was wrong in
+                      `cloud status`, which is that command. */}
                   This machine’s records name a resource, but nothing confirmed it at AWS in this
                   run — so nyxGPT cannot tell you whether it still exists or is still being
-                  billed. The ids on this card are what was recorded here.{' '}
+                  billed ({unconfirmedReason(cloud)}). The ids on this card are what was recorded
+                  here. Fix what that reason names, then{' '}
                   <code>{cloud.commands?.status ?? 'nyxgpt cloud status'}</code> asks AWS and
                   clears what it no longer has.
                 </>

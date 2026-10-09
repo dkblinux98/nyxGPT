@@ -2657,6 +2657,21 @@ rather than mechanism, and nothing can enforce them.
   `terraform destroy` on a finished release stack belongs to `cloud destroy` /
   `cloud deploy`. A declined consent is `cloud.ConsentDeclined` →
   `ATTEMPT_DECLINED`, its own outcome, never a failure to be re-run.
+  **(d) A surface that cannot confirm a record names the CAUSE, and a test that
+  asserts a retired claim is a surface of this class** (review round 1). Two
+  halves, both found by the reviewer or by the sweep the finding forced:
+  "nothing confirmed it" without the reason is unactionable — the operator
+  cannot tell expired credentials from a missing boto3 from a wrong-account
+  answer — so `cloud_deploy._unconfirmed_reason` is the one precedence (Mac
+  observation, then substrate) every such sentence calls, and no surface may
+  prescribe the command it *is* (`nyxgpt cloud status` telling you to run
+  `nyxgpt cloud status` was finding 6, and it survived round 1 in that
+  command's own summary and on the dashboard card). And
+  `scripts/cloud-status-smoke.sh` asserted "an instance exists and is being
+  billed" over an unverified record on a runner with no AWS credentials: the
+  removed claim, written down as a required check. **Sweep the assertions, not
+  only the printers** — a smoke script, a vitest and a unit test are readers of
+  the surface and hold its contract.
   Cause: #4136 was fixed and failed acceptance anyway (#4181) because the class
   survived — live, `cloud status` asked account 551292530955 about a host in
   066835328281 and got the right answer by coincidence; `--profile nyxgpt`

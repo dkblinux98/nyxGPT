@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac
+from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac, cloud_verified
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.config import VALID_SESSION_BACKENDS
 
@@ -3720,8 +3720,16 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
 
 
 def _print_row(label: str, value: str) -> None:
-    """Print one aligned `label  value` line of the status summary."""
-    print(f"  {label:<16}{value}")
+    """Print one aligned `label  value` line of the status summary.
+
+    Padded to a column, but never *into* the value. `{label:<16}` leaves no
+    separator at all once the label reaches the column width, and this PR added
+    a 19-character one: the declined-consent row rendered as "Last deploy
+    attempt3.0.1, DECLINED at ...", which reads as a version string. Short
+    labels pad exactly as before, so every existing row is unchanged.
+    """
+    gap = 16 - len(label)
+    print(f"  {label}{' ' * (gap if gap >= 1 else 2)}{value}")
 
 
 def _health_label(health: dict[str, Any]) -> str:
@@ -3755,6 +3763,23 @@ def _attempt_label(attempt: dict[str, Any]) -> str:
         )
     verb = "still running" if status == ATTEMPT_RUNNING else "stopped"
     return f"{version}, {verb} at the `{phase}` phase{detail}"
+
+
+def _unconfirmed_reason(status: dict[str, Any]) -> str:
+    """Why nothing in this run confirmed the resource this report names (#4181).
+
+    One place, read by every sentence that has to explain an unconfirmed
+    record: whichever observation covers the block being reported -- the Mac's
+    when a Dedicated Host is recorded, the Linux substrate's otherwise -- and
+    that observation's own `reason`. Never a generic sentence, because the
+    generic sentence is the whole of finding 6: an operator with no boto3 was
+    told "`nyxgpt cloud status` asks" by `nyxgpt cloud status`.
+    """
+    for block in (status.get("mac_host") or {}, status.get("infra") or {}):
+        reason = str((block.get("observation") or {}).get("reason") or "")
+        if reason:
+            return reason
+    return cloud_verified.NOT_ASKED
 
 
 def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) -> None:
@@ -3864,11 +3889,30 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
             "being billed."
         )
     elif recorded:
+        # The reason, not the remedy for a reason nobody checked -- #4181
+        # finding 6 in the sentence under the rows rather than in the heading
+        # above them. This used to end "`nyxgpt cloud status` asks AWS and
+        # clears what it no longer has", printed BY `nyxgpt cloud status`
+        # (`_status_command` is the only caller that reaches here), so an
+        # operator whose credentials had expired or whose boto3 was missing was
+        # told to run the command they had just run. The observation already
+        # carries whichever of the causes applied; say that, and name the
+        # remedies that match a cause instead of the one that matches none.
+        # `rstrip` because the reasons disagree about their own punctuation --
+        # the boto3 one ends in a sentence, the credential ones do not -- and
+        # neither should produce ".." in a surface whose whole point is being
+        # read carefully.
+        reason = _unconfirmed_reason(status).rstrip(".")
         print(
             "\nThis machine's records name a resource, but nothing confirmed it at AWS in this "
             "run -- so nyxGPT cannot tell you whether it still exists or is still being "
-            "billed. The ids above are what was recorded here. `nyxgpt cloud status` asks AWS "
-            "and clears what it no longer has."
+            "billed. The ids above are what was recorded here. Why nothing confirmed them: "
+            f"{reason}."
+        )
+        print(
+            "Fix what that reason names -- `nyxgpt cloud credentials-setup` for credentials, "
+            "`--profile`/`--region` for the wrong account, the cloud extra for a missing boto3 "
+            "-- and re-run this command; it asks AWS and clears what it no longer has."
         )
     else:
         print(

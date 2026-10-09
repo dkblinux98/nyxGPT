@@ -438,7 +438,7 @@ which is the whole point: that is the state where the host is the only thing
 still costing money.
 
 ```
-EC2 Mac Dedicated Host (still billing -- AWS confirmed 2026-08-23T06:00:00+00:00)
+EC2 Mac Dedicated Host (still billing -- confirmed at AWS in nyxgpt (066835328281) at 2026-08-23T06:00:00+00:00)
   Host              h-0abc1234 (mac2.metal)
   Location          us-east-1 / us-east-1a
   Allocated         2026-08-22T18:00:00+00:00
@@ -610,9 +610,14 @@ the verdict alone (#4007, #4181). Three answers, not two:
   for it.
 - **Something is recorded here and nothing confirmed it** — the summary says
   exactly that, shows the recorded ids labelled *recorded here, NOT confirmed
-  at AWS*, and names `nyxgpt cloud status`, which asks. This is the case
-  #4181 added: the summary used to assert billing from the presence of an id,
-  and did so for an operator whose AWS account held no instances at all.
+  at AWS*, and names **the reason nothing confirmed them** (no credentials, no
+  boto3, an answer from the wrong account, a record that contradicts itself)
+  together with the remedy that matches that reason. It does not prescribe
+  `nyxgpt cloud status` — it *is* `nyxgpt cloud status`, and telling an
+  operator to re-run the command they just ran is finding 6 of #4181. This is
+  the case #4181 added: the summary used to assert billing from the presence
+  of an id, and did so for an operator whose AWS account held no instances at
+  all.
 - **Nothing was provisioned** — a `NOT COMPLETED` that stopped at `start` or
   `infra`, or a declined consent. No destroy is offered: the deploy died
   before the substrate, so there is nothing to tear down and `cloud destroy`

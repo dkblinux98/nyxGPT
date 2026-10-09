@@ -1687,6 +1687,60 @@ describe('InfrastructurePage', () => {
     expect(screen.queryByRole('button', { name: /deploy/i })).not.toBeInTheDocument();
   });
 
+  it('names why nothing confirmed the record, not just that nothing did (#4181 finding 6)', async () => {
+    // Finding 6 on the card. "Nothing confirmed it at AWS in this run" is the
+    // honest verdict, and on its own it is unactionable: the operator cannot
+    // tell expired credentials from a missing boto3 from an answer that came
+    // back from the wrong account. The cause is already decided server-side in
+    // `cloud_verified`, so the card prints that `reason` rather than deriving
+    // a second opinion (D-066) -- and `nyxgpt cloud status` is still the right
+    // pointer HERE, because a dashboard observes and names the command.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          instance_id: 'i-0abc123def',
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            provisioned: true,
+            instance_id: 'i-0abc123def',
+            observation: {
+              confirmed: false,
+              confirmed_at: '',
+              present: null,
+              coherent: true,
+              usable: false,
+              findings: [],
+              reason: 'AWS could not be asked: ExpiredToken',
+              profile: '',
+              account_id: '',
+              account_label: 'not recorded here',
+              provenance:
+                'recorded on this machine; NOT confirmed at AWS -- AWS could not be asked: ExpiredToken',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/nothing confirmed it at AWS in this run/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/AWS could not be asked: ExpiredToken/)).toBeInTheDocument();
+    // Not the wording for "nobody has asked", which is a different cause with
+    // a different fix -- and was the only one the card could ever express.
+    expect(
+      screen.queryByText(/nothing on this machine has asked AWS about it in this run/)
+    ).toBeNull();
+    expect(screen.queryByText(/An instance exists and is being billed/)).toBeNull();
+  });
+
   it('does not claim an instance is billing when the deploy failed before the substrate (#4007)', async () => {
     // D-018 inside the card written to enforce it. A deploy that dies at
     // `infra` -- no terraform binary, no credentials -- records no ids, and
