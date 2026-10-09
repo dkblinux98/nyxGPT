@@ -452,12 +452,20 @@ and screenshots make verifiable in the review loop:
   inference falls back to the host and the output carried a Compose file, a
   native install mode and a restart command for an api that did not exist; its
   step asserts the **absence** of all three, because a presence-only assertion
-  passes happily on output that also carries the wrong answer. #4184's second
-  injection is the instance's own `sshd`: the runner already offers a
-  post-quantum key exchange by default, so a classical-only drop-in is written
-  first, which both reproduces the owner's condition and proves the product
-  *reports* a drop-in that is parsed and overridden instead of announcing a
-  success it did not get. #4138's is the inverse vantage point -- an
+  passes happily on output that also carries the wrong answer. That moment has
+  to be *built*: the step empties the namespace of every core-tier Pod and
+  then measures, through the product's own kubectl path, that the cluster
+  answers nothing for the core tier -- with one such Pod left Ready the box is
+  a cluster that is *serving*, which is #4137's condition, and the fall-through
+  this step exists to inject cannot happen at all. #4184's second injection is
+  the instance's own `sshd`, written in both drop-in positions because the
+  runner already offers a post-quantum key exchange by default: sorting
+  *before* the product's file proves it *reports* a drop-in that is parsed and
+  overridden instead of announcing a success it did not get, and sorting
+  *after* it keeps the box classical until the product's file is written, so
+  the post-quantum offer that appears is attributable to that file and goes
+  away again when it is removed.
+  #4138's is the inverse vantage point -- an
   api Pod of the deployment, which reaches neither IMDS nor the host's
   `~/.nyxGPT/cloud` -- and its step proves both halves against the real
   cluster: with nothing recorded an in-cluster read must still say UNKNOWN,

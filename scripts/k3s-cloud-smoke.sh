@@ -1501,13 +1501,22 @@ step "12/14  FAULT INJECTION: a DECLARED substrate, before anything answers"
 # happily on output that also contains the wrong answer.
 #
 # The injection is the same box the earlier steps built, reduced to the
-# deploy's own starting conditions: no core Pods (deleted in step 10), a
-# `NYXGPT_COMPOSE_FILE` pointing at nothing, no `nyxgpt-cassandra` container --
-# and the declaration the deploy exports. Both pre-fix readings are asserted to
-# still produce their false answers here, so a silenced check cannot pass as a
-# routed one.
+# deploy's own starting conditions: no core Pods, a `NYXGPT_COMPOSE_FILE`
+# pointing at nothing, no `nyxgpt-cassandra` container -- and the declaration
+# the deploy exports. Both pre-fix readings are asserted to still produce their
+# false answers here, so a silenced check cannot pass as a routed one.
 export NYXGPT_COMPOSE_FILE="$WORK/there-is-no-compose-stack-here/docker-compose.yml"
-kubectl -n "$NAMESPACE" delete pod cassandra-0 grafana-smoke --now >/dev/null 2>&1 || true
+# EVERY core-tier Pod, and "every" is the word this step's first cut got wrong:
+# it deleted step 10's `cassandra-0`/`grafana-smoke` and left step 4's
+# `import-probe-after` Ready. That Pod carries `app: nyxgpt-api-canary-pool`
+# (it has to -- step 5 reaches it through the unmodified api Service), which
+# `_kubernetes_pod_tier` classifies as the CORE tier, so this box was still a
+# cluster that ANSWERS. That is step 10's condition, not this one's: inference
+# said "kubernetes" correctly, there was no fall-through to the host to
+# reproduce, and the step failed its own fault-injection check rather than
+# quietly proving nothing.
+kubectl -n "$NAMESPACE" delete pod --all --now >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" wait --for=delete pod --all --timeout=120s >/dev/null 2>&1 || true
 log "MEASURED (deploy-time conditions): core Pods in the namespace:"
 kubectl -n "$NAMESPACE" get pods -o name --no-headers 2>/dev/null | sed 's/^/    | /' || true
 
@@ -1517,8 +1526,31 @@ import sys
 from nyxgpt import ops, self_heal, substrate
 
 # --- half (a): the fault injection, asserted rather than assumed ------------
+# First the precondition itself, read through the product's own kubectl path
+# rather than inferred from the deletes above: this step's whole subject is a
+# reachable cluster that answers NOTHING for the core tier yet, and with one
+# core-tier Pod still up inference finds a substrate and the fall-through this
+# injects cannot occur. Checked here, and separately from the probe count
+# below, so the failure names the box rather than the symptom.
+core_pods = [
+    s.service
+    for s in self_heal._list_kubernetes_component_status(set())
+    if s.tier == "core"
+]
+print(f"    | cluster core tier from this host: {core_pods or 'nothing answers'}")
+if core_pods:
+    sys.exit(
+        "FAULT INJECTION FAILED: the cluster still answers for the core tier "
+        f"({', '.join(core_pods)}), so this box is a SERVING cluster -- which is step 10's "
+        "condition and not the deploy's own moment this step exists to cover"
+    )
+
 # With nothing declared, this box is exactly the box that logged the Compose
 # failure: the survey has no cluster to infer from and runs `docker compose ps`.
+# "Nothing declared" is made true rather than assumed -- an inherited
+# `NYXGPT_SUBSTRATE` from the surrounding job would route this half the way
+# half (b) is routed and the two would prove the same thing twice.
+substrate.clear_declaration()
 probed = []
 real_probe = self_heal.compose_probe
 
@@ -1579,6 +1611,14 @@ detail = results[0].details
 print(f"    | session-backend guidance: {detail}")
 if "nyxgpt ops restart api" in detail:
     sys.exit("the guidance still names a restart of an api this box does not have")
+# Withdrawing the wrong sentence is half the fix; the other half is saying what
+# IS true where this runs, or the operator is left with a write and no idea
+# what picks it up.
+if ops.K8S_CONFIG_CONFIGMAP not in detail:
+    sys.exit(
+        f"the guidance does not name the {ops.K8S_CONFIG_CONFIGMAP} ConfigMap the api Pods "
+        "actually read, so the restart line was deleted rather than replaced"
+    )
 PY
 log "PASS (fix proven): the declared substrate routes the surveys a deploy triggers"
 
@@ -1626,6 +1666,21 @@ assert snapshot.get("api") == "started", (
     "FAULT INJECTION FAILED: the product does not see the injected unit as started, so "
     "the pre-fix gate would not have printed its install-mode line"
 )
+
+# The other side of the session-backend guidance, now that this box HAS a
+# native api: with no declaration it is told to restart it. Asserted because
+# without it the check above is satisfied by a sentence someone deleted, and a
+# deleted sentence is not a routed one -- on a native host the restart is the
+# right answer and must survive.
+import pathlib
+
+cfg = pathlib.Path.home() / ".nyxGPT" / "config.ini"
+detail = ops.set_session_backend("file", cfg_path=cfg)[0].details
+print(f"    | session-backend guidance, native api registered: {detail}")
+assert "nyxgpt ops restart api" in detail, (
+    "FAULT INJECTION FAILED: a host with a started native api is not told to restart it "
+    "either, so the declared run's silence about it proves nothing about routing"
+)
 PY
 
 set +e
@@ -1661,6 +1716,18 @@ rm -f "$HOME/.config/systemd/user/nyxgpt-api.service"
 systemctl --user daemon-reload
 unset NYXGPT_COMPOSE_FILE
 
+# And put back the one Pod the deletes above took that a LATER step needs: step
+# 14's precondition is a bridge that answers on 127.0.0.1:8000, which it can
+# only do while svc/nyxgpt-api has an endpoint. This Pod is that endpoint (step
+# 4 built it with the Service's own selector and port name), so emptying the
+# namespace for this step's condition has to be undone before step 14 measures
+# anything -- otherwise that step would fail on a missing endpoint and read as
+# "the teardown could not be proven".
+probe_pod import-probe-after | kubectl apply -f - >/dev/null
+kubectl -n "$NAMESPACE" wait --for=condition=Ready pod/import-probe-after --timeout=120s \
+  || fail "the api Service's endpoint Pod did not come back after this step emptied the
+           namespace -- step 14's bridge precondition cannot be measured without it"
+
 # ---------------------------------------------------------------------------
 step "13/14  FAULT INJECTION: the instance's sshd must offer a post-quantum KEX"
 # ---------------------------------------------------------------------------
@@ -1675,10 +1742,18 @@ step "13/14  FAULT INJECTION: the instance's sshd must offer a post-quantum KEX"
 #
 # The injection matters here more than usual: this runner's OpenSSH already
 # offers a PQ exchange by default, so a bare run of the block would pass on a
-# box that never had the defect. A drop-in that sorts BEFORE the product's is
-# written first, which both reproduces the owner's condition (a server offering
-# only classical KEX) and exercises the `KexAlgorithms`-takes-its-first-value
-# rule the product's read-back exists to catch.
+# box that never had the defect. So the owner's condition -- a server offering
+# only classical KEX -- is written as a drop-in in BOTH positions, and the
+# position is what each half is about:
+#
+#   (a) sorting BEFORE the product's file, where
+#       `KexAlgorithms`-takes-its-first-value leaves the product's drop-in
+#       parsed and ignored. What is proven is the read-back: the block reports
+#       that rather than announcing a key exchange it did not obtain.
+#   (b) sorting AFTER it, where the product's file legitimately wins. The box
+#       is measured classical before the drop-in, post-quantum with it, and
+#       classical again once it is removed -- so the PQ offer is attributable
+#       to this file and not to the runner's default.
 if ! ssh -Q kex 2>/dev/null | grep -qE '^(mlkem768x25519-sha256|sntrup761x25519-sha512@openssh.com)$'; then
   log "SKIP: this runner's OpenSSH implements no post-quantum KEX, so there is nothing"
   log "      here to prove the drop-in against (the block's own no-op branch covers it)"
@@ -1717,9 +1792,30 @@ CLASSICAL
              is still classical"
   log "PASS: a parsed-but-overridden drop-in is reported, not announced as success"
 
-  # --- half (b): the product's reading, with the injection removed ---------
+  # --- half (b): the product's reading, and what it is ATTRIBUTABLE to -----
+  # The classical-only config does not go away here, it MOVES: into a drop-in
+  # that sorts AFTER the product's, which the first-value rule makes the
+  # product's file the winner of rather than the loser. That keeps this
+  # runner's PQ-by-default out of the answer -- deleting the injection instead
+  # would leave `sntrup761x25519-sha512@openssh.com` effective on a box that
+  # never had the defect, and the assertion below would pass with or without
+  # the fix. Measured without the drop-in, with it, and after removing it, so
+  # the PQ offer is attributable to this file.
   sudo rm -f /etc/ssh/sshd_config.d/10-nyxgpt-smoke-classical-only.conf \
              /etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf
+  sudo tee /etc/ssh/sshd_config.d/90-nyxgpt-smoke-classical-after.conf >/dev/null <<'CLASSICAL'
+# Injected by k3s-cloud-smoke (#4184): the same classical-only server as above,
+# in a file the product's drop-in precedes. Sorting after it is the point --
+# this is the defect condition, kept on the box, in a position that cannot
+# override the fix under test.
+KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256
+CLASSICAL
+  without="$(sudo sshd -T 2>/dev/null | grep -i '^kexalgorithms ' || true)"
+  log "MEASURED (defect condition, before the drop-in): $without"
+  if grep -qE 'mlkem|sntrup' <<<"$without"; then
+    fail "this box already offers a post-quantum key exchange with no drop-in written, so
+          the assertions below would pass whether the fix is present or not"
+  fi
   applied_out="$(bash "$WORK/sshd-pq.sh" 2>&1)"
   echo "$applied_out" | sed 's/^/    | /'
   grep -q "sshd offers a post-quantum key exchange" <<<"$applied_out" \
@@ -1735,7 +1831,17 @@ CLASSICAL
     || fail "the drop-in dropped the classical algorithms instead of prepending to them"
   sudo sshd -t || fail "sshd cannot validate its own config after the drop-in"
   log "PASS (fix proven): PQ first, every classical algorithm still offered, config valid"
+
+  # Attribution: remove the one file and the answer goes with it.
   sudo rm -f /etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf
+  after="$(sudo sshd -T 2>/dev/null | grep -i '^kexalgorithms ' || true)"
+  log "MEASURED (drop-in removed again): $after"
+  if grep -qE 'mlkem|sntrup' <<<"$after"; then
+    fail "the post-quantum offer outlived the drop-in's removal, so something other than
+          the product's file is what the assertions above measured"
+  fi
+  log "PASS (attribution): the drop-in is the source -- removed, this sshd is classical again"
+  sudo rm -f /etc/ssh/sshd_config.d/90-nyxgpt-smoke-classical-after.conf
 fi
 
 # ---------------------------------------------------------------------------
