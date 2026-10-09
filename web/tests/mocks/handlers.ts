@@ -136,6 +136,14 @@ export const CLOUD_DEPLOY_UNKNOWN = {
   instance_id: '',
   instance_type: '',
   region: '',
+  // #4186. Which account and key pair the deploy used, and the rendered form
+  // the page displays. All three are what the API really sends from a machine
+  // with no `infra.json` -- the label is a sentence, not a blank, because
+  // "this machine has no record" is a different claim from "no profile".
+  aws_profile: '',
+  aws_account_id: '',
+  aws_account_label: 'not recorded here',
+  ssh_key_name: '',
   profiles: [],
   // #3950. False rather than absent: "no deploy is known from here" is not a
   // claim about how some other machine's deploy was built, and the page reads
@@ -168,6 +176,11 @@ export const CLOUD_DEPLOY_UNKNOWN = {
     subnet_id: '',
     security_group_id: '',
     ssh_key_name: '',
+    // #4186, as above: the substrate card's own copy of the account rows.
+    aws_profile: '',
+    aws_account_id: '',
+    aws_account_label: 'not recorded here',
+    ssh_identity_file: '',
     owner_ip_cidr: '',
     access_model: {
       open_ports: [],

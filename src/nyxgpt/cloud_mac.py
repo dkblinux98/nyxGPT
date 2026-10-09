@@ -48,7 +48,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_infra, cloud_record
+from nyxgpt import cloud_identity, cloud_infra, cloud_record
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
@@ -1684,10 +1684,15 @@ def _record_profile(args: argparse.Namespace) -> str:
 
     Unlike the region this is *not* a property of the resource -- it is which
     credentials to use now -- so the flag wins over the saved setting.
+
+    Delegated to the one resolver since #4186: this was the second hand-written
+    copy of the chain (`cloud._resolve_profile` was the first), and it stopped
+    two steps short of it -- no `config.ini [cloud] profile`, no `AWS_PROFILE`
+    -- so an operator who had set either one, and never run `cloud infra
+    apply`, had their EC2 Mac host looked up in whatever account boto3's
+    default profile names.
     """
-    return str(getattr(args, "profile", None) or "") or str(
-        cloud_infra.load_settings().get("aws_profile") or ""
-    )
+    return cloud_identity.account_default(args).profile
 
 
 def _record_verification(host_id: str, present: bool) -> None:
@@ -1825,7 +1830,8 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
         or str(getattr(args, "region", None) or "")
         or str(saved.get("aws_region") or "")
     )
-    profile = str(getattr(args, "profile", None) or "") or str(saved.get("aws_profile") or "")
+    # The one resolver, not a third copy of the chain (#4186).
+    profile = _record_profile(args)
     allocated_at = parse_timestamp(str(record.get("mac_allocated_at") or ""))
     release_at = parse_timestamp(str(record.get("mac_release_at") or "")) or release_time(
         allocated_at or utc_now()

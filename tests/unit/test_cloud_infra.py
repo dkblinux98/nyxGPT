@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud, cloud_infra
+from nyxgpt import cloud, cloud_identity, cloud_imds, cloud_infra
 from nyxgpt.cloud import CloudCommandError
 
 REPO_TERRAFORM_AWS = "terraform/aws"
@@ -35,10 +35,18 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_infra, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     monkeypatch.setattr(cloud, "CLOUD_STATE_FILE", cloud_dir / "state.json")
     # config.ini's [cloud] section is a *fallback* source for region/profile;
-    # a developer's real one must not leak into these assertions.
+    # a developer's real one must not leak into these assertions. Since #4186
+    # that chain lives in `nyxgpt.cloud_identity`, so this neutralises it
+    # there -- along with the one STS call the resolver makes to label the
+    # account, which a unit suite must not attempt, and the operator's real
+    # `~/.ssh`, which would otherwise decide what the SSH default is.
+    cloud_identity.reset_prompt_cache()
     monkeypatch.setattr(
-        cloud_infra, "_configured_cloud_reference", lambda: {"profile": "", "region": ""}
+        cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}
     )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "")
+    monkeypatch.setattr(cloud_identity, "SSH_DIR", tmp_path / "no-such-ssh-dir")
+    monkeypatch.setattr(cloud_identity, "ec2_key_pairs", lambda profile, region: [])
     for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"):
         monkeypatch.delenv(var, raising=False)
     return cloud_dir
@@ -117,8 +125,18 @@ def test_resolve_settings_refuses_a_world_open_owner_ip():
 
 
 def test_resolve_settings_requires_an_ssh_key():
-    with pytest.raises(CloudCommandError, match="No SSH key configured"):
+    """With no key, no candidate and no terminal, the failure names both flags (#4186).
+
+    It used to name a `product_management/` decision record, which the
+    operator reading it has no checkout to open (#4182), and it never said
+    that running from a terminal would have asked instead.
+    """
+    with pytest.raises(CloudCommandError) as excinfo:
         cloud_infra.resolve_settings(_args(ssh_key_name=None, ssh_public_key=None))
+    message = str(excinfo.value)
+    assert "--ssh-key-name" in message
+    assert "--ssh-public-key" in message
+    assert "product_management/" not in message
 
 
 def test_resolve_settings_refuses_both_ssh_key_inputs(tmp_path):
@@ -265,8 +283,8 @@ def test_the_cli_help_names_the_shipped_default(capsys):
 
 def test_resolve_settings_falls_back_to_configured_region(monkeypatch):
     monkeypatch.setattr(
-        cloud_infra,
-        "_configured_cloud_reference",
+        cloud_identity,
+        "configured_reference",
         lambda: {"profile": "nyxgpt", "region": "ap-southeast-2"},
     )
     settings = cloud_infra.resolve_settings(_args())
@@ -790,3 +808,143 @@ def test_infra_command_status_prints_json(capsys):
     args = argparse.Namespace(infra_cmd="status")
     assert cloud_infra.infra_command(args) == 0
     assert json.loads(capsys.readouterr().out)["provisioned"] is False
+
+
+# --- The shared account/SSH resolver (#4186) -----------------------------
+#
+# `resolve_settings` no longer walks its own chain: it calls
+# `nyxgpt.cloud_identity`, which is also what `cloud`, `cloud_mac` and
+# `cloud_deploy` call. These pin the three behaviours the issue is about -- the
+# account is asked for with a visible default, a missing SSH key is a question
+# rather than a wall, and a run with no terminal takes the defaults and says
+# which ones it took.
+
+
+def test_resolve_settings_prompts_for_the_account_with_the_resolved_default(monkeypatch):
+    """Enter accepts; the prompt shows the profile the chain resolved."""
+    monkeypatch.setattr(
+        cloud_identity,
+        "configured_reference",
+        lambda: {"profile": "nyxgpt", "region": "us-east-1"},
+    )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+
+    settings = cloud_infra.resolve_settings(_args())
+
+    assert settings.aws_profile == "nyxgpt"
+    # Recorded, so `cloud status` and the dashboard can report the account
+    # later with no credential and no STS call.
+    assert settings.aws_account_id == "066835328281"
+    # The bracketed default carries the account id, not just the name (#4186).
+    assert any("AWS profile" in p and "[nyxgpt (066835328281)]" in p for p in prompts)
+
+
+def test_resolve_settings_prompts_for_an_ssh_key_instead_of_refusing(monkeypatch, tmp_path):
+    """The owner hit the refusal twice in one acceptance round; it is a question now."""
+    ssh_dir = tmp_path / "ssh"
+    ssh_dir.mkdir()
+    (ssh_dir / "id_ed25519.pub").write_text("ssh-ed25519 AAAAC3Nza test@host\n", encoding="utf-8")
+    (ssh_dir / "id_ed25519").write_text("not a real key\n", encoding="utf-8")
+    monkeypatch.setattr(cloud_identity, "SSH_DIR", ssh_dir)
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    settings = cloud_infra.resolve_settings(_args(ssh_key_name=None, ssh_public_key=None))
+
+    assert settings.ssh_public_key == "ssh-ed25519 AAAAC3Nza test@host"
+    assert settings.ssh_identity_file == str(ssh_dir / "id_ed25519")
+
+
+def test_resolve_settings_announces_the_account_and_key_on_the_scripted_path(monkeypatch, capsys):
+    """`--yes`/no TTY must print what it chose -- there was no prompt to show it."""
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": "us-east-1"}
+    )
+
+    cloud_infra.resolve_settings(_args(yes=True))
+
+    printed = capsys.readouterr().out
+    assert "nyxgpt (066835328281)" in printed
+    assert "existing-pair" in printed
+
+
+def test_a_scripted_run_never_waits_for_input(monkeypatch):
+    """The hang this must not have: `--yes` with a stdin nobody will ever write to."""
+
+    def _refuse(prompt):
+        raise AssertionError(f"a scripted run prompted: {prompt!r}")
+
+    monkeypatch.setattr("builtins.input", _refuse)
+
+    assert cloud_infra.resolve_settings(_args(yes=True)).ssh_key_name == "existing-pair"
+
+
+def test_the_recorded_account_is_not_passed_to_terraform(monkeypatch):
+    """`terraform/aws/variables.tf` declares no such variables.
+
+    A var-file naming an undeclared variable is noise on every single run at
+    best, so the recorded-only fields are kept out of the rendered tfvars
+    while still reaching `infra.json`.
+    """
+    settings = cloud_infra.InfraSettings(
+        aws_region="us-east-1",
+        owner_ip_cidr="198.51.100.7/32",
+        ssh_key_name="pair",
+        aws_account_id="066835328281",
+        ssh_identity_file="/home/x/.ssh/id_rsa",
+        ssh_public_key_path="/home/x/.ssh/id_rsa.pub",
+    )
+    rendered = cloud_infra.render_tfvars(settings)
+
+    assert "aws_account_id" not in rendered
+    assert "ssh_identity_file" not in rendered
+    assert "ssh_public_key_path" not in rendered
+    # But they survive the round trip through the record.
+    cloud_infra.save_settings(settings)
+    reloaded = cloud_infra.saved_settings()
+    assert reloaded is not None
+    assert reloaded.aws_account_id == "066835328281"
+    assert reloaded.ssh_identity_file == "/home/x/.ssh/id_rsa"
+
+
+def test_infra_status_reports_the_account_the_substrate_was_provisioned_in(monkeypatch):
+    """Visible afterwards, from a local read (#4186's last acceptance criterion)."""
+    monkeypatch.setattr(cloud_infra, "_load_cloud_state", lambda: {"instance_id": "i-123"})
+    monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
+    cloud_infra.save_settings(
+        cloud_infra.InfraSettings(
+            aws_region="us-east-1",
+            owner_ip_cidr="198.51.100.7/32",
+            ssh_key_name="nyxgpt-smoke-key",
+            aws_profile="nyxgpt",
+            aws_account_id="066835328281",
+        )
+    )
+
+    status = cloud_infra.infra_status()
+
+    assert status["aws_profile"] == "nyxgpt"
+    assert status["aws_account_id"] == "066835328281"
+    assert status["ssh_key_name"] == "nyxgpt-smoke-key"
+    # Rendered once, in Python, and displayed as-is by the CLI and the
+    # dashboard -- the TypeScript copy of these four branches is gone (D-066).
+    assert status["aws_account_label"] == "nyxgpt (066835328281)"
+
+
+def test_infra_status_says_not_recorded_here_when_this_machine_did_not_provision_it(monkeypatch):
+    """The inverse: no infra.json, which is the instance's and the Pod's vantage point."""
+    monkeypatch.setattr(cloud_infra, "_load_cloud_state", lambda: {"instance_id": "i-123"})
+    monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
+
+    assert cloud_infra.infra_status()["aws_account_label"] == "not recorded here"
+
+
+def test_no_operator_facing_field_cites_a_repository_path():
+    """#4182. The reader has no checkout, so a decision-record filename is dead text."""
+    reachability = cloud_infra.infra_status()["access_model"]["reachability"]
+
+    assert "product_management/" not in reachability

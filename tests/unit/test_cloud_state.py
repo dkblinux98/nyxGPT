@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud_infra, cloud_state
+from nyxgpt import cloud_identity, cloud_infra, cloud_state
 from nyxgpt.cloud import CloudCommandError
 
 pytestmark = pytest.mark.unit
@@ -120,6 +120,21 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", cloud_dir / "infra.json")
     # Computed from CLOUD_DIR at import time, so it needs repointing too.
     monkeypatch.setattr(cloud_state, "BACKEND_FILE", cloud_dir / "backend.json")
+    # Since the review of #4187 these commands resolve the account through
+    # `nyxgpt.cloud_identity` rather than their own copy of the chain, so this
+    # suite has to neutralise the same three things `test_cloud_infra` does:
+    # config.ini's `[cloud]` section (a developer's real one must not decide
+    # these assertions), the one STS call the resolver makes to label the
+    # account (a unit suite makes no network call), and any answer a previous
+    # test in this interpreter typed.
+    cloud_identity.reset_prompt_cache()
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}
+    )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "")
+    # Nothing here is a terminal, but asserting it rather than relying on the
+    # runner's stdin keeps a local `pytest -s` from hanging on a prompt.
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: False)
     for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"):
         monkeypatch.delenv(var, raising=False)
     return cloud_dir
@@ -303,6 +318,117 @@ def test_backend_region_defaults_to_the_region_the_substrate_is_provisioned_into
     )
     settings = cloud_state.resolve_backend_settings(_args(region=None))
     assert settings.region == "eu-west-1"
+
+
+# --- The account these commands authenticate as (#4186, review of #4187) ---
+#
+# `bootstrap`/`migrate` talk to S3, DynamoDB and STS, so "which AWS account"
+# is a decision they make -- and they used to make it with their own copy of
+# the chain that skipped `config.ini [cloud]` entirely. These assert the
+# delegation: the shared order below the flags, the command's own
+# `backend.json` layer above it, and the announcement.
+
+
+def test_config_ini_profile_is_used_when_nothing_closer_names_one(aws, monkeypatch):
+    """The step the hand-written copy skipped: where credentials-setup writes.
+
+    An operator who ran `nyxgpt cloud credentials-setup` and then
+    `nyxgpt cloud state migrate` authenticated as whatever boto3's default
+    chain resolved -- a different identity from every other cloud command on
+    the same machine.
+    """
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": ""}
+    )
+    assert cloud_state.resolve_backend_settings(_args(profile=None)).profile == "nyxgpt"
+
+
+def test_the_resolution_order_is_flag_then_backend_json_then_infra_json_then_config(
+    aws, monkeypatch
+):
+    """All four sources set at once, and the winner asserted at each level."""
+    monkeypatch.setattr(
+        cloud_identity,
+        "configured_reference",
+        lambda: {"profile": "from-config", "region": "eu-west-3"},
+    )
+    cloud_infra.save_settings(
+        cloud_infra.InfraSettings(
+            aws_region="eu-west-1", aws_profile="from-infra", owner_ip_cidr="198.51.100.7/32"
+        )
+    )
+    cloud_state.save_backend_settings(
+        cloud_state.BackendSettings(
+            bucket="b", table="t", region="ap-south-1", profile="from-backend"
+        )
+    )
+
+    # 1. The flag wins over everything.
+    flagged = cloud_state.resolve_backend_settings(_args(profile="from-flag", region="us-west-2"))
+    assert (flagged.profile, flagged.region) == ("from-flag", "us-west-2")
+
+    # 2. Then this command's own record -- it describes the bucket and lock
+    #    table about to be touched, so it outranks the substrate's.
+    saved = cloud_state.resolve_backend_settings(_args(profile=None, region=None))
+    assert (saved.profile, saved.region) == ("from-backend", "ap-south-1")
+
+    # 3. Then infra.json, 4. then config.ini -- the shared resolver's own
+    #    steps, which is the point: they are not restated here.
+    cloud_state.BACKEND_FILE.unlink()
+    from_infra = cloud_state.resolve_backend_settings(_args(profile=None, region=None))
+    assert (from_infra.profile, from_infra.region) == ("from-infra", "eu-west-1")
+
+    cloud_infra.SETTINGS_FILE.unlink()
+    from_config = cloud_state.resolve_backend_settings(_args(profile=None, region=None))
+    assert (from_config.profile, from_config.region) == ("from-config", "eu-west-3")
+
+
+def test_the_chosen_account_is_printed_so_it_is_never_chosen_invisibly(aws, capsys, monkeypatch):
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
+    cloud_state.resolve_backend_settings(_args(profile="nyxgpt"))
+
+    printed = capsys.readouterr().out
+    assert "AWS account: nyxgpt (066835328281)" in printed
+    assert "region: us-west-2" in printed
+
+
+def test_a_recorded_account_id_saves_the_bucket_name_its_own_sts_call(aws, monkeypatch):
+    """The resolver already paid for one; naming the bucket must not pay again."""
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cloud_state,
+        "aws_account_id",
+        lambda region, profile="": calls.append(region) or "123456789012",
+    )
+
+    settings = cloud_state.resolve_backend_settings(_args())
+
+    assert settings.bucket == "nyxgpt-tfstate-066835328281-us-west-2"
+    assert calls == []
+
+
+def test_the_bucket_name_still_falls_back_to_the_must_have_lookup(aws, monkeypatch):
+    """`account_id` is best-effort; a bucket name is not. The inverse of the above."""
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "")
+
+    settings = cloud_state.resolve_backend_settings(_args())
+
+    # `_FakeSts` is what answered, through `cloud_state.aws_account_id`.
+    assert settings.bucket == "nyxgpt-tfstate-123456789012-us-west-2"
+
+
+def test_a_scripted_state_command_is_never_asked_anything(aws, monkeypatch):
+    """`--yes` and the no-TTY path take the default; a prompt here would hang CI."""
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", cloud_identity.prompting_enabled)
+    monkeypatch.setattr(
+        cloud_identity,
+        "ask",
+        lambda *a, **k: pytest.fail("a scripted `cloud state` run asked a question"),
+    )
+    monkeypatch.setenv(cloud_identity.NONINTERACTIVE_ENV, "1")
+
+    assert cloud_state.resolve_backend_settings(_args(profile=None)).profile == ""
 
 
 # --- Migration -----------------------------------------------------------

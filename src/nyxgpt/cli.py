@@ -2704,9 +2704,17 @@ def cli(argv: list[str] | None = None) -> int:
             "--region",
             help="AWS region (default: saved value, then config.ini [cloud] region, then AWS_REGION, then us-east-1)",
         )
+        # #4186: the default is not just resolved, it is *shown* -- the command
+        # prompts with it (profile plus the account id it resolves to) when
+        # there is a terminal, so the account is never chosen invisibly.
         parser.add_argument(
             "--profile",
-            help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
+            help=(
+                "AWS profile to authenticate with. Without it you are asked, with the "
+                "resolved value offered as the default: saved value, then config.ini "
+                "[cloud] profile, then AWS_PROFILE. The prompt shows the account id that "
+                "profile resolves to"
+            ),
         )
         parser.add_argument(
             "--owner-ip",
@@ -2716,16 +2724,28 @@ def cli(argv: list[str] | None = None) -> int:
                 "0.0.0.0/0 is refused)"
             ),
         )
+        # #4186: neither flag is required any more. With neither given the
+        # command asks, listing (in order) the key the last apply recorded, any
+        # EC2 key pair in the chosen account whose fingerprint matches a local
+        # public key, and the local public keys it could register -- the first
+        # being the default. The owner's account already held a matching pair
+        # and the old behaviour was to refuse the deploy rather than offer it.
         parser.add_argument(
             "--ssh-public-key",
             help=(
                 "Path to an OpenSSH public key (e.g. ~/.ssh/id_ed25519.pub) to register "
-                "as a new EC2 key pair. Mutually exclusive with --ssh-key-name"
+                "as a new EC2 key pair. Mutually exclusive with --ssh-key-name. Without "
+                "either flag you are asked, with the best candidate as the default"
             ),
         )
         parser.add_argument(
             "--ssh-key-name",
-            help="Name of an EC2 key pair that already exists in the region. Mutually exclusive with --ssh-public-key",
+            help=(
+                "Name of an EC2 key pair that already exists in the region. Mutually "
+                "exclusive with --ssh-public-key. Without either flag you are asked, and "
+                "a pair whose fingerprint matches one of your local public keys is "
+                "offered by name together with that key"
+            ),
         )
         parser.add_argument(
             "--instance-type",
@@ -2737,10 +2757,23 @@ def cli(argv: list[str] | None = None) -> int:
             help="Root EBS volume size in GiB (default: saved value, then 100)",
         )
 
+    # #4186. `--yes` on these two means only "do not ask, use the defaults".
+    # `infra destroy`, `deploy`, `destroy` and `smoke` already carry a `--yes`
+    # that confirms something irreversible and now suppresses the prompts as
+    # well; these two create nothing to confirm, so this is the scriptable
+    # switch on its own. `NYXGPT_CLOUD_NONINTERACTIVE` does the same for every
+    # `nyxgpt cloud` command, including the read-only ones with no `--yes`.
+    _NONINTERACTIVE_HELP = (
+        "Do not ask for the AWS profile or the SSH key -- take the resolved defaults and "
+        "print them. Already implied with no terminal (CI, `nyxgpt cloud ops` over SSH) "
+        "or with NYXGPT_CLOUD_NONINTERACTIVE set"
+    )
+
     cloud_infra_plan = cloud_infra_sub.add_parser(
         "plan", help="Show what would be provisioned or changed, creating nothing"
     )
     _add_infra_provision_flags(cloud_infra_plan)
+    cloud_infra_plan.add_argument("--yes", action="store_true", help=_NONINTERACTIVE_HELP)
 
     cloud_infra_apply = cloud_infra_sub.add_parser(
         "apply",
@@ -2750,6 +2783,7 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
     _add_infra_provision_flags(cloud_infra_apply)
+    cloud_infra_apply.add_argument("--yes", action="store_true", help=_NONINTERACTIVE_HELP)
 
     cloud_infra_destroy = cloud_infra_sub.add_parser(
         "destroy", help="Tear the substrate down, including the instance and its root volume"
@@ -2758,7 +2792,10 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_infra_destroy.add_argument(
         "--yes",
         action="store_true",
-        help="Confirm the teardown (required -- data that exists only on the instance is lost)",
+        help=(
+            "Confirm the teardown (required -- data that exists only on the instance is "
+            "lost). Also takes the resolved AWS profile and SSH key without asking (#4186)"
+        ),
     )
 
     cloud_infra_sub.add_parser(
@@ -2818,6 +2855,19 @@ def cli(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "--profile",
             help="AWS profile to authenticate with (default: saved value, then config.ini [cloud] profile, then AWS_PROFILE)",
+        )
+        # These two authenticate to S3/DynamoDB and read the account id to name
+        # the bucket, so they resolve the account through the shared resolver
+        # and can ask for it (#4186). `--yes` is the same opt-out the substrate
+        # commands have, so a script never meets a prompt it cannot answer.
+        parser.add_argument(
+            "--yes",
+            action="store_true",
+            help=(
+                "Do not ask for the AWS profile -- take the resolved default and print it. "
+                "Already implied with no terminal (CI, `nyxgpt cloud ops` over SSH) or with "
+                "NYXGPT_CLOUD_NONINTERACTIVE set"
+            ),
         )
 
     cloud_state_status = cloud_state_sub.add_parser(
@@ -3000,7 +3050,9 @@ def cli(argv: list[str] | None = None) -> int:
         help=(
             "Skip the typed confirmation before allocating an EC2 Mac Dedicated Host, so "
             "`--os macos` stays scriptable. The cost disclosure is still printed -- this "
-            "confirms you have read it, it does not suppress it"
+            "confirms you have read it, it does not suppress it. Also takes the resolved "
+            "AWS profile and SSH key without asking (#4186), which is what makes a "
+            "flag-free deploy scriptable"
         ),
     )
     cloud_deploy_p.add_argument(
@@ -3211,7 +3263,10 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_destroy_p.add_argument(
         "--yes",
         action="store_true",
-        help="Confirm the teardown (required -- data that exists only on the instance is lost)",
+        help=(
+            "Confirm the teardown (required -- data that exists only on the instance is "
+            "lost). Also takes the resolved AWS profile and SSH key without asking (#4186)"
+        ),
     )
 
     cloud_tunnel_p = cloud_sub.add_parser(
@@ -3369,7 +3424,11 @@ def cli(argv: list[str] | None = None) -> int:
     cloud_smoke_p.add_argument(
         "--yes",
         action="store_true",
-        help="Confirm destroying a deployment this run did not create (with --skip-deploy)",
+        help=(
+            "Confirm destroying a deployment this run did not create (with "
+            "--skip-deploy). Also takes the resolved AWS profile and SSH key without "
+            "asking (#4186)"
+        ),
     )
     cloud_smoke_p.add_argument(
         "--api-key",

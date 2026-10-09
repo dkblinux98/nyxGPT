@@ -46,8 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_imds, cloud_record
-from nyxgpt import config as config_mod
+from nyxgpt import cloud_cluster_record, cloud_identity, cloud_imds, cloud_record
 from nyxgpt.cloud import (
     CLOUD_STATE_FILE,
     CloudCommandError,
@@ -123,6 +122,24 @@ _OFFLINE_TEST_ENV = {
 }
 
 
+# The subset of `InfraSettings` that Terraform declares as variables. The
+# dataclass carries more than that since #4186 -- the resolved AWS account id
+# and the local SSH files -- and those are recorded so `nyxgpt cloud status`
+# and the dashboard can report which account and key a deployment used. They
+# are *not* tfvars: `terraform/aws/variables.tf` declares no such variables,
+# and a var-file naming an undeclared one is at best a warning on every run.
+TFVARS_FIELDS = (
+    "aws_region",
+    "aws_profile",
+    "name_prefix",
+    "owner_ip_cidr",
+    "ssh_key_name",
+    "ssh_public_key",
+    "instance_type",
+    "root_volume_size",
+)
+
+
 @dataclass
 class InfraSettings:
     """Resolved inputs for one `nyxgpt cloud infra` run, rendered into tfvars."""
@@ -135,19 +152,34 @@ class InfraSettings:
     root_volume_size: int = 100
     aws_profile: str = ""
     name_prefix: str = "nyxgpt-tf"
+    # #4186. Recorded, never passed to Terraform: the account the profile
+    # resolved to (so the choice is visible afterwards without a credential),
+    # and the local files behind the SSH choice (so the commands that log in
+    # afterwards do not have to be told the key again).
+    aws_account_id: str = ""
+    ssh_public_key_path: str = ""
+    ssh_identity_file: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """Serializable form, used for both `infra.json` and tfvars rendering."""
+        """Serializable form, used for `infra.json` and for API/CLI payloads."""
         return {
             "aws_region": self.aws_region,
             "aws_profile": self.aws_profile,
+            "aws_account_id": self.aws_account_id,
             "name_prefix": self.name_prefix,
             "owner_ip_cidr": self.owner_ip_cidr,
             "ssh_key_name": self.ssh_key_name,
             "ssh_public_key": self.ssh_public_key,
+            "ssh_public_key_path": self.ssh_public_key_path,
+            "ssh_identity_file": self.ssh_identity_file,
             "instance_type": self.instance_type,
             "root_volume_size": self.root_volume_size,
         }
+
+    def to_tfvars(self) -> dict[str, Any]:
+        """Just the keys Terraform declares -- see `TFVARS_FIELDS`."""
+        full = self.to_dict()
+        return {key: full[key] for key in TFVARS_FIELDS}
 
 
 # --- Terraform binary + configuration materialization ---
@@ -274,23 +306,19 @@ def saved_settings() -> InfraSettings | None:
         root_volume_size=int(saved.get("root_volume_size") or 100),
         aws_profile=str(saved.get("aws_profile", "")),
         name_prefix=str(saved.get("name_prefix") or "nyxgpt-tf"),
+        aws_account_id=str(saved.get("aws_account_id", "")),
+        ssh_public_key_path=str(saved.get("ssh_public_key_path", "")),
+        ssh_identity_file=str(saved.get("ssh_identity_file", "")),
     )
 
 
-def _configured_cloud_reference() -> dict[str, str]:
-    """Return config.ini's `[cloud]` profile/region reference, or empty strings on failure."""
-    try:
-        from nyxgpt import aws_credentials_setup
+def read_ssh_public_key(path_or_material: str) -> str:
+    """Return OpenSSH public key material, reading it from disk when given a path.
 
-        return aws_credentials_setup.cloud_reference_status(config_mod.load_config())
-    except Exception:
-        # A missing//invalid config.ini must not block provisioning -- every
-        # value it would supply also has a flag and an environment fallback.
-        return {"profile": "", "region": ""}
-
-
-def _read_ssh_public_key(path_or_material: str) -> str:
-    """Return OpenSSH public key material, reading it from disk when given a path."""
+    Public since #4186: `nyxgpt.cloud_identity` resolves the SSH choice for
+    every `nyxgpt cloud` command and must reach this reader rather than grow a
+    second copy of the "that is a PRIVATE key" refusal below.
+    """
     value = path_or_material.strip()
     if not value:
         return ""
@@ -313,65 +341,62 @@ def _read_ssh_public_key(path_or_material: str) -> str:
     return value
 
 
-def resolve_settings(args: argparse.Namespace) -> InfraSettings:
+def resolve_settings(args: argparse.Namespace, *, announce: bool = True) -> InfraSettings:
     """Merge explicit flags over saved settings, config.ini, and the environment.
+
+    The account and the SSH key both come from `nyxgpt.cloud_identity`, the
+    single resolver every `nyxgpt cloud` path shares (#4186). Interactively it
+    asks for whichever of the two was not given, offering the resolved value
+    as a default the operator takes with Enter and showing the profile *and*
+    the account id it resolves to; non-interactively (`--yes`, no TTY) it takes
+    those defaults and prints them. Neither is chosen invisibly, and a missing
+    SSH key is a question rather than the wall it used to be.
 
     The owner IP is re-detected on every run unless `--owner-ip` pins it: the
     security group is only useful while it points at where the owner actually
     is, and a plan that quietly reuses a stale IP would look like a no-op
     while leaving the operator locked out.
+
+    `announce=False` suppresses the one-line summary for a caller that has
+    already printed it -- `destroy_infra` falling back to this resolver, which
+    runs after its own disclosure.
     """
     saved = load_settings()
-    reference = _configured_cloud_reference()
 
-    region = (
-        getattr(args, "region", None)
-        or saved.get("aws_region")
-        or reference.get("region")
-        or os.environ.get("AWS_REGION")
-        or os.environ.get("AWS_DEFAULT_REGION")
-        or "us-east-1"
+    resolved = cloud_identity.resolve_account(args)
+    # Re-stamped with the region actually used, so the announced account and
+    # the provisioned one can never disagree: the resolver reports "" when
+    # nothing named a region, and this module's own last-resort default is
+    # `us-east-1`. Announcing the resolver's empty value would print no region
+    # beside an apply that used one.
+    account = (
+        resolved
+        if resolved.region
+        else cloud_identity.AccountChoice(
+            profile=resolved.profile,
+            region="us-east-1",
+            account_id=resolved.account_id,
+            source=resolved.source,
+        )
     )
-    profile = (
-        getattr(args, "profile", None)
-        or saved.get("aws_profile")
-        or reference.get("profile")
-        or os.environ.get("AWS_PROFILE")
-        or ""
-    )
+    region = account.region
 
     explicit_ip = getattr(args, "owner_ip", None)
     owner_ip_cidr = normalize_cidr(explicit_ip if explicit_ip else detect_current_public_ip())
 
-    ssh_key_name = getattr(args, "ssh_key_name", None) or ""
-    ssh_public_key_arg = getattr(args, "ssh_public_key", None) or ""
-    if ssh_key_name and ssh_public_key_arg:
-        raise CloudCommandError(
-            "Pass either --ssh-key-name (an EC2 key pair that already exists) or "
-            "--ssh-public-key (a .pub file to register), not both."
-        )
-    if ssh_public_key_arg:
-        ssh_public_key = _read_ssh_public_key(ssh_public_key_arg)
-    elif ssh_key_name:
-        ssh_public_key = ""
-    else:
-        ssh_key_name = str(saved.get("ssh_key_name", ""))
-        ssh_public_key = str(saved.get("ssh_public_key", ""))
-
-    if not ssh_key_name and not ssh_public_key:
-        raise CloudCommandError(
-            "No SSH key configured, and SSH is the only way into a nyxGPT instance "
-            "(see product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md). Re-run with "
-            "--ssh-public-key ~/.ssh/id_ed25519.pub (registers a new EC2 key pair) or "
-            "--ssh-key-name <existing-pair>."
-        )
+    ssh = cloud_identity.resolve_ssh(args, account)
+    if announce:
+        cloud_identity.announce(account, ssh)
 
     return InfraSettings(
         aws_region=str(region),
-        aws_profile=str(profile),
+        aws_profile=str(account.profile),
+        aws_account_id=str(account.account_id),
         owner_ip_cidr=owner_ip_cidr,
-        ssh_key_name=str(ssh_key_name),
-        ssh_public_key=str(ssh_public_key),
+        ssh_key_name=str(ssh.key_name),
+        ssh_public_key=str(ssh.public_key),
+        ssh_public_key_path=str(ssh.public_key_path),
+        ssh_identity_file=str(ssh.identity_file),
         instance_type=str(
             getattr(args, "instance_type", None)
             or saved.get("instance_type")
@@ -403,7 +428,7 @@ def render_tfvars(settings: InfraSettings) -> str:
         "# Regenerated on every run; hand edits are lost.",
         "",
     ]
-    for key, value in settings.to_dict().items():
+    for key, value in settings.to_tfvars().items():
         # Empty strings mean "unset" for every variable here, and the
         # Terraform defaults (or the mutually-exclusive sibling) handle them.
         if value == "":
@@ -836,7 +861,13 @@ def infra_status() -> dict[str, Any]:
             "vpc_id": state.get("vpc_id") or "",
             "subnet_id": state.get("subnet_id") or "",
             "security_group_id": state.get("security_group_id") or "",
-            "ssh_key_name": state.get("ssh_key_name") or "",
+            # The record behind the Terraform output, for the same reason the
+            # region and instance type above read it (#4186): the key pair is
+            # the one the resolver chose and wrote down, so an apply whose
+            # output read failed -- or one made with `--ssh-key-name`, where
+            # Terraform registers nothing to output -- still reports which key
+            # the deployment was given.
+            "ssh_key_name": state.get("ssh_key_name") or settings.get("ssh_key_name") or "",
         }
 
     return {
@@ -860,6 +891,23 @@ def infra_status() -> dict[str, Any]:
         "subnet_id": values.get("subnet_id") or "",
         "security_group_id": values.get("security_group_id") or "",
         "ssh_key_name": values.get("ssh_key_name") or "",
+        # #4186. Which AWS account this substrate was provisioned in, as the
+        # profile name *and* the account id the resolver recorded for it. Read
+        # from `infra.json`, so this is a local read like every other field
+        # here -- the id is recorded at resolve time precisely so reporting it
+        # later needs no credential and no STS call. Empty on a machine that
+        # did not provision the substrate (on the instance, in a Pod), which is
+        # the same "no source here can answer" `known` already describes.
+        "aws_profile": settings.get("aws_profile") or "",
+        "aws_account_id": settings.get("aws_account_id") or "",
+        # Rendered here rather than by each reader: the four branches ("profile
+        # (id)" / id only / profile only / "not recorded here") are one
+        # decision, and a second copy in the dashboard's TypeScript had already
+        # drifted on the apostrophe before it shipped (D-066).
+        "aws_account_label": cloud_identity.recorded_account_label(
+            str(settings.get("aws_profile") or ""), str(settings.get("aws_account_id") or "")
+        ),
+        "ssh_identity_file": settings.get("ssh_identity_file") or "",
         "owner_ip_cidr": owner_ip_cidr,
         # The access model is a property of the configuration, not of a live
         # lookup: the security group has exactly one inbound rule and the
@@ -871,10 +919,12 @@ def infra_status() -> dict[str, Any]:
             "open_ports": [22] if provisioned else [],
             "ssh_only": True,
             "world_open_ingress": False,
-            "reachability": (
-                "SSH tunnel to loopback-bound services "
-                "(product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md)"
-            ),
+            # #4182: no repository path in operator-facing text. The reader of
+            # this field is looking at a dashboard or a `cloud status` payload
+            # on a machine that installed nyxGPT from an artifact and has no
+            # checkout, so a decision-record filename told them nothing they
+            # could follow.
+            "reachability": "SSH tunnel to loopback-bound services",
         },
     }
 

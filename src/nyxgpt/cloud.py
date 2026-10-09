@@ -39,7 +39,6 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -117,10 +116,18 @@ def _resolve_region(args: argparse.Namespace) -> str | None:
     class of gap as the profile, and produces the same wrong-place lookup.
     `None` still means "let boto3 resolve it", which is the honest answer when
     nothing here knows.
+
+    The substrate handoff comes first and is this command's own step: the group
+    being retargeted lives in the region `state.json` recorded for it,
+    whatever any later configuration says. Everything after it is the shared
+    resolver's chain, read from `nyxgpt.cloud_identity` rather than restated
+    here (#4186) -- imported late, since that module imports this one.
     """
     explicit = getattr(args, "region", None)
     if explicit:
         return str(explicit)
+    from nyxgpt import cloud_identity
+
     state = _load_cloud_state()
     region = (
         state.get("region")
@@ -128,8 +135,7 @@ def _resolve_region(args: argparse.Namespace) -> str | None:
         # above (#4136): a macOS deployment records only `mac_*` keys, and
         # looking up its group in whatever region came next finds nothing.
         or state.get("mac_region")
-        or _saved_infra_settings().get("aws_region")
-        or _configured_cloud_reference().get("region")
+        or cloud_identity.account_default().region
     )
     return str(region) if region else None
 
@@ -173,55 +179,50 @@ def normalize_cidr(ip_or_cidr: str) -> str:
     return cidr
 
 
-def _configured_cloud_reference() -> dict[str, str]:
-    """Return config.ini's `[cloud]` profile/region reference, or empty strings on failure.
-
-    Mirrors `cloud_infra._configured_cloud_reference`. Imported lazily because
-    this module is imported *by* `cloud_infra` (and through it by most of the
-    `nyxgpt cloud` surface): a module-scope import of the config stack would
-    close an import cycle. A missing or invalid config.ini must never block the
-    lockout-recovery command -- every value it supplies also has a flag and an
-    environment fallback.
-    """
-    try:
-        from nyxgpt import aws_credentials_setup
-        from nyxgpt import config as config_mod
-
-        return aws_credentials_setup.cloud_reference_status(config_mod.load_config())
-    except Exception:
-        return {"profile": "", "region": ""}
-
-
-def _saved_infra_settings() -> dict[str, Any]:
-    """Return what the last `cloud infra apply` recorded (`infra.json`), or `{}`."""
-    try:
-        from nyxgpt import cloud_infra
-
-        return cloud_infra.load_settings()
-    except Exception:
-        return {}
-
-
 def _resolve_profile(args: argparse.Namespace) -> str:
     """Resolve the AWS profile by the same documented order the substrate commands use.
 
     `--profile` > the profile the last `cloud infra apply` recorded
     (`infra.json`) > config.ini `[cloud] profile` > `AWS_PROFILE` > `""`
-    (boto3's own default chain). That is exactly
-    `cloud_infra.resolve_settings`'s order, and matching it is the whole point
+    (boto3's own default chain). Matching that order is the whole point
     (#3993): until this existed every client built here authenticated through
     boto3's default chain alone, so an operator whose *default* profile names a
     different account got `InvalidGroup.NotFound` for a security group that
     plainly exists -- reported, at that moment, to someone locked out of the
     instance and unable to check.
+
+    Since #4186 the order is *implemented* once, in `nyxgpt.cloud_identity`,
+    and this delegates to it. Three hand-written copies of one chain is three
+    chances for them to drift, which is how the same wrong-account lookup kept
+    coming back; imported late because that module imports this one for
+    `CloudCommandError`.
     """
-    return str(
-        getattr(args, "profile", None)
-        or _saved_infra_settings().get("aws_profile")
-        or _configured_cloud_reference().get("profile")
-        or os.environ.get("AWS_PROFILE")
-        or ""
-    )
+    from nyxgpt import cloud_identity
+
+    return cloud_identity.account_default(args).profile
+
+
+def _resolve_account(args: argparse.Namespace, region: str | None) -> Any:
+    """Resolve the account for a command that already knows its region (#4186).
+
+    `allow-ip`'s region comes from the substrate handoff, which the shared
+    resolver deliberately does not read -- it is this command's own fallback
+    chain, and `state.json` names the region the *group being retargeted*
+    lives in. So the account is resolved by the shared resolver (prompting
+    with a default when there is a terminal) and then pinned to that region,
+    rather than letting the two disagree about where the lookup ran.
+    """
+    from nyxgpt import cloud_identity
+
+    account = cloud_identity.resolve_account(args)
+    if region and region != account.region:
+        return cloud_identity.AccountChoice(
+            profile=account.profile,
+            region=region,
+            account_id=account.account_id,
+            source=account.source,
+        )
+    return account
 
 
 def _get_ec2_client(region: str | None, profile: str = "") -> Any:
@@ -433,8 +434,15 @@ def allow_ip(args: argparse.Namespace) -> int:
         region = _resolve_region(args)
         # Resolved once and reused for both the EC2 client and the failure
         # annotation, so the two can never disagree about which identity was
-        # used (#3993).
-        profile = _resolve_profile(args)
+        # used (#3993) -- and printed, so the operator sees the account this
+        # lookup ran in whether or not it fails (#4186). Printing it on the
+        # happy path too is what keeps a wrong-account success (a group of the
+        # same name in the wrong account) from being silent.
+        account = _resolve_account(args, region)
+        profile = account.profile
+        from nyxgpt import cloud_identity
+
+        cloud_identity.announce(account)
         explicit_ip = getattr(args, "ip", None)
         new_cidr = (
             normalize_cidr(explicit_ip)

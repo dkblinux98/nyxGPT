@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_infra
+from nyxgpt import cloud_identity, cloud_infra
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
@@ -313,34 +313,62 @@ def ensure_lock_table(table: str, region: str, profile: str = "") -> list[str]:
 
 
 def resolve_backend_settings(args: argparse.Namespace) -> BackendSettings:
-    """Merge flags over saved backend settings, then over the substrate's own region.
+    """Merge flags over saved backend settings, then over the shared account chain.
+
+    The account and region come from `nyxgpt.cloud_identity` -- the single
+    resolver every `nyxgpt cloud` path shares (#4186) -- with this command's own
+    `backend.json` record inserted as its `prior` layer, directly below the
+    flags. `bootstrap` and `migrate` authenticate to S3 and DynamoDB and read
+    the account id to name the bucket, so they are squarely inside that issue's
+    class: interactively the account is asked for with the resolved value as
+    the default (showing the profile *and* the account id), non-interactively
+    (`--yes`, no TTY) it is taken and printed. It is never chosen invisibly.
+
+    Until the review of #4187 this walked its own copy of the chain and stopped
+    two steps short of the documented order -- no `config.ini [cloud]`, which is
+    exactly where `nyxgpt cloud credentials-setup` writes the profile, so state
+    commands could authenticate as a different identity than every other cloud
+    command on the same machine.
 
     The region defaults to whatever `nyxgpt cloud infra` is provisioning into:
     keeping state in a different region than the substrate adds a second
-    regional dependency to every apply for no benefit.
+    regional dependency to every apply for no benefit. That step is the shared
+    resolver's `infra.json` layer; `us-east-1` remains this command's own
+    last resort, since the resolver reports "" when nothing named a region.
     """
     saved = load_backend_settings()
-    infra = cloud_infra.load_settings()
 
-    region = (
-        getattr(args, "region", None)
-        or (saved.region if saved else "")
-        or infra.get("aws_region")
-        or os.environ.get("AWS_REGION")
-        or os.environ.get("AWS_DEFAULT_REGION")
-        or "us-east-1"
+    resolved = cloud_identity.resolve_account(
+        args,
+        prior=cloud_identity.AccountChoice(
+            profile=saved.profile if saved else "",
+            region=saved.region if saved else "",
+            source=cloud_identity.SOURCE_RECORD,
+        ),
     )
-    profile = (
-        getattr(args, "profile", None)
-        or (saved.profile if saved else "")
-        or infra.get("aws_profile")
-        or os.environ.get("AWS_PROFILE")
-        or ""
+    region = resolved.region or "us-east-1"
+    profile = resolved.profile
+    account = (
+        resolved
+        if resolved.region
+        else cloud_identity.AccountChoice(
+            profile=profile,
+            region=region,
+            account_id=resolved.account_id,
+            source=resolved.source,
+        )
     )
+    cloud_identity.announce(account)
 
     bucket = getattr(args, "bucket", None) or (saved.bucket if saved else "")
     if not bucket:
-        bucket = default_bucket_name(aws_account_id(str(region), str(profile)), str(region))
+        # The resolver's id is best-effort and already paid for (one cached STS
+        # call per process); `aws_account_id` is the must-have form, which
+        # raises with the underlying error attached. Only reached when the
+        # resolver could not read one, so the bucket name never costs a second
+        # round trip.
+        resolved_id = account.account_id or aws_account_id(str(region), str(profile))
+        bucket = default_bucket_name(resolved_id, str(region))
 
     return BackendSettings(
         bucket=str(bucket),

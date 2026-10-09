@@ -287,6 +287,18 @@ type CloudInfraStatus = {
   subnet_id: string;
   security_group_id: string;
   ssh_key_name: string;
+  // Which AWS account the substrate was provisioned in (#4186): the profile
+  // name and the account id it resolved to, recorded by the resolver at
+  // provision time so reporting it here needs no credential. Both empty on a
+  // machine that did not provision it — the instance, or an api Pod — which is
+  // the same "no source here can answer" `known` already covers.
+  // `aws_account_label` is the rendered form, built by the one Python copy of
+  // that wording and read here as-is. Optional: an api older than this page
+  // does not send it.
+  aws_profile: string;
+  aws_account_id: string;
+  aws_account_label?: string;
+  ssh_identity_file: string;
   owner_ip_cidr: string;
   access_model: { open_ports: number[]; ssh_only: boolean; reachability: string };
 };
@@ -398,6 +410,15 @@ type CloudDeployStatus = {
   instance_id: string;
   instance_type: string;
   region: string;
+  // The AWS account and SSH key pair this deployment was made with (#4186),
+  // lifted to the top level of the payload so this card can show them without
+  // reaching into the substrate block. Local reads of what the resolver
+  // recorded; empty on a machine that did not run the deploy.
+  // `aws_account_label` is the rendered form — see `CloudInfraStatus`.
+  aws_profile: string;
+  aws_account_id: string;
+  aws_account_label?: string;
+  ssh_key_name: string;
   profiles: string[];
   // Where the deployment's chat sessions live (#3865). Empty when the deploy
   // record predates the flag, which is not the same claim as 'file'.
@@ -496,6 +517,21 @@ function historyLabel(entry: DeployHistoryEntry): string {
   const when = Number.isFinite(entry.ts) ? new Date(entry.ts * 1000).toLocaleString() : '';
   const what = entry.version ? `${entry.action} ${entry.version}` : entry.action;
   return `${when} · ${what} · ${entry.outcome}`;
+}
+
+// The AWS account a deployment was made in, as the profile name and the
+// account id it resolved to (#4186). The *string* is rendered server-side by
+// `cloud_identity.recorded_account_label` and shipped in both status payloads,
+// so this surface and `nyxgpt cloud status` cannot word it differently — the
+// four branches used to be written out again here in TypeScript and had
+// already drifted on the apostrophe (ledger D-066).
+//
+// The fallback covers one case only: an api older than this page, which has no
+// such field. It is the empty-knowledge wording, not a second copy of the
+// decision — there is nothing to decide from, since neither input is present
+// either.
+function awsAccountLabel(label: string | undefined): string {
+  return label || 'not recorded here';
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -1451,6 +1487,11 @@ export default function InfrastructurePage() {
                 <Row label="VPC" value={substrate.vpc_id} />
                 <Row label="Subnet" value={substrate.subnet_id} />
                 <Row label="Security group" value={substrate.security_group_id} />
+                {/* #4186: the account was the one provisioning input no screen
+                    ever showed, so an operator with more than one AWS account
+                    could not tell which held their instance. Profile and
+                    account id together — either alone is ambiguous. */}
+                <Row label="AWS account" value={awsAccountLabel(substrate.aws_account_label)} />
                 <Row label="SSH key pair" value={substrate.ssh_key_name} />
                 <Row
                   label="SSH allowed from"
@@ -1597,6 +1638,11 @@ export default function InfrastructurePage() {
                   }
                 />
                 <Row label="Region" value={cloud.region} />
+                {/* #4186. Same pair as the substrate card above, repeated here
+                    because this is the card an operator reads after a deploy
+                    and "which account is this in?" is part of the answer. */}
+                <Row label="AWS account" value={awsAccountLabel(cloud.aws_account_label)} />
+                <Row label="SSH key pair" value={cloud.ssh_key_name} />
                 {/* #3867: the two target OSes are provisioned by different
                     bootstraps and do not leave the instance in the same
                     shape — an EC2 Mac runs the Homebrew formulas under
