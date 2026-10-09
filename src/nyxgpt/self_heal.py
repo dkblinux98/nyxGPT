@@ -3460,6 +3460,12 @@ def status() -> dict[str, Any]:
         # leaving the operator to infer it from the rows.
         "substrate": decision.substrate,
         "substrate_source": decision.source,
+        # Whether the run was TOLD its substrate rather than inferring it. A
+        # boolean because that is what the page needs to decide between two
+        # sentences -- "their rows below are the cluster's own answer" is true
+        # of a cluster that is serving and false during an install that has
+        # created no Pods yet (#4184).
+        "substrate_declared": decision.declared,
         "compose_probe_available": survey.compose_probe.available,
         # Whether a Compose survey was a question about this deployment at all
         # (#4137). `available=False` plus `applicable=False` is "never asked,

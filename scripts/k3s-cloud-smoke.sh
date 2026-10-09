@@ -19,7 +19,7 @@
 # hand-maintained approximation of a bootstrap is evidence about the
 # approximation (the #3860 lesson).
 #
-# Twelve steps, and seven of them carry fault injections -- a job that only
+# Fourteen steps, and nine of them carry fault injections -- a job that only
 # runs the happy path passes on every machine that fails to reproduce the bug
 # (#3753):
 #
@@ -82,7 +82,18 @@
 #      agree that the `nyxgpt-api` ServiceAccount may read that one ConfigMap
 #      read-only and no other, an off-cluster read of the same cluster must
 #      still say UNKNOWN, and deleting the record must take the answer with it.
-#  12  The `--no-kubernetes` transition, against the live cluster and bridge
+#  12  FAULT INJECTION: a DECLARED substrate, before anything answers (#4184).
+#      Step 10's host answers for a cluster that is UP; this is the other half
+#      of the class and the half the rc1 report is about -- during the deploy
+#      nothing answers yet, so inference falls back to the host and the output
+#      carried a Compose file, a native install mode and a restart command for
+#      an api that did not exist. Asserts their ABSENCE, which is the criterion.
+#  13  FAULT INJECTION: the instance's own sshd must offer a post-quantum key
+#      exchange (#4184). This runner already does by default, so a classical-
+#      only drop-in is injected first -- both to reproduce the owner's
+#      condition and to prove the product REPORTS a drop-in that is parsed and
+#      overridden rather than announcing success it did not get.
+#  14  The `--no-kubernetes` transition, against the live cluster and bridge
 #      the steps above built: the native section really stops and removes the
 #      bridge, frees 8000, uninstalls k3s and frees 6443 -- and a second pass
 #      on a box with none of them is a no-op, which every first deploy runs.
@@ -160,7 +171,7 @@ if ! systemctl --user status >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-step "1/12  Execute the deploy's own k3s bootstrap"
+step "1/14  Execute the deploy's own k3s bootstrap"
 # ---------------------------------------------------------------------------
 python3 - > "$WORK/k3s-bootstrap.sh" <<'PY'
 from nyxgpt.cloud_deploy import render_k3s_bootstrap
@@ -231,7 +242,7 @@ NODE_IP="$(awk -F'[/:]+' '/server:/ {print $3; exit}' "$KUBECONFIG")"
 log "MEASURED: the kubeconfig points at https://${NODE_IP}:6443"
 
 # ---------------------------------------------------------------------------
-step "2/12  The access surface: #3503 says nothing but TCP 22"
+step "2/14  The access surface: #3503 says nothing but TCP 22"
 # ---------------------------------------------------------------------------
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
@@ -366,7 +377,7 @@ fi
 log "PASS: CoreDNS is Available with 0 restarts and no resolver loop"
 
 # ---------------------------------------------------------------------------
-step "3/12  k8s/*.yaml applies to k3s UNCHANGED"
+step "3/14  k8s/*.yaml applies to k3s UNCHANGED"
 # ---------------------------------------------------------------------------
 # Through the product's own resource sync and secret bootstrap, not a
 # hand-rolled copy: what a deploy applies is the PACKAGED manifests under
@@ -432,7 +443,7 @@ fi
 log "PASS: every Service is ClusterIP"
 
 # ---------------------------------------------------------------------------
-step "4/12  FAULT INJECTION: a docker-built image is invisible to k3s"
+step "4/14  FAULT INJECTION: a docker-built image is invisible to k3s"
 # ---------------------------------------------------------------------------
 # k3s runs its own containerd with its own image store, and every Deployment in
 # k8s/ pins `imagePullPolicy: IfNotPresent` against a `:local` tag that exists
@@ -511,7 +522,7 @@ kubectl -n "$NAMESPACE" wait --for=condition=Ready pod/import-probe-after --time
 log "PASS (fix proven): after _k3s_import_image the same Pod runs"
 
 # ---------------------------------------------------------------------------
-step "5/12  The access bridge, end to end"
+step "5/14  The access bridge, end to end"
 # ---------------------------------------------------------------------------
 # `k8s/`'s Services are ClusterIP-only, so nothing binds 127.0.0.1:8000 on the
 # instance the way the native services do -- and the SSH tunnel forwards to
@@ -555,7 +566,7 @@ log "MEASURED: 127.0.0.1:8000/health -> $bridged"
 log "PASS: systemd --user unit -> nyxgpt ops port-forward -> ClusterIP Service -> Pod"
 
 # ---------------------------------------------------------------------------
-step "6/12  FAULT INJECTION: the bridge is what was measured"
+step "6/14  FAULT INJECTION: the bridge is what was measured"
 # ---------------------------------------------------------------------------
 # Without this, step 5 would pass on any runner where something else happened
 # to be listening on 8000.
@@ -568,7 +579,7 @@ fi
 log "PASS: with the bridge stopped, 127.0.0.1:8000 is dead"
 
 # ---------------------------------------------------------------------------
-step "7/12  FAULT INJECTION: a corpse from a finished rollout fails the install"
+step "7/14  FAULT INJECTION: a corpse from a finished rollout fails the install"
 # ---------------------------------------------------------------------------
 # The 2026-08-26 acceptance blocker (#3956). A `--kubernetes` deploy applies
 # `k8s/` (whose ConfigMap carries the placeholder error-tracking DSN), brings
@@ -803,7 +814,7 @@ log "      self-heal and canary alike -- and one the current ReplicaSet owns sti
 log "      with its reason"
 
 # ---------------------------------------------------------------------------
-step "8/12  FAULT INJECTION: kubectl on a k3s node is not kubectl"
+step "8/14  FAULT INJECTION: kubectl on a k3s node is not kubectl"
 # ---------------------------------------------------------------------------
 # The second 2026-08-26 blocker. `/usr/local/bin/kubectl` on a k3s node is a
 # symlink to the `k3s` binary, whose shim defaults KUBECONFIG to the root-only
@@ -887,7 +898,7 @@ log "PASS: the product finds the kubeconfig kubectl would have, and a probe that
 log "      not ask never answers 'native'"
 
 # ---------------------------------------------------------------------------
-step "9/12  The applied image tags name the build and the version"
+step "9/14  The applied image tags name the build and the version"
 # ---------------------------------------------------------------------------
 # The third 2026-08-26 blocker: four build paths shared `nyxgpt-api:local` /
 # `nyxgpt-web:local`, so an instance running published 3.0.0rc14 reported its
@@ -939,7 +950,7 @@ diff -r --exclude=secret.yaml "$CHECKOUT/k8s" "$K8S_DIR" \
 log "PASS: the manifests are still byte-identical to k8s/ (secret.yaml aside)"
 
 # ---------------------------------------------------------------------------
-step "10/12  FAULT INJECTION: host-side probes must not answer for the cluster"
+step "10/14  FAULT INJECTION: host-side probes must not answer for the cluster"
 # ---------------------------------------------------------------------------
 # #4137, and it needs a live k3s host rather than unit fixtures because the
 # whole defect is a property of this vantage point: a k3s host is NEITHER
@@ -1170,7 +1181,7 @@ unset NYXGPT_COMPOSE_FILE
 kubectl -n "$NAMESPACE" delete pod cassandra-0 grafana-smoke --now >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-step "11/12  FAULT INJECTION: a Pod must be able to report its own deployment"
+step "11/14  FAULT INJECTION: a Pod must be able to report its own deployment"
 # ---------------------------------------------------------------------------
 # #4138, and like step 10 it is a property of a VANTAGE POINT no unit fixture
 # reproduces -- here the opposite one. On the owner's EC2 k3s instance the
@@ -1467,7 +1478,209 @@ log "PASS (attribution): the record is the source -- delete it and the answer go
 unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT
 
 # ---------------------------------------------------------------------------
-step "12/12  The --no-kubernetes transition actually moves the box"
+step "12/14  FAULT INJECTION: a DECLARED substrate, before anything answers"
+# ---------------------------------------------------------------------------
+# #4184, and the reason step 10 above could not cover it. Step 10 proves the
+# routing on a host whose cluster ANSWERS. This box, with the Pods deleted
+# again, is the other half of the same class and the half the owner's rc1
+# report is about: during the deploy itself nothing answers yet, so inference
+# has nothing to work from and every check falls back to the host. On that
+# instance it produced, mid-deploy:
+#
+#   WARNING self-heal: `docker compose ps` exited 125 ... querying
+#   /home/ec2-user/.nyxGPT/docker-compose.yml -- observability survey
+#   unavailable this pass
+#
+# plus `Install mode (native api/web): artifact (published/vendored build)` on
+# a box whose api and web exist only as Pods, and "Restart the API to pick this
+# up (`nyxgpt ops restart api`)" before any api was installed.
+#
+# What is asserted here is the ABSENCE of those three, which is deliberate:
+# this issue's acceptance criterion is that the output carries no Compose
+# reference and no native-install claim, and a presence-only assertion passes
+# happily on output that also contains the wrong answer.
+#
+# The injection is the same box the earlier steps built, reduced to the
+# deploy's own starting conditions: no core Pods (deleted in step 10), a
+# `NYXGPT_COMPOSE_FILE` pointing at nothing, no `nyxgpt-cassandra` container --
+# and the declaration the deploy exports. Both pre-fix readings are asserted to
+# still produce their false answers here, so a silenced check cannot pass as a
+# routed one.
+export NYXGPT_COMPOSE_FILE="$WORK/there-is-no-compose-stack-here/docker-compose.yml"
+kubectl -n "$NAMESPACE" delete pod cassandra-0 grafana-smoke --now >/dev/null 2>&1 || true
+log "MEASURED (deploy-time conditions): core Pods in the namespace:"
+kubectl -n "$NAMESPACE" get pods -o name --no-headers 2>/dev/null | sed 's/^/    | /' || true
+
+python3 - <<'PY'
+import sys
+
+from nyxgpt import ops, self_heal, substrate
+
+# --- half (a): the fault injection, asserted rather than assumed ------------
+# With nothing declared, this box is exactly the box that logged the Compose
+# failure: the survey has no cluster to infer from and runs `docker compose ps`.
+probed = []
+real_probe = self_heal.compose_probe
+
+
+def _counting_probe():
+    probed.append(True)
+    return real_probe()
+
+
+self_heal.compose_probe = _counting_probe
+try:
+    survey = self_heal.component_survey()
+finally:
+    self_heal.compose_probe = real_probe
+print(f"    | with no declaration: compose probed={len(probed)}  "
+      f"undetermined={survey.compose_probe.undetermined}")
+if not probed:
+    sys.exit(
+        "FAULT INJECTION FAILED: the survey did not probe Compose on a box with no cluster, "
+        "so the declared run below proves nothing"
+    )
+
+# --- half (b): the product's reading ---------------------------------------
+with substrate.declared_as(substrate.SUBSTRATE_KUBERNETES):
+    probed.clear()
+    self_heal.compose_probe = _counting_probe
+    try:
+        declared_survey = self_heal.component_survey()
+        payload = self_heal.status()
+    finally:
+        self_heal.compose_probe = real_probe
+    print(f"    | declared kubernetes: compose probed={len(probed)}  "
+          f"substrate={payload['substrate']}  source={payload['substrate_source']}")
+    if probed:
+        sys.exit("a declared Kubernetes run still ran `docker compose ps`")
+    if payload["observability_source"] != "kubernetes":
+        sys.exit(f"the tier was surveyed as {payload['observability_source']!r} on a declared run")
+    reason = declared_survey.compose_probe.reason
+    for leak in ("docker-compose.yml", "docker compose ps", "125"):
+        if leak in reason:
+            sys.exit(f"the scope statement still names {leak!r}")
+    # The sentence must be true when it is printed: there are no rows to read.
+    if "rows below" in reason:
+        sys.exit("the scope statement points at Pod rows that do not exist yet")
+print("    | the declaration routed the survey; the host was never asked about Compose")
+
+# --- the session-backend guidance, mid-deploy ------------------------------
+# Printed BEFORE `ops install` by the provisioning script, so "Restart the API
+# to pick this up" names a command that would have failed.
+import pathlib
+cfg = pathlib.Path.home() / ".nyxGPT" / "config.ini"
+cfg.parent.mkdir(parents=True, exist_ok=True)
+if not cfg.exists():
+    cfg.write_text("[nyxgpt]\nsession_backend = file\n", encoding="utf-8")
+with substrate.declared_as(substrate.SUBSTRATE_KUBERNETES):
+    results = ops.set_session_backend("cassandra", cfg_path=cfg)
+detail = results[0].details
+print(f"    | session-backend guidance: {detail}")
+if "nyxgpt ops restart api" in detail:
+    sys.exit("the guidance still names a restart of an api this box does not have")
+PY
+log "PASS (fix proven): the declared substrate routes the surveys a deploy triggers"
+
+# --- doctor's own text, on this box ----------------------------------------
+# The surface the owner read. Asserted on the OUTPUT rather than on a helper,
+# because the finding was a printed record and not a return value.
+set +e
+doctor_out="$(NYXGPT_SUBSTRATE=kubernetes python3 -c \
+  'from types import SimpleNamespace; from nyxgpt import ops; raise SystemExit(ops.doctor(SimpleNamespace()))' 2>&1)"
+set -e
+echo "$doctor_out" | sed 's/^/    | /'
+if grep -q "^Install mode (native api/web):" <<<"$doctor_out"; then
+  fail "doctor still prints a native install mode as the install mode on a box whose
+        deployment is the cluster's -- the #4184 finding 2 record"
+fi
+if grep -q "Missing local Cassandra container" <<<"$doctor_out"; then
+  fail "the host Cassandra check still answers for a Kubernetes run"
+fi
+grep -q "Substrate: kubernetes" <<<"$doctor_out" \
+  || fail "doctor does not say which substrate its checks are about on a declared run"
+log "PASS (fix proven): no record is printed as a claim about a substrate that is not there"
+unset NYXGPT_COMPOSE_FILE
+
+# ---------------------------------------------------------------------------
+step "13/14  FAULT INJECTION: the instance's sshd must offer a post-quantum KEX"
+# ---------------------------------------------------------------------------
+# #4184 finding 5. Every `nyxgpt cloud ops ...` on the owner's instance carried
+#
+#   ** WARNING: connection is not using a post-quantum key exchange algorithm.
+#   ** This session may be vulnerable to "store now, decrypt later" attacks.
+#
+# which is the CLIENT reporting what the SERVER offered. The fix is on the
+# instance nyxGPT provisions, and this runs the deploy's own text
+# (`SSHD_PQ_KEX_SECTION`) against this machine's real sshd.
+#
+# The injection matters here more than usual: this runner's OpenSSH already
+# offers a PQ exchange by default, so a bare run of the block would pass on a
+# box that never had the defect. A drop-in that sorts BEFORE the product's is
+# written first, which both reproduces the owner's condition (a server offering
+# only classical KEX) and exercises the `KexAlgorithms`-takes-its-first-value
+# rule the product's read-back exists to catch.
+if ! ssh -Q kex 2>/dev/null | grep -qE '^(mlkem768x25519-sha256|sntrup761x25519-sha512@openssh.com)$'; then
+  log "SKIP: this runner's OpenSSH implements no post-quantum KEX, so there is nothing"
+  log "      here to prove the drop-in against (the block's own no-op branch covers it)"
+else
+  python3 -c \
+    'from nyxgpt.cloud_deploy import SSHD_PQ_KEX_SECTION; print("set -euo pipefail"); print(SSHD_PQ_KEX_SECTION)' \
+    > "$WORK/sshd-pq.sh"
+  log "The sshd text (as a deploy sends it):"
+  sed 's/^/    | /' "$WORK/sshd-pq.sh"
+  # `sshd -t` needs the privilege-separation directory; on a real instance sshd
+  # is running and it exists. Created here so the block's own baseline check
+  # measures the config and not this runner's missing /run/sshd.
+  sudo mkdir -p /run/sshd
+  sudo rm -f /etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf
+
+  # --- half (a): the defect condition, on this box -------------------------
+  sudo tee /etc/ssh/sshd_config.d/10-nyxgpt-smoke-classical-only.conf >/dev/null <<'CLASSICAL'
+# Injected by k3s-cloud-smoke (#4184): a server that offers only classical key
+# exchange, which is what Amazon Linux 2023's sshd does by default and what put
+# OpenSSH's "store now, decrypt later" warning on every `cloud ops` command.
+KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256
+CLASSICAL
+  classical="$(sudo sshd -T 2>/dev/null | grep -i '^kexalgorithms ' || true)"
+  log "MEASURED (defect condition reproduced): $classical"
+  if grep -qE 'mlkem|sntrup' <<<"$classical"; then
+    fail "the injected classical-only config did not take effect -- nothing below is evidence"
+  fi
+
+  # The product's block must REPORT this rather than claim success: its file is
+  # read second, and KexAlgorithms takes its first value.
+  ignored_out="$(bash "$WORK/sshd-pq.sh" 2>&1 || true)"
+  echo "$ignored_out" | sed 's/^/    | /'
+  grep -q "not in effect" <<<"$ignored_out" \
+    || fail "the block announced a post-quantum key exchange it did not obtain -- the
+             read-back is what keeps this from being a claim about a connection that
+             is still classical"
+  log "PASS: a parsed-but-overridden drop-in is reported, not announced as success"
+
+  # --- half (b): the product's reading, with the injection removed ---------
+  sudo rm -f /etc/ssh/sshd_config.d/10-nyxgpt-smoke-classical-only.conf \
+             /etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf
+  applied_out="$(bash "$WORK/sshd-pq.sh" 2>&1)"
+  echo "$applied_out" | sed 's/^/    | /'
+  grep -q "sshd offers a post-quantum key exchange" <<<"$applied_out" \
+    || fail "the deploy's sshd block did not put a post-quantum key exchange in place"
+  effective="$(sudo sshd -T 2>/dev/null | grep -i '^kexalgorithms ' || true)"
+  log "MEASURED (effective): $effective"
+  grep -qE '^kexalgorithms (mlkem768x25519-sha256|sntrup761x25519-sha512@openssh\.com)' \
+    <<<"$effective" \
+    || fail "sshd does not PREFER a post-quantum key exchange after the drop-in"
+  # `^` prepends: an older client's algorithms must still be offered, or this
+  # fix would lock out the very operators it is for.
+  grep -q 'curve25519-sha256' <<<"$effective" \
+    || fail "the drop-in dropped the classical algorithms instead of prepending to them"
+  sudo sshd -t || fail "sshd cannot validate its own config after the drop-in"
+  log "PASS (fix proven): PQ first, every classical algorithm still offered, config valid"
+  sudo rm -f /etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf
+fi
+
+# ---------------------------------------------------------------------------
+step "14/14  The --no-kubernetes transition actually moves the box"
 # ---------------------------------------------------------------------------
 # `--no-kubernetes` is documented as moving a deployment back to the native
 # substrate. The failure this proves against is silent in the worst available
@@ -1548,7 +1761,11 @@ log "nothing listens on the public interface, the product finds the cluster with
 log "KUBECONFIG exported, a finished rollout's leftover Pod no longer fails the"
 log "install, no host-side probe answers for the cluster from this host, a Pod of"
 log "the cluster can report the cloud deployment it is part of (and reports UNKNOWN"
-log "when nothing recorded one), the --no-kubernetes transition really retires it --"
-log "and all seven fault injections reproduced the failures they guard against."
+log "when nothing recorded one), a DECLARED substrate routes every survey before"
+log "anything answers -- with no Compose file, no native install mode and no"
+log "restart-the-api guidance in the output -- this instance's sshd offers a"
+log "post-quantum key exchange, the --no-kubernetes transition really retires the"
+log "cluster, and all nine fault injections reproduced the failures they guard"
+log "against."
 log "NOT covered here, by construction: a real EC2 instance, a real AWS security"
 log "group, and IMDSv2 -- see docs/live-verification-ci.md."

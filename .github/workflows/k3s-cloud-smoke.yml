@@ -17,7 +17,7 @@ name: k3s Cloud Smoke
 # `render_provision_script()`, rather than a hand-maintained copy. A smoke that
 # tests an approximation certifies the approximation -- the #3860 lesson.
 #
-# Seven of its twelve steps carry FAULT INJECTIONS (#3753's both-halves rule): the
+# Nine of its fourteen steps carry FAULT INJECTIONS (#3753's both-halves rule): the
 # bootstrap step proves an overlapping VPC network is refused and nothing
 # installed, the image-import step proves the Pod fails without the import and
 # runs with it, the bridge step proves 127.0.0.1:8000 goes dead when the bridge
@@ -71,6 +71,20 @@ name: k3s Cloud Smoke
 # readings still produce their false answers here, and then requires the
 # product's to produce the right ones.
 #
+# The eighth and ninth are #4184's, and they close the half of #4137's class
+# that inference structurally could not reach. Step 10 proves the routing on a
+# host whose cluster ANSWERS; step 12 is the deploy's own moment, where nothing
+# answers yet -- which is where the rc1 instance logged `docker compose ps`
+# exited 125 against a Compose file it never had, printed `Install mode (native
+# api/web): artifact` for api/web that exist only as Pods, and told the
+# operator to restart an api that was not installed. It asserts the ABSENCE of
+# all three, because a presence-only assertion passes on output that also
+# carries the wrong answer. Step 13 does the same for the instance's sshd: this
+# runner already offers a post-quantum key exchange by default, so a
+# classical-only drop-in is injected first -- which reproduces the owner's
+# condition AND exercises the `KexAlgorithms`-takes-its-first-value rule that
+# makes the product's read-back necessary.
+#
 # The last step is the `--no-kubernetes` transition, and it needs a running
 # cluster and a running bridge to mean anything -- which is why it runs here
 # rather than in a unit test. It proves the native deploy's teardown really
@@ -101,6 +115,10 @@ on:
       - 'src/nyxgpt/cloud_cluster_record.py'
       - 'src/nyxgpt/cloud_infra.py'
       - 'src/nyxgpt/cloud_imds.py'
+      # Step 12's subject (#4184): THE substrate decision. Every surface that
+      # routes through it is already listed above, so this is the one file that
+      # had to be added -- and it is the file a regression would land in.
+      - 'src/nyxgpt/substrate.py'
       - 'k8s/**'
       - 'terraform/aws/variables.tf'
       - 'scripts/k3s-cloud-smoke.sh'
@@ -118,6 +136,10 @@ on:
       - 'src/nyxgpt/cloud_cluster_record.py'
       - 'src/nyxgpt/cloud_infra.py'
       - 'src/nyxgpt/cloud_imds.py'
+      # Step 12's subject (#4184): THE substrate decision. Every surface that
+      # routes through it is already listed above, so this is the one file that
+      # had to be added -- and it is the file a regression would land in.
+      - 'src/nyxgpt/substrate.py'
       - 'k8s/**'
       - 'terraform/aws/variables.tf'
       - 'scripts/k3s-cloud-smoke.sh'

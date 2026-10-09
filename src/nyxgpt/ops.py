@@ -14687,6 +14687,7 @@ def infra_status() -> dict[str, Any]:
         # page, which carries the same two fields, cannot disagree with it.
         "substrate": decision.substrate,
         "substrate_source": decision.source,
+        "substrate_declared": decision.declared,
         # Where this answer was computed (#3988). `in_cluster` means the page
         # is describing the deployment it is itself being served from, which
         # is what makes the Compose/native rows above out of scope rather

@@ -39,6 +39,13 @@ type SelfHealStatus = {
   unhealthy_count: number;
   unknown_count?: number;
   compose_probe_reason?: string;
+  // Which substrate this component set was surveyed FOR, and how that was
+  // decided (#4184). The same pair the Self-Heal and Infrastructure pages
+  // render, from the one decision the API makes -- so no two screens can
+  // describe one instance as two different deployments. Absent from an older
+  // api, in which case the line is simply not shown.
+  substrate?: string;
+  substrate_source?: string;
 };
 
 type ResourceMetricsSummary = {
@@ -291,6 +298,12 @@ export default function AdminHealthPage() {
                         {selfHeal.compose_probe_reason && unknownCount > 0 && (
                           <p style={{ margin: 0, fontSize: 12, color: 'var(--muted-foreground)' }}>
                             Reason: <code>{selfHeal.compose_probe_reason}</code>
+                          </p>
+                        )}
+                        {selfHeal.substrate && (
+                          <p style={{ margin: 0, fontSize: 12, color: 'var(--muted-foreground)' }}>
+                            Substrate: <strong>{selfHeal.substrate}</strong>
+                            {selfHeal.substrate_source ? ` -- ${selfHeal.substrate_source}` : ''}
                           </p>
                         )}
                         {unhealthy.map((c) => (
