@@ -37,7 +37,7 @@ import time
 import tomllib
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from configparser import ConfigParser
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -58,6 +58,7 @@ from nyxgpt import (
     tracing,
 )
 from nyxgpt import metrics as prom_metrics
+from nyxgpt import substrate as substrate_mod
 from nyxgpt import verify as verify_mod
 from nyxgpt.config import (
     VALID_SESSION_BACKENDS,
@@ -5366,8 +5367,107 @@ def _expected_native_api_venv() -> tuple[str, str]:
     return "", f"no installed {formula} keg carrying a libexec/venv was found"
 
 
-def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
-    """Ask the api serving this host what IT is executing. `(build, why-not)`.
+#: The key inside `nyxgpt-secrets` that `k8s/deployment-*.yaml` expands into
+#: the api Pods' `NYXGPT_AUTH_API_KEY`. A key NAME, not a value -- the value
+#: exists only in the cluster and in the gitignored `k8s/secret.yaml`.
+K8S_AUTH_API_KEY_SECRET_KEY = "api-key"  # pragma: allowlist secret
+
+
+def _k8s_secret_entry(key: str) -> str:
+    """One key's value out of the `nyxgpt-secrets` Secret, or "" if it cannot be read.
+
+    The value never reaches a log or an argv: `kubectl get secret` returns it
+    on stdout, and `_run` logs stdout only on a NON-zero exit -- where there is
+    no value to leak. Factored out of `_k8s_error_tracking_dsn` when the API
+    key became the second caller (#4184): two `kubectl get secret` renderings
+    is two places for the go-template quoting to be got wrong.
+    """
+    if _which("kubectl") is None:
+        return ""
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "secret",
+            K8S_APP_SECRET_NAME,
+            "-o",
+            f'go-template={{{{index .data "{key}" | base64decode}}}}',
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return ""
+    value = (cp.stdout or "").strip()
+    return "" if value == "<no value>" else value
+
+
+def _serving_api_key(decision: substrate_mod.SubstrateDecision) -> tuple[str, str]:
+    """`(key, where-it-came-from)` for the api that is answering this host's port.
+
+    The credential has to come from the substrate that is SERVING, and on a
+    Kubernetes deployment that is not this host's `config.ini` (#4184 finding
+    3). A `nyxgpt cloud deploy --kubernetes` runs non-interactively with no
+    `--api-key`, so `_ensure_k8s_secret` mints a random one into
+    `nyxgpt-secrets`; the host's seeded `config.ini` keeps the example's empty
+    `[auth] api_key`. Every host-side read of `/api/v1/info` on that instance
+    therefore got HTTP 401 forever -- with the right key sitting in the cluster
+    the same command can read.
+
+    Falls back to the host config whenever the cluster has no key to give, so a
+    bring-your-own cluster whose Secret this process cannot read behaves exactly
+    as it did before. The *source* is returned alongside the key because a
+    refusal has to name which credential was refused: "the key in
+    ~/.nyxGPT/config.ini" and "the key in the cluster's nyxgpt-secrets Secret"
+    need different repairs.
+    """
+    from nyxgpt.config import get_auth_api_key
+
+    if decision.kubernetes:
+        key = _k8s_secret_entry(K8S_AUTH_API_KEY_SECRET_KEY)
+        if key:
+            return key, f"the {K8S_APP_SECRET_NAME} Secret in the {K8S_NAMESPACE} namespace"
+    try:
+        cfg = load_config()
+        key = get_auth_api_key(cfg)
+    except Exception as e:
+        return "", f"[auth] could not be read ({type(e).__name__}: {e})"
+    return key, NATIVE_CONFIG_HINT
+
+
+@dataclass(frozen=True)
+class ApiRuntimeProbe:
+    """What `_probe_running_api_runtime` learned: the build, why not, and whether it was REFUSED.
+
+    Iterable as the `(build, reason)` pair it has always returned, so every
+    existing caller and test reads unchanged; `unreadable` is the fact #4184
+    added. The distinction it carries is the one `doctor` has to make: an api
+    that is deliberately down (connection refused) is not a finding -- `doctor`
+    runs on machines whose stack is stopped -- while an api that ANSWERED and
+    would not let this command read it is a real, actionable problem that was
+    being dropped on the floor. On the owner's k3s instance that was a silent
+    401 on every pass.
+    """
+
+    build: RuntimeBuild | None
+    reason: str = ""
+    #: The api answered and the read still failed -- a refusal, a non-200, or a
+    #: body this version cannot parse. False when nothing answered at all.
+    unreadable: bool = False
+
+    def __iter__(self):
+        """`build, reason = probe` -- the 2-tuple this used to be."""
+        yield self.build
+        yield self.reason
+
+
+def _probe_running_api_runtime(
+    decision: substrate_mod.SubstrateDecision | None = None,
+) -> ApiRuntimeProbe:
+    """Ask the api serving this host what IT is executing.
 
     The authoritative read, and the reason the whole mechanism exists: every
     other answer ops can give is derived from what is on disk, and #4133 is
@@ -5375,75 +5475,98 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     say what the process is running, so it is asked.
 
     `/api/v1/info` is behind the API-key middleware when the *serving* api has
-    auth on, so the configured key is sent whenever one is configured at all
-    -- an operator who hardened their install must not lose this check as a
-    side effect. Deliberately NOT gated on this config's `[auth] enabled`
-    (#4182): that flag describes the file this command just read, and the
-    process answering on :8000 is a different thing -- a Pod reading a
-    Secret, a Compose container reading the mounted config, or a native api
-    started before the flag was turned off. Sending a key an unauthenticated
-    api ignores costs one header; withholding one it requires cost the owner
-    the whole check, and `ops status` reported "CANNOT DETERMINE -- answered
-    HTTP 401" with the key sitting in the config it had already loaded.
+    auth on, so a key is sent whenever one can be had at all -- an operator who
+    hardened their install must not lose this check as a side effect.
+    Deliberately NOT gated on this config's `[auth] enabled` (#4182): that flag
+    describes the file this command just read, and the process answering on
+    :8000 is a different thing -- a Pod reading a Secret, a Compose container
+    reading the mounted config, or a native api started before the flag was
+    turned off. Sending a key an unauthenticated api ignores costs one header;
+    withholding one it requires cost the owner the whole check.
+
+    **Which key, is a substrate question (#4184).** The key comes from the
+    substrate that is serving, via `_serving_api_key` -- for a Kubernetes
+    deployment the cluster's `nyxgpt-secrets`, not this host's `config.ini`,
+    which on a non-interactive `cloud deploy --kubernetes` never receives the
+    random key `_ensure_k8s_secret` minted. #4182 fixed the "no key was sent"
+    half of this and the owner's re-test still read HTTP 401 on every pass,
+    because the key being sent was the wrong one -- an unauthenticated read
+    reported as nothing is the same defect whichever way it is unauthenticated.
 
     Any failure to get an answer returns `None` plus the reason, which is
     reported as "could not determine": a probe that cannot reach the api has
-    learned nothing about which build is running, and reporting that as a
-    match is the defect. A refusal is phrased as a refusal and names the
-    repair, because "HTTP 401" tells an operator what happened and nothing
-    about what to do.
+    learned nothing about which build is running, and reporting that as a match
+    is the defect. A refusal is phrased as a refusal, names the credential that
+    was refused and the repair, and sets `unreadable` so `doctor` can report it
+    rather than swallow it.
     """
-    from nyxgpt.config import get_api_port, get_auth_api_key
+    from nyxgpt.config import get_api_port
 
     try:
         cfg = load_config()
     except Exception as e:  # pragma: no cover - unreadable config is its own report
-        return None, f"could not read config to find the api port ({type(e).__name__}: {e})"
+        return ApiRuntimeProbe(
+            None, f"could not read config to find the api port ({type(e).__name__}: {e})"
+        )
     port = get_api_port(cfg)
     url = f"http://127.0.0.1:{port}/api/v1/info"
     headers: dict[str, str] = {}
-    try:
-        key = get_auth_api_key(cfg)
-        if key:
-            headers[cfg.get("auth", "header", fallback="X-API-Key")] = key
-    except Exception as e:  # pragma: no cover - malformed [auth] is its own report
-        return None, f"could not read [auth] to authenticate the probe ({type(e).__name__}: {e})"
+    key, key_source = _serving_api_key(decision or deployment_substrate())
+    if key:
+        headers[cfg.get("auth", "header", fallback="X-API-Key")] = key
     try:
         resp = httpx.get(url, headers=headers, timeout=_RUNNING_BUILD_PROBE_TIMEOUT)
     except Exception as e:
-        return None, f"{url} did not answer ({type(e).__name__}: {e})"
+        return ApiRuntimeProbe(None, f"{url} did not answer ({type(e).__name__}: {e})")
     if resp.status_code in (401, 403):
         # Said as the actionable thing it is. Which of the two cases applies
         # is knowable from here -- a key was sent or it was not -- and they
-        # need different repairs, so neither is reported as the other.
+        # need different repairs, so neither is reported as the other. The
+        # credential is named (#4184): "does not accept the key" is not
+        # actionable until the operator knows WHICH key was offered.
         if headers:
-            return None, (
-                f"{url} refused the probe (HTTP {resp.status_code}): the api answering there "
-                f"does not accept the key in {NATIVE_CONFIG_HINT}. Repair: set [auth] api_key "
-                "to the key that api is running with (a Kubernetes deployment reads it from "
-                "the nyxgpt secret, a Compose one from the mounted config)."
+            return ApiRuntimeProbe(
+                None,
+                (
+                    f"{url} refused the probe (HTTP {resp.status_code}): the api answering "
+                    f"there does not accept the key in {key_source}. Repair: set that key to "
+                    "the one the serving api runs with (a Kubernetes deployment reads it from "
+                    f"the {K8S_APP_SECRET_NAME} Secret, a Compose one from the mounted "
+                    "config)."
+                ),
+                unreadable=True,
             )
-        return None, (
-            f"{url} requires an API key (HTTP {resp.status_code}) and none is configured. "
-            f"Repair: set [auth] api_key in {NATIVE_CONFIG_HINT} to the key that api is "
-            "running with."
+        return ApiRuntimeProbe(
+            None,
+            (
+                f"{url} requires an API key (HTTP {resp.status_code}) and none could be found "
+                f"for the serving deployment ({key_source} has none). Repair: set [auth] "
+                f"api_key in {NATIVE_CONFIG_HINT} to the key that api is running with."
+            ),
+            unreadable=True,
         )
     if resp.status_code != 200:
-        return None, f"{url} answered HTTP {resp.status_code}"
+        return ApiRuntimeProbe(None, f"{url} answered HTTP {resp.status_code}", unreadable=True)
     try:
         payload = resp.json()
     except Exception as e:
-        return None, f"{url} answered with no JSON body ({type(e).__name__}: {e})"
+        return ApiRuntimeProbe(
+            None, f"{url} answered with no JSON body ({type(e).__name__}: {e})", unreadable=True
+        )
     build = RuntimeBuild.from_dict(payload.get("runtime") if isinstance(payload, dict) else None)
     if build is None:
         # A candidate predating this field. Said plainly rather than treated
         # as a pass: the operator's machine genuinely cannot answer the
         # question, and an upgrade is what makes it able to.
-        return None, (
-            f"{url} answered but reported no runtime block -- that api predates the "
-            "running-build check, so what it is executing cannot be read from it"
+        return ApiRuntimeProbe(
+            None,
+            (
+                f"{url} answered but reported no runtime block -- that api predates the "
+                "running-build check, so what it is executing cannot be read from it"
+            ),
+            unreadable=True,
         )
-    return build, ""
+    return ApiRuntimeProbe(build, "")
 
 
 def _api_image_substrate(
@@ -5543,7 +5666,13 @@ def _native_api_build_drift(
             detail=scope.detail,
             remediation="",
         )
-    build, why_not = _probe_running_api_runtime()
+    # The probe authenticates against the substrate that is SERVING (#4184), so
+    # the decision is made before the read rather than derived from how it went
+    # -- the ordering #4182 established for scope, for the same reason.
+    probe = _probe_running_api_runtime(
+        deployment_substrate(mode=mode, cluster_core_pods=kubernetes)
+    )
+    build, why_not = probe
     substrate_scope = native_build_scope(
         in_cluster=False,
         image_substrate=_api_image_substrate(mode, kubernetes=kubernetes),
@@ -5559,12 +5688,15 @@ def _native_api_build_drift(
             detail=substrate_scope.detail,
             remediation="",
         )
-    return classify_build_drift(
-        build,
-        expected,
-        expected_source=source,
-        remediation=_RUNNING_BUILD_REMEDIATION,
-        undetermined_detail=why_not,
+    return replace(
+        classify_build_drift(
+            build,
+            expected,
+            expected_source=source,
+            remediation=_RUNNING_BUILD_REMEDIATION,
+            undetermined_detail=why_not,
+        ),
+        unreadable=probe.unreadable,
     )
 
 
@@ -10342,6 +10474,74 @@ def _k8s_core_pods_present(pod_states: Sequence[K8sWorkloadState]) -> bool:
     return any(name.startswith(K8S_CORE_POD_PREFIXES) for name in (s.name for s in pod_states))
 
 
+def deployment_substrate(
+    *,
+    pod_states: Sequence[K8sWorkloadState] | None = None,
+    cluster_core_pods: bool | None = None,
+    mode: DeploymentMode | None = None,
+    terraform_deployed: bool | None = None,
+    native_registered: bool | None = None,
+) -> substrate_mod.SubstrateDecision:
+    """Which substrate this `ops` run is about -- the one decision, from `ops`'s evidence (#4184).
+
+    The policy lives in `substrate.decide`; this is the half that knows how to
+    *observe* this machine. Every surface that has to scope a check or a record
+    calls this instead of asking its own question, which is what stops four
+    surfaces from reaching four answers about one instance (CLAUDE.md, one
+    source per decision).
+
+    **Nothing expensive is probed here.** A caller passes in the surveys it
+    already holds -- `status` has both, `doctor` has the Pod list, `infra_status`
+    has everything -- and an arm nobody could see simply is not selected; see
+    `substrate.Evidence`. The two reads this does make are free: `_in_cluster()`
+    is an environment variable and a file, and the Kubernetes marker is a file
+    in `~/.nyxGPT`. A declared substrate short-circuits even those, because a
+    run that was told its substrate has no use for evidence (and
+    `ops session-backend`, which is one line of config write, must not grow a
+    `kubectl get pods`).
+    """
+    declared = substrate_mod.declared()
+    if declared is not None:
+        return declared
+    k8s_recorded = read_install_mode(substrate=SUBSTRATE_KUBERNETES).recorded
+    return substrate_mod.decide(
+        substrate_mod.Evidence(
+            in_cluster=_in_cluster(),
+            cluster_core_pods=(
+                bool(cluster_core_pods)
+                if cluster_core_pods is not None
+                else (_k8s_core_pods_present(pod_states) if pod_states is not None else False)
+            ),
+            kubernetes_recorded=k8s_recorded,
+            # Gated on the marker so a machine that never deployed to
+            # Kubernetes does not consult a k3s binary somebody else installed.
+            kubernetes_owns_host_ports=k8s_recorded and _k8s_access_bridge_owns_host_ports(),
+            terraform_deployed=(
+                bool(terraform_deployed)
+                if terraform_deployed is not None
+                else (
+                    any(_container_deployed(s) for s in mode.terraform.values())
+                    if mode is not None
+                    else False
+                )
+            ),
+            compose_core=bool(compose_core_components(mode)) if mode is not None else False,
+            native_registered=(
+                native_registered
+                if native_registered is not None
+                else (
+                    any(
+                        mode.native.get(component, "none") != "none"
+                        for component in DEV_LAUNCHD_LABELS
+                    )
+                    if mode is not None
+                    else False
+                )
+            ),
+        )
+    )
+
+
 def _k8s_workload_selector(ref: str) -> str:
     """`app=x,track=y` for a `deploy/…`-style ref -- how to find *its* Pods.
 
@@ -12904,6 +13104,15 @@ def _install_kubernetes_steps(
         _record_ops_action("install", "kubernetes", "refused", collision.message)
         return [collision]
 
+    # This run's substrate, declared before anything exists to infer it from
+    # (#4184). Every survey these steps trigger as a side effect -- the
+    # intentional-stop clear, the health waits, the GlitchTip provisioning --
+    # then routes to the cluster instead of falling through to `docker compose
+    # ps` on a box with no Compose stack, which is what logged `exited 125 ...
+    # querying /home/ec2-user/.nyxGPT/docker-compose.yml` into the middle of a
+    # `--kubernetes` deploy. Declared AFTER the two refusals above on purpose:
+    # a run that refuses has not chosen a substrate, and `_refuse_port_collision`
+    # asks what is running natively, which is a host question.
     logger.info(
         "ops: install --kubernetes --local starting (mode=%s)",
         INSTALL_MODE_DEV if dev else INSTALL_MODE_ARTIFACT,
@@ -12991,21 +13200,36 @@ def _install_kubernetes_steps(
         # report a false negative about the one thing this step exists to
         # prove.
         steps.append(("SRE tier host access", _ensure_k8s_observability_host_access))
-    for step_name, fn in steps:
-        try:
-            step_results = fn()
-        except Exception as e:
-            results.append(
-                OpsResult(False, f"kubernetes {step_name} raised", f"{type(e).__name__}: {e}")
-            )
-            step_results = []
-        results += step_results
-        if step_results and not all(r.ok for r in step_results):
-            break
-    else:
-        results += _k8s_stack_health()
-        if not skip_observability:
-            results += _k8s_observability_health()
+    # THE substrate decision for everything below, declared rather than
+    # inferred, and scoped to this block (#4184). Every survey these steps
+    # trigger as a side effect -- the intentional-stop clear, the health waits,
+    # the GlitchTip provisioning -- then routes to the cluster instead of
+    # falling through to `docker compose ps` on a box with no Compose stack,
+    # which is what logged `exited 125 ... querying
+    # /home/ec2-user/.nyxGPT/docker-compose.yml` into the middle of a
+    # `--kubernetes` deploy: inference cannot answer during a deployment's own
+    # creation, because nothing answers yet.
+    #
+    # A `with` block, not a process-wide write: these steps also run inside the
+    # api server (`install_kubernetes_local`, called by the SRE dashboard),
+    # where a sticky declaration would route that process's every later survey
+    # to a cluster for as long as it stayed up.
+    with substrate_mod.declared_as(substrate_mod.SUBSTRATE_KUBERNETES):
+        for step_name, fn in steps:
+            try:
+                step_results = fn()
+            except Exception as e:
+                results.append(
+                    OpsResult(False, f"kubernetes {step_name} raised", f"{type(e).__name__}: {e}")
+                )
+                step_results = []
+            results += step_results
+            if step_results and not all(r.ok for r in step_results):
+                break
+        else:
+            results += _k8s_stack_health()
+            if not skip_observability:
+                results += _k8s_observability_health()
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("install", "kubernetes", result, message)
@@ -14286,6 +14510,31 @@ def infra_status() -> dict[str, Any]:
     else:
         running_mode = "none"
 
+    # THE substrate decision for this answer (#4184), from the surveys this
+    # function has already paid for. Distinct from `running_mode` above, and
+    # the distinction is worth stating because they look like the same thing:
+    # `mode` is "which tiers are UP on this host", a description, and it is
+    # what the page's mode banner renders; this is "which deployment is this
+    # answer ABOUT", and it is what scopes the cards below. They differ exactly
+    # where scoping used to go wrong -- a run that declared its substrate, or a
+    # host whose bridge is serving while the Pod read failed, is a Kubernetes
+    # deployment whose tiers this host cannot see.
+    decision = deployment_substrate(
+        # The boolean, not the Pod list: the classified read above is the only
+        # place that can answer it (an observability-only namespace is not a
+        # Kubernetes deployment -- #4137), and `None` where the cluster could
+        # not be read is what lets the host-ports arm answer instead of a
+        # failed probe being taken for "no cluster".
+        cluster_core_pods=core_pods_in_cluster if kubernetes_probe_available else None,
+        mode=mode_info,
+        # This function's own Terraform read (`terraform_stack_state`), not a
+        # second one off `mode_info`.
+        terraform_deployed=tf_deployed,
+        native_registered=any(
+            mode_info.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
+        ),
+    )
+
     # Which *install* mode the native api/web are on -- artifact (published/
     # vendored builds) or dev (this checkout's working tree, #3789). Reported
     # alongside the deployment mode for the same reason `ops status` prints
@@ -14303,8 +14552,18 @@ def infra_status() -> dict[str, Any]:
         # same defect `ops status` had, on the page the CLI is supposed to
         # agree with. `live: false` is not out-of-scope: the record is real
         # and worth showing, it is just history, and the page says so.
-        "live": any(
-            mode_info.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
+        # ...and `decision.kubernetes` demotes it to history even where a unit
+        # IS registered (#4184): a native marker on a host whose deployment is
+        # the cluster's describes something that is not serving, which is the
+        # same reason the CLI stopped printing it as the install mode. The
+        # card's own RECORD ONLY rendering is what makes this safe to say --
+        # the record is still shown, as history, with its date.
+        "live": (
+            any(
+                mode_info.native.get(component, "none") != "none"
+                for component in DEV_LAUNCHD_LABELS
+            )
+            and not decision.kubernetes
         ),
         # Whether a marker exists at all, which `live: false` alone cannot say
         # (#4182 review round 2). `read_install_mode()` falls back to the
@@ -14351,7 +14610,7 @@ def infra_status() -> dict[str, Any]:
             "no host filesystem and no Docker socket. Run `nyxgpt ops status` on the host to "
             "survey a Docker Compose deployment there."
         )
-    elif core_pods_in_cluster and kubernetes_probe_available and not compose_probe_available:
+    elif decision.kubernetes and not compose_probe_available:
         # The #4137 case, and the reason the gate above could not cover it: a
         # k3s host is neither in-cluster nor Compose. `kubectl` there reaches
         # the cluster perfectly well -- the Pod list below this card is proof
@@ -14421,6 +14680,13 @@ def infra_status() -> dict[str, Any]:
 
     return {
         "mode": running_mode,
+        # Which deployment this whole answer is about, and how that was decided
+        # (#4184). `mode` says which tiers are up; this says which substrate
+        # every scoped card below was scoped FOR, so the page can state it
+        # instead of leaving an operator to infer it -- and so the Self-Heal
+        # page, which carries the same two fields, cannot disagree with it.
+        "substrate": decision.substrate,
+        "substrate_source": decision.source,
         # Where this answer was computed (#3988). `in_cluster` means the page
         # is describing the deployment it is itself being served from, which
         # is what makes the Compose/native rows above out of scope rather
@@ -15191,7 +15457,16 @@ def status(_args) -> int:
     native_installed = any(
         mode.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
     )
-    if not native_installed:
+    # THE substrate decision for this run (#4184), from the two surveys this
+    # command already holds -- so `status` and `doctor` reach it the same way,
+    # from one function, and cannot present the same marker differently. A
+    # native marker on a host whose deployment is the cluster's is history
+    # however many native units are registered: `native_installed` answers
+    # "is one registered here", which is not the question "is this what serves".
+    decision = deployment_substrate(
+        pod_states=k8s_pods, mode=mode, native_registered=native_installed
+    )
+    if not native_installed or decision.kubernetes:
         # Gated on the MARKER, not merely on "nothing is live" (#4182 review
         # round 2). `read_install_mode()` returns the documented artifact
         # default when no marker exists at all, so an ungated branch printed
@@ -16548,33 +16823,12 @@ def _k8s_error_tracking_dsn() -> str:
     Pod booted before provisioning, and conflating them is what let `doctor`
     report a healthy error-tracking path over an api reporting nowhere.
 
-    The value never reaches a log or an argv. `kubectl get secret` returns it
-    on stdout, and `_run` logs stdout only on a NON-zero exit -- where there
-    is no value to leak. Only the DSN's public key, the half designed to be
-    embedded in clients, is ever compared or named in a finding.
+    The value never reaches a log or an argv -- see `_k8s_secret_entry`, the
+    one Secret read both this and the API-key resolution go through (#4184).
+    Only the DSN's public key, the half designed to be embedded in clients, is
+    ever compared or named in a finding.
     """
-    if _which("kubectl") is None:
-        return ""
-    cp = _run(
-        [
-            "kubectl",
-            "-n",
-            K8S_NAMESPACE,
-            "get",
-            "secret",
-            K8S_APP_SECRET_NAME,
-            "-o",
-            f'go-template={{{{index .data "{K8S_ERROR_TRACKING_DSN_SECRET_KEY}" '
-            "| base64decode}}",
-        ],
-        check=False,
-        expected=True,
-        timeout=PROBE_TIMEOUT_SECONDS,
-    )
-    if cp.returncode != 0:
-        return ""
-    value = (cp.stdout or "").strip()
-    return "" if value == "<no value>" else value
+    return _k8s_secret_entry(K8S_ERROR_TRACKING_DSN_SECRET_KEY)
 
 
 def _k8s_error_tracking_dsn_drift_issue() -> str | None:
@@ -16997,6 +17251,46 @@ def _dual_stack_conflict_issues() -> list[str]:
     ]
 
 
+def _native_on_cluster_conflict_issues(
+    native_services: Mapping[str, str], decision: substrate_mod.SubstrateDecision
+) -> list[str]:
+    """A native api/web still RUNNING on a host whose deployment is the cluster's (#4184).
+
+    The other half of withdrawing the native install-mode claim on a
+    Kubernetes host. Dropping the record is right -- it does not describe what
+    serves -- but silence would be wrong in the one case where the record is
+    also live: a native api and the access bridge both want :8000, and whichever
+    won the bind is what the operator is talking to. That is a real finding, and
+    before this it was presented as `Install mode (native api/web): artifact`,
+    i.e. as the answer rather than as the problem.
+
+    Host-scoped: both stacks in the comparison are this machine's, contending
+    for this machine's ports -- the same shape as
+    `_dual_stack_conflict_issues`, which covers native/Compose against
+    Terraform and structurally cannot see Kubernetes (it reads
+    `terraform_conflicts`).
+
+    Only *started* services count. A registered-but-stopped unit left behind by
+    a `--kubernetes` transition is exactly what `ops down` leaves and is not a
+    conflict; claiming one would make this fire on every converted instance.
+    """
+    if not decision.kubernetes:
+        return []
+    running = sorted(
+        component
+        for component in DEV_LAUNCHD_LABELS
+        if native_services.get(component, "none") in ("started", "running")
+    )
+    if not running:
+        return []
+    return [
+        f"native {', '.join(running)} still running on a host whose deployment is Kubernetes "
+        f"({decision.source}) -- both want this host's ports, so what answers on :8000/:3000 "
+        "may be the native service rather than the cluster (run: nyxgpt ops down, which keeps "
+        "volumes, to leave the cluster serving)"
+    ]
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
@@ -17071,16 +17365,9 @@ def doctor(_args) -> int:
     # add a `docker compose ps` and a Terraform read to a command that does
     # not otherwise take them (first principle 1).
     native_services = _native_services_snapshot()
-    if any(native_services.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS):
-        print(f"Install mode (native api/web): {install_mode.label()}")
-    elif install_mode.recorded:
-        # `install_mode.recorded`, for the reason spelled out at the same
-        # branch in `status` (#4182): with no marker on the machine the
-        # default mode is a default, not a record, and printing it under
-        # `Install history` claims an install that never ran.
-        install_history.append(
-            install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
-        )
+    native_registered = any(
+        native_services.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
+    )
     k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
     # Whether the checks below should be asking the cluster rather than this
     # host (#3987). Gated on the marker so a machine that has never deployed
@@ -17094,6 +17381,32 @@ def doctor(_args) -> int:
         else K8sDeploymentProbe([], "no Kubernetes install recorded on this machine")
     )
     k8s_deployed = k8s.deployed
+    # THE substrate decision for this run, made before a single record is
+    # printed (#4184). `doctor`'s native install-mode line used to be gated on
+    # nothing but "is a native unit registered here", which is not the question
+    # -- on the owner's k3s instance it printed `Install mode (native api/web):
+    # artifact (published/vendored build -- the repo-less default)` for a
+    # deployment whose api and web are Pods. A record is only an install mode
+    # if it describes what serves; otherwise it is history, and `status` and
+    # this command now say so through the same renderer and the same decision.
+    decision = deployment_substrate(
+        pod_states=k8s.pods if k8s_install_mode.recorded else None,
+        native_registered=native_registered,
+    )
+    if native_registered and not decision.kubernetes:
+        print(f"Install mode (native api/web): {install_mode.label()}")
+    elif install_mode.recorded:
+        # `install_mode.recorded`, for the reason spelled out at the same
+        # branch in `status` (#4182): with no marker on the machine the
+        # default mode is a default, not a record, and printing it under
+        # `Install history` claims an install that never ran.
+        install_history.append(
+            install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
+        )
+    # A native service that really is up while the cluster serves is not a
+    # record to withdraw quietly -- it is two stacks on one host's ports, and
+    # the only honest thing to do with it is report it (#4184).
+    issues += _native_on_cluster_conflict_issues(native_services, decision)
     if k8s_install_mode.recorded:
         if k8s_deployed:
             print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
@@ -17125,6 +17438,14 @@ def doctor(_args) -> int:
         )
         issues += _k8s_dev_install_checkout_issues(k8s_install_mode)
         issues.extend(_k8s_access_bridge_issues())
+    elif decision.kubernetes:
+        # The gap the marker gate leaves (#4184): a run that DECLARED Kubernetes
+        # -- `ops install --kubernetes`, or any `nyxgpt` the deploy's
+        # provisioning script runs -- reaches here before `_record_k8s_install_
+        # mode` has written anything. Saying nothing left an operator reading a
+        # host report with no statement of what it was a report about.
+        print(f"Substrate: kubernetes ({decision.source})")
+        print("  The checks below report on this host.")
     issues += _dev_install_checkout_issues(install_mode)
 
     issues += _foreign_native_service_issues(install_mode.identity)
@@ -17155,9 +17476,17 @@ def doctor(_args) -> int:
     # that is serving -- a host `docker ps` on a cluster whose Cassandra is
     # `cassandra-0: Running` is the #3987 defect wearing a container's clothes,
     # and it was `doctor`'s only finding on a healthy k3s instance.
+    # Branched on the ONE decision rather than on `k8s_deployed` (#4184). The
+    # two differ exactly where the old reading went wrong: a run that declared
+    # Kubernetes, or a host whose bridge is serving while the Pod read failed,
+    # is a Kubernetes deployment with no Pod list in hand -- and the host check
+    # on such a box reports "Missing local Cassandra container ... run nyxgpt
+    # ops install", which is a claim about the wrong machine and a remedy that
+    # would install a second stack. The cluster half says the honest thing
+    # ("this deployment has no Cassandra Pod") for the same evidence.
     issues += (
         _k8s_cassandra_deployment_issues(k8s.pods)
-        if k8s_deployed
+        if decision.kubernetes
         else _cassandra_deployment_issues()
     )
 
@@ -17171,7 +17500,7 @@ def doctor(_args) -> int:
     # Substrate-branched (#3987): on a Kubernetes deployment these three read
     # the cluster's own config and probe the cluster's own services. See the
     # "Which machine a `doctor` check is about" block above the helpers.
-    tracing_issue = _k8s_tracing_wiring_issue() if k8s_deployed else _tracing_wiring_issue()
+    tracing_issue = _k8s_tracing_wiring_issue() if decision.kubernetes else _tracing_wiring_issue()
     if tracing_issue:
         issues.append(tracing_issue)
 
@@ -17183,7 +17512,9 @@ def doctor(_args) -> int:
         issues.append(tracing_packages_issue)
 
     scrape_issue = (
-        _k8s_prometheus_api_scrape_issue() if k8s_deployed else _prometheus_api_scrape_issue()
+        _k8s_prometheus_api_scrape_issue()
+        if decision.kubernetes
+        else _prometheus_api_scrape_issue()
     )
     if scrape_issue:
         issues.append(scrape_issue)
@@ -17207,7 +17538,7 @@ def doctor(_args) -> int:
     if linux_ollama_conflict_issue:
         issues.append(linux_ollama_conflict_issue)
 
-    missing_models_issue = _missing_required_models_issue(kubernetes=k8s_deployed)
+    missing_models_issue = _missing_required_models_issue(kubernetes=decision.kubernetes)
     if missing_models_issue:
         issues.append(missing_models_issue)
 
@@ -17218,7 +17549,9 @@ def doctor(_args) -> int:
     issues += _observability_volume_doctor_issues()
     issues += _glitchtip_secrets_doctor_issues()
     error_tracking_drift_issue = (
-        _k8s_error_tracking_dsn_drift_issue() if k8s_deployed else _error_tracking_dsn_drift_issue()
+        _k8s_error_tracking_dsn_drift_issue()
+        if decision.kubernetes
+        else _error_tracking_dsn_drift_issue()
     )
     if error_tracking_drift_issue:
         issues.append(error_tracking_drift_issue)
@@ -20435,17 +20768,69 @@ def set_session_backend(backend: str, cfg_path: Path | None = None) -> list[OpsR
 
     if patched == text:
         return [OpsResult(True, f"Session backend already `{normalized}` in {cfg_path}")]
-    detail = (
+    where = (
         "Sessions are stored in the stack's Cassandra -- every deployment mode pointed at "
-        "the same Cassandra shares one session list. Restart the API to pick this up "
-        "(`nyxgpt ops restart api`)."
+        "the same Cassandra shares one session list."
         if normalized == "cassandra"
         else (
-            "Sessions are stored as JSON files under `[nyxgpt] sessions_dir` on this host "
-            "only. Restart the API to pick this up (`nyxgpt ops restart api`)."
+            "Sessions are stored as JSON files under `[nyxgpt] sessions_dir` on this host " "only."
         )
     )
-    return [OpsResult(True, f"Set session backend to `{normalized}` in {cfg_path}", detail)]
+    return [
+        OpsResult(
+            True,
+            f"Set session backend to `{normalized}` in {cfg_path}",
+            f"{where} {_pickup_hint()}",
+        )
+    ]
+
+
+def _pickup_hint() -> str:
+    """What actually makes this config change take effect, on the substrate in front of us.
+
+    "Restart the API to pick this up (`nyxgpt ops restart api`)" was printed
+    unconditionally, and on the two substrates that matter it was wrong at the
+    moment it was printed (#4184 finding 4):
+
+    * **mid-deploy**, which is where the owner read it: this runs from the
+      provisioning script *before* `ops install`, so there is no api to restart
+      and the command named would fail. What makes the value take effect there
+      is the install that is about to run.
+    * **on a Kubernetes deployment**: the api Pods read `session_backend` from
+      the `nyxgpt-config` ConfigMap, not from this file (`k8s/configmap.yaml`
+      pins it to `cassandra`), so restarting anything on this host changes
+      nothing about them. This file still governs every `nyxgpt` command run
+      here, which is why the write is not refused -- only the guidance changes.
+
+    Decided through the one substrate decision, and deliberately with no
+    cluster probe: `deployment_substrate` reads the declaration, `_in_cluster`
+    and the marker, all free, and a one-line config write must not grow a
+    `kubectl get pods` (first principle 1).
+    """
+    decision = deployment_substrate(native_registered=_native_api_registered())
+    if decision.kubernetes:
+        return (
+            f"This file governs `nyxgpt` commands on this host; the api Pods of a Kubernetes "
+            f"deployment read `session_backend` from the {K8S_CONFIG_CONFIGMAP} ConfigMap "
+            f"({decision.source}), so no restart here affects them."
+        )
+    if _native_api_registered():
+        return "Restart the API to pick this up (`nyxgpt ops restart api`)."
+    return (
+        "No api service is installed on this host yet, so there is nothing to restart -- "
+        "whatever starts it next (`nyxgpt ops install`, or the deploy already in progress) "
+        "reads this value then."
+    )
+
+
+def _native_api_registered() -> bool:
+    """Is a native api service registered with this host's service manager at all?
+
+    The cheap half of `_native_services_snapshot` -- no Compose survey, no
+    Terraform read -- for callers that only need to know whether an `ops
+    restart api` would have anything to act on.
+    """
+    return _native_services_snapshot().get("api", "none") != "none"
 
 
 def session_backend(args: Any) -> int:
@@ -21546,13 +21931,29 @@ def _running_api_build_doctor_issues() -> list[str]:
     `ModuleNotFoundError` was deferred to whenever something next restarted
     the api.
 
-    Only the confirmed mismatch is a finding. "Could not determine" is not:
+    Only the confirmed mismatch is a finding. "Nothing answered" is not:
     `doctor` runs on machines whose api is deliberately down, and a finding
-    there would train operators to ignore the list. `status` is where the
-    undetermined state is reported, because that command is a description of
-    the machine rather than a list of things to fix.
+    there would train operators to ignore the list. `status` is where that
+    state is reported, because that command is a description of the machine
+    rather than a list of things to fix.
+
+    **An api that answered and refused the read IS a finding (#4184).** That
+    is `drift.unreadable`, and it is not the same state as silence: on the
+    owner's k3s instance `/api/v1/info` answered HTTP 401 on every pass --
+    because the key was the host's and the serving api was a Pod reading the
+    cluster Secret -- and `doctor` reported nothing whatsoever. A check that
+    cannot make its read has not passed; it has failed to run, and an operator
+    is owed that. `_serving_api_key` now resolves the key from the serving
+    substrate, so what survives here is the case where that still did not work
+    -- a rotated Secret, a bring-your-own cluster this host has no credential
+    for -- which is exactly the case worth printing.
     """
     drift = _native_api_build_drift()
+    if drift.unreadable:
+        return [
+            "The running-build check could not read the api answering on this host: "
+            f"{drift.detail}"
+        ]
     if not drift.mismatched:
         return []
     return [

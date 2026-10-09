@@ -313,6 +313,16 @@ class BuildDrift:
     #: before and after the upgrade (#4182). Both are reported: the stable one
     #: because it is what runs, the resolved one because it is what that is.
     expected_resolved: str = ""
+    #: The api ANSWERED and the read still failed -- a refused credential, a
+    #: non-200, a body this version cannot parse (#4184).
+    #:
+    #: `BUILD_UNDETERMINED` covers two states an operator must not be shown as
+    #: one: nothing is serving (a stopped stack -- not a problem, and `doctor`
+    #: is run on such machines all day), and something IS serving and will not
+    #: let this command read it. The second was being dropped silently: on the
+    #: owner's k3s instance `/api/v1/info` answered HTTP 401 on every pass and
+    #: `doctor` reported nothing at all about it.
+    unreadable: bool = False
 
     @property
     def mismatched(self) -> bool:
@@ -363,6 +373,10 @@ class BuildDrift:
             "detail": self.detail,
             "remediation": self.remediation,
             "summary": self.summary(),
+            # Carried to the Infrastructure page so it can render "something is
+            # serving and will not let us read it" differently from "nothing is
+            # serving" (#4184) -- the CLI makes the same split a finding.
+            "unreadable": self.unreadable,
         }
 
 

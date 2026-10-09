@@ -68,6 +68,27 @@ def _reset_config_fallback_warnings():
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_substrate_declaration(monkeypatch):
+    """No unit test inherits a substrate declaration from its environment (#4184).
+
+    `NYXGPT_SUBSTRATE` overrides every piece of substrate *inference* by
+    design -- that is the whole point of the declaration arm -- so a value
+    exported in the shell that launched pytest (or by a `cloud deploy` script
+    being debugged in the same session) would silently retarget every survey,
+    scope statement and record in the suite. A test that wants the declared arm
+    uses `substrate.declared_as(...)`, which restores whatever was here before.
+
+    The process-local half is cleared too: `declared_as` restores on exit, so
+    nothing should leak between tests, and this fixture is what makes that an
+    assertion rather than a hope.
+    """
+    from nyxgpt import substrate
+
+    monkeypatch.delenv(substrate.SUBSTRATE_ENV_VAR, raising=False)
+    monkeypatch.setattr(substrate, "_DECLARED", substrate.SUBSTRATE_UNKNOWN)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_install_mode_marker(monkeypatch, tmp_path):
     """Redirect the install-mode markers into `tmp_path` for every unit test (#3789).
 
@@ -255,7 +276,9 @@ def real_running_api_probe(monkeypatch):
     monkeypatch.setattr(
         ops,
         "_probe_running_api_runtime",
-        lambda: (None, "stubbed for unit tests: no live api was asked what it is running"),
+        lambda *_a, **_k: ops.ApiRuntimeProbe(
+            None, "stubbed for unit tests: no live api was asked what it is running"
+        ),
     )
     return real
 

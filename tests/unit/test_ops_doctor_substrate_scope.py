@@ -169,6 +169,12 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
         HOST,
         "two of this host's own stacks contending for this host's ports",
     ),
+    "_native_on_cluster_conflict_issues": (
+        HOST,
+        "this host's own native api/web services, still started on a host whose deployment "
+        "is the cluster's -- the Kubernetes case `_dual_stack_conflict_issues` structurally "
+        "cannot see, since it reads `terraform_conflicts` (#4184)",
+    ),
     "_foreign_native_service_issues": (
         HOST,
         "compares the brew/systemd services registered here against this host's marker",
