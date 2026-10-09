@@ -2711,12 +2711,20 @@ def cloud_deploy_status(
     tunneled API health endpoint, which is what the Cloud Deployment page asks
     for on an explicit load or refresh.
 
-    `verify_host=true` additionally asks AWS whether the recorded EC2 Mac
-    Dedicated Host still exists and what Cost Explorer says it has cost (#4136).
-    Opt-in like the health probe, and asked for on the same explicit load: the
-    reply's `mac_host.verified_at` is what tells the page whether it is looking
-    at AWS's answer or at a local record, so a caller that skips this still gets
-    an honest payload rather than an unmarked stale one.
+    `verify_host=true` additionally asks AWS whether the recorded resources
+    still exist -- the EC2 Mac Dedicated Host plus what Cost Explorer says it
+    has cost (#4136), and the Linux substrate's instance (#4181), because "an
+    instance exists and is being billed" is the same claim whichever substrate
+    it is made about. Opt-in like the health probe, and asked for on the same
+    explicit load. It changes nothing in AWS.
+
+    The reply's `mac_host.usable` / `infra.observation.usable` is what tells the
+    page whether it may state presence, billing or release at all, and
+    `provenance` is the sentence to show when it may not -- so a caller that
+    skips this still gets an honest payload rather than an unmarked stale one.
+    A client must not re-derive that from `verified_at`: a confirmation proves
+    the resource exists and does not make a record assembled from two runs
+    describe the resource that was confirmed.
     """
     return cloud_deploy_module.deploy_status(probe_health=probe_health, verify_host=verify_host)
 

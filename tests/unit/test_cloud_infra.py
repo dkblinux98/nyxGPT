@@ -948,3 +948,161 @@ def test_no_operator_facing_field_cites_a_repository_path():
     reachability = cloud_infra.infra_status()["access_model"]["reachability"]
 
     assert "product_management/" not in reachability
+
+
+# --- #4181: the substrate record is verified, not repeated back -----------
+
+
+class _StubEc2Instances:
+    """A DescribeInstances that answers however the test needs."""
+
+    def __init__(self, *, instances=None, error_code=""):
+        self.instances = instances
+        self.error_code = error_code
+        self.calls: list[list[str]] = []
+
+    def describe_instances(self, InstanceIds):  # noqa: N803 - boto3's parameter name
+        self.calls.append(list(InstanceIds))
+        if self.error_code:
+            # botocore-shaped: a plain exception carrying a `response` dict,
+            # which is what `_aws_error_code` reads. Importing
+            # `botocore.exceptions` would break the module on an install with
+            # no cloud extra.
+            raise _instances_client_error(self.error_code)
+        return {"Reservations": [{"Instances": self.instances or []}]}
+
+
+def _instances_client_error(code):
+    error = Exception(f"An error occurred ({code})")
+    error.response = {"Error": {"Code": code}}
+    return error
+
+
+def _stub_boto3(monkeypatch, client):
+    """Route `cloud_infra`'s lazy boto3 import at `client`."""
+
+    class _Session:
+        def __init__(self, **_kwargs):
+            pass
+
+        def client(self, _service, **_kwargs):
+            return client
+
+    monkeypatch.setattr(
+        cloud_infra, "try_import", lambda _name: argparse.Namespace(Session=_Session)
+    )
+
+
+def test_an_unverified_substrate_record_is_not_evidence_an_instance_exists():
+    """The Linux half of #4181, and the reason the fix is not Mac-only.
+
+    "An instance exists and is being billed" was asserted from `state.json`
+    for this substrate exactly as it was for the Mac block. Verifying one and
+    not the other is the narrow-patch pattern #4183 exists to stop.
+    """
+    cloud_infra.write_cloud_state({"instance_id": "i-0abc", "region": "us-east-1"})
+
+    observation = cloud_infra.observe_instance(argparse.Namespace())
+
+    assert observation.usable is False
+    assert "NOT confirmed at AWS" in observation.provenance
+    # The id is still reportable -- an operator whose only view of the box is
+    # this record needs it; it just carries no claim.
+    assert observation.reported("instance_id") == "i-0abc"
+    assert observation.fact("instance_id") == ""
+
+
+def test_verifying_the_substrate_records_what_aws_said_and_whose_account(monkeypatch):
+    cloud_infra.write_cloud_state({"instance_id": "i-0abc", "region": "us-east-1"})
+    _stub_boto3(
+        monkeypatch,
+        _StubEc2Instances(instances=[{"InstanceId": "i-0abc", "State": {"Name": "running"}}]),
+    )
+    monkeypatch.setattr(
+        cloud_identity,
+        "account_default",
+        lambda *a, **k: cloud_identity.AccountChoice(
+            profile="nyxgpt", region="us-east-1", account_id="066835328281", source="flag"
+        ),
+    )
+
+    assert cloud_infra.verify_substrate_record(argparse.Namespace())["instance_present"] is True
+
+    observation = cloud_infra.observe_instance(argparse.Namespace())
+    assert observation.usable is True
+    assert observation.account_label == "nyxgpt (066835328281)"
+    assert cloud_infra.infra_status()["observation"]["usable"] is True
+
+
+def test_a_terminated_instance_is_a_definite_no(monkeypatch):
+    cloud_infra.write_cloud_state({"instance_id": "i-0abc", "region": "us-east-1"})
+    _stub_boto3(
+        monkeypatch,
+        _StubEc2Instances(instances=[{"InstanceId": "i-0abc", "State": {"Name": "terminated"}}]),
+    )
+
+    assert cloud_infra.verify_substrate_record(argparse.Namespace())["instance_present"] is False
+    assert cloud_infra.observe_instance(argparse.Namespace()).usable is False
+
+
+def test_an_instance_aws_has_no_record_of_is_gone_not_unknown(monkeypatch):
+    """`InvalidInstanceID.NotFound` is an answer, not a failure -- the same
+    reading that `InvalidHostID.NotFound` needed on the Mac path (#4136)."""
+    cloud_infra.write_cloud_state({"instance_id": "i-0abc", "region": "us-east-1"})
+    _stub_boto3(monkeypatch, _StubEc2Instances(error_code="InvalidInstanceID.NotFound"))
+
+    assert cloud_infra.verify_substrate_record(argparse.Namespace())["instance_present"] is False
+
+
+def test_expired_credentials_are_unknown_rather_than_gone(monkeypatch):
+    """The one wrong answer that would stop an operator looking for a box they
+    are paying for."""
+    cloud_infra.write_cloud_state({"instance_id": "i-0abc", "region": "us-east-1"})
+    _stub_boto3(monkeypatch, _StubEc2Instances(error_code="ExpiredToken"))
+
+    result = cloud_infra.verify_substrate_record(argparse.Namespace())
+
+    assert result["instance_present"] is None
+    assert "AWS could not be asked" in result["reason"]
+    # And the record is NOT cleared: the Linux teardown is synchronous and
+    # `cloud destroy` owns it.
+    assert cloud_infra.observe_instance(argparse.Namespace()).reported("instance_id") == "i-0abc"
+
+
+def test_a_missing_boto3_is_the_reported_reason(monkeypatch):
+    """Finding 6, one substrate over: say what is missing."""
+    cloud_infra.write_cloud_state({"instance_id": "i-0abc", "region": "us-east-1"})
+    monkeypatch.setattr(cloud_infra, "try_import", lambda _name: None)
+
+    assert (
+        "boto3 is not installed"
+        in cloud_infra.verify_substrate_record(argparse.Namespace())["reason"]
+    )
+    assert "boto3 is not installed" in cloud_infra.observe_instance(argparse.Namespace()).reason
+
+
+def test_verifying_with_no_recorded_instance_asks_aws_nothing(monkeypatch):
+    def _never(*_args, **_kwargs):
+        raise AssertionError("AWS was asked about an instance nothing recorded")
+
+    monkeypatch.setattr(cloud_infra, "try_import", _never)
+
+    assert cloud_infra.verify_substrate_record(argparse.Namespace()) == {}
+
+
+def test_a_process_on_the_instance_needs_no_confirmation(monkeypatch):
+    """The strongest evidence an instance exists is a process running on it.
+
+    IMDS answered, so this IS the box. Reporting it as unconfirmed would make
+    the dashboard served by a deployment unable to say the deployment exists.
+    """
+    monkeypatch.setattr(
+        cloud_imds,
+        "instance_facts",
+        lambda: {"instance_id": "i-0abc", "region": "us-east-1", "public_ip": "198.51.100.10"},
+    )
+
+    status = cloud_infra.infra_status()
+
+    assert status["on_ec2"] is True
+    assert status["observation"]["usable"] is True

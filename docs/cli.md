@@ -23,8 +23,10 @@ documentation are linked out to instead of duplicated here:
   release at teardown — see
   [EC2 Mac targets](cloud.md#ec2-mac-targets)), `nyxgpt cloud status` (what is
   deployed and how to reach it, including a Dedicated Host still billing after
-  the deployment is gone — confirmed against AWS, with the spend figure from
-  Cost Explorer, #4136), `nyxgpt cloud ops` (read-only inspections
+  the deployment is gone — confirmed against AWS, in the account `--profile`
+  names, with the spend figure from Cost Explorer; it states presence or
+  billing only for what it confirmed in that run, and changes nothing, #4136 /
+  #4181), `nyxgpt cloud ops` (read-only inspections
   run on the instance), `nyxgpt cloud canary` (canary rollout against a
   Kubernetes cloud deployment), `nyxgpt cloud screen` (the EC2 Mac's screen,
   over a loopback-only SSH forward — see

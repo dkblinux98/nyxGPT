@@ -108,16 +108,84 @@ _ACCOUNT_ID_CACHE: dict[str, str] = {}
 _PROMPTED: dict[str, AccountChoice | SshChoice] = {}
 _ANNOUNCED: set[str] = set()
 
+# The flags THIS invocation was given, remembered so a layer with no `args` to
+# hand still resolves the account the operator asked for (#4181). The
+# motivating case is the `terraform` subprocess: `cloud_infra._run_terraform`
+# is five call frames below any parsed namespace, and before this it handed
+# Terraform an environment naming no profile at all -- so a `nyxgpt cloud
+# destroy --profile nyxgpt` whose Python calls went to account 066835328281 ran
+# `terraform destroy` as the default account 551292530955 and failed with
+# AccessDenied. One resolver means one answer for every actor in the run,
+# subprocesses included.
+_RUN_ARGS: argparse.Namespace | None = None
+
+
+def bind_run_args(args: argparse.Namespace | None) -> None:
+    """Remember this invocation's flags for the layers that have no `args`.
+
+    Called once per command, as early as the flags exist: by the CLI's `cloud`
+    dispatch, and by `account_default` for any caller that reaches the resolver
+    with a namespace (the admin API builds one rather than parsing argv). Later
+    calls replace it, which is correct -- one process runs one command.
+    """
+    global _RUN_ARGS
+    if args is not None:
+        _RUN_ARGS = args
+
+
+def run_args() -> argparse.Namespace | None:
+    """The flags bound by `bind_run_args`, or None when nothing bound any."""
+    return _RUN_ARGS
+
 
 def reset_prompt_cache() -> None:
-    """Forget this process's prompted answers, printed lines and account ids.
+    """Forget this process's prompted answers, printed lines, account ids and flags.
 
     For tests, which run many commands in one interpreter and would otherwise
     inherit the previous one's answers.
     """
+    global _RUN_ARGS
     _PROMPTED.clear()
     _ANNOUNCED.clear()
     _ACCOUNT_ID_CACHE.clear()
+    _RUN_ARGS = None
+
+
+def credential_env(choice: AccountChoice | None = None) -> dict[str, str]:
+    """The AWS credential environment for a subprocess this run starts (#4181).
+
+    `terraform` resolves credentials itself, from its own provider block and
+    the ambient environment -- it has never seen `--profile`. Three consequences
+    were all live in the owner's 2026-10-09 acceptance round:
+
+    * the Mac release root's provider reads `var.aws_profile`, and the tfvars
+      file it reads it from was **rendered by the run that created the
+      schedule**, so a cleanup months later authenticated as whatever that run
+      used (or, with no `aws_profile` line at all, as the default chain);
+    * the substrate root renders fresh tfvars each run and so happened to be
+      right, which is why the defect looked like a Mac-only bug rather than one
+      missing channel; and
+    * nothing in between ever stated which account Terraform was about to act
+      in, so an AccessDenied named a role rather than the choice behind it.
+
+    So every `terraform` invocation gets this, merged *under* any `extra_env`
+    the caller passes -- a caller holding a more specific choice (`cloud state`,
+    whose backend bucket lives wherever it was bootstrapped) overrides it by
+    passing `credential_env(its_own_choice)` explicitly.
+
+    `AWS_PROFILE` is set when a profile is resolved and **removed** when one is
+    not: resolving to "no named profile" is an answer (the operator typed `-`,
+    or nothing names one), and leaving an inherited `AWS_PROFILE` in place would
+    let the environment override the run's own resolution. Removal is spelled
+    as the empty string, which `_run_terraform` turns into a deletion -- a dict
+    cannot express "unset" any other way.
+    """
+    resolved = choice if choice is not None else account_default()
+    env = {"AWS_PROFILE": str(resolved.profile or "")}
+    if resolved.region:
+        env["AWS_REGION"] = str(resolved.region)
+        env["AWS_DEFAULT_REGION"] = str(resolved.region)
+    return env
 
 
 # --- Resolved answers ----------------------------------------------------
@@ -649,7 +717,19 @@ def account_default(
     `infra.json`. Hand-rolling the four steps below it is what left that
     command two steps short of the documented order -- no `config.ini [cloud]`,
     which is where `nyxgpt cloud credentials-setup` writes the answer.
+
+    With no `args` the flags bound by `bind_run_args` are used (#4181), so a
+    layer that cannot be handed a namespace -- the `terraform` subprocess
+    environment, a status surface built from the record -- still resolves the
+    account the operator named on the command line rather than silently
+    dropping to `infra.json`. Passing a namespace binds it, so the admin API's
+    synthesized args reach the same place the CLI's parsed ones do without
+    every handler having to remember a second call.
     """
+    if args is not None:
+        bind_run_args(args)
+    else:
+        args = _RUN_ARGS
     recorded = recorded_settings()
     reference = configured_reference()
 

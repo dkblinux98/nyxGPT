@@ -75,6 +75,16 @@ on:
       - 'src/nyxgpt/cloud_mac.py'
       - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cli.py'
+      # #4181: these two own the words this smoke asserts. `cloud_verified`
+      # decides whether a record may be claimed at all and renders the
+      # `reason`/`provenance` sentences phases 1b/1c read; `cloud_identity`
+      # resolves the credentials that decide whether an answer counts. A
+      # change to either can invert what `cloud status` prints without
+      # touching any file above it -- which is how this script went on
+      # asserting "an instance exists and is being billed" after the claim
+      # was removed.
+      - 'src/nyxgpt/cloud_verified.py'
+      - 'src/nyxgpt/cloud_identity.py'
       - 'scripts/cloud-status-smoke.sh'
       - '.github/workflows/cloud-status-smoke.yml'
   push:
@@ -89,6 +99,16 @@ on:
       - 'src/nyxgpt/cloud_mac.py'
       - 'src/nyxgpt/cloud.py'
       - 'src/nyxgpt/cli.py'
+      # #4181: these two own the words this smoke asserts. `cloud_verified`
+      # decides whether a record may be claimed at all and renders the
+      # `reason`/`provenance` sentences phases 1b/1c read; `cloud_identity`
+      # resolves the credentials that decide whether an answer counts. A
+      # change to either can invert what `cloud status` prints without
+      # touching any file above it -- which is how this script went on
+      # asserting "an instance exists and is being billed" after the claim
+      # was removed.
+      - 'src/nyxgpt/cloud_verified.py'
+      - 'src/nyxgpt/cloud_identity.py'
       - 'scripts/cloud-status-smoke.sh'
       - '.github/workflows/cloud-status-smoke.yml'
   workflow_dispatch:

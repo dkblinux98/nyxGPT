@@ -22,6 +22,7 @@ from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
 from nyxgpt import cloud_artifact_smoke as cloud_artifact_smoke_mod
 from nyxgpt import cloud_deploy as cloud_deploy_mod
+from nyxgpt import cloud_identity as cloud_identity_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import cloud_provision as cloud_provision_mod
 from nyxgpt import cloud_screen as cloud_screen_mod
@@ -3176,8 +3177,31 @@ def cli(argv: list[str] | None = None) -> int:
         help=(
             "Make no network calls: no health check through an open tunnel "
             "(skipped anyway when no tunnel is open) and no AWS check on the "
-            "recorded EC2 Mac Dedicated Host, whose rows are then labelled as "
-            "unconfirmed rather than reported as current"
+            "recorded EC2 Mac Dedicated Host or Linux instance, whose rows are "
+            "then labelled as unconfirmed rather than reported as current"
+        ),
+    )
+    # #4181. The flag arm of the credential chain was unreachable from the one
+    # command the owner was reading it on: `cloud status` asks AWS (the Mac host
+    # check, the Cost Explorer figure, the substrate check) and had no way to be
+    # told which account to ask, so a report that says "the last answer came
+    # from the wrong account" left the operator with no command to correct it.
+    # Read-only: naming an account changes which account is *asked*, never what
+    # is in it.
+    cloud_status_p.add_argument(
+        "--profile",
+        help=(
+            "AWS profile to ask with (default: the account this machine recorded for the "
+            "deployment, then config.ini [cloud] profile, then AWS_PROFILE). An AWS account "
+            "reports every resource it does not own as absent, so the account asked is part "
+            "of what the answer means"
+        ),
+    )
+    cloud_status_p.add_argument(
+        "--region",
+        help=(
+            "AWS region to ask in (default: the region the resource was recorded in, then "
+            "config.ini [cloud] region, then AWS_REGION)"
         ),
     )
 
@@ -3909,6 +3933,16 @@ def cli(argv: list[str] | None = None) -> int:
             return release_candidate_mod.release_publish(args)
         if args.release_cmd == "rc":
             return release_candidate_mod.release_rc(args)
+
+    if cmd == "cloud":
+        # #4181. Bind this invocation's flags to the one resolver before any
+        # cloud subcommand runs, so every layer below -- including the ones with
+        # no `args` to be handed, like the `terraform` subprocess environment
+        # and the status surfaces built from the record -- resolves the account
+        # the operator named. Without it `--profile nyxgpt` reached the boto3
+        # calls and not Terraform, and `terraform destroy` ran as the default
+        # account while the same command's API calls ran as the right one.
+        cloud_identity_mod.bind_run_args(args)
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)

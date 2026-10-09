@@ -41,6 +41,14 @@
 # same binary, the same $HOME, and UNKNOWN is still what it prints when there
 # genuinely is no source.
 #
+# 1b/1c are also the #4181 half, and this script was the defect's last holdout:
+# they asserted "an instance exists and is being billed" over a record nothing
+# had verified, on a runner with no AWS credentials at all. Reporting an id is
+# the #3993 fix and it stands; claiming the resource exists and is costing
+# money from that id is what #4181 removed. Both phases now pin the honest
+# sentence and the absence of the old claim, so a regression toward either
+# defect fails here rather than at the owner's acceptance round.
+#
 # Expects `nyxgpt` on PATH (installed from the wheel by the caller) and a
 # writable $HOME.
 
@@ -113,7 +121,24 @@ not_contains "$OUT" "UNKNOWN"
 contains "$OUT" "provision"
 contains "$OUT" "Could not reconcile Grafana admin credential"
 contains "$OUT" "i-0abc123def"
-contains "$OUT" "an instance exists and is being billed"
+# #4181. This asserted "an instance exists and is being billed" over exactly
+# this state -- a state.json with no verification fields, on a runner with no
+# AWS credentials. That is the claim #4181 removed: nothing in the run asked
+# AWS, so the ids above are a record, not a resource. The assertion now pins
+# the honest sentence AND the absence of the old claim, so this phase guards
+# the fix instead of encoding the defect.
+contains "$OUT" "nothing confirmed it at AWS in this run"
+not_contains "$OUT" "an instance exists and is being billed"
+# ...and the reason given is the one that actually applies (finding 6), which
+# this job is in an unusually good position to prove: it installs the wheel
+# WITHOUT the `cloud` extra, so there is no boto3 here -- the owner's exact
+# live condition when `cloud status` answered "NOT confirmed at AWS in this run
+# -- `nyxgpt cloud status` asks" from inside `nyxgpt cloud status`. The reason
+# must name the missing boto3, and must never be the wording for "nobody has
+# asked", which is the one cause that cannot apply inside the command that asks.
+contains "$OUT" "Why nothing confirmed them:"
+contains "$OUT" "boto3 is not installed"
+not_contains "$OUT" "nothing on this machine has asked AWS about it"
 # Still wrapped commands only, in the state where an operator is most likely
 # to reach for a raw one.
 contains "$OUT" "nyxgpt cloud allow-ip"
@@ -141,6 +166,11 @@ cat "$OUT"
 contains "$OUT" "SUBSTRATE ONLY"
 not_contains "$OUT" "UNKNOWN"
 contains "$OUT" "i-0abc123def"
+# The same #4181 rule on the other verdict that reads the same record. This
+# phase went unasserted on it, which is how one sibling of the Phase 1b
+# assertion could have been corrected while this one kept the old claim.
+contains "$OUT" "nothing confirmed it at AWS in this run"
+not_contains "$OUT" "an instance exists and is being billed"
 
 echo
 # shellcheck disable=SC2016  # the backticks are literal: this is a banner, not

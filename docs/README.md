@@ -62,8 +62,10 @@ supported command can stop
 ([ops.md](ops.md#nyxgpt-ops-uninstall)).
 AWS deployments are `nyxgpt cloud`-wrapped, with
 an SSH-tunnel-only access path; `nyxgpt cloud status` says what is deployed
-and how to reach it, and `nyxgpt cloud ops` inspects the instance over that
-same path ([cloud.md](cloud.md)). **Canary
+and how to reach it — stating presence, billing or release only for what it
+confirmed at AWS in that run, in the account it names, and changing nothing —
+and `nyxgpt cloud ops` inspects the instance over that same path
+([cloud.md](cloud.md)). **Canary
 deployment** gates a weighted rollout on live metrics before promotion or
 rollback — on a workstation cluster, and on an AWS instance deployed with
 `nyxgpt cloud deploy --kubernetes`, which runs the same manifests on a

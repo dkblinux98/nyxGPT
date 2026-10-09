@@ -66,6 +66,18 @@ AWS_BLOCK_KEYS: tuple[str, ...] = (
     "public_ip",
     "private_ip",
     "ssh_key_name",
+    # What AWS said about this instance, and under which credentials (#4181).
+    # Symmetrical with the Mac block below, and for the same reason: "an
+    # instance exists and is being billed" is a claim about AWS, and the record
+    # on its own is only a claim about what a previous run wrote down. The
+    # profile is recorded alongside the answer because an AWS account reports
+    # every resource it does not own as absent -- so an answer from the wrong
+    # account cannot tell a terminated instance from someone else's.
+    "verified_at",
+    "instance_present",
+    "verify_error",
+    "verified_profile",
+    "verified_account_id",
 )
 
 #: Keys the EC2 Mac owns. Re-exported as `cloud_mac.STATE_KEYS`.
@@ -90,6 +102,15 @@ MAC_BLOCK_KEYS: tuple[str, ...] = (
     # explain that its data might be stale.
     "mac_verified_at",
     "mac_host_present",
+    # Why AWS could not be asked, and which credentials the last answer came
+    # from (#4181). Without the reason, every surface had to word the
+    # unconfirmed case as "nobody has asked yet" -- which `nyxgpt cloud status`
+    # printed about itself while the real reason was that boto3 was missing.
+    # Without the profile, an `InvalidHostID.NotFound` from an account that
+    # does not own the host reads as "released".
+    "mac_verify_error",
+    "mac_verified_profile",
+    "mac_verified_account_id",
     # The spend figure, as Cost Explorer reported it. Recorded rather than
     # recomputed from `now - allocated_at`, which kept counting after AWS
     # stopped charging: the display read $48.44 for a host AWS billed $12.02

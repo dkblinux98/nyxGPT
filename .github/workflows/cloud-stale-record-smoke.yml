@@ -40,6 +40,29 @@ name: Cloud Stale Record Smoke
 #                             `rate * elapsed`. A build that ignores AWS's
 #                             answer cannot pass all four.
 #
+#                             #4181 widened the question from that instance to
+#                             its CLASS: does any `nyxgpt cloud` surface act on,
+#                             or report, a cloud fact this run did not establish
+#                             with the right credentials? The owner accepted
+#                             that the original incident was fixed and failed
+#                             the issue anyway, because it was not. Six more
+#                             scenarios, two of them negative controls:
+#                             `wrong-account` (two live credential profiles and
+#                             a host only one owns);
+#                             `wrong-account-answer` (a confirmation obtained in
+#                             another account is not one);
+#                             `incoherent` (a self-contradicting record is
+#                             reported, never concluded from);
+#                             `status-changes-nothing` (a recording `terraform`
+#                             shim on PATH proves the read invokes no mutation);
+#                             `pre-fix-terraform` + `terraform-credentials` (the
+#                             run's `--profile` reaches the subprocess
+#                             environment AND overwrites the credential lines of
+#                             a tfvars an earlier run rendered -- the owner's
+#                             AccessDenied on `nyxgpt-tf-mac-release`); and
+#                             `declined` (a declined consent is its own outcome,
+#                             not a failed deploy to be re-run).
+#
 # No AWS account, no credentials, no spend: boto3 is pointed at a local server
 # replaying the recorded responses in tests/fixtures/aws/. What is real is
 # everything else -- the installed console script, argparse, the deploy flow,
@@ -58,6 +81,8 @@ on:
       - 'src/nyxgpt/cloud_infra.py'
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud.py'
+      - 'src/nyxgpt/cloud_identity.py'
+      - 'src/nyxgpt/cloud_verified.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud_stale_record_smoke.py'
       - 'tests/fixtures/aws/**'
@@ -69,6 +94,8 @@ on:
       - 'src/nyxgpt/cloud_infra.py'
       - 'src/nyxgpt/cloud_deploy.py'
       - 'src/nyxgpt/cloud.py'
+      - 'src/nyxgpt/cloud_identity.py'
+      - 'src/nyxgpt/cloud_verified.py'
       - 'src/nyxgpt/cli.py'
       - 'scripts/cloud_stale_record_smoke.py'
       - 'tests/fixtures/aws/**'

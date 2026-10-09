@@ -1673,11 +1673,72 @@ describe('InfrastructurePage', () => {
     expect(screen.queryByText('DEPLOYED')).not.toBeInTheDocument();
     expect(screen.getByText(/stopped at the `provision` phase/)).toBeInTheDocument();
     expect(screen.getByText(/Could not reconcile Grafana admin credential/)).toBeInTheDocument();
-    expect(screen.getByText(/An instance exists and is being billed/)).toBeInTheDocument();
+    // #4181. The billing assertion needs AWS to have confirmed the resource in
+    // this run; nothing here did, so the card says what it actually knows. The
+    // card asserted a charge over an unverified record while AWS held no
+    // instances at all, and this is the sentence that replaces it.
+    expect(screen.queryByText(/An instance exists and is being billed/)).toBeNull();
+    expect(
+      screen.getByText(/nothing confirmed it at AWS in this run/)
+    ).toBeInTheDocument();
     // Observable, never operable (D-017): a pointer to the command, not a
     // button. (The commands table lower down names it too, hence getAllByText.)
     expect(screen.getAllByText('nyxgpt cloud deploy').length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /deploy/i })).not.toBeInTheDocument();
+  });
+
+  it('names why nothing confirmed the record, not just that nothing did (#4181 finding 6)', async () => {
+    // Finding 6 on the card. "Nothing confirmed it at AWS in this run" is the
+    // honest verdict, and on its own it is unactionable: the operator cannot
+    // tell expired credentials from a missing boto3 from an answer that came
+    // back from the wrong account. The cause is already decided server-side in
+    // `cloud_verified`, so the card prints that `reason` rather than deriving
+    // a second opinion (D-066) -- and `nyxgpt cloud status` is still the right
+    // pointer HERE, because a dashboard observes and names the command.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          instance_id: 'i-0abc123def',
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            provisioned: true,
+            instance_id: 'i-0abc123def',
+            observation: {
+              confirmed: false,
+              confirmed_at: '',
+              present: null,
+              coherent: true,
+              usable: false,
+              findings: [],
+              reason: 'AWS could not be asked: ExpiredToken',
+              profile: '',
+              account_id: '',
+              account_label: 'not recorded here',
+              provenance:
+                'recorded on this machine; NOT confirmed at AWS -- AWS could not be asked: ExpiredToken',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/nothing confirmed it at AWS in this run/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/AWS could not be asked: ExpiredToken/)).toBeInTheDocument();
+    // Not the wording for "nobody has asked", which is a different cause with
+    // a different fix -- and was the only one the card could ever express.
+    expect(
+      screen.queryByText(/nothing on this machine has asked AWS about it in this run/)
+    ).toBeNull();
+    expect(screen.queryByText(/An instance exists and is being billed/)).toBeNull();
   });
 
   it('does not claim an instance is billing when the deploy failed before the substrate (#4007)', async () => {
@@ -2992,6 +3053,28 @@ describe('InfrastructurePage', () => {
         verified_at: '2026-10-02T10:00:00Z',
         host_present: true,
         incoherent: [],
+        // #4181: `usable` is the one gate the panel claims presence, billing
+        // or release through -- confirmed by AWS in this run, under the
+        // credentials this run resolved, over a record that does not
+        // contradict itself -- and `provenance` is the sentence printed when
+        // it is closed. Both are computed once, server-side, by
+        // `cloud_mac.observe_host`.
+        billing: true,
+        usable: true,
+        provenance: 'confirmed at AWS in nyxgpt (066835328281) at 2026-10-02T10:00:00Z',
+        observation: {
+          confirmed: true,
+          confirmed_at: '2026-10-02T10:00:00Z',
+          present: true,
+          coherent: true,
+          usable: true,
+          findings: [],
+          reason: '',
+          profile: 'nyxgpt',
+          account_id: '066835328281',
+          account_label: 'nyxgpt (066835328281)',
+          provenance: 'confirmed at AWS in nyxgpt (066835328281) at 2026-10-02T10:00:00Z',
+        },
         ...over,
       },
     });
@@ -3005,6 +3088,26 @@ describe('InfrastructurePage', () => {
           screen.getByRole('heading', { name: /EC2 Mac Dedicated Host — still billing/ })
         ).toBeInTheDocument();
       });
+    };
+
+    // The same render, for the cases where the panel must NOT make the claim
+    // (#4181). A separate waiter rather than a flag, because waiting on the
+    // wrong heading is how a test that is supposed to prove a claim is absent
+    // ends up proving nothing.
+    const renderUnconfirmed = async (over = {}) => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+      server.use(http.get('/api/v1/cloud/deploy', () => HttpResponse.json(macHost(over))));
+      render(<InfrastructurePage />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', {
+            name: /EC2 Mac Dedicated Host — recorded here, not confirmed at AWS/,
+          })
+        ).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByRole('heading', { name: /EC2 Mac Dedicated Host — still billing/ })
+      ).toBeNull();
     };
 
     it('names the host, its type, location, allocation and what AWS billed', async () => {
@@ -3064,37 +3167,84 @@ describe('InfrastructurePage', () => {
     // it. This panel said "still billing" over a host that had been released
     // three days earlier, because the local record was all anything asked.
     it('does not say still billing over a host AWS has not confirmed', async () => {
-      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-      server.use(
-        http.get('/api/v1/cloud/deploy', () => HttpResponse.json(macHost({ verified_at: '' })))
-      );
-      render(<InfrastructurePage />);
-      await waitFor(() => {
-        expect(
-          screen.getByRole('heading', {
-            name: /EC2 Mac Dedicated Host — recorded here, not confirmed at AWS/,
-          })
-        ).toBeInTheDocument();
+      await renderUnconfirmed({
+        verified_at: '',
+        host_present: null,
+        billing: false,
+        usable: false,
+        provenance:
+          'recorded on this machine; NOT confirmed at AWS -- nothing on this machine has ' +
+          'asked AWS about it in this run',
       });
-      expect(screen.getByText(/Nothing has asked AWS about this host yet/)).toBeInTheDocument();
       expect(
-        screen.getByText(/never — nothing here has asked AWS whether this host exists/)
+        screen.getAllByText(/nothing on this machine has asked AWS about it in this run/).length
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getByText(/Every row below is what this machine RECORDED/)
       ).toBeInTheDocument();
+    });
+
+    // #4181 finding 6. The panel used to say "Nothing has asked AWS about this
+    // host yet" whatever the cause -- including a run whose boto3 was missing
+    // and a run that asked an account that does not own the host, which reports
+    // every host it does not own as absent. The reason is now carried in the
+    // payload and rendered verbatim.
+    it('names the reason AWS could not be asked, not a remedy for a different one', async () => {
+      await renderUnconfirmed({
+        verified_at: '',
+        host_present: null,
+        billing: false,
+        usable: false,
+        provenance:
+          'recorded on this machine; NOT confirmed at AWS -- boto3 is not installed, so ' +
+          'nothing here can ask AWS',
+      });
+      expect(screen.getAllByText(/boto3 is not installed/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/Nothing has asked AWS about this host yet/)).toBeNull();
+    });
+
+    // #4181 finding 3. A confirmation proves the HOST exists; it does not make
+    // a self-contradicting block describe that host. This panel printed "still
+    // billing" immediately above its own "internally inconsistent" warning
+    // about the same record, and rendered the release conclusions from the
+    // fields that warning had just disqualified.
+    it('withdraws the billing claim over a record that contradicts itself', async () => {
+      await renderUnconfirmed({
+        billing: false,
+        usable: false,
+        release_scheduled: true,
+        releasable_now: true,
+        provenance:
+          'confirmed at AWS at 2026-10-02T10:00:00Z, but this record contradicts itself',
+        incoherent: ['mac_release_scheduled_at is EARLIER than mac_allocated_at'],
+      });
+      expect(screen.getByText(/This record is internally inconsistent/)).toBeInTheDocument();
+      expect(screen.getByText(/recorded as scheduled — not verified in this run/)).toBeInTheDocument();
+      expect(screen.queryByText(/the scheduled release has fired/)).toBeNull();
     });
 
     it('names the moment AWS confirmed the host', async () => {
       await renderWith();
       // Twice on the page -- in the heading and in its own row -- so the row is
       // found by its label rather than by the timestamp alone.
-      expect(screen.getAllByText('2026-10-02T10:00:00Z').length).toBeGreaterThan(0);
       expect(screen.getByText('Confirmed at AWS')).toBeInTheDocument();
+      // #4181: the moment AND the account it was confirmed in. An AWS account
+      // reports every host it does not own as absent, so a confirmation that
+      // cannot name its account is not one this panel may rely on.
+      expect(
+        screen.getByText('2026-10-02T10:00:00Z in nyxgpt (066835328281)')
+      ).toBeInTheDocument();
     });
 
     // #4136. Reported, not used: each of these is detectable with no API call,
     // and means the block's fields came from different runs about different
     // hosts -- so no two rows below can be read together.
     it('reports an incoherent record instead of presenting it as agreed', async () => {
-      await renderWith({
+      await renderUnconfirmed({
+        billing: false,
+        usable: false,
+        provenance:
+          'confirmed at AWS at 2026-10-02T10:00:00Z, but this record contradicts itself',
         incoherent: [
           'mac_release_scheduled_at (2026-10-03T19:25:47+00:00) is EARLIER than ' +
             'mac_allocated_at (2026-10-03T19:27:05+00:00)',

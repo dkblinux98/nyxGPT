@@ -25,8 +25,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from nyxgpt import cloud_identity, cloud_infra, cloud_mac
-from nyxgpt.cloud import CloudCommandError
+from nyxgpt import cloud_identity, cloud_infra, cloud_mac, cloud_record
+from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAC_TF = REPO_ROOT / "terraform" / "aws" / "mac"
@@ -344,6 +344,39 @@ def _record_host(**overrides):
     return cloud_mac.record_mac_host(values)
 
 
+def _presence(monkeypatch, present, reason=""):
+    """Patch the one AWS-answer seam the reconcile reads (#4181).
+
+    `host_presence` carries the reason an answer could not be had alongside the
+    three-valued verdict; `host_still_allocated` is the verdict-only wrapper
+    over it. The reconcile reads the former, because the recorded reason is what
+    stops every later surface having to invent one.
+    """
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=present, reason=reason),
+    )
+
+
+def _confirmed_host(**overrides):
+    """A record AWS confirmed in this run, under the credentials this run has.
+
+    The state in which a surface may state presence, billing or release
+    (#4181): `mac_host_present` plus a fresh `mac_verified_at` plus the profile
+    that got the answer. Without the profile `observe_host` correctly refuses
+    to treat it as a confirmation -- an account reports every resource it does
+    not own as absent, so an answer whose account is unknown proves nothing.
+    """
+    values = {
+        "mac_verified_at": cloud_mac.utc_now().isoformat(),
+        "mac_host_present": True,
+        "mac_verified_profile": None,
+    }
+    values.update(overrides)
+    return _record_host(**values)
+
+
 def test_the_host_id_allocation_time_and_release_time_round_trip_through_state():
     _record_host()
 
@@ -401,7 +434,13 @@ def test_the_pending_release_reports_the_id_the_time_and_the_accrued_cost(monkey
     assert pending["accrued_source"] == ""
     assert pending["estimated_cost"] == pytest.approx(15.60)
     assert pending["releasable_now"] is False
-    assert pending["billing"] is True
+    # #4181: `billing` was hard-coded `True` in a payload whose whole job is to
+    # say whether a charge is running. Nothing has asked AWS about this record,
+    # so the honest answer is that nyxGPT cannot say -- and `provenance` is the
+    # sentence every surface prints instead of the claim.
+    assert pending["billing"] is False
+    assert pending["usable"] is False
+    assert "NOT confirmed at AWS" in pending["provenance"]
 
 
 def test_a_host_past_its_window_is_reported_as_releasable(monkeypatch):
@@ -555,8 +594,8 @@ def test_a_host_aws_says_is_gone_stops_being_reported_as_still_billing(monkeypat
     Nothing on this machine learns the host is gone, so without this reconcile
     the "still billing" row would outlive the charge it describes."""
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: False)
-    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda: True)
+    _presence(monkeypatch, False)
+    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda **_k: True)
 
     assert cloud_mac.reconcile_released_host(_args()) is True
     assert cloud_mac.pending_release() == {}
@@ -567,24 +606,35 @@ def test_a_host_that_could_not_be_looked_up_is_kept_not_forgotten(monkeypatch):
     record on the strength of expired credentials would hide a resource that
     is still costing money -- the one failure this row exists to prevent."""
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: None)
+    _presence(monkeypatch, None, reason="AWS could not be asked: expired token")
 
     assert cloud_mac.reconcile_released_host(_args()) is False
-    assert cloud_mac.pending_release()["host_id"] == "h-0abc"
+    pending = cloud_mac.pending_release()
+    assert pending["host_id"] == "h-0abc"
+    # And the reason is recorded, not reinvented by each reader (#4181): the
+    # only wording available before was "nobody has asked yet", which `nyxgpt
+    # cloud status` printed about itself.
+    assert pending["billing"] is False
+    assert "expired token" in pending["provenance"]
 
 
 def test_a_host_still_allocated_is_kept(monkeypatch):
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: True)
+    _presence(monkeypatch, True)
 
     assert cloud_mac.reconcile_released_host(_args()) is False
-    assert cloud_mac.pending_release()["host_id"] == "h-0abc"
+    pending = cloud_mac.pending_release()
+    assert pending["host_id"] == "h-0abc"
+    # Confirmed in this run, so this is the one state in which the payload may
+    # say a charge is running (#4181).
+    assert pending["billing"] is True
+    assert "confirmed at AWS" in pending["provenance"]
 
 
 def test_tearing_down_a_host_already_released_is_a_no_op(monkeypatch):
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: False)
-    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda: True)
+    _presence(monkeypatch, False)
+    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda **_k: True)
 
     assert cloud_mac.teardown(_args()) == {"managed": False, "already_released": True}
 
@@ -895,7 +945,9 @@ def test_a_host_terraform_already_holds_is_adopted_not_re_disclosed(monkeypatch)
     # #4136: adoption requires AWS to confirm the host in this run. Terraform's
     # state naming it is not evidence it exists -- that is how the 2026-10-03
     # deploy reconciled a host released three days earlier.
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: True)
+    # #4181: the adoption path reads `host_presence`, which carries the reason
+    # an answer could not be had, so the refusal can name it.
+    _presence(monkeypatch, True)
     monkeypatch.setattr(
         cloud_mac,
         "apply_mac_host",
@@ -1638,3 +1690,276 @@ def test_record_profile_still_lets_the_flag_win(monkeypatch):
     monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "recorded"})
 
     assert cloud_mac._record_profile(argparse.Namespace(profile="flag")) == "flag"
+
+
+# --- #4181: nothing is claimed that this run did not establish -------------
+
+
+def test_a_confirmation_from_another_account_is_not_a_confirmation(monkeypatch):
+    """Finding 1, at the reader rather than at the printer.
+
+    An AWS account answers `InvalidHostID.NotFound` for every host it does not
+    own, so an answer from the wrong account cannot tell a released host from
+    someone else's. Live, `nyxgpt cloud status` asked
+    `arn:aws:iam::551292530955:root` about a host billing in 066835328281; the
+    run got the right answer by coincidence, and the wrong one would have
+    cleared the record of a host that was still costing money.
+    """
+    _record_host(
+        mac_host_present=True,
+        mac_verified_at=cloud_mac.utc_now().isoformat(),
+        mac_verified_profile="the-default-account",
+    )
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "nyxgpt"})
+
+    observation = cloud_mac.observe_host(_args())
+
+    assert observation.confirmed is False
+    assert observation.usable is False
+    assert "this run resolved 'nyxgpt'" in observation.reason
+
+
+def test_an_incoherent_record_is_never_usable_however_confirmed():
+    """Finding 3. A confirmation proves the HOST exists, not that the block
+    describes it: `nyxgpt cloud status` printed two INCOHERENT rows and then,
+    from the same fields, "the scheduled release has fired", the October 4
+    instance id, and "an instance exists and is being billed"."""
+    now = cloud_mac.utc_now()
+    _confirmed_host(
+        mac_release_scheduled=True,
+        # Earlier than the allocation: impossible, and one of the three
+        # incoherences the owner's record carried.
+        mac_release_scheduled_at="2026-08-22T17:00:00+00:00",
+    )
+
+    observation = cloud_mac.observe_host(_args(), now=now)
+
+    assert observation.confirmed is True
+    assert observation.coherent is False
+    assert observation.usable is False
+    pending = cloud_mac.pending_release()
+    assert pending["billing"] is False
+    assert pending["incoherent"]
+
+
+def test_a_claim_site_cannot_read_an_unconfirmed_field_as_a_fact():
+    """What makes "reported rather than used" structural (#4181).
+
+    `fact()` withholds the value; `reported()` yields it for a row labelled as
+    what the record holds. The distinction used to be a convention each reader
+    had to remember, and three readers remembered it differently.
+    """
+    _record_host()
+
+    observation = cloud_mac.observe_host(_args())
+
+    assert observation.fact("mac_instance_id") == ""
+    assert observation.reported("mac_instance_id") == "i-0mac"
+
+
+def test_status_does_not_tear_down_the_release_stack(monkeypatch):
+    """Finding 4: a read-only command ran `terraform destroy`.
+
+    `verify_mac_record` reached `destroy_release_stack` through the reconcile,
+    so `nyxgpt cloud status` changed the AWS account it was reporting on. The
+    record is still corrected -- that is local, and it only ever withdraws a
+    claim -- and the Terraform state is left for the command the operator ran
+    to change something.
+    """
+    _record_host()
+    _settings(monkeypatch)
+    cloud_mac.MAC_TFSTATE_FILE.write_text("{}", encoding="utf-8")
+    cloud_mac.MAC_RELEASE_TFSTATE_FILE.write_text("{}", encoding="utf-8")
+    destroyed: list[str] = []
+    monkeypatch.setattr(
+        cloud_mac, "destroy_release_stack", lambda **_k: destroyed.append("called") or True
+    )
+    _stub_clients(monkeypatch, _StubEc2(error_code="InvalidHostID.NotFound"))
+
+    result = cloud_mac.verify_mac_record(_args())
+
+    assert result == {"host_present": False, "cleared": True}
+    assert destroyed == []
+    # Nor is any Terraform state deleted by a read.
+    assert cloud_mac.MAC_TFSTATE_FILE.exists()
+    assert cloud_mac.MAC_RELEASE_TFSTATE_FILE.exists()
+
+
+def test_a_lifecycle_command_still_cleans_the_stack_up(monkeypatch):
+    """The other half: cleanup belongs to `destroy`/`deploy`, and still happens."""
+    _record_host()
+    _settings(monkeypatch)
+    cloud_mac.MAC_TFSTATE_FILE.write_text("{}", encoding="utf-8")
+    destroyed: list[str] = []
+    monkeypatch.setattr(
+        cloud_mac, "destroy_release_stack", lambda **_k: destroyed.append("called") or True
+    )
+    _presence(monkeypatch, False)
+
+    assert cloud_mac.reconcile_released_host(_args()) is True
+
+    assert destroyed == ["called"]
+    assert not cloud_mac.MAC_TFSTATE_FILE.exists()
+
+
+def test_a_declined_allocation_is_its_own_outcome_not_a_failure():
+    """Finding 5. Typing `no` wrote `"status": "failed"`, and `cloud status`
+    then said "a deploy started here and did not finish ... re-run it" about a
+    run whose own recorded error read "nothing was allocated and nothing is
+    billed"."""
+    with pytest.raises(ConsentDeclined, match="nothing was allocated"):
+        cloud_mac.confirm_allocation("disclosure", reader=lambda _prompt: "no")
+
+
+def test_no_answer_at_all_is_also_a_declined_consent():
+    """EOF on stdin is not consent, and the outcome is identical: nothing
+    exists, nothing is billed, and there is nothing to resume."""
+
+    def _eof(_prompt):
+        raise EOFError
+
+    with pytest.raises(ConsentDeclined):
+        cloud_mac.confirm_allocation("disclosure", reader=_eof)
+
+
+def test_a_declined_consent_is_still_an_error_the_cli_prints_cleanly():
+    """A subclass, deliberately: declining is not success, and every existing
+    `except CloudCommandError` must keep printing it without a traceback."""
+    assert issubclass(ConsentDeclined, CloudCommandError)
+
+
+def test_the_verification_records_the_account_it_was_obtained_in(monkeypatch):
+    """Without it, `InvalidHostID.NotFound` from the default account reads
+    exactly like a release -- which is finding 1's mechanism."""
+    _record_host()
+    _settings(monkeypatch)
+    monkeypatch.setattr(
+        cloud_identity,
+        "account_default",
+        lambda *a, **k: cloud_identity.AccountChoice(
+            profile="nyxgpt", region="us-east-1", account_id="066835328281", source="flag"
+        ),
+    )
+    _stub_clients(monkeypatch, _StubEc2(hosts=[{"HostId": "h-0abc", "State": "available"}]))
+
+    cloud_mac.reconcile_released_host(_args(profile="nyxgpt"))
+
+    record = cloud_mac.load_mac_record()
+    assert record["mac_verified_profile"] == "nyxgpt"
+    assert record["mac_verified_account_id"] == "066835328281"
+
+
+def test_the_reason_aws_could_not_be_asked_is_recorded_rather_than_reinvented(monkeypatch):
+    """Finding 6. Every surface had to word the unconfirmed case itself, and the
+    only wording available was "nobody has asked yet" -- which `nyxgpt cloud
+    status` printed about itself when the real reason was a missing boto3."""
+    _record_host()
+    _settings(monkeypatch)
+    monkeypatch.setattr(cloud_mac, "try_import", lambda _name: None)
+
+    cloud_mac.reconcile_released_host(_args())
+
+    record = cloud_mac.load_mac_record()
+    assert "boto3 is required" in record["mac_verify_error"]
+    assert "boto3 is required" in cloud_mac.pending_release()["provenance"]
+
+
+def test_an_allocation_records_the_account_it_was_made_in(monkeypatch):
+    """A confirmation that cannot name its account is not one `observe_host`
+    honours, so the allocation must record the profile with it -- otherwise the
+    very next command reports the host it just allocated as unconfirmed."""
+    monkeypatch.setattr(
+        cloud_identity,
+        "account_default",
+        lambda *a, **k: cloud_identity.AccountChoice(
+            profile="nyxgpt", region="us-east-1", account_id="066835328281", source="flag"
+        ),
+    )
+    _record_host(
+        mac_host_present=True,
+        mac_verified_at=cloud_mac.utc_now().isoformat(),
+        mac_verified_profile="nyxgpt",
+        mac_verified_account_id="066835328281",
+    )
+
+    observation = cloud_mac.observe_host(_args(profile="nyxgpt"))
+
+    assert observation.usable is True
+    assert observation.account_label == "nyxgpt (066835328281)"
+
+
+def test_the_spend_row_leaves_with_the_host_rather_than_freezing(monkeypatch):
+    """Finding 7: the Cost Explorer figure stops once the host is released.
+
+    It stops by the block ceasing to exist, which is stronger than a frozen
+    number: the record leaves `state.json` entirely, so there is no row to
+    report a spend on and no reader that has to know the charge has ended.
+    """
+    _record_host()
+    _settings(monkeypatch)
+    _stub_clients(
+        monkeypatch,
+        _StubEc2(hosts=[{"HostId": "h-0abc", "State": "available"}]),
+        cost=_ce_response([("2026-10-01", "8.12")]),
+    )
+    cloud_mac.verify_mac_record(_args())
+    assert cloud_mac.pending_release()["accrued_cost"] == pytest.approx(8.12)
+
+    # The schedule fires; AWS no longer has the host.
+    _stub_clients(monkeypatch, _StubEc2(error_code="InvalidHostID.NotFound"))
+    cloud_mac.verify_mac_record(_args())
+
+    assert cloud_mac.pending_release() == {}
+    state = cloud_record.load_state()
+    assert not [key for key in state if key.startswith("mac_")]
+
+
+def test_a_mac_deploy_leaves_only_its_own_block_in_the_record(monkeypatch):
+    """Finding 7, third bullet, kept as an asserted case per the scrummaster's note.
+
+    The owner verified live that `state.json` after a real Linux deploy held
+    only the current block and no `mac_*` leftovers. That is `write_block`'s
+    whole-block rule (#4136), and this pins it from both directions so a future
+    merge cannot quietly reintroduce the field-by-field merge the issue title
+    names.
+    """
+    cloud_infra.write_cloud_state({"instance_id": "i-linux", "region": "us-east-1"})
+    _record_host()
+
+    # The Mac block is added beside the Linux one; neither borrows the other's
+    # keys, and the Mac block carries only keys `MAC_BLOCK_KEYS` names.
+    state = cloud_record.load_state()
+    assert state["instance_id"] == "i-linux"
+    assert state["mac_host_id"] == "h-0abc"
+    assert not set(state) - set(cloud_record.AWS_BLOCK_KEYS) - set(cloud_record.MAC_BLOCK_KEYS)
+
+    # A second Linux apply replaces its own block whole and leaves no stale
+    # field behind, and does not touch the Mac's.
+    cloud_infra.write_cloud_state({"instance_id": "i-linux-2"})
+
+    state = cloud_record.load_state()
+    assert state["instance_id"] == "i-linux-2"
+    assert "region" not in state
+    assert state["mac_host_id"] == "h-0abc"
+
+
+def test_the_refusal_names_the_reason_aws_could_not_be_asked(monkeypatch):
+    """Finding 6, in a remedy rather than a status row (#4181).
+
+    The refusal that blocks a reconcile used to say only "AWS could not be
+    asked", so an operator whose boto3 was missing -- or whose profile pointed
+    at an account that does not own the host -- was sent to
+    `credentials-setup`, which fixes neither.
+    """
+    _record_host()
+    _mac_state()
+    _settings(monkeypatch)
+    # No boto3 at all. The reconcile records why it could not ask, and the
+    # refusal reads that back -- so the reason travels from the failed call to
+    # the operator rather than being reinvented as "check your credentials".
+    monkeypatch.setattr(cloud_mac, "try_import", lambda _name: None)
+
+    with pytest.raises(CloudCommandError, match="boto3 is required"):
+        cloud_mac.allocate(_args())
+
+    assert "boto3 is required" in cloud_mac.load_mac_record()["mac_verify_error"]
