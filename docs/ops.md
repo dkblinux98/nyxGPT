@@ -695,19 +695,18 @@ Reports:
   printed first and repeated as `[artifact]`/`[dev]` next to `api` and `web`
   — only when that component is actually installed, never on a `none`
   (#3834). In dev mode it also names the checkout the services are running,
-  and warns if that checkout has since disappeared. When no native api/web
-  exists, the line says so rather than letting a leftover record read as a
-  statement about whatever *is* serving. A Kubernetes deployment's own
+  and warns if that checkout has since disappeared. **The line appears only
+  when a native api/web is registered on this machine**; with nothing
+  running, the marker is a record of a past install and is printed as one —
+  see **Install history** below (#4182). A Kubernetes deployment's own
   install mode is reported in the Kubernetes section below.
 - **Install mode (terraform)** — the same line for the local Terraform
   deployment when there is one (#3835), naming the images it is running and
   tagging its `api`/`web` components. A deployment that is running with
   nothing recorded is reported as `not recorded` (tagged `[unrecorded]` per
   component) rather than defaulting to `artifact`, which for that path would
-  be backwards — see [terraform.md](terraform.md). The line is printed
-  whenever a marker exists, so when *nothing* is deployed it says so in the
-  same terms the native line does: a record of the last Terraform install,
-  not a statement about whatever is serving now (#3989).
+  be backwards — see [terraform.md](terraform.md). With nothing deployed it
+  goes to **Install history** too.
 - **Running api build** — which build the api is *actually executing*, read
   from that process's own `sys.prefix` rather than from the Cellar (#4133).
   Three states, and none of them is a bare version string:
@@ -718,17 +717,32 @@ Reports:
     `nyxgpt ops restart api` as the repair. When the running venv has been
     deleted it adds that the next restart by **any** path (reboot, self-heal,
     the dashboard's Restart control) will fail to start the api.
-  - `CANNOT DETERMINE`, with the reason — nothing answered on the api port, or
-    the api predates this field. Never rendered as a pass.
+  - `CANNOT DETERMINE`, with the reason — nothing answered on the api port,
+    the api predates this field, or it **refused the probe**. A refusal names
+    the repair rather than echoing a status code: the probe sends the
+    configured `[auth] api_key` whenever one is set (not only when this
+    config's `[auth] enabled` is true — the process answering got its auth
+    from wherever it was started, which may not be this file), so a 401 means
+    either that no key is configured or that the configured one is not the
+    one that api is running with, and the block says which. Never rendered as
+    a pass.
 
-  Nothing at all is printed where the question has no subject — a Compose,
-  Terraform or Kubernetes api is *answering* and its interpreter lives in that
-  image, so there is no keg venv for it to match. That scoping is decided from
-  the answer the api gives, so it only applies when one is given: on a host
-  where nothing answers the api port the block prints `CANNOT DETERMINE`
-  whatever is installed there. That ordering is deliberate — one refused
-  loopback connection settles the question more cheaply than the
-  `docker compose ps` and two `brew` calls the scoping needs.
+  **Nothing at all is printed where the question has no subject**, and that
+  is settled before the api is probed (#4182). A Compose, Terraform or
+  Kubernetes api's interpreter lives in its image, and a host with no native
+  api venv has nothing to compare against at all — in either case there is no
+  question here, so the block is absent whatever the probe would have said.
+  Reporting a probe failure as a fact about the host is the defect this
+  ordering removes: `ops status` on a Kubernetes install printed
+  `CANNOT DETERMINE — http://127.0.0.1:8000/api/v1/info answered HTTP 401`
+  about a native keg comparison that machine had no subject for.
+
+  The ordering is also the cheaper one, which is why the old one is gone
+  rather than merely corrected: locating the native venv is an `is_dir()` on
+  Linux and two `brew` calls on macOS, and when it finds nothing the probe is
+  skipped entirely — so a Compose-only or cluster-only host now pays no
+  loopback read at all, where before it paid one on every `status`, `install`
+  and `doctor`.
 
   Why this is its own line rather than a footnote on the version: every other
   line here is derived from disk, and a process outlives the build it was
@@ -831,6 +845,18 @@ Reports:
   between: a host with both has two model stores that can legitimately differ,
   and answering "is this deployment ready" out of the other one's store is the
   same false report the in-cluster read exists to end
+- **Install history** — every install-mode marker with nothing live behind
+  it, each dated from the marker, under a heading that says plainly that
+  nothing below it is running (#4182). It is printed **last**, after every
+  line that describes something this machine is actually doing, and that
+  position is the point: these records used to lead the output with a "this
+  is a record" caveat underneath, and an operator reading top-down met wrong
+  information before the right information — an uninstalled keg's
+  `version 3.0.0rc17` and a Terraform `dev` record for a stack that was not
+  deployed. The date matters for the same reason: a marker is only rewritten
+  by `nyxgpt ops install`, so an upgrade or an uninstall since then is not
+  reflected in it, and the block says so. `nyxgpt ops doctor` prints the same
+  block, from the same renderer, after its own verdict.
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
   stack) for cleanup -- and, when you are removing nyxGPT rather than

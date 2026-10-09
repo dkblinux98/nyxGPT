@@ -2722,7 +2722,7 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
         detail += (
             f"\nCandidate channel: the service is named {formula} after its formula "
             f"(not {name}), which is what `brew services list` shows and what "
-            "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by. "
+            "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by -- "
             f"{see_doc('docs/homebrew.md#candidate-channel')}."
         )
     results = [
@@ -4519,7 +4519,7 @@ def _takeover_system_ollama_service() -> tuple[bool, list[OpsResult]]:
             True,
             "Stopped and disabled system-wide ollama.service",
             "Freed 127.0.0.1:11434 for nyxgpt-ollama.service, which nyxgpt manages "
-            "itself (pointed at the shared ~/.nyxGPT/volumes/ollama/models store). "
+            "itself (pointed at the shared ~/.nyxGPT/volumes/ollama/models store) -- "
             f"{see_doc('docs/systemd.md#ollama')}.",
         )
     )
@@ -15583,7 +15583,7 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     return (
         f"Log aggregation is enabled and native-mode logs exist under {native_log_dir}, "
         "but the running promtail container has no bind mount for them -- "
-        "native logs are not reaching Loki. "
+        "native logs are not reaching Loki -- "
         f"{see_doc('docs/docker-compose.md#log-aggregation')}."
     )
 
@@ -15631,7 +15631,7 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
         f"Tracing is enabled ([tracing] otlp_endpoint={endpoint}) but nothing is "
         "listening there -- spans are being silently dropped and Jaeger will stay "
         "empty. Confirm the otel-collector Compose service (tracing profile) is "
-        "running and publishes that port to the host (nyxgpt ops observability). "
+        "running and publishes that port to the host (nyxgpt ops observability) -- "
         f"{see_doc('docs/docker-compose.md#distributed-tracing')}."
     )
 
@@ -15718,7 +15718,7 @@ HOST_RELAY_REVERT_REMEDIATION = (
     "The host-api-relay service (#3721) now gives Prometheus a route to a "
     "loopback-bound API, so widening the bind is no longer necessary for "
     "observability: set `[api] host = 127.0.0.1` in ~/.nyxGPT/config.ini, then run "
-    "`nyxgpt ops env-sync && nyxgpt ops observability && nyxgpt ops restart api`. "
+    "`nyxgpt ops env-sync && nyxgpt ops observability && nyxgpt ops restart api` -- "
     f"{see_doc('docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux')}."
 )
 
@@ -17119,17 +17119,17 @@ def doctor(_args) -> int:
     issues += _stale_terraform_state_issues()
     issues += _dual_stack_conflict_issues()
 
-    # After every check, for the same reason `status` prints it last (#4182):
-    # a record of a past install must not be the first thing an operator reads
-    # about the machine they are diagnosing.
-    _print_install_history(install_history)
-
     if issues:
         print("nyxGPT ops doctor: FAIL")
         for i in issues:
             print(f"- {i}")
         if volume_info is not None:
             print(f"Log volume (last 24h) by logger: {volume_info}")
+        # After the verdict and every finding, which is the whole point
+        # (#4182): on a machine with nothing installed the checks above print
+        # very little, so a history block sited "after the checks" was still
+        # the first thing an operator read. It goes after the REPORT.
+        _print_install_history(install_history)
         logger.warning(
             "ops: doctor found %d issue(s): %s",
             len(issues),
@@ -17141,6 +17141,7 @@ def doctor(_args) -> int:
     print("nyxGPT ops doctor: OK")
     if volume_info is not None:
         print(f"Log volume (last 24h) by logger: {volume_info}")
+    _print_install_history(install_history)
     logger.info(
         "ops: doctor found no issues",
         extra={"component": "ops", "action": "doctor", "ok": True, "issues": []},
@@ -19641,7 +19642,7 @@ def _start_observability_stack(
                 "Skipped observability stack (Docker not found)",
                 "Grafana/Loki/Jaeger/GlitchTip only ship as Docker Compose profiles -- "
                 "install Docker, then re-run `nyxgpt ops install` (or `nyxgpt ops "
-                "observability`) to get dashboards. "
+                "observability`) to get dashboards -- "
                 f"{see_doc('docs/docker-compose.md')}.",
             )
         ]

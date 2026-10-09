@@ -1,0 +1,281 @@
+name: Status Truthfulness Smoke
+
+# Least-privilege token: this gate only reads the checked-out code.
+permissions:
+  contents: read
+
+# Question this job answers: does `nyxgpt ops status` tell the truth about the
+# machine it is printed on?
+#
+# #4182 (owner acceptance of #4135, 2026-10-09). The headline fix worked and
+# the command still misreported the host three ways, all of which inspection
+# passed and only running it shows:
+#
+#   1. "Running api build: CANNOT DETERMINE -- http://127.0.0.1:8000/api/v1/info
+#      answered HTTP 401" -- status probing its own api without the key sitting
+#      in the config it had already loaded, because it gated the key on THIS
+#      config's `[auth] enabled` rather than on whether a key existed. The
+#      serving process's auth comes from wherever that process got it.
+#   2. The output LED with install records that no longer described anything --
+#      an uninstalled keg and an undeployed Terraform tree -- each with a
+#      "this is a record" caveat underneath, which the owner's report says is
+#      read after the wrong information, not before it.
+#   3. Messages pointing at `docs/*.md`, a path no keg/wheel/container carries.
+#
+# Two jobs, because the two states need different machines:
+#
+# * `auth-enabled-build-probe` -- a REAL api process whose auth came from
+#   somewhere other than the config `ops` reads, which is #4182's finding 1
+#   exactly. Fault-injected both ways (D-006): with the key present in the ops
+#   config the build is named, and with it absent the report says what to do
+#   instead of echoing a status code.
+# * `recorded-but-not-running` -- markers for installs that are not there, and
+#   the assertion that every one of them is printed BELOW everything live.
+#
+# The Kubernetes half of finding 1 -- that a cluster-served host reports the
+# native keg question as out of scope rather than "could not determine" -- is
+# asserted on a real kind cluster in `k8s-observability-smoke.yml`, which
+# already stands one up.
+on:
+  pull_request:
+    paths:
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/running_build.py'
+      - 'src/nyxgpt/install_mode.py'
+      - 'src/nyxgpt/doc_links.py'
+      - '.github/workflows/status-truthfulness-smoke.yml'
+  push:
+    paths:
+      - 'src/nyxgpt/ops.py'
+      - 'src/nyxgpt/running_build.py'
+      - 'src/nyxgpt/install_mode.py'
+      - 'src/nyxgpt/doc_links.py'
+      - '.github/workflows/status-truthfulness-smoke.yml'
+
+jobs:
+  auth-enabled-build-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    env:
+      API_KEY: status-truthfulness-4182
+      SERVER_HOME: /tmp/nyxgpt-server-home
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Start a real api whose auth came from somewhere else
+        # The whole point of the separate HOME: `Path.home()` is what resolves
+        # `~/.nyxGPT/config.ini`, so this api requires a key that the config
+        # `nyxgpt ops status` reads below describes differently. That is the
+        # owner's machine in miniature -- there, the serving api was a Pod
+        # reading a Secret.
+        run: |
+          set -euo pipefail
+          mkdir -p "$SERVER_HOME/.nyxGPT"
+          cat > "$SERVER_HOME/.nyxGPT/config.ini" <<CFG
+          [project]
+          name = nyxGPT
+
+          [api]
+          host = 127.0.0.1
+          port = 8000
+
+          [auth]
+          enabled = true
+          api_key = ${API_KEY}
+
+          [tracing]
+          enabled = false
+          CFG
+          HOME="$SERVER_HOME" nohup python -m uvicorn nyxgpt.app:app \
+            --host 127.0.0.1 --port 8000 > /tmp/nyxgpt-api.log 2>&1 &
+          echo $! > /tmp/nyxgpt-api.pid
+          code=000
+          for _ in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: ${API_KEY}" \
+              http://127.0.0.1:8000/api/v1/info || echo 000)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          echo "authenticated /api/v1/info -> $code"
+          [ "$code" = "200" ] || { echo "::error::the api never came up"; cat /tmp/nyxgpt-api.log; exit 1; }
+
+      - name: The pre-fix request really is refused -- the defect, reproduced
+        # Without this the next step could pass on an api that never required a
+        # key at all, and the job would be asserting nothing. This is the exact
+        # request the old probe made, and its exact answer.
+        run: |
+          set -uo pipefail
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/info || echo 000)
+          echo "unauthenticated /api/v1/info -> $code"
+          [ "$code" = "401" ] || {
+            echo "::error::expected 401 without a key, got $code -- this api is not auth-enabled, so the fix is untested here"
+            exit 1; }
+
+      - name: With the key in config, ops status NAMES the running build
+        # The fix: the key is sent because one is configured, not because this
+        # config's own `[auth] enabled` happens to be true. `enabled = false`
+        # here is deliberate and is what made the owner's run report HTTP 401.
+        run: |
+          set -uo pipefail
+          OPS_HOME=/tmp/nyxgpt-ops-home-with-key
+          rm -rf "$OPS_HOME"
+          mkdir -p "$OPS_HOME/.nyxGPT/opt/nyxgpt-api"
+          sed 's/^enabled = true/enabled = false/' \
+            "$SERVER_HOME/.nyxGPT/config.ini" > "$OPS_HOME/.nyxGPT/config.ini"
+          # Makes the native comparison APPLICABLE: the venv ops expects is the
+          # one this api is really executing, so a correct report is a match and
+          # a broken probe is the only way to miss it.
+          ln -s "$(python -c 'import sys; print(sys.prefix)')" \
+            "$OPS_HOME/.nyxGPT/opt/nyxgpt-api/venv"
+          status=$(HOME="$OPS_HOME" nyxgpt ops status 2>/dev/null)
+          echo "$status" | grep -A 3 'Running api build' || true
+          block=$(echo "$status" | grep -A 1 'Running api build' | tail -1)
+          case "$block" in
+            *"OK -- executing"*) echo "  the running build is named" ;;
+            *) echo "::error::ops status did not name the running build on an auth-enabled api (#4182 finding 1): $block"
+               exit 1;;
+          esac
+          # And the symptom the owner reported is gone, by its own words.
+          if echo "$status" | grep -q 'answered HTTP 401'; then
+            echo "::error::ops status still reports a bare HTTP 401 for the running build"
+            exit 1
+          fi
+
+      - name: With no key at all, the report names the repair -- not a status code
+        # The other half of the same message. "HTTP 401" tells an operator what
+        # happened and nothing about what to do; the probe knows whether it sent
+        # a key, so it can say which of the two repairs applies.
+        run: |
+          set -uo pipefail
+          OPS_HOME=/tmp/nyxgpt-ops-home-no-key
+          rm -rf "$OPS_HOME"
+          mkdir -p "$OPS_HOME/.nyxGPT/opt/nyxgpt-api"
+          grep -v '^api_key' "$SERVER_HOME/.nyxGPT/config.ini" \
+            | sed 's/^enabled = true/enabled = false/' > "$OPS_HOME/.nyxGPT/config.ini"
+          ln -s "$(python -c 'import sys; print(sys.prefix)')" \
+            "$OPS_HOME/.nyxGPT/opt/nyxgpt-api/venv"
+          status=$(HOME="$OPS_HOME" nyxgpt ops status 2>/dev/null)
+          echo "$status" | grep -A 2 'Running api build' || true
+          case "$status" in
+            *"requires an API key"*"Repair: set [auth] api_key"*) echo "  the repair is named" ;;
+            *) echo "::error::a refused probe did not name the repair (#4182 finding 1)"
+               exit 1;;
+          esac
+
+      - name: No user-facing line points at a path this machine does not have
+        # Finding 3, executed rather than only scanned: the static guard
+        # (`tests/unit/test_no_repo_relative_user_paths.py`) reads string
+        # literals, and this reads what the command actually printed.
+        run: |
+          set -uo pipefail
+          OPS_HOME=/tmp/nyxgpt-ops-home-with-key
+          out=$( (HOME="$OPS_HOME" nyxgpt ops status; HOME="$OPS_HOME" nyxgpt ops doctor) 2>&1 || true)
+          if echo "$out" | grep -nE '(^|[^/])docs/[a-z0-9-]+\.md|product_management/'; then
+            echo "::error::output told the operator to open a path only a checkout has (#4182 finding 3)"
+            exit 1
+          fi
+          echo "  no repo-relative pointers in status/doctor output"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          cat /tmp/nyxgpt-api.log || true
+          HOME=/tmp/nyxgpt-ops-home-with-key nyxgpt ops status || true
+
+      - name: Stop the api
+        if: always()
+        run: kill "$(cat /tmp/nyxgpt-api.pid)" 2>/dev/null || true
+
+  recorded-but-not-running:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Leave markers behind for installs that are not there
+        # A torn-down native install and a torn-down Terraform one, which is
+        # literally what the owner's machine had: `nyxgpt-api@3.0.0rc` recorded
+        # after the keg was uninstalled, and a Terraform `dev` record for a
+        # deployment that was not deployed.
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.nyxGPT"
+          cat > "$HOME/.nyxGPT/install-mode.json" <<'JSON'
+          {"mode": "artifact",
+           "identity": {"mode": "artifact", "manager": "brew",
+                        "services": {"api": "nyxgpt-api@9.9.9rc", "web": "nyxgpt-web@9.9.9rc"},
+                        "version": "9.9.9rc17", "channel": "rc", "checkout": null}}
+          JSON
+          cat > "$HOME/.nyxGPT/install-mode-terraform.json" <<'JSON'
+          {"mode": "dev", "checkout": "/tmp/a-working-tree-that-is-not-deployed"}
+          JSON
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: Records print as dated history, AFTER everything that is live
+        run: |
+          set -uo pipefail
+          status=$(nyxgpt ops status 2>/dev/null)
+          echo "$status"
+          heading='Install history -- records of past installs'
+          echo "$status" | grep -q "$heading" || {
+            echo "::error::a marker with nothing behind it was not reported as history (#4182 finding 2)"; exit 1; }
+          # The ordering IS the fix: #3989 already printed a caveat under the
+          # claim, and the owner read the claim first anyway.
+          live=$(echo "$status" | grep -n 'Deployment mode:' | head -1 | cut -d: -f1)
+          hist=$(echo "$status" | grep -n "$heading" | head -1 | cut -d: -f1)
+          echo "  live block at line $live, history at line $hist"
+          [ "$live" -lt "$hist" ] || {
+            echo "::error::install records are printed above the live state (#4182 finding 2)"; exit 1; }
+          # And no present-tense claim survives above it.
+          if echo "$status" | grep -qE '^Install mode \((native api/web|terraform)\):'; then
+            echo "::error::status still leads with an install-mode claim for something that is not running"
+            exit 1
+          fi
+          # The record is dated, which is the fact a bare record cannot carry:
+          # the owner's said rc17 on a machine whose last install was rc21.
+          echo "$status" | sed -n "/$heading/,\$p" | grep -q '\[recorded ' || {
+            echo "::error::the history entry carries no date (#4182 finding 2)"; exit 1; }
+
+      - name: ops doctor reports the same markers the same way
+        # Two commands an operator runs side by side must not present one
+        # marker two ways -- they share `install_history_entry` for that reason.
+        run: |
+          set -uo pipefail
+          out=$(nyxgpt ops doctor 2>/dev/null || true)
+          echo "$out" | cat -n
+          echo "$out" | grep -q 'Install history -- records of past installs' || {
+            echo "::error::ops doctor did not report the stale markers as history (#4182 finding 2)"; exit 1; }
+          if echo "$out" | grep -qE '^Install mode \(native api/web\):'; then
+            echo "::error::ops doctor still leads with a native install-mode claim for nothing running"
+            exit 1
+          fi
+          # Below the VERDICT, not merely below the checks: on a machine with
+          # nothing installed the checks print almost nothing, so "after the
+          # checks" was still the top of the screen.
+          verdict=$(echo "$out" | grep -n 'nyxGPT ops doctor: ' | head -1 | cut -d: -f1)
+          hist=$(echo "$out" | grep -n 'Install history' | head -1 | cut -d: -f1)
+          echo "  verdict at line $verdict, history at line $hist"
+          [ "$verdict" -lt "$hist" ] || {
+            echo "::error::ops doctor prints install records above its own verdict (#4182 finding 2)"; exit 1; }

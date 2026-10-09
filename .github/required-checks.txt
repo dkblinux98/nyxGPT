@@ -136,6 +136,12 @@ service-venv-python
 host-relay-posture
 self-heal-probe-honesty
 observability-settle
+# #4182: `ops status`/`ops doctor` must be true about the machine they are
+# printed on. Both jobs run the real commands -- one against a live
+# auth-enabled api, one against markers for installs that are not there --
+# so a regression here is a product regression, not a flake.
+auth-enabled-build-probe
+recorded-but-not-running
 Install the candidate onto a machine that already has the stable
 Install the published candidate from the real tap
 # macos-brew-smoke.yml's `candidate-upgrade` job (#4133). Required, and

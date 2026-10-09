@@ -469,6 +469,29 @@ jobs:
               exit 1;;
           esac
 
+      - name: ops status says nothing about a native keg on a cluster-served host (#4182)
+        # #4182's finding 1, on a real cluster. `_native_api_build_drift` used
+        # to probe :8000 BEFORE deciding whether the native keg comparison had
+        # a subject here, so a probe that was refused or unanswered came out as
+        # "Running api build: CANNOT DETERMINE -- ... answered HTTP 401" on a
+        # machine whose api is a Pod. Scope is settled first now, and this
+        # cluster has no native keg at all, so the correct output is silence on
+        # that question -- which only a run can show.
+        run: |
+          set -uo pipefail
+          status=$(nyxgpt ops status)
+          if echo "$status" | grep -q 'Running api build'; then
+            echo "$status" | grep -A 3 'Running api build'
+            echo "::error::ops status reported on a native keg/venv comparison on a host with no native install (#4182)"
+            exit 1
+          fi
+          if echo "$status" | grep -q 'CANNOT DETERMINE -- http'; then
+            echo "$status" | grep 'CANNOT DETERMINE'
+            echo "::error::ops status reported a probe failure as a fact about this host (#4182)"
+            exit 1
+          fi
+          echo "  no native-build claim on a cluster-served host"
+
       - name: nyxgpt ops port-forward --stop releases every host port
         # The other half of an access path nyxGPT establishes: it has to be
         # nyxGPT's to take back. A `--stop` that reported success while the
