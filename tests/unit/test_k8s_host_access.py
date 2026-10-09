@@ -180,6 +180,10 @@ def test_host_access_does_not_open_node_ports_on_a_cluster_it_did_not_create(mon
         "_publish_k8s_app_tier_nodeports",
         lambda: pytest.fail("must not patch Services on a cluster nyxGPT did not create"),
     )
+    # Same reason as test_host_access_establishes_a_managed_forward_on_a_byo_cluster:
+    # which branch this takes must not depend on whether the machine running
+    # the suite happens to have k3s installed.
+    monkeypatch.setattr(ops, "_which", lambda _prog: None)
     monkeypatch.setattr(ops, "_probe_web_url", lambda url, **_kw: None)
     monkeypatch.setattr(
         ops, "start_port_forward_background", lambda *_a, **_k: [ops.OpsResult(True, "started")]
@@ -853,6 +857,13 @@ def test_host_access_establishes_a_managed_forward_on_a_byo_cluster(monkeypatch)
     """
     monkeypatch.setattr(ops, "_kubectl_context", lambda: "docker-desktop")
     monkeypatch.setattr(ops, "_kind_cluster_publishes_host_ports", lambda *a, **k: False)
+    # The bridge guard reads the HOST for a `k3s` binary, and this test is
+    # about a cluster that is not this host's. Unpinned, the answer came from
+    # whatever the machine running the suite happened to have installed: on a
+    # Linux box with k3s present the guard fires, no forward is started and
+    # this fails -- a test reading one substrate to answer about another, which
+    # is #4184's own rule applied to the fixture.
+    monkeypatch.setattr(ops, "_which", lambda _prog: None)
     monkeypatch.setattr(ops, "_probe_web_url", lambda url, **_kw: None)
     started: list[str] = []
 

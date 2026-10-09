@@ -101,7 +101,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import brew_services, docker_access
+from nyxgpt import brew_services, docker_access, substrate
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.config import (
     get_error_tracking_enabled,
@@ -463,8 +463,21 @@ COMPOSE_NOT_APPLICABLE_REASON = (
     "has no bearing on it."
 )
 
+# The same scope statement for a run that was TOLD its substrate and has not
+# created the Pods yet (#4184). Said in the future tense deliberately: "the
+# core stack runs as Kubernetes Pods ... see the rows below" is false during an
+# install, and pointing an operator at rows that do not exist yet is the same
+# class of wrong-at-the-moment-it-is-printed message as finding 4's "Restart
+# the API to pick this up" on a box with no api.
+COMPOSE_DECLARED_NOT_APPLICABLE_REASON = (
+    "Not applicable to this deployment: this run is a Kubernetes one ({source}), so the "
+    "observability tier belongs to the cluster and `docker compose` has no bearing on it."
+)
 
-def _compose_not_applicable_probe() -> ComposeProbe:
+
+def _compose_not_applicable_probe(
+    decision: substrate.SubstrateDecision | None = None,
+) -> ComposeProbe:
     """The probe stand-in for a deployment whose observability tier is in-cluster.
 
     Returned *instead of* calling `compose_probe()`, not alongside it: on the
@@ -472,8 +485,15 @@ def _compose_not_applicable_probe() -> ComposeProbe:
     socket that user cannot reach, and each one also logged a warning naming a
     Compose file nothing on that host uses. A probe that cannot inform any
     answer should not be paid for either (first principle 1).
+
+    `decision` carries HOW the substrate was decided, so the scope statement is
+    true when it is printed: a cluster that is serving can be pointed at ("see
+    the rows below"), an install that declared itself cannot.
     """
-    return ComposeProbe(available=False, reason=COMPOSE_NOT_APPLICABLE_REASON, applicable=False)
+    reason = COMPOSE_NOT_APPLICABLE_REASON
+    if decision is not None and decision.declared:
+        reason = COMPOSE_DECLARED_NOT_APPLICABLE_REASON.format(source=decision.source)
+    return ComposeProbe(available=False, reason=reason, applicable=False)
 
 
 @dataclass(frozen=True)
@@ -485,10 +505,37 @@ class ComponentSurvey:
     `docker compose ps` per pass answers both, instead of the two
     independent calls that let the flag and the rows disagree in the first
     place.
+
+    `decision` is the substrate decision that produced the rows (#4184),
+    carried out with them for the same reason: `status()` used to re-derive it
+    with a second `kubernetes_mode_active(components)` call, and a second
+    derivation is a second answer. On a declared Kubernetes run with no Pods up
+    yet the two disagreed -- the survey skipped Compose while the payload
+    labelled the tier `compose`.
     """
 
     components: list[ComponentStatus]
     compose_probe: ComposeProbe
+    #: `None` only on a survey assembled by hand (a test, a caller holding rows
+    #: from somewhere else) -- `component_survey()` always records it. Read
+    #: through `substrate_decision`, never directly.
+    decision: substrate.SubstrateDecision | None = None
+
+    @property
+    def substrate_decision(self) -> substrate.SubstrateDecision:
+        """The decision behind these rows, derived from the rows if it was not recorded.
+
+        Still one decision function: what varies is only how much evidence the
+        producer had. A hand-assembled survey carries rows and nothing else, so
+        the rows are the evidence -- which is exactly what the pre-#4184 code
+        did unconditionally, and is correct whenever no run declared a
+        substrate.
+        """
+        if self.decision is not None:
+            return self.decision
+        return substrate.decide(
+            substrate.Evidence(cluster_core_pods=kubernetes_mode_active(self.components))
+        )
 
 
 @dataclass(frozen=True)
@@ -1672,13 +1719,18 @@ def component_survey() -> ComponentSurvey:
     absent -- an unqueryable stack is never rendered as a definite negative.
 
     **The cluster is asked first, and that order is the fix for #4137.** Which
-    substrate holds the observability tier is decided by what *answers*, never
-    by where this process happens to be running: `kubectl` on a k3s host
-    reaches the cluster perfectly well, and the host is neither in-cluster nor
-    Compose. The earlier order ran `docker compose ps` before it knew the
-    mode, so a k3s instance paid for a probe whose result it then discarded --
-    and still reported that probe's failure, naming a `docker-compose.yml`
-    nothing on that host uses, as the observability tier's state.
+    substrate holds the observability tier is never decided by where this
+    process happens to be running: `kubectl` on a k3s host reaches the cluster
+    perfectly well, and the host is neither in-cluster nor Compose. The earlier
+    order ran `docker compose ps` before it knew the mode, so a k3s instance
+    paid for a probe whose result it then discarded -- and still reported that
+    probe's failure, naming a `docker-compose.yml` nothing on that host uses,
+    as the observability tier's state.
+
+    **What answers is the evidence, not the whole rule (#4184).** The decision
+    is `substrate.decide`'s, and it prefers what the run DECLARED over what
+    answers -- because during a deployment's own creation nothing answers yet,
+    and this survey runs as a side effect of the install that is creating it.
     """
     native_statuses = _list_native_component_status()
     terraform_statuses = _list_terraform_component_status()
@@ -1692,7 +1744,19 @@ def component_survey() -> ComponentSurvey:
     kubernetes_statuses = _list_kubernetes_component_status(
         {s.service for s in native_statuses + terraform_statuses}
     )
-    kubernetes_active = kubernetes_mode_active(kubernetes_statuses)
+    # The one substrate decision (#4184), reached through `substrate.decide` so
+    # this survey and `ops`'s surfaces cannot disagree about one machine. What
+    # the cluster answers is still the evidence this caller holds; what it adds
+    # is the arm inference structurally cannot reach -- a run that was TOLD its
+    # substrate. During `ops install --kubernetes` no Pod exists yet, so the
+    # old reading fell through to `docker compose ps`, logged its exit 125 and
+    # named a Compose file the instance was never meant to have (#4184 finding
+    # 1). "What answers" is the right rule for a deployment that is up and the
+    # wrong one for a deployment being created.
+    decision = substrate.decide(
+        substrate.Evidence(cluster_core_pods=kubernetes_mode_active(kubernetes_statuses))
+    )
+    kubernetes_active = decision.kubernetes
 
     if kubernetes_active:
         # Kubernetes mode: the observability tier runs *in-cluster* (#3787)
@@ -1704,7 +1768,7 @@ def component_survey() -> ComponentSurvey:
         # the probe behind them is not run at all, rather than run and
         # discarded -- nor is the config read that says which of them would
         # have been desired, which is a question about the other substrate.
-        probe = _compose_not_applicable_probe()
+        probe = _compose_not_applicable_probe(decision)
         compose_statuses: list[ComponentStatus] = []
         undetermined_statuses: list[ComponentStatus] = []
     else:
@@ -1731,7 +1795,7 @@ def component_survey() -> ComponentSurvey:
             replace(s, desired=False) if s.desired and s.service in stopped else s
             for s in all_statuses
         ]
-    return ComponentSurvey(components=all_statuses, compose_probe=probe)
+    return ComponentSurvey(components=all_statuses, compose_probe=probe, decision=decision)
 
 
 def _compose_probe_failure_detail(cp: subprocess.CompletedProcess[str]) -> str:
@@ -3364,6 +3428,7 @@ def status() -> dict[str, Any]:
     """
     survey = component_survey()
     components = survey.components
+    decision = survey.substrate_decision
     unhealthy_count = _record_health_check(components)
     state = _load_state()
     restart_counts: dict[str, int] = state.get("restart_counts", {})
@@ -3390,7 +3455,22 @@ def status() -> dict[str, Any]:
         # says nothing about it -- the page must not then explain its
         # absence with the Compose "cannot determine from here" banner, which
         # is about a survey that has no bearing on this deployment.
-        "observability_source": ("kubernetes" if kubernetes_mode_active(components) else "compose"),
+        # Read off the survey's own decision rather than re-derived (#4184):
+        # see `ComponentSurvey.decision`. A second `kubernetes_mode_active`
+        # call here labelled the tier `compose` on a declared Kubernetes run
+        # whose Compose survey the same pass had just declined to make.
+        "observability_source": ("kubernetes" if decision.kubernetes else "compose"),
+        # Which substrate this pass was about and how that was decided (#4184),
+        # so the page and `nyxgpt self-heal status` can say it instead of
+        # leaving the operator to infer it from the rows.
+        "substrate": decision.substrate,
+        "substrate_source": decision.source,
+        # Whether the run was TOLD its substrate rather than inferring it. A
+        # boolean because that is what the page needs to decide between two
+        # sentences -- "their rows below are the cluster's own answer" is true
+        # of a cluster that is serving and false during an install that has
+        # created no Pods yet (#4184).
+        "substrate_declared": decision.declared,
         "compose_probe_available": survey.compose_probe.available,
         # Whether a Compose survey was a question about this deployment at all
         # (#4137). `available=False` plus `applicable=False` is "never asked,

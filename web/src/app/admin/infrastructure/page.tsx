@@ -141,6 +141,15 @@ type InfraStatus = {
   // Optional so an api process from before #4137 still renders.
   compose_in_scope?: boolean;
   compose_out_of_scope_reason?: string;
+  // Which deployment this whole answer is about, and how that was decided
+  // (#4184) -- distinct from `mode`, which says which tiers are UP on this
+  // host. Every scoped card below was scoped FOR this substrate, so the page
+  // states it rather than leaving an operator to work it out; the Self-Heal
+  // page carries the same pair, from the same decision, so the two screens
+  // cannot disagree. Optional so an older api still renders.
+  substrate?: 'native' | 'compose' | 'terraform' | 'kubernetes' | '';
+  substrate_source?: string;
+  substrate_declared?: boolean;
   conflicts: string[];
   terraform: {
     // Answered by whether the container reads happened, not by whether a
@@ -834,6 +843,21 @@ export default function InfrastructurePage() {
           What&apos;s actually running, honestly reported for every local deployment mode and for
           the AWS substrate.
         </p>
+        {/* Which deployment the scoped cards below are scoped FOR, and how that
+            was decided (#4184). An operator reading a NOT IN SCOPE badge is owed
+            the reason it is out of scope, and that reason is this line. */}
+        {status?.substrate && (
+          <p
+            style={{
+              color: 'var(--foreground-muted)',
+              fontSize: '0.8125rem',
+              marginBottom: 8,
+            }}
+          >
+            Substrate: <strong>{status.substrate}</strong>
+            {status.substrate_source ? ` — ${status.substrate_source}` : ''}
+          </p>
+        )}
         <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Admin Dashboard
         </a>

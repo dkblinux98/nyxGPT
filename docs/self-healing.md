@@ -530,16 +530,33 @@ use that survey at all: `status()` reports `observability_source:
 page states that the tier was read from the cluster instead of explaining the
 absence of a Compose stack this deployment never had.
 
-**The cluster is asked first, and "this mode" means a cluster that answers**
-(#4137). The survey used to run `docker compose ps` before it knew the
-deployment mode and then discard the result — paying for a probe it could not
-use on every 15-second pass, and logging its failure, naming a
-`docker-compose.yml`, each time. More importantly the *choice* was being made
-from where the process runs rather than from what answers, which cannot see
-the case that matters: a k3s host is neither in-cluster nor Compose.
-`kubectl` there reaches the cluster perfectly well while every `docker compose
-ps` exits 125 against a daemon socket that user cannot reach. On the owner's
-instance that produced
+**"This mode" means the substrate this run is about, and that is one
+decision** — `nyxgpt.substrate.decide`, which every check, survey and record
+in the product routes through (#4184). It answers in a fixed order:
+
+1. **what the run declared** — `ops install --kubernetes`, or
+   `NYXGPT_SUBSTRATE` exported by `nyxgpt cloud deploy`'s provisioning script
+   for every `nyxgpt` command it runs;
+2. **this process being in the deployment** — it is a Pod;
+3. **what the cluster answers** — the core tier (api/web/Cassandra/Ollama) is
+   running as Pods;
+4. **what holds this host's ports** — a Kubernetes install is recorded here
+   and the access bridge owns `:8000`/`:3000`, so the cluster is serving this
+   machine even on a pass whose Pod read failed;
+5. **the host survey** — Terraform containers, then a Compose core tier, then
+   registered native services;
+6. **nothing answered**, which is a state in its own right and is never
+   collapsed into "native".
+
+The survey used to run `docker compose ps` before it knew the deployment mode
+and then discard the result — paying for a probe it could not use on every
+15-second pass, and logging its failure, naming a `docker-compose.yml`, each
+time. #4137 replaced that with arms 2–5 above: the choice was being made from
+where the process runs rather than from what answers, which cannot see the
+case that matters — a k3s host is neither in-cluster nor Compose. `kubectl`
+there reaches the cluster perfectly well while every `docker compose ps` exits
+125 against a daemon socket that user cannot reach. On the owner's instance
+that produced
 
 ```
 Observability survey: CANNOT DETERMINE from here -- `docker compose ps` exited 125: ...
@@ -552,6 +569,20 @@ every component of that tier as ready. The probe is now skipped entirely in
 this mode and reported as **not applicable** rather than unavailable, which
 are different claims: see
 [Applicable, available, undetermined](#applicable-available-undetermined).
+
+**Arm 1 exists because inference cannot answer during a deployment's own
+creation** (#4184). A `--kubernetes` install runs this survey as a side effect
+of its own first steps — the intentional-stop clear, the health waits, the
+GlitchTip provisioning — and at that point no Pod exists, which is
+indistinguishable from a native box. So the same `exited 125 ... querying
+/home/ec2-user/.nyxGPT/docker-compose.yml` warning appeared *in the middle of
+the deploy that was building the cluster*. The install declares its substrate
+instead, for the duration of its steps, and the provisioning script exports it
+once so every command in the script agrees. `status()` reports the decision as
+`substrate` with `substrate_source` (how it was reached) and
+`substrate_declared`, and the scope sentence changes with it: a cluster that is
+serving can be pointed at ("their rows below are the cluster's own answer"), an
+install that has created nothing cannot.
 
 Healing deletes the Pod (`kubectl delete pod`); its Deployment's
 ReplicaSet then recreates it. This is **on top of, not instead of**:

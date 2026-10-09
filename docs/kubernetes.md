@@ -1123,6 +1123,16 @@ merely unknown, and they now say so:
 
 Run `nyxgpt ops status` on the host to survey either of those there.
 
+**On the HOST of a Kubernetes deployment, the same two cards are scoped by
+which substrate the answer is about** -- not by this `in_cluster` flag, which
+on that machine is correctly `false` (#4137, #4184). The payload carries
+`substrate` and `substrate_source` for exactly that: the Compose card is out
+of scope because nyxGPT runs as Pods here, and the Native card's record is
+shown as dated history (`RECORD ONLY`) rather than as the install mode,
+because a native marker on a cluster-served host describes something that is
+not serving. See
+[ops.md#which-substrate-a-run-is-about](ops.md#which-substrate-a-run-is-about).
+
 Each Pod on that card is badged with the same states the CLI prints, from
 `kubernetes.pod_states` in the JSON (#3827): **READY**, **PENDING** (still
 scheduling, pulling or creating containers -- amber, because that is a normal

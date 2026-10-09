@@ -71,6 +71,7 @@ from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac,
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.config import VALID_SESSION_BACKENDS
 from nyxgpt.doc_links import doc_url, see_doc
+from nyxgpt.substrate import SUBSTRATE_KUBERNETES, SUBSTRATE_NATIVE
 
 # The same `~/.nyxGPT/cloud` directory `cloud_infra` owns -- one place for
 # everything about a cloud deployment. `cloud_infra.CLOUD_STATE_FILE` (the
@@ -280,8 +281,11 @@ HEALTH_PATH = "/health"
 # existing `k8s/*.yaml` manifests, which is what makes `nyxgpt canary` -- the
 # capability that decision was choosing a substrate *for* -- available on the
 # cloud target at all.
-SUBSTRATE_NATIVE = "native"
-SUBSTRATE_KUBERNETES = "kubernetes"
+#
+# The names come from `nyxgpt.substrate`, which owns them (#4184): the plan's
+# `substrate` is exported into the provisioning script as `NYXGPT_SUBSTRATE`
+# and read back by every `nyxgpt` command there, so the two sides have to be
+# spelling the same strings by construction rather than by inspection.
 
 # SSH options applied to every connection. `StrictHostKeyChecking=accept-new`
 # trusts the key on first contact but still fails loudly if it changes later
@@ -1309,7 +1313,19 @@ NYXGPT_VERSION="__VERSION__"
 NYXGPT_PROFILES="__PROFILES__"
 NYXGPT_SESSION_BACKEND_CHOICE="__SESSION_BACKEND__"
 
-echo "==> nyxGPT ${NYXGPT_VERSION}: provisioning $(hostname) from published artifacts"
+# THE substrate decision for this whole provisioning run (#4184). Exported
+# once, before the first `nyxgpt` command, so every one of them -- the session
+# backend write, the install, the watchdog step, and every survey those
+# trigger as a side effect -- is about the substrate this deploy is BUILDING,
+# rather than inferring one from a box that does not have it yet. Inference
+# cannot get this right at this point in the script: nothing answers for a
+# deployment during its own creation, so a `--kubernetes` deploy fell through
+# to `docker compose ps` and logged `exited 125 ... querying
+# /home/ec2-user/.nyxGPT/docker-compose.yml` on an instance that was never
+# meant to have a Compose stack.
+export NYXGPT_SUBSTRATE="__SUBSTRATE__"
+
+echo "==> nyxGPT ${NYXGPT_VERSION}: provisioning $(hostname) on the ${NYXGPT_SUBSTRATE} substrate"
 
 # --- OS packages -------------------------------------------------------
 if command -v dnf >/dev/null 2>&1; then
@@ -1337,6 +1353,7 @@ else
   exit 1
 fi
 
+__SSHD_PQ_KEX_SECTION__
 # --- Resolve a Python that satisfies nyxGPT's requires-python (>= 3.11) -
 # The distro's bare `python3` is never assumed sufficient (#3782): on Amazon
 # Linux 2023 it is 3.9, and `pip install nyxgpt` into a venv built from it is
@@ -1453,6 +1470,112 @@ __STACK_BRINGUP_SECTION__
 "$NYXGPT" self-heal enable
 
 echo "==> nyxGPT ${NYXGPT_VERSION} provisioned"
+"""
+
+
+# The post-quantum key exchange the instance's own sshd must offer (#4184).
+#
+# Every `nyxgpt cloud ops ...` command the owner ran on the rc1 instance
+# carried OpenSSH's warning into its output:
+#
+#   ** WARNING: connection is not using a post-quantum key exchange algorithm.
+#   ** This session may be vulnerable to "store now, decrypt later" attacks.
+#
+# That is the CLIENT reporting what the SERVER offered, so the fix belongs on
+# the instance nyxGPT provisions rather than in a flag that silences the
+# client: Amazon Linux 2023's OpenSSH 8.7 *supports*
+# `sntrup761x25519-sha512@openssh.com` and simply does not offer it by
+# default. Suppressing the warning would have left the connection exactly as
+# vulnerable as the warning says.
+#
+# Three properties this block is built for, in order of how badly each could
+# go wrong:
+#
+# 1. **It cannot lock the operator out.** `sshd -t` validates the drop-in
+#    before anything reloads, and a rejected file is removed rather than left
+#    for the next restart to trip over. A deploy must not be able to leave an
+#    instance only `cloud destroy` can reach.
+# 2. **It names no algorithm this sshd does not know.** An unknown name in
+#    `KexAlgorithms` is a fatal config error, so the list is intersected with
+#    `ssh -Q kex` -- what this build actually implements -- and the block
+#    no-ops with a message when the intersection is empty. Nothing here claims
+#    a capability the machine does not have.
+# 3. **It adds, never replaces.** `^` prepends to the default list (OpenSSH
+#    8.5+), so every classical algorithm an older client needs is still
+#    offered and the only change is that a PQ exchange is now preferred.
+#
+# Separate constant, spliced into the template, so the executed-verification
+# job can run THIS text against a real sshd rather than a copy of it -- the
+# same reason `render_k3s_bootstrap()` is public (the #3860 lesson).
+SSHD_PQ_KEX_SECTION = """# --- sshd: offer a post-quantum key exchange (#4184) --------------------
+# The provisioned OS offers only classical key exchange by default, so every
+# connection to this instance -- including every `nyxgpt cloud ops` command --
+# is one OpenSSH warns is open to "store now, decrypt later". Fixed on the
+# server, where the exposure actually is.
+SSHD_PQ_DROPIN=/etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf
+SSHD_PQ_OFFERED=""
+for kex in mlkem768x25519-sha256 sntrup761x25519-sha512@openssh.com; do
+  if ssh -Q kex 2>/dev/null | grep -qx "$kex"; then
+    SSHD_PQ_OFFERED="${SSHD_PQ_OFFERED:+$SSHD_PQ_OFFERED,}$kex"
+  fi
+done
+if [ -z "$SSHD_PQ_OFFERED" ]; then
+  echo "==> this instance's OpenSSH implements no post-quantum key exchange; sshd left as installed"
+elif ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\\.d/' /etc/ssh/sshd_config; then
+  # Without the include, the drop-in would be a file nothing reads -- which
+  # would report success and change nothing.
+  echo "==> /etc/ssh/sshd_config does not include sshd_config.d; sshd left as installed" >&2
+elif ! sudo sshd -t 2>/dev/null; then
+  # The BASELINE, taken before anything is written, so the validation below
+  # means what it says. `sshd -t` can fail for reasons that have nothing to do
+  # with this change -- a missing /run/sshd on a container, host keys not yet
+  # generated -- and without this check that failure would be reported as "the
+  # post-quantum drop-in was rejected", sending the next reader after a
+  # defect in a file that is fine.
+  echo "==> sshd -t cannot validate this host's existing config; sshd left as installed" >&2
+else
+  sudo tee "$SSHD_PQ_DROPIN" >/dev/null <<PQ_EOF
+# Managed by nyxgpt cloud deploy (#4184) -- rewritten on every deploy.
+# \\`^\\` PREPENDS: the classical algorithms this build offers by default are
+# all still available, so an older client still connects. Only the preference
+# changes, and with it the "store now, decrypt later" exposure OpenSSH warns
+# about on every connection to a server that offers no PQ exchange.
+KexAlgorithms ^$SSHD_PQ_OFFERED
+PQ_EOF
+  sudo chmod 0644 "$SSHD_PQ_DROPIN"
+  if sudo sshd -t; then
+    # `reload`, not `restart`: the connection running this script is an sshd
+    # child, and it survives a reload. Either unit name, since the service is
+    # `sshd` on Amazon Linux and `ssh` on Debian/Ubuntu.
+    sudo systemctl reload sshd 2>/dev/null \\
+      || sudo systemctl reload ssh 2>/dev/null \\
+      || echo "==> could not reload sshd; the drop-in applies at its next restart" >&2
+    # READ BACK what sshd will actually offer, rather than announcing the
+    # write as the outcome. `KexAlgorithms` takes its FIRST value, so a
+    # drop-in that sorts before this one -- or a distribution crypto policy
+    # that sets it -- leaves this file parsed and ignored, and reporting
+    # success there would be a claim about a connection that is still
+    # classical. (`sshd -T` reads the config files; a unit that passes
+    # `-oKexAlgorithms=` on its command line would override even this, which
+    # is the remaining case the message below sends the operator to look at.)
+    SSHD_PQ_EFFECTIVE="$(sudo sshd -T 2>/dev/null | grep -i '^kexalgorithms ' || true)"
+    case "$SSHD_PQ_EFFECTIVE" in
+      *mlkem*|*sntrup*)
+        echo "==> sshd offers a post-quantum key exchange ($SSHD_PQ_OFFERED)"
+        ;;
+      *)
+        echo "==> the post-quantum drop-in was accepted but is not in effect -- something sets KexAlgorithms first (another /etc/ssh/sshd_config.d drop-in, or this distribution's crypto policy). Effective: ${SSHD_PQ_EFFECTIVE:-unreadable}" >&2
+        ;;
+    esac
+  else
+    # Removed, not left in place: a config this sshd rejects would take the
+    # service down at its next restart, and an unreachable instance is a worse
+    # outcome than a classical key exchange.
+    sudo rm -f "$SSHD_PQ_DROPIN"
+    echo "==> sshd rejected the post-quantum key exchange drop-in; removed it, sshd unchanged" >&2
+  fi
+fi
+
 """
 
 
@@ -2042,6 +2165,12 @@ def render_provision_script(plan: DeployPlan) -> str:
         .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
+        # `plan.substrate` -- the plan already knows, and this is the only
+        # place that fact has to be written into the script (#4184).
+        .replace("__SUBSTRATE__", plan.substrate)
+        # Runs on both substrates and on either package manager: the exposure
+        # it closes is a property of the instance, not of what runs on it.
+        .replace("__SSHD_PQ_KEX_SECTION__", SSHD_PQ_KEX_SECTION)
         # The rendered script lands on a machine with no checkout, so its own
         # comments must not cite repository paths either (#4182).
         .replace("__SESSION_STORAGE_DOC__", doc_url("docs/session-storage.md"))

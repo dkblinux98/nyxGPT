@@ -705,10 +705,19 @@ Reports:
   — only when that component is actually installed, never on a `none`
   (#3834). In dev mode it also names the checkout the services are running,
   and warns if that checkout has since disappeared. **The line appears only
-  when a native api/web is registered on this machine**; with nothing
-  running, the marker is a record of a past install and is printed as one —
-  see **Install history** below (#4182). A Kubernetes deployment's own
-  install mode is reported in the Kubernetes section below.
+  when a native api/web is registered on this machine AND the native install
+  is what serves it**; otherwise the marker is a record of a past install and
+  is printed as one — see **Install history** below (#4182, #4184). Being
+  registered is not the same question as serving: on a `cloud deploy
+  --kubernetes` instance whose api and web run only as Pods, this line used to
+  announce `artifact (published/vendored build — the repo-less default)` for a
+  deployment it did not describe. Where a native service really is *started*
+  beside a serving cluster, [`nyxgpt ops doctor`](#nyxgpt-ops-doctor) reports
+  it as the port conflict it is rather than as an install mode. Which
+  deployment this command is reporting about is one decision for the whole run
+  — see [Which substrate a run is about](#which-substrate-a-run-is-about). A
+  Kubernetes deployment's own install mode is reported in the Kubernetes
+  section below.
 - **Install mode (terraform)** — the same line for the local Terraform
   deployment when there is one (#3835), naming the images it is running and
   tagging its `api`/`web` components. A deployment that is running with
@@ -1389,6 +1398,14 @@ The rule this fixed, which binds every check `doctor` runs:
 > about **this host** — its PATH, its files, its service managers, its venv —
 > stays host-scoped, and `doctor` says which is which out loud.
 
+**Which substrate is serving is decided once per run**, by
+`nyxgpt.substrate.decide`, and every branched check below routes through that
+one answer (#4184) — see [Which substrate a run is
+about](#which-substrate-a-run-is-about). Before that, each branch asked its own
+version of the question, and they could disagree about one machine: `doctor`
+would print a native install mode and then report the cluster's Cassandra, on
+the same instance, in the same output.
+
 When a Kubernetes deployment is present, `doctor` prints
 `Kubernetes deployment: …` and, under it, the line that names the split:
 
@@ -1405,7 +1422,7 @@ The sweep behind that line, with every check classified:
 | Scope | Checks | Why |
 |---|---|---|
 | **Asks the cluster** when a deployment is present | Cassandra, required-model presence, tracing wiring, the Prometheus `nyxgpt-api` scrape, the error-tracking DSN | their finding is a claim about the deployment, and each read host config, probed a host port or inspected a host container to make it |
-| **Host-scoped by construction** | foreign native services, the Terraform install mode, the native/Kubernetes dev checkouts, `~/.nyxGPT/config.ini`, OTel packages in this venv, the native API bind posture, `OLLAMA_MODELS` drift, the Linux `ollama.service` port conflict, Docker socket access, observability volume ownership, stale-venv dependencies, tools on `PATH`, `~/.nyxGPT` file permissions, web dependencies, stale Terraform state, dual-stack conflicts | the finding *is* about this machine. A Kubernetes deployment does not change whether `brew` is installed or whether this venv can import its dependencies |
+| **Host-scoped by construction** | foreign native services, the Terraform install mode, the native/Kubernetes dev checkouts, `~/.nyxGPT/config.ini`, OTel packages in this venv, the native API bind posture, `OLLAMA_MODELS` drift, the Linux `ollama.service` port conflict, Docker socket access, observability volume ownership, stale-venv dependencies, tools on `PATH`, `~/.nyxGPT` file permissions, web dependencies, stale Terraform state, dual-stack conflicts, a native api/web still started beside a serving cluster | the finding *is* about this machine. A Kubernetes deployment does not change whether `brew` is installed or whether this venv can import its dependencies — and two of this host's own stacks contending for this host's ports is a claim about this host however the cluster is doing |
 | **Gated on a running Compose stack** | promtail native-log wiring, the Loki 24h log-volume line, the GlitchTip secrets directory/token, Compose services stuck restarting | they read host config, but return nothing unless the Compose container they are about is actually running — so they cannot speak about a cluster |
 
 The two halves of each branched check are separate functions
@@ -1438,6 +1455,18 @@ problem that did not exist. All eleven inline checks are now named helpers
 covered by the guard, and the rule for adding one is: write a
 `_..._issue`/`_..._issues` function and classify it. An `issues.append(...)`
 inside `doctor` is unreviewable by the thing that exists to review it.
+
+**A read `doctor` could not make is reported, not swallowed** (#4184). The
+running-build check asks the api answering on this host what it is executing,
+and on a `cloud deploy --kubernetes` instance that read returned HTTP 401 on
+every pass with nothing printed about it: the key was the host's
+`config.ini`, empty because a non-interactive deploy mints the real one
+straight into the cluster's `nyxgpt-secrets`, and the api answering was a Pod
+reading that Secret. So the credential now comes from the substrate that is
+*serving* — and when a read still fails after that, the finding says so and
+names which credential was refused. "Nothing answered" remains silent on
+purpose: `doctor` is run on machines whose stack is deliberately down, and a
+finding there is the noise that teaches operators to skip the list.
 
 **The cluster's error-tracking check asks the Pods, not only the Secret**
 (#3990). Its original question was whether the DSN in `nyxgpt-secrets` still
@@ -1537,6 +1566,79 @@ warned about and silently downgraded to `file` at load time, which is exactly
 the quiet wrong-store failure this command exists to prevent. See
 [session-storage.md](session-storage.md) for what each backend means and how
 every deployment mode selects one.
+
+**What makes the change take effect depends on the substrate, and the command
+says the one that is true where it runs** (#4184). It used to print "Restart
+the API to pick this up (`nyxgpt ops restart api`)" unconditionally, which
+everywhere but a native install was wrong at the moment it was printed:
+
+| Where it runs | What it says |
+|---|---|
+| a native api is registered with this host's service manager | that it is registered, and to restart it to pick this up (`nyxgpt ops restart api`) |
+| a Kubernetes deployment | the api Pods read `session_backend` from the `nyxgpt-config` ConfigMap, so no restart on this host affects them; the file still governs every `nyxgpt` command run here, which is why the write is not refused |
+| no native api is registered — a Compose- or Terraform-served host, or mid-deploy before `ops install` | that `nyxgpt ops restart api` has nothing to act on here; that a containerised api reads the derived `~/.nyxGPT/docker/config.docker.ini`, which `nyxgpt ops env-sync` regenerates from this file and the container picks up on its next restart; and that on a host with no api at all, whatever installs one next reads this value then |
+
+The third row is where the owner read it: the provisioning script calls this
+*before* `ops install`, so the command it named would have failed.
+
+**Each row is scoped to the one question the command asked** — whether a
+native api is registered with this host's service manager. It deliberately
+does not probe for Compose or Terraform, because that probe is
+`docker compose ps`, whose exit 125 on a Compose-less instance is the other
+half of #4184; so the rows that cannot see those substrates name them as a
+condition instead of asserting them away. A sentence scoped to its evidence
+stays true on a substrate it could not look at. The decision itself costs no
+probe — see [Which substrate a run is
+about](#which-substrate-a-run-is-about).
+
+---
+
+## Which substrate a run is about
+
+Every `nyxgpt` command can run on a machine that holds more than one
+deployment's worth of evidence: a Kubernetes host carries the `kubectl` that
+answers for fourteen Pods *and* a `docker-compose.yml` nothing uses *and* an
+install-mode marker a native install left behind months ago. A check that
+picks its subject from whichever of those answers first reports on the nearest
+record rather than on the deployment — which is the defect class behind #4137
+and #4184.
+
+So **the substrate is one decision per run** (`nyxgpt.substrate.decide`), and
+every check, survey, scope statement and record routes through it. It answers
+in a fixed order:
+
+| | Arm | Example |
+|---|---|---|
+| 1 | what the run **declared** | `ops install --kubernetes`; `NYXGPT_SUBSTRATE` exported once by `nyxgpt cloud deploy`'s provisioning script for every command it runs |
+| 2 | this process is **in** the deployment | the api Pod serving the dashboard |
+| 3 | what the **cluster** answers | the core tier (api/web/Cassandra/Ollama) is running as Pods |
+| 4 | what holds this host's **ports** | a Kubernetes install is recorded here and the access bridge owns `:8000`/`:3000` — the cluster is serving this machine even on a pass whose Pod read failed |
+| 5 | the **host survey** | Terraform containers, then a Compose core tier, then registered native services |
+| 6 | **nothing answered** | a box mid-install, or one torn down. A state in its own right, never collapsed into "native" |
+
+Arm 1 is the one inference cannot reach, and it is what #4184 added: during a
+deployment's own creation nothing answers yet, which is indistinguishable from
+a native box. A `--kubernetes` install triggers surveys as side effects of its
+own steps, and those were falling through to `docker compose ps` and logging
+`exited 125 ... querying /home/ec2-user/.nyxGPT/docker-compose.yml` into the
+middle of the deploy that was building the cluster. The declaration is scoped
+to the work it describes — `nyxgpt ops install --kubernetes` run from the SRE
+dashboard declares for its steps and no longer, because that same process
+serves the dashboard and runs the self-heal watchdog.
+
+Arms 2–5 cost only what the calling command has already surveyed: a caller
+passes in what it holds, and an arm nobody could observe is simply not
+selected. `nyxgpt ops session-backend` writes one config line and pays for no
+cluster probe at all.
+
+Where the answer is printed: `nyxgpt ops doctor` names the substrate and which
+checks answer for it; `nyxgpt self-heal status` prints
+`Substrate: kubernetes -- the cluster answers for the core tier` above the
+component rows (and nothing at all when read from an api that predates the
+field, which `nyxgpt cloud ops self-heal` can be); and the Self-Heal, Infrastructure and System Health pages all render
+`substrate`/`substrate_source` from the same payload field, so no two surfaces
+can describe one instance as two different deployments
+([api.md](api.md#get-apiv1self-healstatus)).
 
 ---
 

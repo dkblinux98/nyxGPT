@@ -49,10 +49,23 @@ type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
   // Where the observability tier was read from this pass (#3828):
-  // 'kubernetes' when the cluster answered for it, 'compose' otherwise -- chosen
-  // by what answers, not by where this process runs (#4137). Absent
-  // from an older API, which only ever read it from Compose.
+  // 'kubernetes' when the cluster answered for it, 'compose' otherwise. Never
+  // chosen by where this process runs (#4137), and since #4184 read off the
+  // one substrate decision -- which prefers what the run DECLARED over what
+  // answers, because during a deployment's own creation nothing answers yet.
+  // Absent from an older API, which only ever read it from Compose.
   observability_source?: 'compose' | 'kubernetes';
+  // Which substrate this pass was about, and how that was decided (#4184).
+  // One decision, made by the API from `substrate.decide`, carried here so
+  // this page states it instead of leaving an operator to infer it from the
+  // rows -- and so it cannot disagree with the Infrastructure page or the
+  // CLI, which read the same two fields. Absent from an older API.
+  substrate?: 'native' | 'compose' | 'terraform' | 'kubernetes' | '';
+  substrate_source?: string;
+  // True when the run was TOLD its substrate (an `ops install --kubernetes`,
+  // or `NYXGPT_SUBSTRATE` from a deploy) rather than inferring it from what
+  // answered. The difference is whether there are Pods to point at yet.
+  substrate_declared?: boolean;
   compose_probe_available: boolean;
   // Whether a Compose answer was owed here and could not be had (#4137) --
   // the only condition the banner below may render as "cannot determine".
@@ -329,12 +342,48 @@ export default function SelfHealPage() {
                 border: '1px solid var(--border-color)',
               }}
             >
-              Observability tier: <strong>read from the cluster</strong>. Grafana, Loki, Jaeger,
-              GlitchTip and the collectors run as Pods in this cluster (
-              <code>k8s/observability</code>), so their rows below are read from the cluster
-              itself and are healed like any other Pod. Their UIs are published on the host by
-              the install where nyxgpt provisioned the cluster; on a bring-your-own cluster,
-              reach them with <code>nyxgpt ops port-forward --target observability</code>.
+              {/* Two sentences, and which one is true depends on HOW the substrate
+                  was decided (#4184). A cluster that answered can be pointed at;
+                  a run that declared Kubernetes before creating a single Pod
+                  cannot, and claiming its rows are "the cluster's own answer"
+                  would be the same wrong-when-printed guidance as telling an
+                  operator to restart an api that does not exist yet. */}
+              {status.substrate_declared ? (
+                <>
+                  Observability tier: <strong>this deployment&apos;s cluster</strong>
+                  {status.substrate_source ? ` (${status.substrate_source})` : ''}. Grafana,
+                  Loki, Jaeger, GlitchTip and the collectors belong to the cluster here, so no
+                  Docker Compose survey is owed — and the rows below are whatever the cluster
+                  holds so far, which during an install is not yet the whole tier.
+                </>
+              ) : (
+                <>
+                  Observability tier: <strong>read from the cluster</strong>. Grafana, Loki,
+                  Jaeger, GlitchTip and the collectors run as Pods in this cluster, so their
+                  rows below are read from the cluster itself and are healed like any other
+                  Pod. Their UIs are published on the host by the install where nyxgpt
+                  provisioned the cluster; on a bring-your-own cluster, reach them with{' '}
+                  <code>nyxgpt ops port-forward --target observability</code>.
+                </>
+              )}
+            </p>
+          )}
+
+          {/* Which deployment every row above and below is about, and how that
+              was decided -- the same pair the Infrastructure page and
+              `nyxgpt self-heal status` carry, from the one decision (#4184).
+              Rendered only when something answered: on a box with no
+              deployment the rows are their own explanation. */}
+          {status.substrate && (
+            <p
+              style={{
+                fontSize: '0.8125rem',
+                color: 'var(--foreground-muted)',
+                marginBottom: '1rem',
+              }}
+            >
+              Substrate: <strong>{status.substrate}</strong>
+              {status.substrate_source ? ` — ${status.substrate_source}` : ''}
             </p>
           )}
 

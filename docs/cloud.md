@@ -1923,17 +1923,36 @@ services start, so no instance ever needs a hand-edited `config.ini`. See
    `src/nyxgpt/ops.py`) -- the one Docker-managed piece of an otherwise
    native install. The distro Node packages are too old (Ubuntu 22.04 ships
    Node 12, AL2023 ships Node 18), hence NodeSource.
-2. **Docker enablement**: `systemctl enable --now docker`, plus
+2. **A post-quantum SSH key exchange on the instance's own `sshd`** (#4184).
+   Every connection to a provisioned instance -- including every `nyxgpt
+   cloud ops` command -- carried OpenSSH's *"connection is not using a
+   post-quantum key exchange algorithm ... may be vulnerable to store now,
+   decrypt later"* warning, because the stock AL2023/Ubuntu `sshd` offers only
+   classical key exchange by default even where it *implements* a PQ one. The
+   script writes `/etc/ssh/sshd_config.d/50-nyxgpt-pq-kex.conf` with
+   `KexAlgorithms ^…` -- `^` **prepends**, so every classical algorithm an
+   older client needs is still offered and only the preference changes -- and
+   it cannot lock you out: the list is intersected with `ssh -Q kex` (so no
+   algorithm this build does not implement is ever named), `sshd -t` is run
+   both before and after the write, a rejected drop-in is removed rather than
+   left for the next restart, and the service is `reload`ed rather than
+   restarted, which the connection running the script survives. Afterwards it
+   reads back `sshd -T` and reports plainly if the drop-in was parsed but is
+   not in effect -- `KexAlgorithms` takes its *first* value, so a drop-in that
+   sorts earlier or a distribution crypto policy can override it, and
+   announcing success there would be a claim about a connection that is still
+   classical.
+3. **Docker enablement**: `systemctl enable --now docker`, plus
    `usermod -aG docker` for the target user, since `ops install` shells out
    to `docker` as that user and never as root.
-3. **nyxGPT itself**, from PyPI, under the AMI's default login user
+4. **nyxGPT itself**, from PyPI, under the AMI's default login user
    (`ec2-user`/`ubuntu`, never root), into a dedicated venv at
    `~/.nyxGPT/opt/nyxgpt-cli`. A venv rather than `pip install --user`
    because Ubuntu 24.04 LTS marks its system Python
    [PEP 668](https://peps.python.org/pep-0668/) externally-managed, which
    makes a `--user` install a hard error.
-4. **Ollama**, via its official installer.
-5. **A usable systemd --user session**: `loginctl enable-linger` (so units
+5. **Ollama**, via its official installer.
+6. **A usable systemd --user session**: `loginctl enable-linger` (so units
    survive with no interactive login), then a bounded wait for
    systemd-logind to create `/run/user/<uid>` and its per-user D-Bus bus.
    Every subsequent `sudo -u` call forwards `XDG_RUNTIME_DIR` and
@@ -1941,10 +1960,10 @@ services start, so no instance ever needs a hand-edited `config.ini`. See
    of a login session's environment, so without them `systemctl --user`
    inside `ops install` has no service manager to talk to and every unit
    fails to start.
-6. **Preflight assertions** that `systemctl --user` and `docker` are both
+7. **Preflight assertions** that `systemctl --user` and `docker` are both
    reachable *as the target user*, so a broken instance fails with a message
    naming the cause instead of a pile of unit-start errors.
-7. Seeds `~/.nyxGPT/config.ini` from the packaged `example.config.ini` and
+8. Seeds `~/.nyxGPT/config.ini` from the packaged `example.config.ini` and
    runs `nyxgpt ops install --skip-observability` -- the same native
    (systemd --user) path #3508 added and `scripts/systemd-native-smoke.sh`
    exercises in CI.
@@ -1985,6 +2004,17 @@ pulls with no template edit.
 bootstraps ever disagree about a core component again, and
 `macos-brew-smoke.yml`'s `mac-model-backend` job executes the whole sequence on
 a real `macos-15` runner.
+
+**One substrate decision for the whole script (#4184).** Before the first
+`nyxgpt` command, the Linux script exports `NYXGPT_SUBSTRATE` -- `kubernetes`
+for a `--kubernetes` deploy, `native` otherwise -- so every command it runs,
+and every survey those trigger as a side effect, is about the substrate the
+deploy is *building*. Inference cannot answer that question here: during a
+deployment's own creation nothing answers yet, which is why a `--kubernetes`
+deploy used to log `docker compose ps exited 125 ... querying
+/home/ec2-user/.nyxGPT/docker-compose.yml` from the middle of its own
+provisioning, on an instance that was never meant to have a Compose stack. See
+[ops.md#which-substrate-a-run-is-about](ops.md#which-substrate-a-run-is-about).
 
 **Repo-less (CLAUDE.md, 2026-08-01):** neither script ever runs `git
 clone` -- the PyPI package and the remote Homebrew tap are the only

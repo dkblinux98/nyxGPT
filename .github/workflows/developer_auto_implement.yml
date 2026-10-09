@@ -2137,19 +2137,35 @@ jobs:
 
           # A rescue draft (#3862) reaches this step once its continuation run
           # has passed verification -- which is exactly the moment it stops
-          # being a rescue and becomes a submission. Promote it: give it the
-          # `Closes #ISSUE` body the PR rules require (the rescue body carries
-          # `Refs`, on purpose, so a merge of an unfinished draft could not
-          # close the issue) and take it out of draft, or the review agent is
-          # asked to review something GitHub will not let it merge.
+          # being a rescue and becomes a submission. Promote the RECORD as well
+          # as the state: the `Refs #ISSUE` the rescue body carries on purpose
+          # (so a merge of an unfinished draft could not close the issue)
+          # becomes the `Closes #ISSUE` the PR rules require, the `wip:` title
+          # prefix goes, and the body's "⚠️ Rescue PR ... **This is not a
+          # submission for review**" preamble is replaced.
+          #
+          # Those last two used to be left standing, so the PR under review
+          # asserted it was not a submission while being reviewed as one and
+          # its merge commit carried `wip:` (review of PR #4191) -- a record
+          # answering for a state the thing is no longer in, which is the very
+          # class #4184 is about. Deliberately NOT gated on `isDraft`: a PR
+          # promoted by an earlier round is exactly the one left carrying the
+          # stale record, and the helper is a no-op on an already-promoted
+          # body, so running it every hand-off costs one read.
+          gh pr view "$PR" --json body --jq '.body' > /tmp/promoted-pr-body.md || true
+          pr_title="$(gh pr view "$PR" --json title --jq '.title' || echo "")"
+          if [[ -s /tmp/promoted-pr-body.md && -n "$pr_title" ]]; then
+            promoted_title="$(python3 scripts/agents/lib/rescue_pr.py promote \
+              --body-file /tmp/promoted-pr-body.md --issue "$ISSUE" --title "$pr_title" \
+              || echo "")"
+            if [[ -n "$promoted_title" ]]; then
+              echo "::notice::PR #$PR still carried its rescue-draft record; promoting it"
+              gh pr edit "$PR" --title "$promoted_title" --body-file /tmp/promoted-pr-body.md || \
+                echo "::warning::Failed to rewrite PR #$PR's rescue record as a submission's"
+            fi
+          fi
           if [[ "$(gh pr view "$PR" --json isDraft --jq '.isDraft')" == "true" ]]; then
             echo "::notice::PR #$PR is a draft; promoting it to ready for review"
-            body="$(gh pr view "$PR" --json body --jq '.body')"
-            if [[ "$body" == *"<!-- rescue-pr: issue-${ISSUE} -->"* ]]; then
-              printf '%s\n' "${body//Refs #${ISSUE}/Closes #${ISSUE}}" > /tmp/promoted-pr-body.md
-              gh pr edit "$PR" --body-file /tmp/promoted-pr-body.md || \
-                echo "::warning::Failed to rewrite rescue PR body to 'Closes #${ISSUE}'"
-            fi
             gh pr ready "$PR" || echo "::warning::Failed to mark PR #$PR ready for review"
           fi
 

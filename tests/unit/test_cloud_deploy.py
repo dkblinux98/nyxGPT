@@ -2852,6 +2852,14 @@ def test_the_linux_bootstrap_is_untouched_by_the_dispatch():
         .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
+        # The substrate the script declares to every `nyxgpt` it runs (#4184).
+        # `native` for this plan, which is the claim: the OS dispatch does not
+        # change it.
+        .replace("__SUBSTRATE__", plan.substrate)
+        # The instance's sshd hardening (#4184) -- substrate-independent, so a
+        # native Linux deploy carries exactly the same block a Kubernetes one
+        # does.
+        .replace("__SSHD_PQ_KEX_SECTION__", cloud_deploy.SSHD_PQ_KEX_SECTION)
         # The rendered script's own comments must not cite repository paths
         # either -- it lands on a machine with no checkout (#4182).
         .replace("__SESSION_STORAGE_DOC__", doc_url("docs/session-storage.md"))

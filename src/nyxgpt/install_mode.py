@@ -97,9 +97,18 @@ INSTALL_MODE_UNRECORDED = "unrecorded"
 # api/web pair (brew services / systemd --user); `kubernetes` is the
 # `--kubernetes --local` deployment's two images; `terraform` is the
 # `--terraform --local` deployment's two containers.
-SUBSTRATE_NATIVE = "native"
-SUBSTRATE_KUBERNETES = "kubernetes"
-SUBSTRATE_TERRAFORM = "terraform"
+#
+# Re-exported from `nyxgpt.substrate`, which is the one place these names are
+# spelled (#4184). Three modules had defined their own copies -- here, in
+# `cloud_deploy`, and in the decision module itself -- so a fourth substrate
+# would have had to be added in three places, and a surface comparing one
+# module's string to another's was comparing by luck. `substrate` imports
+# nothing, so this costs no cycle.
+from nyxgpt.substrate import (  # noqa: E402
+    SUBSTRATE_KUBERNETES,
+    SUBSTRATE_NATIVE,
+    SUBSTRATE_TERRAFORM,
+)
 
 # Same ops-managed home `nyxgpt.ops.NYXGPT_HOME` points at, resolved
 # independently to keep this module free of an ops import.

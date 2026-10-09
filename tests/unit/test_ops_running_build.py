@@ -354,7 +354,11 @@ class TestNativeApiBuildDrift:
         mode = self._mode()
         with (
             patch.object(ops, "_in_cluster", return_value=False),
-            patch.object(ops, "_probe_running_api_runtime", return_value=(None, "did not answer")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(None, "did not answer"),
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "compose_core_components", return_value=[]),
             patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
@@ -375,7 +379,9 @@ class TestNativeApiBuildDrift:
         with (
             patch.object(ops, "_in_cluster", return_value=False),
             patch.object(
-                ops, "_probe_running_api_runtime", return_value=(None, "answered HTTP 401")
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(None, "answered HTTP 401"),
             ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "compose_core_components", return_value=[]),
@@ -395,7 +401,9 @@ class TestNativeApiBuildDrift:
         with (
             patch.object(ops, "_in_cluster", return_value=False),
             patch.object(
-                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/usr/local"), ""),
             ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "compose_core_components", return_value=[]),
@@ -408,7 +416,9 @@ class TestNativeApiBuildDrift:
     def test_no_native_api_venv_is_not_applicable(self):
         with (
             patch.object(
-                ops, "_probe_running_api_runtime", return_value=(_build("/some/venv"), "")
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/some/venv"), ""),
             ),
             patch.object(ops, "_expected_native_api_venv", return_value=("", "no venv here")),
             patch.object(ops, "detect_deployment_mode") as mode,
@@ -426,7 +436,9 @@ class TestNativeApiBuildDrift:
         mode = self._mode(native_api="none", compose={"api": "running", "web": "running"})
         with (
             patch.object(
-                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/usr/local"), ""),
             ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=mode),
@@ -446,7 +458,11 @@ class TestNativeApiBuildDrift:
         accident."""
         mode = self._mode(compose={"web": "running", "cassandra": "running"})
         with (
-            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/old/venv"), "")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/old/venv"), ""),
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=mode),
             patch.object(ops, "compose_core_components", return_value=["web", "cassandra"]),
@@ -458,7 +474,11 @@ class TestNativeApiBuildDrift:
     def test_a_terraform_sibling_does_not_silence_a_native_api(self):
         mode = self._mode(terraform={"cassandra": "running"})
         with (
-            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/old/venv"), "")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/old/venv"), ""),
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=mode),
             patch.object(ops, "compose_core_components", return_value=[]),
@@ -471,7 +491,9 @@ class TestNativeApiBuildDrift:
         mode = self._mode(native_api="none", terraform={"api": "running"})
         with (
             patch.object(
-                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/usr/local"), ""),
             ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=mode),
@@ -486,7 +508,11 @@ class TestNativeApiBuildDrift:
         `docker compose ps` for an answer that cannot have changed."""
         mode = self._mode()
         with (
-            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/new/venv"), "")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/new/venv"), ""),
+            ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode") as survey,
             patch.object(ops, "compose_core_components", return_value=[]),
@@ -501,7 +527,9 @@ class TestNativeApiBuildDrift:
         is a Pod's -- not the native keg this host may also carry."""
         with (
             patch.object(
-                ops, "_probe_running_api_runtime", return_value=(_build("/usr/local"), "")
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/usr/local"), ""),
             ),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
             patch.object(ops, "detect_deployment_mode", return_value=self._mode()),
@@ -517,7 +545,11 @@ class TestNativeApiBuildDrift:
             patch.object(ops, "compose_core_components", return_value=[]),
             patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
             patch.object(ops, "_expected_native_api_venv", return_value=("/keg/venv", "the keg")),
-            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/keg/venv"), "")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/keg/venv"), ""),
+            ),
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_MATCH
@@ -532,7 +564,11 @@ class TestNativeApiBuildDrift:
             patch.object(ops, "compose_core_components", return_value=[]),
             patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
-            patch.object(ops, "_probe_running_api_runtime", return_value=(_build("/old/venv"), "")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(_build("/old/venv"), ""),
+            ),
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_MISMATCH
@@ -546,7 +582,7 @@ class TestNativeApiBuildDrift:
             patch.object(
                 ops,
                 "_probe_running_api_runtime",
-                return_value=(_build("/old/venv", exists=False), ""),
+                return_value=ops.ApiRuntimeProbe(_build("/old/venv", exists=False), ""),
             ),
         ):
             drift = ops._native_api_build_drift()
@@ -559,7 +595,11 @@ class TestNativeApiBuildDrift:
             patch.object(ops, "compose_core_components", return_value=[]),
             patch.object(ops, "_k8s_access_bridge_owns_host_ports", return_value=False),
             patch.object(ops, "_expected_native_api_venv", return_value=("/new/venv", "the keg")),
-            patch.object(ops, "_probe_running_api_runtime", return_value=(None, "did not answer")),
+            patch.object(
+                ops,
+                "_probe_running_api_runtime",
+                return_value=ops.ApiRuntimeProbe(None, "did not answer"),
+            ),
         ):
             drift = ops._native_api_build_drift()
         assert drift.state == BUILD_UNDETERMINED
@@ -1087,7 +1127,7 @@ class TestLegacyStalePathIsReachable:
                 "_probe_running_api_runtime",
                 # python3.11, the legacy path, and the *new* version string --
                 # every field except the prefix looks correct.
-                return_value=(
+                return_value=ops.ApiRuntimeProbe(
                     RuntimeBuild(
                         executable=str(legacy / "bin" / "python3"),
                         prefix=str(legacy),
