@@ -1999,6 +1999,33 @@ jobs:
             done
             return 1
           }
+          # restarted <seconds> <pid before> -- has a DIFFERENT process come up?
+          #
+          # `up` cannot answer this and half two below was asking it to
+          # (#4182). The restart is scheduled asynchronously: at the moment the
+          # endpoint answers 200 the old process is still serving, so `up`
+          # returns on its very first probe and `api_pid` reads the pid that
+          # was there before. The step then declared "it answered without
+          # having restarted" 1.9 seconds after asking -- a verdict its own
+          # evidence could not support, because nothing had waited for the
+          # thing being measured. (That went unseen until #4182: this step was
+          # unreachable behind the #3861 step for weeks.)
+          #
+          # What has to be waited for is the assertion's own words -- "a
+          # restart, not a survival" -- which is the pid MOVING with the api
+          # answering on the new one.
+          restarted() {
+            local deadline=$(( SECONDS + $1 )) old="$2" now
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              now="$(api_pid || true)"
+              if [ -n "$now" ] && [ "$now" != "$old" ] \
+                 && curl -fsS --max-time 5 "$API/health" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
           err_log() {
             echo "--- nyxgpt-api.err.log (tail) ---"
             tail -40 "$(brew --prefix)/var/log/nyxgpt-api.err.log" 2>/dev/null || true
@@ -2135,11 +2162,16 @@ jobs:
             echo "::error::the endpoint did not accept the restart request (got $CODE)"
             err_log; exit 1
           }
-          # AC1: the api answers again, with no CLI intervention. Nothing
-          # between here and the assertion runs a `nyxgpt ops` or `brew`
-          # command -- that is the point.
-          up 180 || {
-            echo "::error::the api did not answer again after the restart it was asked for -- #4043 is NOT fixed"
+          # AC1: the api answers again, under a NEW pid, with no CLI
+          # intervention. Nothing between here and the assertion runs a
+          # `nyxgpt ops` or `brew` command -- that is the point.
+          #
+          # `restarted`, not `up`: the old process is still answering when the
+          # endpoint returns, so `up` is satisfied by the state this is
+          # supposed to detect the end of.
+          restarted 180 "$PID_BEFORE" || {
+            echo "::error::the api did not come back under a new pid within 180s of the"
+            echo "::error::restart it was asked for -- #4043 is NOT fixed"
             err_log
             exit 1
           }
@@ -2175,7 +2207,19 @@ jobs:
           # `attempts` must not carry a failure for `api` either: a refusal
           # and a success were indistinguishable before #4043's first round,
           # and a stale `failed` here would be the same defect inverted.
-          curl -fsS --max-time 10 "$API/api/v1/infra/restart-status" > "$RUNNER_TEMP/status.json"
+          # Polled, not read once: `clear_started` runs in the api that just
+          # came back, so the write can land a moment after it starts
+          # answering. Bounded at 60s and the loop exits as soon as the notice
+          # is gone, so a correct product pays almost nothing -- and a product
+          # that never retires it still fails, below, on the last read.
+          for _ in $(seq 1 30); do
+            curl -fsS --max-time 10 "$API/api/v1/infra/restart-status" > "$RUNNER_TEMP/status.json" || true
+            "$PY" - "$RUNNER_TEMP/status.json" <<'STILL' >/dev/null 2>&1 && break
+          import json, sys
+          sys.exit(0 if "api" not in json.load(open(sys.argv[1], encoding="utf-8")).get("pending", {}) else 1)
+          STILL
+            sleep 2
+          done
           cat "$RUNNER_TEMP/status.json"; echo
           "$PY" - "$RUNNER_TEMP/status.json" <<'PY' || fail=1
           import json
