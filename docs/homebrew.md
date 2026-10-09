@@ -304,10 +304,18 @@ stamps the tap too (#3727):
 ```bash
 brew tap dkblinux98/nyxgpt
 brew tap-trust dkblinux98/nyxgpt   # same one-time step as the stable formulas
-brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+brew install nyxgpt-api@<release>rc nyxgpt-web@<release>rc
 
 nyxgpt up
 ```
+
+`<release>` is the release line the candidate belongs to, with no `v`
+prefix (`3.1.0`, not `v3.1.0`). The literal line is deliberately not
+written here: the release ceremony retires a shipped line's `-rc`
+formulas from the tap, so an instruction naming one stops working at the
+next roll. `brew search nyxgpt-api@` after the `brew tap` above lists the
+lines the tap currently carries, and the round's release issue names the
+one under test.
 
 `nyxgpt up` is the same command on either channel — the candidate kegs install
 the same `nyxgpt` CLI, and it starts whichever of the two formulas is present
@@ -449,13 +457,13 @@ wrappers. Switching channels is an explicit uninstall, never a silent swap:
 ```bash
 # stable -> release candidate
 brew services stop nyxgpt-api && brew uninstall nyxgpt-api
-brew install nyxgpt-api@3.0.0rc && nyxgpt up
+brew install nyxgpt-api@<release>rc && nyxgpt up
 
 # a newer candidate of the same line (same formula, restamped)
-brew update && brew upgrade nyxgpt-api@3.0.0rc && nyxgpt up
+brew update && brew upgrade nyxgpt-api@<release>rc && nyxgpt up
 
 # ...and back once the release is out
-brew services stop nyxgpt-api@3.0.0rc && brew uninstall nyxgpt-api@3.0.0rc
+brew services stop nyxgpt-api@<release>rc && brew uninstall nyxgpt-api@<release>rc
 brew install nyxgpt-api && nyxgpt up
 ```
 
@@ -470,7 +478,7 @@ to stay. Removing nyxGPT altogether is a different sequence — see
 
 ### Upgrading a candidate in place
 
-The third command above — `brew upgrade nyxgpt-api@3.0.0rc` on a host where
+The third command above — `brew upgrade nyxgpt-api@<release>rc` on a host where
 the stack is already running — is the common case during acceptance testing,
 and it has one failure mode worth knowing about (#4133).
 
@@ -1282,7 +1290,7 @@ that reports itself correctly.
 ```bash
 nyxgpt down
 brew uninstall nyxgpt-api nyxgpt-web
-brew update && brew upgrade nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc
+brew update && brew upgrade nyxgpt-api@<release>rc nyxgpt-web@<release>rc
 # Confirm the keg now names the candidate before starting anything:
 nyxgpt --version
 nyxgpt up

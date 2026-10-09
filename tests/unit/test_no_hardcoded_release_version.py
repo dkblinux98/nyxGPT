@@ -18,6 +18,23 @@ v3.0.1 was cut the drift was:
 This is that script's rule as a check that runs: it lives in `tests/unit`, so
 `ci-tests.yml` runs it with the rest of pytest, and the script is deleted.
 
+**#4182 extended it to Markdown, and that gap was the proof it was needed.**
+The scanner read code only, so `docs/` kept telling readers to run
+`brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc` -- a formula the release
+ceremony had already retired from the tap, in the install instructions of
+three documents. An install command that cannot work is the same class of
+defect as a status line that is not true for the machine it prints on, which
+is what #4182 is about.
+
+What the Markdown half reads is narrower than the code half, and deliberately:
+**a line inside a fenced block that begins with a command.** That is what a
+reader copies and runs. Prose naming a past release is a record, and sample
+*output* showing a concrete version is evidence about a real run -- the
+`"version": "3.0.0rc13"` in `docs/api.md`'s `/api/v1/info` response is more
+useful with a real version in it than with a placeholder, and no one can run
+it. So the discriminator is "would a reader type this?", not "does this name
+a version?"
+
 What it reads is *live text*: code and the strings it prints. Comments are
 skipped on purpose -- "the v3.0.0 ruleset" in a comment is a record of what
 happened, not a claim about what is current, and rewriting history to satisfy
@@ -108,6 +125,89 @@ def test_no_live_code_names_a_release_line():
         "example (vX.Y.Z, origin/<release-branch>). A record of the past belongs "
         "in a comment.\n" + "\n".join(hits)
     )
+
+
+# --- the Markdown half (#4182) -------------------------------------------
+
+#: The documentation a reader follows. `README.md` is included even though it
+#: is a pointer layer by owner decision (#3743) -- it still carries an install
+#: pointer, which is exactly the shape that breaks.
+SCANNED_DOCS = ("docs/**/*.md", "README.md")
+
+#: A version a reader would be told to install: `3.0.0`, `3.0.0rc17`,
+#: `v3.0.0`. Unlike `RELEASE_LINE` an `@` may precede it, because
+#: `nyxgpt-api@3.0.0rc` is the exact shape that broke; `:` and `/` still may
+#: not, so a pinned image tag (`traefik/whoami:v1.10.1`) is not a hit.
+DOC_VERSION = re.compile(r"(?<![\w.:/-])v?\d+\.\d+\.\d+(?:rc\d*)?(?![\w.])")
+
+#: What a reader types. Anchored at the start of a fenced-block line, with an
+#: optional `$` prompt, and requiring whitespace or end-of-line after the word
+#: so `nyxgpt-api@3.0.0rc started` -- a line of sample *output* -- is not read
+#: as a `nyxgpt` command.
+DOC_COMMAND = re.compile(
+    r"^\s*(?:\$\s*)?(?:brew|pip|pip3|pipx|python|python3|nyxgpt|curl|kubectl|docker|"
+    r"terraform|gh|sudo)(?:\s|$)"
+)
+
+
+def _doc_hits() -> list[str]:
+    """Every fenced command line in the docs that hard-codes a version."""
+    found = []
+    for pattern in SCANNED_DOCS:
+        for path in sorted(ROOT.glob(pattern)):
+            rel = path.relative_to(ROOT).as_posix()
+            fenced = False
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith("```"):
+                    fenced = not fenced
+                    continue
+                if not fenced or not DOC_COMMAND.match(line):
+                    continue
+                for match in DOC_VERSION.finditer(line):
+                    if match.group(0) not in ALLOWED:
+                        found.append(f"{rel}:{number}: {line.strip()}")
+                        break
+    return found
+
+
+def test_no_doc_instruction_hard_codes_a_release_version():
+    hits = _doc_hits()
+    assert not hits, (
+        "A command a reader is told to run names a hard-coded release version. "
+        "Release lines roll and the ceremony retires the previous line's rc "
+        "formulas, so this instruction stops working -- `brew install "
+        "nyxgpt-api@3.0.0rc` was already dead in three documents when #4182 was "
+        "filed. Use the placeholder form the surrounding prose already uses "
+        "(`nyxgpt-api@<release>rc`, `--version <version>`, `nyxgpt==<version>`) "
+        "and say where the current value comes from. Sample OUTPUT may carry a "
+        "concrete version: it is evidence about a run, not something to type.\n" + "\n".join(hits)
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("brew install nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc", True),
+        ("brew install nyxgpt-api@<release>rc", False),
+        ("pip install nyxgpt==3.0.0rc3", True),
+        ("pip install nyxgpt==<version>", False),
+        ("nyxgpt cloud deploy --version 3.0.0rc3", True),
+        ("nyxgpt cloud deploy --version <version>", False),
+        # Sample output, not a command: `nyxgpt-api@...` is not `nyxgpt ...`.
+        ("nyxgpt-api@3.0.0rc started", False),
+        ("nyxgpt-api@3.0.0rc: refusing to build against python@3.12", False),
+        # A pinned third-party image is not a nyxGPT release.
+        ("docker pull traefik/whoami:v1.10.1", False),
+        ("brew install python@3.12", False),
+    ],
+)
+def test_the_doc_scanner_reads_commands_only(line, expected):
+    """The discriminator, pinned: what a reader types is read, what the
+    machine printed back is not."""
+    matched = bool(DOC_COMMAND.match(line)) and any(
+        m.group(0) not in ALLOWED for m in DOC_VERSION.finditer(line)
+    )
+    assert matched is expected
 
 
 @pytest.mark.parametrize(
