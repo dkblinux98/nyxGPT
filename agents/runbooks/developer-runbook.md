@@ -154,7 +154,9 @@ here now: a rebase in a PR is a review finding (review-runbook §3a), and prose
 anywhere in this repo instructing one is a bug.
 
 ## 3) Implement
-- Make smallest coherent change set that satisfies acceptance criteria.
+- Make smallest coherent change set that satisfies acceptance criteria **and
+  covers the class the issue belongs to** (§3i) — "smallest" is measured
+  against the class, not against the one instance the issue named.
 - Add/extend tests (unit/integration as appropriate).
 - Keep IO behind interfaces; maintain dependency flow.
 
@@ -179,7 +181,9 @@ Two things belong in the PR body of any change that **fixes** something:
    construct and fix every instance, or report the search and say why the
    remainder is deferred (with an issue). #3500 → #3816 was fixed for a single
    author while every other author kept racing; the same question asked on
-   #3801 turned one broken step into 47 (**V-027**).
+   #3801 turned one broken step into 47 (**V-027**). **The procedure, the PR
+   section it lands in, and the one-source-per-decision rule are §3i** — this
+   is the statement, not a second copy of it.
 
 The reviewer runs both gates and blocks on either (Medium). Answering them in
 the PR body costs one paragraph; not answering them costs a review cycle.
@@ -699,6 +703,109 @@ over a run whose blast-radius section named the cause three lines further down
 - **A knowledge failure is never dressed as an answer.** An unreadable head is
   "not checked", not green; a crashed Phase 3 says it did not run rather than
   concluding nothing.
+
+## 3i) Class sweep: the issue is an instance, your fix covers the class (#4183)
+
+The authoring side of review-runbook §1e, and the procedure §3's "the sweep,
+and its result" refers to. Owner decision 2026-10-09 (ledger **D-067**); the
+reasoning is `CLAUDE.md` § "The class, not the instance", which is loaded into
+your run as project instructions (**V-028**).
+
+> **An issue states a symptom. Its criteria are written per symptom. Passing
+> each one is not finishing the job — the job is the class.**
+
+**Why this is a section and not a nicety.** Four cases inside a week, all of
+which passed their own criteria: **#4136** was the *third* occurrence of one
+stale-cloud-record mechanism, because the AWS account is chosen by three
+different code paths (one of them `terraform`'s environment) and "incoherent
+records are reported rather than used" was implemented in one printer while
+other readers kept using the raw fields; **#4135** passed every criterion live
+and still failed acceptance, because the same `ops status` output carried four
+other wrong things; **#4179** added `retriable:ci_red` to Phase 1's classifier
+and not to Phase 2's separate copy, so red-head rounds escalated as fatal for
+seven weeks; **#4174** shipped a rule whose guard script no workflow ran.
+
+### Before you implement
+
+1. **Read the issue's "Defect class and surfaces" section.** If the filer could
+   not name them — the two acceptance handlers deliberately file it as an
+   unchecked checklist, because the owner reports a symptom — **you complete
+   it**. Name the class as a *rule*: "the AWS account is resolved from
+   whichever source answers first, and three code paths resolve it
+   independently", not "`ops status` printed the wrong account".
+2. **Enumerate the surfaces.** The named ones plus the ones you find:
+   - every other code path that makes the **same decision** (grep for the
+     construct, the config key, the env var, the sibling `if` arm, the other
+     subclasses of the same base — not for the symptom);
+   - the user-facing surfaces that rule reaches: CLI commands, web UI pages,
+     API endpoints, TUI screens;
+   - the prose that states it: `docs/`, help text, UI strings, `agents/`.
+3. **Fix them, in this PR.** Not the one the issue happened to name.
+
+### One source per decision
+
+When the sweep finds the same decision made in more than one place —
+credential resolution, error classification, status computation, a lane
+transition — **the fix consolidates it into one place every surface calls**,
+rather than correcting each copy. Correcting N copies leaves N places for the
+next divergence, which is exactly how #4179 survived seven weeks and what
+**D-066** fixed by making `error_classes.py` the one table. A consolidation is
+in scope by definition on a class-sweep fix; it is not scope creep, and the
+reviewer is told so.
+
+### Record it: write `/tmp/class-sweep.md`
+
+You do not own the PR body — `developer_submit_for_review.sh` builds it, and
+the implement prompts forbid you `gh pr edit`. So the sweep is handed over as a
+file, the same shape the review brief already uses via
+`/tmp/review-comments.txt`. Write it to `/tmp/class-sweep.md` (override with
+`NYXGPT_CLASS_SWEEP_FILE`):
+
+```markdown
+**Class:** <the rule, stated generally>
+**Search:** <the greps/paths you actually ran>
+
+| Surface | Found | Action |
+|---|---|---|
+| `src/nyxgpt/ops.py:_account_id` | same precedence bug | fixed (now calls the one resolver) |
+| `terraform/` provider env | inherits the shell's `AWS_PROFILE` | fixed |
+| `web/src/app/admin/cloud/page.tsx` | reads the API's coherence flag already | unaffected — no change |
+| `docs/terraform.md` | documents the old precedence | updated |
+
+**Consolidated:** <the one place the decision now lives, or "n/a">
+**Out of class, filed:** #NNNN <one line each>, or "none"
+```
+
+`scripts/agents/lib/class_sweep.py` puts it into the PR body under the marker
+`<!-- nyxgpt-class-sweep -->`, which is what the review prompt greps for — on a
+fresh submission (via the submit script) and on a review-fix round (via the
+"Request review for existing PR" step, which refreshes the section so a
+re-review never reads the previous round's sweep). **If the file is empty or
+absent it appends a "## Class sweep — NOT PROVIDED" block instead**, exactly as
+the inverse-claims sweep does with its checklist (#4015): a skipped sweep is
+visible to the reviewer rather than silent, and the reviewer is told to treat
+it as the finding. Write the file; do not let the receipt speak for you.
+
+**Not a defect fix?** Say so in one line
+(`**Class:** n/a — feature work, no defect behind it`) and list the surfaces
+the new behavior has to be correct on. The gate asks for the sweep and its
+result, never for every change to become a refactor, and a reported search
+that found nothing satisfies it.
+
+### Out-of-class findings are filed, not dropped
+
+Anything the sweep turns up that belongs to a **different** class gets its own
+issue, named in the "Out of class, filed" line. Do not silently fix it here
+(it leaves the reviewer reviewing two changes, and the owner one unexplained
+diff) and do not drop it (that is the knowledge this whole mechanism exists to
+stop losing). Scaling the work down after the sweep is the owner's call; what
+is not optional is that the extent of the class ends up on the record.
+
+**Rules this project states but does not enforce are themselves a class**
+(#4174's pattern). When your change adds a rule to `CLAUDE.md`, a charter, a
+runbook or a prompt, the sweep includes "what checks this?" — a guard test, a
+smoke job, or a step that fails the build. A rule with no enforcing check is
+the defect #4183 was filed about.
 
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:

@@ -28,6 +28,14 @@ name: Handle Improvement
 # lane only via promote_accepted_features.yml once everything blocking them
 # has reached "For Release".
 #
+# DEFECT CLASS AND SURFACES (owner decision 2026-10-09, #4183): the filed
+# body carries that section as an unchecked CHECKLIST, not as prose -- the
+# handler knows what the owner asked for and cannot know the class, so the
+# developer completes it before implementing and the PR's "Class sweep"
+# section reports what the sweep found. The same block is in
+# handle_acceptance_failure.yml; tests/unit/test_class_sweep_contract.py
+# fails the build if either loses it.
+#
 # This is the `@improvement` counterpart of handle_acceptance_failure.yml
 # (`@acceptance-failure`). Both are stakeholder-acceptance commands: only
 # the human owner can issue them, and both are DISTINCT from the review
@@ -184,9 +192,18 @@ jobs:
             echo
             printf '%s\n' "$COMMENT_BODY"
             echo
+            echo "## Defect class and surfaces"
+            echo
+            echo "_Required section (owner decision 2026-10-09, #4183 — see CLAUDE.md § \"The class, not the instance\"). The handler cannot know the class; the **developer completes this before implementing** and reports the result in the PR's \"Class sweep\" section._"
+            echo
+            echo "- [ ] Class: the general rule this improvement is about, stated as a rule and not as a location"
+            echo "- [ ] Surfaces: every surface that rule touches — CLI commands, web UI pages, API endpoints, docs, and every other code path making the same decision"
+            echo "- [ ] Each surface above is addressed in the implementation, or the PR says why it is unaffected"
+            echo
             echo "## Acceptance Criteria"
             echo
             echo "- [ ] The requested improvement is implemented and verified"
+            echo "- [ ] The class above is swept across every named surface, and the PR body carries the \"Class sweep\" section recording it (#4183)"
             echo
             echo "## Notes"
             echo

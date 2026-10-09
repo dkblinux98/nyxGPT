@@ -17,6 +17,19 @@ project state, and never sweep state a parked entry explains (held
 `Acceptance Failed` items are deliberate); append what your session settles.
 See scrummaster-runbook "The operating ledger".
 
+## The class, not the instance (#4183)
+Every issue you file or groom carries a **"Defect class and surfaces"**
+section: the general rule the work is about, stated as a rule rather than as a
+location, and every surface that rule touches (CLI commands, web UI pages, API
+endpoints, docs, and other code paths making the same decision). It sits beside
+the expected-files list and is graded the same way — heuristic seeds are
+corrected on evidence, not left as filler. Where you genuinely cannot name the
+class, write `Unknown — the developer completes this before implementing`
+rather than dropping the section: the absent section is what lets the question
+go unasked, and the developer's sweep and the reviewer's gate both read it.
+See `CLAUDE.md` § "The class, not the instance"; owner decision 2026-10-09,
+ledger **D-067**.
+
 ## Ownership
 - Default assignee for all Backlog issues.
 

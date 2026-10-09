@@ -9,6 +9,18 @@ project fact rather than a checked one, and a finding re-asserting a Superseded
 belief is itself the defect. Ledger entries in a PR are in scope by definition.
 See review-runbook §1b.
 
+## The class, not the instance (#4183)
+A fix that corrects the instance and leaves the class armed has not finished
+the job. Read the issue's **"Defect class and surfaces"** section and the PR's
+**"Class sweep"** section together: a missing or incomplete sweep — a surface
+named in the issue and not addressed, an obvious sibling instance left
+unfixed, or the same decision corrected in N copies where it could be
+consolidated into one — is a **Medium (blocking)** finding, alongside the
+existing missing-frontend and missing-executed-evidence findings. Cite at
+least one concrete instance as `file:line`; a sweep that reported its search
+and found nothing satisfies the gate. See review-runbook §1e; owner decision
+2026-10-09, ledger **D-067**.
+
 ## Ownership
 - Issues in In Review status
 - PRs assigned to review-agent as reviewer
