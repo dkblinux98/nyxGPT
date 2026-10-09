@@ -1569,18 +1569,26 @@ every deployment mode selects one.
 
 **What makes the change take effect depends on the substrate, and the command
 says the one that is true where it runs** (#4184). It used to print "Restart
-the API to pick this up (`nyxgpt ops restart api`)" unconditionally, which on
-the two places that matter was wrong at the moment it was printed:
+the API to pick this up (`nyxgpt ops restart api`)" unconditionally, which
+everywhere but a native install was wrong at the moment it was printed:
 
 | Where it runs | What it says |
 |---|---|
-| a native install with an api registered | `Restart the API to pick this up (nyxgpt ops restart api)` — unchanged |
+| a native api is registered with this host's service manager | that it is registered, and to restart it to pick this up (`nyxgpt ops restart api`) |
 | a Kubernetes deployment | the api Pods read `session_backend` from the `nyxgpt-config` ConfigMap, so no restart on this host affects them; the file still governs every `nyxgpt` command run here, which is why the write is not refused |
-| mid-deploy, before `ops install` | there is no api to restart; whatever starts it next reads this value then |
+| no native api is registered — a Compose- or Terraform-served host, or mid-deploy before `ops install` | that `nyxgpt ops restart api` has nothing to act on here; that a containerised api reads the derived `~/.nyxGPT/docker/config.docker.ini`, which `nyxgpt ops env-sync` regenerates from this file and the container picks up on its next restart; and that on a host with no api at all, whatever installs one next reads this value then |
 
 The third row is where the owner read it: the provisioning script calls this
-*before* `ops install`, so the command it named would have failed. The decision
-costs no probe — see [Which substrate a run is
+*before* `ops install`, so the command it named would have failed.
+
+**Each row is scoped to the one question the command asked** — whether a
+native api is registered with this host's service manager. It deliberately
+does not probe for Compose or Terraform, because that probe is
+`docker compose ps`, whose exit 125 on a Compose-less instance is the other
+half of #4184; so the rows that cannot see those substrates name them as a
+condition instead of asserting them away. A sentence scoped to its evidence
+stays true on a substrate it could not look at. The decision itself costs no
+probe — see [Which substrate a run is
 about](#which-substrate-a-run-is-about).
 
 ---

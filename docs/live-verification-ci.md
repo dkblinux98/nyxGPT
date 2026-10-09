@@ -457,7 +457,12 @@ and screenshots make verifiable in the review loop:
   then measures, through the product's own kubectl path, that the cluster
   answers nothing for the core tier -- with one such Pod left Ready the box is
   a cluster that is *serving*, which is #4137's condition, and the fall-through
-  this step exists to inject cannot happen at all. #4184's second injection is
+  this step exists to inject cannot happen at all. The same step then measures
+  the other half of that moment, added in the review round: with nothing
+  declared and no native api registered -- the permanent state of every
+  Compose- and Terraform-served host, whose api is a container -- the
+  session-backend guidance must say which question was asked, not that nothing
+  is installed. #4184's second injection is
   the instance's own `sshd`, written in both drop-in positions because the
   runner already offers a post-quantum key exchange by default: sorting
   *before* the product's file proves it *reports* a drop-in that is parsed and

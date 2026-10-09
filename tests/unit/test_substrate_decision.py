@@ -724,8 +724,8 @@ def test_the_session_backend_write_does_not_name_a_restart_mid_deploy(_seeded_co
     results = ops.set_session_backend("cassandra", cfg_path=_seeded_config)
 
     assert results[0].ok
-    assert "nyxgpt ops restart api" not in results[0].details
-    assert "nothing to restart" in results[0].details
+    assert "nothing here for `nyxgpt ops restart api` to act on" in results[0].details
+    assert "whatever installs one next" in results[0].details
 
 
 @pytest.mark.unit
@@ -748,25 +748,95 @@ def test_the_session_backend_write_still_names_the_restart_on_a_native_install(
     _seeded_config, monkeypatch
 ):
     """The regression this change could most easily have caused: on the
-    substrate where the guidance was always right, it is unchanged."""
+    substrate where the restart IS the remedy, it is still named.
+
+    The subject is scoped to what was actually looked at -- the service
+    manager's registration -- so the sentence claims nothing about a container
+    that may be serving beside it (that case is `ops restart api`'s own Compose
+    refusal to report, and it does)."""
     monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {"api": "started"})
 
     results = ops.set_session_backend("cassandra", cfg_path=_seeded_config)
 
-    assert "Restart the API to pick this up (`nyxgpt ops restart api`)." in results[0].details
+    assert "A native api service is registered with this host's service manager" in (
+        results[0].details
+    )
+    assert "`nyxgpt ops restart api`" in results[0].details
 
 
 @pytest.mark.unit
-def test_the_session_backend_write_pays_for_no_cluster_probe(_seeded_config, monkeypatch):
-    """One line of config write must not grow a `kubectl get pods`."""
+def test_a_compose_served_host_is_not_told_that_nothing_is_installed(_seeded_config, monkeypatch):
+    """The review finding on the first fix for finding 4, and the same class.
+
+    A Docker-Compose-served host runs its api as a container, so nothing is
+    registered with the service manager -- and the first fix answered that with
+    "No api service is installed on this host yet ... whatever starts it next
+    reads this value then". Both halves are false there: an api IS serving, and
+    nothing is about to start it. The guidance must scope itself to the one
+    question it asked and name what a containerised api actually reads.
+    """
+    # The state under test, spelled out: Compose IS serving the api here. The
+    # hint never asks (see the probe guard below) -- this is what makes the
+    # assertion below a statement about a Compose host and not about a bare box.
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda *_a, **_k: {"api": "running"})
+
+    results = ops.set_session_backend("cassandra", cfg_path=_seeded_config)
+    details = results[0].details
+
+    assert "No api service is installed on this host yet" not in details
+    assert "No native api service is registered with this host's service manager" in details
+    # ...and the remedy that IS true there: the container reads the derived
+    # file, which `env-sync` regenerates from the one just written.
+    assert str(ops.COMPOSE_CONFIG_FILE) in details
+    assert "nyxgpt ops env-sync" in details
+
+
+@pytest.mark.unit
+def test_the_session_backend_write_pays_for_no_cluster_or_compose_probe(
+    _seeded_config, monkeypatch
+):
+    """One line of config write must not grow a `kubectl get pods` -- nor a
+    `docker compose ps`.
+
+    The Compose half is not only cost: `_compose_stack_snapshot` is the probe
+    whose exit 125 on a Compose-less instance is finding 1 of this same issue.
+    Answering the Compose case by *probing* for it would have fixed one arm of
+    the class by reintroducing another.
+    """
     monkeypatch.setattr(
         ops, "_k8s_deployment_probe", lambda: pytest.fail("a config write surveyed the cluster")
     )
     monkeypatch.setattr(
         ops, "_k8s_pod_states", lambda **_k: pytest.fail("a config write surveyed the cluster")
     )
+    monkeypatch.setattr(
+        ops,
+        "_compose_stack_snapshot",
+        lambda *_a, **_k: pytest.fail("a config write ran `docker compose ps`"),
+    )
 
     assert ops.set_session_backend("cassandra", cfg_path=_seeded_config)[0].ok
+
+
+@pytest.mark.unit
+def test_the_pickup_hint_reads_the_native_services_once(_seeded_config, monkeypatch):
+    """The decision's evidence and the arm's discriminator are one read.
+
+    `_native_services_snapshot` shells out per component; asking it the same
+    question twice in a row is the kind of cost first principle 1 exists to
+    stop, and it can also answer differently the second time.
+    """
+    calls = []
+
+    def _counted():
+        calls.append(1)
+        return {"api": "started"}
+
+    monkeypatch.setattr(ops, "_native_services_snapshot", _counted)
+
+    ops.set_session_backend("cassandra", cfg_path=_seeded_config)
+
+    assert len(calls) == 1
 
 
 # --- 6. the deploy declares the substrate for its whole script ---------------

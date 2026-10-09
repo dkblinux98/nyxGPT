@@ -89,7 +89,21 @@ that finds nothing **defers** instead of overruling it. See
 ### What the continued round is told
 
 A refusal leaves no PR behind, so `developer_ensure_pr_exists.sh` opens a
-rescue draft and the next round takes the Review Fix path. The brief it is
+rescue draft and the next round takes the Review Fix path.
+
+When a later round's verification passes, that draft stops being a rescue —
+and so does its **record**. `scripts/agents/lib/rescue_pr.py` is the one place
+that makes the change: the deliberately non-closing `Refs #N` becomes
+`Closes #N`, the `wip:` title prefix goes, and the body's "⚠️ Rescue PR …
+**This is not a submission for review**" preamble is replaced with a short
+note that the branch reached review the long way. Only the first of those
+three used to happen, so a PR under review asserted it was not a submission
+while being reviewed as one, and its merge commit carried `wip:` (review of
+PR #4191). It runs on every hand-off rather than only on a draft — a PR
+promoted by an earlier round is exactly the one left carrying the stale
+record — and is a no-op on a body that has already been promoted.
+
+The brief it is
 handed used to say only "finish the work on that branch" — which is how a
 round re-submitted into the same red head and spent the retry budget on a
 cause nobody had named.

@@ -20805,8 +20805,8 @@ def _pickup_hint() -> str:
     """What actually makes this config change take effect, on the substrate in front of us.
 
     "Restart the API to pick this up (`nyxgpt ops restart api`)" was printed
-    unconditionally, and on the two substrates that matter it was wrong at the
-    moment it was printed (#4184 finding 4):
+    unconditionally, and on three substrates it was wrong at the moment it was
+    printed (#4184 finding 4):
 
     * **mid-deploy**, which is where the owner read it: this runs from the
       provisioning script *before* `ops install`, so there is no api to restart
@@ -20817,36 +20817,53 @@ def _pickup_hint() -> str:
       pins it to `cassandra`), so restarting anything on this host changes
       nothing about them. This file still governs every `nyxgpt` command run
       here, which is why the write is not refused -- only the guidance changes.
+    * **on a Compose- or Terraform-served host**: the api is a container, so
+      nothing is registered with this host's service manager and the restart
+      was never the remedy -- what the container reads is the *derived*
+      `COMPOSE_CONFIG_FILE`, regenerated from this file by `ops env-sync` and
+      `ops install`.
 
-    Decided through the one substrate decision, and deliberately with no
-    cluster probe: `deployment_substrate` reads the declaration, `_in_cluster`
-    and the marker, all free, and a one-line config write must not grow a
-    `kubectl get pods` (first principle 1).
+    **The host arms say which question was asked, because only one was.** The
+    first fix for this issue answered that third case with "No api service is
+    installed on this host yet ... whatever starts it next reads this value
+    then" -- both halves false beside a serving container, and the same class
+    one arm over (review of #4191). The honest shape of a zero-probe answer is
+    to scope it to its evidence ("registered with this host's service manager")
+    and name the substrate it could not see as a condition, rather than
+    asserting it away.
+
+    And that arm stays unprobed on purpose: the Compose read is
+    `_compose_stack_snapshot`, the `docker compose ps` whose exit 125 on a
+    Compose-less instance is finding **1** of this very issue, and a one-line
+    config write must not grow it -- any more than it may grow a `kubectl get
+    pods` (first principle 1). The substrate still comes from the one decision;
+    `deployment_substrate` reads the declaration, `_in_cluster` and the marker,
+    all free, and an arm no evidence could select is simply not selected
+    (`substrate.Evidence`).
     """
-    decision = deployment_substrate(native_registered=_native_api_registered())
+    # One read, used twice: as the decision's evidence and as the host arms'
+    # discriminator. `_native_services_snapshot` shells out per component.
+    native_api = _native_services_snapshot().get("api", "none") != "none"
+    decision = deployment_substrate(native_registered=native_api)
     if decision.kubernetes:
         return (
             f"This file governs `nyxgpt` commands on this host; the api Pods of a Kubernetes "
             f"deployment read `session_backend` from the {K8S_CONFIG_CONFIGMAP} ConfigMap "
             f"({decision.source}), so no restart here affects them."
         )
-    if _native_api_registered():
-        return "Restart the API to pick this up (`nyxgpt ops restart api`)."
+    if native_api:
+        return (
+            "A native api service is registered with this host's service manager -- restart "
+            "it to pick this up (`nyxgpt ops restart api`)."
+        )
     return (
-        "No api service is installed on this host yet, so there is nothing to restart -- "
-        "whatever starts it next (`nyxgpt ops install`, or the deploy already in progress) "
-        "reads this value then."
+        "No native api service is registered with this host's service manager, so there is "
+        "nothing here for `nyxgpt ops restart api` to act on. A containerised api (Compose or "
+        f"Terraform) reads the derived {COMPOSE_CONFIG_FILE} instead, which `nyxgpt ops "
+        "env-sync` regenerates from this file -- it picks the value up when its container next "
+        "restarts. With no api on this host at all, whatever installs one next (`nyxgpt ops "
+        "install`, or the deploy already in progress) reads this value then."
     )
-
-
-def _native_api_registered() -> bool:
-    """Is a native api service registered with this host's service manager at all?
-
-    The cheap half of `_native_services_snapshot` -- no Compose survey, no
-    Terraform read -- for callers that only need to know whether an `ops
-    restart api` would have anything to act on.
-    """
-    return _native_services_snapshot().get("api", "none") != "none"
 
 
 def session_backend(args: Any) -> int:

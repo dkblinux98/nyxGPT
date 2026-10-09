@@ -1622,6 +1622,55 @@ if ops.K8S_CONFIG_CONFIGMAP not in detail:
 PY
 log "PASS (fix proven): the declared substrate routes the surveys a deploy triggers"
 
+# --- the same guidance with NOTHING declared and no api of any kind --------
+# The arm the first fix for finding 4 got wrong (review of PR #4191). This box
+# now has no api registered with its service manager -- which is also the
+# permanent state of every Compose- and Terraform-served host, because their
+# api is a container. Answering that with "No api service is installed on this
+# host yet ... whatever starts it next reads this value then" is false twice
+# over beside a serving container, and it is this issue's own class one arm
+# along: a sentence answering for a substrate the check never looked at.
+#
+# Run as its own block, and before the native unit is injected below, because
+# both conditions this needs are destroyed by the next thing this step does.
+python3 - <<'PY'
+import pathlib
+import sys
+
+from nyxgpt import install_mode, ops, substrate
+
+# The conditions, made true rather than assumed. The Kubernetes marker step 10
+# wrote is cleared HERE (the block below used to do it) -- while it stands,
+# `deployment_substrate` can still answer "kubernetes" from the access bridge
+# holding this host's ports, and the host arm under test is unreachable.
+substrate.clear_declaration()
+install_mode.clear_install_mode(substrate=install_mode.SUBSTRATE_KUBERNETES)
+snapshot = ops._native_services_snapshot()
+if snapshot.get("api", "none") != "none":
+    sys.exit(
+        f"FAULT INJECTION FAILED: this box already has a native api ({snapshot['api']}), so "
+        "the arm under test is not the one that would be printed"
+    )
+
+cfg = pathlib.Path.home() / ".nyxGPT" / "config.ini"
+undeclared = ops.set_session_backend("file", cfg_path=cfg)[0].details
+print(f"    | session-backend guidance, nothing declared, no native api: {undeclared}")
+if "No api service is installed on this host yet" in undeclared:
+    sys.exit("the guidance still claims no api is installed from a check that never looked")
+if "No native api service is registered with this host's service manager" not in undeclared:
+    sys.exit("the guidance does not scope itself to the one question it asked")
+if str(ops.COMPOSE_CONFIG_FILE) not in undeclared or "nyxgpt ops env-sync" not in undeclared:
+    sys.exit(
+        "the guidance does not name what a containerised api actually reads, so the false "
+        "sentence was withdrawn rather than replaced"
+    )
+# Put the value back: an unchanged write returns "already `file`" with no
+# guidance at all, and the native-arm measurement below writes `file` too --
+# it has to be a real change for there to be a sentence to read.
+ops.set_session_backend("cassandra", cfg_path=cfg)
+PY
+log "PASS (review fix proven): a host with no native api is told what was checked"
+
 # --- doctor's own text, on this box ----------------------------------------
 # The surface the owner read. Asserted on the OUTPUT rather than on a helper,
 # because the finding was a printed record and not a return value.
@@ -1656,8 +1705,11 @@ install_mode.write_install_mode(
 )
 # ...and no Kubernetes marker, which is the mid-deploy truth:
 # `_record_k8s_install_mode` is a later step of the install this run is in, so
-# the marker-gated block cannot speak for it. (Step 10 wrote one; this removes
-# it.) The declaration is what has to carry the routing here.
+# the marker-gated block cannot speak for it. (Step 10 wrote one; the
+# no-native-api block just above removed it, and this reasserts the condition
+# rather than inheriting it -- this block's reading must not depend on what
+# another block happened to leave behind.) The declaration is what has to carry
+# the routing here.
 install_mode.clear_install_mode(substrate=install_mode.SUBSTRATE_KUBERNETES)
 
 snapshot = ops._native_services_snapshot()
