@@ -261,6 +261,44 @@ def real_running_api_probe(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def real_expected_native_api_venv(monkeypatch):
+    """No unit test reads the developer's real Homebrew for the installed keg (#4182).
+
+    The companion to `real_running_api_probe` above, and it became autouse for
+    the same reason that one is. `_expected_native_api_venv` shells out to
+    `brew --prefix` / `brew --cellar`, and #4182 moved that read AHEAD of the
+    probe: scope is what decides whether "is the serving api the installed
+    keg's venv?" has a subject at all, and a probe failure is not a fact about
+    scope. So every caller of `_native_api_build_drift` -- `status`,
+    `install`, `doctor`, `restart api` -- now reaches this read on every run,
+    including the runs where nothing is answering.
+
+    That is correct behavior and cheap on a real machine (two local `brew`
+    calls, no network, against the `docker compose ps` and `kubectl` reads
+    those commands already make). In a unit test it is neither: it asks the
+    machine running the suite what IT has installed, which is the hazard
+    `home_sandbox` and `_no_real_host_stack_commands` exist to remove, and the
+    real-`brew` guard fails the test by design.
+
+    Answered the way a machine with no native install answers -- `("",
+    reason)` -- which scopes the running-build question out and keeps every
+    caller's "do not act" path. Tests about the read itself
+    (`TestExpectedNativeApiVenv`) and about the comparison
+    (`tests/unit/test_ops_running_build.py`) patch the name themselves, and
+    their patch lands after this one.
+    """
+    from nyxgpt import ops
+
+    real = ops._expected_native_api_venv
+    monkeypatch.setattr(
+        ops,
+        "_expected_native_api_venv",
+        lambda: ("", "stubbed for unit tests: the real Homebrew keg was not read"),
+    )
+    return real
+
+
+@pytest.fixture(autouse=True)
 def _refuse_real_docker_builds(monkeypatch):
     """Fail any unit test that reaches a real `docker build` (#3834).
 

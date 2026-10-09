@@ -130,6 +130,7 @@ from nyxgpt.running_build import (
     BuildDrift,
     RuntimeBuild,
     local_runtime_build,
+    native_build_scope,
 )
 from nyxgpt.running_build import classify as classify_build_drift
 from nyxgpt.subprocess_bounds import (
@@ -5319,12 +5320,24 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     precisely the case where disk and process disagree. Only the process can
     say what the process is running, so it is asked.
 
-    `/api/v1/info` is behind the API-key middleware when `[auth] enabled`, so
-    the configured key is sent -- an operator who hardened their install must
-    not lose this check as a side effect. Any failure to get an answer
-    returns `None` plus the reason, which is reported as "could not
-    determine": a probe that cannot reach the api has learned nothing about
-    which build is running, and reporting that as a match is the defect.
+    `/api/v1/info` is behind the API-key middleware when the *serving* api has
+    auth on, so the configured key is sent whenever one is configured at all
+    -- an operator who hardened their install must not lose this check as a
+    side effect. Deliberately NOT gated on this config's `[auth] enabled`
+    (#4182): that flag describes the file this command just read, and the
+    process answering on :8000 is a different thing -- a Pod reading a
+    Secret, a Compose container reading the mounted config, or a native api
+    started before the flag was turned off. Sending a key an unauthenticated
+    api ignores costs one header; withholding one it requires cost the owner
+    the whole check, and `ops status` reported "CANNOT DETERMINE -- answered
+    HTTP 401" with the key sitting in the config it had already loaded.
+
+    Any failure to get an answer returns `None` plus the reason, which is
+    reported as "could not determine": a probe that cannot reach the api has
+    learned nothing about which build is running, and reporting that as a
+    match is the defect. A refusal is phrased as a refusal and names the
+    repair, because "HTTP 401" tells an operator what happened and nothing
+    about what to do.
     """
     from nyxgpt.config import get_api_port, get_auth_api_key
 
@@ -5336,14 +5349,31 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     url = f"http://127.0.0.1:{port}/api/v1/info"
     headers: dict[str, str] = {}
     try:
-        if cfg.getboolean("auth", "enabled", fallback=False):
-            headers[cfg.get("auth", "header", fallback="X-API-Key")] = get_auth_api_key(cfg)
+        key = get_auth_api_key(cfg)
+        if key:
+            headers[cfg.get("auth", "header", fallback="X-API-Key")] = key
     except Exception as e:  # pragma: no cover - malformed [auth] is its own report
         return None, f"could not read [auth] to authenticate the probe ({type(e).__name__}: {e})"
     try:
         resp = httpx.get(url, headers=headers, timeout=_RUNNING_BUILD_PROBE_TIMEOUT)
     except Exception as e:
         return None, f"{url} did not answer ({type(e).__name__}: {e})"
+    if resp.status_code in (401, 403):
+        # Said as the actionable thing it is. Which of the two cases applies
+        # is knowable from here -- a key was sent or it was not -- and they
+        # need different repairs, so neither is reported as the other.
+        if headers:
+            return None, (
+                f"{url} refused the probe (HTTP {resp.status_code}): the api answering there "
+                f"does not accept the key in {NATIVE_CONFIG_HINT}. Repair: set [auth] api_key "
+                "to the key that api is running with (a Kubernetes deployment reads it from "
+                "the nyxgpt secret, a Compose one from the mounted config)."
+            )
+        return None, (
+            f"{url} requires an API key (HTTP {resp.status_code}) and none is configured. "
+            f"Repair: set [auth] api_key in {NATIVE_CONFIG_HINT} to the key that api is "
+            "running with."
+        )
     if resp.status_code != 200:
         return None, f"{url} answered HTTP {resp.status_code}"
     try:
@@ -5362,7 +5392,46 @@ def _probe_running_api_runtime() -> tuple[RuntimeBuild | None, str]:
     return build, ""
 
 
-def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
+def _api_image_substrate(
+    mode: DeploymentMode | None = None, *, kubernetes: bool | None = None
+) -> str:
+    """Which image-based substrate holds the api on this host, or `""` for none.
+
+    Scoped to the api, which is the component the running-build check is
+    about. Asking "is ANY core component containerised" would mark a native
+    api out of scope because web or Cassandra happens to be Compose-managed,
+    and silence is the one outcome that check must not reach by accident.
+
+    Kubernetes is in this list since #4182, and its absence was a latent
+    false accusation of the same shape the Compose gate exists to prevent: on
+    a kind cluster whose node publishes :8000 the api answering is a Pod, so
+    comparing its in-image `sys.prefix` to a host keg path reports MISMATCH on
+    a correct deployment. `_k8s_access_bridge_owns_host_ports` covered only
+    the k3s bridge -- one topology of three.
+
+    `mode`/`kubernetes` let a caller that has already surveyed this host pass
+    its own answers in rather than paying for a second `docker compose ps` or
+    `kubectl get pods` (`status` holds both).
+    """
+    survey = mode if mode is not None else detect_deployment_mode()
+    if "api" in compose_core_components(survey):
+        return "compose"
+    if _container_deployed(survey.terraform.get("api", "absent")):
+        return "terraform"
+    if _k8s_access_bridge_owns_host_ports():
+        return "kubernetes"
+    # api/web Pods, not merely Pods: a namespace holding only the in-cluster
+    # observability workloads has no api serving anything, and calling that
+    # out of scope would silence the check on a host where it applies -- the
+    # same distinction `_k8s_app_pods_present` draws for the status block.
+    if kubernetes is None:
+        kubernetes = _k8s_app_pods_present(_k8s_deployment_probe().pods)
+    return "kubernetes" if kubernetes else ""
+
+
+def _native_api_build_drift(
+    mode: DeploymentMode | None = None, *, kubernetes: bool | None = None
+) -> BuildDrift:
     """Is the api answering on this host running the build the installed service execs?
 
     Gated on the vantage point, which is the one way this check could produce
@@ -5371,7 +5440,8 @@ def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
     comparing it to a host keg path would report drift on a correctly deployed
     stack. Each of those is reported `not_applicable` with the reason -- the
     same scope statement `infra_status` makes for a Compose survey run from
-    inside a Pod (#3988).
+    inside a Pod (#3988), and from #4182 literally the same function
+    (`native_build_scope`) rather than a second copy of the reasoning.
 
     Note what it is deliberately NOT gated on: whether the native service is
     currently *running*. "The registered service is stopped" is precisely the
@@ -5381,63 +5451,54 @@ def _native_api_build_drift(mode: DeploymentMode | None = None) -> BuildDrift:
     native api INSTALLED here", answered by `_expected_native_api_venv`
     finding a venv on disk.
 
-    The probe runs FIRST, and that ordering is a cost decision as much as a
-    logical one (first principle 1). If nothing is answering there is no
-    running build to compare, so the answer is already settled -- and settling
-    it with one 5s loopback read is far cheaper than the work the gates below
-    need: `detect_deployment_mode` runs `docker compose ps`, and the macOS
-    expectation costs two `brew` calls. `status`, `install` and `doctor` all
-    call this, so on a machine with the api down it now costs one refused
-    connection apiece. One consequence is named in `docs/ops.md` rather than
-    hidden: a Compose/Kubernetes host with nothing answering :8000 reports
-    "could not determine" instead of "not applicable", because the cheap read
-    settles it before the scoping gates are consulted.
+    **Scope is settled before the probe, and that is #4182's fix.** The probe
+    used to run first, as a cost decision: one 5s loopback read is cheaper
+    than `docker compose ps` plus two `brew` calls. But a probe failure is not
+    a fact about scope, and reporting it as one is what the owner saw -- `ops
+    status` on a Kubernetes host printed `CANNOT DETERMINE -- answered HTTP
+    401` about a native keg comparison that machine had no subject for. The
+    cost objection turns out to be answered by the cheapest gate rather than
+    by the ordering: `_expected_native_api_venv` is a `is_dir()` on Linux and
+    two `brew` calls on macOS, and when it finds nothing there is no question
+    here, so the probe is skipped entirely. That makes this strictly *cheaper*
+    than before on a Compose-only or cluster-only host (no loopback read at
+    all) and correct on every host. The survey is paid only when a native venv
+    really is installed.
 
-    `mode` lets a caller that has already surveyed this host pass its own
-    `DeploymentMode` in rather than paying for a second `docker compose ps`
-    (`status` holds one). Omitted, the survey is taken here -- and only if the
-    probe got an answer, so the usual cost is zero.
+    `_api_image_substrate` is consulted after the probe answers, and also when
+    it does not: "the native api is down" and "a Pod is holding :8000" are
+    different states, and only the survey tells them apart.
     """
-    build, why_not = _probe_running_api_runtime()
-    if build is None:
+    expected, source = _expected_native_api_venv()
+    scope = native_build_scope(
+        in_cluster=_in_cluster(), native_venv=expected, native_venv_reason=source
+    )
+    if not scope.applicable:
+        # No native api venv on this machine (or this process is a Pod), so
+        # whatever answers :8000 is not one and there is nothing to compare it
+        # to. Settled without probing: an unanswerable question costs nothing.
         return BuildDrift(
-            state=BUILD_UNDETERMINED,
+            state=BUILD_NOT_APPLICABLE,
             running=None,
             expected_prefix="",
             expected_source="",
-            detail=why_not,
-            remediation=_RUNNING_BUILD_REMEDIATION,
-        )
-    expected, source = _expected_native_api_venv()
-    if not expected:
-        # No native api venv on this machine, so whatever answers :8000 is not
-        # one and there is nothing to compare it to.
-        return BuildDrift(
-            state=BUILD_NOT_APPLICABLE,
-            running=build,
-            expected_prefix="",
-            expected_source="",
-            detail=source or "there is no native api service on this machine",
+            detail=scope.detail,
             remediation="",
         )
-    survey = mode if mode is not None else detect_deployment_mode()
-    # Scoped to the api, which is the component this check is about. Asking
-    # "is ANY core component containerised" would mark a native api
-    # not_applicable because web or Cassandra happens to be Compose-managed,
-    # and silence is the one outcome this check must not reach by accident.
-    container_api = "api" in compose_core_components(survey) or _container_deployed(
-        survey.terraform.get("api", "absent")
+    build, why_not = _probe_running_api_runtime()
+    substrate_scope = native_build_scope(
+        in_cluster=False,
+        image_substrate=_api_image_substrate(mode, kubernetes=kubernetes),
+        native_venv=expected,
+        native_venv_reason=source,
     )
-    if container_api or _k8s_access_bridge_owns_host_ports():
+    if not substrate_scope.applicable:
         return BuildDrift(
             state=BUILD_NOT_APPLICABLE,
             running=build,
             expected_prefix=expected,
             expected_source=source,
-            detail=(
-                "the api port on this host is held by a container/cluster deployment, whose "
-                "interpreter lives in its image -- a native keg/venv comparison does not apply"
-            ),
+            detail=substrate_scope.detail,
             remediation="",
         )
     return classify_build_drift(
@@ -14322,7 +14383,11 @@ def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
     where the serving process IS a native one. Inside a Pod or a Compose
     container the interpreter lives in the image and a host keg path is not
     the thing it should equal, so those answer `not_applicable` with the
-    reason rather than reporting drift on a correct deployment.
+    reason rather than reporting drift on a correct deployment. The scope
+    decision itself is `native_build_scope`, shared with `ops status` since
+    #4182 -- two copies of it had already drifted into opposite orderings,
+    which is why one surface stayed quiet on a cluster-served host and the
+    other printed CANNOT DETERMINE about the same machine.
 
     `running_mode` is the page's own verdict about what is serving, reused
     here rather than re-derived, so the card cannot contradict the mode
@@ -14339,32 +14404,30 @@ def _infra_running_build(*, in_cluster: bool, running_mode: str) -> BuildDrift:
     real other subject (`compose`/`terraform`/`kubernetes`) stays out of
     scope.
     """
-    if in_cluster:
-        return BuildDrift(
-            state=BUILD_NOT_APPLICABLE,
-            running=local_runtime_build(),
-            expected_prefix="",
-            expected_source="",
-            detail=(
-                "Not in scope from here: this api runs inside a Kubernetes Pod, whose "
-                "interpreter lives in the deployed image. The Kubernetes card above "
-                "reports that deployment's build."
-            ),
-            remediation="",
-        )
-    if running_mode not in ("native", "none"):
-        return BuildDrift(
-            state=BUILD_NOT_APPLICABLE,
-            running=local_runtime_build(),
-            expected_prefix="",
-            expected_source="",
-            detail=(
-                f"Not in scope from here: the serving deployment is `{running_mode}`, not a "
-                "native install, so there is no keg/venv for this process to match."
-            ),
-            remediation="",
-        )
     expected, source = _expected_native_api_venv()
+    scope = native_build_scope(
+        in_cluster=in_cluster,
+        # `"none"` is mapped to no substrate deliberately -- see the paragraph
+        # above: a surviving pre-upgrade process is registered nowhere, so the
+        # page's own verdict is `none` while that process is serving this
+        # request.
+        image_substrate=running_mode if running_mode != "none" else "",
+        native_venv=expected,
+        native_venv_reason=source,
+        # With a native service registered as started, a venv this process
+        # cannot locate is an anomaly, not an absent subject -- reported as
+        # "cannot determine" below rather than as silence.
+        missing_venv_is_out_of_scope=running_mode != "native",
+    )
+    if not scope.applicable:
+        return BuildDrift(
+            state=BUILD_NOT_APPLICABLE,
+            running=local_runtime_build(),
+            expected_prefix="",
+            expected_source="",
+            detail=f"Not in scope from here: {scope.detail}",
+            remediation="",
+        )
     return classify_build_drift(
         local_runtime_build(),
         expected or None,
@@ -15019,7 +15082,13 @@ def status(_args) -> int:
     # version are both compatible with a pre-upgrade process serving from a
     # deleted venv, which is the state no surface could distinguish from a
     # correct one.
-    _print_running_api_build(_native_api_build_drift(mode))
+    # Both surveys this command already holds are handed in, so the scope
+    # decision costs nothing extra and -- more importantly -- cannot disagree
+    # with the Kubernetes section printed further down about whether a cluster
+    # is serving this host (#4182).
+    _print_running_api_build(
+        _native_api_build_drift(mode, kubernetes=_k8s_app_pods_present(k8s_pods))
+    )
 
     terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)

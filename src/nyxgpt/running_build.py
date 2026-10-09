@@ -67,10 +67,13 @@ __all__ = [
     "BUILD_MISMATCH",
     "BUILD_NOT_APPLICABLE",
     "BUILD_UNDETERMINED",
+    "IMAGE_SUBSTRATE_SUBJECTS",
     "BuildDrift",
+    "BuildScope",
     "RuntimeBuild",
     "classify",
     "local_runtime_build",
+    "native_build_scope",
     "same_tree",
 ]
 
@@ -170,6 +173,95 @@ def local_runtime_build() -> RuntimeBuild:
         version=running_version(),
         prefix_exists=Path(sys.prefix).is_dir(),
     )
+
+
+#: Every substrate whose api interpreter lives in a deployed image rather
+#: than in a venv on this host, mapped to the sentence naming what reports on
+#: it instead. A native keg/venv comparison has no subject on any of them, so
+#: the question is `not_applicable` there however the probe went.
+IMAGE_SUBSTRATE_SUBJECTS: dict[str, str] = {
+    "compose": (
+        "the api port on this host is held by a `compose` container/cluster deployment, "
+        "whose interpreter lives in its image -- a native keg/venv comparison does not apply"
+    ),
+    "terraform": (
+        "the api port on this host is held by a `terraform` container/cluster deployment, "
+        "whose interpreter lives in its image -- a native keg/venv comparison does not apply"
+    ),
+    "kubernetes": (
+        "the api port on this host is held by a `kubernetes` container/cluster deployment, "
+        "whose interpreter lives in the deployed image -- a native keg/venv comparison does "
+        "not apply. The Kubernetes section reports that deployment's build"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class BuildScope:
+    """Whether the native running-build question has a subject here, and why not.
+
+    One type, one decision, because the two surfaces that ask it had drifted
+    into opposite orderings and #4182 is the bill for that. The Infrastructure
+    page settled applicability *first* (`_infra_running_build`) and so stayed
+    quiet on a cluster-served host; `ops status` probed first and reported the
+    probe's failure, so the one command an operator runs printed
+    `CANNOT DETERMINE -- http://127.0.0.1:8000/api/v1/info answered HTTP 401`
+    about a question that had no subject on that machine at all.
+
+    `detail` is only meaningful when `applicable` is False: it is the reason
+    the question does not apply, phrased for an operator.
+    """
+
+    applicable: bool
+    detail: str
+
+
+def native_build_scope(
+    *,
+    in_cluster: bool,
+    image_substrate: str = "",
+    native_venv: str = "",
+    native_venv_reason: str = "",
+    missing_venv_is_out_of_scope: bool = True,
+) -> BuildScope:
+    """Does "is the serving api the installed keg's venv?" have a subject here?
+
+    The single source for that decision (#4182). Three ways the answer is no,
+    and none of them depends on whether the api answered a probe -- which is
+    the whole point: "I could not reach it" is not a fact about scope, and
+    reporting it as one is how a Kubernetes host was told its native build
+    could not be determined.
+
+    * **`in_cluster`** -- this process is itself a Pod. Its `sys.prefix` comes
+      from the deployed image.
+    * **`image_substrate`** -- something in `IMAGE_SUBSTRATE_SUBJECTS` holds
+      the api on this host. Same reason, from the outside.
+    * **no native venv** -- nothing a native install ever created is on disk,
+      so whatever answers :8000 is not one and there is nothing to compare it
+      against. `native_venv_reason` carries the caller's own words for that
+      (`_expected_native_api_venv` returns them), because "no keg carrying a
+      libexec/venv was found" and "Homebrew not found" send an operator to
+      different places.
+
+    `missing_venv_is_out_of_scope=False` is for a caller that already knows a
+    native service IS registered and started: there, a venv that cannot be
+    located is an anomaly worth reporting as "cannot determine" rather than
+    as silence, and `classify()` renders it that way from an empty
+    expectation.
+    """
+    if in_cluster:
+        return BuildScope(
+            False,
+            "this api runs inside a Kubernetes Pod, whose interpreter lives in the deployed "
+            "image. The Kubernetes card reports that deployment's build.",
+        )
+    if image_substrate in IMAGE_SUBSTRATE_SUBJECTS:
+        return BuildScope(False, IMAGE_SUBSTRATE_SUBJECTS[image_substrate])
+    if not native_venv and missing_venv_is_out_of_scope:
+        return BuildScope(
+            False, native_venv_reason or "there is no native api service on this machine"
+        )
+    return BuildScope(True, "")
 
 
 def same_tree(running: str, expected: str) -> bool:

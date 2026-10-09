@@ -372,7 +372,13 @@ def test_ops_restart_falls_back_to_brew_when_launchd_knows_no_job(monkeypatch):
     results = ops._restart_native_service("api")
 
     assert [r.ok for r in results] == [True], [r.message for r in results]
-    assert ops_run.commands == [f"brew services restart {CANDIDATE}"]
+    # Only the commands that ACT are asserted. `brew --prefix`/`--cellar` are
+    # read-only keg lookups the running-build scope check makes before it
+    # probes (#4182 moved that read ahead of the probe, which is what makes a
+    # host with no native venv skip the probe entirely).
+    assert [c for c in ops_run.commands if not c.startswith("brew --")] == [
+        f"brew services restart {CANDIDATE}"
+    ]
 
 
 def test_the_install_time_restart_still_rewrites_the_plist(monkeypatch):
