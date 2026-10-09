@@ -72,6 +72,25 @@ class CloudCommandError(RuntimeError):
     """Raised for an `allow-ip` failure that should print a clean CLI message, not a traceback."""
 
 
+class ConsentDeclined(CloudCommandError):
+    """The operator was asked to authorize a charge and said no (#4181).
+
+    A subclass, so every existing `except CloudCommandError` still prints it
+    cleanly and still exits non-zero -- declining is not success. What it adds
+    is the ability to tell it apart from a *failure*, which nothing could
+    before: `nyxgpt cloud deploy --os macos` recorded a declined EC2 Mac
+    allocation as `"status": "failed"`, and `nyxgpt cloud status` then told the
+    operator "a deploy started here and did not finish ... re-run it" about a
+    run whose own recorded error read "nothing was allocated and nothing is
+    billed".
+
+    Nothing broke, nothing was created, nothing needs re-running: the command
+    asked a question and got an answer. Raised wherever a disclosure-plus-
+    confirmation gate is declined, and handled by the one place that writes the
+    attempt record.
+    """
+
+
 def _load_cloud_state() -> dict[str, Any]:
     """Read `CLOUD_STATE_FILE`, returning `{}` if it's missing or unparseable."""
     if not CLOUD_STATE_FILE.exists():

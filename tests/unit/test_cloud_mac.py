@@ -344,6 +344,39 @@ def _record_host(**overrides):
     return cloud_mac.record_mac_host(values)
 
 
+def _presence(monkeypatch, present, reason=""):
+    """Patch the one AWS-answer seam the reconcile reads (#4181).
+
+    `host_presence` carries the reason an answer could not be had alongside the
+    three-valued verdict; `host_still_allocated` is the verdict-only wrapper
+    over it. The reconcile reads the former, because the recorded reason is what
+    stops every later surface having to invent one.
+    """
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=present, reason=reason),
+    )
+
+
+def _confirmed_host(**overrides):
+    """A record AWS confirmed in this run, under the credentials this run has.
+
+    The state in which a surface may state presence, billing or release
+    (#4181): `mac_host_present` plus a fresh `mac_verified_at` plus the profile
+    that got the answer. Without the profile `observe_host` correctly refuses
+    to treat it as a confirmation -- an account reports every resource it does
+    not own as absent, so an answer whose account is unknown proves nothing.
+    """
+    values = {
+        "mac_verified_at": cloud_mac.utc_now().isoformat(),
+        "mac_host_present": True,
+        "mac_verified_profile": None,
+    }
+    values.update(overrides)
+    return _record_host(**values)
+
+
 def test_the_host_id_allocation_time_and_release_time_round_trip_through_state():
     _record_host()
 
@@ -401,7 +434,13 @@ def test_the_pending_release_reports_the_id_the_time_and_the_accrued_cost(monkey
     assert pending["accrued_source"] == ""
     assert pending["estimated_cost"] == pytest.approx(15.60)
     assert pending["releasable_now"] is False
-    assert pending["billing"] is True
+    # #4181: `billing` was hard-coded `True` in a payload whose whole job is to
+    # say whether a charge is running. Nothing has asked AWS about this record,
+    # so the honest answer is that nyxGPT cannot say -- and `provenance` is the
+    # sentence every surface prints instead of the claim.
+    assert pending["billing"] is False
+    assert pending["usable"] is False
+    assert "NOT confirmed at AWS" in pending["provenance"]
 
 
 def test_a_host_past_its_window_is_reported_as_releasable(monkeypatch):
@@ -555,8 +594,8 @@ def test_a_host_aws_says_is_gone_stops_being_reported_as_still_billing(monkeypat
     Nothing on this machine learns the host is gone, so without this reconcile
     the "still billing" row would outlive the charge it describes."""
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: False)
-    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda: True)
+    _presence(monkeypatch, False)
+    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda **_k: True)
 
     assert cloud_mac.reconcile_released_host(_args()) is True
     assert cloud_mac.pending_release() == {}
@@ -567,24 +606,35 @@ def test_a_host_that_could_not_be_looked_up_is_kept_not_forgotten(monkeypatch):
     record on the strength of expired credentials would hide a resource that
     is still costing money -- the one failure this row exists to prevent."""
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: None)
+    _presence(monkeypatch, None, reason="AWS could not be asked: expired token")
 
     assert cloud_mac.reconcile_released_host(_args()) is False
-    assert cloud_mac.pending_release()["host_id"] == "h-0abc"
+    pending = cloud_mac.pending_release()
+    assert pending["host_id"] == "h-0abc"
+    # And the reason is recorded, not reinvented by each reader (#4181): the
+    # only wording available before was "nobody has asked yet", which `nyxgpt
+    # cloud status` printed about itself.
+    assert pending["billing"] is False
+    assert "expired token" in pending["provenance"]
 
 
 def test_a_host_still_allocated_is_kept(monkeypatch):
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: True)
+    _presence(monkeypatch, True)
 
     assert cloud_mac.reconcile_released_host(_args()) is False
-    assert cloud_mac.pending_release()["host_id"] == "h-0abc"
+    pending = cloud_mac.pending_release()
+    assert pending["host_id"] == "h-0abc"
+    # Confirmed in this run, so this is the one state in which the payload may
+    # say a charge is running (#4181).
+    assert pending["billing"] is True
+    assert "confirmed at AWS" in pending["provenance"]
 
 
 def test_tearing_down_a_host_already_released_is_a_no_op(monkeypatch):
     _record_host()
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: False)
-    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda: True)
+    _presence(monkeypatch, False)
+    monkeypatch.setattr(cloud_mac, "destroy_release_stack", lambda **_k: True)
 
     assert cloud_mac.teardown(_args()) == {"managed": False, "already_released": True}
 

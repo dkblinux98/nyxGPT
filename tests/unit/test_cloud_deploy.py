@@ -1893,7 +1893,14 @@ def test_status_describes_a_failed_deploy_instead_of_reporting_unknown(
     assert "provision" in out
     assert "Grafana" in out
     assert "i-0abc" in out
-    assert "an instance exists and is being billed" in out
+    # #4181: the billing sentence now needs AWS to have confirmed the instance
+    # in this run. Nothing did here, so the report says what it actually knows
+    # -- the ids are recorded on this machine -- and names the command that
+    # asks. Saying "an instance exists and is being billed" from the record
+    # alone is how `cloud status` asserted a charge with AWS holding no
+    # instances at all.
+    assert "an instance exists and is being billed" not in out
+    assert "nothing confirmed it at AWS in this run" in out
 
 
 def test_a_deploy_that_failed_before_the_substrate_claims_no_billing(
@@ -3066,7 +3073,13 @@ def test_the_status_summary_prints_the_pending_host_when_nothing_is_deployed(mon
             "verified_at": "2026-08-23T06:00:00+00:00",
             "host_present": True,
             "releasable_now": False,
+            # #4181: `usable` is the one gate a surface may claim presence,
+            # billing or release through, and `provenance` is the sentence it
+            # prints when the gate is closed. Both are computed once, by
+            # `cloud_mac.observe_host`.
             "billing": True,
+            "usable": True,
+            "provenance": "confirmed at AWS in nyxgpt (066835328281) at 2026-08-23T06:00:00+00:00",
         },
     )
 
@@ -3076,7 +3089,7 @@ def test_the_status_summary_prints_the_pending_host_when_nothing_is_deployed(mon
     assert "h-0abc" in out
     assert "2026-08-23T18:30:00+00:00" in out
     assert "USD 15.60 from AWS Cost Explorer" in out
-    assert "still billing -- AWS confirmed" in out
+    assert "still billing -- confirmed at AWS in nyxgpt (066835328281)" in out
 
 
 def test_a_linux_deployment_prints_no_dedicated_host_block(capsys):

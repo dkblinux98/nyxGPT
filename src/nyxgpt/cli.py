@@ -22,6 +22,7 @@ from nyxgpt import canary as canary_mod
 from nyxgpt import cloud as cloud_mod
 from nyxgpt import cloud_artifact_smoke as cloud_artifact_smoke_mod
 from nyxgpt import cloud_deploy as cloud_deploy_mod
+from nyxgpt import cloud_identity as cloud_identity_mod
 from nyxgpt import cloud_infra as cloud_infra_mod
 from nyxgpt import cloud_provision as cloud_provision_mod
 from nyxgpt import cloud_screen as cloud_screen_mod
@@ -3909,6 +3910,16 @@ def cli(argv: list[str] | None = None) -> int:
             return release_candidate_mod.release_publish(args)
         if args.release_cmd == "rc":
             return release_candidate_mod.release_rc(args)
+
+    if cmd == "cloud":
+        # #4181. Bind this invocation's flags to the one resolver before any
+        # cloud subcommand runs, so every layer below -- including the ones with
+        # no `args` to be handed, like the `terraform` subprocess environment
+        # and the status surfaces built from the record -- resolves the account
+        # the operator named. Without it `--profile nyxgpt` reached the boto3
+        # calls and not Terraform, and `terraform destroy` ran as the default
+        # account while the same command's API calls ran as the right one.
+        cloud_identity_mod.bind_run_args(args)
 
     if cmd == "cloud" and args.cloud_cmd == "allow-ip":
         return cloud_mod.allow_ip(args)

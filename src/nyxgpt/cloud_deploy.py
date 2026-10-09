@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any
 
 from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac
-from nyxgpt.cloud import CloudCommandError
+from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.config import VALID_SESSION_BACKENDS
 
 # The same `~/.nyxGPT/cloud` directory `cloud_infra` owns -- one place for
@@ -95,12 +95,26 @@ DEPLOY_STATE_FILE = CLOUD_DIR / "deploy.json"
 # billing instance ran and `state.json` on the same disk named it.
 DEPLOY_ATTEMPT_FILE = CLOUD_DIR / "deploy-attempt.json"
 
-# `status` values for `DEPLOY_ATTEMPT_FILE`. Three, not two: a deploy that is
-# still running is not a failure, and treating it as one would send an
-# operator to debug a provision that is merely slow.
+# `status` values for `DEPLOY_ATTEMPT_FILE`. Four, not two, and each exists
+# because the previous spelling made a reader draw a conclusion that was not
+# true:
+#
+# * `running` -- a deploy that is still going is not a failure, and treating it
+#   as one would send an operator to debug a provision that is merely slow.
+# * `declined` -- the operator was shown a priced disclosure and said no
+#   (#4181). Recording that as `failed` had `nyxgpt cloud status` report "a
+#   deploy started here and did not finish ... re-run it" about a run whose own
+#   error text read "nothing was allocated and nothing is billed". A question
+#   that was answered is not an incident.
 ATTEMPT_RUNNING = "running"
 ATTEMPT_FAILED = "failed"
+ATTEMPT_DECLINED = "declined"
 ATTEMPT_SUCCEEDED = "succeeded"
+
+#: Attempt states that mean "this machine started something and it is not
+#: finished". `declined` is deliberately absent: nothing was created, so there
+#: is nothing for a status surface to describe or an operator to resume.
+ATTEMPT_UNFINISHED = (ATTEMPT_RUNNING, ATTEMPT_FAILED)
 
 # Append-only record of every deploy and teardown, so the admin dashboard can
 # answer "what happened to this deployment" and not just "what is it now"
@@ -2565,6 +2579,13 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     begin_deploy_attempt(plan, host=host_flag)
     try:
         return _deploy(args, plan, steps, host_flag)
+    except ConsentDeclined as exc:
+        # A declined consent is its own outcome, not a failure (#4181). The
+        # operator read a priced disclosure and said no; nothing was created,
+        # nothing is billed, and the next `nyxgpt cloud status` must not tell
+        # them a deploy "did not finish" and offer to resume it.
+        finish_deploy_attempt(ATTEMPT_DECLINED, error=str(exc) or exc.__class__.__name__)
+        raise
     except BaseException as exc:
         finish_deploy_attempt(ATTEMPT_FAILED, error=str(exc) or exc.__class__.__name__)
         raise
@@ -3349,7 +3370,16 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         # Never raises, by construction: an observability surface must not fail
         # because credentials expired. A host it finds released clears the
         # record, so the still-billing row below disappears with the charge.
+        #
+        # Both substrates, not just the Mac (#4181). "An instance exists and is
+        # being billed" was asserted from `state.json` for the Linux substrate
+        # exactly as it was for the Mac block, and verifying one would have left
+        # the identical defect one substrate over. Neither call changes anything
+        # in AWS -- that is the other half of #4181, and the reason `cloud
+        # status` no longer reaches `terraform destroy`.
         cloud_mac.verify_mac_record()
+        with contextlib.suppress(Exception):  # pragma: no cover - best effort by design
+            cloud_infra.verify_substrate_record()
     record = load_deploy_state()
     attempt = load_deploy_attempt()
     infra = cloud_infra.infra_status()
@@ -3377,7 +3407,11 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
     # here; a finished deployment plus a later failed attempt is still a
     # deployment, and the attempt is reported alongside it rather than
     # replacing it.
-    unfinished_attempt = bool(attempt) and attempt.get("status") != ATTEMPT_SUCCEEDED
+    # #4181: `!= ATTEMPT_SUCCEEDED` counted a *declined* consent as an
+    # unfinished deploy, so typing `no` at the EC2 Mac disclosure made this
+    # command report "a deploy started here and did not finish" and prescribe
+    # re-running it. Declining created nothing; there is nothing to finish.
+    unfinished_attempt = bool(attempt) and attempt.get("status") in ATTEMPT_UNFINISHED
 
     if record.get("host"):
         source = SOURCE_DEPLOY_RECORD
@@ -3709,9 +3743,17 @@ def _attempt_label(attempt: dict[str, Any]) -> str:
     status = str(attempt.get("status") or ATTEMPT_RUNNING)
     if status == ATTEMPT_SUCCEEDED:
         return f"{version} completed"
-    verb = "still running" if status == ATTEMPT_RUNNING else "stopped"
     error = str(attempt.get("error") or "")
     detail = f" -- {error}" if error else ""
+    if status == ATTEMPT_DECLINED:
+        # Said as an outcome, not an incident (#4181). The operator read a
+        # priced disclosure and declined it; the only thing this row has to
+        # convey is that the charge was never made.
+        return (
+            f"{version}, DECLINED at the `{phase}` phase -- the disclosure was shown and not "
+            f"accepted, so nothing was created and nothing is billed{detail}"
+        )
+    verb = "still running" if status == ATTEMPT_RUNNING else "stopped"
     return f"{version}, {verb} at the `{phase}` phase{detail}"
 
 
@@ -3753,20 +3795,29 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
     # `~/.nyxGPT/cloud/state.json` was holding all along. Two false statements
     # about a machine that is billing, in the one report written for the case
     # where the operator cannot see the machine any other way.
-    _print_row(
-        "Instance",
-        status.get("instance_id") or mac_host.get("instance_id") or "not recorded",
-    )
-    _print_row(
-        "Instance type",
-        mac_host.get("instance_type") or infra.get("instance_type") or "not recorded",
-    )
-    _print_row("Public IP", status.get("host") or mac_host.get("public_ip") or "not recorded")
-    _print_row("Region", status.get("region") or mac_host.get("region") or "not recorded")
-    _print_row(
-        "Security group",
-        mac_host.get("security_group_id") or infra.get("security_group_id") or "not recorded",
-    )
+    #
+    # #4181. The values still come from the record -- that was the #4122 fix
+    # and it stands -- but a value nothing confirmed in this run is now LABELLED
+    # as recorded. Live, this block printed the October 4 instance id out of an
+    # incoherent Mac block as though it described the deploy being reported,
+    # three rows below its own INCOHERENT warnings about the same block.
+    def _row(label: str, own: Any, *, mac_key: str = "", infra_key: str = "") -> None:
+        """One row, saying where its value came from when that is not this run."""
+        if own:
+            _print_row(label, own)
+            return
+        recorded = str(mac_host.get(mac_key) or "") if mac_key else ""
+        if recorded:
+            suffix = "" if mac_host.get("usable") else " (recorded here, NOT confirmed at AWS)"
+            _print_row(label, f"{recorded}{suffix}")
+            return
+        _print_row(label, (infra_key and infra.get(infra_key)) or "not recorded")
+
+    _row("Instance", status.get("instance_id"), mac_key="instance_id")
+    _row("Instance type", "", mac_key="instance_type", infra_key="instance_type")
+    _row("Public IP", status.get("host"), mac_key="public_ip")
+    _row("Region", status.get("region"), mac_key="region")
+    _row("Security group", "", mac_key="security_group_id", infra_key="security_group_id")
 
     # The billing resource must not be the one thing nothing observes -- and
     # a deploy that *failed* is precisely when a Dedicated Host has been
@@ -3784,7 +3835,16 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
     # whose own recorded error reads "nothing was allocated and nothing is
     # billed" -- sat inside a frame asserting the opposite. Asserting billing
     # over either is the same class of lie this verdict was written to end.
-    provisioned = bool(
+    #
+    # #4181 splits what D-018 conflated. "Something is recorded here" and
+    # "something exists in AWS and is costing money" are different claims, and
+    # this printed the second from evidence for only the first: live, with AWS
+    # holding no instances at all, it concluded "an instance exists and is
+    # being billed" from an incoherent Mac block -- and without that block the
+    # same command correctly said nothing was billed. So the *billing*
+    # assertion now needs a confirmation from this run, and the records-only
+    # case says exactly what it knows and which command would check.
+    recorded = bool(
         substrate_only
         or status.get("instance_id")
         or status.get("host")
@@ -3795,10 +3855,20 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
         # the substrate, and AWS refuses to release it for 24 hours (#4122).
         or mac_host.get("host_id")
     )
-    if provisioned:
+    confirmed = bool(mac_host.get("usable")) or bool((infra.get("observation") or {}).get("usable"))
+    provisioned = recorded
+    if confirmed:
         print(
             "\nThis is NOT the same as nothing being deployed, and it is not the same as "
-            "unknown: an instance exists and is being billed."
+            "unknown: AWS confirmed in this run that the resource below exists, so it is "
+            "being billed."
+        )
+    elif recorded:
+        print(
+            "\nThis machine's records name a resource, but nothing confirmed it at AWS in this "
+            "run -- so nyxGPT cannot tell you whether it still exists or is still being "
+            "billed. The ids above are what was recorded here. `nyxgpt cloud status` asks AWS "
+            "and clears what it no longer has."
         )
     else:
         print(
@@ -3840,20 +3910,29 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     if not mac_host or not mac_host.get("host_id"):
         return
     # "Still billing" is a claim about AWS, so it is only made when AWS said so
-    # in this run (#4136). An unconfirmed record gets the weaker heading it has
-    # always deserved: `nyxgpt cloud status` used to print "still billing" over
-    # a host that had been released three days earlier, because the record was
-    # the only thing it asked.
-    if mac_host.get("verified_at"):
-        heading = (
-            f"EC2 Mac Dedicated Host (still billing -- AWS confirmed {mac_host['verified_at']})"
-        )
+    # in this run (#4136) -- and, since #4181, only when the record it is said
+    # over can describe a single moment. The gate is computed once, in
+    # `cloud_mac.observe_host`, and shipped as `usable`; this reads it rather
+    # than re-deriving it from `verified_at`, which is how the heading went on
+    # saying "still billing" above two INCOHERENT rows.
+    usable = bool(mac_host.get("usable"))
+    if usable:
+        heading = f"EC2 Mac Dedicated Host (still billing -- {mac_host.get('provenance')})"
     else:
-        heading = (
-            "EC2 Mac Dedicated Host (recorded here; NOT confirmed at AWS in this run -- "
-            "`nyxgpt cloud status` asks)"
-        )
+        # The reason, not the remedy for a reason nobody checked (#4181 finding
+        # 6). This used to read "NOT confirmed at AWS in this run -- `nyxgpt
+        # cloud status` asks" *while being that command*, when the actual cause
+        # was a missing boto3. `provenance` carries whichever of the four causes
+        # applied: never asked, asked and could not get an answer, answered from
+        # the wrong account, or answered about a record that contradicts itself.
+        heading = f"EC2 Mac Dedicated Host ({mac_host.get('provenance')})"
     print(f"\n{heading}")
+    if not usable:
+        print(
+            "  Every row below is what THIS MACHINE RECORDED, not what AWS reports. None of it "
+            "is evidence that the host exists, that it is billing, or that its release is "
+            "scheduled."
+        )
     _print_row("Host", f"{mac_host['host_id']} ({mac_host.get('instance_type') or 'unknown type'})")
     _print_row(
         "Location",
@@ -3870,7 +3949,19 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     else:
         release_note = f"{mac_host.get('release_at') or 'unknown'} (AWS's 24-hour minimum)"
     _print_row("Releasable at", release_note)
-    if mac_host.get("release_scheduled") and mac_host.get("releasable_now"):
+    if not usable:
+        # #4181 finding 3. These two sentences -- "the scheduled release has
+        # fired" and "a one-shot AWS schedule releases it" -- are statements
+        # about EventBridge, and they were printed from the same fields the
+        # INCOHERENT rows above had just disqualified. The recorded values are
+        # still shown; the conclusions drawn from them are not.
+        _print_row(
+            "Release",
+            f"recorded as {'scheduled' if mac_host.get('release_scheduled') else 'NOT scheduled'}"
+            " -- not verified in this run, so nyxGPT cannot say whether anything will release "
+            "this host. `nyxgpt cloud destroy --yes` schedules it and reports what AWS said",
+        )
+    elif mac_host.get("release_scheduled") and mac_host.get("releasable_now"):
         # Deliberately not "released": nothing on this machine watched the
         # schedule fire, so claiming the charge has stopped would be an
         # assertion nothing checked. Slack has the outcome.
@@ -3921,8 +4012,15 @@ def _mac_spend_label(mac_host: dict[str, Any]) -> str:
 
     estimate = mac_host.get("estimated_cost")
     rate = mac_host.get("hourly_rate")
-    reason = str(mac_host.get("spend_error") or "") or (
-        "AWS has not been asked yet -- `nyxgpt cloud status` asks"
+    # The reason the figure is missing, in this order: Cost Explorer's own
+    # error, then whatever stopped AWS being asked at all. The bare fallback
+    # used to be the only wording, and #4181 finding 6 is what that costs: a
+    # run whose boto3 was missing reported "AWS has not been asked yet --
+    # `nyxgpt cloud status` asks" from inside `nyxgpt cloud status`.
+    reason = (
+        str(mac_host.get("spend_error") or "")
+        or str((mac_host.get("observation") or {}).get("reason") or "")
+        or "AWS has not been asked yet -- `nyxgpt cloud status` asks"
     )
     if estimate is not None and rate:
         return (
@@ -3989,6 +4087,16 @@ def _print_status_summary(status: dict[str, Any]) -> None:
             f"`{commands['status']}` where `{commands['deploy']}` was run, or deploy from here "
             f"with `{commands['deploy']}`."
         )
+        # #4181. A declined consent lands here -- it is not an unfinished
+        # deploy, so it no longer takes the NOT COMPLETED path -- and it is
+        # still the answer to "what happened when I ran that command". Printed
+        # for any unfinished-or-declined attempt rather than only the declined
+        # one: the sentence above says no deploy has been recorded, and an
+        # attempt is exactly the thing that qualifies it.
+        attempt = status.get("attempt") or {}
+        if attempt and attempt.get("status") != ATTEMPT_SUCCEEDED:
+            print()
+            _print_row("Last deploy attempt", _attempt_label(attempt))
         # Printed even here, and especially here: the ordinary end state of a
         # macOS teardown is "no deployment, one Dedicated Host still billing
         # until tomorrow". Reporting only the deployment would make the single

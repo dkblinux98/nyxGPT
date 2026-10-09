@@ -46,13 +46,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_identity, cloud_imds, cloud_record
+from nyxgpt import cloud_cluster_record, cloud_identity, cloud_imds, cloud_record, cloud_verified
 from nyxgpt.cloud import (
     CLOUD_STATE_FILE,
     CloudCommandError,
     detect_current_public_ip,
     normalize_cidr,
 )
+from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 NYXGPT_HOME = Path.home() / ".nyxGPT"
 CLOUD_DIR = NYXGPT_HOME / "cloud"
@@ -469,10 +470,31 @@ def _run_terraform(
     is left attached to the terminal unless `capture` is set (it is for
     `output -json`, which is parsed), so a CLI `plan`/`apply` still streams
     Terraform's progress live rather than going silent for minutes.
+
+    **The credential choice comes from the one resolver (#4181).** Terraform
+    never sees `--profile`: it resolves credentials from its own provider block
+    and the ambient environment, and a stored tfvars file an *earlier* run
+    rendered is part of that provider block. That is how a `nyxgpt cloud
+    destroy --profile nyxgpt` whose boto3 calls reached the right account ran
+    `terraform destroy` as the default one and died with AccessDenied on
+    `nyxgpt-tf-mac-release`. `cloud_identity.credential_env()` is merged in
+    below `extra_env`, so the default is this run's resolved account for every
+    root -- `aws`, `mac` and `mac-release` alike -- and a caller holding a more
+    specific choice (`cloud_state`, whose backend bucket lives wherever it was
+    bootstrapped) states it explicitly instead.
     """
     binary = ensure_terraform_binary()
     command = [binary, f"-chdir={chdir or TERRAFORM_DIR}", *arguments]
-    env = {**os.environ, **(extra_env or {})}
+    credentials = {**cloud_identity.credential_env(), **(extra_env or {})}
+    env = {**os.environ, **credentials}
+    # An empty value means "unset", which a dict cannot say any other way: a
+    # run that resolved *no* named profile must clear an inherited
+    # `AWS_PROFILE` rather than let the environment outrank its own resolution.
+    # Scoped to the keys this function set, so nothing else in `os.environ` is
+    # touched.
+    for key, value in credentials.items():
+        if value == "":
+            env.pop(key, None)
     completed = subprocess.run(
         command,
         stdout=subprocess.PIPE if capture else None,
@@ -647,6 +669,145 @@ def clear_cloud_state() -> None:
     """Drop this substrate's block from the shared cloud state after a destroy."""
     cloud_record.clear_block(
         cloud_record.SUBSTRATE_AWS, reason="substrate destroyed by `nyxgpt cloud infra destroy`"
+    )
+
+
+# --- Verified reading of the substrate record (#4181) -------------------
+
+
+def _instance_presence(instance_id: str, region: str, profile: str) -> tuple[bool | None, str]:
+    """Does AWS still have `instance_id`? `(None, reason)` when it could not be asked.
+
+    The Linux half of `cloud_mac.host_presence`, and three-valued for the same
+    reason: expired credentials reported as "the instance is gone" is the one
+    wrong answer that stops an operator looking for a box they are paying for.
+    A terminated instance lingers in `DescribeInstances` for about an hour and
+    then stops being returned at all, so both the explicit `terminated` state
+    and `InvalidInstanceID.NotFound` are the same definite *no*.
+    """
+    boto3 = try_import("boto3")
+    if boto3 is None:
+        return None, ("boto3 is not installed, so nothing here can ask AWS. " + CLOUD_EXTRA_REMEDY)
+    try:
+        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+        response = session.client("ec2", region_name=region).describe_instances(
+            InstanceIds=[instance_id]
+        )
+    except Exception as exc:
+        code = _aws_error_code(exc).replace("-", "").lower()
+        if code in INSTANCE_NOT_FOUND_CODES:
+            return False, ""
+        return None, f"AWS could not be asked: {exc}"
+    for reservation in response.get("Reservations", []):
+        for instance in reservation.get("Instances", []):
+            if str(instance.get("InstanceId") or "") != instance_id:
+                continue
+            state = str((instance.get("State") or {}).get("Name") or "")
+            return state not in ("terminated", "shutting-down"), ""
+    return False, ""
+
+
+def _aws_error_code(exc: Exception) -> str:
+    """botocore's `Error.Code` off a ClientError, or `''` for anything else.
+
+    Read off the response dict rather than by catching typed botocore
+    exceptions, for the same reason `cloud_mac._aws_error_code` does: importing
+    `botocore.exceptions` at module scope would break this module on an install
+    without the cloud extra.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        if isinstance(error, dict):
+            return str(error.get("Code", ""))
+    return ""
+
+
+#: What EC2 returns for an instance id it has no record of. Both spellings are
+#: matched for the same reason `cloud_mac.HOST_NOT_FOUND_CODES` matches two.
+INSTANCE_NOT_FOUND_CODES = ("invalidinstanceid.notfound", "invalidinstanceidnotfound")
+
+
+def verify_substrate_record(args: argparse.Namespace | None = None) -> dict[str, Any]:
+    """Ask AWS whether the recorded Linux instance still exists, and write it down.
+
+    The Linux counterpart of `cloud_mac.verify_mac_record` (#4181), and it
+    exists because the claim it backs is the same one: `nyxgpt cloud status`
+    and the dashboard's Cloud deployment card both say "an instance exists and
+    is being billed", and until this they said it from `state.json` alone --
+    the file a previous run wrote. A Mac-only fix would have left the identical
+    defect one substrate over, which is the narrow-patch pattern #4183 exists
+    to stop.
+
+    A read: one `DescribeInstances`, and the only write is to the local record.
+    Never raises -- an observability surface must not fail because credentials
+    expired. Unlike the Mac path it does **not** clear the block on a definite
+    no: the Linux substrate's teardown is synchronous and `cloud destroy` owns
+    it, so a terminated instance means the operator has a Terraform state to
+    reconcile rather than a charge nyxGPT should quietly stop reporting.
+    """
+    record = cloud_record.load_block(cloud_record.SUBSTRATE_AWS)
+    instance_id = str(record.get("instance_id") or "")
+    if not instance_id:
+        return {}
+    account = cloud_identity.account_default(args)
+    region = str(record.get("region") or account.region or "")
+    present, reason = _instance_presence(instance_id, region, account.profile)
+    try:
+        cloud_record.amend_block(
+            cloud_record.SUBSTRATE_AWS,
+            {
+                "verified_at": cloud_verified.utc_now().isoformat(),
+                "instance_present": present,
+                "verify_error": reason or None,
+                "verified_profile": account.profile or None,
+                "verified_account_id": account.account_id or None,
+            },
+            expect={"instance_id": instance_id},
+            reason="recorded what AWS said about the instance",
+        )
+    except Exception:  # pragma: no cover - a record that moved under us
+        return {"instance_present": present, "reason": reason}
+    return {"instance_present": present, "reason": reason}
+
+
+def observe_instance(
+    args: argparse.Namespace | None = None,
+    *,
+    record: dict[str, Any] | None = None,
+) -> cloud_verified.Observation:
+    """The one verified reader of the Linux substrate block (#4181).
+
+    Same shape and same gate as `cloud_mac.observe_host`, from the same
+    `cloud_verified.observe`, so a surface rendering either substrate asks one
+    question -- `usable` -- and gets an answer reached the same way.
+    """
+    block = cloud_record.load_block(cloud_record.SUBSTRATE_AWS) if record is None else record
+    account = cloud_identity.account_default(args)
+    if not block.get("instance_id"):
+        return cloud_verified.observe(
+            {},
+            reason=cloud_verified.NOT_ASKED,
+            account_label=cloud_identity.recorded_account_label(
+                account.profile, account.account_id
+            ),
+        )
+    recorded_profile = str(block.get("verified_profile") or "")
+    return cloud_verified.observe(
+        block,
+        present=(
+            bool(block.get("instance_present"))
+            if block.get("instance_present") is not None
+            else None
+        ),
+        confirmed_at=str(block.get("verified_at") or ""),
+        profile=recorded_profile,
+        account_id=str(block.get("verified_account_id") or ""),
+        account_label=cloud_identity.recorded_account_label(
+            recorded_profile, str(block.get("verified_account_id") or "")
+        ),
+        reason=str(block.get("verify_error") or ""),
+        expect_profile=account.profile,
     )
 
 
@@ -870,9 +1031,31 @@ def infra_status() -> dict[str, Any]:
             "ssh_key_name": state.get("ssh_key_name") or settings.get("ssh_key_name") or "",
         }
 
+    # #4181. The one verified reading of this record, in the same shape the Mac
+    # block ships, so the CLI row and the dashboard card gate their "an
+    # instance exists and is being billed" sentence on `usable` rather than on
+    # the presence of an id a previous run wrote. First-hand vantage points
+    # need no confirmation and get one that says so: a process running ON the
+    # instance is the strongest evidence the instance exists that there is.
+    if source in ON_INSTANCE_SOURCES:
+        observation = cloud_verified.observe(
+            values,
+            present=True,
+            confirmed_at=cloud_verified.utc_now().isoformat(),
+            reason="",
+        )
+    else:
+        observation = observe_instance(record=cloud_record.load_block(cloud_record.SUBSTRATE_AWS))
+
     return {
         "source": source,
         "source_label": SOURCE_LABELS[source],
+        # What AWS last said about this instance, and on whose authority
+        # (#4181). `observation["usable"]` is the ONLY flag a surface may claim
+        # presence or billing from; `observation["provenance"]` is the sentence
+        # it prints when it cannot. A local read -- `verify_substrate_record`
+        # is what asks AWS, and `nyxgpt cloud status` calls it.
+        "observation": observation.to_dict(),
         # "this process is running on the provisioned instance", not "IMDS
         # answered" (#4138) -- see ON_INSTANCE_SOURCES for why the two
         # vantage points render identically everywhere this flag is read.

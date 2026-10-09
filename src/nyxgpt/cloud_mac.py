@@ -48,8 +48,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_identity, cloud_infra, cloud_record
-from nyxgpt.cloud import CloudCommandError
+from nyxgpt import cloud_identity, cloud_infra, cloud_record, cloud_verified
+from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 
 # The two extra root modules inside the synced Terraform tree. Root modules,
@@ -335,15 +335,14 @@ def scheduler_timestamp(moment: datetime) -> str:
 
 
 def parse_timestamp(value: str) -> datetime | None:
-    """Parse an ISO-8601 timestamp from cloud state, or `None` if unusable."""
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    """Parse an ISO-8601 timestamp from cloud state, or `None` if unusable.
+
+    Delegated to `cloud_verified` since #4181: deciding whether a recorded
+    instant is usable is part of deciding whether a recorded *fact* is, and the
+    substrate module and the verified reader disagreeing about one timestamp
+    would be a disagreement about whether AWS confirmed something.
+    """
+    return cloud_verified.parse_timestamp(value)
 
 
 def accrued_cost(allocated_at: datetime, hourly_rate: float, now: datetime | None = None) -> float:
@@ -636,12 +635,16 @@ def confirm_allocation(
     try:
         answer = (reader or input)(prompt)
     except (EOFError, KeyboardInterrupt) as exc:
-        raise CloudCommandError(
+        # `ConsentDeclined`, not a failure (#4181). No answer is not consent,
+        # and the outcome is identical to typing anything else: nothing exists,
+        # nothing is billed, and nothing needs re-running unless the operator
+        # wants the host after all.
+        raise ConsentDeclined(
             "No confirmation was given, so nothing was allocated and nothing is billed. "
             "Pass --yes to allocate from a non-interactive run."
         ) from exc
     if str(answer).strip().lower() != CONFIRMATION_WORD:
-        raise CloudCommandError(
+        raise ConsentDeclined(
             "Not confirmed -- nothing was allocated and nothing is billed.\n"
             f"Re-run and type `{CONFIRMATION_WORD}`, pass --yes to skip the prompt, or point "
             "the deploy at a Mac you already have with `--host <address>`."
@@ -708,17 +711,29 @@ def clear_mac_record(*, reason: str = "") -> None:
     cloud_record.clear_block(cloud_record.SUBSTRATE_MAC, reason=reason)
 
 
-def pending_release() -> dict[str, Any]:
-    """What `nyxgpt cloud status` reports about a host that is still billing.
+def pending_release(args: argparse.Namespace | None = None) -> dict[str, Any]:
+    """What `nyxgpt cloud status` reports about a host that may still be billing.
 
     Empty dict when nothing is outstanding. A resource that still costs money
     must not be the one thing nothing observes (Definition of Done, the
     observability rule) -- and the host outlives both the instance and the
     substrate by construction, so no other status source can see it.
+
+    **The payload separates what is recorded from what may be claimed (#4181).**
+    The descriptive fields are the record's, and they are here so an operator
+    whose only view of that machine is this file still gets the ids. The
+    `observation` block beside them is `observe_host().to_dict()`, and its
+    `usable` flag is the ONLY thing any surface -- this CLI, the API, both
+    dashboard cards -- may gate a claim of presence, billing or release on.
+    `billing` is that flag rather than the `True` it used to be hard-coded to:
+    in the owner's acceptance round this payload asserted billing over a host
+    AWS no longer had, from a record that contradicted itself, and every reader
+    believed it because the payload said so.
     """
     record = load_mac_record()
     if not record:
         return {}
+    observation = observe_host(args, record=record)
     allocated_at = parse_timestamp(str(record.get("mac_allocated_at") or ""))
     release_at = parse_timestamp(str(record.get("mac_release_at") or ""))
     now = utc_now()
@@ -779,17 +794,25 @@ def pending_release() -> dict[str, Any]:
         # `None` means no run has confirmed it, which is a different claim from
         # "it is gone" -- and the reason no surface here says "still billing"
         # on the strength of the record alone.
-        "verified_at": str(record.get("mac_verified_at") or ""),
-        "host_present": (
-            bool(record.get("mac_host_present"))
-            if record.get("mac_host_present") is not None
-            else None
-        ),
+        "verified_at": observation.confirmed_at,
+        "host_present": observation.present,
         # Free internal-consistency checks. Non-empty means the block cannot
         # describe any state AWS was ever in, so its fields came from more than
         # one run and must not be acted on.
-        "incoherent": record_findings(record),
-        "billing": True,
+        "incoherent": list(observation.findings),
+        # #4181. Was `True`, unconditionally, in a payload whose whole job is to
+        # say whether a charge is running. It is now the one gate: AWS
+        # confirmed this host, in this run, under the credentials this run
+        # resolved, and the block is internally coherent.
+        "billing": observation.usable,
+        # The gate itself, plus the sentence to print when it is closed. Every
+        # reader reads these two rather than re-deriving the decision -- the
+        # dashboard card had its own copy of "verified_at is set, so say still
+        # billing", which is how it went on asserting a charge over a record
+        # whose own fields contradicted each other.
+        "observation": observation.to_dict(),
+        "usable": observation.usable,
+        "provenance": observation.provenance,
     }
 
 
@@ -820,6 +843,79 @@ def _write_tfvars(path: Path, values: dict[str, Any]) -> Path:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
     return path
+
+
+def _read_tfvars(path: Path) -> dict[str, Any]:
+    """Parse a tfvars file this module wrote back into `{name: value}`.
+
+    Only the shapes `_write_tfvars` emits: `key = "string"`, `key = 123`,
+    `key = true`. Comments and blank lines are skipped; anything it cannot
+    parse is skipped rather than guessed at, because the caller is about to
+    hand the result to `terraform destroy`.
+    """
+    values: dict[str, Any] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, raw = stripped.partition("=")
+        if not separator:
+            continue
+        key = key.strip()
+        raw = raw.strip()
+        if not key:
+            continue
+        if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+            values[key] = raw[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+            continue
+        if raw in ("true", "false"):
+            values[key] = raw == "true"
+            continue
+        try:
+            values[key] = int(raw)
+        except ValueError:
+            continue
+    return values
+
+
+def _restamp_tfvars(path: Path, *, region: str, profile: str) -> None:
+    """Rewrite `path`'s credential choice to this run's, keeping everything else (#4181).
+
+    A stored tfvars file is the right thing to reuse for *what* a destroy
+    operates on -- those values are exactly what created the resources, and
+    rebuilding them would re-derive an availability zone the record may never
+    have captured. It is the wrong thing to reuse for *whose credentials* do
+    it: that is a property of the current invocation, not of the resource.
+
+    The owner's 2026-10-09 round proved both halves at once. `nyxgpt cloud
+    status --profile nyxgpt` ran the release-schedule cleanup against
+    `mac-release.tfvars` as rendered by the run that created the schedule on
+    2026-10-04 -- which carried `aws_region` and no `aws_profile` line at all --
+    so the provider fell through to the default credential chain and
+    `terraform destroy` failed AccessDenied on `nyxgpt-tf-mac-release` while
+    every boto3 call in the same command authenticated correctly.
+
+    Done in addition to `cloud_identity.credential_env()`, not instead of it:
+    the environment covers the roots whose provider has no `aws_profile` to
+    read, and this covers the case where a *stale* one would outrank it
+    (`profile = var.aws_profile != "" ? var.aws_profile : null`). A missing
+    file is a no-op -- the caller renders a fresh one.
+    """
+    if not path.exists():
+        return
+    values = _read_tfvars(path)
+    if not values:
+        return
+    values["aws_region"] = region or str(values.get("aws_region") or "")
+    # Deliberately assigned even when empty: "" is how the provider is told to
+    # use the ambient chain (`_write_tfvars` drops the line), and a run that
+    # resolved no named profile must not inherit an earlier run's.
+    values["aws_profile"] = profile
+    _write_tfvars(path, values)
 
 
 def _init(config_dir: Path, state_file: Path) -> None:
@@ -964,11 +1060,20 @@ def destroy_mac_instance(plan_values: dict[str, Any]) -> dict[str, Any]:
     values are exactly what created the resources being destroyed, whereas a
     rebuild has to re-derive an availability zone that has no default and
     would fail the run if the record never captured one.
+
+    What is *not* reused is the credential choice in it: `_restamp_tfvars`
+    replaces that with this run's before Terraform reads the file (#4181).
     """
     cloud_infra.sync_terraform_config()
     config_dir = _config_dir(MAC_CONFIG_DIRNAME)
     if not MAC_TFVARS_FILE.exists():
         _write_tfvars(MAC_TFVARS_FILE, plan_values)
+    else:
+        _restamp_tfvars(
+            MAC_TFVARS_FILE,
+            region=str(plan_values.get("aws_region") or ""),
+            profile=str(plan_values.get("aws_profile") or ""),
+        )
     _init(config_dir, MAC_TFSTATE_FILE)
     forgot = forget_host()
     cloud_infra.run_terraform(
@@ -1026,7 +1131,7 @@ def apply_release_schedule(
     }
 
 
-def destroy_release_stack() -> bool:
+def destroy_release_stack(*, region: str = "", profile: str = "") -> bool:
     """Tear down a completed release stack. Returns False when there is none.
 
     The schedule deletes itself when it fires, but the state machine, the
@@ -1036,11 +1141,23 @@ def destroy_release_stack() -> bool:
     of the next teardown rather than exposed as a command of its own: the only
     moment nyxGPT can be sure the previous release finished is the next time
     it is asked to schedule one.
+
+    **Never from a read command** (#4181): this is a `terraform destroy`, and
+    `nyxgpt cloud status` used to reach it through `reconcile_released_host`.
+    `verify_mac_record` now passes `cleanup=False` there, so the only callers
+    are `cloud destroy` and `cloud deploy`.
+
+    `region`/`profile` are this run's resolved credential choice, written over
+    whatever the stored tfvars said -- see `_restamp_tfvars`. Defaulted rather
+    than required so a caller that genuinely has no resolution (a test, a
+    teardown with no record) gets the environment's, which is what it had
+    before.
     """
     if not MAC_RELEASE_TFSTATE_FILE.exists():
         return False
     cloud_infra.sync_terraform_config()
     config_dir = _config_dir(MAC_RELEASE_CONFIG_DIRNAME)
+    _restamp_tfvars(MAC_RELEASE_TFVARS_FILE, region=region, profile=profile)
     _init(config_dir, MAC_RELEASE_TFSTATE_FILE)
     cloud_infra.run_terraform(
         ["destroy", "-input=false", "-auto-approve", f"-var-file={MAC_RELEASE_TFVARS_FILE}"],
@@ -1073,8 +1190,24 @@ def _aws_error_code(exc: Exception) -> str:
     return ""
 
 
-def host_still_allocated(host_id: str, region: str, profile: str = "") -> bool | None:
-    """Is `host_id` still allocated? `None` when AWS could not be asked.
+@dataclass(frozen=True)
+class HostPresence:
+    """AWS's answer about one Dedicated Host, with the reason when there is none.
+
+    `present` is the three-valued answer `host_still_allocated` has always
+    returned; `reason` is what #4181 finding 6 was missing. Every surface that
+    reports an unconfirmed host used to have to word the cause itself, and the
+    only wording available was "nobody has asked yet" -- which `nyxgpt cloud
+    status` printed about itself over a run whose real problem was that boto3
+    was not installed.
+    """
+
+    present: bool | None
+    reason: str = ""
+
+
+def host_presence(host_id: str, region: str, profile: str = "") -> HostPresence:
+    """Ask AWS whether `host_id` is still allocated, carrying why if it cannot.
 
     Three answers, not two, and both of the definite ones matter.
 
@@ -1090,24 +1223,41 @@ def host_still_allocated(host_id: str, region: str, profile: str = "") -> bool |
       three days earlier, read it as unknown, left the stale record in place,
       and the deploy went on to announce "no new host, no new 24-hour minimum"
       before allocating one.
+
+    **`InvalidHostID.NotFound` is only that answer from the account that owns
+    the host** (#4181). An AWS account reports every host it does not own as
+    not-found, so the caller records the profile this answer came from
+    alongside it and `cloud_verified.observe` refuses to treat an answer from
+    another account as a confirmation. Live, `nyxgpt cloud status` asked
+    `arn:aws:iam::551292530955:root` about a host in 066835328281 and would
+    have cleared a still-billing record on the strength of it.
     """
     if not host_id:
-        return False
+        return HostPresence(present=False)
     try:
         client = _client("ec2", region, profile)
         response = client.describe_hosts(HostIds=[host_id])
     except Exception as exc:
         code = _aws_error_code(exc).replace("-", "").lower()
         if code in HOST_NOT_FOUND_CODES:
-            return False
-        return None
+            return HostPresence(present=False)
+        return HostPresence(present=None, reason=f"AWS could not be asked: {exc}")
     for host in response.get("Hosts", []):
         if str(host.get("HostId") or "") != host_id:
             continue
         # `released` and `released-permanent-failure` are terminal; anything
         # else (available, under-assessment, pending) is still allocated.
-        return not str(host.get("State") or "").startswith("released")
-    return False
+        return HostPresence(present=not str(host.get("State") or "").startswith("released"))
+    return HostPresence(present=False)
+
+
+def host_still_allocated(host_id: str, region: str, profile: str = "") -> bool | None:
+    """`host_presence(...).present` -- the three-valued answer on its own.
+
+    Kept as the name the callers that only need the verdict use, and as the
+    seam `scripts/cloud_stale_record_smoke.py`'s negative control replaces.
+    """
+    return host_presence(host_id, region, profile).present
 
 
 # --- Resolution + the two lifecycle entry points -----------------------
@@ -1268,7 +1418,7 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
             raise CloudCommandError(_unconfirmed_host_message(orphaned_host))
         if present:
             _heal_orphaned_record(args, orphaned_host, existing)
-            _record_verification(orphaned_host, True)
+            _record_verification(orphaned_host, True, profile=_record_profile(args), args=args)
             # Re-read rather than reuse what `_heal_orphaned_record` returned:
             # the verification landed after it, and the reconcile's block is
             # built from this record.
@@ -1351,9 +1501,15 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
             "mac_release_scheduled": False,
             # Confirmed by the allocation itself -- the host exists because this
             # run just created it, which is the one case that needs no
-            # `DescribeHosts` to prove.
+            # `DescribeHosts` to prove. The credentials are recorded with it
+            # (#4181): a confirmation that cannot say which account it was made
+            # in is not one `observe_host` will honour, and without this the
+            # very next command would report the host it had just allocated as
+            # unconfirmed.
             "mac_verified_at": utc_now().isoformat(),
             "mac_host_present": True,
+            "mac_verified_profile": plan.profile or None,
+            "mac_verified_account_id": cloud_identity.account_default(args).account_id or None,
         },
         reason=f"allocated Dedicated Host {host_id}",
     )
@@ -1530,6 +1686,13 @@ def _reconciled_block(
             "mac_spend_through",
             "mac_verified_at",
             "mac_host_present",
+            # And which credentials got that confirmation (#4181). Dropping it
+            # while keeping `mac_verified_at` would leave a record that claims
+            # an answer and cannot say whose account it came from -- which
+            # `observe_host` correctly refuses to treat as a confirmation, so
+            # the reconcile would un-verify the host it just verified.
+            "mac_verified_profile",
+            "mac_verified_account_id",
         ):
             if existing.get(key) is not None:
                 block[key] = existing[key]
@@ -1614,7 +1777,7 @@ def _slack_settings() -> tuple[str, str]:
         return ("", "")
 
 
-def reconcile_released_host(args: argparse.Namespace) -> bool:
+def reconcile_released_host(args: argparse.Namespace, *, cleanup: bool = True) -> bool:
     """Forget a recorded host AWS says is already gone. Returns True if it cleared one.
 
     The deferred release fires with nobody watching -- that is the whole
@@ -1635,6 +1798,16 @@ def reconcile_released_host(args: argparse.Namespace) -> bool:
     host at <time>" instead of repeating the record back as fact, and they are
     what `allocate` requires before it is allowed to claim "no new host, no new
     24-hour minimum".
+
+    **`cleanup=False` makes this safe for a read command (#4181).** With it,
+    the one `DescribeHosts` still happens and the record is still corrected --
+    both are local bookkeeping, and correcting the record only ever *removes* a
+    claim this machine could no longer support -- but nothing in AWS is
+    touched, and the Terraform state and tfvars are left alone. That is the
+    whole of finding 4: `nyxgpt cloud status` reached `destroy_release_stack`
+    through here, so a read-only command ran `terraform destroy` on the release
+    schedule. Cleanup belongs to `cloud destroy` and `cloud deploy`, which pass
+    the default.
     """
     record = load_mac_record()
     host_id = str(record.get("mac_host_id") or "")
@@ -1643,24 +1816,35 @@ def reconcile_released_host(args: argparse.Namespace) -> bool:
     region = _record_region(record, args)
     profile = _record_profile(args)
     try:
-        present = host_still_allocated(host_id, region, profile)
-    except Exception:  # pragma: no cover - host_still_allocated swallows its own
-        return False
-    if present is not False:
-        if present is True:
-            _record_verification(host_id, True)
+        presence = host_presence(host_id, region, profile)
+    except Exception as exc:  # pragma: no cover - host_presence swallows its own
+        presence = HostPresence(present=None, reason=f"AWS could not be asked: {exc}")
+    # Written down whatever the answer was, including "could not ask" and the
+    # reason for it (#4181). An unrecorded failure is why every reader had to
+    # word the unconfirmed case as "nobody has asked yet".
+    _record_verification(host_id, presence, profile=profile, args=args)
+    if presence.present is not False:
         return False
     print(
         f"Dedicated Host {host_id} has been released -- AWS no longer has it. "
         "Clearing it from this machine's cloud state."
     )
-    try:
-        destroy_release_stack()
-    except Exception as exc:  # pragma: no cover - best effort by design
-        print(f"note: could not clean up the released host's schedule: {exc}", file=sys.stderr)
+    if cleanup:
+        try:
+            destroy_release_stack(region=region, profile=profile)
+        except Exception as exc:  # pragma: no cover - best effort by design
+            print(f"note: could not clean up the released host's schedule: {exc}", file=sys.stderr)
     clear_mac_record(reason=f"AWS reports Dedicated Host {host_id} as released")
-    MAC_TFSTATE_FILE.unlink(missing_ok=True)
-    MAC_TFVARS_FILE.unlink(missing_ok=True)
+    if cleanup:
+        MAC_TFSTATE_FILE.unlink(missing_ok=True)
+        MAC_TFVARS_FILE.unlink(missing_ok=True)
+    elif MAC_RELEASE_TFSTATE_FILE.exists():
+        print(
+            "note: the released host's EventBridge schedule stack is still on this machine. "
+            "`nyxgpt cloud status` observes and changes nothing, so it does not tear it down; "
+            "`nyxgpt cloud destroy --yes` and the next `nyxgpt cloud deploy --os macos` do.",
+            file=sys.stderr,
+        )
     return True
 
 
@@ -1679,7 +1863,7 @@ def _record_region(record: dict[str, Any], args: argparse.Namespace) -> str:
     )
 
 
-def _record_profile(args: argparse.Namespace) -> str:
+def _record_profile(args: argparse.Namespace | None) -> str:
     """Credential profile for an AWS call about the recorded host.
 
     Unlike the region this is *not* a property of the resource -- it is which
@@ -1691,32 +1875,133 @@ def _record_profile(args: argparse.Namespace) -> str:
     -- so an operator who had set either one, and never run `cloud infra
     apply`, had their EC2 Mac host looked up in whatever account boto3's
     default profile names.
+
+    `None` is accepted since #4181 so a status surface with no parsed flags
+    reaches the same resolver -- it then reads the flags `bind_run_args`
+    recorded for this invocation, rather than starting the chain one step down.
     """
     return cloud_identity.account_default(args).profile
 
 
-def _record_verification(host_id: str, present: bool) -> None:
-    """Write down that AWS confirmed `host_id`, and when. Best effort.
+def _record_verification(
+    host_id: str,
+    presence: HostPresence | bool,
+    *,
+    profile: str = "",
+    args: argparse.Namespace | None = None,
+) -> None:
+    """Write down what AWS said about `host_id`, when, and under whose credentials.
 
     Amended rather than written whole, and gated on the host id: the point of
     the field is that it describes *this* host, so landing it on a block that
     has since been replaced would make the record less trustworthy than having
-    no verification at all.
+    no verification at all. Best effort.
+
+    Three fields beyond the answer, all added by #4181, and each closes a way a
+    reader could state something nothing established:
+
+    * `mac_verify_error` -- why AWS could not be asked. Without it the only
+      wording available for an unconfirmed host was "nothing has asked yet",
+      which `nyxgpt cloud status` printed about itself when the real reason was
+      a missing boto3.
+    * `mac_verified_profile` / `mac_verified_account_id` -- which credentials
+      got the answer. An AWS account reports every host it does not own as
+      not-found, so without these an `InvalidHostID.NotFound` from the default
+      account reads exactly like a release.
+
+    A `bool` is accepted for the one caller that *created* the resource and so
+    needs no AWS round trip to know it exists.
     """
+    answer = presence if isinstance(presence, HostPresence) else HostPresence(present=presence)
+    # A local read: the id is recorded by the resolver at provision time
+    # precisely so reporting the account later costs no STS call.
+    account = cloud_identity.account_default(args)
     try:
         amend_mac_record(
-            {"mac_verified_at": utc_now().isoformat(), "mac_host_present": present},
+            {
+                "mac_verified_at": utc_now().isoformat(),
+                "mac_host_present": answer.present,
+                # `None` removes the field -- an error from a previous run must
+                # not outlive the answer that replaced it.
+                "mac_verify_error": answer.reason or None,
+                "mac_verified_profile": profile or None,
+                "mac_verified_account_id": (
+                    account.account_id if account.profile == profile else None
+                ),
+            },
             host_id=host_id,
-            reason="AWS confirmed the host",
+            reason="recorded what AWS said about the host",
         )
     except Exception:  # pragma: no cover - a record that moved under us
         return
 
 
 # How recent a `DescribeHosts` confirmation has to be to count as "this run".
-# Generous enough to cover a slow Terraform sync between the reconcile and the
-# decision, short enough that it can only ever mean the current command.
-VERIFICATION_MAX_AGE_SECONDS = 300.0
+# One definition, shared with the Linux substrate's identical question (#4181):
+# two modules disagreeing about how old an answer may be is two modules
+# disagreeing about whether AWS confirmed something.
+VERIFICATION_MAX_AGE_SECONDS = cloud_verified.CONFIRMATION_MAX_AGE_SECONDS
+
+
+def observe_host(
+    args: argparse.Namespace | None = None,
+    *,
+    record: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> cloud_verified.Observation:
+    """The ONE reader of the Mac block: what may be stated, and on whose authority.
+
+    Every surface that describes the Dedicated Host goes through this --
+    `pending_release` (and so `nyxgpt cloud status`, the API payload and the
+    dashboard card), `allocate`'s reconcile gate, and the remedies. Before
+    #4181 each of them read the raw record and decided for itself: `allocate`
+    required a fresh confirmation, `pending_release` shipped a hard-coded
+    `"billing": True`, and the deploy-attempt report concluded "an instance
+    exists and is being billed" from the presence of a host id. All three were
+    looking at the same block, and in the owner's acceptance round they
+    disagreed about it inside one command's output.
+
+    The observation it returns answers in two registers, and the difference is
+    the whole point: `fact(key)` yields a value only when AWS confirmed this
+    host in this run under these credentials *and* the block is internally
+    coherent, while `reported(key)` always yields it for a row labelled as
+    what the record holds. A claim site that calls `fact` cannot assert a
+    remembered value; one that calls `reported` is not asserting anything.
+    """
+    block = load_mac_record() if record is None else record
+    profile = _record_profile(args)
+    account = cloud_identity.account_default(args)
+    if not block.get("mac_host_id"):
+        # No host recorded at all. An observation of nothing, so that a caller
+        # never has to special-case the absence before it can ask `usable`.
+        return cloud_verified.observe(
+            {},
+            reason=cloud_verified.NOT_ASKED,
+            account_label=cloud_identity.recorded_account_label(profile, account.account_id),
+            now=now,
+        )
+    recorded_profile = str(block.get("mac_verified_profile") or "")
+    return cloud_verified.observe(
+        block,
+        present=(
+            bool(block.get("mac_host_present"))
+            if block.get("mac_host_present") is not None
+            else None
+        ),
+        confirmed_at=str(block.get("mac_verified_at") or ""),
+        profile=recorded_profile,
+        account_id=str(block.get("mac_verified_account_id") or ""),
+        account_label=cloud_identity.recorded_account_label(
+            recorded_profile, str(block.get("mac_verified_account_id") or "")
+        ),
+        findings=tuple(record_findings(block)),
+        reason=str(block.get("mac_verify_error") or ""),
+        # The account this run resolved. An answer obtained with any other one
+        # is about a host in another account, and "not found" there is not a
+        # release here (#4181 finding 1).
+        expect_profile=profile,
+        now=now,
+    )
 
 
 def host_confirmed_this_run(record: dict[str, Any], *, now: datetime | None = None) -> bool:
@@ -1726,13 +2011,15 @@ def host_confirmed_this_run(record: dict[str, Any], *, now: datetime | None = No
     prompt (#4136). "The record names a host" is not evidence the host exists;
     `mac_host_present` plus a fresh `mac_verified_at` is, and nothing writes
     those except an actual answer from `DescribeHosts`.
+
+    Answered by `observe_host` since #4181 -- one definition of "confirmed",
+    shared with every reporting surface, so the gate that lets a deploy skip a
+    priced disclosure and the row that tells an operator the host is billing
+    can never disagree about the same record.
     """
-    if not record.get("mac_host_id") or not record.get("mac_host_present"):
+    if not record.get("mac_host_id"):
         return False
-    verified = parse_timestamp(str(record.get("mac_verified_at") or ""))
-    if verified is None:
-        return False
-    return ((now or utc_now()) - verified).total_seconds() <= VERIFICATION_MAX_AGE_SECONDS
+    return observe_host(record=record, now=now).confirmed
 
 
 def _unconfirmed_host_message(host_id: str) -> str:
@@ -1763,10 +2050,19 @@ def verify_mac_record(args: argparse.Namespace | None = None) -> dict[str, Any]:
 
     `args` is optional so a status surface with no parsed flags can call it; the
     region then comes from the record (which is where it belongs anyway) and the
-    profile from the saved settings.
+    profile from the one resolver, which since #4181 can see the flags this run
+    was given even here.
+
+    **This is a read, and it changes nothing in AWS** (#4181). It used to reach
+    `destroy_release_stack` -- a `terraform destroy` -- through the reconcile,
+    so `nyxgpt cloud status` mutated the account it was reporting on. The
+    `cleanup=False` below is that fix: the `DescribeHosts` still happens, the
+    record is still corrected (local, and it only ever withdraws a claim), and
+    tearing the finished schedule stack down is left to `cloud destroy` and
+    `cloud deploy`, which are the commands an operator ran to change something.
     """
     args = args if args is not None else argparse.Namespace()
-    if reconcile_released_host(args):
+    if reconcile_released_host(args, cleanup=False):
         return {"host_present": False, "cleared": True}
     record = load_mac_record()
     host_id = str(record.get("mac_host_id") or "")
@@ -1856,7 +2152,7 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
     if previous_host and previous_host != host_id:
         try:
             if host_still_allocated(previous_host, region, profile) is False:
-                destroy_release_stack()
+                destroy_release_stack(region=region, profile=profile)
         except Exception as exc:  # pragma: no cover - best effort by design
             result["errors"].append(f"could not clean up the previous release stack: {exc}")
 
