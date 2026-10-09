@@ -1402,8 +1402,13 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     existing = load_mac_record()
     if existing and mac_state_exists():
         host_id = str(existing.get("mac_host_id") or "")
-        if not host_confirmed_this_run(existing):
-            raise CloudCommandError(_unconfirmed_host_message(host_id))
+        # The one reader, so the gate that may skip a priced disclosure and the
+        # row that reports a charge cannot disagree about this record -- and the
+        # refusal carries that reader's own reason rather than a generic one
+        # (#4181).
+        observation = observe_host(args, record=existing)
+        if not observation.confirmed:
+            raise CloudCommandError(_unconfirmed_host_message(host_id, observation.reason))
         return _reconcile_existing(args, existing)
     # No usable record, but Terraform already holds a host: a previous run
     # allocated it and then failed before recording it. Heal the record and
@@ -1411,11 +1416,12 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     # Terraform state outlives the resource it names just as the record does.
     orphaned_host = allocated_host_from_state()
     if orphaned_host:
-        present = host_still_allocated(
+        presence = host_presence(
             orphaned_host, _record_region(existing, args), _record_profile(args)
         )
+        present = presence.present
         if present is None:
-            raise CloudCommandError(_unconfirmed_host_message(orphaned_host))
+            raise CloudCommandError(_unconfirmed_host_message(orphaned_host, presence.reason))
         if present:
             _heal_orphaned_record(args, orphaned_host, existing)
             _record_verification(orphaned_host, True, profile=_record_profile(args), args=args)
@@ -2022,17 +2028,26 @@ def host_confirmed_this_run(record: dict[str, Any], *, now: datetime | None = No
     return observe_host(record=record, now=now).confirmed
 
 
-def _unconfirmed_host_message(host_id: str) -> str:
-    """Why a reconcile cannot proceed when AWS could not be asked about `host_id`."""
+def _unconfirmed_host_message(host_id: str, reason: str = "") -> str:
+    """Why a reconcile cannot proceed when AWS could not be asked about `host_id`.
+
+    `reason` is the observation's own, so the remedy matches the cause (#4181).
+    This used to say only "AWS could not be asked", leaving an operator whose
+    boto3 was missing, or whose profile pointed at the wrong account, to run
+    `credentials-setup` against a problem it does not fix -- the same defect as
+    finding 6, in a remedy rather than a status row.
+    """
+    detail = f" -- {reason}" if reason else ""
     return (
         f"Dedicated Host {host_id} is recorded on this machine, but AWS could not be asked "
-        "whether it still exists in this run -- so nyxGPT cannot tell a host you are already "
-        "paying for from one that was released.\n"
+        f"whether it still exists in this run{detail}. So nyxGPT cannot tell a host you are "
+        "already paying for from one that was released.\n"
         "Reconciling on the record alone is how a deploy came to announce 'no new host, no new "
         "24-hour minimum' and then allocate one (#4136), so nothing is applied and nothing is "
         "billed here.\n"
-        "Fix the credentials (`nyxgpt cloud credentials-setup`, or check the profile/region) and "
-        "re-run. `nyxgpt cloud status` shows what is recorded in the meantime."
+        "Fix what that reason names -- `nyxgpt cloud credentials-setup` for credentials, "
+        "`--profile`/`--region` for the wrong account, the cloud extra for a missing boto3 -- "
+        "and re-run. `nyxgpt cloud status` shows what is recorded in the meantime."
     )
 
 

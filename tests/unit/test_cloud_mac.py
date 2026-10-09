@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nyxgpt import cloud_identity, cloud_infra, cloud_mac
+from nyxgpt import cloud_identity, cloud_infra, cloud_mac, cloud_record
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -945,7 +945,9 @@ def test_a_host_terraform_already_holds_is_adopted_not_re_disclosed(monkeypatch)
     # #4136: adoption requires AWS to confirm the host in this run. Terraform's
     # state naming it is not evidence it exists -- that is how the 2026-10-03
     # deploy reconciled a host released three days earlier.
-    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *a, **k: True)
+    # #4181: the adoption path reads `host_presence`, which carries the reason
+    # an answer could not be had, so the refusal can name it.
+    _presence(monkeypatch, True)
     monkeypatch.setattr(
         cloud_mac,
         "apply_mac_host",
@@ -1884,3 +1886,80 @@ def test_an_allocation_records_the_account_it_was_made_in(monkeypatch):
 
     assert observation.usable is True
     assert observation.account_label == "nyxgpt (066835328281)"
+
+
+def test_the_spend_row_leaves_with_the_host_rather_than_freezing(monkeypatch):
+    """Finding 7: the Cost Explorer figure stops once the host is released.
+
+    It stops by the block ceasing to exist, which is stronger than a frozen
+    number: the record leaves `state.json` entirely, so there is no row to
+    report a spend on and no reader that has to know the charge has ended.
+    """
+    _record_host()
+    _settings(monkeypatch)
+    _stub_clients(
+        monkeypatch,
+        _StubEc2(hosts=[{"HostId": "h-0abc", "State": "available"}]),
+        cost=_ce_response([("2026-10-01", "8.12")]),
+    )
+    cloud_mac.verify_mac_record(_args())
+    assert cloud_mac.pending_release()["accrued_cost"] == pytest.approx(8.12)
+
+    # The schedule fires; AWS no longer has the host.
+    _stub_clients(monkeypatch, _StubEc2(error_code="InvalidHostID.NotFound"))
+    cloud_mac.verify_mac_record(_args())
+
+    assert cloud_mac.pending_release() == {}
+    state = cloud_record.load_state()
+    assert not [key for key in state if key.startswith("mac_")]
+
+
+def test_a_mac_deploy_leaves_only_its_own_block_in_the_record(monkeypatch):
+    """Finding 7, third bullet, kept as an asserted case per the scrummaster's note.
+
+    The owner verified live that `state.json` after a real Linux deploy held
+    only the current block and no `mac_*` leftovers. That is `write_block`'s
+    whole-block rule (#4136), and this pins it from both directions so a future
+    merge cannot quietly reintroduce the field-by-field merge the issue title
+    names.
+    """
+    cloud_infra.write_cloud_state({"instance_id": "i-linux", "region": "us-east-1"})
+    _record_host()
+
+    # The Mac block is added beside the Linux one; neither borrows the other's
+    # keys, and the Mac block carries only keys `MAC_BLOCK_KEYS` names.
+    state = cloud_record.load_state()
+    assert state["instance_id"] == "i-linux"
+    assert state["mac_host_id"] == "h-0abc"
+    assert not set(state) - set(cloud_record.AWS_BLOCK_KEYS) - set(cloud_record.MAC_BLOCK_KEYS)
+
+    # A second Linux apply replaces its own block whole and leaves no stale
+    # field behind, and does not touch the Mac's.
+    cloud_infra.write_cloud_state({"instance_id": "i-linux-2"})
+
+    state = cloud_record.load_state()
+    assert state["instance_id"] == "i-linux-2"
+    assert "region" not in state
+    assert state["mac_host_id"] == "h-0abc"
+
+
+def test_the_refusal_names_the_reason_aws_could_not_be_asked(monkeypatch):
+    """Finding 6, in a remedy rather than a status row (#4181).
+
+    The refusal that blocks a reconcile used to say only "AWS could not be
+    asked", so an operator whose boto3 was missing -- or whose profile pointed
+    at an account that does not own the host -- was sent to
+    `credentials-setup`, which fixes neither.
+    """
+    _record_host()
+    _mac_state()
+    _settings(monkeypatch)
+    # No boto3 at all. The reconcile records why it could not ask, and the
+    # refusal reads that back -- so the reason travels from the failed call to
+    # the operator rather than being reinvented as "check your credentials".
+    monkeypatch.setattr(cloud_mac, "try_import", lambda _name: None)
+
+    with pytest.raises(CloudCommandError, match="boto3 is required"):
+        cloud_mac.allocate(_args())
+
+    assert "boto3 is required" in cloud_mac.load_mac_record()["mac_verify_error"]
