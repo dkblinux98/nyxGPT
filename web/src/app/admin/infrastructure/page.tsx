@@ -301,6 +301,12 @@ type CloudInfraStatus = {
   ssh_identity_file: string;
   owner_ip_cidr: string;
   access_model: { open_ports: number[]; ssh_only: boolean; reachability: string };
+  // #4181. What AWS last said about this instance, and on whose authority.
+  // `observation.usable` is the only flag this page may claim presence or
+  // billing from; the ids above are what a previous run recorded and are not
+  // evidence on their own. Optional: an api older than this page does not
+  // send it, and a missing block reads as "not confirmed", which is correct.
+  observation?: VerifiedObservation;
 };
 
 type DeployHealth = {
@@ -378,7 +384,37 @@ type MacHost = {
   // were written by different runs about different hosts, so none of them can
   // be read together.
   incoherent?: string[];
+  // #4181. `billing` is no longer a constant `true` -- it IS `usable`, the one
+  // gate any surface may claim presence, billing or release through, computed
+  // once in `cloud_mac.observe_host`. `provenance` is the sentence to print
+  // when the gate is closed, and it names which of the four causes applied:
+  // never asked, asked and could not get an answer, answered from the wrong
+  // account, or answered about a record that contradicts itself. Both are
+  // rendered server-side so this card cannot word them differently from
+  // `nyxgpt cloud status` (D-066).
   billing: boolean;
+  usable?: boolean;
+  provenance?: string;
+  observation?: VerifiedObservation;
+};
+
+// #4181. What AWS last said about one recorded resource, and on whose
+// authority -- `cloud_verified.Observation.to_dict()`. Shipped on both
+// substrate payloads so this page never re-derives "may I state this as a
+// fact?": `usable` is the answer and `provenance` is the sentence for when it
+// is `false`.
+type VerifiedObservation = {
+  confirmed: boolean;
+  confirmed_at: string;
+  present: boolean | null;
+  coherent: boolean;
+  usable: boolean;
+  findings: string[];
+  reason: string;
+  profile: string;
+  account_id: string;
+  account_label: string;
+  provenance: string;
 };
 
 type CloudDeployStatus = {
@@ -1559,6 +1595,19 @@ export default function InfrastructurePage() {
               Unknown from this machine — no deploy has been recorded here and this is not the
               instance. Run <code>{cloud?.commands?.status ?? 'nyxgpt cloud status'}</code>{' '}
               where the deploy was run.
+              {/* #4181. A declined consent lands here: it is no longer counted
+                  as an unfinished deploy, because nothing was created and
+                  there is nothing to resume. It is still the answer to "what
+                  happened when I ran that command", so it is said rather than
+                  swallowed by the sentence above. */}
+              {cloud?.attempt?.status === 'declined' && (
+                <>
+                  {' '}
+                  The last deploy started here was <strong>DECLINED</strong> at the{' '}
+                  <code>{cloud.attempt.phase || 'unknown'}</code> phase — the priced disclosure
+                  was shown and not accepted, so nothing was created and nothing is billed.
+                </>
+              )}
             </p>
           ) : !cloud.deployed ? (
             /* #3993. Observable, never operable (D-017): this states what
@@ -1575,16 +1624,37 @@ export default function InfrastructurePage() {
                     cloud.attempt?.phase ? ` — it stopped at the \`${cloud.attempt.phase}\` phase` : ''
                   }${cloud.attempt?.error ? `: ${cloud.attempt.error}` : '.'}`
                 : 'A substrate is provisioned, but no deploy has been recorded against it.'}{' '}
-              {cloud.source !== 'deploy-attempt' ||
-              cloud.instance_id ||
-              cloud.host ||
-              cloud.instance_type ? (
+              {/* #4181 splits what D-018 conflated. "Something is recorded
+                  here" and "something exists in AWS and is costing money" are
+                  different claims, and this card printed the second from
+                  evidence for only the first — live, with AWS holding no
+                  instances at all. The billing assertion now needs a
+                  confirmation from THIS run, which is exactly what
+                  `observation.usable` is, computed once in Python for both
+                  substrates. */}
+              {cloud.mac_host?.usable || cloud.infra?.observation?.usable ? (
                 <>
-                  An instance exists and is being billed — this is not the same as nothing being
-                  deployed, and not the same as unknown. Re-run{' '}
-                  <code>{cloud.commands?.deploy ?? 'nyxgpt cloud deploy'}</code> (idempotent), or{' '}
+                  An instance exists and is being billed — AWS confirmed it in this run (
+                  {cloud.mac_host?.usable
+                    ? cloud.mac_host.provenance
+                    : cloud.infra?.observation?.provenance}
+                  ). This is not the same as nothing being deployed, and not the same as unknown.
+                  Re-run <code>{cloud.commands?.deploy ?? 'nyxgpt cloud deploy'}</code>{' '}
+                  (idempotent), or{' '}
                   <code>{cloud.commands?.destroy ?? 'nyxgpt cloud destroy --yes'}</code> to tear it
                   down.
+                </>
+              ) : cloud.source !== 'deploy-attempt' ||
+                cloud.instance_id ||
+                cloud.host ||
+                cloud.instance_type ||
+                cloud.mac_host?.host_id ? (
+                <>
+                  This machine’s records name a resource, but nothing confirmed it at AWS in this
+                  run — so nyxGPT cannot tell you whether it still exists or is still being
+                  billed. The ids on this card are what was recorded here.{' '}
+                  <code>{cloud.commands?.status ?? 'nyxgpt cloud status'}</code> asks AWS and
+                  clears what it no longer has.
                 </>
               ) : (
                 <>
@@ -1823,8 +1893,13 @@ export default function InfrastructurePage() {
                   instead: this panel reported "still billing" over a host that
                   had been released three days earlier, because the local record
                   was the only thing anything asked. */}
+              {/* #4181. The gate is `usable`, not `verified_at`: a
+                  confirmation over a record whose own fields contradict each
+                  other confirms a host but not the block describing it, and
+                  this heading said "still billing" directly above the
+                  INCOHERENT warnings about the same block. */}
               <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-                {cloud.mac_host.verified_at
+                {cloud.mac_host.usable
                   ? 'EC2 Mac Dedicated Host — still billing'
                   : 'EC2 Mac Dedicated Host — recorded here, not confirmed at AWS'}
               </h3>
@@ -1834,11 +1909,19 @@ export default function InfrastructurePage() {
                 Mac immediately and defers only the host release. This host outlives the instance
                 and the deploy record by design.
               </p>
-              {!cloud.mac_host.verified_at && (
+              {/* #4181 finding 6: the REASON, not the remedy for a reason
+                  nobody checked. This used to say "nothing has asked AWS
+                  about this host yet" whatever the cause — including a run
+                  whose boto3 was missing and a run that asked the wrong
+                  account. `provenance` carries whichever applied. */}
+              {!cloud.mac_host.usable && (
                 <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
-                  Nothing has asked AWS about this host yet, so every row below is what was
-                  recorded rather than what is true. <code>nyxgpt cloud status</code> asks, and
-                  clears the block if the host is gone.
+                  {cloud.mac_host.provenance ??
+                    'Nothing has asked AWS about this host in this run.'}{' '}
+                  Every row below is what this machine RECORDED, not what AWS reports: none of it
+                  is evidence that the host exists, that it is billing, or that its release is
+                  scheduled. <code>nyxgpt cloud status</code> asks, and clears the block if the
+                  host is gone.
                 </p>
               )}
               {(cloud.mac_host.incoherent?.length ?? 0) > 0 && (
@@ -1872,10 +1955,21 @@ export default function InfrastructurePage() {
                       : `${cloud.mac_host.release_at || 'unknown'} (AWS’s 24-hour minimum)`
                   }
                 />
+                {/* #4181 finding 3. "The scheduled release has fired" and "a
+                    one-shot AWS schedule releases it" are statements about
+                    EventBridge, and they were rendered from the same fields
+                    the INCOHERENT warning above had just disqualified. The
+                    recorded value is still shown; the conclusion is not. */}
                 <Row
                   label="Release"
                   value={
-                    cloud.mac_host.release_scheduled && cloud.mac_host.releasable_now
+                    !cloud.mac_host.usable
+                      ? `recorded as ${
+                          cloud.mac_host.release_scheduled ? 'scheduled' : 'NOT scheduled'
+                        } — not verified in this run, so nyxGPT cannot say whether anything will release this host. \`${
+                          cloud?.commands?.destroy ?? 'nyxgpt cloud destroy --yes'
+                        }\` schedules it and reports what AWS said`
+                      : cloud.mac_host.release_scheduled && cloud.mac_host.releasable_now
                       ? 'the scheduled release has fired — Slack has the outcome. Not “released”: nothing here watched it. The block clears as soon as AWS confirms the host is gone, which `nyxgpt cloud status` asks'
                       : cloud.mac_host.release_scheduled
                       ? 'scheduled — a one-shot AWS schedule releases it and reports the outcome to Slack'
@@ -1887,9 +1981,12 @@ export default function InfrastructurePage() {
                 <Row
                   label="Confirmed at AWS"
                   value={
-                    cloud.mac_host.verified_at
-                      ? cloud.mac_host.verified_at
-                      : 'never — nothing here has asked AWS whether this host exists'
+                    cloud.mac_host.usable
+                      ? `${cloud.mac_host.verified_at} in ${
+                          cloud.mac_host.observation?.account_label || 'the resolved account'
+                        }`
+                      : cloud.mac_host.provenance ??
+                        'never — nothing here has asked AWS whether this host exists'
                   }
                 />
                 {/* #4136. AWS's figure when there is one, and the local
@@ -1907,7 +2004,9 @@ export default function InfrastructurePage() {
                         cloud.mac_host.estimated_cost !== undefined &&
                         cloud.mac_host.hourly_rate
                       ? `no AWS figure (${
-                          cloud.mac_host.spend_error || 'AWS has not been asked yet'
+                          cloud.mac_host.spend_error ||
+                          cloud.mac_host.observation?.reason ||
+                          'AWS has not been asked yet'
                         }). Local ESTIMATE only: ${cloud.mac_host.currency || 'USD'} ${cloud.mac_host.estimated_cost.toFixed(
                           2,
                         )} at $${cloud.mac_host.hourly_rate.toFixed(4)}/hour, counted from the recorded allocation time — it keeps counting whether or not AWS is still charging`
