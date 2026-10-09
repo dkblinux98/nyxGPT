@@ -1796,6 +1796,38 @@ built server-side on purpose: the CLI row, this payload and the dashboard's
 cloud cards all show that wording, and rendering it in each of them is one
 decision in three places. Clients display it rather than reassembling it.
 
+`observation` (#4181) is **the only field a client may claim presence, billing
+or release from.** Every other field here is what some previous run wrote down,
+which is useful and is not evidence; `observation.usable` is `true` only when
+AWS confirmed the resource in this request's run, under the credentials that
+run resolved, over a record whose own fields do not contradict each other.
+`observation.provenance` is the sentence to show when it is `false`, and it
+names which of the four causes applied — nobody asked, AWS could not be asked
+(and why), the last answer came from another account, or the record disagrees
+with itself. The decision is reached once, server-side, for both substrates:
+
+```json
+"observation": {
+  "confirmed": true,
+  "confirmed_at": "2026-10-09T12:00:00+00:00",
+  "present": true,
+  "coherent": true,
+  "usable": true,
+  "findings": [],
+  "reason": "",
+  "profile": "nyxgpt",
+  "account_id": "066835328281",
+  "account_label": "nyxgpt (066835328281)",
+  "provenance": "confirmed at AWS in nyxgpt (066835328281) at 2026-10-09T12:00:00+00:00"
+}
+```
+
+The same block is on `mac_host` in the cloud-deploy payload, where `billing`
+is now that same `usable` flag rather than the constant `true` it used to be.
+A client that re-derives the decision from `verified_at` is re-creating the
+defect: a confirmation proves the resource exists, and does not make a record
+assembled from two runs describe the resource that was confirmed.
+
 ```json
 {
   "source": "terraform-state",
@@ -1813,6 +1845,7 @@ decision in three places. Clients display it rather than reassembling it.
   "aws_profile": "nyxgpt",
   "aws_account_id": "066835328281",
   "aws_account_label": "nyxgpt (066835328281)",
+  "observation": { "usable": true, "provenance": "confirmed at AWS in nyxgpt (066835328281) at 2026-10-09T12:00:00+00:00" },
   "ssh_identity_file": "/Users/owner/.ssh/id_rsa",
   "owner_ip_cidr": "198.51.100.7/32",
   "access_model": {
@@ -1915,7 +1948,7 @@ calls are opt-in query parameters.
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `probe_health` | `false` | Also make one short request to the tunneled API health endpoint. Opt-in so the polled default stays free of network calls; skipped with a reason when no tunnel is open, since a probe would only time out. |
-| `verify_host` | `false` | Also ask AWS whether the recorded EC2 Mac Dedicated Host still exists, and refresh what Cost Explorer says it has cost (#4136). One `DescribeHosts` plus an hourly-cached `GetCostAndUsage`, and only when a host is recorded. This is what makes the `mac_host` block AWS's answer rather than the local record read back; the block reports which of the two it is either way. Never fails the request — expired credentials leave the block labelled as unconfirmed. |
+| `verify_host` | `false` | Also ask AWS whether the recorded resources still exist, and refresh what Cost Explorer says the EC2 Mac Dedicated Host has cost (#4136, #4181). One `DescribeHosts` plus an hourly-cached `GetCostAndUsage` when a host is recorded, and one `DescribeInstances` when the Linux substrate record names an instance — "an instance exists and is being billed" is the same claim whichever substrate it is made about. This is what makes the `mac_host` / `infra.observation` blocks AWS's answer rather than the local record read back; both report which of the two they are either way. Changes nothing in AWS. Never fails the request — expired credentials leave the blocks labelled as unconfirmed, with the reason. |
 
 Like the substrate read it names its source (#3804): `deploy-record` on the
 machine that ran the deploy, `local-instance` when this process *is* the

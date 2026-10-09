@@ -3177,8 +3177,8 @@ def cli(argv: list[str] | None = None) -> int:
         help=(
             "Make no network calls: no health check through an open tunnel "
             "(skipped anyway when no tunnel is open) and no AWS check on the "
-            "recorded EC2 Mac Dedicated Host, whose rows are then labelled as "
-            "unconfirmed rather than reported as current"
+            "recorded EC2 Mac Dedicated Host or Linux instance, whose rows are "
+            "then labelled as unconfirmed rather than reported as current"
         ),
     )
     # #4181. The flag arm of the credential chain was unreachable from the one

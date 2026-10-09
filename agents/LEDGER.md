@@ -2625,6 +2625,55 @@ rather than mechanism, and nothing can enforce them.
   not the instance"; `agents/runbooks/developer-runbook.md` §3i;
   `agents/runbooks/review-runbook.md` §1e.
 
+- **D-068** · 2026-10-09 · developer-agent (#4181) — **A cloud surface states
+  presence, billing or release only for what THIS run established with the
+  credentials it resolved — and a read changes nothing.** The decision lives
+  once, in `nyxgpt/cloud_verified.observe` → `Observation.usable`: *confirmed*
+  (AWS answered about this resource within `CONFIRMATION_MAX_AGE_SECONDS`,
+  under the profile this run resolved) **and** *coherent* (the record's own
+  fields can describe one moment). `fact(key)` yields a value only when
+  `usable`; `reported(key)` always yields it for a row labelled as what the
+  record holds — so "reported rather than used" is structural, not a
+  convention each reader remembers. `cloud_mac.observe_host` and
+  `cloud_infra.observe_instance` both build it, and every surface (CLI rows,
+  both API payloads, both dashboard cards) reads that one flag plus its one
+  `provenance` sentence; `mac_host["billing"]` **is** `usable` rather than the
+  constant `True` it was. Three rules bind anyone adding to this path.
+  **(a) The account is part of what an answer means**: an AWS account reports
+  every resource it does not own as absent, so `InvalidHostID.NotFound` from
+  the wrong account is indistinguishable from a release — the profile each
+  confirmation was obtained in is recorded with it
+  (`mac_verified_profile`/`verified_profile`) and an answer from any other
+  account is not a confirmation. **(b) Every actor in the run gets the
+  resolver's answer, subprocesses included**: `cloud_identity.bind_run_args`
+  makes the flags readable with no namespace to hand, `credential_env()` goes
+  into the environment of every `terraform` invocation for every root, and
+  `cloud_mac._restamp_tfvars` overwrites the credential lines of any stored
+  tfvars before it is reused — because
+  `profile = var.aws_profile != "" ? var.aws_profile : null` means a stale one
+  outranks the environment. **(c) A read command makes no AWS change**:
+  `reconcile_released_host(cleanup=False)` is what `cloud status` calls;
+  correcting the local record stays (it only ever *withdraws* a claim) and the
+  `terraform destroy` on a finished release stack belongs to `cloud destroy` /
+  `cloud deploy`. A declined consent is `cloud.ConsentDeclined` →
+  `ATTEMPT_DECLINED`, its own outcome, never a failure to be re-run.
+  Cause: #4136 was fixed and failed acceptance anyway (#4181) because the class
+  survived — live, `cloud status` asked account 551292530955 about a host in
+  066835328281 and got the right answer by coincidence; `--profile nyxgpt`
+  reached every boto3 call and no Terraform one, so `terraform destroy` died
+  AccessDenied on `nyxgpt-tf-mac-release`; two INCOHERENT rows were printed
+  three rows above "an instance exists and is being billed" with AWS holding no
+  instances; and typing `no` at a priced disclosure was reported as a deploy
+  that "did not finish … re-run it". Executed evidence:
+  `scripts/cloud_stale_record_smoke.py` (10 scenarios, 2 negative controls,
+  account-aware replay server, recording `terraform` shim) via
+  `.github/workflows/cloud-stale-record-smoke.yml`. Number from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run,
+  not eyeballed.
+  Source: #4181; related #4136, #4122, #3993, #4186; extends **D-018**,
+  **D-066**, **D-067**; `docs/cloud.md` § "Every row is AWS's answer or is
+  labelled as not being one".
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

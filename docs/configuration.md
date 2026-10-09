@@ -928,7 +928,7 @@ resolved, showing the account id the profile points at
 | Environment variable | Description |
 |---|---|
 | `NYXGPT_CLOUD_NONINTERACTIVE` | Set to any non-empty value to stop every `nyxgpt cloud` command asking: the resolved defaults are used and printed on one line instead. Already implied when there is no terminal on stdin and stdout (CI, `nyxgpt cloud ops` over SSH, the admin API) and by `--yes`, so this is for a wrapper script that runs with a terminal attached but no human in front of it. A run with no usable default fails naming each missing input and its flag -- it never waits for input (#4186). |
-| `AWS_PROFILE` / `AWS_REGION` / `AWS_DEFAULT_REGION` | boto3's own variables, read as the last step of the shared order above, after `[cloud] profile`/`region`. |
+| `AWS_PROFILE` / `AWS_REGION` / `AWS_DEFAULT_REGION` | boto3's own variables, read as the last step of the shared order above, after `[cloud] profile`/`region`. nyxGPT also *sets* them in the environment of every `terraform` subprocess it starts, from the account that order resolved (#4181) -- so a `--profile` reaches Terraform, which has no flag of its own, and a run that resolved no named profile clears an inherited `AWS_PROFILE` instead of letting the shell decide the account. |
 
 ---
 

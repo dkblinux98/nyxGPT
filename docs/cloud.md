@@ -452,25 +452,47 @@ The same block appears on the admin dashboard's Infrastructure page, and on
 both surfaces it is *observed*, never driven — the release is already
 scheduled in AWS and there is nothing for a page to press.
 
-**Every row is AWS's answer or is labelled as not being one (#4136).**
+**Every row is AWS's answer or is labelled as not being one (#4136, #4181).**
 `nyxgpt cloud status` makes one `DescribeHosts` call and (at most hourly, since
 Cost Explorer bills per request) one `GetCostAndUsage`:
 
-- The heading says **still billing** only when AWS confirmed the host in that
-  run. Without a confirmation it reads *recorded here, not confirmed at AWS*,
-  and the rows below are what was written down rather than what is true.
+- The heading says **still billing** only when the block is *usable*: AWS
+  confirmed the host in this run, **under the credentials this run resolved**,
+  and the record does not contradict itself. Anything else prints the reason —
+  nobody asked, AWS could not be asked (and why), the last answer came from
+  another account, or the record's own fields disagree — followed by a line
+  saying that every row below is what this machine recorded rather than what
+  AWS reports.
+- **The account is part of what an answer means (#4181).** An AWS account
+  reports every resource it does not own as absent, so `InvalidHostID.NotFound`
+  from the wrong account is indistinguishable from a release. The account each
+  confirmation was obtained in is recorded with it, and an answer from any
+  other account is not treated as a confirmation. `--profile` / `--region` tell
+  this command which account to ask.
 - **Spend is Cost Explorer's figure**, not `rate × elapsed`. The old
   calculation could not stop counting when the charges did: it read $48.44 for
   a host AWS had billed $12.02 for and had not charged for in two days. When
-  AWS has no figure yet the row says so and offers the local number explicitly
-  as an *estimate*.
+  AWS has no figure yet the row says so — naming the reason AWS could not be
+  asked, rather than the remedy for a different reason — and offers the local
+  number explicitly as an *estimate*.
 - A host AWS reports as **released** does not get a weaker row — its record
   leaves `state.json` entirely, so there is nothing left to describe.
 - `INCOHERENT` rows appear when the record contradicts itself (a release
   scheduled before its host was allocated, a release window that is not
   allocation + 24h30m, a scheduled release with no schedule). Those are
   detectable with no API call, and they mean the fields came from more than one
-  run, so none of them can be read together.
+  run, so none of them can be read together — **including** by the rows that
+  would otherwise draw a conclusion. A confirmation proves the host exists; it
+  does not make a block assembled from two runs describe that host, so an
+  incoherent record gets no billing claim and no release verdict however
+  recently AWS answered.
+- **This command changes nothing (#4181).** It used to reach `terraform
+  destroy` on the EC2 Mac release-schedule stack, through the reconcile that
+  clears a released host — a read-only command mutating the account it was
+  reporting on. Correcting the local record still happens, because that only
+  ever withdraws a claim; tearing the finished schedule stack down belongs to
+  `nyxgpt cloud destroy` and `nyxgpt cloud deploy`, and `cloud status` says so
+  when one is left behind.
 
 Once the fire time passes, the row says the schedule **has fired** rather than
 that the host is released: nothing on your machine watched it, so claiming the
@@ -507,6 +529,7 @@ nyxgpt cloud status            # the operator summary (default)
 nyxgpt cloud status --json     # the machine-readable payload
 nyxgpt cloud status --no-probe # don't health-check through an open tunnel,
                                # and don't ask AWS about the Dedicated Host
+nyxgpt cloud status --profile nyxgpt   # ask a named AWS account (#4181)
 ```
 
 The deploy, substrate and tunnel facts come from recorded state alone — no AWS
@@ -517,8 +540,12 @@ the command asks AWS about it (one `DescribeHosts`, plus an hourly-cached
 `GetCostAndUsage`) because a host id is a claim about money, and the row is
 labelled *recorded here, not confirmed at AWS* rather than reported as current
 when the question cannot be asked — see *Every row is AWS's answer or is
-labelled as not being one* above. `--no-probe` suppresses both network calls,
-which is what makes it the poll-safe form. The summary carries the installed release, the
+labelled as not being one* above. The recorded Linux instance is asked about
+the same way, with one `DescribeInstances` (#4181): the sentence "an instance
+exists and is being billed" is the same claim whichever substrate it is made
+about. `--no-probe` suppresses every network call, which is what makes it the
+poll-safe form; `--profile` / `--region` say which account to ask, because an
+account that does not own a resource reports it as absent. The summary carries the installed release, the
 instance id and type, the region, the **AWS account** the deployment was made
 in (the profile name and the account id it resolved to, #4186), the **SSH key
 pair** it was given, the public IP, the security group's single
@@ -567,13 +594,29 @@ move it forward: re-run `nyxgpt cloud deploy` (idempotent — it reconciles from
 where it stopped), or `nyxgpt cloud allow-ip` if your public IP has changed
 since.
 
-What they say about billing depends on what was actually recorded, never on
-the verdict alone (#4007). When the record shows an instance exists, the
-summary says so plainly — **it is being billed** — and offers `nyxgpt cloud
-destroy --yes` to stop paying for it. A `NOT COMPLETED` that stopped at
-`start` or `infra` instead says nothing was provisioned, and offers no
-destroy: the deploy died before the substrate, so there is nothing to tear
-down and `cloud destroy` would only answer "nothing to destroy".
+**A declined consent is neither** (#4181). Typing anything but `allocate` at
+the EC2 Mac disclosure records the attempt as `declined` — its own outcome,
+not a failure — so the summary does not say a deploy "did not finish" and
+does not prescribe re-running it. It still says what happened, because that is
+the answer to "what did that command do": *DECLINED at the `…` phase — the
+disclosure was shown and not accepted, so nothing was created and nothing is
+billed*. The command still exits non-zero; declining is not success.
+
+What they say about billing depends on what was actually confirmed, never on
+the verdict alone (#4007, #4181). Three answers, not two:
+
+- **AWS confirmed the resource in this run** — the summary says so plainly,
+  *it is being billed*, and offers `nyxgpt cloud destroy --yes` to stop paying
+  for it.
+- **Something is recorded here and nothing confirmed it** — the summary says
+  exactly that, shows the recorded ids labelled *recorded here, NOT confirmed
+  at AWS*, and names `nyxgpt cloud status`, which asks. This is the case
+  #4181 added: the summary used to assert billing from the presence of an id,
+  and did so for an operator whose AWS account held no instances at all.
+- **Nothing was provisioned** — a `NOT COMPLETED` that stopped at `start` or
+  `infra`, or a declined consent. No destroy is offered: the deploy died
+  before the substrate, so there is nothing to tear down and `cloud destroy`
+  would only answer "nothing to destroy".
 
 This exists because a failed provision used to report `UNKNOWN from this
 machine` — sending an operator to look for another workstation while a live,
@@ -1141,12 +1184,18 @@ deletes both — once the substrate is gone, "a deploy stopped at `provision`"
 describes an instance that no longer does.
 
 All of them are read-only inputs to `nyxgpt cloud status`, which answers the
-deploy, substrate and tunnel questions from these files alone — no AWS call,
-no connection to the instance — so it still answers when your AWS credentials
-have expired. The exception is the EC2 Mac Dedicated Host block, which
-`status` verifies against AWS whenever one is recorded (#4136); `--no-probe`
-turns that call off along with the tunnel health check, and is the form to
-poll.
+deploy and tunnel questions from these files alone — no AWS call, no
+connection to the instance — so it still answers when your AWS credentials
+have expired. The exceptions are the two blocks that carry a claim about
+money: the EC2 Mac Dedicated Host (#4136) and the recorded Linux instance
+(#4181). `status` verifies each against AWS whenever one is recorded, in the
+account the shared order resolves (`--profile` names it explicitly), and
+reports the record as *recorded here, not confirmed at AWS* rather than as
+current when the question cannot be asked. `--no-probe` turns both calls off
+along with the tunnel health check, and is the form to poll. None of them
+changes anything in AWS: `status` observes, and the cleanup it used to do
+(`terraform destroy` on a finished release-schedule stack) belongs to
+`cloud destroy` and `cloud deploy`.
 
 The history is appended by `deploy` and `destroy` themselves rather than by
 whichever surface invoked them, so a deploy run from a terminal shows up on
@@ -1621,6 +1670,28 @@ the account either way
 3. config.ini `[cloud] profile`
 4. `AWS_PROFILE`
 5. boto3's own default chain
+
+**And the `terraform` subprocess gets the same answer (#4181).** Terraform
+resolves credentials itself, from its provider block plus the ambient
+environment, and it has never seen `--profile`. Two things close that gap, and
+both are needed:
+
+- the resolved profile and region are put into the environment of **every**
+  `terraform` invocation, for every root module (`aws`, `mac`, `mac-release`) —
+  a run that resolved *no* named profile clears an inherited `AWS_PROFILE`
+  rather than letting the shell outrank its own resolution; and
+- a **stored tfvars file an earlier run rendered** has its credential lines
+  overwritten with this run's before Terraform reads it. Reusing those values
+  for *what* a destroy operates on is right; reusing them for *whose
+  credentials* do it is not, and the provider's
+  `profile = var.aws_profile != "" ? var.aws_profile : null` means a stale one
+  outranks the environment.
+
+Until this, a `nyxgpt cloud destroy --profile nyxgpt` whose boto3 calls reached
+the right account ran `terraform destroy` on the EC2 Mac release-schedule root
+as the *default* account — against a tfvars file rendered days earlier with no
+`aws_profile` line at all — and died with `AccessDenied` on
+`nyxgpt-tf-mac-release`.
 
 Steps 2 and 3 are the point. Until they existed, `allow-ip` built its client
 with no profile at all, so a workstation whose **default** profile names a
