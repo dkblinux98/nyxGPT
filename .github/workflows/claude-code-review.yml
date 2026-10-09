@@ -562,6 +562,10 @@ jobs:
             - The PR patches one instance of a fault that exists elsewhere in
               the tree, without fixing the class or reporting the search
               (generality gate, review-runbook §1e)
+            - The PR has no "## Class sweep" section, leaves the NOT PROVIDED
+              receipt standing, or its sweep does not account for a surface the
+              issue's "Defect class and surfaces" section named (class-sweep
+              gate, review-runbook §1e, #4183)
 
             Do not APPROVE until tests are updated AND documentation is
             complete. CI is not on that list: the gate already answered it.
@@ -607,6 +611,55 @@ jobs:
             Report the search you actually ran in the `### Documentation
             Status` section, so "no falsified claims" is distinguishable from
             "never checked".
+
+            ## Class-sweep gate (REQUIRED, review-runbook.md §1e, #4183)
+
+            A fix that corrects the instance and leaves the class armed has not
+            finished the job. The gate used to ask you to *notice* the class,
+            which worked only when you happened to see it — so #4136 shipped as
+            the third occurrence of one mechanism (three code paths choose the
+            AWS account; the coherence check landed in one printer), #4135
+            passed every criterion and failed acceptance on the rest of the same
+            `ops status` output, #4179 added an error class to one of two copies
+            of the classifier, and #4174 shipped a rule whose guard no workflow
+            ran. Owner decision 2026-10-09 made the sweep an artifact you read.
+
+            Run it like this, before deciding:
+
+            1. Read the issue's **"Defect class and surfaces"** section and the
+               PR's **"## Class sweep"** section (marker
+               `<!-- nyxgpt-class-sweep -->`) together.
+               `developer_submit_for_review.sh` appends a **NOT PROVIDED**
+               block when the PR body has no sweep, so its absence is explicit
+               — you never have to infer it.
+            2. Check the sweep against the issue: every surface the issue named
+               is accounted for, either changed or stated as unaffected with a
+               reason.
+            3. **Run the search yourself.** `grep` for the construct the fix
+               describes — the other call sites, the sibling workflows, the
+               parallel branches of the same `if`, the other subclasses of the
+               same base, and the CLI/web/API/docs surfaces the rule reaches.
+               Report the terms and paths you ran.
+            4. **Look for a decision made twice.** Where the sweep corrected
+               the same decision in several copies, ask why it was not
+               consolidated into one place every surface calls. A consolidation
+               on a class-sweep fix is IN SCOPE by definition — never flag it
+               as scope creep.
+            5. Check that out-of-class findings were **filed and named**, not
+               silently fixed in this PR and not dropped.
+
+            Medium (blocking): a missing or incomplete sweep; an obvious
+            sibling instance left unfixed; the same decision corrected in N
+            copies where one source was available and the PR does not say why.
+            Cite at least one concrete `file:line` or named surface — a bare
+            "this might be elsewhere" is speculation, which §1b forbids.
+
+            SYMMETRY: the gate asks for the sweep and its result, not for
+            unbounded scope. A reported search that found nothing satisfies it,
+            and so does `**Class:** n/a — feature work, no defect behind it` on
+            a PR with no defect behind it. Scaling the fix down after the sweep
+            is the owner's call; your job is that the class was looked for and
+            its extent is on the record.
 
             ## Executed-verification gate (REQUIRED, review-runbook.md §1c, #3775)
 
@@ -720,6 +773,9 @@ jobs:
             - Executed-verification gate (§1c): a runtime/install/platform
               claim is demonstrated by execution on the target platform and
               cited in the PR — inspection alone is not evidence
+            - Class-sweep gate (§1e): the fix covers the class, not the
+              instance the issue named, and the PR's "## Class sweep" section
+              accounts for every surface the issue listed
             - Reasonable maintainability
 
             Additional quality checks:
@@ -783,6 +839,24 @@ jobs:
             this BLOCKS APPROVE (Medium)]
             [If the PR introduces a new expiry-dated world-state claim instead
             of pointing at a living source, this BLOCKS APPROVE (Medium)]
+
+            ### Class Sweep
+            - Class this change belongs to: [the rule, stated generally — or
+              "n/a, feature work with no defect behind it"]
+            - "Class sweep" section present in the PR body: [YES / NO /
+              NOT PROVIDED receipt left standing]
+            - Surfaces the issue named vs. surfaces the sweep accounts for:
+              [all accounted for / name each one it misses]
+            - Search you ran yourself: [the exact grep terms and paths —
+              required, "N/A" is not an acceptable answer]
+            - Sibling instances you found still unfixed: [NONE / file:line each]
+            - Same decision corrected in more than one copy: [NO / where, and
+              whether the PR says why it was not consolidated]
+            - Out-of-class findings filed and named: [N/A / #NNNN each /
+              MISSING — found but neither filed nor named]
+            [If the sweep is missing or incomplete, a sibling instance is left
+            unfixed, or N copies were corrected where one source was available
+            and unexplained, this BLOCKS APPROVE (Medium) — §1e]
 
             ### Executed Verification
             - Runtime/install/platform claim in this PR: [one line, or NONE —

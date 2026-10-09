@@ -154,7 +154,9 @@ here now: a rebase in a PR is a review finding (review-runbook §3a), and prose
 anywhere in this repo instructing one is a bug.
 
 ## 3) Implement
-- Make smallest coherent change set that satisfies acceptance criteria.
+- Make smallest coherent change set that satisfies acceptance criteria **and
+  covers the class the issue belongs to** (§3i) — "smallest" is measured
+  against the class, not against the one instance the issue named.
 - Add/extend tests (unit/integration as appropriate).
 - Keep IO behind interfaces; maintain dependency flow.
 

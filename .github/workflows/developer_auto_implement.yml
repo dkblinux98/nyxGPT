@@ -598,8 +598,30 @@ jobs:
             ### Step 2: Understand and fix the problem
             1. Read the full issue #${{ github.event.issue.number }} including all comments
             2. The human owner has left a comment explaining what is broken — read it carefully
-            3. Implement the minimal fix to resolve the reported problem
-            4. Add/update tests to cover the fixed scenario
+            3. **CLASS SWEEP FIRST (#4183, developer-runbook §3i).** The owner
+               reported a SYMPTOM; the issue's "Defect class and surfaces"
+               section is an unchecked checklist precisely because the handler
+               could not know the class. Complete it before you change
+               anything:
+               * name the class as a RULE, not as a location;
+               * enumerate the surfaces — every other code path that makes the
+                 same decision (grep for the construct, not the symptom), plus
+                 the CLI/web/API/docs surfaces the rule reaches;
+               * fix every instance in this PR, and where the same decision is
+                 made in several places CONSOLIDATE it into one place every
+                 surface calls rather than correcting each copy;
+               * file anything out of class as its own issue and name it;
+               * record all of it in the PR body under `## Class sweep` with
+                 the marker `<!-- nyxgpt-class-sweep -->`.
+               This is the acceptance round that most needs it: #4136 was the
+               third occurrence of one mechanism and #4135 passed every
+               criterion while the same output carried four other wrong
+               things. The reviewer blocks on a missing or incomplete sweep
+               (Medium, review-runbook §1e).
+            4. Implement the fix — minimal against the CLASS, not against the
+               single reported instance
+            5. Add/update tests to cover the fixed scenario and the sibling
+               instances the sweep found
 
             ### Step 3: Validate before committing
             BEFORE committing, run ALL validation checks (ALL must pass):
@@ -884,6 +906,18 @@ jobs:
                - For each: identify the root cause, plan the fix, and anticipate side effects
                - Confirm your plan covers all issues before writing a single line
             3. Implement fixes for each issue
+            4. **Each finding is an INSTANCE — fix its class (#4183,
+               developer-runbook §3i).** A review finding names one place; the
+               same mistake is usually in the sibling call sites, the parallel
+               `if` arm, the other copy of the decision. Before you call a
+               finding fixed, grep for the construct it describes and fix every
+               instance, consolidating into one source where the same decision
+               is made more than once. Then update the PR body's
+               `## Class sweep` section (marker `<!-- nyxgpt-class-sweep -->`)
+               with what this round swept — if the reviewer's finding IS a
+               missing/incomplete class sweep, that section is the thing being
+               rejected and rewriting it is the fix, not an afterthought.
+               Anything out of class gets its own issue, named in the PR.
 
             ### Step 2.5: Resolve merge conflicts with the release branch (if any)
             Conflicts are YOUR work, not the owner's (owner rule 2026-08-15,
@@ -1084,6 +1118,69 @@ jobs:
 
             Once you have successfully checked out the feature branch, proceed to implementation.
 
+            ## Step 1.5: CLASS SWEEP — the issue is an instance, your fix covers the class (#4183, developer-runbook §3i)
+
+            **Do this BEFORE you write code.** An issue states a symptom, its
+            criteria are written per symptom, and passing each one is not
+            finishing the job — the job is the class. #4136 was the THIRD
+            occurrence of one mechanism (three code paths choose the AWS
+            account; the fix landed in one printer), #4135 passed every
+            criterion and failed acceptance on the rest of the same `ops
+            status` output, #4179 added an error class to one of two copies of
+            the classifier, and #4174 shipped a rule whose guard no workflow
+            ran.
+
+            1. **Read the issue's "Defect class and surfaces" section.** If it
+               is an unchecked checklist or says "Unknown" — which is what the
+               `@acceptance-failure` / `@improvement` handlers deliberately
+               file, because the owner reports a symptom — **you complete it**.
+               State the class as a RULE, not as a location: "the AWS account
+               is resolved from whichever source answers first, and three code
+               paths resolve it independently", not "`ops status` printed the
+               wrong account".
+            2. **Enumerate the surfaces** — the ones the issue names plus the
+               ones you find:
+               * every other code path that makes the SAME decision (grep for
+                 the construct, the config key, the env var, the sibling `if`
+                 arm, the other subclasses of the same base — never for the
+                 symptom);
+               * the user-facing surfaces the rule reaches: CLI commands, web
+                 UI pages, API endpoints, TUI screens;
+               * the prose that states it: `docs/`, help text, UI strings,
+                 `agents/`.
+            3. **Fix every instance in THIS PR**, not just the one the issue
+               named.
+            4. **ONE SOURCE PER DECISION.** Where the sweep finds the same
+               decision made in more than one place (credential resolution,
+               error classification, status computation, a lane transition),
+               CONSOLIDATE it into one place every surface calls rather than
+               correcting each copy — correcting N copies leaves N places for
+               the next divergence, which is how #4179 survived seven weeks. A
+               consolidation on a class-sweep fix is in scope by definition.
+            5. **OUT-OF-CLASS findings are filed, not dropped.** Anything
+               belonging to a DIFFERENT class gets its own issue — report it in
+               the PR body for the workflow to file; do not silently fix it
+               here and do not forget it.
+            6. **Record it in the PR body** under a `## Class sweep` heading
+               carrying the marker `<!-- nyxgpt-class-sweep -->`: the class,
+               the search you actually ran, a row per surface (what was found /
+               what changed or why it is unaffected), what you consolidated,
+               and any out-of-class issue. `developer_submit_for_review.sh`
+               appends a **NOT PROVIDED** block when the body has no such
+               section, so a skipped sweep is visible to the reviewer rather
+               than silent — write the section yourself.
+
+            A rule this project states but does not ENFORCE is itself a class
+            (#4174): if your change adds a rule to `CLAUDE.md`, a charter, a
+            runbook or a prompt, the sweep includes "what checks this?" — a
+            guard test, a smoke job, or a step that fails the build.
+
+            Feature work with no defect behind it says so in one line
+            (`**Class:** n/a — feature work, no defect behind it`) and lists
+            the surfaces the new behavior must be correct on. The reviewer
+            blocks on a missing or incomplete sweep (Medium, review-runbook
+            §1e).
+
             ## Step 2: Implement the Solution
 
             **Before writing any code**, if your implementation touches an external library
@@ -1093,7 +1190,9 @@ jobs:
             This ensures you use current APIs rather than outdated patterns from training data.
 
             Requirements:
-            - Make the minimal correct change to resolve the issue.
+            - Make the minimal correct change that covers the CLASS the issue
+              belongs to (Step 1.5) — "minimal" is measured against the class,
+              never against the single instance the issue happened to name.
             - Add/update tests for ALL code changes.
 
             ## Step 3: Mandatory Validation Before Commit
