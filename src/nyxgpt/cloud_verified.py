@@ -73,17 +73,22 @@ def utc_now() -> datetime:
 def parse_timestamp(value: str) -> datetime | None:
     """Parse a recorded ISO-8601 instant, or `None` when it is not one.
 
-    `None` rather than an exception, and naive values are rejected rather than
-    assumed to be UTC: a timestamp nobody can place is exactly the kind of
-    field this module exists to stop being read as a fact. Callers treat it as
-    "unknown", which is the honest reading of an unparseable record.
+    `None` rather than an exception: a timestamp nobody can place is exactly
+    the kind of field this module exists to stop being read as a fact, and
+    callers treat `None` as "unknown", which is the honest reading of an
+    unparseable record. A *naive* value is read as UTC, because every writer
+    in this tree records `datetime.now(UTC).isoformat()` and the only naive
+    ones are hand edits; treating those as local time would silently shift a
+    confirmation across the freshness window.
+
+    `Z` is normalised rather than passed through, which `fromisoformat` would
+    now accept: `cloud_record`'s own values carry `+00:00`, and AWS returns
+    `Z` -- doing it here keeps the two spellings one code path.
     """
     text = str(value or "").strip()
     if not text:
         return None
     try:
-        # `Z` is legal ISO-8601 and is what AWS returns; `fromisoformat` only
-        # learned it in 3.11, and this project still supports 3.10.
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
@@ -237,7 +242,14 @@ def observe(
     action differs for each.
     """
     fresh = is_fresh(confirmed_at, now=now)
-    wrong_account = expect_profile is not None and str(expect_profile or "") != str(profile or "")
+    # "Whose account was that answer from?" only applies when there *was* an
+    # answer. Asking it of a record nothing has ever checked would report a
+    # wrong-account mismatch -- and send the operator at `--profile` -- for a
+    # record whose problem is simply that nobody has looked.
+    answered = present is not None or bool(confirmed_at)
+    wrong_account = (
+        answered and expect_profile is not None and str(expect_profile or "") != str(profile or "")
+    )
     confirmed = bool(present) and fresh and not wrong_account
 
     if confirmed:

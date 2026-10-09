@@ -208,3 +208,18 @@ def test_an_unparseable_timestamp_is_unknown_rather_than_an_exception():
     assert cloud_verified.parse_timestamp("yesterday") is None
     assert cloud_verified.parse_timestamp("") is None
     assert cloud_verified.is_fresh("yesterday", now=NOW) is False
+
+
+def test_a_never_asked_record_is_not_called_a_wrong_account_read():
+    """ "Whose account was that answer from?" only applies when there was one.
+
+    Asking it of a record nothing has checked reported a wrong-account
+    mismatch, and sent the operator at `--profile` over a record whose problem
+    is that nobody has looked.
+    """
+    observation = _observe(
+        present=None, confirmed_at="", profile="", account_label="", expect_profile="nyxgpt"
+    )
+
+    assert observation.usable is False
+    assert observation.reason == cloud_verified.NOT_ASKED
