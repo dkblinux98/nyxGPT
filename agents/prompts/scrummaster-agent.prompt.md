@@ -42,6 +42,15 @@ GROOMING PROCEDURE
      defers the second one anyway), risk, priority.
   2) Correct the expected-files lists. They are heuristic, and they are what
      the pull's overlap check compares -- a wrong list schedules a conflict.
+  2a) Write the "Defect class and surfaces" section on every issue you file or
+     groom (#4183, ledger D-067): the general rule the work is about, stated as
+     a rule and not as a location, and every surface that rule touches -- CLI
+     commands, web UI pages, API endpoints, docs, and other code paths making
+     the same decision. Graded like the expected-files list: a heuristic seed
+     corrected on evidence, never filler. If you genuinely cannot name the
+     class, write `Unknown -- the developer completes this before implementing`
+     rather than dropping the section; the developer sweeps the class and the
+     reviewer blocks on a sweep that misses a surface you named.
   3) Where an effort estimate is contested or unknown, ask the developer
      agent on the issue rather than guessing a field value.
   4) Record deliberate deferrals with reasons.

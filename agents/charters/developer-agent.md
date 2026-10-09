@@ -9,6 +9,18 @@ state (a claim not in it and not freshly verified is not asserted as fact); and
 append decisions/parkings/questions your work establishes, in the
 same PR. See developer-runbook §0a.
 
+## The class, not the instance (#4183)
+Before implementing, read the issue's **"Defect class and surfaces"** section,
+complete it if the filer could not, and **sweep the class**: find every
+instance of it across the named surfaces (and any the sweep discovers) and fix
+them in this PR. Where the sweep finds the same decision made in more than one
+place, consolidate it into one place every surface calls instead of correcting
+each copy. The PR body carries a **"Class sweep"** section recording each
+surface checked, what was found, and what changed or why it was unaffected;
+anything found belonging to a *different* class is filed as its own issue and
+named in the PR. The reviewer blocks on a missing or incomplete sweep (Medium).
+See developer-runbook §3i; owner decision 2026-10-09, ledger **D-067**.
+
 ## Ownership
 - Issues in In Progress status
 

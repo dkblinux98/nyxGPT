@@ -54,6 +54,10 @@ The review-agent OWNS the review process:
   runtime, install or platform behavior must be demonstrated by *execution on
   the target platform*, not by inspection. See §1c — missing executed evidence
   on an in-scope change is a Medium (blocking) finding.
+- **Class-sweep gate (#4183):** the fix must cover the *class* of defect, not
+  the instance the issue happened to name, and the PR must carry a
+  **"Class sweep"** section recording each surface checked. See §1e — a missing
+  or incomplete sweep is a Medium (blocking) finding.
 - **Workflow actor gates (#3600, going-public hardening):** any new or edited `.github/workflows/*.yml` job triggered by `issues`, `issue_comment`, `pull_request`, or `pull_request_review*` that carries write permissions or a secret-backed `GH_TOKEN` MUST gate its `if:` on the actor's identity (`comment.user.login`/`review.user.login` against `vars.HUMAN_OWNER` or the relevant agent var) — a trigger phrase with no author check is a Medium (blocking) finding. See `agents/runbooks/developer-runbook.md` §3b for the pattern and the fork-PR guard requirement on merge/review paths.
 - **Code-scanning gate (#3837):** dispatch `code_scan_report.yml` and read the
   open-alert list before deciding. Report `TOTAL_OPEN` and any alert this PR's
@@ -314,7 +318,7 @@ four it is, and ask for the diagnosis rather than a different patch.
   that will diagnose it, satisfies this gate — that is understanding the limits
   of what is understood. What blocks is a mitigation presented as a fix.
 
-## 1e) Generality gate: is the patch as general as the defect? (#3821)
+## 1e) Generality gate: is the patch as general as the defect? (#3821, #4183)
 
 The second of the agentic first principles — again, stated in full only in
 `CLAUDE.md` § Agentic First Principles — weighs harm to the agentic process
@@ -332,28 +336,66 @@ that broke one `github-script` step turned out to be **47 interpolations across
 6 workflows**, and the sweep found them because someone asked the question
 (ledger **V-027**).
 
+That was 2026-08. The gate as first written asked the reviewer to *notice* the
+class, which worked only when the reviewer happened to see it — so the pattern
+kept shipping: **#4136** was the third occurrence of one stale-cloud-record
+mechanism (three code paths choose the AWS account; the coherence check landed
+in one printer), **#4135** passed every criterion and failed acceptance on the
+rest of the same `ops status` output, **#4179** added an error class to one of
+two copies of the classifier, and **#4174** shipped a rule whose guard no
+workflow ran. Owner decision 2026-10-09 (#4183, ledger **D-067**) made the
+sweep an artifact the reviewer reads instead of a question they must think to
+ask.
+
 **How to run the check.** On any PR that fixes a defect:
 
-1. **Name the fault as a class**, not as a location: "a GitHub Actions
+1. **Read the issue's "Defect class and surfaces" section** and the PR's
+   **"Class sweep"** section (marker `<!-- nyxgpt-class-sweep -->`) together.
+   The first says what the class is and where it lives; the second says what
+   the developer did about each surface. `developer_submit_for_review.sh`
+   appends a **NOT PROVIDED** block when the PR body carries no sweep, so its
+   absence is explicit — a missing sweep is never something you have to infer.
+2. **Name the fault as a class**, not as a location: "a GitHub Actions
    expression interpolated into a `script:` body is JavaScript, not data", not
    "line 812 breaks on apostrophes".
-2. **Search for the class.** `grep` the tree for the construct, not the
-   symptom — the other call sites, the sibling workflows, the parallel branches
-   of the same `if`, the other subclasses that share the base.
-3. **Require one of three outcomes**: the class is fixed in this PR; the search
+3. **Search for the class yourself.** `grep` the tree for the construct, not
+   the symptom — the other call sites, the sibling workflows, the parallel
+   branches of the same `if`, the other subclasses that share the base, and the
+   user-facing surfaces (CLI, web UI, API, docs) the rule reaches. Report the
+   search you ran, so an empty result is distinguishable from a check that
+   never happened.
+4. **Check for a decision made twice.** Where the sweep's own table shows the
+   same decision corrected in several copies — credential resolution, error
+   classification, status computation — ask whether it should have been
+   consolidated into one place every surface calls. A consolidation on a
+   class-sweep fix is **in scope by definition**: do not flag it as scope
+   creep, and do not accept N corrected copies where one source was available
+   (#4179; ledger **D-066**).
+5. **Require one of three outcomes**: the class is fixed in this PR; the search
    is reported and shows the instance really is the only one; or the remaining
    instances are named with a filed issue and a stated reason for deferring.
+   Out-of-class findings must be *filed and named*, not silently fixed here and
+   not dropped.
 
-**Blocking condition.** A narrow patch on a general defect is a **Medium
-(blocking)** finding. Cite the other instances you found as `file:line` — a
-generality finding must name at least one, or it is speculation, which §1b
-forbids.
+**Blocking conditions.** All **Medium (blocking)**:
+
+- a **missing or incomplete "Class sweep"** section — no section at all, the
+  NOT-PROVIDED receipt left standing, or a surface the issue named that the
+  sweep does not account for;
+- an obvious **sibling instance left unfixed**, cited as `file:line`;
+- the same decision **corrected in N copies** where one source was available
+  and the PR does not say why it was not consolidated.
+
+A generality finding must name at least one concrete instance or surface — a
+bare "this might be elsewhere" is speculation, which §1b forbids.
 
 **Symmetry.** This asks for the sweep and its result, not for unbounded scope.
-A reported search that found nothing satisfies the gate. Scaling the fix down
-after the sweep is the owner's call (principle 3): the reviewer's job is to
-make sure the class was looked for and its extent is on the record, never to
-convert every bug fix into a refactor.
+A reported search that found nothing satisfies the gate, and so does
+`**Class:** n/a — feature work, no defect behind it` on a PR with no defect
+behind it: feature work has no class to sweep, exactly as §1d demands no root
+cause from it. Scaling the fix down after the sweep is the owner's call
+(principle 3): the reviewer's job is to make sure the class was looked for and
+its extent is on the record, never to convert every bug fix into a refactor.
 
 ## 1f) Code-scanning gate: has anyone read the alerts? (#3837)
 
@@ -556,6 +598,9 @@ After completing the review:
 - Include findings organized by severity (Critical/Medium/Minor)
 - Include a `### Code Scanning` section reporting `TOTAL_OPEN` from the
   `code_scan_report.yml` run and any alert in a file this PR touches (§1f)
+- Include a `### Class Sweep` section naming the class, whether the PR's sweep
+  covered every surface the issue named, and the search *you* ran (§1e) — so a
+  clean result is distinguishable from a gate that never ran
 - Provide clear recommendation with rationale
 
 ## 5) Automatic execution

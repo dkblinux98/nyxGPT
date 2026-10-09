@@ -67,6 +67,9 @@ REVIEW WORKFLOW
    - List findings by severity with file:line references
    - Include a "### Live Verification" section when step 4 applied
    - Include an "### Executed Verification" section when step 5 applied
+   - Include a "### Class Sweep" section on every review (§1e): the class,
+     whether the PR's sweep covered every surface the issue named, and the
+     search you ran
    - Critical/Medium issues BLOCK merge
    - Minor issues noted but don't block
    - Provide clear recommendation with rationale
@@ -120,9 +123,20 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - Diagnosis gate (#3821, runbook §1d): a fix must name the cause and what
   established it. No stated cause, no evidence behind it, or a cause the
   thread's evidence contradicts, is a Medium (blocking) finding.
-- Generality gate (#3821, runbook §1e): where a fix patches one instance of a
-  fault, ask whether the same fault is elsewhere. A narrow patch on a general
-  defect is a Medium (blocking) finding; cite the other instances found.
+- Generality / class-sweep gate (#3821, #4183, runbook §1e): where a fix
+  patches one instance of a fault, ask whether the same fault is elsewhere. The
+  PR must carry a "## Class sweep" section (marker
+  `<!-- nyxgpt-class-sweep -->`) naming the class, the search run, and a row
+  per surface; `developer_submit_for_review.sh` appends a NOT PROVIDED block
+  when it is absent, so a missing sweep is explicit rather than inferred. Run
+  the search yourself as well and report it in a "### Class Sweep" section.
+  Medium (blocking): a missing or incomplete sweep (a surface the issue named
+  and the sweep does not account for), an obvious sibling instance left
+  unfixed, or the same decision corrected in N copies where one source was
+  available and the PR does not say why. Cite at least one concrete instance;
+  a reported search that found nothing, or feature work with no defect behind
+  it, satisfies the gate. A consolidation on a class-sweep fix is in scope by
+  definition -- never flag it as scope creep.
 - Code quality and maintainability
 - Performance and security considerations
 
