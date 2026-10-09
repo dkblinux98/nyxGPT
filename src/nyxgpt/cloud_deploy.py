@@ -70,6 +70,7 @@ from typing import Any
 from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac, cloud_verified
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.config import VALID_SESSION_BACKENDS
+from nyxgpt.doc_links import doc_url, see_doc
 
 # The same `~/.nyxGPT/cloud` directory `cloud_infra` owns -- one place for
 # everything about a cloud deployment. `cloud_infra.CLOUD_STATE_FILE` (the
@@ -885,7 +886,7 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         raise CloudCommandError(
             f"{backend!r} is not a valid session backend. "
             f"Choose one of: {', '.join(VALID_SESSION_BACKENDS)} "
-            "(see docs/session-storage.md)."
+            f"({see_doc('docs/session-storage.md')})."
         )
     requested_k8s = getattr(args, "kubernetes", None)
     # The substrate carries over only within one target OS, for the same
@@ -913,7 +914,7 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         raise CloudCommandError(
             "--kubernetes is not available on a macOS target: k3s is Linux-only, and an "
             "EC2 Mac is provisioned from the remote Homebrew tap under launchd "
-            "(see docs/cloud.md, 'EC2 Mac targets').\n"
+            f"({see_doc('docs/cloud.md', topic='EC2 Mac targets')}).\n"
             "Deploy the cluster on a Linux target -- `nyxgpt cloud deploy --os linux "
             "--kubernetes` -- or drop --kubernetes to provision this Mac natively."
         )
@@ -930,7 +931,8 @@ def resolve_plan(args: argparse.Namespace) -> DeployPlan:
         raise CloudCommandError(
             f"--session-backend {backend} cannot take effect on a Kubernetes deployment: the "
             "Pods read k8s/configmap.yaml, which sets `session_backend = cassandra` so that "
-            "every api replica shares one session list (see docs/session-storage.md). "
+            "every api replica shares one session list "
+            f"({see_doc('docs/session-storage.md')}). "
             f"Pass --session-backend cassandra, or drop --kubernetes to deploy natively with "
             f"the {backend} backend."
             + (
@@ -1423,7 +1425,7 @@ fi
 # on a cloud instance means chats are JSON files on ephemeral instance disk:
 # invisible to every other deployment mode pointed at the same Cassandra, and
 # gone with the instance. Nothing in this path used to change it, so the
-# cross-mode session guarantee (docs/session-storage.md, #3590) silently did
+# cross-mode session guarantee (__SESSION_STORAGE_DOC__, #3590) silently did
 # not hold for cloud deploys and the only fix was to SSH in and hand-edit
 # config.ini -- exactly the raw-operations flow the wrapped-command
 # requirement forbids. Set it here instead, before `ops install`, so the
@@ -2040,6 +2042,9 @@ def render_provision_script(plan: DeployPlan) -> str:
         .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
+        # The rendered script lands on a machine with no checkout, so its own
+        # comments must not cite repository paths either (#4182).
+        .replace("__SESSION_STORAGE_DOC__", doc_url("docs/session-storage.md"))
         .replace("__NODE_SECTION__", node_section)
         .replace("__LLM_RUNTIME_SECTION__", llm_section)
         .replace("__STACK_BRINGUP_SECTION__", bringup_section)
@@ -2743,7 +2748,7 @@ def _deploy(
         print(
             "Kubernetes substrate: the whole stack runs as Pods on this one "
             f"{instance_type or 'machine'}. See the node-capacity section of "
-            "docs/kubernetes.md for what it reserves"
+            f"{doc_url('docs/kubernetes.md')} for what it reserves"
             + (", and pass --instance-type to size up" if instance_type else "")
             + " -- the install refuses a node that cannot hold the stack before it "
             "builds anything.",
@@ -3644,7 +3649,8 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
             "here. It is a thread in the api process, it ships disabled everywhere, and "
             "this bootstrap just does not turn it on -- enable it from the admin "
             "Self-Heal page or with `nyxgpt self-heal enable` on the instance. Chat, RAG "
-            "and the web UI are unaffected. See docs/cloud.md, 'EC2 Mac targets'."
+            "and the web UI are unaffected; "
+            f"{see_doc('docs/cloud.md', topic='EC2 Mac targets')}."
         )
         # The single most expensive thing about this deploy, said at the end
         # where the operator is actually looking (#3995). A Dedicated Host is
@@ -3700,7 +3706,7 @@ def _print_deploy_summary(result: dict[str, Any]) -> None:
     print(
         "\nNo application port is open in the security group -- the instance's services bind "
         "127.0.0.1 and are reached only through that tunnel "
-        "(product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md).\n"
+        f"({doc_url('product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md')}).\n"
         "If your public IP changes, run `nyxgpt cloud allow-ip`."
     )
     # Everything above scrolls away. This is the command that says it all
@@ -4477,7 +4483,7 @@ def _canary_command(args: argparse.Namespace) -> int:
         raise CloudCommandError(
             "The recorded deployment does not run Kubernetes, and canary rollout needs a "
             "cluster to weight traffic in. Re-deploy with `nyxgpt cloud deploy --kubernetes` "
-            "(see docs/cloud.md#kubernetes-on-the-cloud-target)."
+            f"({see_doc('docs/cloud.md#kubernetes-on-the-cloud-target')})."
         )
     argv = canary_argv(args)
     target = resolve_access_target(args)

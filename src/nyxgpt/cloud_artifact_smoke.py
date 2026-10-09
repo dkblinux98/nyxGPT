@@ -60,6 +60,7 @@ from typing import Any
 
 from nyxgpt import cloud_provision, release_tarball
 from nyxgpt.cloud import NYXGPT_HOME, CloudCommandError
+from nyxgpt.doc_links import doc_url
 from nyxgpt.subprocess_bounds import timeout_result
 
 # The distro the owner's cloud rounds actually run on. Overridable
@@ -1226,7 +1227,7 @@ def smoke_status() -> dict[str, Any]:
             "inject": "nyxgpt cloud smoke --container --inject old-python",
             "status": "nyxgpt cloud smoke --container --status",
         },
-        "docs": "docs/cloud-artifact-smoke.md",
+        "docs": doc_url("docs/cloud-artifact-smoke.md"),
     }
 
 

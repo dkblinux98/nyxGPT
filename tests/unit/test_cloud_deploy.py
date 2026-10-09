@@ -27,6 +27,7 @@ from nyxgpt import (
     cloud_verified,
 )
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
+from nyxgpt.doc_links import doc_url
 
 
 @pytest.fixture(autouse=True)
@@ -2851,6 +2852,9 @@ def test_the_linux_bootstrap_is_untouched_by_the_dispatch():
         .replace("__VERSION__", plan.version)
         .replace("__PROFILES__", ",".join(plan.profiles))
         .replace("__SESSION_BACKEND__", plan.session_backend)
+        # The rendered script's own comments must not cite repository paths
+        # either -- it lands on a machine with no checkout (#4182).
+        .replace("__SESSION_STORAGE_DOC__", doc_url("docs/session-storage.md"))
         .replace("__NODE_SECTION__", cloud_deploy.NATIVE_NODE_SECTION)
         .replace("__LLM_RUNTIME_SECTION__", cloud_deploy.NATIVE_LLM_RUNTIME_SECTION)
         .replace("__STACK_BRINGUP_SECTION__", cloud_deploy.NATIVE_STACK_BRINGUP_SECTION)

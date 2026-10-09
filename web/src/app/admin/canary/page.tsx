@@ -287,8 +287,8 @@ export default function CanaryPage() {
             Gate a gradual weighted rollout of nyxgpt-{component}-canary on live metrics, then
             promote it to nyxgpt-{component}-stable (or roll back). Deploying a version to the
             canary track is <code>nyxgpt canary deploy</code> (#3991); the traffic controls here
-            act on what it deployed. The sole deployment model since blue/green was retired -- see
-            docs/kubernetes.md.
+            act on what it deployed. The sole deployment model since blue/green was retired --
+            see the <a href="/support/docs/kubernetes">Kubernetes guide</a>.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard

@@ -70,6 +70,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from nyxgpt.doc_links import doc_url
+
 #: Where the detail this module deliberately keeps out of its return values
 #: goes instead (#3837, CodeQL #123). Not `nyxgpt.logging`'s configured
 #: logger by name: this module is imported by the CLI, the API and the
@@ -127,7 +129,7 @@ STABLE_CONFIRMATION = "ceremony"
 #: it, and deferring to those deadlocks the cut (see `run_claims_tip`).
 IN_FLIGHT_RUN_STATUSES = ("queued", "in_progress", "waiting", "requested", "pending")
 
-DOCS_ANCHOR = "docs/cloud.md#pypi-publishing-rc-and-stable"
+DOCS_ANCHOR = doc_url("docs/cloud.md#pypi-publishing-rc-and-stable")
 
 # `v3.0.0` -- the release-branch naming this repo uses (CLAUDE.md: master is
 # releases only; work merges to the active release branch).

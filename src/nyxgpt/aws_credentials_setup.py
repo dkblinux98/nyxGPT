@@ -60,6 +60,7 @@ from typing import Any
 
 from nyxgpt import cloud_secrets, config_wizard
 from nyxgpt.config import DEFAULT_CONFIG_PATH
+from nyxgpt.doc_links import see_doc
 from nyxgpt.optional_imports import CLOUD_EXTRA_REMEDY, try_import
 from nyxgpt.secrets_setup import SecretValidationError, mask_secret
 
@@ -262,7 +263,7 @@ SECRET_STORE_REFERENCE_FIELDS: tuple[SecretStoreReferenceField, ...] = (
         description=(
             "Blank for a local deploy ([auth]/[openai]/[github] read from config.ini "
             "as usual). 'ssm' or 'secretsmanager' on a cloud deploy so nyxGPT's own "
-            "secrets are resolved from AWS instead -- see docs/cloud.md."
+            f"secrets are resolved from AWS instead -- {see_doc('docs/cloud.md')}."
         ),
         validator=_validate_secret_store_provider,
     ),

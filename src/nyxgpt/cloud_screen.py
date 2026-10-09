@@ -68,6 +68,7 @@ from typing import Any
 
 from nyxgpt import cloud_deploy, cloud_mac
 from nyxgpt.cloud import CloudCommandError
+from nyxgpt.doc_links import doc_url, see_doc
 
 # Apple's Screen Sharing / VNC port, on the *remote* end. Fixed and not ours
 # to move: macOS's `com.apple.screensharing` job binds it and the launchd
@@ -290,7 +291,7 @@ cat > "$PF_ANCHOR_FILE" <<'NYXGPT_ANCHOR'
 # Screen Sharing is reachable only from this machine's loopback interface,
 # which means only through nyxGPT's authenticated SSH tunnel. Nothing is
 # listening on a non-loopback address
-# (product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md).
+# ({doc_url('product_management/DECISION_PRIVATE_ACCESS_MECHANISM.md')}).
 pass in quick on lo0 proto tcp from any to any port 5900
 block drop in quick proto tcp from any to any port 5900
 NYXGPT_ANCHOR
@@ -905,8 +906,9 @@ def resolve_screen_target(args: argparse.Namespace) -> cloud_deploy.DeployTarget
             + "\nThe reason is the constraint this command exists to keep: Screen Sharing must "
             "be reachable only from the Mac's own loopback interface, and nyxGPT cannot know "
             "what a security group it does not manage exposes. The same scoping applies to "
-            f"`{commands['allow_ip']}` on a `--host` Mac (see docs/cloud.md, 'EC2 Mac "
-            f"targets').\nDeploy a Mac nyxGPT manages with `{commands['deploy']} --os macos`."
+            f"`{commands['allow_ip']}` on a `--host` Mac "
+            f"({see_doc('docs/cloud.md', topic='EC2 Mac targets')}).\n"
+            f"Deploy a Mac nyxGPT manages with `{commands['deploy']} --os macos`."
         )
     # Flags win, then what the deploy recorded -- the same precedence
     # `cloud_deploy.resolve_access_target` applies, so a Mac deployed with a

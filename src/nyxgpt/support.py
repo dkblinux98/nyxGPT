@@ -71,6 +71,7 @@ from urllib.parse import urlencode
 import markdown as markdown_lib
 from bs4 import BeautifulSoup
 
+from nyxgpt import doc_links
 from nyxgpt.version import running_version
 
 #: Where the docs tree lives inside the installed package.
@@ -126,11 +127,16 @@ _PACKAGED_SLUG_SET = frozenset(PACKAGED_SLUGS)
 #: Where support tickets go. This is the *product's* repository, not
 #: anything the install configures: a user filing a ticket is reporting a
 #: problem with nyxGPT, wherever their own agent tooling happens to point.
-ISSUE_REPO_OWNER = "dkblinux98"
-ISSUE_REPO_NAME = "nyxGPT"
-ISSUE_REPO_URL = f"https://github.com/{ISSUE_REPO_OWNER}/{ISSUE_REPO_NAME}"
+#:
+#: Read from `doc_links` rather than declared here (#4182): the CLI and API
+#: messages that name a document resolve their URLs from the same three
+#: constants, and two copies of "which repository and which branch" is two
+#: places for the next divergence.
+ISSUE_REPO_OWNER = doc_links.REPO_OWNER
+ISSUE_REPO_NAME = doc_links.REPO_NAME
+ISSUE_REPO_URL = doc_links.REPO_URL
 ISSUE_FORM_TEMPLATE = "support.yml"
-REPO_DEFAULT_BRANCH = "master"
+REPO_DEFAULT_BRANCH = doc_links.REPO_DEFAULT_BRANCH
 
 #: The label that routes a support ticket, and the only thing that does. The
 #: Support project auto-adds `is:issue is:open label:Support` and every
@@ -183,8 +189,9 @@ TICKET_TYPE_DESCRIPTIONS: dict[str, str] = {
 }
 
 #: The in-app route the docs viewer serves documents from; links between
-#: packaged documents are rewritten onto it.
-DOCS_ROUTE_PREFIX = "/support/docs"
+#: packaged documents are rewritten onto it, and `doc_links.see_doc` names it
+#: when a CLI/API message points at a packaged document (#4182).
+DOCS_ROUTE_PREFIX = doc_links.DOCS_ROUTE_PREFIX
 
 #: Where the UI posts a ticket. Reported in `support_context` rather than
 #: written into the frontend a second time, so the two cannot drift.

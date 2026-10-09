@@ -811,8 +811,10 @@ export default function InfrastructurePage() {
       >
         Full local Terraform and Kubernetes stacks are available today via{' '}
         <code>nyxgpt ops install --terraform</code> and{' '}
-        <code>nyxgpt ops install --kubernetes</code> — see <code>docs/terraform.md</code>{' '}
-        and <code>docs/kubernetes.md</code>. Neither requires a pre-existing cluster: the
+        <code>nyxgpt ops install --kubernetes</code> — see the{' '}
+        <a href="/support/docs/terraform">Terraform guide</a> and the{' '}
+        <a href="/support/docs/kubernetes">Kubernetes guide</a>. Neither requires a pre-existing
+        cluster: the
         Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
         reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
         is. <strong>This page reports; it does not install, deploy or destroy anything.</strong>{' '}

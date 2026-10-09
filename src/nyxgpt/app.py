@@ -143,6 +143,7 @@ from nyxgpt.config import (
     log_effective_config,
     validate_bind_security,
 )
+from nyxgpt.doc_links import doc_url
 from nyxgpt.logging import configure_logging, request_id_var
 from nyxgpt.ollama_client import ModelRuntimeError, get_json, post_json
 from nyxgpt.rag.rag import (
@@ -2219,7 +2220,7 @@ def admin_access_update(
                     "API key rotation via this dashboard is disabled because a cloud "
                     "secrets provider ([secrets] provider) is configured. Rotate the "
                     "value in AWS SSM Parameter Store or Secrets Manager instead -- "
-                    "see docs/cloud.md for the rotation procedure."
+                    f"see {doc_url('docs/cloud.md')} for the rotation procedure."
                 ),
             )
         new_key = secrets.token_urlsafe(32)

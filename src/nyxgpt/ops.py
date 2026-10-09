@@ -76,6 +76,7 @@ from nyxgpt.config import (
     read_grafana_admin_password,
     resolve_grafana_admin_password,
 )
+from nyxgpt.doc_links import doc_url, see_doc
 from nyxgpt.install_mode import (
     CHANNEL_CANDIDATE,
     CHANNEL_DEV,
@@ -2722,7 +2723,7 @@ def _install_from_remote_tap(name: str) -> list[OpsResult]:
             f"\nCandidate channel: the service is named {formula} after its formula "
             f"(not {name}), which is what `brew services list` shows and what "
             "`nyxgpt ops status`, `nyxgpt up` and self-heal resolve it by. "
-            "See docs/homebrew.md#candidate-channel."
+            f"{see_doc('docs/homebrew.md#candidate-channel')}."
         )
     results = [
         OpsResult(
@@ -4519,7 +4520,7 @@ def _takeover_system_ollama_service() -> tuple[bool, list[OpsResult]]:
             "Stopped and disabled system-wide ollama.service",
             "Freed 127.0.0.1:11434 for nyxgpt-ollama.service, which nyxgpt manages "
             "itself (pointed at the shared ~/.nyxGPT/volumes/ollama/models store). "
-            "See docs/systemd.md#ollama.",
+            f"{see_doc('docs/systemd.md#ollama')}.",
         )
     )
     # `disable --now` returns as soon as systemd accepts the job; the socket
@@ -7475,7 +7476,7 @@ CLOUD_DEPLOY_POINTER = (
     "cloud deployment is `nyxgpt cloud infra apply` to provision the AWS substrate "
     "and `nyxgpt cloud deploy` to deploy this stack onto it -- add --kubernetes there "
     "for a single-node k3s cluster running these same k8s/*.yaml manifests (#3956); "
-    "see docs/cloud.md and docs/kubernetes.md"
+    f"{see_doc('docs/cloud.md')}, and {see_doc('docs/kubernetes.md')}"
 )
 
 
@@ -15582,7 +15583,8 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     return (
         f"Log aggregation is enabled and native-mode logs exist under {native_log_dir}, "
         "but the running promtail container has no bind mount for them -- "
-        "native logs are not reaching Loki. See docs/docker-compose.md#log-aggregation."
+        "native logs are not reaching Loki. "
+        f"{see_doc('docs/docker-compose.md#log-aggregation')}."
     )
 
 
@@ -15630,7 +15632,7 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
         "listening there -- spans are being silently dropped and Jaeger will stay "
         "empty. Confirm the otel-collector Compose service (tracing profile) is "
         "running and publishes that port to the host (nyxgpt ops observability). "
-        "See docs/docker-compose.md#distributed-tracing."
+        f"{see_doc('docs/docker-compose.md#distributed-tracing')}."
     )
 
 
@@ -15705,7 +15707,7 @@ def _prometheus_api_scrape_issue(cfg_path: Path | None = None) -> str | None:
         "Prometheus cannot scrape the API's /metrics endpoint "
         f"(job nyxgpt-api is down: {last_error}) -- every Grafana dashboard will render "
         f"empty even though the stack looks healthy.{hint} "
-        "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+        f"{see_doc('docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux')}."
     )
 
 
@@ -15717,7 +15719,7 @@ HOST_RELAY_REVERT_REMEDIATION = (
     "loopback-bound API, so widening the bind is no longer necessary for "
     "observability: set `[api] host = 127.0.0.1` in ~/.nyxGPT/config.ini, then run "
     "`nyxgpt ops env-sync && nyxgpt ops observability && nyxgpt ops restart api`. "
-    "See docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux."
+    f"{see_doc('docs/troubleshooting.md#grafana-dashboards-are-empty-on-linux')}."
 )
 
 
@@ -17009,7 +17011,7 @@ def doctor(_args) -> int:
                 "  Cassandra, model readiness, tracing wiring, the Prometheus scrape and "
                 "the error-tracking DSN are reported against the cluster, not this host."
                 "\n  Every other check below is about this host -- its tools, files, "
-                "services and venv (docs/ops.md)."
+                f"services and venv ({see_doc('docs/ops.md')})."
             )
             if k8s_deployed
             else "  The checks below report on this host."
@@ -19639,7 +19641,8 @@ def _start_observability_stack(
                 "Skipped observability stack (Docker not found)",
                 "Grafana/Loki/Jaeger/GlitchTip only ship as Docker Compose profiles -- "
                 "install Docker, then re-run `nyxgpt ops install` (or `nyxgpt ops "
-                "observability`) to get dashboards. See docs/docker-compose.md.",
+                "observability`) to get dashboards. "
+                f"{see_doc('docs/docker-compose.md')}.",
             )
         ]
 
@@ -20773,8 +20776,8 @@ def sync_variables_to_github_actions(
             OpsResult(
                 True,
                 "No mapped variables have a value set in config.ini -- nothing to sync",
-                "Set the [github]/[homebrew]/[monitoring] keys listed in "
-                "docs/github-tokens.md, then retry.",
+                "Set the [github]/[homebrew]/[monitoring] keys listed at "
+                f"{doc_url('docs/github-tokens.md')}, then retry.",
             )
         ]
 
