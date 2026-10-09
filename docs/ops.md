@@ -536,7 +536,16 @@ Constraints, by design:
   old keg on top of a running dev process.
 - The admin dashboard's **Infrastructure** page carries the same label: its
   Native card is badged `DEV INSTALL` / `ARTIFACT INSTALL` and, in dev mode,
-  names the checkout being served ([ui.md](ui.md)).
+  names the checkout being served ([ui.md](ui.md)). Two further badges say
+  that the label describes nothing live, so the page cannot read as a claim
+  about what is serving (#4182): **`RECORD ONLY`** when a marker exists but no
+  native api/web is registered on the host — rendered as dated history, and
+  rewritten only by `nyxgpt ops install`, so an upgrade or an uninstall since
+  that date is not in it — and **`NOT INSTALLED`** when nothing ever recorded
+  a native install here at all, which is what a Kubernetes- or Compose-only
+  host reads. The `Install history` block of
+  [`nyxgpt ops status`](#nyxgpt-ops-status) draws the same distinction from
+  the same fields.
 - On macOS, `nyxgpt ops down`/`stop` unloads the dev LaunchAgents but leaves
   their plists in `~/Library/LaunchAgents`, so they load again at the next
   login. Two commands remove them outright: switching back with `nyxgpt up`,
@@ -727,22 +736,25 @@ Reports:
     one that api is running with, and the block says which. Never rendered as
     a pass.
 
-  **Nothing at all is printed where the question has no subject**, and that
-  is settled before the api is probed (#4182). A Compose, Terraform or
-  Kubernetes api's interpreter lives in its image, and a host with no native
-  api venv has nothing to compare against at all — in either case there is no
-  question here, so the block is absent whatever the probe would have said.
-  Reporting a probe failure as a fact about the host is the defect this
-  ordering removes: `ops status` on a Kubernetes install printed
+  **Nothing at all is printed where the question has no subject**, and no
+  part of that decision comes from how the probe went (#4182). A Compose,
+  Terraform or Kubernetes api's interpreter lives in its image, and a host
+  with no native api venv has nothing to compare against at all — in either
+  case there is no question here, so the block is absent whatever the probe
+  said or failed to say. Reporting a probe failure as a fact about the host is
+  the defect this removes: `ops status` on a Kubernetes install printed
   `CANNOT DETERMINE — http://127.0.0.1:8000/api/v1/info answered HTTP 401`
   about a native keg comparison that machine had no subject for.
 
-  The ordering is also the cheaper one, which is why the old one is gone
-  rather than merely corrected: locating the native venv is an `is_dir()` on
-  Linux and two `brew` calls on macOS, and when it finds nothing the probe is
-  skipped entirely — so a Compose-only or cluster-only host now pays no
-  loopback read at all, where before it paid one on every `status`, `install`
-  and `doctor`.
+  One of the two scope questions is also asked *earlier* than the probe, and
+  that half is a cost win rather than a correctness one: locating the native
+  venv is an `is_dir()` on Linux and two `brew` calls on macOS, and when it
+  finds nothing the probe is skipped entirely — so a Compose-only or
+  cluster-only host now pays no loopback read at all, where before it paid one
+  on every `status`, `install` and `doctor`. The other — which substrate holds
+  the api port — costs a `docker compose ps` and a cluster survey, so it is
+  still asked after the probe on a host that *does* have a native venv; its
+  verdict then discards the probe's result rather than reporting it.
 
   Why this is its own line rather than a footnote on the version: every other
   line here is derived from disk, and a process outlives the build it was
@@ -856,7 +868,11 @@ Reports:
   deployed. The date matters for the same reason: a marker is only rewritten
   by `nyxgpt ops install`, so an upgrade or an uninstall since then is not
   reflected in it, and the block says so. `nyxgpt ops doctor` prints the same
-  block, from the same renderer, after its own verdict.
+  block, from the same renderer, after its own verdict. A substrate with **no
+  marker** contributes nothing here, and a machine with no markers at all
+  prints no heading: with nothing recorded there is no past install to report,
+  and a default mode listed under "records of past installs" would be a record
+  of something that never happened — the same defect in the other direction.
 - A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
   component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
   stack) for cleanup -- and, when you are removing nyxGPT rather than

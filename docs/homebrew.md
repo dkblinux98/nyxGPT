@@ -506,9 +506,9 @@ nyxgpt ops restart api # the repair, on a MISMATCH
 
 The block is absent where the question has no subject -- a host with no
 native api venv, or one whose api port is held by a Compose/Terraform/
-Kubernetes deployment -- and that is decided before the api is probed, so a
-probe that is refused or unanswered is never reported as a fact about the
-host ([ops.md](ops.md#nyxgpt-ops-status), #4182).
+Kubernetes deployment -- and that is decided from the machine rather than
+from the probe, so a probe that is refused or unanswered is never reported as
+a fact about the host ([ops.md](ops.md#nyxgpt-ops-status), #4182).
 
 `nyxgpt ops restart api` performs the same repair, not merely a service
 restart: on a confirmed mismatch it stops the surviving process by PID first,

@@ -289,3 +289,110 @@ def test_infra_status_still_describes_a_native_install_that_is_registered(monkey
     _infra_status_stubs(monkeypatch, native={"api": "started", "web": "started"})
 
     assert ops.infra_status()["install_mode"]["live"] is True
+
+
+# --- no marker at all is not a record either (#4182, review round 2) ---
+#
+# Everything above writes a marker first, and the history block above is
+# correct for all of it. `read_install_mode()` answers the documented artifact
+# default when there is NO marker, though, so "nothing live" alone was enough
+# to print
+#
+#     Install history -- records of past installs. NOTHING below is running...
+#       native api/web: artifact (published/vendored build -- the repo-less default)
+#
+# undated, on a Kubernetes- or Compose-only host -- a record of an install that
+# never happened. That is the same class as the defect this section fixes, so
+# the record is gated on the marker, not on the absence of services.
+
+
+def test_status_prints_no_native_history_on_a_machine_that_never_installed_one(
+    monkeypatch, capsys, tmp_path
+):
+    """No marker, nothing live -- so nothing to say, and nothing said."""
+    _nothing_native_or_terraform(monkeypatch)
+    assert not install_mode.install_mode_file().exists()
+
+    ops.status(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    assert "native api/web:" not in out
+    assert "Install mode (native api/web):" not in out
+    # With no other substrate recorded either, the whole heading is absent:
+    # an empty "records of past installs" block is itself a claim there are
+    # some.
+    assert HISTORY_HEADING not in out
+
+
+def test_status_still_prints_the_native_history_when_a_marker_exists(monkeypatch, capsys, tmp_path):
+    """The control: the gate must not swallow the case it was carved out of."""
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _nothing_native_or_terraform(monkeypatch)
+
+    ops.status(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    history = _history_block(out)
+    assert any(ln.startswith("  native api/web: artifact") for ln in history.splitlines()), history
+
+
+def _doctor_stubs(monkeypatch, tmp_path):
+    """Enough of `doctor`'s machine to reach its install-mode branch cheaply."""
+    monkeypatch.setattr(ops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ops, "_which", lambda _tool: None)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "installed-package")
+    monkeypatch.setattr(ops, "_stale_venv_doctor_issues", lambda: [])
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: {"api": "none", "web": "none"})
+
+
+def test_doctor_prints_no_native_history_on_a_machine_that_never_installed_one(
+    monkeypatch, capsys, tmp_path
+):
+    """`doctor`'s copy of the same branch, which had the same gap.
+
+    The two commands an operator runs side by side must not present the same
+    (absent) marker differently, so this is asserted on `doctor` too rather
+    than inferred from `status` passing.
+    """
+    _doctor_stubs(monkeypatch, tmp_path)
+    assert not install_mode.install_mode_file().exists()
+
+    ops.doctor(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    assert "native api/web:" not in out
+    assert "Install mode (native api/web):" not in out
+
+
+def test_doctor_still_prints_the_native_history_when_a_marker_exists(monkeypatch, capsys, tmp_path):
+    """The control for `doctor`."""
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _doctor_stubs(monkeypatch, tmp_path)
+
+    ops.doctor(SimpleNamespace())
+    out = capsys.readouterr().out
+
+    history = _history_block(out)
+    assert any(ln.startswith("  native api/web: artifact") for ln in history.splitlines()), history
+
+
+def test_infra_status_says_whether_a_marker_exists_at_all(monkeypatch, tmp_path):
+    """The field the card's fourth state is read from.
+
+    `live: false` with `recorded: false` is "no native install here, and none
+    was ever recorded" -- which the page must not render as a record of the
+    last one.
+    """
+    _infra_status_stubs(monkeypatch, native={"api": "none", "web": "none"})
+    assert not install_mode.install_mode_file().exists()
+
+    payload = ops.infra_status()["install_mode"]
+
+    assert payload["live"] is False
+    assert payload["recorded"] is False
+    assert payload["recorded_at"] == ""
+
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    recorded_payload = ops.infra_status()["install_mode"]
+    assert recorded_payload["recorded"] is True
+    assert recorded_payload["recorded_at"]

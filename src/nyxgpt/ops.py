@@ -2781,25 +2781,76 @@ _BREW_SOFT_FAILURE_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Everything Homebrew wraps around the text of an error line, so the marker
+#: match below is made against the message and never against its decoration.
+#: `onoe` has three renderings of one sentence and ops must read all three
+#: (#4182):
+#:
+#: * plain -- `Error: Failed to fix install linkage`;
+#: * coloured -- `\x1b[31mError\x1b[0m: ...`, which brew emits whenever
+#:   `HOMEBREW_COLOR` is set or it believes it has a terminal, so a captured
+#:   `stderr` is decorated more often than not;
+#: * a GitHub Actions annotation -- `::error::...` (`Homebrew::EnvConfig
+#:   .github_actions?`, set from the runner's own `GITHUB_ACTIONS`), with the
+#:   newlines percent-escaped onto one line.
+#:
+#: The third is why this exists. `macos-brew-smoke.yml`'s #3861 fault
+#: injection reproduces the soft failure correctly on the runner, brew reports
+#: it as `::error::Failed to fix install linkage`, and a parser that only knew
+#: `Error:` read it as "brew reported no post-install soft failure" -- so ops
+#: raised a real install failure over a complete keg, which is the very defect
+#: #3861 fixed, reappearing in the one environment the evidence for it runs in.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+#: Deliberately case-sensitive and colon-anchored. A pip build log carried in
+#: brew's own output is full of lowercase `error: subprocess-exited-with-error`
+#: lines, and loosening either half would let one of those be read as a verdict
+#: Homebrew reached.
+_BREW_ERROR_LINE_RE = re.compile(r"^(?:Error\s*:|::error\b[^:]*::)\s*")
+#: Homebrew's annotation escaping, undone so a marker that brew folded onto one
+#: line still starts the message (`GitHub::Actions::Annotation#escape`).
+_GITHUB_ANNOTATION_UNESCAPE: tuple[tuple[str, str], ...] = (
+    ("%0A", "\n"),
+    ("%0D", "\r"),
+    ("%25", "%"),
+)
+
+
+def _brew_error_message(line: str) -> str | None:
+    """The message of one Homebrew error `line`, or None if it is not one.
+
+    Reads past the decoration described on `_ANSI_ESCAPE_RE` so that the three
+    renderings of `onoe` produce the same message. Returning None for every
+    other line is what keeps an incidental mention in a caveats block or a
+    build log from being read as an error brew raised.
+    """
+    stripped = _ANSI_ESCAPE_RE.sub("", line).strip()
+    match = _BREW_ERROR_LINE_RE.match(stripped)
+    if match is None:
+        return None
+    message = stripped[match.end() :].strip()
+    for escaped, raw in _GITHUB_ANNOTATION_UNESCAPE:
+        message = message.replace(escaped, raw)
+    return message.strip()
+
+
 def _brew_soft_failure_reason(output: str) -> str | None:
     """The Homebrew post-install soft failure `output` reports, or None.
 
     Matches only the `ofail` wordings listed in `_BREW_SOFT_FAILURE_MARKERS`,
-    and only on a line brew itself marked as an error (`Error: ...`), so an
-    incidental mention in a caveats block or in a formula's own build log
+    and only on a line brew itself marked as an error (`_brew_error_message`),
+    so an incidental mention in a caveats block or in a formula's own build log
     cannot be read as one. If Homebrew rewords one of these, this returns None
     and the caller falls back to treating the exit as fatal -- the safe
     direction, and a visible one, because the operator then sees the raw
     Homebrew text in the failure detail.
     """
     for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("Error:"):
+        detail = _brew_error_message(line)
+        if detail is None:
             continue
-        detail = stripped[len("Error:") :].strip()
         for marker in _BREW_SOFT_FAILURE_MARKERS:
             if detail.startswith(marker):
-                return detail
+                return detail.splitlines()[0].strip()
     return None
 
 
@@ -5454,23 +5505,27 @@ def _native_api_build_drift(
     native api INSTALLED here", answered by `_expected_native_api_venv`
     finding a venv on disk.
 
-    **Scope is settled before the probe, and that is #4182's fix.** The probe
-    used to run first, as a cost decision: one 5s loopback read is cheaper
-    than `docker compose ps` plus two `brew` calls. But a probe failure is not
-    a fact about scope, and reporting it as one is what the owner saw -- `ops
-    status` on a Kubernetes host printed `CANNOT DETERMINE -- answered HTTP
-    401` about a native keg comparison that machine had no subject for. The
-    cost objection turns out to be answered by the cheapest gate rather than
-    by the ordering: `_expected_native_api_venv` is a `is_dir()` on Linux and
-    two `brew` calls on macOS, and when it finds nothing there is no question
-    here, so the probe is skipped entirely. That makes this strictly *cheaper*
-    than before on a Compose-only or cluster-only host (no loopback read at
-    all) and correct on every host. The survey is paid only when a native venv
-    really is installed.
+    **No scope answer is ever derived from how the probe went, and that is
+    #4182's fix.** The probe used to run first and its failure was reported as
+    the answer: `ops status` on a Kubernetes host printed `CANNOT DETERMINE --
+    answered HTTP 401` about a native keg comparison that machine had no
+    subject for. Both scope gates below are now decided from the machine --
+    `_in_cluster()`, a venv on disk, which substrate holds the port -- and a
+    `not_applicable` verdict is returned whatever the probe said or failed to
+    say.
 
-    `_api_image_substrate` is consulted after the probe answers, and also when
-    it does not: "the native api is down" and "a Pod is holding :8000" are
-    different states, and only the survey tells them apart.
+    Be precise about the ordering, because it is not uniform and claiming
+    otherwise would be this issue's own defect in a docstring (#4182 review
+    round 2). The *first* gate -- "is a native api installed here at all" --
+    genuinely precedes the probe, and that is also what makes this cheaper
+    than the old arrangement: `_expected_native_api_venv` is an `is_dir()` on
+    Linux and two `brew` calls on macOS, so a Compose-only or cluster-only
+    host pays no loopback read whatsoever. The *second* -- "is an image
+    substrate holding :8000" -- runs after the probe, because it costs a
+    `docker compose ps` and the `kubernetes` survey, and on a host that does
+    have a native venv the common case is that the native api is the thing
+    answering. On that path the probe's result is simply discarded, which is
+    the behavior that matters: it is never reported.
     """
     expected, source = _expected_native_api_venv()
     scope = native_build_scope(
@@ -14251,6 +14306,14 @@ def infra_status() -> dict[str, Any]:
         "live": any(
             mode_info.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
         ),
+        # Whether a marker exists at all, which `live: false` alone cannot say
+        # (#4182 review round 2). `read_install_mode()` falls back to the
+        # documented artifact default, so a host that has never run a native
+        # install reads back `mode: artifact` -- and a card that branched on
+        # `live === false` alone called that "a record of the last native
+        # install" on a machine where there was none. The CLI gates its own
+        # history line on the same field.
+        "recorded": install_mode_state.recorded,
         "recorded_at": install_mode_recorded_at(SUBSTRATE_NATIVE),
         # Which build, not merely which mode (#3861). `known: false` is the
         # honest answer for a machine whose marker predates identities -- the
@@ -15026,12 +15089,21 @@ def _print_running_api_build(drift: BuildDrift) -> None:
     one with no native install there is no question here, and a line saying
     so on every such machine is noise that teaches operators to skip the
     block that matters.
+
+    Where the installed path is a symlink -- which on macOS it always is, by
+    design -- what it resolves to is named beside it, by the shared
+    `installed_prefix_phrase` rather than by a format string of this block's
+    own (#4182). The `opt` path is the one the service execs and so the one
+    worth naming, but it carries no version: an operator reading `installed:
+    /opt/homebrew/opt/nyxgpt-api@3.0.0rc/libexec/venv` has been shown a path
+    that reads exactly the same before and after the upgrade they just ran,
+    which does not answer the question this block is here to answer.
     """
     if drift.state == BUILD_NOT_APPLICABLE:
         return
     print("\nRunning api build (read from the process, not the keg):")
     if drift.state == BUILD_MATCH:
-        print(f"  OK -- executing {drift.expected_prefix}")
+        print(f"  OK -- executing {drift.installed_prefix_phrase}")
         if drift.expected_source:
             print(f"      ({drift.expected_source})")
         return
@@ -15040,7 +15112,7 @@ def _print_running_api_build(drift: BuildDrift) -> None:
         return
     print("  MISMATCH -- the api answering on this host is NOT the installed build.")
     print(f"      running:   {drift.running_prefix}")
-    print(f"      installed: {drift.expected_prefix}")
+    print(f"      installed: {drift.installed_prefix_phrase}")
     print(f"      {drift.detail}")
     print(
         "      The install-mode and version lines above describe what is INSTALLED. "
@@ -15120,9 +15192,19 @@ def status(_args) -> int:
         mode.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
     )
     if not native_installed:
-        install_history.append(
-            install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
-        )
+        # Gated on the MARKER, not merely on "nothing is live" (#4182 review
+        # round 2). `read_install_mode()` returns the documented artifact
+        # default when no marker exists at all, so an ungated branch printed
+        # `Install history ... native api/web: artifact (published/vendored
+        # build -- the repo-less default)`, undated, on a Kubernetes- or
+        # Compose-only host -- a record of a past install that never happened,
+        # which is the same class as the record this section was built to
+        # reposition. No record, no history line. The sibling Terraform and
+        # Kubernetes branches already gate this way.
+        if install_mode.recorded:
+            install_history.append(
+                install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
+            )
     else:
         print(f"\nInstall mode (native api/web): {install_mode.label()}")
         if install_mode.is_dev:
@@ -15394,7 +15476,11 @@ def status(_args) -> int:
             k8s_install_mode, _k8s_mode_source = _k8s_recorded_install_state(
                 _read_k8s_install_record(), in_cluster=_in_cluster()
             )
-            if not _k8s_app_pods_present(pod_states):
+            # Asked once and kept: the answer is read three times below and a
+            # second `_k8s_app_pods_present` call cannot return anything
+            # different, so paying for it twice bought nothing (#4182 review).
+            k8s_app_pods = _k8s_app_pods_present(pod_states)
+            if not k8s_app_pods:
                 # Same distinction the native and Terraform records draw, and
                 # since #4182 the same placement: the marker records what the
                 # last install built, a namespace with no api/web Pods in it
@@ -15402,12 +15488,19 @@ def status(_args) -> int:
                 # history heading rather than above a Pod list as `Install
                 # mode:`. No `substrate` to date it from -- the Kubernetes
                 # record lives in a ConfigMap, not a marker file.
-                install_history.append(
-                    install_history_entry("kubernetes", k8s_install_mode.label())
-                )
+                #
+                # Gated on `recorded` for the reason the native branch is: with
+                # nothing recorded there is no past install to report, and an
+                # `unrecorded (no install-mode marker for this cluster)` line
+                # printed under `records of past installs` is a non-record
+                # dressed as one.
+                if k8s_install_mode.recorded:
+                    install_history.append(
+                        install_history_entry("kubernetes", k8s_install_mode.label())
+                    )
             else:
                 print(f"  Install mode: {k8s_install_mode.label()}")
-            if _k8s_app_pods_present(pod_states) and k8s_install_mode.is_dev:
+            if k8s_app_pods and k8s_install_mode.is_dev:
                 checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
                 if checkout is not None and not checkout.exists():
                     print(
@@ -16980,7 +17073,11 @@ def doctor(_args) -> int:
     native_services = _native_services_snapshot()
     if any(native_services.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS):
         print(f"Install mode (native api/web): {install_mode.label()}")
-    else:
+    elif install_mode.recorded:
+        # `install_mode.recorded`, for the reason spelled out at the same
+        # branch in `status` (#4182): with no marker on the machine the
+        # default mode is a default, not a record, and printing it under
+        # `Install history` claims an install that never ran.
         install_history.append(
             install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
         )

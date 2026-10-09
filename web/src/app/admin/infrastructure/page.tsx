@@ -56,6 +56,13 @@ type InfraStatus = {
     // renders against an api process from before #4182; absent is read as
     // live, which is what it was always assumed to be.
     live?: boolean;
+    // Whether a marker exists at all. `live === false` alone does not say:
+    // the api reads a missing marker as the documented artifact default, so a
+    // host that never ran a native install reports `mode: 'artifact'` too,
+    // and branching on `live` alone described that as a record of a past
+    // install that never happened (#4182). Absent is read as recorded, which
+    // keeps a pre-#4182 api's payload rendering as it did.
+    recorded?: boolean;
     recorded_at?: string;
     // WHICH build, not merely which mode (#3861). A mode cannot tell a 2.1.0
     // keg from a 3.0.0rc12 one -- both are 'artifact' -- which is how four
@@ -98,6 +105,13 @@ type InfraStatus = {
         prefix_exists: boolean;
       } | null;
       expected_prefix: string;
+      // What `expected_prefix` resolves to right now, and `''` when it is not
+      // a symlink. On macOS the expectation is `<prefix>/opt/<formula>/
+      // libexec/venv` by design -- the path the service execs, which follows
+      // a relink -- and it carries no version, so naming only it answers
+      // "which build is installed?" with a string that reads the same before
+      // and after an upgrade (#4182). Optional: a pre-#4182 api omits it.
+      expected_resolved?: string;
       expected_source: string;
       detail: string;
       remediation: string;
@@ -793,6 +807,23 @@ export default function InfrastructurePage() {
   // a `docker-compose.yml` it does not use, above its own list of ready Pods.
   const composeOutOfScope = status?.compose_in_scope === false || inCluster;
 
+  // The Native card's three non-live states, settled once here so the badge
+  // and the paragraph under it cannot disagree (#4182). `live === false` means
+  // nothing native is REGISTERED on this host; what the card may then say
+  // about the install depends on whether anything ever recorded one:
+  //
+  // * a marker exists  -> `RECORD ONLY`, rendered as dated history;
+  // * no marker exists -> `NOT INSTALLED`. The mode in the payload is the
+  //   api's documented artifact default, not a record, and the previous
+  //   rendering called it "a record of the last native install" on a
+  //   Kubernetes- or Compose-only host, where there has never been one.
+  //
+  // `recorded` absent (a pre-#4182 api) is read as recorded, so an older
+  // payload keeps the rendering it had rather than acquiring a new claim.
+  const nativeRecorded = status?.install_mode?.recorded !== false;
+  const nativeRecordOnly = status?.install_mode?.live === false && nativeRecorded;
+  const nativeNeverInstalled = status?.install_mode?.live === false && !nativeRecorded;
+
   return (
     <div style={{ padding: '2rem', maxWidth: '900px', margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
@@ -929,7 +960,9 @@ export default function InfrastructurePage() {
                     {!status.native_probe_available && (
                       <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
                     )}
-                    {status.install_mode?.live === false ? (
+                    {nativeNeverInstalled ? (
+                      <span style={badgeStyle(false, true)}>NOT INSTALLED</span>
+                    ) : nativeRecordOnly ? (
                       <span style={badgeStyle(false, true)}>RECORD ONLY</span>
                     ) : (
                       <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
@@ -960,17 +993,24 @@ export default function InfrastructurePage() {
                 acceptance report is what it is for: a record read as a
                 statement about what is serving. */}
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
-              {status.install_mode?.live === false ? (
+              {nativeNeverInstalled ? (
+                <>
+                  No native api/web is registered on this host, and no{' '}
+                  <code>nyxgpt ops install</code> has recorded one here — so there is no
+                  install mode to report. The stack serving this page is deployed some other
+                  way; see the Kubernetes, Compose and Terraform cards above.
+                </>
+              ) : nativeRecordOnly ? (
                 <>
                   No native api/web is registered on this host. The line below is a{' '}
                   <strong>record of the last native install</strong>
-                  {status.install_mode.recorded_at
+                  {status.install_mode?.recorded_at
                     ? `, recorded ${status.install_mode.recorded_at}`
                     : ''}
                   , not a statement about whatever is serving now — and only{' '}
                   <code>nyxgpt ops install</code> rewrites it, so an upgrade or an uninstall
                   since then is not reflected in it. <br />
-                  {status.install_mode.label}
+                  {status.install_mode?.label}
                 </>
               ) : status.install_mode?.mode === 'dev' ? (
                 <>
@@ -1048,14 +1088,32 @@ export default function InfrastructurePage() {
                     <code>{status.install_mode.running_build.running?.prefix}</code> (python{' '}
                     {status.install_mode.running_build.running?.python}), but the installed
                     service execs{' '}
-                    <code>{status.install_mode.running_build.expected_prefix}</code>. The version
-                    reported everywhere else describes what is installed, not this process.
+                    <code>{status.install_mode.running_build.expected_prefix}</code>
+                    {status.install_mode.running_build.expected_resolved ? (
+                      <>
+                        {' '}
+                        (now{' '}
+                        <code>{status.install_mode.running_build.expected_resolved}</code>)
+                      </>
+                    ) : (
+                      ''
+                    )}
+                    . The version reported everywhere else describes what is installed, not
+                    this process.
                   </p>
+                  {/* The missing venv is the RUNNING process's, and the
+                      sentence names it (#4182). "That path" sat immediately
+                      after the installed path above, so this paragraph read
+                      as a claim that the installed venv was gone — which on
+                      an upgraded machine is the one path here that certainly
+                      exists. The CLI's `classify()` carried the identical
+                      sentence and is fixed the same way. */}
                   {status.install_mode.running_build.running?.prefix_exists === false && (
                     <p style={{ marginBottom: '0.35rem' }}>
-                      That path no longer exists — this process is holding deleted files open,
-                      and the next restart by any path (reboot, self-heal, the Restart control)
-                      will fail to start the API.
+                      <code>{status.install_mode.running_build.running?.prefix}</code> no longer
+                      exists — this process is holding deleted files open, and the next restart
+                      by any path (reboot, self-heal, the Restart control) will fail to start
+                      the API.
                     </p>
                   )}
                   <p style={{ marginBottom: 0 }}>

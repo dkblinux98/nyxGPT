@@ -181,6 +181,18 @@ jobs:
           set -uo pipefail
           OPS_HOME=/tmp/nyxgpt-ops-home-with-key
           out=$( (HOME="$OPS_HOME" nyxgpt ops status; HOME="$OPS_HOME" nyxgpt ops doctor) 2>&1 || true)
+          # The assertion is an ABSENCE, so prove there was output to search
+          # before trusting that the search found nothing (#4182 review round
+          # 2). Both commands are deliberately allowed to exit non-zero --
+          # `doctor` exits 2 on any finding -- so an exit code cannot carry
+          # this, and a pair of crashes would otherwise read as a clean sweep.
+          case "$out" in
+            *"nyxGPT ops status"*"nyxGPT ops doctor"*) ;;
+            *)
+              echo "$out"
+              echo "::error::status/doctor printed no recognisable output -- nothing was scanned"
+              exit 1;;
+          esac
           if echo "$out" | grep -nE '(^|[^/])docs/[a-z0-9-]+\.md|product_management/'; then
             echo "::error::output told the operator to open a path only a checkout has (#4182 finding 3)"
             exit 1
@@ -279,3 +291,37 @@ jobs:
           echo "  verdict at line $verdict, history at line $hist"
           [ "$verdict" -lt "$hist" ] || {
             echo "::error::ops doctor prints install records above its own verdict (#4182 finding 2)"; exit 1; }
+
+      - name: With the markers gone, there is no history to print either
+        # The fault injection run the other way: remove the markers and the
+        # same two commands must say NOTHING about a native or Terraform
+        # install. `read_install_mode()` answers the documented artifact
+        # default when no marker exists, so the first cut of this fix printed
+        #
+        #   Install history -- records of past installs. NOTHING below is ...
+        #     native api/web: artifact (published/vendored build -- the ...)
+        #
+        # undated, on every Kubernetes- or Compose-only host -- a record of an
+        # install that never happened, which is the same class as the record
+        # this job was written for. Proven by running because only a run shows
+        # what the default renders as.
+        run: |
+          set -uo pipefail
+          rm -f "$HOME/.nyxGPT/install-mode.json" "$HOME/.nyxGPT/install-mode-terraform.json"
+          rc=0
+          out=$( (nyxgpt ops status; nyxgpt ops doctor) 2>/dev/null ) || rc=$?
+          echo "$out"
+          # Absence assertions, so the commands' own output is asserted first.
+          case "$out" in
+            *"nyxGPT ops status"*"nyxGPT ops doctor"*) ;;
+            *) echo "::error::status/doctor printed nothing recognisable (rc=$rc) -- nothing was measured"; exit 1;;
+          esac
+          if echo "$out" | grep -q 'Install history'; then
+            echo "::error::an Install history block was printed on a machine with no install-mode markers (#4182)"
+            exit 1
+          fi
+          if echo "$out" | grep -qE 'native api/web:|^Install mode \(native api/web\):'; then
+            echo "::error::a native install mode was reported on a machine that never recorded one (#4182)"
+            exit 1
+          fi
+          echo "  no marker, no record -- in status and doctor alike"
