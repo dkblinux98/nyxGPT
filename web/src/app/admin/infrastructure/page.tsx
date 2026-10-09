@@ -48,6 +48,15 @@ type InfraStatus = {
     checkout: string | null;
     label: string;
     components: string[];
+    // Whether this marker describes anything REGISTERED on the host, and
+    // when it was written (#4182). A marker outlives the install that wrote
+    // it, so without these the card rendered `ARTIFACT INSTALL` over a keg
+    // that had been uninstalled -- the same defect `nyxgpt ops status` had,
+    // on the page it is supposed to agree with. Optional so the page still
+    // renders against an api process from before #4182; absent is read as
+    // live, which is what it was always assumed to be.
+    live?: boolean;
+    recorded_at?: string;
     // WHICH build, not merely which mode (#3861). A mode cannot tell a 2.1.0
     // keg from a 3.0.0rc12 one -- both are 'artifact' -- which is how four
     // install identities accumulated on one machine unseen. `known: false`
@@ -920,9 +929,13 @@ export default function InfrastructurePage() {
                     {!status.native_probe_available && (
                       <span style={badgeStyle(false, true)}>CANNOT DETERMINE</span>
                     )}
-                    <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
-                      {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
-                    </span>
+                    {status.install_mode?.live === false ? (
+                      <span style={badgeStyle(false, true)}>RECORD ONLY</span>
+                    ) : (
+                      <span style={badgeStyle(status.install_mode?.mode !== 'dev', false)}>
+                        {status.install_mode?.mode === 'dev' ? 'DEV INSTALL' : 'ARTIFACT INSTALL'}
+                      </span>
+                    )}
                   </>
                 )}
               </div>
@@ -940,8 +953,26 @@ export default function InfrastructurePage() {
               </p>
             ) : (
             <>
+            {/* A marker with nothing registered behind it is HISTORY, and is
+                said to be history before anything else about it (#4182). The
+                present-tense branches below describe services that are
+                there; this one is reached when none is, and the owner's
+                acceptance report is what it is for: a record read as a
+                statement about what is serving. */}
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
-              {status.install_mode?.mode === 'dev' ? (
+              {status.install_mode?.live === false ? (
+                <>
+                  No native api/web is registered on this host. The line below is a{' '}
+                  <strong>record of the last native install</strong>
+                  {status.install_mode.recorded_at
+                    ? `, recorded ${status.install_mode.recorded_at}`
+                    : ''}
+                  , not a statement about whatever is serving now — and only{' '}
+                  <code>nyxgpt ops install</code> rewrites it, so an upgrade or an uninstall
+                  since then is not reflected in it. <br />
+                  {status.install_mode.label}
+                </>
+              ) : status.install_mode?.mode === 'dev' ? (
                 <>
                   {status.install_mode.components.join(' and ')} run the working tree at{' '}
                   <code>{status.install_mode.checkout ?? 'an unrecorded checkout'}</code> (editable

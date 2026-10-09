@@ -14242,6 +14242,16 @@ def infra_status() -> dict[str, Any]:
         "checkout": install_mode_state.checkout,
         "label": install_mode_state.label(),
         "components": sorted(DEV_LAUNCHD_LABELS),
+        # Whether this marker describes anything that is REGISTERED here, and
+        # when it was written (#4182). Without the pair the card renders
+        # `ARTIFACT INSTALL` over a keg that was uninstalled months ago -- the
+        # same defect `ops status` had, on the page the CLI is supposed to
+        # agree with. `live: false` is not out-of-scope: the record is real
+        # and worth showing, it is just history, and the page says so.
+        "live": any(
+            mode_info.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
+        ),
+        "recorded_at": install_mode_recorded_at(SUBSTRATE_NATIVE),
         # Which build, not merely which mode (#3861). `known: false` is the
         # honest answer for a machine whose marker predates identities -- the
         # page says so rather than presenting the mode as if it identified

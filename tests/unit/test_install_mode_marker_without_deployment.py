@@ -248,3 +248,44 @@ def test_doctor_terraform_marker_with_nothing_deployed_is_reported_as_a_record(
     # to fail `ops verify` on. In particular the missing-checkout issue below
     # is about images that are *running*.
     assert issues == []
+
+
+def _infra_status_stubs(monkeypatch, *, native):
+    """`infra_status` stubs for a host with `native` component states."""
+    monkeypatch.setattr(ops, "_native_services_snapshot", lambda: dict(native))
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {})
+    monkeypatch.setattr(
+        ops, "_docker_container_probe", lambda name: ops.ContainerProbe("absent", known=True)
+    )
+    monkeypatch.setattr(ops, "_which", lambda _tool: None)
+    monkeypatch.setattr(ops, "_in_cluster", lambda: False)
+    monkeypatch.setattr(ops.self_heal, "compose_probe", lambda: ops.self_heal.ComposeProbe(True))
+
+
+def test_infra_status_marks_a_marker_with_nothing_registered_as_a_record(monkeypatch, tmp_path):
+    """The Infrastructure page's Native card, which is the CLI's twin surface.
+
+    Without this the card rendered `ARTIFACT INSTALL` with the marker's label
+    under it on a host whose keg had been uninstalled -- the same defect
+    `ops status` had, on the page the CLI is supposed to agree with (#4182).
+    `live: false` is not out-of-scope: the record is real and worth showing,
+    it is history, and the payload says which.
+    """
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _infra_status_stubs(monkeypatch, native={"api": "none", "web": "none"})
+
+    payload = ops.infra_status()["install_mode"]
+
+    assert payload["live"] is False
+    # Dated, so a reader can weigh the record against what they have done
+    # since -- the owner's said rc17 on a machine last installed at rc21.
+    assert payload["recorded_at"]
+
+
+def test_infra_status_still_describes_a_native_install_that_is_registered(monkeypatch, tmp_path):
+    """The case the distinction must not swallow."""
+    install_mode.write_install_mode(install_mode.INSTALL_MODE_ARTIFACT, None)
+    _infra_status_stubs(monkeypatch, native={"api": "started", "web": "started"})
+
+    assert ops.infra_status()["install_mode"]["live"] is True
