@@ -104,6 +104,7 @@ fault-injection
 artifact-install
 session-backend-fault-injection
 cloud-dev-deploy-smoke
+cloud-identity-prompt-smoke
 cloud-imds-smoke
 cloud-stale-record-smoke
 cloud-status-smoke

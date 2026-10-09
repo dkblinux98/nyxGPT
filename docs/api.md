@@ -1783,6 +1783,13 @@ endpoint on a workstation spends no `kubectl` on it.
 security group admits is a rule, not metadata, and neither an instance nor a
 Pod on it can see it.
 
+`aws_profile`, `aws_account_id` and `ssh_identity_file` (#4186) are read from
+`~/.nyxGPT/cloud/infra.json`, which the account/SSH resolver writes at
+provision time precisely so reporting them later needs no credential and no
+STS call. They are empty for the same reason and under the same sources: a
+machine that did not provision the substrate has no record of which account it
+is in. See [cloud.md](cloud.md#which-account-and-which-ssh-key-4186).
+
 ```json
 {
   "source": "terraform-state",
@@ -1797,6 +1804,9 @@ Pod on it can see it.
   "vpc_id": "vpc-0abc",
   "security_group_id": "sg-0abc",
   "ssh_key_name": "owner-pair",
+  "aws_profile": "nyxgpt",
+  "aws_account_id": "066835328281",
+  "ssh_identity_file": "/Users/owner/.ssh/id_rsa",
   "owner_ip_cidr": "198.51.100.7/32",
   "access_model": {
     "open_ports": [22],
@@ -1813,8 +1823,16 @@ Provision or reconcile the substrate. Body fields are all optional and mirror
 the CLI flags — `region`, `profile`, `owner_ip`, `ssh_key_name`,
 `ssh_public_key`, `instance_type`, `root_volume_size`. Anything omitted falls
 back to the settings saved by the previous run; `owner_ip` defaults to the
-API host's detected public IP. Returns the Terraform outputs and the recorded
-state:
+API host's detected public IP.
+
+The CLI *asks* for the profile and the SSH key when neither a flag nor a saved
+setting names one (#4186); this endpoint never does. An HTTP request is not
+interactive whatever terminal its server process inherited, so the resolver is
+told so explicitly — a request with nothing to default to returns `409` naming
+the missing inputs rather than blocking on a prompt written to a terminal
+nobody is reading.
+
+Returns the Terraform outputs and the recorded state:
 
 ```json
 {

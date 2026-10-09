@@ -74,6 +74,7 @@ def _no_ambient_sources(monkeypatch, tmp_path):
     their `config.ini [cloud]`, their `AWS_PROFILE`, their `~/.ssh` -- and
     passes or fails according to their AWS setup rather than the code.
     """
+    cloud_identity.reset_prompt_cache()
     monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {})
     monkeypatch.setattr(
         cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}
@@ -214,17 +215,34 @@ def test_the_label_says_so_when_the_account_id_could_not_be_read():
 
 
 def test_the_account_prompt_offers_the_resolved_value_as_the_default(monkeypatch):
-    """Enter accepts the default; that is the whole ask in the issue."""
+    """Enter accepts the default, and the default shown is the whole answer.
+
+    The issue is specific about this: the bracketed default is the profile
+    *and* the account id it resolves to, so the account cannot be accepted
+    without having been seen.
+    """
     monkeypatch.setattr(
         cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": "us-east-1"}
     )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
     prompts: list[str] = []
     monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
 
     account = cloud_identity.resolve_account(_args(), interactive=True)
 
     assert account.profile == "nyxgpt"
-    assert prompts == ["AWS profile [nyxgpt]: "]
+    assert prompts == ["AWS profile [nyxgpt (066835328281)]: "]
+
+
+def test_the_prompt_says_in_words_what_enter_does_with_no_profile_resolved(monkeypatch):
+    """`[(none)]` would leave the operator guessing what Enter is about to do."""
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+
+    account = cloud_identity.resolve_account(_args(), interactive=True)
+
+    assert account.profile == ""
+    assert prompts == ["AWS profile (Enter to use boto3's default credential chain): "]
 
 
 def test_a_typed_answer_overrides_the_default(monkeypatch):
@@ -580,3 +598,54 @@ def test_a_recorded_settings_read_that_blows_up_is_a_missing_default(monkeypatch
     monkeypatch.setattr(cloud_infra, "load_settings", _angry)
 
     assert cloud_identity.recorded_settings() == {}
+
+
+# --- Asked once per command ----------------------------------------------
+
+
+def test_a_typed_answer_is_not_asked_for_again(monkeypatch, tmp_path):
+    """One `cloud deploy --os macos` resolves settings four times.
+
+    `cloud_mac` does it three times (pricing, plan, launch) and
+    `cloud_deploy` then calls `apply_infra`. Without the memo the operator is
+    asked the same two questions four times -- and a Dedicated Host
+    allocation is not a flow anyone should be made to re-answer mid-way.
+    """
+    ssh_dir = tmp_path / "ssh"
+    _write_key(ssh_dir, "id_ed25519.pub", ED25519_PUB)
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or "")
+
+    first = cloud_identity.resolve_ssh(_args(), interactive=True, ssh_dir=ssh_dir)
+    asked_once = len(asked)
+    second = cloud_identity.resolve_ssh(_args(), interactive=True, ssh_dir=ssh_dir)
+
+    assert second == first
+    assert len(asked) == asked_once, asked
+
+
+def test_an_explicit_flag_still_beats_a_remembered_answer(monkeypatch):
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": ""}
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: "typed")
+
+    cloud_identity.resolve_account(_args(), interactive=True)
+
+    assert cloud_identity.resolve_account(_args(profile="flag"), interactive=True).profile == (
+        "flag"
+    )
+
+
+def test_an_identical_announcement_is_printed_once(capsys):
+    """Four identical lines read as four decisions; a different line always prints."""
+    account = cloud_identity.AccountChoice(profile="nyxgpt", account_id="066835328281")
+    other = cloud_identity.AccountChoice(profile="other", account_id="999988887777")
+
+    cloud_identity.announce(account)
+    cloud_identity.announce(account)
+    cloud_identity.announce(other)
+
+    printed = capsys.readouterr().out
+    assert printed.count("nyxgpt (066835328281)") == 1
+    assert printed.count("other (999988887777)") == 1

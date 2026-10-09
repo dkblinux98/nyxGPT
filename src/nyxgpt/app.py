@@ -2567,6 +2567,14 @@ def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
 
     The dashboard posts the same inputs the CLI flags carry; anything omitted
     falls back to the settings a previous run saved, exactly as on the CLI.
+
+    `yes=True` is not a confirmation here -- it is what tells the #4186
+    resolver that this caller cannot be asked. The resolver otherwise decides
+    from `sys.stdin.isatty()`, and an api started in a foreground terminal
+    (`uvicorn` run by hand, which is how a developer runs it) has one: a
+    missing SSH key would then block an HTTP request on `input()` until the
+    client gave up, with the question written to a terminal nobody is reading.
+    An HTTP request is never interactive, whatever its process inherited.
     """
     return argparse.Namespace(
         region=payload.get("region") or None,
@@ -2576,6 +2584,7 @@ def _cloud_infra_args(payload: dict[str, Any]) -> argparse.Namespace:
         ssh_key_name=payload.get("ssh_key_name") or None,
         instance_type=payload.get("instance_type") or None,
         root_volume_size=payload.get("root_volume_size") or None,
+        yes=True,
     )
 
 

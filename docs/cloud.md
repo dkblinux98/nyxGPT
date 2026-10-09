@@ -62,11 +62,15 @@ never the instance, so it works from the new IP while still locked out.
 ## `nyxgpt cloud deploy` — the one-command path (P6-11, #3513)
 
 ```bash
-nyxgpt cloud deploy --ssh-public-key ~/.ssh/id_ed25519.pub
+nyxgpt cloud deploy
 ```
 
 One command takes you from nothing to a running, monitored stack you can
-reach from your workstation. It:
+reach from your workstation. It asks which AWS account and which SSH key to
+use, offering a default you take with Enter
+([Which account, and which SSH key](#which-account-and-which-ssh-key-4186));
+pass `--profile` / `--ssh-public-key ~/.ssh/id_ed25519.pub` to answer up
+front, or `--yes` to take the defaults without being asked. Then it:
 
 1. **Applies the substrate** — the same reconcile `nyxgpt cloud infra apply`
    performs, so a re-run converges instead of creating a second deployment.
@@ -103,13 +107,17 @@ reach from your workstation. It:
    the localhost URLs, which are live the moment the command returns.
 
 Every flag `nyxgpt cloud infra apply` accepts (`--region`, `--profile`,
-`--owner-ip`, `--ssh-key-name`, `--instance-type`, `--root-volume-size`)
-works here too and is remembered for later runs, plus:
+`--owner-ip`, `--ssh-key-name`, `--ssh-public-key`, `--instance-type`,
+`--root-volume-size`) works here too and is remembered for later runs. None of
+them is required: `--profile` and the two SSH flags are *asked for* when
+absent, with the resolved value as the default
+([Which account, and which SSH key](#which-account-and-which-ssh-key-4186)).
+Plus:
 
 | Flag | Meaning |
 | --- | --- |
 | `--os {auto,linux,macos}` | Which target OS's bootstrap to drive (default `auto`: `macos` for a `mac*.metal` instance type, `linux` otherwise). With no `--host`, `--os macos` prices and allocates an EC2 Mac Dedicated Host after a typed confirmation. See [EC2 Mac targets](#ec2-mac-targets) |
-| `--yes` | Skip the typed confirmation before allocating a Dedicated Host, so `--os macos` stays scriptable. The cost disclosure is still printed |
+| `--yes` | Skip the typed confirmation before allocating a Dedicated Host, so `--os macos` stays scriptable. The cost disclosure is still printed. Also takes the resolved AWS profile and SSH key without asking (#4186) |
 | `--mac-instance-type` | EC2 Mac type to allocate a host for (default `mac2.metal`, the cheapest family) |
 | `--mac-az` | Availability zone for the Dedicated Host (default: the first zone EC2 says offers the family) |
 | `--mac-ami-id` | Pin the macOS AMI (default: the newest `amzn-ec2-macos-*` for the type's architecture) |
@@ -511,11 +519,19 @@ labelled *recorded here, not confirmed at AWS* rather than reported as current
 when the question cannot be asked — see *Every row is AWS's answer or is
 labelled as not being one* above. `--no-probe` suppresses both network calls,
 which is what makes it the poll-safe form. The summary carries the installed release, the
-instance id and type, the region, the public IP, the security group's single
+instance id and type, the region, the **AWS account** the deployment was made
+in (the profile name and the account id it resolved to, #4186), the **SSH key
+pair** it was given, the public IP, the security group's single
 ingress rule, the enabled observability profiles, the tunnel's state, a
 health verdict, the localhost URLs and, most importantly, the **connection
 target**: the SSH user and identity file the deploy actually used, alongside
 the host. `host` on its own is not an address you can reach.
+
+The AWS account row is there because it was the one provisioning input no
+surface ever reported: an operator with two accounts could not tell which one
+held their instance without an STS call of their own. It reads
+`not recorded here` — never a blank — when asked from a machine that did not
+run the deploy, which is a different claim from "no profile".
 
 On an EC2 Mac deployment the summary adds a **`Screen path`** row — open,
 enabled-but-closed, or never set up — and names
@@ -1275,7 +1291,7 @@ Docker stack (`nyxgpt-tf-vpc`, `nyxgpt-tf-instance-sg`, `nyxgpt-tf-instance`,
 
 ```bash
 # See what would be created; creates nothing.
-nyxgpt cloud infra plan --region us-east-1 --ssh-public-key ~/.ssh/id_ed25519.pub
+nyxgpt cloud infra plan --region us-east-1
 
 # Provision it (idempotent -- a re-run reconciles rather than duplicates).
 nyxgpt cloud infra apply
@@ -1291,10 +1307,13 @@ nyxgpt cloud infra destroy --yes
 ```
 
 Every flag is remembered in `~/.nyxGPT/cloud/infra.json`, so later runs only
-need the ones that change. Exactly one of `--ssh-public-key` (a `.pub` file
-to register as a new key pair) or `--ssh-key-name` (an EC2 key pair that
-already exists in the region) is required — SSH is the only way in, so an
-instance with no key is refused before anything is created.
+need the ones that change. `--ssh-public-key` (a `.pub` file to register as a
+new key pair) and `--ssh-key-name` (an EC2 key pair that already exists in the
+region) are mutually exclusive, and **neither is required**: with neither
+given the command asks, offering the best candidate as the default — see
+[Which account, and which SSH key](#which-account-and-which-ssh-key-4186).
+SSH is still the only way in, so a run that has no candidate *and* cannot ask
+is refused before anything is created.
 
 None of these is on the dashboard. The Infrastructure page's AWS section
 reports what they produced and names the commands themselves — see
@@ -1581,7 +1600,11 @@ do, and then hands the rest to boto3's normal credential resolution
 stores AWS credentials itself. See "Guided AWS credentials setup" below for
 how to get a profile in place.
 
-The order (#3993):
+The order (#3993), implemented once in `nyxgpt.cloud_identity` and shared by
+every `nyxgpt cloud` command since #4186 — which also makes step 1 a *question
+with this order's answer as its default* when there is a terminal, and prints
+the account either way
+([Which account, and which SSH key](#which-account-and-which-ssh-key-4186)):
 
 1. `--profile <name>`
 2. the profile the last `nyxgpt cloud infra apply` recorded
@@ -1619,6 +1642,114 @@ substrate: set `[cloud] profile` in ~/.nyxGPT/config.ini (or pass
 Cloud **secrets** resolution (`[secrets] provider = ssm|secretsmanager`,
 [below](#cloud-secrets-ssm--secrets-manager)) had the same gap and takes the
 same profile: `[secrets] profile` when set, otherwise `[cloud] profile`.
+
+---
+
+## Which account, and which SSH key (#4186)
+
+Every `nyxgpt cloud` command needs two answers before it can do anything: the
+AWS identity to authenticate as, and the SSH key that will be the only way
+into the instance afterwards. Both are resolved in **one** place —
+`nyxgpt.cloud_identity` — so `deploy`, `infra`, `destroy`, `status`, `tunnel`,
+`allow-ip`, `ops`, `credentials` and `canary` cannot disagree about either
+one.
+
+The order is the same for both, and it is the order above: **flag →
+`~/.nyxGPT/cloud/infra.json` → `config.ini [cloud]` → environment**.
+
+### You are asked, with a default
+
+What changed is what happens when a flag is absent. Instead of choosing
+silently (the account) or refusing (the SSH key), the command asks — and the
+default is one keypress away:
+
+```
+$ nyxgpt cloud deploy
+AWS profile [nyxgpt (066835328281)]:
+
+SSH key for the instance (SSH is the only way in):
+  1) EC2 key pair 'nyxgpt-smoke-key' (already in this account; fingerprint matches ~/.ssh/id_rsa.pub)  (default)
+  2) register ~/.ssh/id_ed25519.pub as a new EC2 key pair
+Choice [1]:
+Private key to authenticate with [~/.ssh/id_rsa]:
+AWS account: nyxgpt (066835328281) | region: us-east-1 | SSH key: EC2 key pair 'nyxgpt-smoke-key' … | identity: ~/.ssh/id_rsa
+```
+
+The account prompt shows the profile **and the account id it resolves to**,
+because the name alone is not an answer: two sensibly-named profiles can point
+at any two accounts, and a run in the wrong one is how a security group that
+plainly exists comes back `InvalidGroup.NotFound`.
+
+The SSH candidates are offered in this order:
+
+1. the key the last `cloud infra apply` recorded in `infra.json`;
+2. an EC2 key pair in the chosen account and region **whose fingerprint
+   matches one of your local public keys** — offered by name together with the
+   file it matches, and with that file's private half as the identity to log
+   in with;
+3. a local public key to register as a new pair.
+
+Step 2 is the one that was missing. An account can already hold a usable pair
+— and finding it otherwise means comparing fingerprints by hand, which is
+exactly what the 2026-10-09 acceptance round had to do. Both formats EC2
+reports are matched: the base64 SHA-256 `ssh-keygen -l` prints, and the hex
+MD5 of the DER public key that an *imported* RSA pair is fingerprinted with. A
+pair EC2 **created** is fingerprinted from its private half, which no public
+key can reproduce, so those cannot be matched and are not offered as matches.
+
+### Scriptable, and it never hangs
+
+The prompts need a real terminal on both stdin and stdout. Without one — CI, a
+`nyxgpt cloud ops` invocation over SSH, the admin API — the resolved defaults
+are used and **printed on one line**, so a scripted run still says which
+account and key it used:
+
+```
+AWS account: nyxgpt (066835328281) | region: us-east-1 | SSH key: EC2 key pair 'nyxgpt-smoke-key' | identity: ~/.ssh/id_rsa
+```
+
+Two ways to ask for that explicitly:
+
+| | Meaning |
+| --- | --- |
+| `--yes` | On `cloud infra plan`/`apply` it means only "do not ask". On `cloud infra destroy`, `cloud deploy`, `cloud destroy` and `cloud smoke` it keeps its existing confirmation meaning *and* takes the defaults |
+| `NYXGPT_CLOUD_NONINTERACTIVE=1` | The same, for every `nyxgpt cloud` command — including the read-only ones that have no `--yes`. For a wrapper script that runs with a terminal attached but no human in front of it |
+
+With no usable default, the run fails rather than waiting, and the message
+names every missing input and the flag that supplies it:
+
+```
+nyxgpt cloud infra plan: This run cannot ask (no terminal, or --yes was given) and
+these inputs have no usable default:
+  - an SSH key for the instance (SSH is the only way in; this account has no key pair
+    matching a local public key, and this machine has no public key to register):
+    pass --ssh-key-name <existing-pair> or --ssh-public-key <file.pub>
+Run the command from a terminal to be prompted for them instead, or set them once
+with `nyxgpt cloud credentials-setup`.
+```
+
+You are asked at most once per command, whatever it does internally: a
+`cloud deploy --os macos` resolves its settings four times (pricing, the plan,
+the launch, then the substrate apply) and the answer you typed is carried
+across all four.
+
+### And it stays visible afterwards
+
+The resolver records the account id and the local SSH files alongside the rest
+of `infra.json`, so the choice can be reported later from a local read, with no
+credentials and no API call:
+
+* `nyxgpt cloud status` prints an **AWS account** row (`nyxgpt (066835328281)`)
+  and an **SSH key pair** row;
+* `nyxgpt cloud infra status` carries `aws_profile`, `aws_account_id` and
+  `ssh_key_name`;
+* the dashboard's Infrastructure page shows both on the AWS substrate card and
+  on the cloud deployment card.
+
+All three say `not recorded here` rather than leaving a blank when the question
+is asked from somewhere that cannot answer it — on the instance, or from an api
+Pod, where no `infra.json` exists. That is a different claim from "no profile",
+and the surfaces keep them apart.
 
 ---
 

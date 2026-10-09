@@ -89,6 +89,31 @@ _LOOKUP_READ_TIMEOUT = 5
 # the announcement), and one STS round trip per command is the budget.
 _ACCOUNT_ID_CACHE: dict[str, str] = {}
 
+# Answers the operator actually typed, and lines already printed, for the life
+# of the process. One command resolves settings more than once by design --
+# `cloud_mac` does it three times inside a single `cloud deploy --os macos`
+# (pricing, then the plan, then the launch), and `cloud_deploy` then calls
+# `apply_infra` -- so without this the operator is asked the same two questions
+# four times over and the announcement is printed four times. Only *prompted*
+# answers are remembered: everything else re-derives from the same flags, the
+# same `infra.json` and the same environment, so re-deriving it costs nothing
+# and cannot disagree with itself.
+# Forward-referenced: the two dataclasses are declared below, and
+# `from __future__ import annotations` means this is never evaluated.
+_PROMPTED: dict[str, AccountChoice | SshChoice] = {}
+_ANNOUNCED: set[str] = set()
+
+
+def reset_prompt_cache() -> None:
+    """Forget this process's prompted answers, printed lines and account ids.
+
+    For tests, which run many commands in one interpreter and would otherwise
+    inherit the previous one's answers.
+    """
+    _PROMPTED.clear()
+    _ANNOUNCED.clear()
+    _ACCOUNT_ID_CACHE.clear()
+
 
 # --- Resolved answers ----------------------------------------------------
 
@@ -639,6 +664,13 @@ def resolve_account(
     if interactive is None:
         interactive = prompting_enabled(args)
 
+    # An answer the operator already typed in this command, reused rather than
+    # asked again -- see `_PROMPTED`. A flag still wins over it, because a flag
+    # is this invocation's instruction and the memo is only a memory.
+    remembered = _PROMPTED.get("account")
+    if isinstance(remembered, AccountChoice) and default.source != SOURCE_FLAG:
+        return remembered
+
     account = default
     if lookup_account_id and not account.account_id:
         account = AccountChoice(
@@ -665,14 +697,17 @@ def resolve_account(
     )
     answer = ask(prompt, label)
     if answer in ("", label, account.profile):
+        _PROMPTED["account"] = account
         return account
     chosen = "" if answer == "-" else answer
-    return AccountChoice(
+    typed = AccountChoice(
         profile=chosen,
         region=account.region,
         account_id=account_id(chosen, account.region) if lookup_account_id else "",
         source=SOURCE_PROMPT,
     )
+    _PROMPTED["account"] = typed
+    return typed
 
 
 def _explicit_ssh_choice(args: argparse.Namespace | None) -> SshChoice | None:
@@ -794,6 +829,9 @@ def resolve_ssh(
     explicit = _explicit_ssh_choice(args)
     if explicit is not None:
         return explicit
+    remembered = _PROMPTED.get("ssh")
+    if isinstance(remembered, SshChoice):
+        return remembered
     if account is None:
         account = account_default(args)
     if interactive is None:
@@ -838,13 +876,15 @@ def resolve_ssh(
         if answer in ("", "(ssh defaults)", _tilde(identity_default))
         else str(Path(answer).expanduser())
     )
-    return SshChoice(
+    answered = SshChoice(
         key_name=chosen.key_name,
         public_key=chosen.public_key,
         public_key_path=chosen.public_key_path,
         identity_file=identity,
         source=SOURCE_PROMPT if index or identity != identity_default else chosen.source,
     )
+    _PROMPTED["ssh"] = answered
+    return answered
 
 
 def announce(account: AccountChoice, ssh: SshChoice | None = None) -> str:
@@ -854,6 +894,12 @@ def announce(account: AccountChoice, ssh: SshChoice | None = None) -> str:
     prompt to have shown the operator what it picked, and "it printed the
     account it used" is the difference between #4181's wrong-account run being
     obvious and being invisible.
+
+    An identical line is printed once per process. One command resolves
+    settings up to four times (see `_PROMPTED`), and four identical lines read
+    as four different decisions. A *different* line is always printed -- that
+    would mean two parts of one command disagreed, which is exactly what the
+    operator needs to see.
     """
     parts = [f"AWS account: {account.label}"]
     if account.region:
@@ -863,7 +909,9 @@ def announce(account: AccountChoice, ssh: SshChoice | None = None) -> str:
         if ssh.identity_file:
             parts.append(f"identity: {_tilde(ssh.identity_file)}")
     line = " | ".join(parts)
-    print(line)
+    if line not in _ANNOUNCED:
+        print(line)
+        _ANNOUNCED.add(line)
     return line
 
 
@@ -888,6 +936,7 @@ __all__ = [
     "public_key_blob",
     "public_key_fingerprints",
     "recorded_settings",
+    "reset_prompt_cache",
     "resolve_account",
     "resolve_ssh",
     "ssh_candidates",

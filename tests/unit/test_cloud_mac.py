@@ -36,6 +36,7 @@ MAC_RELEASE_TF = REPO_ROOT / "terraform" / "aws" / "mac-release"
 @pytest.fixture(autouse=True)
 def _isolated_cloud_home(tmp_path, monkeypatch):
     """Point every path the module reads or writes at a temp dir."""
+    cloud_identity.reset_prompt_cache()
     cloud_dir = tmp_path / ".nyxGPT" / "cloud"
     cloud_dir.mkdir(parents=True)
     monkeypatch.setattr(cloud_infra, "CLOUD_DIR", cloud_dir)

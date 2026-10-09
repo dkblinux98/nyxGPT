@@ -911,13 +911,24 @@ credentials_source =
 
 | Key | Description |
 |---|---|
-| `profile` | AWS CLI profile name nyxGPT uses when calling boto3. |
+| `profile` | AWS CLI profile name nyxGPT uses when calling boto3. Third in the shared resolution order -- a `--profile` flag and the profile the last `nyxgpt cloud infra apply` recorded both win over it, and `AWS_PROFILE` is consulted after it. |
 | `region` | Default AWS region for nyxGPT's own AWS API calls. |
 | `credentials_source` | Where the access key pair for `profile` was routed by the guided setup: `profile` (`~/.aws/credentials`), `keychain` (OS keychain), or `ambient` (already available some other way). Set by the guided flow -- not meant to be hand-edited. |
 
 This section **never holds an AWS access key or secret access key** -- see
 [`docs/cloud.md`](cloud.md#guided-aws-credentials-setup-p6-13-3512) for
 where those actually go.
+
+Setting `profile` here is how you make the value this section supplies the
+*default you accept with Enter*: with a terminal, every `nyxgpt cloud` command
+asks which account and which SSH key to use and offers what this order
+resolved, showing the account id the profile points at
+([cloud.md](cloud.md#which-account-and-which-ssh-key-4186)).
+
+| Environment variable | Description |
+|---|---|
+| `NYXGPT_CLOUD_NONINTERACTIVE` | Set to any non-empty value to stop every `nyxgpt cloud` command asking: the resolved defaults are used and printed on one line instead. Already implied when there is no terminal on stdin and stdout (CI, `nyxgpt cloud ops` over SSH, the admin API) and by `--yes`, so this is for a wrapper script that runs with a terminal attached but no human in front of it. A run with no usable default fails naming each missing input and its flag -- it never waits for input (#4186). |
+| `AWS_PROFILE` / `AWS_REGION` / `AWS_DEFAULT_REGION` | boto3's own variables, read as the last step of the shared order above, after `[cloud] profile`/`region`. |
 
 ---
 

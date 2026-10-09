@@ -59,6 +59,7 @@ def _isolated_cloud_state(tmp_path, monkeypatch):
     # too: it is one STS call made to label the account in the prompt and the
     # announcement, and a unit suite must not reach AWS to find out that it has
     # no credentials.
+    cloud_identity.reset_prompt_cache()
     monkeypatch.setattr(cloud_infra, "SETTINGS_FILE", tmp_path / "cloud" / "infra.json")
     monkeypatch.setattr(
         cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}

@@ -31,7 +31,12 @@ documentation are linked out to instead of duplicated here:
   [Reaching the Mac's screen](cloud.md#reaching-the-macs-screen-4121)),
   tunnel, destroy, the end-to-end
   `nyxgpt cloud smoke` test, Terraform state, and credentials setup; see
-  [Cloud (AWS)](cloud.md)
+  [Cloud (AWS)](cloud.md). Every one of these needs an AWS account and most
+  need an SSH key: with a terminal they **ask**, offering the resolved value as
+  a default you take with Enter and showing the account id the profile points
+  at; without one (CI, `--yes`, `NYXGPT_CLOUD_NONINTERACTIVE`) they take those
+  defaults and print them. See
+  [Which account, and which SSH key](cloud.md#which-account-and-which-ssh-key-4186)
 - Cloud artifact smoke (`nyxgpt cloud smoke --container`) — the artifact
   install path on a bare Amazon Linux 2023 container, no AWS account and no
   charges; see [Cloud artifact smoke](cloud-artifact-smoke.md)

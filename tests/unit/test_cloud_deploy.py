@@ -17,13 +17,21 @@ from pathlib import Path
 
 import pytest
 
-from nyxgpt import cloud_deploy, cloud_imds, cloud_infra, cloud_mac, cloud_screen
+from nyxgpt import (
+    cloud_deploy,
+    cloud_identity,
+    cloud_imds,
+    cloud_infra,
+    cloud_mac,
+    cloud_screen,
+)
 from nyxgpt.cloud import CloudCommandError
 
 
 @pytest.fixture(autouse=True)
 def _isolated_cloud_home(tmp_path, monkeypatch):
     """Point every path the module reads or writes at a temp dir."""
+    cloud_identity.reset_prompt_cache()
     cloud_dir = tmp_path / ".nyxGPT" / "cloud"
     cloud_dir.mkdir(parents=True)
     monkeypatch.setattr(cloud_deploy, "CLOUD_DIR", cloud_dir)

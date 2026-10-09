@@ -175,12 +175,11 @@ def drive_under_pty(home: Path, newlines: int = 3, timeout: float = 90.0) -> tup
         if not chunk:
             break
         transcript += chunk
-        # Answer each prompt as it arrives, so the probe does not depend on
-        # guessed sleeps -- a prompt ends in ": " by construction.
+        # Answer each prompt as it arrives rather than on a guessed sleep: a
+        # prompt is the last thing written and ends in ": " by construction,
+        # and the pty echoes our newline back, so the next read no longer
+        # matches. `sent` bounds it either way.
         if sent < newlines and transcript.rstrip(b" ").endswith(b":"):
-            os.write(master, b"\n")
-            sent += 1
-        elif sent < newlines and transcript.endswith(b": "):
             os.write(master, b"\n")
             sent += 1
     try:

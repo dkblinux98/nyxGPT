@@ -40,6 +40,7 @@ def _isolated_cloud_home(tmp_path, monkeypatch):
     # there -- along with the one STS call the resolver makes to label the
     # account, which a unit suite must not attempt, and the operator's real
     # `~/.ssh`, which would otherwise decide what the SSH default is.
+    cloud_identity.reset_prompt_cache()
     monkeypatch.setattr(
         cloud_identity, "configured_reference", lambda: {"profile": "", "region": ""}
     )
@@ -837,7 +838,8 @@ def test_resolve_settings_prompts_for_the_account_with_the_resolved_default(monk
     # Recorded, so `cloud status` and the dashboard can report the account
     # later with no credential and no STS call.
     assert settings.aws_account_id == "066835328281"
-    assert any("AWS profile [nyxgpt]" in p for p in prompts)
+    # The bracketed default carries the account id, not just the name (#4186).
+    assert any("AWS profile [nyxgpt (066835328281)]" in p for p in prompts)
 
 
 def test_resolve_settings_prompts_for_an_ssh_key_instead_of_refusing(monkeypatch, tmp_path):
