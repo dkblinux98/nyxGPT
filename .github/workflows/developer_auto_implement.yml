@@ -598,8 +598,32 @@ jobs:
             ### Step 2: Understand and fix the problem
             1. Read the full issue #${{ github.event.issue.number }} including all comments
             2. The human owner has left a comment explaining what is broken — read it carefully
-            3. Implement the minimal fix to resolve the reported problem
-            4. Add/update tests to cover the fixed scenario
+            3. **CLASS SWEEP FIRST (#4183, developer-runbook §3i).** The owner
+               reported a SYMPTOM; the issue's "Defect class and surfaces"
+               section is an unchecked checklist precisely because the handler
+               could not know the class. Complete it before you change
+               anything:
+               * name the class as a RULE, not as a location;
+               * enumerate the surfaces — every other code path that makes the
+                 same decision (grep for the construct, not the symptom), plus
+                 the CLI/web/API/docs surfaces the rule reaches;
+               * fix every instance in this PR, and where the same decision is
+                 made in several places CONSOLIDATE it into one place every
+                 surface calls rather than correcting each copy;
+               * file anything out of class as its own issue and name it;
+               * write all of it to `/tmp/class-sweep.md` (Write tool) —
+                 `developer_submit_for_review.sh` attaches that file to the PR
+                 body under the `<!-- nyxgpt-class-sweep -->` marker, and
+                 appends a NOT PROVIDED block if you leave it empty.
+               This is the acceptance round that most needs it: #4136 was the
+               third occurrence of one mechanism and #4135 passed every
+               criterion while the same output carried four other wrong
+               things. The reviewer blocks on a missing or incomplete sweep
+               (Medium, review-runbook §1e).
+            4. Implement the fix — minimal against the CLASS, not against the
+               single reported instance
+            5. Add/update tests to cover the fixed scenario and the sibling
+               instances the sweep found
 
             ### Step 3: Validate before committing
             BEFORE committing, run ALL validation checks (ALL must pass):
@@ -884,6 +908,20 @@ jobs:
                - For each: identify the root cause, plan the fix, and anticipate side effects
                - Confirm your plan covers all issues before writing a single line
             3. Implement fixes for each issue
+            4. **Each finding is an INSTANCE — fix its class (#4183,
+               developer-runbook §3i).** A review finding names one place; the
+               same mistake is usually in the sibling call sites, the parallel
+               `if` arm, the other copy of the decision. Before you call a
+               finding fixed, grep for the construct it describes and fix every
+               instance, consolidating into one source where the same decision
+               is made more than once. Then **rewrite `/tmp/class-sweep.md`**
+               (Write tool) with what this round swept — the workflow refreshes
+               the PR body's `## Class sweep` section from that file before it
+               hands the PR back to the reviewer, so you do not touch the PR
+               yourself. If the reviewer's finding IS a missing or incomplete
+               class sweep, that file is the thing being rejected and rewriting
+               it is the fix, not an afterthought. Anything out of class gets
+               its own issue, named in your summary.
 
             ### Step 2.5: Resolve merge conflicts with the release branch (if any)
             Conflicts are YOUR work, not the owner's (owner rule 2026-08-15,
@@ -1084,6 +1122,84 @@ jobs:
 
             Once you have successfully checked out the feature branch, proceed to implementation.
 
+            ## Step 1.5: CLASS SWEEP — the issue is an instance, your fix covers the class (#4183, developer-runbook §3i)
+
+            **Do this BEFORE you write code.** An issue states a symptom, its
+            criteria are written per symptom, and passing each one is not
+            finishing the job — the job is the class. #4136 was the THIRD
+            occurrence of one mechanism (three code paths choose the AWS
+            account; the fix landed in one printer), #4135 passed every
+            criterion and failed acceptance on the rest of the same `ops
+            status` output, #4179 added an error class to one of two copies of
+            the classifier, and #4174 shipped a rule whose guard no workflow
+            ran.
+
+            1. **Read the issue's "Defect class and surfaces" section.** If it
+               is an unchecked checklist or says "Unknown" — which is what the
+               `@acceptance-failure` / `@improvement` handlers deliberately
+               file, because the owner reports a symptom — **you complete it**.
+               State the class as a RULE, not as a location: "the AWS account
+               is resolved from whichever source answers first, and three code
+               paths resolve it independently", not "`ops status` printed the
+               wrong account".
+            2. **Enumerate the surfaces** — the ones the issue names plus the
+               ones you find:
+               * every other code path that makes the SAME decision (grep for
+                 the construct, the config key, the env var, the sibling `if`
+                 arm, the other subclasses of the same base — never for the
+                 symptom);
+               * the user-facing surfaces the rule reaches: CLI commands, web
+                 UI pages, API endpoints, TUI screens;
+               * the prose that states it: `docs/`, help text, UI strings,
+                 `agents/`.
+            3. **Fix every instance in THIS PR**, not just the one the issue
+               named.
+            4. **ONE SOURCE PER DECISION.** Where the sweep finds the same
+               decision made in more than one place (credential resolution,
+               error classification, status computation, a lane transition),
+               CONSOLIDATE it into one place every surface calls rather than
+               correcting each copy — correcting N copies leaves N places for
+               the next divergence, which is how #4179 survived seven weeks. A
+               consolidation on a class-sweep fix is in scope by definition.
+            5. **OUT-OF-CLASS findings are filed, not dropped.** Anything
+               belonging to a DIFFERENT class gets its own issue — report it in
+               the PR body for the workflow to file; do not silently fix it
+               here and do not forget it.
+            6. **Write the sweep to `/tmp/class-sweep.md`.** You do not own the
+               PR body — `developer_submit_for_review.sh` builds it, and it
+               attaches that file under the `<!-- nyxgpt-class-sweep -->`
+               marker the review prompt reads. Use the Write tool. Content:
+
+               ```markdown
+               **Class:** <the rule, stated generally>
+               **Search:** <the greps/paths you actually ran>
+
+               | Surface | Found | Action |
+               |---|---|---|
+               | `src/nyxgpt/ops.py:_account_id` | same precedence bug | fixed (now calls the one resolver) |
+               | `web/src/app/admin/cloud/page.tsx` | reads the API's flag already | unaffected — no change |
+               | `docs/terraform.md` | documents the old precedence | updated |
+
+               **Consolidated:** <the one place the decision now lives, or "n/a">
+               **Out of class, filed:** <one line each, or "none">
+               ```
+
+               If you leave that file empty the script appends a **NOT
+               PROVIDED** block instead, which the reviewer is told to treat as
+               the finding. A skipped sweep is visible either way — write the
+               file.
+
+            A rule this project states but does not ENFORCE is itself a class
+            (#4174): if your change adds a rule to `CLAUDE.md`, a charter, a
+            runbook or a prompt, the sweep includes "what checks this?" — a
+            guard test, a smoke job, or a step that fails the build.
+
+            Feature work with no defect behind it says so in one line
+            (`**Class:** n/a — feature work, no defect behind it`) and lists
+            the surfaces the new behavior must be correct on. The reviewer
+            blocks on a missing or incomplete sweep (Medium, review-runbook
+            §1e).
+
             ## Step 2: Implement the Solution
 
             **Before writing any code**, if your implementation touches an external library
@@ -1093,7 +1209,9 @@ jobs:
             This ensures you use current APIs rather than outdated patterns from training data.
 
             Requirements:
-            - Make the minimal correct change to resolve the issue.
+            - Make the minimal correct change that covers the CLASS the issue
+              belongs to (Step 1.5) — "minimal" is measured against the class,
+              never against the single instance the issue happened to name.
             - Add/update tests for ALL code changes.
 
             ## Step 3: Mandatory Validation Before Commit
@@ -2033,6 +2151,33 @@ jobs:
                 echo "::warning::Failed to rewrite rescue PR body to 'Closes #${ISSUE}'"
             fi
             gh pr ready "$PR" || echo "::warning::Failed to mark PR #$PR ready for review"
+          fi
+
+          # Class sweep (#4183). This path does NOT call
+          # developer_submit_for_review.sh -- the PR already exists -- so
+          # without this step a re-review round keeps whatever sweep (or
+          # NOT PROVIDED receipt) the first submission left, while the reviewer
+          # is asked to decide on the rewritten change. The decision lives in
+          # ONE place for both paths, scripts/agents/lib/class_sweep.py, because
+          # two copies of a decision is the fault this gate exists to catch
+          # (ledger D-066, D-067). Advisory: a failure here never blocks the
+          # handoff, and an older PR branch without the helper reports `error`.
+          if gh pr view "$PR" --json body --jq '.body' > /tmp/existing-pr-body.md; then
+            sweep_outcome="$(python3 scripts/agents/lib/class_sweep.py apply \
+              --body-file /tmp/existing-pr-body.md \
+              --sweep "${NYXGPT_CLASS_SWEEP_FILE:-/tmp/class-sweep.md}" 2>/dev/null \
+              || echo error)"
+            case "$sweep_outcome" in
+              attached|not-provided)
+                gh pr edit "$PR" --body-file /tmp/existing-pr-body.md \
+                  || echo "::warning::Could not refresh PR #$PR's class-sweep section"
+                echo "::notice::Class sweep on PR #$PR: $sweep_outcome"
+                ;;
+              kept) echo "::notice::PR #$PR already carries a written class sweep" ;;
+              *) echo "::warning::Class-sweep helper did not run for PR #$PR (#4183)" ;;
+            esac
+          else
+            echo "::warning::Could not read PR #$PR's body; class-sweep section not refreshed"
           fi
 
           # Assign PR to review-agent

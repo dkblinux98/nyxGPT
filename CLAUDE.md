@@ -226,6 +226,49 @@ missing `npm`, or a path that resolves relative to a repo that is not there.
   cloud instances) all reached owner acceptance testing and were all
   discoverable by running the install once on a clean target.
 
+### The class, not the instance: a fix is done when its class is swept (Owner decision, 2026-10-09, #4183)
+
+**A change is complete when the *class* of defect it addresses is gone from
+the tree, not when the instance someone was looking at stops reproducing.**
+First principle 2 already says a narrow patch on a general defect "has not
+finished the job"; until #4183 nothing in the process asked the question, so
+the same defect kept returning through another copy of the logic or another
+surface (#4136 was the third occurrence of one mechanism; #4135 passed every
+criterion and failed acceptance on the rest of the same output; #4179 ran for
+seven weeks because a classifier arm was added to one of two copies).
+
+Four obligations, one per role:
+
+- **The issue names the class and its surfaces** — the required
+  "Defect class and surfaces" section above. The scrummaster writes it when
+  grooming; the two acceptance handlers write it as a checklist for the
+  developer to complete.
+- **The developer sweeps before implementing.** Find every instance of the
+  class across the named surfaces *and any the sweep discovers*, fix them in
+  this PR, and record the result in a **"Class sweep"** section of the PR body:
+  each surface checked, what was found, and what was changed or why it was
+  unaffected. `agents/runbooks/developer-runbook.md` §3i is the procedure.
+- **One source per decision.** Where the sweep finds the same decision made in
+  more than one place — credential resolution, error classification, status
+  computation — the fix *consolidates* it into one place every surface calls,
+  rather than correcting each copy. Correcting N copies leaves N places for the
+  next divergence (#4179, ledger **D-066**).
+- **Review blocks an unswept fix.** A missing or incomplete "Class sweep" — a
+  surface named in the issue and not addressed, or an obvious sibling instance
+  left unfixed — is a **Medium (blocking)** finding, alongside the existing
+  missing-frontend and missing-executed-evidence findings
+  (`agents/runbooks/review-runbook.md` §1e).
+
+**Out-of-class findings are filed, not dropped.** Anything the sweep turns up
+belonging to a *different* class gets its own issue, named in the PR. It is
+neither silently fixed outside scope nor quietly forgotten — scaling scope is
+the owner's call (principle 3), and the sweep's job is to put the extent of the
+class on the record either way.
+
+The gate asks for the sweep and its result, not for unbounded scope: a reported
+search that found nothing satisfies it, and feature work with no defect behind
+it says so in one line.
+
 ---
 
 ## Operational Command Wrapping (Owner Requirement, 2026-07-15)
@@ -301,6 +344,11 @@ When creating GitHub issues:
 ## Problem / Motivation
 [Why is this needed? What problem does it solve?]
 
+## Defect class and surfaces
+- Class: [the general rule this breaks, stated as a rule — not as a location]
+- Surfaces: [every surface that rule touches — CLI commands, web UI pages,
+  API endpoints, docs, and other code paths making the same decision]
+
 ## Acceptance Criteria
 - [ ] [Specific, testable criterion 1]
 - [ ] [Specific, testable criterion 2]
@@ -312,6 +360,14 @@ When creating GitHub issues:
 ## Related Issues/PRs
 - Related to #[number]
 ```
+
+**"Defect class and surfaces" is required on every issue** (owner decision
+2026-10-09, #4183; ledger D-067) — see "The class, not the instance" below. On
+a feature it names the rule the feature must hold to and the surfaces it must
+hold on; on a defect it names the rule that broke and where else that rule is
+applied. "Unknown — the developer completes this before implementing" is an
+acceptable value and is what the `@acceptance-failure` / `@improvement`
+handlers write; a missing *section* is not.
 
 **Required Project Fields:**
 - Status: Backlog

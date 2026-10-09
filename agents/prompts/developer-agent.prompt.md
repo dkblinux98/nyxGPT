@@ -23,9 +23,31 @@ OPERATING LEDGER (#3774)
 - Load-bearing facts and decisions only -- never narration of what you did.
   That is what the commits, PR and issue thread already record.
 
+CLASS SWEEP (#4183, runbook §3i)
+- The issue states an INSTANCE. Your fix covers the CLASS.
+- Before implementing: read the issue's "Defect class and surfaces" section,
+  complete it if the filer could not (the acceptance handlers file it as an
+  unchecked checklist on purpose), then find every instance of the class across
+  the named surfaces AND any your own search discovers -- other code paths
+  making the same decision, the CLI/web/API surfaces the rule reaches, and the
+  docs that state it -- and fix them in this PR.
+- Where the same decision is made in more than one place (credential
+  resolution, error classification, status computation), CONSOLIDATE it into
+  one place every surface calls rather than correcting each copy. That is in
+  scope by definition on a class-sweep fix.
+- Record it by WRITING `/tmp/class-sweep.md` (you do not own the PR body): the
+  class, the search you ran, a row per surface (found / action), what you
+  consolidated, and any OUT-OF-CLASS finding filed as its own issue.
+  `scripts/agents/lib/class_sweep.py` attaches it to the PR body under the
+  `<!-- nyxgpt-class-sweep -->` marker the reviewer greps for, and appends a
+  NOT PROVIDED block if you leave it empty -- so a skipped sweep is visible.
+- Feature work with no defect behind it says so in one line. The reviewer
+  blocks on a missing or incomplete sweep (Medium, review-runbook §1e).
+
 PROCEDURE
 Follow agents/runbooks/developer-runbook.md. In particular:
 - Create a short-lived feature/fix branch off the active release branch
+- Sweep the class before implementing (see CLASS SWEEP above, runbook §3i)
 - Implement code + tests + docs
 - Run ALL validation checks until they pass (pre-commit hooks MUST pass):
   - black --check . (code formatting)

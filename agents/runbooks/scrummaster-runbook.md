@@ -278,6 +278,36 @@ intervenes manually.
   from the authoring side, and the incident it's based on (#3614/PR #3645:
   an unmarked live-dispatch AC required manual EA intervention).
 
+## Every issue names its defect class and surfaces (#4183)
+
+Owner decision 2026-10-09 (ledger **D-067**); the reasoning is `CLAUDE.md`
+§ "The class, not the instance". An issue states a symptom, its criteria are
+written per symptom, and the developer passes each one — so the class the
+symptom belongs to was never looked for, and the same defect came back through
+another copy of the logic or another surface (#4136 three times, #4179 for
+seven weeks).
+
+Every issue you file or groom carries a **"Defect class and surfaces"**
+section:
+
+- **Class** — the general rule the work is about, stated *as a rule*: "the AWS
+  account is resolved from whichever source answers first, and three code paths
+  resolve it independently", not "`ops status` printed the wrong account".
+- **Surfaces** — every surface that rule touches, listed concretely: the CLI
+  commands, web UI pages, API endpoints and docs, **plus every other code path
+  that makes the same decision**.
+
+Treat it exactly like the expected-files list: a heuristic seed, corrected on
+evidence during grooming, never left as filler — a wrong surfaces list
+schedules an unswept fix the same way a wrong expected-files list schedules a
+conflict. Where you genuinely cannot name the class, write
+`Unknown — the developer completes this before implementing`; the section
+itself is not optional, because its absence is what lets the question go
+unasked. The developer sweeps the class (developer-runbook §3i) and the
+reviewer blocks on a sweep that misses a surface you named (review-runbook
+§1e). The two acceptance-testing handlers write the section as an unchecked
+checklist for the same reason: the owner reports a symptom, not a class.
+
 ## Phase completion
 - When all issues in active Phase are complete:
   - notify human owner for acceptance

@@ -67,6 +67,9 @@ REVIEW WORKFLOW
    - List findings by severity with file:line references
    - Include a "### Live Verification" section when step 4 applied
    - Include an "### Executed Verification" section when step 5 applied
+   - Include a "### Class Sweep" section on every review (§1e): the class,
+     whether the PR's sweep covered every surface the issue named, and the
+     search you ran
    - Critical/Medium issues BLOCK merge
    - Minor issues noted but don't block
    - Provide clear recommendation with rationale
@@ -101,6 +104,17 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - No architecture boundary violations
 - No secrets committed
 - Documentation updated for user-facing changes
+- End-to-end usability (Definition of Done, CLAUDE.md; runbook §1): a nyxGPT
+  user feature must be usable from the WEB INTERFACE, and ops/SRE state must be
+  OBSERVABLE from the SRE/admin dashboard -- while ops/SRE *lifecycle* stays a
+  CLI command the dashboard names as a text pointer (owner decision 2026-08-16,
+  #3804: a UI cannot safely drive the substrate it runs on). A backend-only
+  implementation is a Medium (blocking) finding unless the issue explicitly
+  scopes it backend-only with owner approval and a linked frontend follow-up
+  issue; a NEW ACTING CONTROL on a substrate the dashboard itself runs on is
+  equally a finding. Found by #4183's own class sweep: this finding was stated
+  in CLAUDE.md and the runbook and asked of the review agent nowhere, which is
+  the #4174 pattern -- a rule stated and not enforced (D-011).
 - Inverse-claims check (#3744, runbook §1a): the change does not leave
   falsified claims elsewhere in the tree. Ask what this change makes UNTRUE,
   grep the whole tree (README.md, docs/, agents/, CLAUDE.md,
@@ -120,9 +134,20 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - Diagnosis gate (#3821, runbook §1d): a fix must name the cause and what
   established it. No stated cause, no evidence behind it, or a cause the
   thread's evidence contradicts, is a Medium (blocking) finding.
-- Generality gate (#3821, runbook §1e): where a fix patches one instance of a
-  fault, ask whether the same fault is elsewhere. A narrow patch on a general
-  defect is a Medium (blocking) finding; cite the other instances found.
+- Generality / class-sweep gate (#3821, #4183, runbook §1e): where a fix
+  patches one instance of a fault, ask whether the same fault is elsewhere. The
+  PR must carry a "## Class sweep" section (marker
+  `<!-- nyxgpt-class-sweep -->`) naming the class, the search run, and a row
+  per surface; `developer_submit_for_review.sh` appends a NOT PROVIDED block
+  when it is absent, so a missing sweep is explicit rather than inferred. Run
+  the search yourself as well and report it in a "### Class Sweep" section.
+  Medium (blocking): a missing or incomplete sweep (a surface the issue named
+  and the sweep does not account for), an obvious sibling instance left
+  unfixed, or the same decision corrected in N copies where one source was
+  available and the PR does not say why. Cite at least one concrete instance;
+  a reported search that found nothing, or feature work with no defect behind
+  it, satisfies the gate. A consolidation on a class-sweep fix is in scope by
+  definition -- never flag it as scope creep.
 - Code quality and maintainability
 - Performance and security considerations
 

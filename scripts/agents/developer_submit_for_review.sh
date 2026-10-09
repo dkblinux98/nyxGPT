@@ -19,6 +19,12 @@ Behavior:
   - Refuses to submit an issue labeled `Escalation` (#4134): the owner holds
     it, and it re-enters the loop only when they restore its real label.
   - If pr_body_file is omitted, a deterministic PR body is generated from issue data.
+  - Attaches the developer's class sweep (#4183) from $NYXGPT_CLASS_SWEEP_FILE
+    (default /tmp/class-sweep.md) under the `<!-- nyxgpt-class-sweep -->`
+    marker the review prompt reads. When no sweep was written, a
+    "## Class sweep — NOT PROVIDED" block is appended instead: the gate is the
+    reviewer's to apply, and this makes a skipped sweep visible rather than
+    silent. Advisory -- it never refuses a submission.
 
 Then:
   - PR Assignee -> REPO_OWNER
@@ -334,6 +340,40 @@ if [[ -x "$SWEEP_SCRIPT" || -f "$SWEEP_SCRIPT" ]]; then
   fi
   rm -f "$sweep_md" "$sweep_err"
 fi
+
+# ---- Class sweep: carry it, or say out loud that nobody did (#4183) ----
+# The fix covers the CLASS, not the instance the issue named (owner decision
+# 2026-10-09, ledger D-067; developer-runbook 3i, review-runbook 1e). The
+# developer writes the sweep to NYXGPT_CLASS_SWEEP_FILE (default
+# /tmp/class-sweep.md) -- the same hand-off shape the review brief already uses
+# via /tmp/review-comments.txt -- because this script, not the agent, owns the
+# PR body.
+#
+# Two outcomes, and never a third: the sweep is in the body under the marker
+# the review prompt reads, or a NOT PROVIDED block is, naming what is missing.
+# Silence is what #4183 was filed about -- #4136 reached its third occurrence
+# through reviews that had no artifact to miss. Like the inverse-claims sweep
+# this is ADVISORY at submit time: it never refuses a submission, because the
+# judgement of whether a class was swept is the reviewer's, not a grep's.
+CLASS_SWEEP_FILE="${NYXGPT_CLASS_SWEEP_FILE:-/tmp/class-sweep.md}"
+if [[ -z "$tmp_body" ]]; then
+  tmp_body="$(mktemp)"
+  cat "$body_file" > "$tmp_body"
+  body_file="$tmp_body"
+fi
+class_sweep_outcome="error"
+if sweep_out="$(python3 "$DIR/lib/class_sweep.py" apply \
+      --body-file "$body_file" --sweep "$CLASS_SWEEP_FILE")"; then
+  class_sweep_outcome="$sweep_out"
+fi
+case "$class_sweep_outcome" in
+  attached) echo "[dev] class sweep attached from ${CLASS_SWEEP_FILE} (#4183)" >&2 ;;
+  kept)     echo "[dev] class sweep already in the PR body; left as written" >&2 ;;
+  not-provided)
+    _warn "no class sweep at ${CLASS_SWEEP_FILE} (#4183); the PR body says so explicitly" ;;
+  *)
+    _warn "the class-sweep helper did not run; submitting without it (advisory only)." ;;
+esac
 
 # ---- Record a CI override as a claim, never as an excuse (#3971) ----
 # The legitimate case is a failure that reproduces on the base branch without
