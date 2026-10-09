@@ -15,9 +15,14 @@ on a machine whose very next lines reported every Terraform component
 with no check that anything was deployed at all.
 
 These tests pin the "marker present, nothing deployed" case for all three
-substrates: the mode line may still be printed (it is a real record), but
-nothing below it may describe containers, Pods or services in the present
-tense.
+substrates. #3989 settled that nothing below the mode line may describe
+containers, Pods or services in the present tense; #4182 settled WHERE the
+record goes, because the caveat was not enough. The owner's `ops status` led
+with two install records -- an uninstalled keg and an undeployed Terraform
+tree -- and their acceptance report reads: "They carry a 'this is a record'
+caveat, but an operator reading top-down meets wrong information before the
+right information." So a record now appears only under the trailing
+`Install history` heading, after every line that describes something live.
 """
 
 from __future__ import annotations
@@ -32,7 +37,18 @@ from nyxgpt import install_mode, ops
 
 pytestmark = pytest.mark.unit
 
-RECORD_NOT_STATEMENT = "not a statement about whatever is serving now"
+HISTORY_HEADING = ops.INSTALL_HISTORY_HEADING
+
+
+def _history_block(out: str) -> str:
+    """Everything printed under the `Install history` heading.
+
+    Asserting on this slice rather than on the whole output is the point: a
+    record in the history block is correct and a record anywhere above it is
+    the defect, and only a position-aware assertion can tell those apart.
+    """
+    assert HISTORY_HEADING in out, out
+    return out.split(HISTORY_HEADING, 1)[1]
 
 
 def _cp(returncode=0, stdout="", stderr=""):
@@ -73,12 +89,14 @@ def test_status_terraform_marker_with_nothing_deployed_is_reported_as_a_record(
     ops.status(SimpleNamespace())
     out = capsys.readouterr().out
 
-    tf_line = next(ln for ln in out.splitlines() if "Install mode (terraform):" in ln)
+    history = _history_block(out)
+    tf_line = next(ln for ln in history.splitlines() if ln.startswith("  terraform:"))
     assert "dev" in tf_line
     # The follow-up sentence asserts containers exist. None do.
     assert "the api/web containers were built from that working tree" not in out
-    assert "No Terraform deployment on this machine" in out
-    assert RECORD_NOT_STATEMENT in out
+    # And the record is BELOW everything live, not above it -- the whole of
+    # #4182's finding 2.
+    assert "Install mode (terraform):" not in out
 
 
 def test_status_terraform_marker_still_describes_a_deployment_that_is_running(
@@ -125,10 +143,12 @@ def test_status_native_marker_with_nothing_installed_is_reported_as_a_record(
     ops.status(SimpleNamespace())
     out = capsys.readouterr().out
 
-    assert "Install mode (native api/web): dev" in out
-    assert "No native api/web on this machine" in out
-    assert RECORD_NOT_STATEMENT in out
+    history = _history_block(out)
+    assert any(ln.startswith("  native api/web: dev") for ln in history.splitlines()), history
+    assert "Install mode (native api/web):" not in out
     assert "api/web run the working tree" not in out
+    # The live blocks come first, which is what "reading top-down" means.
+    assert out.index("Deployment mode:") < out.index(HISTORY_HEADING)
 
 
 def _k8s_status_stubs(monkeypatch, pods):
@@ -184,10 +204,11 @@ def test_status_kubernetes_marker_with_no_app_pods_is_reported_as_a_record(
     assert ops.status(SimpleNamespace()) == 0
     out = capsys.readouterr().out
 
-    assert "Install mode: dev (images built from the working tree" in out
+    history = _history_block(out)
+    assert "  kubernetes: dev (images built from the working tree" in history
     assert "The Pods run images built from that working tree" not in out
-    assert "No nyxGPT api/web Pods in this namespace" in out
-    assert RECORD_NOT_STATEMENT in out
+    # The record no longer sits above the Pod list as `Install mode:`.
+    assert "Install mode: dev (images built from the working tree" not in out
 
 
 def test_status_kubernetes_still_describes_pods_that_are_there(monkeypatch, capsys, tmp_path):
@@ -220,9 +241,9 @@ def test_doctor_terraform_marker_with_nothing_deployed_is_reported_as_a_record(
     issues = ops._terraform_install_mode_issues()
     out = capsys.readouterr().out
 
-    assert "Install mode (terraform): dev" in out
-    assert "No Terraform deployment on this machine" in out
-    assert RECORD_NOT_STATEMENT in out
+    history = _history_block(out)
+    assert any(ln.startswith("  terraform: dev") for ln in history.splitlines()), history
+    assert "Install mode (terraform):" not in out
     # A record of a past install is not a fault: nothing to fix, so nothing
     # to fail `ops verify` on. In particular the missing-checkout issue below
     # is about images that are *running*.

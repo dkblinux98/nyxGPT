@@ -515,9 +515,12 @@ def test_status_reports_the_kubernetes_deployments_own_mode(monkeypatch, capsys)
     out = capsys.readouterr().out
 
     # The native marker is attributed to native api/web and is not asserted
-    # of anything that is running...
-    assert "Install mode (native api/web): dev" in out
-    assert "No native api/web on this machine" in out
+    # of anything that is running -- since #4182 by being printed as history
+    # rather than as a leading `Install mode` claim with a caveat under it.
+    history = out.split(ops.INSTALL_HISTORY_HEADING, 1)
+    assert len(history) == 2, out
+    assert "  native api/web: dev" in history[1]
+    assert "Install mode (native api/web):" not in out
     assert "[dev]" not in out
     # ...and the deployment that IS running reports what it was built from.
     assert "Install mode: artifact (images built from the published" in out
@@ -558,7 +561,9 @@ def test_doctor_flags_a_dev_kubernetes_deployment_whose_checkout_is_gone(
     out = capsys.readouterr().out
 
     assert rc == 2
-    assert "Install mode (kubernetes): dev" in out
+    # No Pods anywhere (no kubectl), so the recorded mode is history (#4182).
+    assert "  kubernetes: dev" in out.split(ops.INSTALL_HISTORY_HEADING, 1)[1]
+    assert "Install mode (kubernetes):" not in out
     assert "Dev-mode Kubernetes deployment recorded, but its checkout is missing" in out
 
 

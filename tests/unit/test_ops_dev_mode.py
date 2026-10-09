@@ -726,7 +726,9 @@ def test_doctor_flags_a_dev_install_whose_checkout_is_gone(monkeypatch, capsys, 
     rc = ops.doctor(Args())
     out = capsys.readouterr().out
     assert rc == 2
-    assert "Install mode (native api/web): dev" in out
+    # Nothing native is registered on this machine, so the recorded mode is
+    # printed as history rather than as a present-tense claim (#4182).
+    assert "  native api/web: dev" in out.split(ops.INSTALL_HISTORY_HEADING, 1)[1]
     assert "its checkout is missing" in out
 
 

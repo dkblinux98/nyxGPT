@@ -88,11 +88,13 @@ from nyxgpt.install_mode import (
     MANAGER_SYSTEMD,
     MANAGER_UNKNOWN,
     SUBSTRATE_KUBERNETES,
+    SUBSTRATE_NATIVE,
     SUBSTRATE_TERRAFORM,
     InstallIdentity,
     InstallModeState,
     clear_install_mode,
     install_mode_file,
+    install_mode_recorded_at,
     read_install_mode,
     write_install_mode,
 )
@@ -14956,6 +14958,49 @@ def _print_required_models_status(
             )
 
 
+#: The heading every surface prints install *records* under. One constant
+#: because the whole point is that a reader meets these lines in one place,
+#: clearly separated from what is running, and after it -- never before it.
+INSTALL_HISTORY_HEADING = (
+    "Install history -- records of past installs. NOTHING below is running on this machine:"
+)
+
+
+def install_history_entry(heading: str, label: str, substrate: str = "") -> str:
+    """One `Install history` line: a dated record, never a present-tense claim.
+
+    The single renderer for a recorded-but-not-live install (#4182), called by
+    `ops status` and `ops doctor` so the two cannot present the same marker
+    differently. Both used to lead their output with `Install mode (native
+    api/web): artifact ... version 3.0.0rc17` and then say, underneath, that
+    this was only a record -- and the owner's acceptance report is exactly
+    what that ordering produces: "an operator reading top-down meets wrong
+    information before the right information." A caveat under a claim does
+    not unmake the claim; moving the record out of the claim's position does.
+
+    `substrate` is the marker to date the record from (`install_mode_file`'s
+    argument). Omitted -- or absent, as the Kubernetes record is, since it
+    lives in a ConfigMap rather than a file -- the entry simply carries no
+    date rather than inventing one.
+    """
+    when = install_mode_recorded_at(substrate) if substrate else ""
+    stamp = f" [recorded {when}]" if when else ""
+    return f"  {heading}: {label}{stamp}"
+
+
+def _print_install_history(entries: Sequence[str]) -> None:
+    """Print the `Install history` block, or nothing when there is no history."""
+    if not entries:
+        return
+    print(f"\n{INSTALL_HISTORY_HEADING}")
+    for entry in entries:
+        print(entry)
+    print(
+        "  A marker is only rewritten by `nyxgpt ops install`, so an upgrade or an "
+        "uninstall since that date is not reflected here."
+    )
+
+
 def _print_running_api_build(drift: BuildDrift) -> None:
     """Print the running-build block `status` shows under its install-mode lines (#4133).
 
@@ -15050,29 +15095,38 @@ def status(_args) -> int:
     # dev install that had long since been torn down. The Terraform line
     # below and the Kubernetes section further down report those deployments'
     # own recorded modes (#3835, #3834).
+    #
+    # A marker with nothing live behind it is HISTORY, and since #4182 it is
+    # printed as history -- in the trailing section, not in this leading
+    # position with a caveat underneath. The caveat was there and it was not
+    # enough: the owner's acceptance report says "an operator reading
+    # top-down meets wrong information before the right information", about
+    # output whose first two lines described a keg that had been uninstalled
+    # and a Terraform deployment that was not there.
+    install_history: list[str] = []
     install_mode = read_install_mode()
     native_installed = any(
         mode.native.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS
     )
-    print(f"\nInstall mode (native api/web): {install_mode.label()}")
     if not native_installed:
-        print(
-            "  No native api/web on this machine -- that is a record of the last native "
-            "install, not a statement about whatever is serving now."
+        install_history.append(
+            install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
         )
-    elif install_mode.is_dev:
-        checkout = Path(install_mode.checkout) if install_mode.checkout else None
-        if checkout is not None and not checkout.exists():
+    else:
+        print(f"\nInstall mode (native api/web): {install_mode.label()}")
+        if install_mode.is_dev:
+            checkout = Path(install_mode.checkout) if install_mode.checkout else None
+            if checkout is not None and not checkout.exists():
+                print(
+                    f"  WARNING: that checkout no longer exists ({checkout}) -- api/web are "
+                    "running code that may be gone. Re-run `nyxgpt up --dev` from a checkout, "
+                    "or `nyxgpt up` to return to the artifact path."
+                )
             print(
-                f"  WARNING: that checkout no longer exists ({checkout}) -- api/web are "
-                "running code that may be gone. Re-run `nyxgpt up --dev` from a checkout, "
-                "or `nyxgpt up` to return to the artifact path."
+                "  api/web run the working tree (editable venv + Next dev server); "
+                "restart a service to pick up new code. Artifact-path behavior "
+                "(published tap/tarball) is NOT what is being exercised here."
             )
-        print(
-            "  api/web run the working tree (editable venv + Next dev server); "
-            "restart a service to pick up new code. Artifact-path behavior "
-            "(published tap/tarball) is NOT what is being exercised here."
-        )
 
     # Which build the api is ACTUALLY executing, read from the process rather
     # than from the Cellar (#4133). Printed directly under the install-mode
@@ -15092,36 +15146,33 @@ def status(_args) -> int:
 
     terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
-    if terraform_deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists():
+    if terraform_deployed:
         # Attributed the same way as the native line above, and printed only
         # when there is a Terraform deployment to describe (#3835). `deployed`
         # matters here: a running stack with no marker is reported as not
         # recorded rather than as the artifact default, which for Terraform
         # would assert the opposite of the truth.
-        print(
-            f"Install mode (terraform): {terraform_install_mode.label(deployed=terraform_deployed)}"
-        )
-        if not terraform_deployed:
-            # The marker alone is enough to print the line above, so this
-            # branch is reached whenever a Terraform install ran on this
-            # machine at some point -- including one that failed, or one that
-            # has since been torn down. Saying so is the whole point (#3989):
-            # the dev follow-up below used to be printed unconditionally and
-            # asserted, in the present tense, that api/web containers exist
-            # and describes what they were built from, on a machine where
-            # `docker cassandra: absent` and every Terraform component
-            # `absent` appeared three lines later. Mirrors the native block
-            # above, which has always drawn this distinction.
-            print(
-                "  No Terraform deployment on this machine -- that is a record of the "
-                "last Terraform install, not a statement about whatever is serving now."
-            )
-        elif terraform_install_mode.is_dev:
+        print(f"Install mode (terraform): {terraform_install_mode.label(deployed=True)}")
+        if terraform_install_mode.is_dev:
             print(
                 "  the api/web containers were built from that working tree, not from "
                 "published images -- artifact-path behavior is NOT what is being "
                 "exercised here."
             )
+    elif install_mode_file(SUBSTRATE_TERRAFORM).exists():
+        # A Terraform install ran on this machine at some point -- including
+        # one that failed, or one that has since been torn down -- and
+        # nothing from it is up. #3989 said so in a caveat under the claim;
+        # #4182 moves the record itself out of the claim's position, because
+        # the owner read `Install mode (terraform): dev (... working tree)`
+        # as a description of a deployment they did not have.
+        install_history.append(
+            install_history_entry(
+                "terraform",
+                terraform_install_mode.label(deployed=False),
+                SUBSTRATE_TERRAFORM,
+            )
+        )
 
     print("\nDeployment mode:")
     for component in ("api", "web", "ollama"):
@@ -15332,17 +15383,20 @@ def status(_args) -> int:
             k8s_install_mode, _k8s_mode_source = _k8s_recorded_install_state(
                 _read_k8s_install_record(), in_cluster=_in_cluster()
             )
-            print(f"  Install mode: {k8s_install_mode.label()}")
             if not _k8s_app_pods_present(pod_states):
-                # Same distinction the native and Terraform lines draw
-                # (#3989): the marker records what the last install built,
-                # and a namespace with no api/web Pods in it is not running
-                # any of it.
-                print(
-                    "  No nyxGPT api/web Pods in this namespace -- that is a record of the "
-                    "last Kubernetes install, not a statement about whatever is serving now."
+                # Same distinction the native and Terraform records draw, and
+                # since #4182 the same placement: the marker records what the
+                # last install built, a namespace with no api/web Pods in it
+                # is not running any of it, and a record belongs under the
+                # history heading rather than above a Pod list as `Install
+                # mode:`. No `substrate` to date it from -- the Kubernetes
+                # record lives in a ConfigMap, not a marker file.
+                install_history.append(
+                    install_history_entry("kubernetes", k8s_install_mode.label())
                 )
-            elif k8s_install_mode.is_dev:
+            else:
+                print(f"  Install mode: {k8s_install_mode.label()}")
+            if _k8s_app_pods_present(pod_states) and k8s_install_mode.is_dev:
                 checkout = Path(k8s_install_mode.checkout) if k8s_install_mode.checkout else None
                 if checkout is not None and not checkout.exists():
                     print(
@@ -15410,6 +15464,11 @@ def status(_args) -> int:
                         f"stable={c['stable']['state']} ({c['stable']['version'] or 'n/a'}) | "
                         f"canary={c['canary']['state']} ({c['canary']['version'] or 'n/a'})"
                     )
+
+    # LAST, and that position is the fix (#4182): every line above describes
+    # something this machine is actually doing, and every line below is a
+    # record of something it did.
+    _print_install_history(install_history)
 
     print(
         "\nCleanup: `nyxgpt ops stop <target>` stops one component (native and/or Compose), "
@@ -16041,8 +16100,13 @@ def _foreign_native_service_issues(identity: InstallIdentity) -> list[str]:
     ]
 
 
-def _terraform_install_mode_issues() -> list[str]:
+def _terraform_install_mode_issues(history: list[str] | None = None) -> list[str]:
     """Print the Terraform deployment's install mode and return its issues (#3835).
+
+    `history` is `doctor`'s install-history list (#4182). With nothing
+    deployed, the recorded mode is appended there instead of printed here:
+    this function runs in the middle of `doctor`'s checks, so a record printed
+    inline lands above live findings and reads as one.
 
     Separate from the native install mode `doctor` reports just above the
     call: it is a different deployment, installed independently, and
@@ -16072,17 +16136,19 @@ def _terraform_install_mode_issues() -> list[str]:
     if not (deployed or install_mode_file(SUBSTRATE_TERRAFORM).exists()):
         return []
     state = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
-    print(f"Install mode (terraform): {state.label(deployed=deployed)}")
     if not deployed:
         # Reached whenever a marker exists and nothing is up -- a torn-down
-        # or failed Terraform install. Printed, never raised: a record of a
-        # past install is not a fault. Said out loud because the line above
-        # otherwise reads as a description of a running stack (#3989).
-        print(
-            "  No Terraform deployment on this machine -- that is a record of the "
-            "last Terraform install, not a statement about whatever is serving now."
-        )
+        # or failed Terraform install. Recorded, never raised: a record of a
+        # past install is not a fault. #3989 printed it here with a caveat
+        # under it; #4182 moves it to the history block, because a caveat
+        # under a present-tense claim does not unmake the claim.
+        entry = install_history_entry("terraform", state.label(deployed=False), SUBSTRATE_TERRAFORM)
+        if history is None:
+            print(f"\n{INSTALL_HISTORY_HEADING}\n{entry}")
+        else:
+            history.append(entry)
         return []
+    print(f"Install mode (terraform): {state.label(deployed=True)}")
     if not state.recorded:
         print(
             "  (nothing recorded what these containers were built from -- redeploy with "
@@ -16889,8 +16955,23 @@ def doctor(_args) -> int:
     # deployments' own modes reported beside it when there are any (#3834,
     # #3835): they are separate installs and one line cannot speak for all of
     # them.
+    # A marker with nothing live behind it is history here too, and printed
+    # under the same heading `status` uses, by the same renderer (#4182) --
+    # two commands an operator runs side by side must not present the same
+    # marker one way and the other way.
+    install_history: list[str] = []
     install_mode = read_install_mode()
-    print(f"Install mode (native api/web): {install_mode.label()}")
+    # `_native_services_snapshot`, not `detect_deployment_mode`: the question
+    # is only "is a native api/web registered here", and the full survey would
+    # add a `docker compose ps` and a Terraform read to a command that does
+    # not otherwise take them (first principle 1).
+    native_services = _native_services_snapshot()
+    if any(native_services.get(component, "none") != "none" for component in DEV_LAUNCHD_LABELS):
+        print(f"Install mode (native api/web): {install_mode.label()}")
+    else:
+        install_history.append(
+            install_history_entry("native api/web", install_mode.label(), SUBSTRATE_NATIVE)
+        )
     k8s_install_mode = read_install_mode(substrate=SUBSTRATE_KUBERNETES)
     # Whether the checks below should be asking the cluster rather than this
     # host (#3987). Gated on the marker so a machine that has never deployed
@@ -16905,7 +16986,15 @@ def doctor(_args) -> int:
     )
     k8s_deployed = k8s.deployed
     if k8s_install_mode.recorded:
-        print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
+        if k8s_deployed:
+            print(f"Install mode (kubernetes): {k8s_install_mode.label()}")
+        else:
+            # The marker outlives the deployment, so a torn-down cluster left
+            # `doctor` naming an install mode for Pods that are not there --
+            # and then reporting on this host instead (#4182).
+            install_history.append(
+                install_history_entry("kubernetes", k8s_install_mode.label(), SUBSTRATE_KUBERNETES)
+            )
         # Said out loud, next to the mode, so the checks below are read
         # against the right machine (#3987) -- doctor otherwise names a
         # Kubernetes install mode and then reports exclusively on this host.
@@ -16930,7 +17019,7 @@ def doctor(_args) -> int:
     issues += _dev_install_checkout_issues(install_mode)
 
     issues += _foreign_native_service_issues(install_mode.identity)
-    issues += _terraform_install_mode_issues()
+    issues += _terraform_install_mode_issues(install_history)
     issues += _running_api_build_doctor_issues()
 
     config_issues, cfg_parser = _host_config_doctor_issues()
@@ -17027,6 +17116,11 @@ def doctor(_args) -> int:
     issues += _stale_venv_doctor_issues()
     issues += _stale_terraform_state_issues()
     issues += _dual_stack_conflict_issues()
+
+    # After every check, for the same reason `status` prints it last (#4182):
+    # a record of a past install must not be the first thing an operator reads
+    # about the machine they are diagnosing.
+    _print_install_history(install_history)
 
     if issues:
         print("nyxGPT ops doctor: FAIL")
