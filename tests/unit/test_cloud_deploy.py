@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxgpt import cloud_deploy, cloud_infra, cloud_mac, cloud_screen
+from nyxgpt import cloud_deploy, cloud_imds, cloud_infra, cloud_mac, cloud_screen
 from nyxgpt.cloud import CloudCommandError
 
 
@@ -3335,3 +3335,90 @@ def test_a_failed_linux_deploy_still_reads_the_substrate_fields(
     out = capsys.readouterr().out
     assert "NOT COMPLETED" in out
     assert "sg-0abc" in out
+
+
+# --- The resolver's answer reaches the commands that log in (#4186) -------
+
+
+def test_resolve_target_falls_back_to_the_recorded_identity_file(_isolated_cloud_home, tmp_path):
+    """Accepting a matched key pair at the deploy prompt is also the login key.
+
+    The resolver wrote the private half beside the pair it chose, so `cloud
+    ops`, `tunnel`, `screen` and `credentials` do not have to be told
+    `--identity-file` again on every invocation.
+    """
+    _write_cloud_state(_isolated_cloud_home)
+    key = tmp_path / "id_rsa"
+    key.write_text("x", encoding="utf-8")
+    (_isolated_cloud_home / "infra.json").write_text(
+        json.dumps(
+            {
+                "aws_region": "us-east-1",
+                "owner_ip_cidr": "198.51.100.7/32",
+                "ssh_key_name": "nyxgpt-smoke-key",
+                "ssh_identity_file": str(key),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cloud_deploy.resolve_target(_args()).identity_file == str(key)
+
+
+def test_an_explicit_identity_file_still_wins_over_the_recorded_one(_isolated_cloud_home, tmp_path):
+    _write_cloud_state(_isolated_cloud_home)
+    recorded = tmp_path / "id_rsa"
+    recorded.write_text("x", encoding="utf-8")
+    explicit = tmp_path / "other_key"
+    explicit.write_text("x", encoding="utf-8")
+    (_isolated_cloud_home / "infra.json").write_text(
+        json.dumps(
+            {
+                "aws_region": "us-east-1",
+                "owner_ip_cidr": "198.51.100.7/32",
+                "ssh_identity_file": str(recorded),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    target = cloud_deploy.resolve_target(_args(identity_file=str(explicit)))
+
+    assert target.identity_file == str(explicit)
+
+
+def test_the_account_row_names_the_profile_and_the_account_id():
+    assert cloud_deploy._account_row("nyxgpt", "066835328281") == "nyxgpt (066835328281)"
+
+
+def test_the_account_row_is_explicit_about_what_it_does_not_know():
+    """A blank would read as 'no profile', which is a different claim (D-018)."""
+    assert cloud_deploy._account_row("", "") == "not recorded here"
+    assert "not recorded" in cloud_deploy._account_row("nyxgpt", "")
+    assert "default credential chain" in cloud_deploy._account_row("", "066835328281")
+
+
+def test_deploy_status_carries_the_account_and_key_for_the_status_surfaces(
+    _isolated_cloud_home, monkeypatch
+):
+    """`nyxgpt cloud status` and the dashboard's cloud card read these two keys."""
+    _write_cloud_state(_isolated_cloud_home)
+    (_isolated_cloud_home / "infra.json").write_text(
+        json.dumps(
+            {
+                "aws_region": "us-east-1",
+                "owner_ip_cidr": "198.51.100.7/32",
+                "aws_profile": "nyxgpt",
+                "aws_account_id": "066835328281",
+                "ssh_key_name": "nyxgpt-smoke-key",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
+
+    status = cloud_deploy.deploy_status()
+
+    assert status["aws_profile"] == "nyxgpt"
+    assert status["aws_account_id"] == "066835328281"
+    assert status["ssh_key_name"] == "nyxgpt-smoke-key"

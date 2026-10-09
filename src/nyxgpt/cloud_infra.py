@@ -846,7 +846,13 @@ def infra_status() -> dict[str, Any]:
             "vpc_id": state.get("vpc_id") or "",
             "subnet_id": state.get("subnet_id") or "",
             "security_group_id": state.get("security_group_id") or "",
-            "ssh_key_name": state.get("ssh_key_name") or "",
+            # The record behind the Terraform output, for the same reason the
+            # region and instance type above read it (#4186): the key pair is
+            # the one the resolver chose and wrote down, so an apply whose
+            # output read failed -- or one made with `--ssh-key-name`, where
+            # Terraform registers nothing to output -- still reports which key
+            # the deployment was given.
+            "ssh_key_name": state.get("ssh_key_name") or settings.get("ssh_key_name") or "",
         }
 
     return {

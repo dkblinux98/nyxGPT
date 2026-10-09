@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nyxgpt import cloud_infra, cloud_mac
+from nyxgpt import cloud_identity, cloud_infra, cloud_mac
 from nyxgpt.cloud import CloudCommandError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1610,3 +1610,30 @@ def test_a_fresh_confirmation_counts():
     _record_host(mac_host_present=True, mac_verified_at=now.isoformat())
 
     assert cloud_mac.host_confirmed_this_run(cloud_mac.load_mac_record(), now=now) is True
+
+
+# --- Credential profile resolution (#4186) -------------------------------
+
+
+def test_record_profile_reads_the_whole_documented_chain(monkeypatch, tmp_path):
+    """`_record_profile` was the second hand-written copy, and a short one.
+
+    It read the flag and `infra.json` and stopped, so an operator who had set
+    `[cloud] profile` (or `AWS_PROFILE`) and never run `cloud infra apply` had
+    their EC2 Mac Dedicated Host looked up in whichever account boto3's
+    default profile names -- a host that costs a non-cancellable 24-hour
+    minimum, reported absent because the query went to the wrong place. It
+    delegates to the one resolver now.
+    """
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {})
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": ""}
+    )
+
+    assert cloud_mac._record_profile(argparse.Namespace(profile=None)) == "nyxgpt"
+
+
+def test_record_profile_still_lets_the_flag_win(monkeypatch):
+    monkeypatch.setattr(cloud_identity, "recorded_settings", lambda: {"aws_profile": "recorded"})
+
+    assert cloud_mac._record_profile(argparse.Namespace(profile="flag")) == "flag"

@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud, cloud_identity, cloud_infra
+from nyxgpt import cloud, cloud_identity, cloud_imds, cloud_infra
 from nyxgpt.cloud import CloudCommandError
 
 REPO_TERRAFORM_AWS = "terraform/aws"
@@ -807,3 +807,131 @@ def test_infra_command_status_prints_json(capsys):
     args = argparse.Namespace(infra_cmd="status")
     assert cloud_infra.infra_command(args) == 0
     assert json.loads(capsys.readouterr().out)["provisioned"] is False
+
+
+# --- The shared account/SSH resolver (#4186) -----------------------------
+#
+# `resolve_settings` no longer walks its own chain: it calls
+# `nyxgpt.cloud_identity`, which is also what `cloud`, `cloud_mac` and
+# `cloud_deploy` call. These pin the three behaviours the issue is about -- the
+# account is asked for with a visible default, a missing SSH key is a question
+# rather than a wall, and a run with no terminal takes the defaults and says
+# which ones it took.
+
+
+def test_resolve_settings_prompts_for_the_account_with_the_resolved_default(monkeypatch):
+    """Enter accepts; the prompt shows the profile the chain resolved."""
+    monkeypatch.setattr(
+        cloud_identity,
+        "configured_reference",
+        lambda: {"profile": "nyxgpt", "region": "us-east-1"},
+    )
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+
+    settings = cloud_infra.resolve_settings(_args())
+
+    assert settings.aws_profile == "nyxgpt"
+    # Recorded, so `cloud status` and the dashboard can report the account
+    # later with no credential and no STS call.
+    assert settings.aws_account_id == "066835328281"
+    assert any("AWS profile [nyxgpt]" in p for p in prompts)
+
+
+def test_resolve_settings_prompts_for_an_ssh_key_instead_of_refusing(monkeypatch, tmp_path):
+    """The owner hit the refusal twice in one acceptance round; it is a question now."""
+    ssh_dir = tmp_path / "ssh"
+    ssh_dir.mkdir()
+    (ssh_dir / "id_ed25519.pub").write_text("ssh-ed25519 AAAAC3Nza test@host\n", encoding="utf-8")
+    (ssh_dir / "id_ed25519").write_text("not a real key\n", encoding="utf-8")
+    monkeypatch.setattr(cloud_identity, "SSH_DIR", ssh_dir)
+    monkeypatch.setattr(cloud_identity, "prompting_enabled", lambda args=None: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    settings = cloud_infra.resolve_settings(_args(ssh_key_name=None, ssh_public_key=None))
+
+    assert settings.ssh_public_key == "ssh-ed25519 AAAAC3Nza test@host"
+    assert settings.ssh_identity_file == str(ssh_dir / "id_ed25519")
+
+
+def test_resolve_settings_announces_the_account_and_key_on_the_scripted_path(monkeypatch, capsys):
+    """`--yes`/no TTY must print what it chose -- there was no prompt to show it."""
+    monkeypatch.setattr(cloud_identity, "account_id", lambda profile, region="": "066835328281")
+    monkeypatch.setattr(
+        cloud_identity, "configured_reference", lambda: {"profile": "nyxgpt", "region": "us-east-1"}
+    )
+
+    cloud_infra.resolve_settings(_args(yes=True))
+
+    printed = capsys.readouterr().out
+    assert "nyxgpt (066835328281)" in printed
+    assert "existing-pair" in printed
+
+
+def test_a_scripted_run_never_waits_for_input(monkeypatch):
+    """The hang this must not have: `--yes` with a stdin nobody will ever write to."""
+
+    def _refuse(prompt):
+        raise AssertionError(f"a scripted run prompted: {prompt!r}")
+
+    monkeypatch.setattr("builtins.input", _refuse)
+
+    assert cloud_infra.resolve_settings(_args(yes=True)).ssh_key_name == "existing-pair"
+
+
+def test_the_recorded_account_is_not_passed_to_terraform(monkeypatch):
+    """`terraform/aws/variables.tf` declares no such variables.
+
+    A var-file naming an undeclared variable is noise on every single run at
+    best, so the recorded-only fields are kept out of the rendered tfvars
+    while still reaching `infra.json`.
+    """
+    settings = cloud_infra.InfraSettings(
+        aws_region="us-east-1",
+        owner_ip_cidr="198.51.100.7/32",
+        ssh_key_name="pair",
+        aws_account_id="066835328281",
+        ssh_identity_file="/home/x/.ssh/id_rsa",
+        ssh_public_key_path="/home/x/.ssh/id_rsa.pub",
+    )
+    rendered = cloud_infra.render_tfvars(settings)
+
+    assert "aws_account_id" not in rendered
+    assert "ssh_identity_file" not in rendered
+    assert "ssh_public_key_path" not in rendered
+    # But they survive the round trip through the record.
+    cloud_infra.save_settings(settings)
+    reloaded = cloud_infra.saved_settings()
+    assert reloaded is not None
+    assert reloaded.aws_account_id == "066835328281"
+    assert reloaded.ssh_identity_file == "/home/x/.ssh/id_rsa"
+
+
+def test_infra_status_reports_the_account_the_substrate_was_provisioned_in(monkeypatch):
+    """Visible afterwards, from a local read (#4186's last acceptance criterion)."""
+    monkeypatch.setattr(cloud_infra, "_load_cloud_state", lambda: {"instance_id": "i-123"})
+    monkeypatch.setattr(cloud_imds, "instance_facts", lambda: None)
+    cloud_infra.save_settings(
+        cloud_infra.InfraSettings(
+            aws_region="us-east-1",
+            owner_ip_cidr="198.51.100.7/32",
+            ssh_key_name="nyxgpt-smoke-key",
+            aws_profile="nyxgpt",
+            aws_account_id="066835328281",
+        )
+    )
+
+    status = cloud_infra.infra_status()
+
+    assert status["aws_profile"] == "nyxgpt"
+    assert status["aws_account_id"] == "066835328281"
+    assert status["ssh_key_name"] == "nyxgpt-smoke-key"
+
+
+def test_no_operator_facing_field_cites_a_repository_path():
+    """#4182. The reader has no checkout, so a decision-record filename is dead text."""
+    reachability = cloud_infra.infra_status()["access_model"]["reachability"]
+
+    assert "product_management/" not in reachability
