@@ -49,9 +49,11 @@ type SelfHealStatus = {
   enabled: boolean;
   mode: DetectedMode;
   // Where the observability tier was read from this pass (#3828):
-  // 'kubernetes' when the cluster answered for it, 'compose' otherwise -- chosen
-  // by what answers, not by where this process runs (#4137). Absent
-  // from an older API, which only ever read it from Compose.
+  // 'kubernetes' when the cluster answered for it, 'compose' otherwise. Never
+  // chosen by where this process runs (#4137), and since #4184 read off the
+  // one substrate decision -- which prefers what the run DECLARED over what
+  // answers, because during a deployment's own creation nothing answers yet.
+  // Absent from an older API, which only ever read it from Compose.
   observability_source?: 'compose' | 'kubernetes';
   // Which substrate this pass was about, and how that was decided (#4184).
   // One decision, made by the API from `substrate.decide`, carried here so

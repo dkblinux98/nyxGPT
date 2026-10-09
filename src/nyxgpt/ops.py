@@ -15409,7 +15409,11 @@ def status(_args) -> int:
 
     Where a Kubernetes deployment is present it is named in the "Deployment
     mode" block and the required-model check is asked of the *in-cluster*
-    Ollama rather than this host's (#3987) -- see `_k8s_deployment_pods`.
+    Ollama rather than this host's (#3987) -- see `_k8s_deployment_pods`. The
+    native install-mode line is printed only where the native install is what
+    serves (#4184): on a cluster-served host it is history, through the same
+    `install_history_entry` renderer `doctor` uses, because being registered
+    here is not the same question as being what answers.
 
     Its Kubernetes observability block reports what each backend has RECEIVED
     as well as which workloads are ready (`_k8s_observability_data_flow`).
@@ -17330,6 +17334,17 @@ def doctor(_args) -> int:
     construction. See "Which machine a `doctor` check is about" above
     `_k8s_deployment_config` for the rule and the sweep behind it (#3987,
     extended to the container/file/tool/service checks by #4137).
+
+    **Which substrate those branches take is ONE decision** (`#4184`,
+    `deployment_substrate`), made before a single record is printed, and every
+    branch below reads it rather than asking its own version of the question.
+    Two consequences the owner's k3s instance needed: the native install-mode
+    line is printed only where the native install is what *serves* -- a marker
+    on a cluster-served host is history, under the same heading `status` uses
+    -- and the Cassandra/tracing/scrape/DSN/model branches follow the decision
+    rather than `k8s.deployed`, so a run that declared Kubernetes, or a host
+    whose bridge is serving while the Pod read failed, is not handed a host
+    reading with a host remedy.
 
     Every finding this prints comes from a NAMED helper, and that is a
     requirement rather than a style (#4137): `tests/unit/test_ops_doctor_

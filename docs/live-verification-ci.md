@@ -432,7 +432,7 @@ and screenshots make verifiable in the review loop:
   frees `127.0.0.1:8000`, uninstalls k3s, frees 6443, and is a no-op on a
   second pass (which is what every first deploy runs). That last one is only
   meaningful with a cluster actually running, which is why it is here and not
-  in a unit test. Seven of its twelve steps carry fault injections rather than
+  in a unit test. Nine of its fourteen steps carry fault injections rather than
   happy paths -- an overlapping VPC network is proved to be refused with nothing
   installed, a Pod referencing a docker-built image is proved to fail before
   `_k3s_import_image` and to run after it, stopping the bridge is proved to
@@ -445,9 +445,19 @@ and screenshots make verifiable in the review loop:
   leave a terminated Pod attached to a ReplicaSet it scaled to zero, and that
   kubeconfig has to actually be root-only.
 
-  The two most recent injections are both about a **vantage point**, which is
+  Four of the injections are about a **vantage point or a moment**, which is
   the class of defect a live box is the only way to reach. #4137's is a k3s
-  host, which is neither in-cluster nor Compose. #4138's is the inverse -- an
+  host, which is neither in-cluster nor Compose. #4184's is the same host at a
+  different *moment* -- during the deploy, when nothing answers yet, so
+  inference falls back to the host and the output carried a Compose file, a
+  native install mode and a restart command for an api that did not exist; its
+  step asserts the **absence** of all three, because a presence-only assertion
+  passes happily on output that also carries the wrong answer. #4184's second
+  injection is the instance's own `sshd`: the runner already offers a
+  post-quantum key exchange by default, so a classical-only drop-in is written
+  first, which both reproduces the owner's condition and proves the product
+  *reports* a drop-in that is parsed and overridden instead of announcing a
+  success it did not get. #4138's is the inverse vantage point -- an
   api Pod of the deployment, which reaches neither IMDS nor the host's
   `~/.nyxGPT/cloud` -- and its step proves both halves against the real
   cluster: with nothing recorded an in-cluster read must still say UNKNOWN,

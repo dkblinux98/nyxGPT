@@ -1595,9 +1595,27 @@ report `"kubernetes"` at all -- see
 this pass: `"kubernetes"` when the cluster answered for it (a Kubernetes
 deployment -- the `compose_probe_*` fields then say nothing about it and a
 client must not present them as a verdict on that tier), `"compose"`
-otherwise. The choice is made by **what answers**, not by whether this
-process is itself inside a Pod (#4137): a k3s host is neither in-cluster nor
-Compose, and `kubectl` there reaches the cluster perfectly well.
+otherwise. The choice is made by **one substrate decision**, carried on the
+same payload as `substrate`/`substrate_source`/`substrate_declared` (#4184) --
+never by whether this process is itself inside a Pod (#4137): a k3s host is
+neither in-cluster nor Compose, and `kubectl` there reaches the cluster
+perfectly well. The decision prefers what the run DECLARED (an `ops install
+--kubernetes`, or `NYXGPT_SUBSTRATE` from a `cloud deploy` script) over what
+answers, because during a deployment's own creation nothing answers yet; see
+[self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for the full
+precedence.
+
+`substrate` is which deployment this pass was about (`"kubernetes"`,
+`"compose"`, `"terraform"`, `"native"`, or `""` when nothing on the machine
+answers for a deployment), `substrate_source` is a short phrase saying how that
+was decided, and `substrate_declared` is `true` when the run was told rather
+than inferring it. A client renders the pair so an operator can see which
+deployment a scope statement is about; `substrate_declared` is what
+distinguishes "the cluster is serving and these are its rows" from "this is a
+Kubernetes run that has not created its Pods yet". All three are absent from an
+api older than #4184. `GET /api/v1/admin/infra/status` carries the same three
+fields, from the same decision, so the Self-Heal, Infrastructure and System
+Health pages cannot describe one instance as two different deployments.
 
 `compose_probe_applicable` and `compose_probe_undetermined` carry that same
 fact in the form a client needs to render it, and the second is the one to key

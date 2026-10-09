@@ -1719,13 +1719,18 @@ def component_survey() -> ComponentSurvey:
     absent -- an unqueryable stack is never rendered as a definite negative.
 
     **The cluster is asked first, and that order is the fix for #4137.** Which
-    substrate holds the observability tier is decided by what *answers*, never
-    by where this process happens to be running: `kubectl` on a k3s host
-    reaches the cluster perfectly well, and the host is neither in-cluster nor
-    Compose. The earlier order ran `docker compose ps` before it knew the
-    mode, so a k3s instance paid for a probe whose result it then discarded --
-    and still reported that probe's failure, naming a `docker-compose.yml`
-    nothing on that host uses, as the observability tier's state.
+    substrate holds the observability tier is never decided by where this
+    process happens to be running: `kubectl` on a k3s host reaches the cluster
+    perfectly well, and the host is neither in-cluster nor Compose. The earlier
+    order ran `docker compose ps` before it knew the mode, so a k3s instance
+    paid for a probe whose result it then discarded -- and still reported that
+    probe's failure, naming a `docker-compose.yml` nothing on that host uses,
+    as the observability tier's state.
+
+    **What answers is the evidence, not the whole rule (#4184).** The decision
+    is `substrate.decide`'s, and it prefers what the run DECLARED over what
+    answers -- because during a deployment's own creation nothing answers yet,
+    and this survey runs as a side effect of the install that is creating it.
     """
     native_statuses = _list_native_component_status()
     terraform_statuses = _list_terraform_component_status()
