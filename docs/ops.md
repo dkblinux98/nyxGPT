@@ -1624,8 +1624,10 @@ selected. `nyxgpt ops session-backend` writes one config line and pays for no
 cluster probe at all.
 
 Where the answer is printed: `nyxgpt ops doctor` names the substrate and which
-checks answer for it; `nyxgpt self-heal status` prints it above the component
-rows; and the Self-Heal, Infrastructure and System Health pages all render
+checks answer for it; `nyxgpt self-heal status` prints
+`Substrate: kubernetes -- the cluster answers for the core tier` above the
+component rows (and nothing at all when read from an api that predates the
+field, which `nyxgpt cloud ops self-heal` can be); and the Self-Heal, Infrastructure and System Health pages all render
 `substrate`/`substrate_source` from the same payload field, so no two surfaces
 can describe one instance as two different deployments
 ([api.md](api.md#get-apiv1self-healstatus)).

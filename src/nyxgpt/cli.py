@@ -1560,6 +1560,14 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
     """
     data = self_heal_mod.status()
     print(f"Self-heal watchdog: {'enabled' if data['enabled'] else 'disabled'}")
+    # Which deployment the rows below are about, and how that was decided
+    # (#4184). The same pair the Self-Heal, Infrastructure and System Health
+    # pages render, read from the one decision the API makes -- so an operator
+    # comparing `nyxgpt cloud ops self-heal` with the dashboard cannot be shown
+    # two different deployments for one instance. `.get` so an older api's
+    # payload prints exactly as it did.
+    if data.get("substrate"):
+        print(f"Substrate: {data['substrate']} -- {data.get('substrate_source', 'reason unknown')}")
     # Where the observability tier was read from, before its rows (#4137).
     # Said out loud on a Kubernetes deployment rather than left implicit: this
     # line used to be the cannot-determine verdict below, printed directly

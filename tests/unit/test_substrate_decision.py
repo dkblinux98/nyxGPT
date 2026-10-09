@@ -316,6 +316,59 @@ def test_a_hand_assembled_survey_still_derives_its_substrate_from_its_rows():
     assert survey.substrate_decision.kubernetes is True
 
 
+@pytest.mark.unit
+def test_the_cli_says_which_substrate_the_rows_are_about(monkeypatch, capsys, _box_being_built):
+    """The surface the owner reads over `nyxgpt cloud ops self-heal`.
+
+    An operator comparing that output with the dashboard must not be shown two
+    different deployments for one instance, so the CLI prints the same pair the
+    three pages render, from the one decision.
+    """
+    from nyxgpt import cli
+
+    monkeypatch.setattr(self_heal, "compose_probe", lambda: pytest.fail("not asked"))
+    monkeypatch.setattr(self_heal, "is_enabled", lambda: True)
+
+    with substrate.declared_as(substrate.SUBSTRATE_KUBERNETES):
+        cli.cmd_self_heal_status(None)
+    out = capsys.readouterr().out
+
+    assert "Substrate: kubernetes" in out
+    assert "CANNOT DETERMINE" not in out
+    assert "docker-compose.yml" not in out
+
+
+@pytest.mark.unit
+def test_the_cli_prints_no_substrate_line_for_an_older_api_payload(monkeypatch, capsys):
+    """`cloud ops self-heal` reads the payload of the api ON THE INSTANCE, which
+    can predate this change -- and then there is no decision to report."""
+    from nyxgpt import cli
+
+    monkeypatch.setattr(
+        self_heal_mod_status_owner(),
+        "status",
+        lambda: {
+            "enabled": True,
+            "mode": "native",
+            "components": [],
+            "events": [],
+            "unhealthy_count": 0,
+            "compose_probe_available": True,
+        },
+    )
+
+    cli.cmd_self_heal_status(None)
+
+    assert "Substrate:" not in capsys.readouterr().out
+
+
+def self_heal_mod_status_owner():
+    """The module `cli` calls `status()` on -- imported there under an alias."""
+    from nyxgpt import cli
+
+    return cli.self_heal_mod
+
+
 # --- 3. finding 2: a record that describes nothing that exists ---------------
 
 
