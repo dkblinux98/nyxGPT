@@ -558,6 +558,17 @@ What handles it instead:
   attached to the head — the usual case for a path-filtered smoke — is not
   waited for and not counted against it.
 
+**"Red head" above is live again, and was paused between 2026-08-26 and
+2026-10-10 (#4192).** A temporary owner rule made the gate decide `proceed` on
+a red head and pass the failing check names into your prompt as an
+*observation* instead, scoped "REVERT AFTER #4034". #4034 merged on
+2026-09-30 and nothing reverted it, so for ten days nothing refused a red head
+— PR #4191 merged onto `v3.0.1` with three required checks red, two of them
+real product defects, and the release branch could not be cut as a candidate.
+The refusal is back. A prompt you receive will therefore say the checks are
+green; if it instead reports a check list the gate **could not read**, that is
+still not a finding and you still must not re-read the checks.
+
 **The one CI-adjacent thing that IS your job: verifying a developer override.**
 When the failure reproduces on the base branch, the developer may submit with
 `--ci-override "<reason>"`, which writes the reason into the PR body under

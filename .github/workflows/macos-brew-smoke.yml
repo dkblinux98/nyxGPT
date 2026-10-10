@@ -169,6 +169,10 @@ on:
       # `ops.py`'s ~214, so this is not the every-PR cost that keeps `ops.py`
       # out.
       - 'src/nyxgpt/self_heal.py'
+      # The Linux `restart-wait` job's own test (#4192). It extracts the
+      # restart step's shell out of this file, so it has to re-run when either
+      # side moves.
+      - 'tests/unit/test_macos_restart_wait.py'
       # The web tier's own version, derived from the directory the keg's
       # wrapper `cd`s into (#3982). This is a claim about a Homebrew keg on
       # macOS, so it is asserted here rather than only in vitest -- a unit
@@ -224,6 +228,46 @@ permissions:
   contents: read
 
 jobs:
+  restart-wait:
+    name: The restart steps wait for the restart instead of sampling it
+    # #4192, and the reason it is an `ubuntu-latest` job inside a macOS
+    # workflow. `keg-install`'s "The api restarts itself when the UI asks it
+    # to (#4043)" step failed on 9 of its last 10 PR runs, and not because
+    # #4043 regressed: it read the api's pid one second after an endpoint that
+    # answers `{"status":"scheduled"}` by design, so `up` returned against a
+    # process that had not been replaced yet. The step was measuring a restart
+    # that had not happened and reporting it as one that did not happen.
+    #
+    # That logic is workflow YAML, and the only thing that ever executed it
+    # was a macOS runner on an ADVISORY job -- so the race was invisible to
+    # every gate on the tree until it had been red for ten days on the release
+    # branch. This job runs the step's real shell, extracted from this file and
+    # never re-typed, against a stub `launchctl` whose pid changes on a delay:
+    # the shipped wait must return the successor, and the retired form must
+    # still read the pre-restart pid (a check that cannot fail proves nothing,
+    # #3753). Linux, ~40 seconds, path-filtered like everything else here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `--noconftest` so this costs a two-package install rather than the
+      # whole editable package: the test drives bash and reads YAML, and the
+      # root `tests/conftest.py` would pull in psutil and `nyxgpt.config` at
+      # collection time. Same trade as escalation-headline-smoke.yml.
+      - name: Install dependencies
+        run: python -m pip install --quiet pytest pyyaml
+
+      - name: The wait, executed in both directions
+        run: |
+          python -m pytest -q -p no:cacheprovider --noconftest \
+            --no-header --rootdir . -c /dev/null \
+            tests/unit/test_macos_restart_wait.py
+
   keg-install:
     name: Install the working tree's formulas
     # PRs and dispatch build from the checkout. An rc cut calls this workflow
@@ -1991,6 +2035,46 @@ jobs:
             done
             return 1
           }
+          # WAIT FOR THE RESTART BEFORE MEASURING IT (#4192).
+          #
+          # `POST /infra/restart-required` answers 200 the moment it has
+          # *scheduled* the work: `app.infra_restart_required` defers
+          # `_do_restart_required` onto a `threading.Timer(0.5, ...)` so the
+          # triggering response can be sent before the process handling it is
+          # killed, and it says so -- `{"status":"scheduled"}`, not `running`.
+          # `launchctl kickstart -k` is one more hop after that: launchd kills
+          # the instance and starts a new one on its own schedule.
+          #
+          # So at the moment the POST returns, the OLD process is still
+          # answering `/health`. `up` therefore returns INSTANTLY and every
+          # reading after it is of the pre-restart machine. That is what
+          # failed this step on 9 of its last 10 PR runs -- `pid=23672 (was
+          # 23672)` with `attempts.api.status == "running"` one second after
+          # the request (runs 37999255152, 37997409193, 37984308744,
+          # 37984169057, 37982404176). The step was measuring a restart that
+          # had not happened YET, and reporting it as one that did not happen.
+          # Half one below never hit it because its `down 60` happens to wait.
+          #
+          # The wait is on the PID CHANGING, not on `down`: `kickstart -k` can
+          # replace the process inside one poll interval, so a `down` probe is
+          # allowed to miss the gap entirely and would reintroduce the same
+          # flake inverted. A new pid under the same launchd label is also the
+          # actual claim -- it is the one reading an api that merely never
+          # restarted cannot produce -- so making it the WAIT CONDITION rather
+          # than an assertion after a blind sleep is what removes the race
+          # instead of widening it.
+          restarted() {  # restarted <old-pid> <seconds> -- echoes the new pid
+            local old="$1" deadline=$(( SECONDS + $2 )) now
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              now="$(api_pid || true)"
+              if [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$old" ]; then
+                printf '%s' "$now"
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
           down() {  # down <seconds> -- has the api stopped answering?
             local deadline=$(( SECONDS + $1 ))
             while [ "$SECONDS" -lt "$deadline" ]; do
@@ -2073,9 +2157,23 @@ jobs:
           # The running api already imported the module, so it has to be
           # replaced by a process that is NOT inside the job (this shell is a
           # child of the runner, which is the whole difference being measured).
+          #
+          # Waited on the pid, for the same reason half two is (#4192) and with
+          # a sharper consequence here: `up` returns while the OLD process --
+          # the one still holding the SHIPPED module in memory -- is answering,
+          # so half one could post its restart request to a process that still
+          # carries the hand-off the injection just removed. It would then come
+          # back cleanly, and the step reads "the api came back on the PRE-FIX
+          # keg" as "this runner does not reproduce #4043" and fails. The
+          # injection is only in force once a NEW process has read it.
+          PID_PRE_INJECT="$(api_pid)"
           brew services restart "$SPEC" 2>&1 | tail -5
-          up 180 || { echo "::error::the api did not come back after the injection"; err_log; exit 1; }
-          PID_BEFORE="$(api_pid)"
+          if ! PID_BEFORE="$(restarted "$PID_PRE_INJECT" 180)"; then
+            echo "::error::the api did not come back after the injection (pid still"
+            echo "::error::${PID_PRE_INJECT}), so nothing below is running the reverted module"
+            err_log; exit 1
+          fi
+          up 180 || { echo "::error::the api did not answer after the injection"; err_log; exit 1; }
           pend
           echo "pre-fix api pid=$PID_BEFORE state=$(brew_state)"
           CODE="$(curl -s -o "$RUNNER_TEMP/pre.json" -w '%{http_code}' --max-time 20 \
@@ -2135,15 +2233,31 @@ jobs:
             echo "::error::the endpoint did not accept the restart request (got $CODE)"
             err_log; exit 1
           }
-          # AC1: the api answers again, with no CLI intervention. Nothing
-          # between here and the assertion runs a `nyxgpt ops` or `brew`
-          # command -- that is the point.
+          # AC1: the api restarts and answers again, with no CLI intervention.
+          # Nothing between here and the assertions runs a `nyxgpt ops` or
+          # `brew` command -- that is the point.
+          #
+          # `restarted` is the wait AND the first assertion, deliberately (see
+          # its definition): a restart is a NEW PID under the same launchd
+          # label, and an api that merely never went down cannot produce one.
+          # The retired form of these four lines was `up 180` followed by
+          # `api_pid`, which read the machine one second after a restart the
+          # endpoint had only just scheduled -- the flake #4192 was filed for.
+          if ! PID_AFTER="$(restarted "$PID_BEFORE" 180)"; then
+            echo "::error::the api did not restart within 180s of accepting the request"
+            echo "::error::(pid still ${PID_BEFORE}) -- #4043 is NOT fixed"
+            err_log
+            exit 1
+          fi
+          # ...and the successor serves, rather than merely existing. `up`
+          # means something here, where it meant nothing before the wait: the
+          # old process is gone by now, so this is the new one answering.
           up 180 || {
-            echo "::error::the api did not answer again after the restart it was asked for -- #4043 is NOT fixed"
+            echo "::error::the api restarted (pid $PID_BEFORE -> $PID_AFTER) but the"
+            echo "::error::successor never answered $API/health"
             err_log
             exit 1
           }
-          PID_AFTER="$(api_pid)"
           STATE_AFTER="$(brew_state)"
           JOB_AFTER=unloaded
           if job_loaded; then JOB_AFTER=loaded; fi
@@ -2151,13 +2265,6 @@ jobs:
                "plist file=$(plist_path || echo absent)"
           err_log
           fail=0
-          # A restart, not a survival: an api that merely never went down
-          # would answer /health throughout and prove nothing.
-          if [ -z "$PID_AFTER" ] || [ "$PID_AFTER" = "$PID_BEFORE" ]; then
-            echo "::error::the api's pid did not change ($PID_BEFORE -> ${PID_AFTER:-<none>})"
-            echo "::error::-- it answered without having restarted"
-            fail=1
-          fi
           # AC3: brew reports it started and launchd holds the job.
           if [ "$STATE_AFTER" = none ] || [ "$STATE_AFTER" = "<absent>" ]; then
             echo "::error::brew reports $KEG_NAME as '$STATE_AFTER' after the restart"
@@ -2175,6 +2282,13 @@ jobs:
           # `attempts` must not carry a failure for `api` either: a refusal
           # and a success were indistinguishable before #4043's first round,
           # and a stale `failed` here would be the same defect inverted.
+          #
+          # One read, not a poll, and that is sound BECAUSE of the wait above:
+          # `clear_started` is called from the api's lifespan *startup*, which
+          # uvicorn completes before it accepts a connection -- so an api that
+          # has answered `/health` has already retired what it was entitled to
+          # retire. Reading it before the restart landed is what made this an
+          # unbounded race (#4192); reading it after is a fact.
           curl -fsS --max-time 10 "$API/api/v1/infra/restart-status" > "$RUNNER_TEMP/status.json"
           cat "$RUNNER_TEMP/status.json"; echo
           "$PY" - "$RUNNER_TEMP/status.json" <<'PY' || fail=1

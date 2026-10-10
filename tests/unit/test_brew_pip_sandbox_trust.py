@@ -218,3 +218,71 @@ def test_a_pip_call_added_without_the_flags_is_caught():
 
     with pytest.raises(ValueError, match="-26276"):
         build_homebrew_artifacts.validate_pip_sandbox_flags(sneaked, "nyxgpt-api")
+
+
+@pytest.mark.parametrize("which", ["web-local", "web-tap-template"])
+def test_a_pip_call_added_to_the_WEB_formula_is_caught_too(which):
+    """The guard's scope is the same for both formulas (#4192).
+
+    `nyxgpt-web` runs no pip today, and the two rules above are vacuous on it
+    for that reason -- which is exactly the state in which nobody notices that
+    the guard has stopped looking. #4192 was filed partly on the belief that a
+    pip call on the web install path was reaching Apple's trust store, and
+    answering that needed this to be a measurement rather than a reading.
+
+    `pip_invocations` ended its scan at `(bin/"nyxgpt-api").write`, a name the
+    web formula does not contain, so on it the scan ran to end of file. That
+    errs safe, but it meant one rule with two scopes (ledger D-066). Both
+    halves are asserted here: a pip call in the web formula's `install` block
+    is caught, and one in its service wrapper's bash heredoc -- text, not an
+    executed command -- is not.
+    """
+    text = FORMULAS[which].read_text(encoding="utf-8")
+    # Clean as it stands, which is also the claim that the web formula runs no
+    # pip at all.
+    build_homebrew_artifacts.validate_pip_sandbox_flags(text, "nyxgpt-web")
+    assert build_homebrew_artifacts.pip_invocations(text) == []
+
+    in_install = text.replace(
+        '    system "npm", "ci"',
+        '    system "npm", "ci"\n    system "pip3", "install", "something"',
+        1,
+    )
+    assert in_install != text
+    with pytest.raises(ValueError, match="-26276"):
+        build_homebrew_artifacts.validate_pip_sandbox_flags(in_install, "nyxgpt-web")
+
+    # And the exclusion the scan boundary exists for: the wrapper heredoc is
+    # bash source written to a file, so a `pip` word in it runs nothing at
+    # install time and must not be reported.
+    in_wrapper = text.replace(
+        '      cd "#{libexec}"',
+        '      cd "#{libexec}"\n      # system "pip", "install", "x"',
+        1,
+    )
+    assert in_wrapper != text
+    build_homebrew_artifacts.validate_pip_sandbox_flags(in_wrapper, "nyxgpt-web")
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        '    system "pip3", "install", "httpx"\n',
+        '    system venv/"bin/pip3", "install", "httpx"\n',
+        '    system venv/"bin/pip3.12", "install", "httpx"\n',
+        '    system python3, "-m", "pip", "install", "httpx"\n',
+    ],
+)
+def test_every_spelling_of_pip_is_measured(spelling):
+    """A versioned pip is still pip (#4192).
+
+    The detector matched `pip` and `*/pip` only, so `pip3` / `pip3.12` -- the
+    names `ensurepip` leaves on PATH, and the ones a person writes first --
+    were invisible to it. A guard that only sees the project's current
+    convention certifies the next call that does not follow it.
+    """
+    text = FORMULAS["api-tap-template"].read_text(encoding="utf-8")
+    sneaked = text.replace("    pip_wheel = Dir.glob", spelling + "    pip_wheel = Dir.glob")
+    assert sneaked != text
+    with pytest.raises(ValueError, match="-26276"):
+        build_homebrew_artifacts.validate_pip_sandbox_flags(sneaked, "nyxgpt-api")

@@ -58,6 +58,7 @@ on:
       - "tests/test_reviewable_head_gate.sh"
       - "tests/unit/test_required_checks.py"
       - "tests/unit/test_reviewable_head_gate_wiring.py"
+      - "tests/unit/test_failure_classification.py"
       - ".github/required-checks.txt"
       - ".github/workflows/claude-code-review.yml"
       - ".github/workflows/developer_auto_implement.yml"
@@ -71,6 +72,7 @@ on:
       - "tests/test_reviewable_head_gate.sh"
       - "tests/unit/test_required_checks.py"
       - "tests/unit/test_reviewable_head_gate_wiring.py"
+      - "tests/unit/test_failure_classification.py"
       - ".github/required-checks.txt"
       - ".github/workflows/claude-code-review.yml"
       - ".github/workflows/developer_auto_implement.yml"
@@ -154,10 +156,17 @@ jobs:
 
       - name: The wiring and the required set, as guards
         # These are pytest files, and the pytest suite runs on the release
-        # branch rather than on pull requests -- so without this step the two
-        # guards that keep the required set honest and keep the gate in front
-        # of the paid invocation would first run AFTER the merge that broke
-        # them.
+        # branch rather than on pull requests -- so without this step the
+        # guards that keep the required set honest, keep the gate in front of
+        # the paid invocation, and keep the failure signatures anchored would
+        # first run AFTER the merge that broke them.
+        #
+        # `test_failure_classification.py` is here since #4192: it runs every
+        # signature in `classify_error` against text that is nothing but
+        # identifiers, and a signature that matches one decides this gate's
+        # refusal by the head SHA. It belongs to the same required check as
+        # the gate it misroutes, and this workflow already triggers on
+        # `gh_project.sh`.
         shell: bash
         # `pip install -e .` and not just pyyaml+pytest: the root
         # `tests/conftest.py` imports `tests/log_guard.py` (-> psutil) and
@@ -172,7 +181,8 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             --no-header -p no:randomly \
             tests/unit/test_required_checks.py \
-            tests/unit/test_reviewable_head_gate_wiring.py
+            tests/unit/test_reviewable_head_gate_wiring.py \
+            tests/unit/test_failure_classification.py
 
       - name: The review workflow delegates the decision rather than re-implementing it
         shell: bash

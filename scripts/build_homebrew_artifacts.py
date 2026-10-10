@@ -184,6 +184,11 @@ _OFFLINE_FLAG = "--no-index"
 _SYSTEM_START_RE = re.compile(r"^\s*system\s")
 _RUBY_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
+#: Every way a formula can name the pip executable: `pip`, `pip3`, `pip3.12`.
+#: Matched against the last path segment of a Ruby string literal, so
+#: `venv/"bin/pip3.12"` and a bare `"pip"` are both recognised (#4192).
+_PIP_EXECUTABLE_RE = re.compile(r"pip[0-9]*(?:\.[0-9]+)?")
+
 _CLASS_RE = re.compile(r"^class\s+(\w+)\s+<\s+Formula\b", re.MULTILINE)
 
 _LICENSE_RE = re.compile(r"^([ \t]*)license\s+\"[^\"]*\"[ \t]*$", re.MULTILINE)
@@ -490,7 +495,22 @@ def pip_invocations(formula_text: str) -> list[PipInvocation]:
     body = formula_text[start_of_install:]
     # The service wrapper below it is a bash heredoc that can mention pip
     # without running it; `install` proper ends where that write begins.
-    end_of_recipe = body.find('(bin/"nyxgpt-api").write')
+    #
+    # BOTH wrappers, not just the api's (#4192). The api formula's name was
+    # hard-coded here, so on `nyxgpt-web` the marker was never found and the
+    # scan ran to end of file -- over `service`, `caveats` and `test`. That
+    # errs safe (a wider scan cannot MISS a pip call, only flag one that is
+    # not run) and flags nothing today, but it means the rule this function
+    # enforces had a different scope per formula, which is the divergence
+    # ledger D-066 is about. One marker list, both surfaces.
+    end_of_recipe = min(
+        (
+            found_at
+            for wrapper in _FORMULAS
+            if (found_at := body.find(f'(bin/"{wrapper}").write')) != -1
+        ),
+        default=-1,
+    )
     if end_of_recipe != -1:
         body = body[:end_of_recipe]
 
@@ -514,7 +534,15 @@ def pip_invocations(formula_text: str) -> list[PipInvocation]:
         literals = tuple(_RUBY_STRING_RE.findall(statement))
         # `-m pip`, `venv/"bin/pip"`, or pip run out of its own wheel by
         # zipimport (`"#{pip_wheel}/pip"`) -- all three appear in the recipe.
-        if not any(part == "pip" or part.endswith("/pip") for part in literals):
+        #
+        # VERSIONED NAMES COUNT (#4192). The predicate used to be `== "pip"`
+        # or `endswith("/pip")`, so `system "pip3", ...` or
+        # `system venv/"bin/pip3.12", ...` -- the spelling a `python3 -m
+        # ensurepip` keg leaves on PATH, and the one a person reaches for
+        # first -- ran with no mitigation and no guard. "Every pip call in the
+        # rendered formulas" has to mean every way of naming pip, or the guard
+        # measures a convention rather than a rule.
+        if not any(_PIP_EXECUTABLE_RE.fullmatch(part.rsplit("/", 1)[-1]) for part in literals):
             continue
         found.append(
             PipInvocation(statement=statement, line=body_offset + start + 1, literals=literals)

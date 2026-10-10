@@ -27,6 +27,12 @@ on:
       - "scripts/agents/developer_create_branch.sh"
       - "scripts/agents/developer_ensure_pr_exists.sh"
       - "scripts/agents/lib/branch_residue.py"
+      # The rescue-PR promotion (#4184) and its tests. This job asserts the
+      # promotion by RUNNING it (tests/test_ensure_pr_exists.sh case 3b), so a
+      # change to the helper has to run this job -- the previous filter named
+      # only the workflow the behaviour used to live in (#4192).
+      - "scripts/agents/lib/rescue_pr.py"
+      - "tests/unit/test_rescue_pr_promotion.py"
       - "scripts/agents/sweep_stranded_residue.sh"
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/developer_submit_for_review.sh"
@@ -51,6 +57,8 @@ on:
       - "scripts/agents/developer_create_branch.sh"
       - "scripts/agents/developer_ensure_pr_exists.sh"
       - "scripts/agents/lib/branch_residue.py"
+      - "scripts/agents/lib/rescue_pr.py"
+      - "tests/unit/test_rescue_pr_promotion.py"
       - "scripts/agents/sweep_stranded_residue.sh"
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/developer_submit_for_review.sh"

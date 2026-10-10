@@ -100,20 +100,52 @@ read_agent_error_detail() {
 classify_error() {
   local error_text="$1"
 
+  # EVERY SIGNATURE BELOW MATCHES A SIGNAL, NOT A SUBSTRING (#4192).
+  #
+  # The failure text this reads is a run log: it carries commit SHAs, GitHub
+  # run and job ids, pytest node ids with line numbers, PR numbers and whole
+  # prompt bodies. So a signature that can be satisfied *incidentally* by that
+  # surrounding noise does not classify the failure -- it classifies the
+  # identifiers that happened to be printed beside it, and because the
+  # signatures are tried in order, one incidental match pre-empts the real one.
+  #
+  # That is not hypothetical. `529|[Oo]verloaded` sat above the red-head
+  # signature and matched the digits `529` ANYWHERE, so a red-head refusal
+  # carrying head `3f529aa0...` classified `retriable:api_overloaded` (waited
+  # two minutes, retried the same red head) while the identical refusal with
+  # head `0ac51a4c...` classified `retriable:ci_red` (handed the round back to
+  # the developer, which is #3971's contract). The classification depended on a
+  # random SHA, and `tests/test_reviewable_head_gate.sh` flaked on its
+  # fixture's.
+  #
+  # The rule, applied to every pattern here and asserted as a property by
+  # `tests/unit/test_failure_classification.py::test_no_signature_fires_on_identifier_noise`:
+  # a number is matched only where the text says what the number IS, and a
+  # wildcard never spans an unbounded distance.
+
   # Fatal errors - do NOT retry these
-  if echo "$error_text" | grep -qE "is not OPEN.*state=CLOSED"; then
+  if echo "$error_text" | grep -qE "is not OPEN[^|]{0,40}state=CLOSED"; then
     # Issue closed - could be intentional or accidental (Phase 2 will distinguish)
     echo "fatal:issue_closed"
     return
   fi
 
-  if echo "$error_text" | grep -qE "Authentication failed|permission denied|Unauthorized"; then
+  if echo "$error_text" | grep -qE "\b(Authentication failed|permission denied|Unauthorized)\b"; then
     # Auth failures won't fix themselves
     echo "fatal:auth_failure"
     return
   fi
 
-  if echo "$error_text" | grep -qE "already merged|PR.*merged"; then
+  # `already merged` is the sentence every real producer prints (`gh pr merge`,
+  # `review_accept_and_merge.sh`, `merge_data_branch.sh`). The second arm used
+  # to be `PR.*merged`, which is co-occurrence rather than assertion: one line
+  # mentioning a PR and the word "merged" anywhere after it was enough, and
+  # this project prints such lines on purpose -- the #4151 residue guard's
+  # heading, the conflict-resolution prompt's "already merged into <base>",
+  # even this issue's own text. A FATAL class decided by co-occurrence ends the
+  # round and pages the owner, so it is anchored to the claim being made about
+  # a specific PR.
+  if echo "$error_text" | grep -qE "already merged|\bPR #?[0-9]+ (is|was|has been) (already )?merged\b"; then
     # Work already complete
     echo "fatal:already_merged"
     return
@@ -125,7 +157,7 @@ classify_error() {
     return
   fi
 
-  if echo "$error_text" | grep -qE "network.*timeout|connection.*timed out|Connection reset"; then
+  if echo "$error_text" | grep -qE "network[^|]{0,30}timeout|connection[^|]{0,30}timed out|Connection reset"; then
     echo "retriable:network_timeout"
     return
   fi
@@ -136,7 +168,14 @@ classify_error() {
   # exhausted; nothing had been committed or pushed, so there was nothing to
   # repair -- and the run was escalated to the owner as a FATAL anyway, because
   # no signature matched and unknown defaults to fatal.
-  if echo "$error_text" | grep -qE "529|[Oo]verloaded"; then
+  #
+  # `529` is matched ONLY where the text says it is a status (#4192): the bare
+  # substring is in every third commit SHA and every GitHub run id, and it used
+  # to decide this class for them. `[Oo]verloaded` keeps only a leading word
+  # boundary, so the API's own error *shape* (`"type": "overloaded_error"`)
+  # still matches alongside its message (`Overloaded`).
+  if echo "$error_text" | grep -qE "\b[Oo]verloaded" \
+    || echo "$error_text" | grep -qiE "(http|status(_code)?|code|error)[^0-9A-Za-z]{0,4}529\b"; then
     echo "retriable:api_overloaded"
     return
   fi

@@ -29,6 +29,17 @@ set -uo pipefail
 #   2. The rescue body carries the machine-readable marker, and `Refs #N`
 #      rather than `Closes #N` (an unfinished draft must not close its issue).
 #
+#   2b. PROMOTION IS RUN, NOT GREPPED FOR (#4192). When a continuation run's
+#      verification passes, the draft stops being a rescue:
+#      `scripts/agents/lib/rescue_pr.py promote` rewrites `Refs #N` to the
+#      `Closes #N` the PR rules require, drops the `wip:` title and replaces
+#      the "not a submission" preamble. Case 3b executes that against the real
+#      body case 2 just produced. It used to assert the bash parameter
+#      expansion that implemented the rewrite inside
+#      developer_auto_implement.yml, so when #4184 moved the rewrite into that
+#      helper -- improving it -- this suite went red on every run of Branch
+#      Guard Smoke, on the release branch, and blocked an rc cut.
+#
 #   3. The marker is the SAME string developer_auto_implement.yml matches on.
 #      This is the coupling that makes the body's own recovery instructions
 #      true: without it a reassignment starts a fresh timestamped branch,
@@ -59,6 +70,16 @@ _assert_contains() {
   if [[ "$haystack" != *"$needle"* ]]; then
     echo "[FAIL] $desc: '$needle' not found in:" >&2
     echo "$haystack" >&2
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "[ok] $desc"
+  fi
+}
+
+_assert_eq() {
+  local desc="$1" want="$2" got="$3"
+  if [[ "$want" != "$got" ]]; then
+    echo "[FAIL] $desc: expected '$want', got '$got'" >&2
     FAILURES=$((FAILURES + 1))
   else
     echo "[ok] $desc"
@@ -323,10 +344,88 @@ _assert_contains "the rescue lookup is restricted to OPEN PRs (closing one is th
   "$WF" 'pulls?state=open&per_page=100'
 _assert_contains "a rescue draft routes to the continue-the-work path" \
   "$WF" '"$RESCUE" == "true"'
-_assert_contains "a promoted rescue PR gets the Closes line the PR rules require" \
-  "$WF" 'body//Refs #${ISSUE}/Closes #${ISSUE}'
 _assert_contains "and is taken out of draft before review is requested" \
   "$WF" 'gh pr ready "$PR"'
+
+# ======================================================================
+# 3b. PROMOTION, EXECUTED -- not grepped for the string that implements it
+# ======================================================================
+# This used to assert `body//Refs #${ISSUE}/Closes #${ISSUE}` against the
+# workflow text, i.e. that the rewrite was spelled as one particular bash
+# parameter expansion inside developer_auto_implement.yml. #4184 moved the
+# rewrite into `scripts/agents/lib/rescue_pr.py promote` -- which also drops
+# the `wip:` title prefix and replaces the "this is not a submission" preamble,
+# so the behaviour got STRICTLY better -- and this assertion went red on every
+# run of Branch Guard Smoke for two days, on `v3.0.1`, blocking the rc2 cut
+# (#4192). A gate that measures how a behaviour is implemented rather than
+# whether it happens fails on every correct refactor and passes on an
+# incorrect one that keeps the string.
+#
+# So the promotion is RUN, against the real rescue body the real script just
+# wrote in case 2 above (`$TMP/pr-body.md`), with the title the real script
+# gives a rescue draft. Three properties, each one of the PR rules:
+#
+#   * `Refs #N` -> `Closes #N`, because a submission must carry the native
+#     closing link and a rescue draft deliberately withholds it;
+#   * the `wip:` prefix goes, so the merge commit does not say `wip:`;
+#   * the "not a submission for review" preamble is replaced, because a record
+#     that answers for a state the thing is no longer in is the whole of #4184.
+#
+# Idempotence too: the workflow runs this on every hand-off, including for a PR
+# an earlier round already promoted.
+PROMOTE="$ROOT_DIR/scripts/agents/lib/rescue_pr.py"
+cp "$TMP/pr-body.md" "$TMP/promote-body.md"
+RESCUE_TITLE="$(sed -n 's/^gh pr create .* --title \(.*\) --body-file .*$/\1/p' "$TMP/gh.log" | head -1)"
+# The title the real script writes, read off the stub's own transcript. If the
+# script ever stops prefixing `wip:`, that is a change to assert, not to
+# tolerate: a hard-coded title here would hide it.
+_assert_contains "the rescue draft the script opened is titled wip:" "$RESCUE_TITLE" "wip:"
+
+PROMOTED_TITLE="$("${NYXGPT_TEST_PYTHON:-python3}" "$PROMOTE" promote \
+  --body-file "$TMP/promote-body.md" --issue 9201 --title "$RESCUE_TITLE")"
+PROMOTED_BODY="$(cat "$TMP/promote-body.md")"
+
+_assert_contains "promotion gives the body the Closes line the PR rules require" \
+  "$PROMOTED_BODY" "Closes #9201"
+_assert_not_contains "and the deliberately non-closing Refs line is gone" \
+  "$PROMOTED_BODY" "Refs #9201"
+_assert_not_contains "the 'not a submission for review' preamble does not survive promotion" \
+  "$PROMOTED_BODY" "This is not a submission for review"
+_assert_contains "it is replaced by a record of how the PR got here" \
+  "$PROMOTED_BODY" "Promoted from a rescue draft"
+_assert_contains "the Context section describing the branch is kept for the reviewer" \
+  "$PROMOTED_BODY" "## Context"
+_assert_contains "the marker the workflow matches survives, so a second hand-off still finds it" \
+  "$PROMOTED_BODY" "<!-- rescue-pr: issue-9201 -->"
+_assert_not_contains "and the promoted title no longer says wip:" "$PROMOTED_TITLE" "wip:"
+_assert_contains "while keeping the rest of the title" "$PROMOTED_TITLE" "#9201"
+
+# Idempotent: the same call on the promoted record changes nothing and prints
+# nothing, which is what makes the workflow's `if [[ -n "$out" ]]` the whole
+# "did anything change" test.
+AGAIN="$("${NYXGPT_TEST_PYTHON:-python3}" "$PROMOTE" promote \
+  --body-file "$TMP/promote-body.md" --issue 9201 --title "$PROMOTED_TITLE")"
+_assert_eq "re-promoting an already-promoted PR is a no-op" "" "$AGAIN"
+_assert_eq "and leaves its body byte-identical" \
+  "$PROMOTED_BODY" "$(cat "$TMP/promote-body.md")"
+
+# Fault injection: the promotion has to be able to fail. Run it against the
+# PRE-#4184 record -- a rescue body with the preamble already stripped by hand
+# but `Refs #N` left standing, which is exactly what the retired workflow-local
+# rewrite produced -- and require the assertions above to be unsatisfied by it.
+# Without this half, every check above would also pass against a helper that
+# does nothing at all on a body it does not recognise.
+printf '%s\n' "## Context" "" "Refs #9201" > "$TMP/retired-body.md"
+RETIRED_TITLE="$("${NYXGPT_TEST_PYTHON:-python3}" "$PROMOTE" promote \
+  --body-file "$TMP/retired-body.md" --issue 9201 --title "wip: something (#9201)")"
+_assert_not_contains "a body with no rescue heading is NOT rewritten (so the checks above mean something)" \
+  "$(cat "$TMP/retired-body.md")" "Closes #9201"
+_assert_not_contains "though its wip: title is still corrected" "$RETIRED_TITLE" "wip:"
+
+# And the coupling that the grep used to stand for, asserted as wiring rather
+# than as a string: the workflow calls this helper on the hand-off path.
+_assert_contains "developer_auto_implement.yml promotes through that helper" \
+  "$WF" 'rescue_pr.py promote'
 _assert_contains "developer_submit_for_review.sh adopts an existing open PR instead of dying" \
   "$(cat "$ROOT_DIR/scripts/agents/developer_submit_for_review.sh")" \
   'gh pr ready "$existing_pr"'
