@@ -306,6 +306,36 @@ class TestShellSuitesResolveTheirInterpreter:
             "unexecuted section"
         )
 
+    def test_every_wrapper_of_an_exit_77_suite_handles_all_three_outcomes(self):
+        """A wrapper that only knows pass/fail turns a skip back into a red.
+
+        Scoped to the suites that CAN exit 77 -- the ones taking their
+        interpreter from the shared resolver. A wrapper around a suite with no
+        third outcome has nothing to handle, and demanding the helper there
+        would be ceremony rather than a guard.
+        """
+        offenders = []
+        for path in sorted((ROOT / "tests" / "unit").glob("*.py")):
+            if path.name == Path(__file__).name:
+                continue
+            code = "\n".join(text for _n, text in _code_lines(path))
+            for suite in _SUITES_RUNNING_PYTHON:
+                if Path(suite).name not in code:
+                    continue
+                # Only wrappers that RUN it, not ones that merely read it.
+                if "subprocess.run" not in code:
+                    continue
+                # `assert_shell_suite_ran(` -- the CALL. Matching the bare name
+                # would be satisfied by the import line alone, which is how
+                # this guard was vacuous when first written.
+                if "assert_shell_suite_ran(" not in code:
+                    offenders.append(f"{path.relative_to(ROOT)} runs {suite}")
+        assert not sorted(set(offenders)), (
+            "these pytest wrappers run a suite that can exit 77 ('could not "
+            "run') but do not use `assert_shell_suite_ran`, so that third "
+            f"outcome would be reported as a test failure (#4195): {offenders}"
+        )
+
     def test_the_escalation_suite_can_no_longer_skip_its_executed_section(self):
         """The specific regression: a `[SKIP]` that still printed a pass."""
         text = (ROOT / "tests" / "test_escalation_evidence.sh").read_text(encoding="utf-8")
