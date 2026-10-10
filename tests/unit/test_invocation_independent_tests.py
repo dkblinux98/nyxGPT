@@ -57,6 +57,15 @@ _SUITES_RUNNING_PYTEST = (
     "tests/test_pr_head_guard_discriminates.sh",
 )
 
+#: Every shell suite that runs ANY python, pytest or not. Each must take its
+#: interpreter from `tests/pytest_python.sh` rather than making the choice
+#: itself -- the #4195 sweep found five copies of that one decision, two of
+#: them wrong in different ways.
+_SUITES_RUNNING_PYTHON = _SUITES_RUNNING_PYTEST + (
+    "tests/test_red_head_round.sh",
+    "tests/test_reviewable_head_gate.sh",
+)
+
 
 def _shell_suites() -> list[Path]:
     return sorted(p for p in (ROOT / "tests").glob("*.sh") if p.name != "pytest_python.sh")
@@ -249,6 +258,28 @@ class TestShellSuitesResolveTheirInterpreter:
 
         text = SHELL_LIB.read_text(encoding="utf-8")
         assert f"NO_PYTEST_PYTHON_EXIT={NO_PYTEST_PYTHON_EXIT}" in text
+
+    @pytest.mark.parametrize("suite", _SUITES_RUNNING_PYTHON)
+    def test_each_suite_takes_its_interpreter_from_the_shared_resolver(self, suite):
+        """ONE SOURCE PER DECISION (CLAUDE.md): not five copies of it.
+
+        The #4195 sweep found the "which interpreter" decision made five times
+        across four suites, each slightly differently, and the two that were
+        wrong were wrong in different ways. Correcting copies leaves a place
+        for the next divergence, so the decision moved to one file and this
+        asserts nobody has made a sixth copy.
+        """
+        text = (ROOT / suite).read_text(encoding="utf-8")
+        assert "pytest_python.sh" in text, f"{suite} does not source the shared resolver"
+        offenders = [
+            f"{line_no}: {line.strip()}"
+            for line_no, line in _code_lines(ROOT / suite)
+            if "NYXGPT_TEST_PYTHON:-" in line
+        ]
+        assert not offenders, (
+            f"{suite} still resolves its own interpreter inline: {offenders}. Take "
+            "it from `require_python` / `require_pytest_python` instead (#4195)."
+        )
 
     def test_no_shell_suite_takes_its_pytest_interpreter_from_path(self):
         """`python3 -m pytest` in a suite is the #4195 defect, by construction."""

@@ -47,6 +47,14 @@ set -uo pipefail
 # Usage: bash tests/test_reviewable_head_gate.sh
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# One source for "which interpreter" across every shell suite (#4195): this
+# file had four inline copies of that decision, two of them a bare
+# `python3`, and a suite's result must not depend on which `python3` the
+# caller happens to have. `require_python`, not `require_pytest_python`:
+# `$PYTHON` here only runs stdlib scripts under scripts/agents/lib.
+# shellcheck source=tests/pytest_python.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pytest_python.sh"
+PYTHON="$(require_python "$ROOT_DIR")" || exit $?
 
 FAILURES=0
 
@@ -572,7 +580,7 @@ _assert_not_contains "with no hand-back to the developer" "$(cat "$TMP/gh.log")"
 # -- because the step that turns a state into a decision is workflow YAML, and
 # workflow YAML is exactly the thing this project has learned it cannot verify
 # by reading (the huddle_session_probe.py pattern, #3911).
-ROOT_DIR="$ROOT_DIR" python3 - <<'EXTRACT' > "$TMP/gate-step.sh"
+ROOT_DIR="$ROOT_DIR" "$PYTHON" - <<'EXTRACT' > "$TMP/gate-step.sh"
 import os
 import yaml
 
@@ -686,7 +694,7 @@ _assert_eq "a refused red head classifies retriable, so the round continues" \
 # (#4138, run 37722699004). These assert on the REAL refusal this script just
 # wrote, end to end: the reader gets the check and its URL back out, and Phase
 # 2 continues the round instead of ending it.
-PARSED="$("${NYXGPT_TEST_PYTHON:-python3}" \
+PARSED="$("$PYTHON" \
   "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" red-head-checks \
   < "$NYXGPT_AGENT_ERROR_FILE")"
 _assert_contains "the reader gets the failing check back out of the refusal" \
@@ -695,7 +703,7 @@ _assert_contains "and where to read it" "$PARSED" "actions/runs/777/job/888"
 
 CAUSE="$(jq -n -c --arg vd "$(cat "$NYXGPT_AGENT_ERROR_FILE")" \
     --arg fs "Submit PR for review" '{verification_detail: $vd, failed_step: $fs}' \
-  | "${NYXGPT_TEST_PYTHON:-python3}" "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" cause)"
+  | "$PYTHON" "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" cause)"
 _assert_eq "an escalation for it would be keyed on the failing check, not the step" \
   "head-red:k8s-artifact-smoke" "$CAUSE"
 
@@ -719,7 +727,7 @@ _assert_eq "a successful submission records no failure reason" "" \
 # And the harvest order is the workflow's, executed: the recorded reason
 # outranks the step-name fallback. Lifted from developer_auto_implement.yml
 # for the same reason Part 6 lifts the gate step.
-ROOT_DIR="$ROOT_DIR" python3 - <<'EXTRACT' > "$TMP/classify-step.sh"
+ROOT_DIR="$ROOT_DIR" "$PYTHON" - <<'EXTRACT' > "$TMP/classify-step.sh"
 import os
 import yaml
 

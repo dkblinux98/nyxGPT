@@ -33,9 +33,13 @@ set -uo pipefail
 #   NYXGPT_VERIFY_PYTEST_TARGET what pytest runs (default tests/unit/)
 #   NYXGPT_VERIFY_PYTEST_ARGS   pytest args (default: -v + coverage)
 #   NYXGPT_VERIFY_LOG_DIR       where the per-gate logs land (default /tmp)
-#   NYXGPT_VERIFY_PYTHON        the interpreter (default `python`, which is
-#                               what setup-python puts on PATH in the workflow;
-#                               the shell suite points it at its own)
+#   NYXGPT_VERIFY_PYTHON        the interpreter for EVERY python this script
+#                               runs -- the gates AND `_fail_gate`'s own
+#                               composition of the recorded reason (#4195).
+#                               Defaults to `python` (what setup-python puts on
+#                               PATH in the workflow), falling back to `python3`
+#                               where there is no `python`; the shell suite
+#                               points it at its own.
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null

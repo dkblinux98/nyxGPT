@@ -74,6 +74,8 @@ on:
       - "tests/test_issue_hygiene.sh"
       - "tests/gh_stub_issue_hygiene.py"
       - "tests/test_pr_head_guard_discriminates.sh"
+      # The shared pytest-interpreter resolver the script above sources (#4195).
+      - "tests/pytest_python.sh"
       - "tests/unit/test_pull_request_target_safety.py"
   pull_request:
     paths:
@@ -85,6 +87,8 @@ on:
       - "tests/test_issue_hygiene.sh"
       - "tests/gh_stub_issue_hygiene.py"
       - "tests/test_pr_head_guard_discriminates.sh"
+      # The shared pytest-interpreter resolver the script above sources (#4195).
+      - "tests/pytest_python.sh"
       - "tests/unit/test_pull_request_target_safety.py"
   workflow_dispatch:
 

@@ -46,6 +46,8 @@ on:
       - "scripts/agents/lib/escalation_evidence.py"
       - "scripts/agents/lib/gh_project.sh"
       - "tests/test_escalation_evidence.sh"
+      # The shared pytest-interpreter resolver the suite above sources (#4195).
+      - "tests/pytest_python.sh"
       - "tests/unit/test_escalation_headline.py"
       - ".github/workflows/developer_auto_implement.yml"
       - ".github/workflows/escalation-headline-smoke.yml"
@@ -56,6 +58,8 @@ on:
       - "scripts/agents/lib/escalation_evidence.py"
       - "scripts/agents/lib/gh_project.sh"
       - "tests/test_escalation_evidence.sh"
+      # The shared pytest-interpreter resolver the suite above sources (#4195).
+      - "tests/pytest_python.sh"
       - "tests/unit/test_escalation_headline.py"
       - ".github/workflows/developer_auto_implement.yml"
       - ".github/workflows/escalation-headline-smoke.yml"

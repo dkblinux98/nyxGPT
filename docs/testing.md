@@ -41,6 +41,58 @@ Run **integration tests only**:
 pytest -m integration
 ```
 
+### The answer must not depend on the command (#4195)
+
+`pytest`, `python -m pytest`, `pytest tests/unit`, `pytest <file>` and the
+smoke jobs must all give the **same** answer for the same tree. They did not,
+and the two ways they diverged are both easy to reintroduce:
+
+1. **`python -m pytest` prepends the current directory to `sys.path`; the
+   `pytest` console script does not.** The repo root holds a gitignored
+   `build/` directory that setuptools leaves behind on any `pip install -e .`,
+   and with the repo root on `sys.path` that bare directory imports as a
+   *namespace package*. So `pytest.importorskip("build")` answered **yes** on
+   an interpreter that cannot run `python -m build`, and the test went from
+   `skipped` to `failed` purely on which command was typed.
+
+   **Rule:** guard what you *run*. For a `python -m X` subprocess use
+   `runnable_module_or_skip("X", needed_for=...)` from
+   `tests/unit/shell_suite.py`, which asks for `X.__main__` — the thing a
+   directory with no `__main__.py` cannot provide. `importorskip` stays
+   correct for a module the test imports itself.
+
+2. **A shell suite that picks its interpreter off `PATH`.** `python3` on a CI
+   runner and on most dev machines is a system interpreter with no pytest, so
+   a suite that executes pytest got a different answer from `bash tests/<x>.sh`
+   than from the pytest wrapper that passes `NYXGPT_TEST_PYTHON`.
+
+   **Rule:** source `tests/pytest_python.sh` and take the interpreter from
+   `require_pytest_python` (or `require_python` when the suite only runs
+   stdlib scripts). It is the one place the candidate order and the
+   `command -v` absolutisation live.
+
+**Three outcomes, never two.** A suite that executes something exits `0`
+(passed), `1` (a check failed) or **`77`** (this machine cannot run
+`python -m pytest`, so the suite could not answer). The pytest wrappers map
+`77` to a skip via `assert_shell_suite_ran`; the smoke jobs treat it as a
+broken job. Collapsing `77` into `0` is what let
+`tests/test_escalation_evidence.sh` print *"All tests passed."* with its whole
+executed half skipped, and collapsing it into `1` would make a red test that
+says nothing about the code.
+
+**A skip that reads as a pass is worse than a failure.** A pytest wrapper
+around an executing suite asserts both the exit status *and* a line the suite
+only prints once its executed section ran — that is what
+`assert_shell_suite_ran`'s `proof_of_execution` is for. The same rule applies
+to fault-injection scripts: `tests/test_pr_head_guard_discriminates.sh`
+accepts only pytest exit `1` as "the guard went red", because every other
+non-zero status means the guard never started and reporting that as a caught
+defect made all nine of its cases vacuous.
+
+`tests/unit/test_invocation_independent_tests.py` enforces all of the above,
+including the one permitted `--deselect` in `.github/workflows/**` — which has
+to name what gates the excluded test instead.
+
 ## What a pytest run may touch
 
 **Nothing of yours.** The suite gives itself a private `$HOME` in a fresh temp
@@ -75,6 +127,9 @@ This logging setup mirrors the application and CLI logging configuration to ensu
 - Add new unit tests under `tests/unit/` and mark them with `@pytest.mark.unit` (or use a file-level marker).
 - Add new integration tests under `tests/integration/` and mark them with `@pytest.mark.integration`.
 - Do not mix unit and integration behavior in the same test file.
+- A test's result must come from the tree, not from the command that started
+  pytest or from what happens to be installed — see
+  "The answer must not depend on the command" above.
 
 ## Web UI Testing (Next.js)
 
