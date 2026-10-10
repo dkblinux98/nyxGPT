@@ -64,7 +64,7 @@ pr_comment_bodies() {
 BODIES="$(pr_comment_bodies)"
 
 _has_marker() {
-  printf '%s' "$BODIES" | grep -Fq -- "$1"
+  printf '%s' "$BODIES" | grep -F -- "$1" >/dev/null
 }
 
 case "$STATE" in

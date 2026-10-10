@@ -661,11 +661,18 @@ def _smoke_status_greps():
     """Every install-mode pattern the systemd smoke greps `ops status` for.
 
     Matched on the pattern rather than on the pipeline, because the script
-    reads the output both ways: piped straight into `grep -q`, and captured
-    into `dev_status_out` first so a failure can print it.
+    reads the output both ways: piped straight into `grep`, and captured into
+    `dev_status_out` first so a failure can print it.
+
+    Deliberately not anchored on `grep -q`: a `grep` reading a pipe may not
+    stop early, or the producer's EPIPE becomes the pipeline's answer under
+    `pipefail` (#4192), so the piped reads spell it
+    `grep "..." >/dev/null`. Anchoring on `-q` here silently returned an
+    EMPTY pattern list for those -- and the only thing standing between that
+    and a vacuous pass is the `assert patterns` in the caller.
     """
     script = Path(__file__).resolve().parents[2] / "scripts" / "systemd-native-smoke.sh"
-    return re.findall(r'grep -q "(Install mode[^"]+)"', script.read_text(encoding="utf-8"))
+    return re.findall(r'grep[^"\n]*"(Install mode[^"]+)"', script.read_text(encoding="utf-8"))
 
 
 def _greps(pattern, text):

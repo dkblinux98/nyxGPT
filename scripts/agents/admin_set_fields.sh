@@ -83,7 +83,7 @@ item_id_for_content() {
   echo "$resp" \
     | jq -r --arg pid "$(get_project_id)" \
         '.data.repository.issueOrPullRequest.projectItems.nodes[]? | select(.project.id == $pid) | .id' \
-    | head -1
+    | sed -n '1p'
 }
 
 normalized="$(echo "$ITEMS" | tr ',' ' ')"

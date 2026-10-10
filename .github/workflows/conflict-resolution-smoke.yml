@@ -188,7 +188,7 @@ jobs:
           # The behavior this issue removed, taken from the file it was removed
           # from. If this ever matches again, the regression is real.
           if git log -p -1 --format= -- .github/workflows/notify-merge-conflicts.yml \
-             | grep -q '^-.*addAssignees'; then
+             | grep '^-.*addAssignees' >/dev/null; then
             echo "::notice::Confirmed: the owner-assignment step existed and was removed here."
           else
             echo "::notice::Owner-assignment removal is not in this commit's diff; asserting current state only."

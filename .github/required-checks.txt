@@ -203,6 +203,20 @@ acceptance-standard
 # it.
 The model backend, installed and pulled on real macOS
 # macos-brew-smoke.yml's `restart-wait` job (#4192). Required, and the only
+# pipefail-pipeline-smoke.yml (#4192, review round 2). Required, and
+# deliberately wide-filtered: it is the only thing standing between the gate
+# surface and a check whose colour is not evidence about the head. `brew
+# services list | grep -q "$KEG"` turned its own SUCCESS into a red required
+# check (run 38071858945) because `grep -q` left on the first match and brew's
+# next write took EPIPE, which `pipefail` reported as the pipeline's status;
+# the same head was green an hour before. The predicate form is worse and
+# silent -- `launchctl list | grep -q` reads a lost race as "not loaded", so
+# the step skips the half it exists to prove and then passes on a service that
+# survived. This job runs the mechanism, both repaired steps against a stub
+# producer that loses the race on purpose, and the tree-wide scan. A red one
+# means a gate somewhere can now go red (or quietly pass) for a reason that
+# has nothing to do with the commit.
+pipeline-readers-drain
 # job in that workflow that does not run on a Mac -- which is the point. The
 # `keg-install` step driving #4043's self-restart failed on 9 of its last 10
 # PR runs because it sampled the api's pid one second after an endpoint that

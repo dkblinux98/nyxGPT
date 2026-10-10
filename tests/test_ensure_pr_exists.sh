@@ -107,7 +107,7 @@ _assert_not_contains() {
 # reference, while that assertion passed (#3862, second review round).
 _assert_not_matches() {
   local desc="$1" haystack="$2" pattern="$3"
-  if printf '%s' "$haystack" | grep -Eiq "$pattern"; then
+  if printf '%s' "$haystack" | grep -Ei "$pattern" >/dev/null; then
     echo "[FAIL] $desc: /$pattern/ unexpectedly matched in:" >&2
     echo "$haystack" >&2
     FAILURES=$((FAILURES + 1))
@@ -321,7 +321,7 @@ for _violation in \
   "resolved  #9201" \
   "Closes: #9201"
 do
-  if printf '%s' "$_violation" | grep -Eiq "$CLOSING_KEYWORD_RE"; then
+  if printf '%s' "$_violation" | grep -Ei "$CLOSING_KEYWORD_RE" >/dev/null; then
     echo "[ok] the keyword guard still catches: ${_violation}"
   else
     echo "[FAIL] the keyword guard no longer catches: ${_violation}" >&2

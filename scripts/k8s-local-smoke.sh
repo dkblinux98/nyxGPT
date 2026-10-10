@@ -110,7 +110,7 @@ step() { echo; echo "=== $* ==="; }
 # The sentinel is `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`, pinned by
 # tests/unit/test_port_forward_status_predicate.py.
 managed_forward_running() {
-    nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
+    nyxgpt ops port-forward --status | grep 'Background port-forward running' >/dev/null
 }
 
 # What `nyxgpt ops status` tells the operator about reaching the SRE UIs
@@ -190,7 +190,7 @@ chat_round_trip() {
         -d "{\"session\":\"${session}\",\"prompt\":\"Reply with exactly: PONG\",\"model\":\"${MODEL}\"}" \
         --max-time "${NYXGPT_SMOKE_CHAT_TIMEOUT:-300}" 2>&1) || return 1
     echo "$out"
-    echo "$out" | grep -q '"content"' || return 1
+    echo "$out" | grep '"content"' >/dev/null || return 1
 }
 
 step "1/19 Bring the stack up: nyxgpt ops install --kubernetes"
@@ -968,7 +968,10 @@ if [ -z "$found" ]; then
     # record that distinguishes them which no Pod log carries. It holds no
     # credential: the token travels in a request header, inside the Pod.
     echo "--- GlitchTip's issue list for org nyxgpt (looking for ${ERROR_MARKER}) ---" >&2
-    printf '%s\n' "${issues:-<no response>}" | head -c 4000 >&2
+    # `|| true`, not a draining reader: this is a truncated diagnostic dump,
+    # so `head -c`'s early exit is the point and its status is not an answer
+    # anyone reads (#4192 exemption 1). `sed` has no byte-range equivalent.
+    printf '%s\n' "${issues:-<no response>}" | head -c 4000 >&2 || true
     echo >&2
     fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
 resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
@@ -1081,11 +1084,11 @@ kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=3 >/dev/nu
 kubectl -n "$NAMESPACE" rollout status deployment/nyxgpt-api-stable --timeout=300s >/dev/null ||
     fail "nyxgpt-api-stable did not reach 3 replicas for the shared-session check"
 for _ in $(seq 1 12); do
-    curl -fsS "${BASE}/api/sessions" | grep -q "$SESSION" ||
+    curl -fsS "${BASE}/api/sessions" | grep "$SESSION" >/dev/null ||
         fail "session ${SESSION} missing from a replica's session list -- sessions are not shared"
 done
 kubectl -n "$NAMESPACE" exec cassandra-0 -- \
-    cqlsh -e "SELECT name FROM ${NAMESPACE}.chat_sessions;" | grep -q "$SESSION" ||
+    cqlsh -e "SELECT name FROM ${NAMESPACE}.chat_sessions;" | grep "$SESSION" >/dev/null ||
     fail "session ${SESSION} is not in Cassandra -- the session store is not the shared one"
 ok "session is stored in the in-cluster Cassandra and visible from every replica"
 kubectl -n "$NAMESPACE" scale deployment/nyxgpt-api-stable --replicas=1 >/dev/null

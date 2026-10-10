@@ -109,7 +109,7 @@ if [[ -n "$VERSION_GUESS" && "${FORCE_CEREMONY:-0}" != "1" ]]; then
   MARKER="$(python3 "${DIR}/lib/ceremony_trigger.py" marker "$VERSION_GUESS")"
   if gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${RELEASE_ISSUE}/comments" --paginate 2>/dev/null \
     | jq -s --arg m "$MARKER" '[.[][] | select(.body | contains($m))] | length > 0' 2>/dev/null \
-    | grep -q true; then
+    | grep true >/dev/null; then
     ALREADY=true
   fi
 fi

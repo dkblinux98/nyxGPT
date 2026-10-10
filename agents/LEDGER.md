@@ -2743,6 +2743,51 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4184, #4191, #4179, #4122, #4043, #4034, #3995,
   #3971; extends **D-006**, **D-057**, **D-066**, **D-067**.
 
+- **D-070** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
+  colour is not evidence if its own plumbing can decide it: under
+  `set -o pipefail`, a pipeline whose reader may leave early reports the
+  producer's broken pipe instead of the answer.** Found as a live red on this
+  PR's head. `macos-brew-smoke.yml`'s non-vacuity assertion for #4043 was
+  `brew services list | grep -q "$KEG" || { echo "…measuring nothing"; exit 1; }`.
+  `grep -q` exits on the first match, brew's next write takes `EPIPE`
+  (`Broken pipe @ rb_sys_fail_on_write - <STDOUT>`, run 38071858945, one line
+  under the one showing `nyxgpt-api@3.0.0rc` matched), and `pipefail` promotes
+  that to the pipeline's status — **so the assertion fired because it had
+  succeeded.** The same head passed an hour earlier (38070775763): it is a
+  race on whether the producer still has a write pending, so neither colour
+  was about the commit. In a *predicate* it is worse and silent —
+  `loaded() { launchctl list | grep -q "$1"; }` reads a lost race as "not
+  loaded", which skipped the half the step exists to prove and then passed
+  the did-the-stop-work assertion on a service that had survived.
+  **The reader decides, not the producer**, and that is recorded because the
+  first fix on this round got it backwards: a probe showed a 1.2 MB `echo`
+  payload surviving, and the conclusion drawn ("a builtin cannot take
+  `EPIPE`") was an artifact of the payload being ONE line — `grep` had to
+  reach the newline to match, so it drained it. The same bytes as 200k lines
+  exit **141**. There is no safe producer; there are only safe readers:
+  `grep -q PAT <<<"$text"` (no pipe), `producer | grep PAT >/dev/null`
+  (identical status, drains) and `producer | sed -n '1,Np'` (identical output,
+  drains). Swept tree-wide: **79 pipelines across 34 files**, every one a
+  gate workflow or an agent script. Enforced by
+  `scripts/agents/lib/sigpipe_pipeline_guard.py` over `.github/workflows/`
+  plus every `*.sh` under `scripts/` and `tests/`, as the new `[required]`
+  `pipeline-readers-drain` job — because the construct is shell inside
+  workflow YAML, which nothing on the tree executed, which is why it survived
+  to redden the release branch. Executed evidence, both directions:
+  `tests/unit/test_sigpipe_pipeline_guard.py` runs the real `run:` bodies out
+  of the workflow against a stub producer that loses the race deliberately —
+  the retired forms fail on a listing that matches and report a loaded service
+  as absent; the shipped forms pass. Also from the sweep, one source for one
+  decision: the keg job's "is the web keg on this machine" existed twice (the
+  install gated `inputs.include_web || pull_request`, the wrapper assertion
+  iterating both formulas unconditionally), so a dispatch with the default
+  `include_web=false` failed deterministically on a keg it had deliberately
+  skipped (38071500460) — now the job's one `WEB_KEG_INSTALLED`. Number from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
+  run, not eyeballed.
+  Source: #4192; related #4043, #4193, #4195; extends **D-006**, **D-066**,
+  **D-069**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

@@ -275,7 +275,7 @@ PY
 deletes=$(grep -c "delete pod" "$KUBECTL_LOG" || true)
 [ "$deletes" -ge 1 ] || fail "self-heal never healed a Running-but-not-ready Pod -- the fix over-corrected"
 [ "$deletes" -le 2 ] || fail "the heal budget did not hold across Pod recreation: $deletes deletions in 10 passes"
-if grep "delete pod" "$KUBECTL_LOG" | grep -q "$UNSCHEDULABLE_DEPLOY"; then
+if grep "delete pod" "$KUBECTL_LOG" | grep "$UNSCHEDULABLE_DEPLOY" >/dev/null; then
     fail "a delete targeted the unschedulable Deployment's Pod"
 fi
 ok "healing happened and stopped at the cap ($deletes deletion(s) in 10 passes), never touching the unschedulable Pod"

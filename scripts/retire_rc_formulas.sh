@@ -92,7 +92,7 @@ fi
 # Never let a retirement touch the stable formulas — `brew install
 # nyxgpt-api` must keep resolving to the release that just shipped.
 for stable in "${STABLE_FORMULAS[@]}"; do
-  if git status --porcelain -- "$stable" | grep -q .; then
+  if git status --porcelain -- "$stable" | grep . >/dev/null; then
     echo "[retire-rc] FATAL: this retirement modified ${stable} — refusing to push" >&2
     exit 1
   fi

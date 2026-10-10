@@ -1,0 +1,149 @@
+name: Pipefail Pipeline Smoke
+
+# Which question does this job answer? (#3775 executed verification)
+#
+#   "When a gate asserts something with `producer | grep -q PATTERN` under
+#    `set -o pipefail`, does the check's colour still mean what it says --
+#    and did the construct it replaced actually go red on a green commit?"
+#
+# The defect (#4192, review round 2; run 38071858945): the macOS keg job's
+# non-vacuity assertion for #4043 read
+#
+#     brew services list | grep -q "$KEG" || {
+#       echo "::error::brew does not register a service for $KEG -- nothing
+#             here resolves to a versioned name, so this step is measuring
+#             nothing"; exit 1; }
+#
+# `grep -q` leaves on the first match, brew's next write takes EPIPE
+# (`Broken pipe @ rb_sys_fail_on_write - <STDOUT>` is in the log, one line
+# under the one showing `nyxgpt-api@3.0.0rc` matched), and `pipefail` promotes
+# that to the pipeline's status -- so the assertion fired BECAUSE it had
+# succeeded. The same head had passed an hour earlier: it is a race on whether
+# the producer still has a write pending when the reader goes.
+#
+# In a predicate it is worse and silent. `loaded() { launchctl list | grep -q
+# "$1"; }` reads a lost race as "not loaded", which skips the half the step
+# exists to prove and then makes the did-the-stop-work assertion pass on a
+# service that survived. Nothing is red; the gate just stops measuring.
+#
+# Unit tests of the product cannot see any of this: the constructs are shell
+# inside workflow YAML and smoke scripts, which nothing on the tree executed.
+# This job runs the real thing -- the actual `run:` bodies, extracted, against
+# a stub producer that loses the race deliberately -- in both directions, per
+# the macos-brew-smoke.yml fault-injection template (#3753, ledger D-006):
+#
+#   1. RETIRED FORM -- must fail on a listing that MATCHES, and must report a
+#      loaded service as absent;
+#   2. SHIPPED FORM -- the same shell out of the workflow, against the same
+#      stub, must pass and must see it;
+#   3. THE GUARD -- `sigpipe_pipeline_guard` must find a planted hazard in a
+#      workflow AND in a shell script, must not flag the accepted forms, and
+#      must report nothing across .github/workflows plus every shell script
+#      under scripts/ and tests/.
+#
+# The path filter is wide on purpose. The guard's claim is about the whole
+# gate surface, so a PR touching any workflow or any shell script is exactly
+# the PR on which the claim could stop being true.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/**"
+      - "tests/**"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/**"
+      - "tests/**"
+  workflow_dispatch:
+
+# Read-only: this job reads the tree and runs shell in a temp directory. It
+# never writes to the repository or its APIs (CodeQL
+# actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
+jobs:
+  pipeline-readers-drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The path filter is wide, so without this a `push` to any feature branch
+    # would run this on top of the PR run that already covers the same head.
+    # On a push it is only wanted for the release branch, where it is the
+    # post-merge check (first principle 1 -- cost).
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML and pytest
+        run: python -m pip install --quiet pyyaml pytest
+
+      - name: No pipefail pipeline can report its reader's early exit
+        run: python scripts/agents/lib/sigpipe_pipeline_guard.py
+
+      # A guard that cannot fail is not a guard. Two plants, because the
+      # scanner reads two kinds of file through two different code paths: a
+      # `run:` body lifted out of YAML, and a shell script read whole.
+      - name: Guard rejects a planted hazard in a workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          # `-q` is assembled from a variable so THIS file does not contain
+          # the construct -- the guard reads `run:` bodies textually, heredoc
+          # content included, and would otherwise flag its own fault
+          # injection. github-script-injection-smoke.yml assembles its own
+          # plant's expression delimiter the same way, for the same reason.
+          Q="-q"
+          cat > "$TMP/planted.yml" <<YAML
+          name: planted
+          on: [push]
+          jobs:
+            planted:
+              runs-on: ubuntu-latest
+              steps:
+                - name: reports its reader's early exit
+                  run: |
+                    set -euo pipefail
+                    brew services list | grep $Q "\$KEG" || exit 1
+          YAML
+          if python scripts/agents/lib/sigpipe_pipeline_guard.py "$TMP/planted.yml"; then
+            echo "::error::the guard accepted a planted workflow hazard -- it is not measuring anything"
+            exit 1
+          fi
+          echo "good: the planted workflow hazard was rejected"
+
+      - name: Guard rejects a planted hazard in a shell script
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          # The reader on a continuation line: the shape the first draft of
+          # this guard missed, because a line-at-a-time scan attributes the
+          # producer to nothing and passes.
+          Q="-q"
+          cat > "$TMP/planted.sh" <<SH
+          set -euo pipefail
+          if gh api "repos/x/y/issues/1/comments" --paginate \\
+            | jq -s '[.[][]] | length > 0' \\
+            | grep $Q true; then
+            echo yes
+          fi
+          SH
+          if python scripts/agents/lib/sigpipe_pipeline_guard.py "$TMP/planted.sh"; then
+            echo "::error::the guard accepted a planted shell hazard -- it is not measuring anything"
+            exit 1
+          fi
+          echo "good: the planted shell hazard was rejected"
+
+      # The executed halves: the mechanism itself, and the two repaired steps
+      # run against a stub producer out of the workflow they ship in.
+      - name: The repaired steps, executed, in both directions
+        run: python -m pytest tests/unit/test_sigpipe_pipeline_guard.py -v

@@ -71,11 +71,11 @@ guidance_is_present() {
   local rc=0
   section="$(caveats_section "$file")"
 
-  if ! printf '%s\n' "$section" | grep -q 'nyxgpt up'; then
+  if ! printf '%s\n' "$section" | grep 'nyxgpt up' >/dev/null; then
     echo "  missing: the \`nyxgpt up\` instruction"
     rc=1
   fi
-  if ! printf '%s\n' "$section" | grep -q 'brew services start'; then
+  if ! printf '%s\n' "$section" | grep 'brew services start' >/dev/null; then
     echo "  missing: any mention of \`brew services start\`"
     rc=1
   fi

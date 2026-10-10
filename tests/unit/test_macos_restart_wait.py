@@ -51,14 +51,14 @@ STEP_NAME = "The api restarts itself when the UI asks it to (#4043)"
 STUB_DELAY_SECONDS = 6
 
 
-def _step_script() -> str:
-    """The real `run:` body of the step under test."""
+def _step_script(step_name: str = STEP_NAME) -> str:
+    """The real `run:` body of a step, by name (default: the step under test)."""
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     for job in workflow["jobs"].values():
         for step in job.get("steps", []):
-            if step.get("name") == STEP_NAME:
+            if step.get("name") == step_name:
                 return str(step["run"])
-    raise AssertionError(f"{WORKFLOW} has no step named {STEP_NAME!r} any more")
+    raise AssertionError(f"{WORKFLOW} has no step named {step_name!r} any more")
 
 
 def _shell_function(script: str, name: str) -> str:
@@ -205,3 +205,66 @@ def test_the_step_waits_on_the_pid_rather_than_sampling_it() -> None:
         "the post-restart pid is being sampled again rather than waited for -- that "
         "read returns the pre-restart process, which is #4192"
     )
+
+
+# ---------------------------------------------------------------------------
+# One source for "is the web keg on this machine" (#4192 review round 2)
+# ---------------------------------------------------------------------------
+#
+# Reviewer-found, and the same shape as the rest of this issue: the step that
+# installs `nyxgpt-web` was gated `inputs.include_web || pull_request`, while
+# the wrapper assertion iterated BOTH formulas unconditionally -- so a
+# `workflow_dispatch` with the default `include_web=false` went red on a keg it
+# had deliberately not installed (run 38071500460). A gate that reports how it
+# was invoked is not reporting on the head.
+#
+# The condition now lives once, as the job's `WEB_KEG_INSTALLED`. These pin
+# that, because two copies of one decision is what diverged in the first place
+# (CLAUDE.md "one source per decision", ledger D-066).
+
+KEG_JOB = "keg-install"
+WEB_FLAG = "WEB_KEG_INSTALLED"
+
+
+def _keg_install_job() -> dict:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"].get(KEG_JOB)
+    assert job, f"{WORKFLOW} no longer has a {KEG_JOB!r} job"
+    return job
+
+
+def test_the_web_keg_condition_is_declared_once_on_the_job() -> None:
+    job = _keg_install_job()
+    declared = job.get("env", {}).get(WEB_FLAG)
+    assert declared, f"{KEG_JOB} must declare {WEB_FLAG} once, at job level"
+    # Derived from the inputs, not probed from the machine: a `brew list`
+    # probe would narrow the assertion silently on a run where the install
+    # should have happened and did not.
+    assert "inputs.include_web" in declared
+    assert "pull_request" in declared
+
+
+def test_no_step_restates_the_web_keg_condition() -> None:
+    """Every reader goes through the job's flag, including the steps' `if:`."""
+    for step in _keg_install_job()["steps"]:
+        condition = str(step.get("if", ""))
+        assert "include_web" not in condition, (
+            f"step {step.get('name')!r} restates the web-keg condition instead of "
+            f"reading {WEB_FLAG} -- that is the divergence this flag removed"
+        )
+
+
+def test_the_wrapper_assertion_only_asserts_kegs_this_run_installed() -> None:
+    """And it still asserts the api wrapper unconditionally.
+
+    Narrowing to "whatever is installed" would make the step vacuous on a run
+    where nothing was; the api keg is installed on every run of this job.
+    """
+    script = _step_script("Both service wrappers are runnable scripts, not 0444 text files (#4043)")
+    assert f"${{{WEB_FLAG}" in script or f"${WEB_FLAG}" in script, (
+        "the wrapper step must read the job's web-keg flag rather than naming "
+        "both formulas unconditionally"
+    )
+    assert (
+        "formulas=(nyxgpt-api@3.0.0rc)" in script
+    ), "the api wrapper must still be asserted on every run"

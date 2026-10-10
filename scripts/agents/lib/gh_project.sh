@@ -207,7 +207,7 @@ classify_error() {
   # name the gate instead of printing "error type could not be determined":
   # see scripts/agents/run_final_verification.sh and
   # scripts/agents/lib/escalation_evidence.py, which own the format this reads.
-  if echo "$error_text" | grep -q "Final Verification failed: gate="; then
+  if echo "$error_text" | grep "Final Verification failed: gate=" >/dev/null; then
     local _gate
     _gate="$(echo "$error_text" \
       | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
@@ -532,13 +532,13 @@ get_fields_json() {
 field_id_by_name() {
   require_cmd jq
   local name="$1"
-  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .id' | head -n 1
+  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .id' | sed -n '1p'
 }
 
 field_type_by_name() {
   require_cmd jq
   local name="$1"
-  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .__typename' | head -n 1
+  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .__typename' | sed -n '1p'
 }
 
 single_select_option_id() {
@@ -905,7 +905,7 @@ issue_status() {
   }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num")" || return 1
   echo "$resp" \
     | jq -r --arg field "$STATUS_FIELD" '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[]? | select(.field.name==$field) | .name' \
-    | head -1
+    | sed -n '1p'
 }
 
 # Clears (unsets) a project field on an item -- used by
@@ -2246,7 +2246,7 @@ print((datetime.datetime.utcnow() - datetime.timedelta(minutes=int(sys.argv[1]))
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" --paginate 2>/dev/null \
     | jq -s --arg marker "$marker" --arg cutoff "$cutoff" \
       '[.[][] | select(.body | contains($marker)) | select(.created_at >= $cutoff)] | length > 0' 2>/dev/null \
-    | grep -q true
+    | grep true >/dev/null
 }
 
 # -------------------------
@@ -3289,7 +3289,7 @@ related_feature_of() {
     body="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.body // ""' 2>/dev/null || echo "")"
   fi
   jq -n -c --argjson b "${blocks:-[]}" --arg body "$body" '{blocks: $b, body: $body}' \
-    | python3 "${_LIB_DIR}/issue_relationships.py" resolve-related 2>/dev/null | head -1
+    | python3 "${_LIB_DIR}/issue_relationships.py" resolve-related 2>/dev/null | sed -n '1p'
 }
 
 # Assign issue to developer and trigger workflow
@@ -4648,7 +4648,7 @@ required_check_state() {
     [[ -n "$line" ]] || continue
     name="${line%=*}"
     concl="${line##*=}"
-    printf '%s\n' "$names" | grep -Fxq -- "$name" || continue
+    printf '%s\n' "$names" | grep -Fx -- "$name" >/dev/null || continue
     present=$((present + 1))
     case "$concl" in
       # `cancelled` counts as failure: the gate it stood for did not pass, and

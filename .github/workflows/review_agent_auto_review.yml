@@ -206,7 +206,7 @@ jobs:
             fi
           else
             COMMENT="${COMMENT_BODY:-}"
-            if echo "$COMMENT" | grep -q 'nyxgpt-structured-review'; then
+            if grep -q 'nyxgpt-structured-review' <<<"$COMMENT"; then
               # Fallback trigger: the structured-review comment the review
               # workflow persists after every review. The primary trigger is
               # the pull_request_review event, but that event only fires when

@@ -29,7 +29,7 @@ DROPPED_PARAMS=0
 
 for call in $FRONTEND_CALLS; do
   # Skip dynamic routes with ${...}
-  if echo "$call" | grep -q '\${'; then
+  if echo "$call" | grep '\${' >/dev/null; then
     continue
   fi
 

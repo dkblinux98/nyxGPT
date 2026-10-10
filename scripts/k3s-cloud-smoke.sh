@@ -247,7 +247,7 @@ step "2/14  The access surface: #3503 says nothing but TCP 22"
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
 
-if ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -Eq '^(0\.0\.0\.0|\*|\[::\]):6443$'; then
+if ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -E '^(0\.0\.0\.0|\*|\[::\]):6443$' >/dev/null; then
   fail "the k3s apiserver is listening on every interface -- on an EC2 instance that is the
         public NIC, and #3503's access model is that nothing but TCP 22 is reachable"
 fi
@@ -296,7 +296,7 @@ log "PASS: local-path is present and is the default StorageClass"
 # ...and now that the deploy controller has demonstrably run, the absence of
 # these two is evidence rather than a head start.
 for unwanted in traefik svclb; do
-  if kubectl get pods -A --no-headers 2>/dev/null | grep -q "$unwanted"; then
+  if kubectl get pods -A --no-headers 2>/dev/null | grep "$unwanted" >/dev/null; then
     kubectl get pods -A | sed 's/^/    | /'
     fail "$unwanted is running -- the bootstrap's --disable flags did not take"
   fi
@@ -370,7 +370,7 @@ COREDNS_RESTARTS="$(kubectl -n kube-system get pods -l k8s-app=kube-dns \
 log "MEASURED: CoreDNS restart count is $COREDNS_RESTARTS"
 [[ "$COREDNS_RESTARTS" -eq 0 ]] \
   || fail "CoreDNS has restarted $COREDNS_RESTARTS time(s) -- it is Available but not healthy"
-if kubectl -n kube-system logs -l k8s-app=kube-dns --tail=200 2>/dev/null | grep -q "plugin/loop"; then
+if kubectl -n kube-system logs -l k8s-app=kube-dns --tail=200 2>/dev/null | grep "plugin/loop" >/dev/null; then
   kubectl -n kube-system logs -l k8s-app=kube-dns --tail=50 | sed 's/^/    | /'
   fail "CoreDNS logged a resolver loop -- its upstream resolves back to itself"
 fi
@@ -437,7 +437,7 @@ done
 log "MEASURED: Service types in the nyxgpt namespace:"
 kubectl -n "$NAMESPACE" get svc -o custom-columns=NAME:.metadata.name,TYPE:.spec.type --no-headers \
   | sed 's/^/    | /'
-if kubectl -n "$NAMESPACE" get svc -o jsonpath='{.items[*].spec.type}' | grep -Eq 'LoadBalancer|NodePort'; then
+if kubectl -n "$NAMESPACE" get svc -o jsonpath='{.items[*].spec.type}' | grep -E 'LoadBalancer|NodePort' >/dev/null; then
   fail "a Service asks for a LoadBalancer or NodePort -- #3503 allows no port but 22"
 fi
 log "PASS: every Service is ClusterIP"
@@ -1957,7 +1957,7 @@ if command -v k3s >/dev/null 2>&1; then
   fail "k3s is still installed after the --no-kubernetes teardown -- the cluster would
         keep running the stack the deploy record now says is native"
 fi
-if ss -ltnH 'sport = :6443' | grep -q .; then
+if ss -ltnH 'sport = :6443' | grep . >/dev/null; then
   fail "something still listens on 6443 after the k3s uninstall"
 fi
 log "PASS: k3s is uninstalled and 6443 is free"

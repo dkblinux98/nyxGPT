@@ -151,6 +151,20 @@ merge path. The rest of the not-required half is project bookkeeping (adding a
 card to the board, stamping a lane, detecting a conflict): a flake in one of
 those must not be able to wedge the pipeline, and none of them judges the code.
 
+**A required check's colour has to be about the head.** Re-enabling the red-head
+block (#4192) makes every name in that list able to stop a review, so a check
+that can go red — or quietly pass — for a reason unconnected to the commit is
+no longer merely noise. The live example was
+`brew services list | grep -q "$KEG"` under `set -o pipefail`: `grep -q` leaves
+on the first match, brew's next write takes `EPIPE`, and `pipefail` reports
+*that* as the pipeline's status, so the assertion failed **because it had
+succeeded** (run 38071858945; the same head passed an hour earlier). The
+predicate form is worse and silent — a lost race reads as "no match", so the
+step skips or passes vacuously. `scripts/agents/lib/sigpipe_pipeline_guard.py`
+now scans every workflow and every shell script under `scripts/`/`tests/` for
+the construct, as the `[required]` `pipeline-readers-drain` job; ledger
+**D-070** has the mechanism and the three accepted forms.
+
 **Absent is not pending.** Most jobs in the list are path-filtered, so on any
 given PR most of them never run. A required check that is not attached to the
 head is not waited for and not counted against it — the path filter already

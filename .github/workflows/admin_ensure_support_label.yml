@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           if gh label list --repo "${{ github.repository }}" --limit 200 \
-               --json name --jq '.[].name' | grep -Fxq "$LABEL"; then
+               --json name --jq '.[].name' | grep -Fx "$LABEL" >/dev/null; then
             echo "✅ Label '$LABEL' exists in ${{ github.repository }}"
             exit 0
           fi

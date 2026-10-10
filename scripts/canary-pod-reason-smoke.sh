@@ -103,7 +103,7 @@ render_deployment "nyxgpt-api-canary" "900Gi" "canary" | kubectl apply -f -
 for _ in $(seq 1 30); do
     if kubectl -n "$NAMESPACE" get pods -l app=nyxgpt-api-canary-pool \
         -o jsonpath='{.items[*].status.conditions[?(@.type=="PodScheduled")].reason}' \
-        2>/dev/null | grep -q Unschedulable; then
+        2>/dev/null | grep Unschedulable >/dev/null; then
         break
     fi
     sleep 2

@@ -102,7 +102,7 @@ jobs:
           fi
           cp /tmp/ceremony.orig scripts/release_ceremony.sh
           echo "ok: the inverted ordering fails the tests"
-          grep -E '^\[FAIL\]' /tmp/inverted.log | head
+          grep -E '^\[FAIL\]' /tmp/inverted.log | sed -n '1,10p'
 
   iteration-preservation:
     name: Adding a sprint iteration does not wipe board item values

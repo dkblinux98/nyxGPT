@@ -71,7 +71,7 @@ jobs:
           # lines are not.
           _code() { grep -v '^[[:space:]]*#' "$1"; }
           for wf in .github/workflows/retro_*_dump.yml .github/workflows/retro_data_refresh.yml; do
-            if _code "$wf" | grep -q 'git push'; then
+            if _code "$wf" | grep 'git push' >/dev/null; then
               echo "::error file=$wf::still pushes directly at a branch (#3815)"
               rc=1
             fi
@@ -86,7 +86,7 @@ jobs:
               rc=1
             fi
           done
-          if _code .github/workflows/retro_data_merge.yml | grep -q 'git push'; then
+          if _code .github/workflows/retro_data_merge.yml | grep 'git push' >/dev/null; then
             echo "::error file=.github/workflows/retro_data_merge.yml::still pushes directly at the default branch (#3815)"
             rc=1
           fi

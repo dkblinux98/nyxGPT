@@ -278,6 +278,23 @@ jobs:
     if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      # ONE copy of "is the web keg on this machine", read by the step that
+      # installs it and by every step that asserts about it (#4192 review
+      # round 2, reviewer-found). It was two: the install is gated
+      # `inputs.include_web || pull_request`, while the wrapper assertion
+      # below iterated BOTH formulas unconditionally -- so a
+      # `workflow_dispatch` with the default `include_web=false` failed
+      # deterministically on a keg it had deliberately not installed (run
+      # 38071500460). A gate that goes red for how it was invoked says nothing
+      # about the head, which is this issue's whole class -- and dispatch is
+      # how this advisory job gets re-run, so it has to be usable.
+      #
+      # Derived from the inputs, deliberately not probed from the machine:
+      # asking `brew list` whether the keg is there would quietly narrow the
+      # assertion on any run where the install should have happened and did
+      # not.
+      WEB_KEG_INSTALLED: ${{ inputs.include_web || github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -1462,7 +1479,7 @@ jobs:
         # layout that nothing on macOS ever ran. The cost is a real `npm ci` +
         # `next build`, which is why it is bought only on the narrow packaging
         # path filter above and not on a hot file.
-        if: ${{ inputs.include_web || github.event_name == 'pull_request' }}
+        if: ${{ env.WEB_KEG_INSTALLED == 'true' }}
         run: |
           set -euo pipefail
           brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 \
@@ -1502,7 +1519,7 @@ jobs:
         #     deliberately one nothing in this tree reports (`9.9.9`), so the
         #     assertion cannot pass by reading the API's number for the web
         #     tier's -- which is the exact bug (#3982).
-        if: ${{ inputs.include_web || github.event_name == 'pull_request' }}
+        if: ${{ env.WEB_KEG_INSTALLED == 'true' }}
         run: |
           set -euo pipefail
 
@@ -1630,7 +1647,20 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for formula in nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc; do
+          # Only the kegs this run installed. Reading the job's one
+          # `WEB_KEG_INSTALLED` rather than restating the condition: this step
+          # used to iterate both unconditionally, so a dispatch with
+          # `include_web=false` went red on a keg it had deliberately skipped
+          # (#4192, run 38071500460). Which kegs are expected is still decided
+          # by the inputs, never by probing the machine.
+          formulas=(nyxgpt-api@3.0.0rc)
+          if [ "${WEB_KEG_INSTALLED:-false}" = "true" ]; then
+            formulas+=(nyxgpt-web@3.0.0rc)
+          else
+            echo "note: nyxgpt-web was not installed on this run" \
+              "(include_web=false), so only the api wrapper is asserted"
+          fi
+          for formula in "${formulas[@]}"; do
             wrapper="$(brew --prefix "$formula")/bin/${formula%@*}"
             echo "=== $wrapper ==="
             if [ ! -f "$wrapper" ]; then
@@ -1658,7 +1688,7 @@ jobs:
             fi
           done
           [ "$fail" -eq 0 ] || exit 1
-          echo "good: both wrappers start with a shebang and carry the exec bit"
+          echo "good: ${#formulas[@]} wrapper(s) start with a shebang and carry the exec bit"
 
       - name: "A Homebrew post-install soft failure is not an install failure (#3861)"
         # The owner's 2026-08-21 acceptance run: `nyxgpt up` reported `native
@@ -1739,7 +1769,7 @@ jobs:
           SRC_VENV="$KEG/libexec/venv"
           [ -n "$KEG" ] || { echo "::error::brew --prefix ${FORMULA} returned nothing"; exit 1; }
           [ -x "$SRC_VENV/bin/python3" ] || {
-            echo "--- ${SRC_VENV}/bin ---"; ls -l "$SRC_VENV/bin" 2>&1 | head -20
+            echo "--- ${SRC_VENV}/bin ---"; ls -l "$SRC_VENV/bin" 2>&1 | sed -n '1,20p'
             echo "::error::the keg has no runnable interpreter at ${SRC_VENV}/bin/python3"
             exit 1; }
 
@@ -2371,7 +2401,16 @@ jobs:
           PLIST
             launchctl bootstrap "gui/$(id -u)" "$LA/$1.plist" 2>/dev/null || true
           }
-          loaded() { launchctl list 2>/dev/null | grep -q "$1"; }
+          # `launchctl list | grep -q` would answer "not loaded" whenever
+          # launchctl loses the race to grep's early exit (#4192): the skip
+          # below would fire spuriously, and the assertion after the stop would
+          # PASS on a service that survived. A builtin fed from memory cannot
+          # lose that race.
+          loaded() {
+            local listing
+            listing="$(launchctl list 2>/dev/null || true)"
+            grep -q "$1" <<<"$listing"
+          }
 
           echo "=== inject both log followers ==="
           inject com.nyxgpt.cassandra-logs
@@ -2747,10 +2786,21 @@ jobs:
           echo "driver: $PY"
 
           echo "=== what brew itself registers for the candidate ==="
-          brew services list
+          # Captured once and matched by a builtin, deliberately: the earlier
+          # `brew services list | grep -q "$KEG"` reported its own SUCCESS as a
+          # failure. `grep -q` leaves on the first match, brew's next write
+          # then takes EPIPE ("Broken pipe @ rb_sys_fail_on_write"), and
+          # `pipefail` makes the pipeline non-zero -- so the non-vacuity check
+          # below fired "measuring nothing" with the name right there in the
+          # log (run 38071858945). The same head passed at 38070775763: it is a
+          # race on whether brew still has a write pending, which is why the
+          # red said nothing about the commit. #4192, guarded for the whole
+          # tree by scripts/agents/lib/sigpipe_pipeline_guard.py.
+          SERVICES="$(brew services list)"
+          printf '%s\n' "$SERVICES"
           # Non-vacuity: if brew does not list the versioned name, the product
           # never resolves to it and neither half below is about anything.
-          brew services list | grep -q "$KEG" || {
+          grep -q "$KEG" <<<"$SERVICES" || {
             echo "::error::brew does not register a service for $KEG -- nothing here resolves to a versioned name, so this step is measuring nothing"
             exit 1
           }

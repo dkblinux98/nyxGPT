@@ -255,7 +255,7 @@ jobs:
           sleep 45
           ./scripts/k8s-unscheduled-pods.sh nyxgpt
           if ! kubectl -n nyxgpt get events --field-selector reason=FailedScheduling \
-               -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' | grep -q 'Insufficient cpu'; then
+               -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' | grep 'Insufficient cpu' >/dev/null; then
             echo "::error::injection failed: the pre-fix cpu requests fit, so the cpu half is untested"
             kubectl -n nyxgpt get pods -o wide
             kubectl describe node | sed -n '/Allocated resources/,/Events/p'
@@ -294,7 +294,7 @@ jobs:
           fi
           # The Pod #3825 named: the observability layer is incomplete without it.
           kubectl -n nyxgpt get pod -l app=prometheus \
-            -o jsonpath='{.items[0].spec.nodeName}' | grep -q . \
+            -o jsonpath='{.items[0].spec.nodeName}' | grep . >/dev/null \
             || { echo "::error::prometheus is still unscheduled"; exit 1; }
           echo "every Pod scheduled, prometheus included"
 
