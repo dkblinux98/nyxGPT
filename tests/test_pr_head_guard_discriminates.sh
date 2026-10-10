@@ -43,9 +43,27 @@
 #
 # Each must make the guard RED. The shipped tree must make it GREEN. A guard
 # that passes case 1 through 9 is asserting nothing and this script says so.
+#
+# AND ONE WAY THIS SCRIPT COULD ITSELF BE VACUOUS (#4195). It used to run a
+# bare `python3 -m pytest` and read any non-zero status as "the guard is red,
+# as it must be". On a machine where PATH's `python3` has no pytest -- a
+# GitHub Actions runner before `setup-python`, and most dev machines -- that is
+# every case at once: nine `[ok] (guard red, as it must be)` lines with the
+# guard never having started, which reads exactly like a guard that caught
+# everything. So the interpreter is resolved up front through the shared
+# resolver (and the suite exits 77 if there is none), and `_guard` now
+# distinguishes pytest's "a test failed" (1) from every other status -- no
+# tests collected (5), usage error (4), internal error (3), interrupted (2) --
+# each of which is this script being broken, not the guard being red.
+#
+# Exit status: 0 all cases passed, 1 a case failed, 77 this machine cannot run
+# `python -m pytest` so the script could not answer (tests/pytest_python.sh).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/pytest_python.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pytest_python.sh"
+PYTHON="$(require_pytest_python "$ROOT_DIR")" || exit $?
 WF="$ROOT_DIR/.github/workflows/ensure_project_hygiene.yml"
 CLOSE_WF="$ROOT_DIR/.github/workflows/pr_project_status_on_close.yml"
 # Case 8 plants a file rather than editing one, so it must not collide with a
@@ -81,30 +99,46 @@ FAILURES=0
 # script install the whole project to answer a question about a workflow file.
 # The full suite still collects the same file WITH conftest, so nothing here
 # exempts it from the ordinary run.
+# Prints nothing; returns pytest's own exit status. `set -e` is on, so the
+# status is captured rather than tested inline.
 _guard() {
-  (cd "$ROOT_DIR" && python3 -m pytest "$GUARD" -q -p no:cacheprovider --noconftest \
-      >/tmp/guard.out 2>&1)
+  local rc=0
+  (cd "$ROOT_DIR" && "$PYTHON" -m pytest "$GUARD" -q -p no:cacheprovider --noconftest \
+      >/tmp/guard.out 2>&1) || rc=$?
+  return "$rc"
 }
 
 _expect_green() {
-  local desc="$1"
-  if _guard; then
+  local desc="$1" rc=0
+  _guard || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     echo "[ok] $desc"
   else
-    echo "[FAIL] $desc -- the guard is red on a tree that should pass:" >&2
+    echo "[FAIL] $desc -- the guard is red on a tree that should pass (pytest exit ${rc}):" >&2
     cat /tmp/guard.out >&2
     FAILURES=$((FAILURES + 1))
   fi
 }
 
 _expect_red() {
-  local desc="$1"
-  if _guard; then
+  local desc="$1" rc=0
+  _guard || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     echo "[FAIL] $desc -- the guard PASSED on a workflow that hands this" >&2
     echo "       repository's secrets to a PR author. The guard is vacuous." >&2
     FAILURES=$((FAILURES + 1))
+  elif [[ "$rc" -ne 1 ]]; then
+    # NOT "red, as it must be". Only pytest exit 1 means an assertion failed,
+    # which is the one status that proves the guard SAW the injection. 5 is
+    # "no tests collected", 4/3/2 are usage/internal/interrupt, and anything
+    # else is the interpreter failing to start -- all of them mean this script
+    # measured nothing, and calling that a pass is the #4195 defect.
+    echo "[FAIL] $desc -- the guard did not RUN (pytest exit ${rc}, not 1), so" >&2
+    echo "       its redness proves nothing about the injected defect:" >&2
+    cat /tmp/guard.out >&2
+    FAILURES=$((FAILURES + 1))
   else
-    echo "[ok] $desc (guard red, as it must be)"
+    echo "[ok] $desc (guard red on an assertion, as it must be)"
   fi
 }
 

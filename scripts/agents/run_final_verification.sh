@@ -46,7 +46,19 @@ LOG_DIR="${NYXGPT_VERIFY_LOG_DIR:-/tmp}"
 GATES="${NYXGPT_VERIFY_GATES:-black ruff mypy pytest tsc routes}"
 PYTEST_TARGET="${NYXGPT_VERIFY_PYTEST_TARGET:-tests/unit/}"
 PYTEST_ARGS="${NYXGPT_VERIFY_PYTEST_ARGS:---cov=src/nyxgpt --cov-report=term-missing}"
-PY="${NYXGPT_VERIFY_PYTHON:-python}"
+# One interpreter for the whole run -- the gates AND `_fail_gate`'s composition
+# of the recorded reason (#4195). `python` first because that is what
+# `setup-python` puts on PATH in the workflow, then `python3`, which is the
+# only one some machines have: the previous `${NYXGPT_VERIFY_PYTHON:-python}`
+# would have failed every gate on such a machine with "python: command not
+# found", a failure about the runner rather than about the tree.
+if [[ -n "${NYXGPT_VERIFY_PYTHON:-}" ]]; then
+  PY="$NYXGPT_VERIFY_PYTHON"
+elif command -v python >/dev/null 2>&1; then
+  PY="python"
+else
+  PY="python3"
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -55,8 +67,16 @@ mkdir -p "$LOG_DIR"
 _fail_gate() {
   local gate="$1" total="${2:-}" lines="$3"
   local detail
+  # `$PY`, not a bare `python3` (#4195). Running the gates under one
+  # interpreter and composing the recorded reason under whatever `python3`
+  # PATH happens to resolve to made the recording depend on how the script was
+  # invoked: from an activated venv the two are the same, from
+  # `/path/to/venv/bin/python -m pytest` they are not, and on a machine with no
+  # `python3` on PATH at all the detail came out EMPTY -- which is exactly the
+  # "Error type could not be determined" headline this script exists to
+  # prevent. One interpreter per run, named once above.
   detail="$(printf '%s\n' "$lines" \
-    | python3 "${LIB_DIR}/escalation_evidence.py" verification-detail "$gate" "$total")"
+    | "$PY" "${LIB_DIR}/escalation_evidence.py" verification-detail "$gate" "$total")"
   write_agent_error_detail "$detail"
   echo "::error::Final Verification failed at the ${gate} gate."
   printf '%s\n' "$detail"

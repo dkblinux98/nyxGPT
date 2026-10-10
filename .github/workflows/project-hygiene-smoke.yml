@@ -192,4 +192,17 @@ jobs:
 
       - name: "Both directions: the guard is red on every unsafe shape, green on the shipped one"
         shell: bash
-        run: bash tests/test_pr_head_guard_discriminates.sh
+        # Exit 77 is the script saying it found no interpreter that can run
+        # `python -m pytest` (#4195). On this runner `setup-python` has just
+        # installed one, so 77 means the job is broken -- it is called out
+        # rather than collapsed into "a case failed", because before #4195 the
+        # script reported that state as nine passing fault-injection cases.
+        run: |
+          set -uo pipefail
+          bash tests/test_pr_head_guard_discriminates.sh && RC=0 || RC=$?
+          if [ "$RC" -eq 77 ]; then
+            echo "::error::the script could not find an interpreter that runs pytest on a"
+            echo "::error::runner where setup-python just installed one -- this job is broken."
+            exit 1
+          fi
+          exit "$RC"

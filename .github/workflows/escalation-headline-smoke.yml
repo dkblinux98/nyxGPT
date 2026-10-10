@@ -378,6 +378,23 @@ jobs:
       # that file is run separately below so its stdout can be checked.
       - name: Every combination of evidence, as a pure decision
         shell: bash
+        # WHY THE --deselect IS STILL HERE (#4195 criterion 3). It is NOT
+        # hiding a failure: `TestShellSuite` runs the same shell suite that the
+        # NEXT STEP runs, and that step is what gates it -- it checks the exit
+        # status AND greps for one of the suite's own executed-section [ok]
+        # lines, which this step's pass/fail summary could not do. Running the
+        # suite twice in one job would double its cost (it executes a pytest
+        # gate, builds a git fixture repo and creates worktrees) to produce the
+        # weaker of the two signals.
+        #
+        # The deselect was ALSO load-bearing before #4195 and no longer is:
+        # `TestShellSuite` used to fail under a full `pytest` run, and this
+        # deselect is what kept that out of CI. That is fixed at the source --
+        # the suite now resolves an interpreter that can run pytest, or exits
+        # 77 ("could not run") instead of printing "All tests passed." -- so
+        # the test is green under `pytest`, `pytest tests/unit`,
+        # `pytest <file>` and here. Nothing is excluded that is not gated by
+        # the step below; if that step is ever removed, remove this too.
         run: |
           python -m pytest -q -p no:cacheprovider --noconftest \
             --no-header --rootdir . -c /dev/null \
@@ -386,15 +403,21 @@ jobs:
 
       - name: The shell suite, with its executed section proven to have run
         shell: bash
-        # The suite SKIPS its executed section when the interpreter it is given
-        # has no pytest, and a skip there would leave this job green over
-        # nothing. So the interpreter is named explicitly and one of the
-        # section's own [ok] lines must appear in the output.
+        # This is the step the deselect above defers to. Two things must hold,
+        # and neither is implied by the other: the suite exited 0, AND its
+        # EXECUTED section really ran. Since #4195 the suite cannot silently
+        # skip that section -- it exits 77 instead -- so 77 is called out
+        # separately here rather than being lumped in with a test failure.
         run: |
           set -uo pipefail
           OUT="$(NYXGPT_TEST_PYTHON="$(command -v python)" bash tests/test_escalation_evidence.sh 2>&1)" \
             && RC=0 || RC=$?
           printf '%s\n' "$OUT"
+          if [ "$RC" -eq 77 ]; then
+            echo "::error::the suite could not find an interpreter that runs pytest on a"
+            echo "::error::runner where setup-python just installed one -- this job is broken."
+            exit 1
+          fi
           [ "$RC" -eq 0 ] || exit 1
           if ! printf '%s' "$OUT" | grep -qF "[ok] it records the first failing node ID"; then
             echo "::error::the suite's EXECUTED section did not run (it was skipped) --"
