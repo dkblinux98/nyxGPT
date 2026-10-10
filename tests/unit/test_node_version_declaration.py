@@ -342,3 +342,39 @@ def test_the_declared_line_is_a_supported_lts():
         f"Node {DECLARED} is an odd-numbered line, which never becomes LTS -- "
         "nyxGPT installs and runs on LTS lines only"
     )
+
+
+def test_the_published_web_tarball_carries_the_declaration():
+    """The keg's `npm ci` has to see `engines` AND `engine-strict`.
+
+    `web/` ships as a standalone tarball -- the Homebrew keg extracts it and
+    runs `npm ci` inside it with no repo above it -- so the gate only exists
+    there if both files are vendored. `.npmrc` is a dotfile, and
+    `release_tarball._vendor_tree` works by an exclusion list: nothing stops a
+    future entry there from dropping it, at which point the one install that
+    builds the SHIPPED bundle would silently go back to treating an `engines`
+    mismatch as a warning. That regression leaves no trace in a passing
+    install, which is why it is asserted here rather than left to review.
+    """
+    import tarfile
+    import tempfile
+
+    from nyxgpt import release_tarball
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tarball = release_tarball.build_release_dist_tarball("nyxgpt-web", "0.0.0-test", Path(tmp))
+        with tarfile.open(tarball) as tf:
+            names = {name.split("/", 1)[-1] for name in tf.getnames()}
+            manifest = tf.extractfile("nyxgpt-web-0.0.0-test/package.json")
+            assert manifest is not None
+            engines = json.loads(manifest.read().decode("utf-8")).get("engines") or {}
+
+    assert ".npmrc" in names, (
+        "the published web tarball carries no `.npmrc`, so the Homebrew keg's "
+        "`npm ci` runs without `engine-strict` -- an `engines` mismatch would warn "
+        "and install. Check `release_tarball._WEB_VENDOR_EXCLUDES`."
+    )
+    assert engines.get("node") == node_runtime.NODE_ENGINES_RANGE, (
+        "the published web tarball's package.json does not declare "
+        f"engines.node = {node_runtime.NODE_ENGINES_RANGE!r}"
+    )
