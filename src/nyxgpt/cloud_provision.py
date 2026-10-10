@@ -41,6 +41,7 @@ import importlib.resources
 import sys
 from pathlib import Path
 
+from nyxgpt import node_runtime
 from nyxgpt.cloud import CloudCommandError
 from nyxgpt.cloud_deploy import DEFAULT_SESSION_BACKEND
 from nyxgpt.config import VALID_SESSION_BACKENDS
@@ -54,6 +55,15 @@ SESSION_BACKEND_PLACEHOLDER = "__NYXGPT_SESSION_BACKEND__"
 BREW_FORMULAS_PLACEHOLDER = "__NYXGPT_BREW_FORMULAS__"
 BREW_API_FORMULA_PLACEHOLDER = "__NYXGPT_BREW_API_FORMULA__"
 BREW_WEB_FORMULA_PLACEHOLDER = "__NYXGPT_BREW_WEB_FORMULA__"
+
+# The Node major, from nyxGPT's one Node declaration (#4194). A placeholder
+# rather than a literal in the templates for the same reason the version is
+# one: the templates used to carry a hard-coded `20` of their own, which
+# nothing held equal to CI, `web/Dockerfile`, the Homebrew keg or
+# `cloud_deploy`'s own copy of the same bootstrap.
+NODE_MAJOR_PLACEHOLDER = "__NYXGPT_NODE_MAJOR__"
+NODESOURCE_RPM_PLACEHOLDER = "__NYXGPT_NODESOURCE_RPM_URL__"
+NODESOURCE_DEB_PLACEHOLDER = "__NYXGPT_NODESOURCE_DEB_URL__"
 
 # One entry per supported target OS family: the `--os` value, the packaged
 # template filename (see scripts/cloud/, symlinked into
@@ -242,6 +252,9 @@ def render_user_data(
         .replace(BREW_FORMULAS_PLACEHOLDER, f"{api_formula} {web_formula}")
         .replace(BREW_API_FORMULA_PLACEHOLDER, api_formula)
         .replace(BREW_WEB_FORMULA_PLACEHOLDER, web_formula)
+        .replace(NODE_MAJOR_PLACEHOLDER, str(node_runtime.NODE_MAJOR))
+        .replace(NODESOURCE_RPM_PLACEHOLDER, node_runtime.nodesource_setup_url("dnf"))
+        .replace(NODESOURCE_DEB_PLACEHOLDER, node_runtime.nodesource_setup_url("apt"))
     )
 
 

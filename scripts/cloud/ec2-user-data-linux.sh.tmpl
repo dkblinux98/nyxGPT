@@ -116,19 +116,30 @@ if [ -z "$NYXGPT_PYTHON" ]; then
   exit 1
 fi
 
-# Node 20 from NodeSource rather than the distro repos: Ubuntu 22.04 LTS
-# still ships Node 12 and AL2023 ships Node 18, both below the Node 20 the
-# web bundle's build is standardized on (see linux-native-smoke.yml).
+# Node from NodeSource rather than the distro repos: Ubuntu 22.04 LTS still
+# ships Node 12 and AL2023 ships Node 18, both below the major the web
+# bundle's build is standardized on.
+#
+# The major is `__NYXGPT_NODE_MAJOR__`, substituted by
+# `cloud_provision.render_user_data` from `node_runtime.NODE_MAJOR` -- nyxGPT's
+# one Node declaration (#4194). It was a literal `20` here, a second literal
+# `20` in `cloud_deploy.NATIVE_NODE_SECTION`, a third in `web/Dockerfile` and a
+# fourth in seven workflows, with nothing holding any of them equal; macOS
+# meanwhile took whatever `node` Homebrew had. Edit the declaration.
+#
+# `-ne`, not `-lt`: a NEWER major is a mismatch too, and `-lt 20` is why an
+# instance that happened to carry Node 26 ran a bundle built against nothing of
+# the kind. `ops doctor` on the instance reports the same verdict.
 NODE_MAJOR=0
 if command -v node >/dev/null 2>&1; then
   NODE_MAJOR=$(node -v | sed 's/^v//' | cut -d. -f1)
 fi
-if ! command -v npm >/dev/null 2>&1 || [ "$NODE_MAJOR" -lt 20 ]; then
+if ! command -v npm >/dev/null 2>&1 || [ "$NODE_MAJOR" -ne __NYXGPT_NODE_MAJOR__ ]; then
   if command -v dnf >/dev/null 2>&1; then
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+    curl -fsSL __NYXGPT_NODESOURCE_RPM_URL__ | bash -
     dnf install -y nodejs
   else
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    curl -fsSL __NYXGPT_NODESOURCE_DEB_URL__ | bash -
     apt-get install -y nodejs
   fi
 fi

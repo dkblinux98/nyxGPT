@@ -67,7 +67,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac, cloud_verified
+from nyxgpt import (
+    cloud_cluster_record,
+    cloud_identity,
+    cloud_infra,
+    cloud_mac,
+    cloud_verified,
+    node_runtime,
+)
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.config import VALID_SESSION_BACKENDS
 from nyxgpt.doc_links import doc_url, see_doc
@@ -1581,18 +1588,27 @@ fi
 
 # --- The native substrate's blocks (the default deploy, unchanged) -----
 
-NATIVE_NODE_SECTION = """# --- Node.js 20 (the web bundle's build and run toolchain) -------------
+NATIVE_NODE_SECTION = f"""# --- Node.js {node_runtime.NODE_MAJOR} (the web bundle's build and run toolchain) -------------
 # `nyxgpt ops install`'s "native web service" step runs `npm ci`/`npm run
 # build`, and the wrapper it installs execs `npm run start`, so npm has to
 # be here before `ops install` runs. Without it that step fails with "npm
 # not found; cannot install nyxgpt-web" and the deploy leaves an API with no
 # web surface, which is not a working nyxGPT (#3761).
 #
-# Node 20 from NodeSource rather than the distro repos -- the same source
-# scripts/cloud/ec2-user-data-linux.sh.tmpl uses, and for the same reason:
-# the AMIs in the target-OS support matrix ship a Node older than the one
-# the web bundle builds against. Where NodeSource has no repo for the
-# release, fall back to the distro's own packages, then verify.
+# The major is `node_runtime.NODE_MAJOR` -- nyxGPT's one Node declaration
+# (#4194) -- interpolated, never a literal. It used to be a hard-coded `20`
+# here AND in scripts/cloud/ec2-user-data-linux.sh.tmpl, two copies of one
+# decision that nothing held equal to CI, the container or macOS.
+#
+# From NodeSource rather than the distro repos, for the reason the template
+# gives too: the AMIs in the target-OS support matrix ship a Node older than
+# the one the web bundle builds against (Ubuntu 22.04 ships 12, AL2023 ships
+# 18). Where NodeSource has no repo for the release, fall back to the distro's
+# own packages, then verify.
+#
+# The test is `!=`, not `-lt`: a NEWER major is a mismatch too. `-lt 20` was
+# how an instance that happened to have Node 26 on it ran a web bundle built
+# and tested on nothing of the kind.
 #
 # Every install is `|| true`: under `set -euo pipefail` a failed one would
 # abort here with the package manager's own message, and the named
@@ -1603,16 +1619,18 @@ NODE_MAJOR=0
 if command -v node >/dev/null 2>&1; then
   NODE_MAJOR=$(node -v | sed 's/^v//' | cut -d. -f1)
 fi
-if ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR:-0}" -lt 20 ]; then
+if ! command -v npm >/dev/null 2>&1 || \
+[ "${{NODE_MAJOR:-0}}" -ne {node_runtime.NODE_MAJOR} ]; then
   if command -v dnf >/dev/null 2>&1; then
-    if curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
+    if curl -fsSL {node_runtime.nodesource_setup_url("dnf")} | sudo -E bash - >/dev/null; then
       sudo dnf install -y nodejs >/dev/null || true
     else
-      sudo dnf install -y nodejs20 nodejs20-npm >/dev/null \\
+      sudo dnf install -y nodejs{node_runtime.NODE_MAJOR} \
+nodejs{node_runtime.NODE_MAJOR}-npm >/dev/null \\
         || sudo dnf install -y nodejs npm >/dev/null || true
     fi
   else
-    if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
+    if curl -fsSL {node_runtime.nodesource_setup_url("apt")} | sudo -E bash - >/dev/null; then
       sudo apt-get install -y -qq nodejs >/dev/null || true
     else
       sudo apt-get install -y -qq nodejs npm >/dev/null || true
@@ -1625,6 +1643,17 @@ fi
 if ! command -v npm >/dev/null 2>&1; then
   echo "node/npm could not be installed -- 'nyxgpt ops install' cannot build the nyxgpt-web bundle without npm" >&2
   exit 1
+fi
+
+# A wrong major is reported, not tolerated (#4194). The bundle is built and
+# tested on Node {node_runtime.NODE_MAJOR}; running it on another major is the
+# defect `ops doctor` now names, and saying so here puts it in the deploy log
+# at the moment it becomes true rather than leaving it for an operator to find.
+INSTALLED_NODE_MAJOR=$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1 || echo 0)
+if [ "${{INSTALLED_NODE_MAJOR:-0}}" -ne {node_runtime.NODE_MAJOR} ]; then
+  echo "WARNING: node is $(node -v 2>/dev/null || echo absent), not the Node \
+{node_runtime.NODE_MAJOR} nyxGPT declares -- run '{node_runtime.NODE_REMEDIATION_COMMAND}' on \
+the instance ('nyxgpt ops doctor' reports it too)" >&2
 fi
 """
 

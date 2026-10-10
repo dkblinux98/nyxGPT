@@ -1,9 +1,16 @@
-FROM node:20-alpine AS deps
+# The Node major in every `FROM` below is NOT a free choice (#4194): it is the
+# one nyxGPT declares in `.nvmrc` / `src/nyxgpt/node_runtime.py`, and
+# `tests/unit/test_node_version_declaration.py` fails the build if this file
+# names a different one. Bump the declaration, not this line.
+FROM node:24-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
+# `.npmrc` with the manifests, not left behind: it carries `engine-strict`, so
+# without it the one `npm ci` that builds the shipped bundle is the one install
+# that would downgrade an `engines` mismatch back to a warning.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -28,7 +35,7 @@ ARG NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN=""
 ENV NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN=${NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN}
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 # Which web build this image is (#3982). Server-side only, so unlike the
