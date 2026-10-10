@@ -801,6 +801,32 @@ diff) and do not drop it (that is the knowledge this whole mechanism exists to
 stop losing). Scaling the work down after the sweep is the owner's call; what
 is not optional is that the extent of the class ends up on the record.
 
+**You file it, and the number is the whole evidence.** Nothing in the pipeline
+files it for you:
+
+```bash
+scripts/agents/create_issue.sh \
+  --title "bug: <the different class, as a symptom someone can find>" \
+  --label "Acceptance Failure" \
+  --body-file /tmp/ooc-issue.md \
+  --copy-from-issue "$ISSUE"       # Module/Priority/Effort/Sprint/Milestone
+```
+
+Not `--blocks`: an out-of-class finding is a separate defect, not a blocker on
+the issue in hand, and a native blocked-by edge would park this issue in
+`Acceptance Failed` and gate its promotion (#3731). Give the new issue its own
+"Defect class and surfaces" section — you are the one who just did the search,
+so the class and the surfaces are already known, and leaving them "Unknown"
+spends the next session's budget re-deriving what you had.
+
+Then put the number it printed on the `**Out of class, filed:**` line.
+`scripts/agents/lib/class_sweep.py` reads that line and appends a note to the
+PR-body section when the claim names no issue, because the alternative is what
+happened on #4195 (PR #4197): a thorough out-of-class description, the words
+"filed, not fixed here", nothing filed, and only a reviewer's tracker search
+between that and a merged PR closing the only issue that mentioned it. `none`
+is a complete answer; a claim without a number is not.
+
 **Rules this project states but does not enforce are themselves a class**
 (#4174's pattern). When your change adds a rule to `CLAUDE.md`, a charter, a
 runbook or a prompt, the sweep includes "what checks this?" — a guard test, a

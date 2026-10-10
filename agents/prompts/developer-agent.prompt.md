@@ -41,6 +41,10 @@ CLASS SWEEP (#4183, runbook §3i)
   `scripts/agents/lib/class_sweep.py` attaches it to the PR body under the
   `<!-- nyxgpt-class-sweep -->` marker the reviewer greps for, and appends a
   NOT PROVIDED block if you leave it empty -- so a skipped sweep is visible.
+- An out-of-class finding is filed BY YOU (`scripts/agents/create_issue.sh`,
+  no `--blocks`) and its number goes on the `**Out of class, filed:**` line;
+  nothing files it for you, and the same helper appends a note when the claim
+  names no issue, so an unfiled claim reaches the reviewer labelled (#4195).
 - Feature work with no defect behind it says so in one line. The reviewer
   blocks on a missing or incomplete sweep (Medium, review-runbook §1e).
 

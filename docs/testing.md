@@ -89,6 +89,24 @@ accepts only pytest exit `1` as "the guard went red", because every other
 non-zero status means the guard never started and reporting that as a caught
 defect made all nine of its cases vacuous.
 
+**Run the suite from a virtualenv, not from a user-site install.** The rules
+above make a test's answer independent of the *command*; they cannot make it
+independent of an environment where the parent process and its children see
+different packages. That is what `pip install --user` (or any `pip install`
+outside a venv) produces here: the suite moves `$HOME` into a temp directory
+before anything is imported (see the next section), the parent's `sys.path` was
+computed under the real `$HOME` and still lists `~/.local/...`, and every
+subprocess it starts resolves `~/.local` under the sandbox and finds nothing.
+So `python -c "import pytest"` fails in a child while `import pytest` works in
+the parent, and `runnable_module_or_skip` reports "cannot run `python -m build`"
+for a `build` the parent can see. Observed: a user-site layout fails
+`test_the_shared_resolver_finds_the_interpreter_running_this_test` and turns
+`tests/unit/test_resources_packaging.py` from a skip into a failure. A fresh
+venv passes both, CI's layout is unaffected, and the pre-#4195 `importorskip`
+had the same parent/child gap — this is the documented setup doing its job, not
+a new constraint. If user-site installs ever need to be supported, the gap is in
+`home_sandbox`, not in the guards.
+
 `tests/unit/test_invocation_independent_tests.py` enforces all of the above,
 including the one permitted `--deselect` in `.github/workflows/**` — which has
 to name what gates the excluded test instead.

@@ -33,6 +33,7 @@ Each test here is written so that reverting the #4195 fix makes it fail.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import re
@@ -87,6 +88,77 @@ def _code_lines(path: Path) -> list[tuple[int, str]]:
             continue
         out.append((i, line))
     return out
+
+
+#: The ways a test module starts a child process. `Popen` included: a wrapper
+#: that streams output still has three outcomes to handle.
+_SUBPROCESS_CALLS = frozenset({"run", "check_output", "check_call", "call", "Popen"})
+
+
+def _string_literals(node: ast.AST) -> list[str]:
+    return [
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    ]
+
+
+def _suites_invoked(path: Path) -> set[str]:
+    """Which of `_SUITES_RUNNING_PYTHON` this module actually EXECUTES.
+
+    "The suite's filename appears somewhere in the file" was the first cut of
+    this, and it is wrong in the direction that matters: a module that quotes a
+    suite path as *data* -- a fixture, an expected message, an example in a
+    docstring the code-line filter does not drop -- gets reported as a wrapper
+    of a suite it never starts. `tests/unit/test_class_sweep.py` tripped it
+    exactly that way, by using a real sweep's text as test input, and the only
+    fix available to its author would have been to stop naming the file.
+
+    So the question asked is the one the guard means: does the suite reach the
+    arguments of a subprocess call? Both shapes in the tree count --
+    `subprocess.run([bash, "tests/x.sh"])` and the `suite = ROOT / "tests" /
+    "x.sh"` indirection both wrappers actually use. The precision cuts the
+    other way too, so `test_the_wrapper_detector_finds_every_real_wrapper`
+    pins that the detector still sees the wrappers that exist; a detector that
+    found nothing would make this guard vacuous, which is the failure mode
+    #4195 already had to fix once.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:  # pragma: no cover - a broken module fails louder elsewhere
+        return set()
+
+    # Names bound to an expression that names a suite: `suite = ROOT / "x.sh"`.
+    bound: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        literals = _string_literals(node.value)
+        named = {s for s in _SUITES_RUNNING_PYTHON if any(Path(s).name in t for t in literals)}
+        if not named:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            for name in ast.walk(target):
+                if isinstance(name, ast.Name):
+                    bound.setdefault(name.id, set()).update(named)
+
+    invoked: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if called not in _SUBPROCESS_CALLS:
+            continue
+        literals = _string_literals(node)
+        invoked.update(
+            s for s in _SUITES_RUNNING_PYTHON if any(Path(s).name in t for t in literals)
+        )
+        for name in ast.walk(node):
+            if isinstance(name, ast.Name) and name.id in bound:
+                invoked.update(bound[name.id])
+    return invoked
 
 
 class TestTheNamespacePackageTrap:
@@ -372,22 +444,50 @@ class TestShellSuitesResolveTheirInterpreter:
         for path in sorted((ROOT / "tests" / "unit").glob("*.py")):
             if path.name == Path(__file__).name:
                 continue
+            # Only wrappers that RUN a suite -- not ones that read it, or
+            # quote its path as test data (`_suites_invoked`'s docstring).
+            suites = _suites_invoked(path)
+            if not suites:
+                continue
             code = "\n".join(text for _n, text in _code_lines(path))
-            for suite in _SUITES_RUNNING_PYTHON:
-                if Path(suite).name not in code:
-                    continue
-                # Only wrappers that RUN it, not ones that merely read it.
-                if "subprocess.run" not in code:
-                    continue
-                # `assert_shell_suite_ran(` -- the CALL. Matching the bare name
-                # would be satisfied by the import line alone, which is how
-                # this guard was vacuous when first written.
-                if "assert_shell_suite_ran(" not in code:
-                    offenders.append(f"{path.relative_to(ROOT)} runs {suite}")
+            # `assert_shell_suite_ran(` -- the CALL. Matching the bare name
+            # would be satisfied by the import line alone, which is how this
+            # guard was vacuous when first written.
+            if "assert_shell_suite_ran(" not in code:
+                offenders += [f"{path.relative_to(ROOT)} runs {suite}" for suite in suites]
         assert not sorted(set(offenders)), (
             "these pytest wrappers run a suite that can exit 77 ('could not "
             "run') but do not use `assert_shell_suite_ran`, so that third "
             f"outcome would be reported as a test failure (#4195): {offenders}"
+        )
+
+    def test_the_wrapper_detector_finds_every_real_wrapper(self):
+        """The other half of the precision trade: it must not find nothing.
+
+        `_suites_invoked` replaced "the filename appears in the file" with "the
+        suite reaches a subprocess call", which is narrower by design -- and a
+        detector that narrowed to zero would make the guard above pass by
+        finding nobody to police. These are the wrappers that exist today, each
+        using one of the two shapes the detector has to understand.
+        """
+        detected = {
+            path.name: _suites_invoked(path)
+            for path in sorted((ROOT / "tests" / "unit").glob("*.py"))
+        }
+        assert "tests/test_escalation_evidence.sh" in detected["test_escalation_headline.py"], (
+            "the detector no longer sees test_escalation_headline.py as a "
+            "wrapper of test_escalation_evidence.sh, so nothing checks that it "
+            "handles exit 77 (#4195)"
+        )
+        assert "tests/test_red_head_round.sh" in detected["test_error_classes.py"], (
+            "the detector no longer sees test_error_classes.py as a wrapper of "
+            "test_red_head_round.sh (#4195)"
+        )
+        # ...and a module that only quotes a suite path is not a wrapper of it.
+        assert not detected["test_class_sweep.py"], (
+            "test_class_sweep.py uses a suite path as test data and starts no "
+            "suite; reporting it as a wrapper is the false positive "
+            "`_suites_invoked` exists to remove"
         )
 
     def test_the_escalation_suite_can_no_longer_skip_its_executed_section(self):
