@@ -147,7 +147,7 @@ jobs:
                exit 1;;
           esac
           # And the symptom the owner reported is gone, by its own words.
-          if echo "$status" | grep -q 'answered HTTP 401'; then
+          if grep -q 'answered HTTP 401' <<<"$status"; then
             echo "::error::ops status still reports a bare HTTP 401 for the running build"
             exit 1
           fi
@@ -251,12 +251,12 @@ jobs:
           status=$(nyxgpt ops status 2>/dev/null)
           echo "$status"
           heading='Install history -- records of past installs'
-          echo "$status" | grep -q "$heading" || {
+          grep -q "$heading" <<<"$status" || {
             echo "::error::a marker with nothing behind it was not reported as history (#4182 finding 2)"; exit 1; }
           # The ordering IS the fix: #3989 already printed a caveat under the
           # claim, and the owner read the claim first anyway.
-          live=$(echo "$status" | grep -n 'Deployment mode:' | head -1 | cut -d: -f1)
-          hist=$(echo "$status" | grep -n "$heading" | head -1 | cut -d: -f1)
+          live=$(echo "$status" | grep -n 'Deployment mode:' | sed -n '1p' | cut -d: -f1)
+          hist=$(echo "$status" | grep -n "$heading" | sed -n '1p' | cut -d: -f1)
           echo "  live block at line $live, history at line $hist"
           [ "$live" -lt "$hist" ] || {
             echo "::error::install records are printed above the live state (#4182 finding 2)"; exit 1; }
@@ -267,7 +267,7 @@ jobs:
           fi
           # The record is dated, which is the fact a bare record cannot carry:
           # the owner's said rc17 on a machine whose last install was rc21.
-          echo "$status" | sed -n "/$heading/,\$p" | grep -q '\[recorded ' || {
+          echo "$status" | sed -n "/$heading/,\$p" | grep '\[recorded ' >/dev/null || {
             echo "::error::the history entry carries no date (#4182 finding 2)"; exit 1; }
 
       - name: ops doctor reports the same markers the same way
@@ -277,7 +277,7 @@ jobs:
           set -uo pipefail
           out=$(nyxgpt ops doctor 2>/dev/null || true)
           echo "$out" | cat -n
-          echo "$out" | grep -q 'Install history -- records of past installs' || {
+          grep -q 'Install history -- records of past installs' <<<"$out" || {
             echo "::error::ops doctor did not report the stale markers as history (#4182 finding 2)"; exit 1; }
           if echo "$out" | grep -qE '^Install mode \(native api/web\):'; then
             echo "::error::ops doctor still leads with a native install-mode claim for nothing running"
@@ -286,8 +286,8 @@ jobs:
           # Below the VERDICT, not merely below the checks: on a machine with
           # nothing installed the checks print almost nothing, so "after the
           # checks" was still the top of the screen.
-          verdict=$(echo "$out" | grep -n 'nyxGPT ops doctor: ' | head -1 | cut -d: -f1)
-          hist=$(echo "$out" | grep -n 'Install history' | head -1 | cut -d: -f1)
+          verdict=$(echo "$out" | grep -n 'nyxGPT ops doctor: ' | sed -n '1p' | cut -d: -f1)
+          hist=$(echo "$out" | grep -n 'Install history' | sed -n '1p' | cut -d: -f1)
           echo "  verdict at line $verdict, history at line $hist"
           [ "$verdict" -lt "$hist" ] || {
             echo "::error::ops doctor prints install records above its own verdict (#4182 finding 2)"; exit 1; }
@@ -316,7 +316,7 @@ jobs:
             *"nyxGPT ops status"*"nyxGPT ops doctor"*) ;;
             *) echo "::error::status/doctor printed nothing recognisable (rc=$rc) -- nothing was measured"; exit 1;;
           esac
-          if echo "$out" | grep -q 'Install history'; then
+          if grep -q 'Install history' <<<"$out"; then
             echo "::error::an Install history block was printed on a machine with no install-mode markers (#4182)"
             exit 1
           fi

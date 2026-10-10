@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           BODY='🚫 **Dispatch refused**: if rework is genuinely needed, file it with `@improvement` on the feature issue instead.'
-          if printf '%s' "$BODY" | grep -q '@improvement'; then
+          if printf '%s' "$BODY" | grep '@improvement' >/dev/null; then
             echo "::notice::Confirmed: the bare substring test matches this message (the defect)."
           else
             echo "::error::Fault injection failed -- the message no longer contains the token, so this job proves nothing."

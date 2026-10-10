@@ -467,7 +467,7 @@ jobs:
           ./venv/bin/nyxgpt ops doctor | tee /tmp/doctor-unrecorded.txt || true
           grep -q "nothing recorded what these containers were built from" /tmp/doctor-unrecorded.txt
           mv /tmp/install-mode-terraform.json ~/.nyxGPT/install-mode-terraform.json
-          ./venv/bin/nyxgpt ops status | grep -q "Install mode (terraform): artifact"
+          ./venv/bin/nyxgpt ops status | grep "Install mode (terraform): artifact" >/dev/null
 
       - name: Verify core + observability are actually serving
         run: |

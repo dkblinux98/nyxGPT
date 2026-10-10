@@ -1065,6 +1065,27 @@ again.
   the Review Fix brief re-derives them live from the PR head. A retry that
   loses the cause just burns the budget (3 per issue+step, `retry_budget.py`);
   when it does run out the escalation is keyed `head-red:<checks>`.
+- **This paragraph describes the live behaviour again, and it did not between
+  2026-08-26 and 2026-10-10 (#4192).** A temporary owner rule made the review
+  gate's `failed` arm decide `proceed` — a red required check was *noted* in
+  the review prompt, not refused — explicitly scoped "REVERT AFTER #4034".
+  #4034 merged on 2026-09-30, nothing reverted it, and the suite that would
+  have noticed had been changed to assert the temporary behaviour. Ten days
+  later PR #4191 merged onto `v3.0.1` with three required checks red. If you
+  read a comment or a run log from that window saying a red head does not stop
+  the review, it is describing the paused state, not the rule: do not restore
+  it. `tests/test_reviewable_head_gate.sh` now pins `failed` as the decision
+  **and** as reachable from the `head-not-reviewable` job.
+- **When you write an error signature, match the SIGNAL, not a substring
+  (#4192).** The text `classify_error` reads is a run log: commit SHAs, run
+  and job ids, PR numbers, pytest node ids. `529|[Oo]verloaded` matched the
+  bare digits `529` anywhere and sat *above* the red-head signature, so the
+  same refusal classified `retriable:ci_red` or `retriable:api_overloaded`
+  depending on the head SHA — a random two-minute wait and a retry of an
+  unchanged red head. Anchor a number to what the text says it *is* (an HTTP
+  status), anchor a phrase to the claim being made, and bound every wildcard.
+  `tests/unit/test_failure_classification.py` runs every signature in the
+  function against identifier-only text and fails on a match.
 
 Full mechanics: `docs/reviewable-head-gate.md`.
 

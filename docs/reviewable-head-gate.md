@@ -41,6 +41,25 @@ names, and answers:
 `failed` wins over `pending`: one concluded failure decides the head without
 waiting for the rest.
 
+### The `failed` row was switched off for six weeks (#4192)
+
+Between 2026-08-26 and 2026-10-10 the review workflow's `head-gate` job decided
+`proceed` on `failed` under a temporary owner rule, passing the failing check
+names into the review prompt as an observation instead of refusing. The rule
+was scoped "REVERT AFTER #4034"; #4034 merged on 2026-09-30 and nothing
+reverted it, because the one suite that measured the decision
+(`tests/test_reviewable_head_gate.sh`) had been changed to assert the temporary
+answer. Red heads merged for ten days, ending with PR #4191 landing three red
+required checks on `v3.0.1`.
+
+Two things changed so a pause cannot go quiet again: the suite pins `failed` as
+the decision **and** as reachable from the `head-not-reviewable` job that acts
+on it, and the submission side's refusal classifies deterministically (the
+overload signature used to match a bare `529` in a head SHA — see
+`classify_error`). The lesson is the general one: **a gate switched off needs a
+test that goes red while it is off**, or the revert depends on someone
+remembering.
+
 ### The refusal continues the round, and that takes a file
 
 Exiting 3 with a clear sentence on stderr does not, by itself, deliver "the
@@ -131,6 +150,20 @@ deadlocks the gate against its own run — the deadlock **Q-005** records for th
 merge path. The rest of the not-required half is project bookkeeping (adding a
 card to the board, stamping a lane, detecting a conflict): a flake in one of
 those must not be able to wedge the pipeline, and none of them judges the code.
+
+**A required check's colour has to be about the head.** Re-enabling the red-head
+block (#4192) makes every name in that list able to stop a review, so a check
+that can go red — or quietly pass — for a reason unconnected to the commit is
+no longer merely noise. The live example was
+`brew services list | grep -q "$KEG"` under `set -o pipefail`: `grep -q` leaves
+on the first match, brew's next write takes `EPIPE`, and `pipefail` reports
+*that* as the pipeline's status, so the assertion failed **because it had
+succeeded** (run 38071858945; the same head passed an hour earlier). The
+predicate form is worse and silent — a lost race reads as "no match", so the
+step skips or passes vacuously. `scripts/agents/lib/sigpipe_pipeline_guard.py`
+now scans every workflow and every shell script under `scripts/`/`tests/` for
+the construct, as the `[required]` `pipeline-readers-drain` job; ledger
+**D-070** has the mechanism and the three accepted forms.
 
 **Absent is not pending.** Most jobs in the list are path-filtered, so on any
 given PR most of them never run. A required check that is not attached to the

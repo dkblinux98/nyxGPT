@@ -202,6 +202,51 @@ acceptance-standard
 # guard against that filed as advisory is the same gap with a job attached to
 # it.
 The model backend, installed and pulled on real macOS
+# pipefail-pipeline-smoke.yml's `pipeline-readers-drain` job (#4192, review
+# round 2). Required, and deliberately wide-filtered: it is the only thing
+# standing between the gate surface and a check whose colour is not evidence
+# about the head. `brew services list | grep -q "$KEG"` turned its own SUCCESS
+# into a red required check (run 38071858945) because `grep -q` left on the
+# first match and brew's next write took EPIPE, which `pipefail` reported as
+# the pipeline's status; the same head was green an hour before. The predicate
+# form is worse and silent -- `launchctl list | grep -q` reads a lost race as
+# "not loaded", so the step skips the half it exists to prove and then passes
+# on a service that survived. This job runs the mechanism, both repaired steps
+# against a stub producer that loses the race on purpose, and the tree-wide
+# scan. A red one means a gate somewhere can now go red (or quietly pass) for
+# a reason that has nothing to do with the commit.
+pipeline-readers-drain
+# pipefail-pipeline-smoke.yml's `pytest-jobs-can-collect` job (#4192, review
+# round 3), and the job above is the defect that filed it. Added as a required
+# check by round 2, `pipeline-readers-drain` installed `pyyaml pytest` and ran
+# `pytest tests/unit/...`, which loads the ROOT `tests/conftest.py` ->
+# `tests/log_guard.py` -> `psutil`. It exited 4 at COLLECTION -- a usage
+# error, not a test failure -- so the check was red with every assertion it
+# exists for untested, on a head that was fine. That took the PR to a
+# hand-back and then to an owner escalation.
+#
+# Fifteen jobs across eleven workflows make this same decision, three
+# different ways, and nothing on the tree checked any of them. This job holds
+# all of them to one rule -- a pytest call that loads the root conftest needs
+# `pip install -e .`, or it says `--noconftest` -- derived from the conftest's
+# own imports, so there is no restated dependency list to drift. Required
+# because the failure it prevents is precisely a red required check that says
+# nothing about the commit, which is the state this whole issue was filed
+# from; and cheap, because it is the same wide path filter as its sibling and
+# runs in about a minute on ubuntu-latest.
+pytest-jobs-can-collect
+# macos-brew-smoke.yml's `restart-wait` job (#4192). Required, and the only
+# job in that workflow that does not run on a Mac -- which is the point. The
+# `keg-install` step driving #4043's self-restart failed on 9 of its last 10
+# PR runs because it sampled the api's pid one second after an endpoint that
+# answers `{"status":"scheduled"}` by design, and nothing on the tree could
+# see that: the logic is workflow YAML, executed only by an ADVISORY macOS
+# job. This job extracts that shell out of the workflow and runs it against a
+# stub launchctl in both directions in ~40s on Linux, path-filtered like the
+# rest of the workflow. A red one means a restart step here is measuring the
+# machine before the restart lands -- i.e. a gate about to report a product
+# defect that is not there.
+The restart steps wait for the restart instead of sampling it
 
 [not-required]
 # macos-brew-smoke.yml's `keg-install` job. Owner decision, 2026-08-24: this
@@ -244,6 +289,19 @@ The model backend, installed and pulled on real macOS
 #
 #   The bar to flip it stands as written above: green twice in a row on
 #   unrelated PRs.
+#
+# WHY IT WAS RED THROUGH 2026-10-10, diagnosed on #4192 and recorded because
+# "failing at a different step each time" above was the reason it is advisory
+# and that reason had never been examined: the last ten PR runs all failed at
+# the SAME step, `The api restarts itself when the UI asks it to (#4043)`, and
+# the defect was in the step rather than in the keg. It read the api's pid one
+# second after `POST /infra/restart-required`, which answers
+# `{"status":"scheduled"}` by design, so `up` returned against the process
+# that had not been replaced yet. The pid change is the wait condition now.
+# That is one cause removed, not the whole history; the bar above is unchanged
+# and this job stays advisory until it is met on unrelated PRs, because
+# flipping a gate on two passes of the PR that touched it is the trade this
+# section already refused once.
 Install the working tree's formulas
 
 # The review's own runs, including the gate itself. Requiring any of them

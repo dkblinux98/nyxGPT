@@ -103,7 +103,7 @@ STAGED_LINES="$(git diff --cached --numstat | awk '{a=$1; d=$2; if (a=="-") a=0;
 if [[ "$STAGED_FILES" -gt "$MAX_FILES" || "$STAGED_LINES" -gt "$MAX_LINES" ]]; then
   echo "::error::Snapshot guard tripped: staged $STAGED_FILES file(s) / $STAGED_LINES line(s) exceeds the limit ($MAX_FILES files / $MAX_LINES lines)."
   echo "::error::Offending paths (largest first):"
-  git diff --cached --numstat | sort -t "$(printf '\t')" -k1,1nr | head -20 >&2
+  git diff --cached --numstat | sort -t "$(printf '\t')" -k1,1nr | sed -n '1,20p' >&2
   git reset >/dev/null
   exit 1
 fi

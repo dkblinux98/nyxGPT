@@ -634,18 +634,46 @@ _run_gate_step_failed() {
 _assert_eq "the workflow step reviews a green head" "proceed" \
   "$(_run_gate_step 'security-scan=success')"
 
-# TEMPORARY (owner decision, 2026-08-26) -- REVERT AFTER #4034, together with
-# the `failed)` branch in claude-code-review.yml.
+# A red required check REFUSES the review (#3971), and this assertion is what
+# keeps that arm alive (#4192).
 #
-# A red required check is NOTED, not refused. The owner asked for the failure
-# to be reported inside the review so ONE round returns the CI problem and the
-# code findings together; #3971 shipped the refusal instead. The two
-# assertions below are the whole contract: the review still runs, and the
-# failing check's name still reaches it.
-_assert_eq "the workflow step reviews a red head, noting the failure" "proceed" \
+# From 2026-08-26 to 2026-10-10 the step decided `proceed` on a red head under
+# an owner rule explicitly scoped "REVERT AFTER #4034". #4034 merged on
+# 2026-09-30; nothing reverted it, and nothing could notice, because this suite
+# had been changed to assert the temporary behaviour instead. Ten days later PR
+# #4191 merged onto `v3.0.1` with three required checks red. So the decision is
+# pinned in BOTH directions now: `failed` is the decision, and the
+# `head-not-reviewable` job that acts on it must still be reachable from it
+# (asserted below), which is the coupling a one-line edit to the `case` would
+# otherwise break silently.
+_assert_eq "the workflow step refuses a red head" "failed" \
   "$(_run_gate_step 'security-scan=failure')"
-_assert_eq "and the red check's name still reaches the review prompt" "security-scan" \
+_assert_eq "and the red check's name is carried out of the gate" "security-scan" \
   "$(_run_gate_step_failed 'security-scan=failure')"
+
+# The decision has to reach the job that acts on it. `decision=failed` with a
+# `head-not-reviewable` job gated on something else is the same dead arm in a
+# different file.
+HANDBACK_IF="$(ROOT_DIR="$ROOT_DIR" python3 - <<'EXTRACT'
+import os
+import yaml
+
+wf = yaml.safe_load(open(os.environ["ROOT_DIR"] + "/.github/workflows/claude-code-review.yml"))
+print(" ".join(str(wf["jobs"]["head-not-reviewable"]["if"]).split()))
+EXTRACT
+)"
+_assert_contains "the hand-back job is reachable from a 'failed' decision" \
+  "$HANDBACK_IF" "decision == 'failed'"
+REVIEW_IF="$(ROOT_DIR="$ROOT_DIR" python3 - <<'EXTRACT'
+import os
+import yaml
+
+wf = yaml.safe_load(open(os.environ["ROOT_DIR"] + "/.github/workflows/claude-code-review.yml"))
+print(" ".join(str(wf["jobs"]["claude-review"]["if"]).split()))
+EXTRACT
+)"
+_assert_eq "and the review itself runs only on 'proceed', so a red head spends no invocation" \
+  "needs.head-gate.outputs.decision == 'proceed'" "$REVIEW_IF"
 
 _assert_eq "the workflow step reports a wait that expired" "timeout" \
   "$(_run_gate_step 'security-scan=pending')"
@@ -680,6 +708,41 @@ CLASSIFY="$(
 )"
 _assert_eq "a refused red head classifies retriable, so the round continues" \
   "retriable:ci_red" "$CLASSIFY"
+
+# #4192: ...and the class does not depend on WHICH head the fixture repository
+# happened to produce. The overload signature used to be `529|[Oo]verloaded`
+# and sat ABOVE the red-head one, so the bare digits `529` anywhere in the
+# refusal pre-empted it: the identical text classified `retriable:ci_red` with
+# head `0ac51a4c…` and `retriable:api_overloaded` with head `3f529aa0…` -- a
+# two-minute wait and a retry of the same unchanged red head instead of the
+# hand-back #3971 specifies. The assertion above therefore passed or failed on
+# a random SHA, which is the flake reported from run 38003374998.
+#
+# Built by rewriting the REAL refusal this script just wrote, so it stays the
+# shipped text rather than a copy of it: every hex identifier becomes one
+# carrying `529`, and every multi-digit number (the run and job ids) does too.
+HOSTILE="$(sed -E \
+  -e 's/[0-9a-f]{7,40}/3f529aa0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6/g' \
+  -e 's/[0-9]{3,}/52952995291/g' "$NYXGPT_AGENT_ERROR_FILE")"
+# shellcheck source=/dev/null
+HOSTILE_CLASSIFY="$(
+  source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
+  classify_error "$HOSTILE"
+)"
+_assert_eq "the same refusal with 529 in its head SHA, run id and job id still classifies ci_red" \
+  "retriable:ci_red" "$HOSTILE_CLASSIFY"
+
+# Fault injection for the assertion directly above: the retired substring
+# pattern, restored and run against that same text. A check that cannot fail
+# proves nothing (#3775), and this one could not have failed before #4192 --
+# it would have been measuring the fixture's luck.
+if printf '%s' "$HOSTILE" | grep -qE "529|[Oo]verloaded"; then
+  echo "[ok] the retired 529-substring pattern really does match it (so the check above can fail)"
+else
+  echo "[FAIL] the retired 529-substring pattern no longer matches the hostile refusal," >&2
+  echo "       so the assertion above would pass against the unfixed classifier too" >&2
+  FAILURES=$((FAILURES + 1))
+fi
 
 # #4179: classifying it retriable was never the end of the story -- Phase 2
 # re-classified it from an empty harvest and escalated it as FATAL anyway

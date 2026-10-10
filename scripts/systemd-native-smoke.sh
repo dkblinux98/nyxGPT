@@ -327,7 +327,7 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
 
   # 3. Nothing built an artifact: no dist tarball anywhere under the
   #    ops-managed install roots.
-  if find "$HOME/.nyxGPT/opt" -name 'nyxgpt-*.tar.gz' -print -quit | grep -q .; then
+  if find "$HOME/.nyxGPT/opt" -name 'nyxgpt-*.tar.gz' -print -quit | grep . >/dev/null; then
     echo "::error::a dist tarball was built in dev mode -- the keg/tarball path was taken"
     fail_count=1
   else
@@ -375,7 +375,7 @@ if [[ "$DEV_MODE" -eq 1 ]]; then
 
   # Attributed to the native api/web, as above: a Terraform or Kubernetes
   # deployment's mode says nothing about which build the systemd units run.
-  if nyxgpt ops status | grep -q "Install mode (native api/web): artifact"; then
+  if nyxgpt ops status | grep "Install mode (native api/web): artifact" >/dev/null; then
     echo "  ops status reports artifact mode after the switch"
   else
     echo "::error::ops status still reports dev mode after reinstalling without --dev"

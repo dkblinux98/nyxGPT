@@ -71,7 +71,7 @@ _assert_not_contains() {
 
 _assert_not_matches() {
   local desc="$1" haystack="$2" pattern="$3"
-  if printf '%s' "$haystack" | grep -Eiq "$pattern"; then
+  if printf '%s' "$haystack" | grep -Ei "$pattern" >/dev/null; then
     echo "[FAIL] $desc: /$pattern/ unexpectedly matched in:" >&2
     echo "$haystack" >&2
     FAILURES=$((FAILURES + 1))
@@ -357,7 +357,7 @@ _assert_contains "and warns that the closed issue may read as accepted" \
 
 # 1b. The keyword guard above must be able to fail.
 for _violation in "Closes #9301" "this CLOSED #9301" "fixes #9301" "Closes: #9301"; do
-  if printf '%s' "$_violation" | grep -Eiq "$CLOSING_KEYWORD_RE"; then
+  if printf '%s' "$_violation" | grep -Ei "$CLOSING_KEYWORD_RE" >/dev/null; then
     echo "[ok] the keyword guard still catches: ${_violation}"
   else
     echo "[FAIL] the keyword guard no longer catches: ${_violation}" >&2

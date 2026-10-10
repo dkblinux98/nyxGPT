@@ -1,0 +1,15 @@
+# REPAIR A -- the suite needs no app import, so it says so.
+#
+# The flag sits on a continuation line deliberately: every `--noconftest` in
+# this repository's smoke workflows does, so a line-at-a-time scan would
+# report all seven of them as violations. The guard MUST accept this file.
+name: planted - skips the conftest
+on: [push]
+jobs:
+  skips-the-conftest:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python -m pip install --quiet pyyaml pytest
+      - run: |
+          python -m pytest -q -p no:cacheprovider --noconftest --no-header \
+            tests/unit/test_something.py

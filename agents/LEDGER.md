@@ -2689,6 +2689,156 @@ rather than mechanism, and nothing can enforce them.
   **D-066**, **D-067**; `docs/cloud.md` § "Every row is AWS's answer or is
   labelled as not being one".
 
+- **D-069** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
+  that measures something other than the behaviour, is not a gate — and the
+  revert of a temporary rule is owed a test that is RED while the rule is in
+  force.** The owner's instruction was to make `v3.0.1`'s required set
+  trustworthy before cutting `3.0.1rc2`; what the four failures had in common
+  is that each one's *measurement* was wrong, not (in three cases) the thing
+  measured. **(a) The red-head review block is restored.** The
+  `claude-code-review.yml` `head-gate` `failed)` arm decided `proceed` from
+  2026-08-26 under a rule scoped "REVERT AFTER #4034"; #4034 merged
+  2026-09-30, nothing reverted it, and the one suite that could have noticed
+  had been edited to assert the temporary answer — so red heads merged for ten
+  days, ending with PR #4191 landing three red required checks on the release
+  branch. `tests/test_reviewable_head_gate.sh` now pins `failed` as the
+  decision *and* as reachable from the `head-not-reviewable` job that acts on
+  it. **(b) An error signature matches a signal, never a substring.**
+  `classify_error`'s `529|[Oo]verloaded` sat above the red-head signature and
+  matched the bare digits `529` anywhere, so one refusal classified
+  `retriable:ci_red` or `retriable:api_overloaded` according to its head SHA.
+  `529` is now matched only where the text says it is a status; the sweep found
+  the same defect in the FATAL `PR.*merged` arm (co-occurrence, not assertion)
+  and bounded every remaining wildcard; a property test runs every signature
+  in the function against identifier-only text. **(c) A gate asserts the
+  behaviour, not the string that implements it.** Branch Guard Smoke grepped
+  `developer_auto_implement.yml` for the parameter expansion that used to
+  rewrite `Refs` → `Closes`; #4184 moved it into `rescue_pr.py promote` and
+  improved it, and the gate went red on every run for two days. It now *runs*
+  the promotion, and `branch-guard-smoke.yml`'s path filter names the helper.
+  **(d) An asynchronous operation must be waited for, not sampled.**
+  `macos-brew-smoke.yml`'s #4043 step read the api's pid one second after
+  `POST /infra/restart-required`, which answers `{"status":"scheduled"}` by
+  design (`threading.Timer(0.5, …)`, then an asynchronous `launchctl kickstart
+  -k`): `up` returned instantly against the *old* process, so the step
+  reported `pid=23672 (was 23672)` on 9 of its last 10 runs — a restart that
+  had not happened yet, reported as one that did not happen. The pid change is
+  now the wait condition. The issue's own diagnosis of this one (a pip call on
+  the `nyxgpt-web` install path reaching Apple's trust store) did **not**
+  hold: the `simple/pip/` + `OSStatus -26276` lines in those logs are step 8's
+  deliberate negative control, step 18 passed on all five cited runs, and
+  `validate_pip_sandbox_flags` (#4122, D-057) already covers all four formula
+  files on every PR. **Diagnose from the run, not from the issue** — the
+  grep that found the signature found the fault injection that prints it. The
+  sweep did harden that guard where it was *narrower than its own rule*: the
+  install-block scan ended at a marker only the api formula contains, and the
+  pip detector matched `pip` and `*/pip` but not `pip3`/`pip3.12`.
+  Executed evidence: `tests/test_reviewable_head_gate.sh`,
+  `tests/test_ensure_pr_exists.sh` (Branch Guard Smoke),
+  `tests/unit/test_failure_classification.py`,
+  `tests/unit/test_brew_pip_sandbox_trust.py`, and `macos-brew-smoke`'s
+  `keg-install` job twice on this PR. Number from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
+  run, not eyeballed.
+  Source: #4192; related #4184, #4191, #4179, #4122, #4043, #4034, #3995,
+  #3971; extends **D-006**, **D-057**, **D-066**, **D-067**.
+
+- **D-070** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
+  colour is not evidence if its own plumbing can decide it: under
+  `set -o pipefail`, a pipeline whose reader may leave early reports the
+  producer's broken pipe instead of the answer.** Found as a live red on this
+  PR's head. `macos-brew-smoke.yml`'s non-vacuity assertion for #4043 was
+  `brew services list | grep -q "$KEG" || { echo "…measuring nothing"; exit 1; }`.
+  `grep -q` exits on the first match, brew's next write takes `EPIPE`
+  (`Broken pipe @ rb_sys_fail_on_write - <STDOUT>`, run 38071858945, one line
+  under the one showing `nyxgpt-api@3.0.0rc` matched), and `pipefail` promotes
+  that to the pipeline's status — **so the assertion fired because it had
+  succeeded.** The same head passed an hour earlier (38070775763): it is a
+  race on whether the producer still has a write pending, so neither colour
+  was about the commit. In a *predicate* it is worse and silent —
+  `loaded() { launchctl list | grep -q "$1"; }` reads a lost race as "not
+  loaded", which skipped the half the step exists to prove and then passed
+  the did-the-stop-work assertion on a service that had survived.
+  **The reader decides, not the producer**, and that is recorded because the
+  first fix on this round got it backwards: a probe showed a 1.2 MB `echo`
+  payload surviving, and the conclusion drawn ("a builtin cannot take
+  `EPIPE`") was an artifact of the payload being ONE line — `grep` had to
+  reach the newline to match, so it drained it. The same bytes as 200k lines
+  exit **141**. There is no safe producer; there are only safe readers:
+  `grep -q PAT <<<"$text"` (no pipe), `producer | grep PAT >/dev/null`
+  (identical status, drains) and `producer | sed -n '1,Np'` (identical output,
+  drains). Swept tree-wide: **79 pipelines across 34 files**, every one a
+  gate workflow or an agent script. Enforced by
+  `scripts/agents/lib/sigpipe_pipeline_guard.py` over `.github/workflows/`
+  plus every `*.sh` under `scripts/` and `tests/`, as the new `[required]`
+  `pipeline-readers-drain` job — because the construct is shell inside
+  workflow YAML, which nothing on the tree executed, which is why it survived
+  to redden the release branch. Executed evidence, both directions:
+  `tests/unit/test_sigpipe_pipeline_guard.py` runs the real `run:` bodies out
+  of the workflow against a stub producer that loses the race deliberately —
+  the retired forms fail on a listing that matches and report a loaded service
+  as absent; the shipped forms pass. Also from the sweep, one source for one
+  decision: the keg job's "is the web keg on this machine" existed twice (the
+  install gated `inputs.include_web || pull_request`, the wrapper assertion
+  iterating both formulas unconditionally), so a dispatch with the default
+  `include_web=false` failed deterministically on a keg it had deliberately
+  skipped (38071500460) — now the job's one `WEB_KEG_INSTALLED`. Number from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
+  run, not eyeballed.
+  Source: #4192; related #4043, #4193, #4195; extends **D-006**, **D-066**,
+  **D-069**.
+
+- **D-071** · 2026-10-10 · developer (#4192, review round 3) — **A job that
+  runs pytest must be able to COLLECT it: a required check that dies at
+  collection is red about the runner's package set, not about the head.**
+  Found as the live red that escalated this PR to the owner, and it arrived
+  through the gate **D-070** added one round earlier.
+  `pipeline-readers-drain` installed `pyyaml pytest` and ran
+  `pytest tests/unit/test_sigpipe_pipeline_guard.py`; any target under
+  `tests/` loads the **root** `tests/conftest.py`, whose import closure runs
+  `conftest.py` → `log_guard.py` → **`psutil`**, two files from anything a
+  workflow author reads. So the job exited **4** —
+  `ImportError while loading conftest`, a *usage* error, not a test failure —
+  with every assertion it exists for untested, on a head that was fine. Gate
+  comments at 18:19Z (hand-back) and 18:28Z (escalation); run 38075053828.
+  **The decision is made independently in 15 jobs across 11 workflows**, and
+  the tree already held three different answers: `pip install -e .` (6 jobs),
+  `--noconftest` (7), and an explicit `psutil` install (1). Nothing checked
+  any of them, so one job answering *neither* was indistinguishable from the
+  rest until it ran. Per **D-066**, corrected as one source rather than 15
+  copies: `scripts/agents/lib/pytest_conftest_guard.py` derives what the root
+  conftest needs **from the conftest's own imports** and holds every job to
+  one rule — *a pytest call that loads the root conftest requires
+  `pip install -e .`, or it says `--noconftest`*. A bare module list can never
+  satisfy it, because the closure imports first-party `nyxgpt`. Enforced as
+  the new `[required]` `pytest-jobs-can-collect` job on the same wide filter
+  as its sibling. Executed evidence, both directions, in a venv built with the
+  job's exact dependency set: the retired command reproduces
+  `ModuleNotFoundError: No module named 'psutil'` at exit 4, the shipped one
+  passes 31/31; and three planted fixtures
+  (`tests/fixtures/pytest_conftest_guard/`) prove the guard rejects the
+  defect's own shape and accepts **both** repairs — a guard that flagged
+  `--noconftest` would have 14 false positives on this tree, and a gate that
+  cries wolf is a gate someone switches off, which is where #4192 started.
+  The plants are files, not heredocs, because the guard reads `run:` bodies
+  textually and an inline `pip install -e .` would have exempted the planting
+  job and hidden a real violation in it. One link is pinned rather than
+  assumed: every third-party module in the closure must be a declared runtime
+  dependency of the package, so `pip install -e .` genuinely suffices — if
+  someone adds an import `pyproject.toml` does not declare, the test says so
+  instead of six jobs reddening one at a time. Also from the sweep, two
+  corrections of record rather than behaviour: `red-head-round-smoke.yml`'s
+  `psutil` step carried the comment "pytest cannot even collect without it",
+  a premise that stopped being load-bearing when that call gained
+  `--noconftest` (kept as belt and braces, premise corrected so the next
+  author does not copy a false claim); and round 2's entry in
+  `.github/required-checks.txt` had been spliced into the middle of the
+  `restart-wait` comment, leaving both gates' rationale unreadable. Number
+  from `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1`
+  — run, not eyeballed.
+  Source: #4192; related #4193, #4195; extends **D-006**, **D-066**,
+  **D-069**, **D-070**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

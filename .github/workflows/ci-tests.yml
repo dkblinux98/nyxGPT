@@ -220,7 +220,7 @@ jobs:
             echo "no usable before-sha -- running the web gates"
             exit 0
           fi
-          if git diff --name-only "$BASE_SHA" "$GITHUB_SHA" | grep -q '^web/'; then
+          if git diff --name-only "$BASE_SHA" "$GITHUB_SHA" | grep '^web/' >/dev/null; then
             echo "web=true" >> "$GITHUB_OUTPUT"
           else
             echo "web=false" >> "$GITHUB_OUTPUT"

@@ -62,7 +62,7 @@ step() { echo; echo "=== $* ==="; }
 # see the same helper in scripts/k8s-local-smoke.sh and
 # `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`.
 managed_forward_running() {
-    nyxgpt ops port-forward --status | grep -q 'Background port-forward running'
+    nyxgpt ops port-forward --status | grep 'Background port-forward running' >/dev/null
 }
 
 cleanup() {
@@ -265,7 +265,7 @@ CHAT=$(curl -sS -N -X POST "${BASE}/api/chat/stream" \
     -H 'Content-Type: application/json' \
     -d "{\"session\":\"${SESSION}\",\"prompt\":\"Reply with exactly: PONG\",\"model\":\"${MODEL}\"}" \
     --max-time "${NYXGPT_SMOKE_CHAT_TIMEOUT:-300}" 2>&1) || fail "the chat request failed"
-echo "$CHAT" | grep -q '"content"' ||
+echo "$CHAT" | grep '"content"' >/dev/null ||
     { echo "$CHAT" >&2; fail "chat produced no answer -- the artifact-built stack cannot chat"; }
 ok "chat answered through web -> api -> in-cluster Ollama, all from published artifacts"
 
@@ -282,10 +282,10 @@ ok "both canary Deployments rest at 0 after the artifact install"
 step "9/9 The deployment reports its own install mode, honestly"
 STATUS=$(nyx ops status)
 echo "$STATUS"
-echo "$STATUS" | grep -q "Install mode: artifact (images built from the published" ||
+echo "$STATUS" | grep "Install mode: artifact (images built from the published" >/dev/null ||
     fail "ops status does not report the Kubernetes deployment's artifact install mode"
 # The #3834 report: a `[dev]` stamp on native components that are not running.
-if echo "$STATUS" | grep -E "native +(api|web): none" | grep -q "\[dev\]"; then
+if echo "$STATUS" | grep -E "native +(api|web): none" | grep "\[dev\]" >/dev/null; then
     fail "ops status stamped an install mode on a native component that is not running"
 fi
 nyx ops doctor >/tmp/k8s-artifact-doctor.log 2>&1 || true
