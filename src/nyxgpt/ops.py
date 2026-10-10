@@ -52,6 +52,7 @@ from nyxgpt import (
     cloud_imds,
     docker_access,
     model_bootstrap,
+    node_runtime,
     release_tarball,
     restart_state,
     self_heal,
@@ -1278,6 +1279,91 @@ def _log_nonzero_exit(
 def _which(prog: str) -> str | None:
     """Return the absolute path to `prog` on PATH, or None if it isn't found."""
     return shutil.which(prog)
+
+
+# --- The declared Node toolchain (#4194) --------------------------------
+#
+# ONE source for "does this host have the Node nyxGPT runs?", called by every
+# step that needs it. Before this there were six independent
+# `_which("node") is None` / `_which("npm") is None` guards across `ops
+# install`, the dev-mode web service, the MCP deps step and `doctor`, and all
+# six asked only whether SOME `node` existed -- which is true of every wrong
+# major as well as the right one. That is why a Node 26 machine got "Web deps
+# already installed (undici OK)" and nothing anywhere said the bundle had been
+# built and was being served by an interpreter nothing in CI had ever run.
+#
+# `node_runtime.node_version_report()` is the decision; these are the two ops-
+# shaped wrappers around it, so a step reports it as an `OpsResult` and
+# `doctor` reports it as an issue line without either restating the rule.
+
+
+def _node_toolchain_gate(step: str) -> list[OpsResult] | None:
+    """`None` when this host runs the declared Node; a failing result when not.
+
+    `step` names what cannot proceed, so the operator reads "cannot install web
+    deps" rather than a bare version complaint with no consequence attached.
+    """
+    report = node_runtime.node_version_report()
+    if report.ok:
+        return None
+    if report.state == node_runtime.NODE_MISSING:
+        return [
+            OpsResult(
+                False,
+                f"Node.js not found; cannot {step}",
+                f"nyxGPT requires Node {report.declared_major} " f"(run: {report.remediation})",
+            )
+        ]
+    return [
+        OpsResult(
+            False,
+            f"Wrong Node.js version; cannot {step}",
+            f"{report.detail} (run: {report.remediation})",
+        )
+    ]
+
+
+def _node_can_resolve(pkg: str, web_dir: Path) -> bool:
+    """Can the DECLARED `node` resolve `pkg` from `web_dir`?
+
+    One copy, called by `_ensure_web_deps` and by `doctor`'s web-dependency
+    check. They each carried their own byte-identical nested `_can_resolve`
+    running the bare `node` off `PATH`, which on macOS is the unversioned
+    Homebrew keg -- so the two surfaces answered "is undici installed?" using
+    an interpreter that was not the one serving the UI.
+    """
+    node = node_runtime.resolve_node_bin()
+    if not node:
+        return False
+    try:
+        cp = subprocess.run(
+            [node, "-p", f"require.resolve('{pkg}')"],
+            cwd=str(web_dir),
+            text=True,
+            capture_output=True,
+        )
+        return cp.returncode == 0
+    except Exception as e:
+        logger.warning(
+            "Failed to resolve node package %r, assuming missing: %s",
+            pkg,
+            e,
+            extra={"component": "ops"},
+        )
+        return False
+
+
+def _npm_invocation(args: Sequence[str]) -> tuple[list[str], dict[str, str]]:
+    """`(argv, env)` that runs `npm` from the DECLARED Node, not the first on PATH.
+
+    Both halves matter. The absolute `npm` picks the right script; the `PATH`
+    prefix is what makes the `node` that script re-execs the same one -- an
+    `npm` from the declared keg driving a `node` from somewhere else is the
+    very mismatch this is here to remove, and on macOS it is the likely one,
+    since `/opt/homebrew/bin` leads `PATH` and holds the *unversioned* keg.
+    """
+    npm = node_runtime.resolve_npm_bin() or "npm"
+    return [npm, *args], node_runtime.node_environment()
 
 
 def _running_as_root() -> bool:
@@ -4407,10 +4493,15 @@ def _install_native_web_systemd() -> list[OpsResult]:
     exists instead of a path a failed rebuild rmtree'd out from under it (a
     real outage-on-restart bug found in review, #3508).
 
-    Returns a list of OpsResult; fails early if `npm` isn't on PATH.
+    Returns a list of OpsResult; fails early if this host is not on the Node
+    nyxGPT declares (#4194). "Fails early" used to mean `_which("npm") is
+    None`, which let the bundle be built by any major that happened to be
+    installed -- the build this step stages is then served for the life of the
+    install, so a wrong major here is not a warning, it is the artifact.
     """
-    if _which("npm") is None:
-        return [OpsResult(False, "npm not found; cannot install nyxgpt-web", "")]
+    gate = _node_toolchain_gate("install nyxgpt-web")
+    if gate is not None:
+        return gate
 
     results: list[OpsResult] = []
     root = _native_install_root("nyxgpt-web")
@@ -4431,15 +4522,16 @@ def _install_native_web_systemd() -> list[OpsResult]:
         tf.extractall(staging_dir, filter="data")
     staged_extracted = staging_dir / f"nyxgpt-web-{version}"
 
-    npm = _which("npm") or "npm"
     for step_name, npm_args in (("npm ci", ["ci"]), ("npm run build", ["run", "build"])):
+        argv, npm_env = _npm_invocation(npm_args)
         try:
             cp = subprocess.run(
-                [npm, *npm_args],
+                argv,
                 cwd=str(staged_extracted),
                 text=True,
                 capture_output=True,
                 check=False,
+                env=npm_env,
             )
         except Exception as e:
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -5051,8 +5143,12 @@ def _install_native_web_dev() -> list[OpsResult]:
     checkout = _dev_checkout_root()
     if checkout is None:
         return [_dev_mode_unavailable("nyxgpt-web")]
-    if _which("npm") is None:
-        return [OpsResult(False, "npm not found; cannot install nyxgpt-web", "")]
+    # The declared Node, same gate as the artifact path (#4194): `npm run dev`
+    # serves the working tree, so a dev-mode install on the wrong major is a
+    # dev machine that disagrees with CI -- the exact split this issue closes.
+    gate = _node_toolchain_gate("install nyxgpt-web")
+    if gate is not None:
+        return gate
 
     web_dir = checkout / "web"
     if not (web_dir / "node_modules").is_dir():
@@ -6579,43 +6675,19 @@ def _ensure_web_deps() -> list[OpsResult]:
             )
         ]
 
-    if _which("node") is None:
-        return [
-            OpsResult(
-                False,
-                "node not found; cannot install web deps",
-                "Install Node.js and ensure `node` is on PATH",
-            )
-        ]
-    if _which("npm") is None:
-        return [
-            OpsResult(
-                False,
-                "npm not found; cannot install web deps",
-                "Install Node.js/npm and ensure `npm` is on PATH",
-            )
-        ]
+    # One gate for the whole toolchain (#4194), replacing the two existence
+    # checks that used to live here. Both of them were satisfied by any `node`
+    # at all, which is how "Web deps already installed (undici OK)" came back
+    # from a tree installed by Node 26 against a lockfile resolved for 20.
+    gate = _node_toolchain_gate("install web deps")
+    if gate is not None:
+        return gate
 
     node_modules = web_dir / "node_modules"
     lockfile = web_dir / "package-lock.json"
 
     def _can_resolve(pkg: str) -> bool:
-        try:
-            cp = subprocess.run(
-                ["node", "-p", f"require.resolve('{pkg}')"],
-                cwd=str(web_dir),
-                text=True,
-                capture_output=True,
-            )
-            return cp.returncode == 0
-        except Exception as e:
-            logger.warning(
-                "Failed to resolve node package %r, assuming missing: %s",
-                pkg,
-                e,
-                extra={"component": "ops"},
-            )
-            return False
+        return _node_can_resolve(pkg, web_dir)
 
     # Check if node_modules exists and undici can be resolved
     if node_modules.exists() and _can_resolve("undici"):
@@ -6623,7 +6695,10 @@ def _ensure_web_deps() -> list[OpsResult]:
         return results
 
     def _run_npm(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(cmd, cwd=str(web_dir), text=True, capture_output=True)
+        # `cmd` arrives as `["npm", ...]` from the callers below; the declared
+        # toolchain replaces the bare name and carries its own PATH.
+        argv, npm_env = _npm_invocation(cmd[1:])
+        return subprocess.run(argv, cwd=str(web_dir), text=True, capture_output=True, env=npm_env)
 
     # Prefer npm ci when a lockfile exists, but if the lockfile is out of sync
     # (common after editing package.json), fall back to npm install so the lock
@@ -6736,14 +6811,13 @@ def _ensure_mcp_deps() -> list[OpsResult]:
             )
         ]
 
-    if _which("npm") is None:
-        return [
-            OpsResult(
-                False,
-                "npm not found; cannot install MCP deps",
-                "Install Node.js/npm and ensure `npm` is on PATH",
-            )
-        ]
+    # The declared Node here too (#4194): the root `package.json` now carries
+    # `engines`, and `.npmrc` makes it strict, so a wrong major fails this
+    # `npm ci` with npm's own EBADENGINE rather than installing MCP servers
+    # that then crash on a runtime they were never resolved for.
+    gate = _node_toolchain_gate("install MCP deps")
+    if gate is not None:
+        return gate
 
     sentinel = root_dir / "node_modules" / "@modelcontextprotocol" / "server-github"
     if sentinel.exists():
@@ -6757,7 +6831,8 @@ def _ensure_mcp_deps() -> list[OpsResult]:
     npm_cmd = ["npm", "ci"] if use_ci else ["npm", "install"]
 
     try:
-        cp = subprocess.run(npm_cmd, cwd=str(root_dir), text=True, capture_output=True)
+        argv, npm_env = _npm_invocation(npm_cmd[1:])
+        cp = subprocess.run(argv, cwd=str(root_dir), text=True, capture_output=True, env=npm_env)
         if cp.returncode == 0:
             results.append(
                 OpsResult(
@@ -14678,6 +14753,38 @@ def infra_status() -> dict[str, Any]:
         in_cluster=in_cluster, running_mode=running_mode
     ).to_dict()
 
+    # Which Node the web tier runs here (#4194). On the install card rather
+    # than its own, because that is the card that answers "what is installed,
+    # and is it what is running" -- and because the Definition of Done asks the
+    # dashboard for the state, not for a button: fixing it is `nyxgpt ops
+    # node`, which the payload names so the page can print it as a pointer.
+    #
+    # The SAME report `ops status` prints and `doctor` flags, deliberately: the
+    # defect this closes is three surfaces each deciding for themselves whether
+    # Node was acceptable, and all three deciding on `node` merely existing.
+    #
+    # Scoped on `in_cluster` for the reason the rest of this card is (#3988):
+    # inside a Pod, the only Node this process could measure is whatever the
+    # *api* image carries, and the web tier is a different image on a different
+    # Pod. Reporting the api container's `node` -- or its absence -- as the web
+    # tier's would be the same confident answer about the wrong machine.
+    if in_cluster:
+        install_mode["node"] = {
+            "state": "not_applicable",
+            "ok": True,
+            "path": "",
+            "version": "",
+            "major": None,
+            "declared_major": node_runtime.NODE_MAJOR,
+            "detail": (
+                "Not in scope from here: this API is running inside a Kubernetes Pod. The "
+                "web tier is a separate image, whose Node this process cannot measure."
+            ),
+            "remediation": "",
+        }
+    else:
+        install_mode["node"] = node_runtime.node_version_report().to_dict()
+
     return {
         "mode": running_mode,
         # Which deployment this whole answer is about, and how that was decided
@@ -15388,6 +15495,29 @@ def _print_running_api_build(drift: BuildDrift) -> None:
     print(f"      Repair: {drift.remediation or _RUNNING_BUILD_REMEDIATION}")
 
 
+def _print_node_runtime() -> None:
+    """Print which Node the web tier runs here, and whether it is the declared one.
+
+    Printed unconditionally, including when it is correct (#4194): "Node OK"
+    was previously inferable only from the *absence* of an error, and an
+    absence is exactly what a check that only looked for `node` on `PATH`
+    produced on a machine running the wrong major. The version and the resolved
+    path are both shown because on macOS the path IS the answer -- the
+    versioned keg's `node` and the unversioned `/opt/homebrew/bin/node` differ
+    in nothing an operator can see from a bare version string.
+
+    Same report object the Infrastructure page renders and `doctor` flags, so
+    the three cannot disagree about one host.
+    """
+    report = node_runtime.node_version_report()
+    if report.ok:
+        print(f"Node runtime (web tier): {report.version} at {report.path}")
+        return
+    print(f"Node runtime (web tier): MISMATCH -- nyxGPT declares Node {report.declared_major}")
+    print(f"      {report.detail}")
+    print(f"      Repair: {report.remediation}")
+
+
 def status(_args) -> int:
     """CLI entrypoint for `nyxgpt ops status`.
 
@@ -15516,6 +15646,8 @@ def status(_args) -> int:
     _print_running_api_build(
         _native_api_build_drift(mode, kubernetes=_k8s_app_pods_present(k8s_pods))
     )
+
+    _print_node_runtime()
 
     terraform_deployed = any(_container_deployed(state) for state in mode.terraform.values())
     terraform_install_mode = read_install_mode(substrate=SUBSTRATE_TERRAFORM)
@@ -17170,43 +17302,46 @@ def _compose_restart_loop_issues() -> list[str]:
     ]
 
 
+def _node_version_doctor_issues() -> list[str]:
+    """The Node this host would run the web tier with, against the declared one.
+
+    Host-scoped (PATH and a keg are as local as facts get) and deliberately
+    **not** gated on a checkout: the Node version is a question about every
+    install, and the one platform where it was wrong -- macOS, serving from the
+    Homebrew keg with no checkout in sight -- is exactly the one a
+    checkout-gated check cannot speak about (#4194).
+
+    Three distinct findings, not one. "No Node at all", "a Node whose version
+    could not be read" and "a Node of the wrong major" have different causes;
+    the check this replaces emitted `Missing tool in PATH: node` for the first
+    and stayed silent for the other two, which is how `doctor` reported a clean
+    bill of health on a machine running the bundle on Node 26.
+    """
+    report = node_runtime.node_version_report()
+    if report.ok:
+        return []
+    return [f"{report.detail} (run: {report.remediation})"]
+
+
 def _web_dependency_doctor_issues() -> list[str]:
-    """The Node toolchain and `web/node_modules` of a checkout on THIS host.
+    """`web/node_modules` of a checkout on THIS host.
 
     Host-scoped, and self-gated on a checkout being present: an artifact
     install has no `web/` to check, and a container or Pod carries its own
     dependencies in its image.
+
+    The Node *toolchain* is no longer checked here (#4194). It moved to
+    `_node_version_doctor_issues`, which is not checkout-gated -- an artifact
+    install has no `web/` and still has a Node version that can be wrong.
     """
     web_dir = REPO_ROOT / "web"
     if not web_dir.exists():
         return []
 
-    def _can_resolve(pkg: str) -> bool:
-        try:
-            cp = subprocess.run(
-                ["node", "-p", f"require.resolve('{pkg}')"],
-                cwd=str(web_dir),
-                text=True,
-                capture_output=True,
-            )
-            return cp.returncode == 0
-        except Exception as e:
-            logger.warning(
-                "Failed to resolve node package %r, assuming missing: %s",
-                pkg,
-                e,
-                extra={"component": "ops"},
-            )
-            return False
-
     issues: list[str] = []
-    if _which("node") is None:
-        issues.append("Missing tool in PATH: node")
-    if _which("npm") is None:
-        issues.append("Missing tool in PATH: npm")
     if not (web_dir / "node_modules").exists():
         issues.append(f"Missing web deps: {web_dir / 'node_modules'} (run: nyxgpt ops install)")
-    elif not _can_resolve("undici"):
+    elif not _node_can_resolve("undici", web_dir):
         issues.append("Missing web dependency: undici (run: nyxgpt ops install)")
     return issues
 
@@ -17294,6 +17429,130 @@ def _native_on_cluster_conflict_issues(
         "may be the native service rather than the cluster (run: nyxgpt ops down, which keeps "
         "volumes, to leave the cluster serving)"
     ]
+
+
+def _install_declared_node() -> list[OpsResult]:
+    """Put the DECLARED Node on this host, by the platform's own package manager.
+
+    macOS gets the versioned Homebrew keg; a `dnf`/`apt` host gets NodeSource's
+    repo for the same major -- the same two paths the EC2 bootstrap and
+    `cloud_deploy.NATIVE_NODE_SECTION` take, reached here through a wrapped
+    command so an operator on an already-provisioned machine has one too.
+    Before this, the remedy for a wrong Node was a raw `brew install` or a
+    piped NodeSource script, which the Operational Command Wrapping rule does
+    not allow nyxGPT to tell anyone to run.
+    """
+    formula = node_runtime.HOMEBREW_NODE_FORMULA
+    if _is_macos():
+        if _which("brew") is None:
+            return [
+                OpsResult(
+                    False,
+                    f"Cannot install {formula}: Homebrew is not on PATH",
+                    "Install Homebrew (https://brew.sh), then re-run this command",
+                )
+            ]
+        cp = _run(["brew", "install", formula], check=False)
+        if cp.returncode != 0:
+            return [
+                OpsResult(False, f"`brew install {formula}` failed", _output_excerpt(cp).strip())
+            ]
+        return [OpsResult(True, f"Installed {formula}")]
+    if _is_linux():
+        manager = "dnf" if _which("dnf") else "apt"
+        url = node_runtime.nodesource_setup_url(manager)
+        # Two steps, both privileged: NodeSource's script adds the repo, the
+        # package manager then installs from it. `_privileged_run` is what puts
+        # the `sudo` on, consistently with every other privileged ops step.
+        setup = _privileged_run(["bash", "-c", f"curl -fsSL {url} | bash -"])
+        if setup is None:
+            # "Could not even try" kept apart from "tried and failed", the
+            # distinction `_privileged_run` exists to preserve: the operator
+            # needs to know whether to fix sudo or to fix the repo.
+            return [
+                OpsResult(
+                    False,
+                    f"Cannot install Node {node_runtime.NODE_MAJOR}: root is unreachable",
+                    "Adding the NodeSource repository needs root, and neither `sudo` nor "
+                    "an already-root session is available here",
+                )
+            ]
+        if setup.returncode != 0:
+            return [
+                OpsResult(
+                    False,
+                    f"Could not add the NodeSource repository for Node "
+                    f"{node_runtime.NODE_MAJOR}",
+                    _output_excerpt(setup).strip(),
+                )
+            ]
+        install = _privileged_run(
+            [manager, "install", "-y", "nodejs"]
+            if manager == "dnf"
+            else ["apt-get", "install", "-y", "-q", "nodejs"]
+        )
+        if install is None or install.returncode != 0:
+            return [
+                OpsResult(
+                    False,
+                    f"Could not install nodejs from NodeSource ({manager})",
+                    _output_excerpt(install).strip() if install else "root is unreachable",
+                )
+            ]
+        return [OpsResult(True, f"Installed Node {node_runtime.NODE_MAJOR} from NodeSource")]
+    return _unsupported_os_result(f"install Node {node_runtime.NODE_MAJOR}")
+
+
+def node(_args) -> int:
+    """CLI entrypoint for `nyxgpt ops node`: report, and reconcile, this host's Node.
+
+    The remedy every other surface points at (#4194). `doctor`, `status` and
+    the Infrastructure page all report a Node mismatch; a report with no
+    wrapped command behind it would leave the operator with a raw `brew
+    install` or a piped NodeSource script, which the Operational Command
+    Wrapping rule forbids nyxGPT from instructing.
+
+    Idempotent and honest about it: on a host already running the declared
+    major it installs nothing and says so. Returns non-zero when the host is
+    still not on the declared Node afterwards, so it is usable in a script.
+    """
+    logger.info("ops: node starting", extra={"component": "ops", "action": "node"})
+    print("nyxGPT ops node")
+    report = node_runtime.node_version_report()
+    print(f"  declared: Node {report.declared_major} (.nvmrc / package.json engines)")
+    print(f"  resolved: {report.version or 'none'} {f'at {report.path}' if report.path else ''}")
+    if report.ok:
+        return 0 if _emit_results("node", [OpsResult(True, report.detail)]) else 1
+
+    print(f"  {report.detail}")
+
+    if os.environ.get(node_runtime.NODE_BIN_ENV_VAR, "").strip():
+        # An explicit override means the operator (or a smoke job's fault
+        # injection) has NAMED the binary to use. Installing another one would
+        # neither change what resolution answers nor be what was asked for, so
+        # this reports and stops -- non-zero, because the host is not on the
+        # declared Node.
+        print(
+            f"  {node_runtime.NODE_BIN_ENV_VAR} is set, so this is a report only: "
+            "resolution is pinned to that path and installing another Node would "
+            "not change it. Unset it to let this command install the declared Node."
+        )
+        return 1
+
+    ok = _emit_results("node", _install_declared_node())
+    # Re-read rather than trust the installer's exit code: the question is what
+    # this host now RESOLVES, and on macOS a successful `brew install node@NN`
+    # of a keg-only formula changes nothing on `PATH` at all -- which is the
+    # point, and is why the verdict has to come from the resolver.
+    after = node_runtime.node_version_report()
+    print(f"  now: {after.detail}")
+    if not after.ok:
+        print(
+            "  This host is still not on the declared Node -- "
+            f"{see_doc('docs/ops.md')} for the per-platform install path."
+        )
+        return 1
+    return 0 if ok else 1
 
 
 def doctor(_args) -> int:
@@ -17507,6 +17766,10 @@ def doctor(_args) -> int:
     )
 
     issues += _compose_restart_loop_issues()
+    # Ungated and before the checkout-scoped web-deps check (#4194): a wrong
+    # Node major is the cause of most of what that check would report next, and
+    # it is a finding on an artifact install too, where there is no `web/`.
+    issues += _node_version_doctor_issues()
     issues += _web_dependency_doctor_issues()
 
     log_issue = _log_aggregation_wiring_issue()

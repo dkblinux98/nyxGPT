@@ -117,6 +117,28 @@ type InfraStatus = {
       remediation: string;
       summary: string;
     };
+    // Which Node.js the web tier runs on this host, against the one nyxGPT
+    // declares (#4194). On the install card because this is the card that
+    // answers "what is installed, and is it what is running" — and because the
+    // answer had no surface at all: every check in the tree asked whether a
+    // `node` existed, which is true of every wrong major too, so a macOS
+    // install serving from Homebrew's unversioned keg (26.11 while CI was on
+    // 20) reported nothing anywhere.
+    //
+    // Reported, not operated, per the Definition of Done: `remediation` is a
+    // `nyxgpt` command the page prints as text. Optional so the page still
+    // renders against an api process from before #4194; absent renders nothing
+    // rather than an invented pass.
+    node?: {
+      state: 'ok' | 'missing' | 'mismatch' | 'unreadable' | 'not_applicable';
+      ok: boolean;
+      path: string;
+      version: string;
+      major: number | null;
+      declared_major: number;
+      detail: string;
+      remediation: string;
+    };
   };
   native: Record<string, string>;
   // Whether the native card's Docker-backed read (Cassandra, the one native
@@ -1151,6 +1173,49 @@ export default function InfrastructurePage() {
                   Could not confirm that this API process is running the installed build:{' '}
                   {status.install_mode.running_build.detail}. That is not the same as a match —
                   check with <code>nyxgpt ops status</code>.
+                </p>
+              )}
+            {/* The Node the web tier runs, ALWAYS rendered when the api
+                reports it — including when it is correct (#4194). A row that
+                appeared only on a mismatch would make "Node is fine" something
+                an operator infers from an absence, and an absence is precisely
+                what the old `_which("node") is not None` check produced on a
+                host running the wrong major.
+
+                `not_applicable` renders nothing: inside a Pod the web tier is
+                a different image whose Node this process cannot measure, and
+                the api container's own `node` is an answer about the wrong
+                machine. */}
+            {status.install_mode?.node &&
+              status.install_mode.node.state !== 'not_applicable' && (
+                <p
+                  style={{
+                    fontSize: '0.8rem',
+                    marginBottom: '0.75rem',
+                    ...(status.install_mode.node.ok
+                      ? { color: 'var(--foreground-muted)' }
+                      : {
+                          border: '1px solid var(--error, #b91c1c)',
+                          borderRadius: '6px',
+                          padding: '0.75rem',
+                        }),
+                  }}
+                >
+                  <strong>Node.js (web tier):</strong>{' '}
+                  {status.install_mode.node.ok ? (
+                    <>
+                      {status.install_mode.node.version} at{' '}
+                      <code>{status.install_mode.node.path}</code> — the declared major (
+                      {status.install_mode.node.declared_major}).
+                    </>
+                  ) : (
+                    <>
+                      {status.install_mode.node.detail}. The web bundle is built and tested on
+                      Node {status.install_mode.node.declared_major}; another major is not a
+                      newer version of what was tested, it is an untested one. Fix:{' '}
+                      <code>{status.install_mode.node.remediation}</code>.
+                    </>
+                  )}
                 </p>
               )}
             {!status.native_probe_available && (

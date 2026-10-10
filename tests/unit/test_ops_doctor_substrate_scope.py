@@ -156,10 +156,17 @@ CHECK_SCOPE: dict[str, tuple[str, str]] = {
         "this host's PATH; `nyxgpt ops` shells out to these on every substrate, so a missing "
         "one is a real finding about this machine wherever the workloads run",
     ),
+    "_node_version_doctor_issues": (
+        HOST,
+        "the Node version this host's PATH and Homebrew kegs resolve, against the one "
+        "nyxGPT declares; deliberately NOT gated on a checkout, because an artifact "
+        "install has no web/ and still has a Node major that can be wrong (#4194)",
+    ),
     "_web_dependency_doctor_issues": (
         HOST,
-        "the Node toolchain and node_modules of a checkout on this host, self-gated on one "
-        "being present; a container or Pod carries its dependencies in its image",
+        "node_modules of a checkout on this host, self-gated on one being present; a "
+        "container or Pod carries its dependencies in its image. The Node toolchain "
+        "itself moved to _node_version_doctor_issues (#4194)",
     ),
     "_stale_terraform_state_issues": (
         HOST,

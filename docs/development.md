@@ -110,7 +110,12 @@ never requires one — see [Installing nyxGPT](ops.md#installing-nyxgpt) and the
 
 ### Prerequisites
 - Python 3.11+
-- Node.js 18+ (for web UI)
+- Node.js — the exact major declared in `.nvmrc` (for the web UI). Not a
+  floor: `engines` in both `package.json` files pins one major and
+  `engine-strict=true` in `.npmrc` makes `npm install` refuse any other, so a
+  dev machine cannot quietly build the bundle on something CI never runs
+  (#4194). With `nvm`, `nvm use` in the repo root reads `.nvmrc`;
+  `nyxgpt ops node` installs it on a host that has not got it.
 - Docker Desktop (for Cassandra)
 - Ollama (for LLM backend)
 

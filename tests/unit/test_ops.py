@@ -5314,14 +5314,24 @@ def test_vendor_tree_always_excludes_caches_even_without_caller_excludes(tmp_pat
 
 
 def _fake_subprocess_run(*, ci_rc=0, ci_stderr="", install_rc=0, resolve_rc=0):
-    def _run(cmd, cwd=None, text=True, capture_output=True):
-        if cmd[:2] == ["npm", "ci"]:
+    """A `subprocess.run` stand-in for the `npm ci`/`npm install`/`node -p` trio.
+
+    Matched on the *basename* and accepting `env=`, both because of #4194:
+    `_ensure_web_deps` now invokes the DECLARED toolchain, so the argv carries
+    an absolute `/usr/bin/npm` and an explicit environment rather than the bare
+    name and an inherited one.
+    """
+
+    def _run(cmd, cwd=None, text=True, capture_output=True, env=None):
+        tool = os.path.basename(cmd[0])
+        rest = cmd[1:]
+        if tool == "npm" and rest[:1] == ["ci"]:
             return subprocess.CompletedProcess(cmd, ci_rc, stdout="", stderr=ci_stderr)
-        if cmd[:2] == ["npm", "install"]:
+        if tool == "npm" and rest[:1] == ["install"]:
             return subprocess.CompletedProcess(
                 cmd, install_rc, stdout="", stderr="npm install failed"
             )
-        if cmd[:1] == ["node"]:
+        if tool == "node":
             return subprocess.CompletedProcess(cmd, resolve_rc, stdout="", stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -5337,26 +5347,83 @@ def test_ensure_web_deps_no_web_dir(monkeypatch, tmp_path):
     assert "not applicable to an artifact install" in results[0].message
 
 
-@pytest.mark.unit
-def test_ensure_web_deps_no_node(monkeypatch, tmp_path):
-    web_dir = tmp_path / "web"
-    web_dir.mkdir()
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_which", lambda prog: None if prog == "node" else "/usr/bin/x")
-    results = ops._ensure_web_deps()
-    assert results[0].ok is False
-    assert "node not found" in results[0].message
+def _stub_node_report(monkeypatch, report):
+    """Make `node_runtime.node_version_report()` answer `report` for this test.
+
+    `tests/conftest.py` stubs it suite-wide to "this host runs the declared
+    Node" so that no test depends on the runner's PATH; the three tests below
+    are about what `ops` does when it does NOT, so they override the override.
+    """
+    monkeypatch.setattr(ops.node_runtime, "node_version_report", lambda *, timeout=15.0: report)
+
+
+def _missing_node_report():
+    """No `node` anywhere on the host."""
+    return ops.node_runtime.NodeRuntimeReport(
+        state=ops.node_runtime.NODE_MISSING,
+        path="",
+        version="",
+        major=None,
+        declared_major=ops.node_runtime.NODE_MAJOR,
+        detail="Node.js not found",
+        remediation=ops.node_runtime.NODE_REMEDIATION_COMMAND,
+    )
+
+
+def _wrong_major_node_report(major=26):
+    """A `node` that exists and is the wrong major -- the owner's Mac, 2026-10-10."""
+    return ops.node_runtime.NodeRuntimeReport(
+        state=ops.node_runtime.NODE_MISMATCH,
+        path="/opt/homebrew/bin/node",
+        version=f"v{major}.11.0",
+        major=major,
+        declared_major=ops.node_runtime.NODE_MAJOR,
+        detail=f"Node v{major}.11.0 at /opt/homebrew/bin/node is not the declared major",
+        remediation=ops.node_runtime.NODE_REMEDIATION_COMMAND,
+    )
 
 
 @pytest.mark.unit
-def test_ensure_web_deps_no_npm(monkeypatch, tmp_path):
+def test_ensure_web_deps_refuses_when_node_is_absent(monkeypatch, tmp_path):
+    """No Node at all is reported as absent, with the wrapped remedy named."""
     web_dir = tmp_path / "web"
     web_dir.mkdir()
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_which", lambda prog: None if prog == "npm" else "/usr/bin/x")
+    _stub_node_report(monkeypatch, _missing_node_report())
     results = ops._ensure_web_deps()
     assert results[0].ok is False
-    assert "npm not found" in results[0].message
+    assert "Node.js not found" in results[0].message
+    assert "cannot install web deps" in results[0].message
+    assert ops.node_runtime.NODE_REMEDIATION_COMMAND in results[0].details
+
+
+@pytest.mark.unit
+def test_ensure_web_deps_refuses_a_wrong_node_major(monkeypatch, tmp_path):
+    """THE #4194 defect at this call site, and the reason it went unseen.
+
+    The check this replaces was `_which("node") is None`, which is false for a
+    Node 26 host exactly as it is for a Node 24 one -- so the install went on
+    to run `npm ci` and reported "Web deps already installed (undici OK)" for a
+    tree resolved against a major nothing in CI had ever built on. A wrong
+    major has to STOP the step, not merely not-be-absent.
+    """
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    _stub_node_report(monkeypatch, _wrong_major_node_report())
+
+    # Any npm call at all would be the defect: the gate runs first.
+    def _explode(*args, **kwargs):
+        raise AssertionError("npm must not run on a wrong Node major")
+
+    monkeypatch.setattr(ops.subprocess, "run", _explode)
+
+    results = ops._ensure_web_deps()
+    assert results[0].ok is False
+    assert "Wrong Node.js version" in results[0].message
+    assert "cannot install web deps" in results[0].message
+    assert str(ops.node_runtime.NODE_MAJOR) not in results[0].message  # the detail carries it
+    assert ops.node_runtime.NODE_REMEDIATION_COMMAND in results[0].details
 
 
 @pytest.mark.unit
@@ -5537,10 +5604,13 @@ def test_ensure_web_deps_can_resolve_handles_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True):
-        if cmd[:1] == ["node"]:
+    # `env=` and basenames: the declared toolchain is invoked absolutely since
+    # #4194, so a stub written against the bare names never matches.
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, env=None):
+        tool = os.path.basename(cmd[0])
+        if tool == "node":
             raise OSError("node vanished")
-        if cmd[:2] == ["npm", "ci"]:
+        if tool == "npm" and cmd[1:2] == ["ci"]:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="network error")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -5558,7 +5628,7 @@ def test_ensure_web_deps_handles_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
 
-    def raise_run(cmd, cwd=None, text=True, capture_output=True):
+    def raise_run(cmd, cwd=None, text=True, capture_output=True, env=None):
         raise OSError("exploded")
 
     monkeypatch.setattr(ops.subprocess, "run", raise_run)
@@ -5582,13 +5652,26 @@ def test_ensure_mcp_deps_no_package_json(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_ensure_mcp_deps_no_npm(monkeypatch, tmp_path):
+def test_ensure_mcp_deps_refuses_when_node_is_absent(monkeypatch, tmp_path):
+    """The same one gate as the web-deps step (#4194), not a second opinion."""
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(ops, "_which", lambda _: None)
+    _stub_node_report(monkeypatch, _missing_node_report())
     results = ops._ensure_mcp_deps()
     assert results[0].ok is False
-    assert "npm not found" in results[0].message
+    assert "Node.js not found" in results[0].message
+    assert "cannot install MCP deps" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_mcp_deps_refuses_a_wrong_node_major(monkeypatch, tmp_path):
+    """Root `package.json` carries `engines` too, so this install can be wrong."""
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    _stub_node_report(monkeypatch, _wrong_major_node_report())
+    results = ops._ensure_mcp_deps()
+    assert results[0].ok is False
+    assert "Wrong Node.js version" in results[0].message
 
 
 @pytest.mark.unit
@@ -5612,7 +5695,9 @@ def test_ensure_mcp_deps_install_succeeds(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda cmd, cwd=None, text=True, capture_output=True: subprocess.CompletedProcess(cmd, 0),
+        lambda cmd, cwd=None, text=True, capture_output=True, env=None: (
+            subprocess.CompletedProcess(cmd, 0)
+        ),
     )
 
     results = ops._ensure_mcp_deps()
@@ -5628,8 +5713,8 @@ def test_ensure_mcp_deps_install_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda cmd, cwd=None, text=True, capture_output=True: subprocess.CompletedProcess(
-            cmd, 1, stdout="", stderr="boom"
+        lambda cmd, cwd=None, text=True, capture_output=True, env=None: (
+            subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
         ),
     )
 
@@ -5645,7 +5730,7 @@ def test_ensure_mcp_deps_install_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/npm")
 
-    def raise_run(cmd, cwd=None, text=True, capture_output=True):
+    def raise_run(cmd, cwd=None, text=True, capture_output=True, env=None):
         raise OSError("boom")
 
     monkeypatch.setattr(ops.subprocess, "run", raise_run)
@@ -5665,14 +5750,16 @@ def test_ensure_mcp_deps_uses_npm_ci_when_lockfile_present(monkeypatch, tmp_path
 
     seen_cmd = []
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, env=None):
         seen_cmd.append(cmd)
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
 
     results = ops._ensure_mcp_deps()
-    assert seen_cmd == [["npm", "ci"]]
+    # The DECLARED npm, by absolute path (#4194) -- `conftest` pins it to
+    # /usr/bin/npm so this asserts the resolution happened, not the runner's.
+    assert seen_cmd == [[ops.node_runtime.resolve_npm_bin(), "ci"]]
     assert results[0].ok is True
     assert "npm ci" in results[0].message
 
@@ -5685,14 +5772,14 @@ def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path
 
     seen_cmd = []
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, env=None):
         seen_cmd.append(cmd)
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
 
     results = ops._ensure_mcp_deps()
-    assert seen_cmd == [["npm", "install"]]
+    assert seen_cmd == [[ops.node_runtime.resolve_npm_bin(), "install"]]
     assert results[0].ok is True
     assert "npm install" in results[0].message
 
@@ -5863,13 +5950,51 @@ def test_ops_doctor_reports_missing_brew_and_docker(monkeypatch, capsys, tmp_pat
     monkeypatch.setattr(ops, "_which", lambda _: None)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
 
+    # Node is no longer a PATH-existence check (#4194): `doctor` reports the
+    # version it resolved against the declared one, so the absent case has to
+    # come from the one report rather than from `_which`.
+    _stub_node_report(monkeypatch, _missing_node_report())
+
     rc = ops.doctor(MagicMock())
     assert rc == 2
     out = capsys.readouterr().out
     assert "Missing tool in PATH: brew" in out
     assert "Missing tool in PATH: docker" in out
-    assert "Missing tool in PATH: node" in out
-    assert "Missing tool in PATH: npm" in out
+    # Not `Missing tool in PATH: node` any more, and that is the fix: the old
+    # line was emitted when no `node` existed and NOT emitted for a wrong
+    # major, so "Node OK" was inferred from silence. The finding now names the
+    # declared major and the wrapped remedy, in both cases.
+    assert "Node.js not found" in out
+    assert ops.node_runtime.NODE_REMEDIATION_COMMAND in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_reports_a_wrong_node_major_as_a_finding(monkeypatch, capsys, tmp_path):
+    """The #4194 acceptance criterion: nothing reports "Node OK" for a `node`.
+
+    On the owner's machine Homebrew `node` 26.11 is first on PATH. Every check
+    in the tree asked `_which("node") is None`, which that host satisfies, so
+    `doctor` had nothing to say about a web tier being served by a major no CI
+    job had ever built on.
+
+    Also NOT gated on a checkout: `REPO_ROOT` here has no `web/`, which is what
+    an artifact install looks like -- and macOS, where the defect actually
+    lived, is exactly that.
+    """
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    _stub_node_report(monkeypatch, _wrong_major_node_report())
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "is not the declared major" in out
+    assert ops.node_runtime.NODE_REMEDIATION_COMMAND in out
 
 
 @pytest.mark.unit

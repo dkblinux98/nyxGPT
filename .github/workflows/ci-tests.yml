@@ -231,8 +231,7 @@ jobs:
         if: steps.touched.outputs.web == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
+          node-version-file: '.nvmrc'
       - name: Install web dependencies
         if: steps.touched.outputs.web == 'true'
         run: cd web && npm ci

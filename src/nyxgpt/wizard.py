@@ -8,12 +8,12 @@ and config.ini generation.
 from __future__ import annotations
 
 import secrets
-import shutil
 import sys
 from configparser import ConfigParser
 from pathlib import Path
 from typing import Any
 
+from nyxgpt import node_runtime
 from nyxgpt.config import DEFAULT_CONFIG_PATH, shipped_default_model
 from nyxgpt.models import list_models
 
@@ -281,8 +281,16 @@ def _generate_config_ini(
     # "/path/to/nyxGPT" placeholder text the user must remember to edit.
     repo_dir = str(Path(__file__).resolve().parents[2])
     venv_python = str(Path(sys.executable).resolve())
-    node_bin = shutil.which("node") or "/opt/homebrew/bin/node"
-    npm_bin = shutil.which("npm") or "/opt/homebrew/bin/npm"
+    # The DECLARED Node, not the first `node` on PATH (#4194). The old pair
+    # here was `shutil.which("node") or "/opt/homebrew/bin/node"` -- PATH
+    # first, with the UNVERSIONED Homebrew keg as the fallback -- so on macOS
+    # both arms resolved to whatever major `brew upgrade node` had last moved
+    # to, and `[paths] node_bin` recorded it into the user's config as a fact.
+    # `node_runtime.resolve_node_bin` prefers the versioned `node@NN` keg and
+    # falls back to PATH; the fallbacks below keep a config writable on a host
+    # with no Node at all, pointing at where the declared keg will land.
+    node_bin = node_runtime.resolve_node_bin() or f"{node_runtime.homebrew_node_bin_dirs()[0]}/node"
+    npm_bin = node_runtime.resolve_npm_bin() or f"{node_runtime.homebrew_node_bin_dirs()[0]}/npm"
 
     config.add_section("paths")
     config.set("paths", "repo_dir", repo_dir)

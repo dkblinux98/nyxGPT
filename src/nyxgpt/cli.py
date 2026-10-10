@@ -2181,6 +2181,19 @@ def cli(argv: list[str] | None = None) -> int:
     )
     ops_doctor.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
 
+    # The wrapped remedy for a Node mismatch (#4194). `doctor`, `status` and
+    # the Infrastructure page all report the mismatch; without this they would
+    # have had to point at a raw `brew install node@NN` or a piped NodeSource
+    # script, which the Operational Command Wrapping rule forbids.
+    ops_sub.add_parser(
+        "node",
+        help=(
+            f"Report this host's Node.js against the version nyxGPT declares "
+            f"(Node {ops_mod.node_runtime.NODE_MAJOR}), and install it if it is missing or "
+            "the wrong major"
+        ),
+    )
+
     # Built from `ops.NATIVE_LOG_FOLLOWERS` rather than spelled out, so the
     # targets the CLI accepts cannot drift from the followers `restart`/`stop`
     # actually drive. They did: `ollama-logs` was missing from both lists while
@@ -3935,6 +3948,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.status(args)
         if args.ops_cmd == "doctor":
             return ops_mod.doctor(args)
+        if args.ops_cmd == "node":
+            return ops_mod.node(args)
         if args.ops_cmd == "restart":
             return ops_mod.restart(args)
         if args.ops_cmd == "stop":

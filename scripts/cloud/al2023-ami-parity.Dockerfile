@@ -8,7 +8,7 @@
 #
 #   * a modern Python (the AMI's system `python3` is 3.9; nyxGPT requires
 #     >=3.11, so selecting an interpreter is the bootstrap's job -- #3782)
-#   * node/npm (the web bundle's build needs Node 20; provisioning it is the
+#   * node/npm (the web bundle's build needs the declared Node; provisioning it is the
 #     bootstrap's job -- #3761)
 #   * docker (the Cassandra container needs an engine; installing and starting
 #     it is the bootstrap's job -- #3760)

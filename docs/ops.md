@@ -47,7 +47,9 @@ install or operate flow requires one.
 
 - Python 3.11+ (or Homebrew, on the macOS native path)
 - Docker — required for the Cassandra container behind RAG
-- Node.js — for the local web UI on the native paths
+- Node.js — for the local web UI on the native paths. **One** major, declared in
+  `.nvmrc`; see [The declared Node.js version](#the-declared-nodejs-version). `nyxgpt ops node`
+  installs it and reports what this host has.
 
 Ollama is installed and managed for you by `nyxgpt ops install` (Homebrew
 service on macOS, `nyxgpt-ollama.service` on Linux).
@@ -123,6 +125,7 @@ nyxgpt ops stop
 nyxgpt ops down
 nyxgpt ops uninstall
 nyxgpt ops doctor
+nyxgpt ops node
 nyxgpt ops env-sync
 nyxgpt ops install-extra
 nyxgpt ops session-backend
@@ -1482,6 +1485,100 @@ two surfaces disagreeing about one fact is its own defect (#3827), and the
 disagreement here pointed the wrong way: a clean `doctor` over an api
 reporting errors nowhere. A Pod that cannot be asked (no api tier, not yet
 serving) is `unknown`, not empty, and falls through to the key comparison.
+
+---
+
+## The declared Node.js version
+
+nyxGPT declares exactly one Node.js major, and every place that installs,
+tests or runs Node takes it from that declaration. Nothing picks its own, and
+nothing is left to whatever `node` happens to be first on `PATH`.
+
+The declaration lives in two spellings of one value:
+
+| | |
+|---|---|
+| `.nvmrc` | what `nvm use` and CI's `actions/setup-node` (`node-version-file`) read |
+| `src/nyxgpt/node_runtime.py` (`NODE_MAJOR`) | what the Python side reads — it has to answer on an artifact install, where there is no checkout |
+
+Everything else derives from it, and
+`tests/unit/test_node_version_declaration.py` fails the build if any of them
+names a different major:
+
+- `engines.node` in both `package.json` files, with `engine-strict=true` in
+  both `.npmrc` files — so `npm install` on the wrong major **fails**, naming
+  the required version, instead of printing `EBADENGINE` and installing anyway;
+- every `actions/setup-node` step in CI, via `node-version-file`;
+- `web/Dockerfile`'s base image, in all three stages;
+- the Linux/EC2 bootstraps' NodeSource repo
+  ([cloud.md](cloud.md#the-nodejs-version));
+- the macOS Homebrew formulas, which depend on the **versioned** `node@NN`
+  keg and put that keg's `bin` first on the web service's `PATH`.
+
+That last one is why `brew upgrade node` no longer changes what nyxGPT runs:
+`node@NN` is keg-only, so Homebrew does not link it into
+`$(brew --prefix)/bin`, and the service resolves it by path rather than by
+name.
+
+**A newer major is not "newer than fine", it is untested.** The range is one
+major (`<major>.x`), not `>=<major>`, for exactly that reason.
+
+### `nyxgpt ops node`
+
+Reports what this host resolves, against what nyxGPT declares — and installs
+the declared Node when it is missing or the wrong major.
+
+```bash
+nyxgpt ops node
+```
+
+```
+nyxGPT ops node
+  declared: Node 24 (.nvmrc / package.json engines)
+  resolved: v26.11.0 at /opt/homebrew/bin/node
+  Node v26.11.0 at /opt/homebrew/bin/node is not the Node 24 nyxGPT declares
+[OK] Installed node@24
+  now: Node v24.21.0 at /opt/homebrew/opt/node@24/bin/node (declared major 24)
+```
+
+It is the wrapped remedy the other surfaces point at — on macOS it installs
+the versioned Homebrew keg, on a `dnf`/`apt` host it adds NodeSource's repo
+for the declared major and installs `nodejs`. It is idempotent: on a host
+already running the declared major it installs nothing and says so.
+
+The verdict comes from resolving again, not from the installer's exit code: a
+successful `brew install node@NN` of a keg-only formula changes nothing on
+`PATH` — which is the point of using one — so the only honest answer to "did
+that work" is to ask what this host now resolves. It exits non-zero if the
+host is still not on the declared Node, which is what happens when a wrong
+major remains ahead of it.
+
+`NYXGPT_NODE_BIN=/path/to/node` overrides resolution for every surface. It
+exists for the smoke jobs' wrong-major fault injection, and for an operator
+with a Node the normal search cannot find. While it is set, `nyxgpt ops node`
+reports and installs nothing: the variable has already named the binary, so
+installing another one would not change what resolution answers.
+
+### Where a wrong version shows up
+
+Three surfaces, one report, so none of them can disagree with the others:
+
+- **`nyxgpt ops status`** prints a `Node runtime (web tier):` line always —
+  including when it is correct. "Node is fine" being readable only from the
+  *absence* of an error is what let a Node 26 install look healthy.
+- **`nyxgpt ops doctor`** reports a wrong major as a finding, with
+  `nyxgpt ops node` as the repair. It is not gated on a repo checkout: an
+  artifact install has no `web/` and still has a Node major that can be wrong,
+  and macOS — where this was actually broken — is exactly that case.
+- **The SRE dashboard's Infrastructure page** shows the same version and path
+  on the install card. Reported, not operated: the page prints the `nyxgpt`
+  command as text rather than offering a button, per the Definition of Done.
+
+The three states are kept apart on purpose — "no `node` at all", "a `node`
+whose version could not be read", and "a `node` of the wrong major" have
+different causes and different remedies. Every check this replaced collapsed
+all three into "is there a `node` on `PATH`", which is true of every wrong
+major as well as every right one.
 
 ---
 

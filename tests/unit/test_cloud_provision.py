@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from nyxgpt import cloud_provision
+from nyxgpt import cloud_provision, node_runtime
 
 # --- render_user_data ----------------------------------------------------
 
@@ -192,13 +192,19 @@ def test_linux_bootstrap_installs_and_enables_docker_for_the_target_user():
     assert 'usermod -aG docker "$NYXGPT_TARGET_USER"' in body
 
 
-def test_linux_bootstrap_installs_node_for_the_web_bundle_build():
+def test_linux_bootstrap_installs_the_declared_node_for_the_web_bundle_build():
     # `_install_native_web_systemd` runs `npm ci`/`npm run build` and fails
-    # outright without npm; the distro packages are below Node 20.
+    # outright without npm; the distro packages are older still (Ubuntu 22.04
+    # ships 12, AL2023 ships 18).
+    #
+    # Read from `node_runtime` since #4194 -- the major, the `-ne` comparison
+    # and the NodeSource URL are all substituted into the template now, so a
+    # test naming `20` would be asserting against a literal the template no
+    # longer has.
     body = "\n".join(_linux_executable_lines())
 
-    assert "nodesource.com/setup_20.x" in body
-    assert '[ "$NODE_MAJOR" -lt 20 ]' in body
+    assert node_runtime.NODESOURCE_SETUP_SCRIPT in body
+    assert f'[ "$NODE_MAJOR" -ne {node_runtime.NODE_MAJOR} ]' in body
 
 
 def test_linux_bootstrap_installs_the_cli_into_a_venv_not_pip_user():
