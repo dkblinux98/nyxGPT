@@ -169,6 +169,10 @@ on:
       # `ops.py`'s ~214, so this is not the every-PR cost that keeps `ops.py`
       # out.
       - 'src/nyxgpt/self_heal.py'
+      # The Linux `restart-wait` job's own test (#4192). It extracts the
+      # restart step's shell out of this file, so it has to re-run when either
+      # side moves.
+      - 'tests/unit/test_macos_restart_wait.py'
       # The web tier's own version, derived from the directory the keg's
       # wrapper `cd`s into (#3982). This is a claim about a Homebrew keg on
       # macOS, so it is asserted here rather than only in vitest -- a unit
@@ -224,6 +228,46 @@ permissions:
   contents: read
 
 jobs:
+  restart-wait:
+    name: The restart steps wait for the restart instead of sampling it
+    # #4192, and the reason it is an `ubuntu-latest` job inside a macOS
+    # workflow. `keg-install`'s "The api restarts itself when the UI asks it
+    # to (#4043)" step failed on 9 of its last 10 PR runs, and not because
+    # #4043 regressed: it read the api's pid one second after an endpoint that
+    # answers `{"status":"scheduled"}` by design, so `up` returned against a
+    # process that had not been replaced yet. The step was measuring a restart
+    # that had not happened and reporting it as one that did not happen.
+    #
+    # That logic is workflow YAML, and the only thing that ever executed it
+    # was a macOS runner on an ADVISORY job -- so the race was invisible to
+    # every gate on the tree until it had been red for ten days on the release
+    # branch. This job runs the step's real shell, extracted from this file and
+    # never re-typed, against a stub `launchctl` whose pid changes on a delay:
+    # the shipped wait must return the successor, and the retired form must
+    # still read the pre-restart pid (a check that cannot fail proves nothing,
+    # #3753). Linux, ~40 seconds, path-filtered like everything else here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `--noconftest` so this costs a two-package install rather than the
+      # whole editable package: the test drives bash and reads YAML, and the
+      # root `tests/conftest.py` would pull in psutil and `nyxgpt.config` at
+      # collection time. Same trade as escalation-headline-smoke.yml.
+      - name: Install dependencies
+        run: python -m pip install --quiet pytest pyyaml
+
+      - name: The wait, executed in both directions
+        run: |
+          python -m pytest -q -p no:cacheprovider --noconftest \
+            --no-header --rootdir . -c /dev/null \
+            tests/unit/test_macos_restart_wait.py
+
   keg-install:
     name: Install the working tree's formulas
     # PRs and dispatch build from the checkout. An rc cut calls this workflow

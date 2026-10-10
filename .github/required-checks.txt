@@ -202,6 +202,18 @@ acceptance-standard
 # guard against that filed as advisory is the same gap with a job attached to
 # it.
 The model backend, installed and pulled on real macOS
+# macos-brew-smoke.yml's `restart-wait` job (#4192). Required, and the only
+# job in that workflow that does not run on a Mac -- which is the point. The
+# `keg-install` step driving #4043's self-restart failed on 9 of its last 10
+# PR runs because it sampled the api's pid one second after an endpoint that
+# answers `{"status":"scheduled"}` by design, and nothing on the tree could
+# see that: the logic is workflow YAML, executed only by an ADVISORY macOS
+# job. This job extracts that shell out of the workflow and runs it against a
+# stub launchctl in both directions in ~40s on Linux, path-filtered like the
+# rest of the workflow. A red one means a restart step here is measuring the
+# machine before the restart lands -- i.e. a gate about to report a product
+# defect that is not there.
+The restart steps wait for the restart instead of sampling it
 
 [not-required]
 # macos-brew-smoke.yml's `keg-install` job. Owner decision, 2026-08-24: this
