@@ -238,3 +238,101 @@ def test_nodesource_urls_name_the_declared_major():
     assert node_runtime.nodesource_setup_url("apt") == (
         f"https://deb.nodesource.com/setup_{major}.x"
     )
+
+
+# --- `nyxgpt ops node` ---------------------------------------------------
+#
+# The wrapped remedy every other surface points at. Tested here rather than in
+# test_ops.py because what it is about is this module's report; `ops` only
+# renders it and dispatches the install.
+
+
+def _report(state, *, path="", version="", major=None):
+    return node_runtime.NodeRuntimeReport(
+        state=state,
+        path=path,
+        version=version,
+        major=major,
+        declared_major=node_runtime.NODE_MAJOR,
+        detail="stubbed detail",
+        remediation=node_runtime.NODE_REMEDIATION_COMMAND,
+    )
+
+
+def test_ops_node_installs_nothing_on_a_host_already_on_the_declared_major(monkeypatch, capsys):
+    """Idempotent, and it says so: no install, exit 0."""
+    from nyxgpt import ops
+
+    monkeypatch.setattr(
+        ops.node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(
+            node_runtime.NODE_OK,
+            path="/usr/bin/node",
+            version=f"v{node_runtime.NODE_MAJOR}.0.0",
+            major=node_runtime.NODE_MAJOR,
+        ),
+    )
+
+    def _no_install():
+        raise AssertionError("ops node must not install on a correct host")
+
+    monkeypatch.setattr(ops, "_install_declared_node", _no_install)
+    monkeypatch.delenv(node_runtime.NODE_BIN_ENV_VAR, raising=False)
+
+    assert ops.node(object()) == 0
+    out = capsys.readouterr().out
+    assert f"declared: Node {node_runtime.NODE_MAJOR}" in out
+
+
+def test_ops_node_reports_only_when_the_binary_is_pinned_by_env(monkeypatch, capsys):
+    """An explicit `NYXGPT_NODE_BIN` is an instruction, not a problem to fix.
+
+    Installing another Node would not change what resolution answers -- the
+    override is read first -- so the honest action is to report and exit
+    non-zero. It is also what keeps the smoke jobs' fault injection from
+    triggering a NodeSource install on the runner.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.setenv(node_runtime.NODE_BIN_ENV_VAR, "/tmp/injected/node")
+    monkeypatch.setattr(
+        ops.node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(
+            node_runtime.NODE_MISMATCH, path="/tmp/injected/node", version="v20.0.0", major=20
+        ),
+    )
+
+    def _no_install():
+        raise AssertionError("ops node must not install while the binary is pinned")
+
+    monkeypatch.setattr(ops, "_install_declared_node", _no_install)
+
+    assert ops.node(object()) == 1
+    out = capsys.readouterr().out
+    assert node_runtime.NODE_BIN_ENV_VAR in out
+    assert "report only" in out
+
+
+def test_ops_node_reverifies_by_resolving_again_not_by_the_installer_exit_code(monkeypatch, capsys):
+    """A successful `brew install node@NN` of a keg-only formula changes no PATH.
+
+    So "did it work" cannot be the installer's exit code -- it has to be a
+    fresh resolution. This stubs an installer that succeeds while the host
+    stays wrong, and requires a non-zero exit.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.delenv(node_runtime.NODE_BIN_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        ops.node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(
+            node_runtime.NODE_MISMATCH, path="/opt/homebrew/bin/node", version="v26.11.0", major=26
+        ),
+    )
+    monkeypatch.setattr(ops, "_install_declared_node", lambda: [ops.OpsResult(True, "Installed")])
+
+    assert ops.node(object()) == 1
+    assert "still not on the declared Node" in capsys.readouterr().out

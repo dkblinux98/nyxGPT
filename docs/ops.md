@@ -1544,9 +1544,20 @@ nyxGPT ops node
 It is the wrapped remedy the other surfaces point at — on macOS it installs
 the versioned Homebrew keg, on a `dnf`/`apt` host it adds NodeSource's repo
 for the declared major and installs `nodejs`. It is idempotent: on a host
-already running the declared major it installs nothing and says so. It exits
-non-zero if the host is still not on the declared Node afterwards, which is
-the honest outcome when a wrong major remains first on `PATH`.
+already running the declared major it installs nothing and says so.
+
+The verdict comes from resolving again, not from the installer's exit code: a
+successful `brew install node@NN` of a keg-only formula changes nothing on
+`PATH` — which is the point of using one — so the only honest answer to "did
+that work" is to ask what this host now resolves. It exits non-zero if the
+host is still not on the declared Node, which is what happens when a wrong
+major remains ahead of it.
+
+`NYXGPT_NODE_BIN=/path/to/node` overrides resolution for every surface. It
+exists for the smoke jobs' wrong-major fault injection, and for an operator
+with a Node the normal search cannot find. While it is set, `nyxgpt ops node`
+reports and installs nothing: the variable has already named the binary, so
+installing another one would not change what resolution answers.
 
 ### Where a wrong version shows up
 

@@ -186,6 +186,71 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e .
 
+      # Executed evidence for #4194, before the smoke that depends on it: the
+      # Node this job runs comes from `.nvmrc` (the step above reads it), and
+      # the install has to AGREE that it is the declared one. Both directions
+      # are asserted, because a check that only ever reports "fine" is the
+      # thing #4194 is about -- `_which("node") is not None` was true on every
+      # wrong major too, and `doctor` had nothing to say about a web tier being
+      # served by a Node no CI job had ever built on.
+      - name: "The installed Node is the declared one, and a wrong one is reported (#4194)"
+        run: |
+          set -euo pipefail
+          DECLARED="$(tr -d '[:space:]' < .nvmrc)"
+          echo "declared: $DECLARED; setup-node gave: $(node -v)"
+          test "$(node -v | sed 's/^v//' | cut -d. -f1)" = "$DECLARED" || {
+            echo "::error::setup-node did not install the declared major -- node-version-file is not being honoured"
+            exit 1
+          }
+
+          # The right major reads as right...
+          nyxgpt ops node | tee "$RUNNER_TEMP/node-ok.log"
+          grep -q "declared major ${DECLARED}" "$RUNNER_TEMP/node-ok.log" || {
+            echo "::error::nyxgpt ops node did not accept the declared major"
+            exit 1
+          }
+
+          # ...and an injected wrong one reads as wrong. The fault is a real
+          # executable placed where resolution looks, not a patched function:
+          # the claim is about what this host resolves at run time.
+          SHIM="$RUNNER_TEMP/wrong-node/bin"
+          mkdir -p "$SHIM"
+          # Derived from the declaration, not a literal: the fault has to stay
+          # a wrong major whatever the declared one becomes. (It also keeps a
+          # bare `vX.Y.Z` out of the tree, which
+          # tests/unit/test_no_hardcoded_release_version.py reads as a pinned
+          # nyxGPT release line -- rightly, the patterns are identical.)
+          WRONG_MAJOR="$((DECLARED - 2))"
+          {
+            echo '#!/bin/bash'
+            echo "if [ \"\${1:-}\" = \"-v\" ]; then echo \"v${WRONG_MAJOR}.0.0\"; exit 0; fi"
+            echo 'exit 70'
+          } > "$SHIM/node"
+          chmod 0755 "$SHIM/node"
+          "$SHIM/node" -v
+
+          NYXGPT_NODE_BIN="$SHIM/node" nyxgpt ops node > "$RUNNER_TEMP/node-bad.log" 2>&1 || true
+          cat "$RUNNER_TEMP/node-bad.log"
+          grep -q "not the Node ${DECLARED} nyxGPT declares" "$RUNNER_TEMP/node-bad.log" || {
+            echo "::error::nyxgpt ops node did not report the injected wrong major"
+            exit 1
+          }
+
+          NYXGPT_NODE_BIN="$SHIM/node" nyxgpt ops doctor > "$RUNNER_TEMP/doctor-bad.log" 2>&1 || true
+          grep -q "not the Node ${DECLARED} nyxGPT declares" "$RUNNER_TEMP/doctor-bad.log" || {
+            echo "::error::nyxgpt ops doctor did not report the injected wrong major"
+            exit 1
+          }
+          grep -q "nyxgpt ops node" "$RUNNER_TEMP/doctor-bad.log" || {
+            echo "::error::nyxgpt ops doctor reported the mismatch with no wrapped remedy"
+            exit 1
+          }
+
+          # `ops status` prints it unconditionally, which is what makes "Node
+          # is fine" a statement rather than an inference from silence.
+          nyxgpt ops status 2>&1 | grep "Node runtime (web tier)"
+          echo "good: the declared Node is installed, accepted, and a wrong one is reported with its remedy"
+
       # Both halves of the #3775 evidence, in this order and in one job so the
       # ~1.4GB Ollama download is paid once. First the pre-fix behaviour --
       # with the bootstrap disabled, the native Ollama step fails on this

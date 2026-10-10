@@ -17525,6 +17525,20 @@ def node(_args) -> int:
         return 0 if _emit_results("node", [OpsResult(True, report.detail)]) else 1
 
     print(f"  {report.detail}")
+
+    if os.environ.get(node_runtime.NODE_BIN_ENV_VAR, "").strip():
+        # An explicit override means the operator (or a smoke job's fault
+        # injection) has NAMED the binary to use. Installing another one would
+        # neither change what resolution answers nor be what was asked for, so
+        # this reports and stops -- non-zero, because the host is not on the
+        # declared Node.
+        print(
+            f"  {node_runtime.NODE_BIN_ENV_VAR} is set, so this is a report only: "
+            "resolution is pinned to that path and installing another Node would "
+            "not change it. Unset it to let this command install the declared Node."
+        )
+        return 1
+
     ok = _emit_results("node", _install_declared_node())
     # Re-read rather than trust the installer's exit code: the question is what
     # this host now RESOLVES, and on macOS a successful `brew install node@NN`
@@ -17534,7 +17548,7 @@ def node(_args) -> int:
     print(f"  now: {after.detail}")
     if not after.ok:
         print(
-            "  This host is still not on the declared Node. See "
+            "  This host is still not on the declared Node -- "
             f"{see_doc('docs/ops.md')} for the per-platform install path."
         )
         return 1
