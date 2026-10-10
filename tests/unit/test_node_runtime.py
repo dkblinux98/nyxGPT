@@ -28,10 +28,21 @@ from nyxgpt import node_runtime
 
 pytestmark = pytest.mark.unit
 
+# Captured at import, before `tests/conftest.py`'s `_runner_runs_the_declared_
+# node` fixture replaces them: exercising the real resolution and
+# classification is the point of this file, and the suite-wide stub exists so
+# that every *other* test is not a test of the runner's PATH.
+_REAL_RESOLVE_NODE = node_runtime.resolve_node_bin
+_REAL_RESOLVE_NPM = node_runtime.resolve_npm_bin
+_REAL_REPORT = node_runtime.node_version_report
+
 
 @pytest.fixture(autouse=True)
-def _no_ambient_override(monkeypatch):
-    """A real `NYXGPT_NODE_BIN`/`HOMEBREW_PREFIX` in the environment must not leak in."""
+def _real_node_runtime(monkeypatch):
+    """Undo the suite-wide stub, and keep the ambient environment out."""
+    monkeypatch.setattr(node_runtime, "resolve_node_bin", _REAL_RESOLVE_NODE)
+    monkeypatch.setattr(node_runtime, "resolve_npm_bin", _REAL_RESOLVE_NPM)
+    monkeypatch.setattr(node_runtime, "node_version_report", _REAL_REPORT)
     monkeypatch.delenv(node_runtime.NODE_BIN_ENV_VAR, raising=False)
     monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
 

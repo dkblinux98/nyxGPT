@@ -296,6 +296,47 @@ def _no_instance_metadata_reads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _runner_runs_the_declared_node(monkeypatch):
+    """The suite's default is "this host runs the Node nyxGPT declares" (#4194).
+
+    Same reasoning as `_no_instance_metadata_reads` above. Since #4194 every
+    `ops` step that touches npm first asks `node_runtime.node_version_report()`
+    what Node this machine has, and that answer is a property of the runner --
+    GitHub's `ubuntu-latest` image carries several, a dev machine carries
+    whatever nvm last activated. Left unstubbed, three hundred tests about
+    `npm ci` failure modes and `doctor` output would pass or fail on which Node
+    happened to be first on `PATH`, which is not what any of them is asking.
+
+    Worse, they would pass or fail *unpredictably*: many of those tests patch
+    `subprocess.run` wholesale, so the version probe would be answered by a
+    stub written for `npm ci` and come back unreadable.
+
+    The exceptions capture the real function at import time, before this
+    fixture replaces it: `tests/unit/test_node_runtime.py` (exercising it is
+    the point) and the mismatch cases in `tests/unit/test_ops.py`, which
+    restore it deliberately to assert on the refusal.
+    """
+    from nyxgpt import node_runtime
+
+    declared = node_runtime.NodeRuntimeReport(
+        state=node_runtime.NODE_OK,
+        path="/usr/bin/node",
+        version=f"v{node_runtime.NODE_MAJOR}.0.0",
+        major=node_runtime.NODE_MAJOR,
+        declared_major=node_runtime.NODE_MAJOR,
+        detail=f"Node v{node_runtime.NODE_MAJOR}.0.0 at /usr/bin/node (stubbed by conftest)",
+        remediation="",
+    )
+    monkeypatch.setattr(node_runtime, "node_version_report", lambda *, timeout=15.0: declared)
+    # `ops` imports the module, not the function, so patching the module
+    # attribute reaches every caller -- but the npm/node *paths* are resolved
+    # separately and would still come off the runner's PATH. Pinned too, so a
+    # test asserting on an argv sees a stable one.
+    monkeypatch.setattr(node_runtime, "resolve_node_bin", lambda: "/usr/bin/node")
+    monkeypatch.setattr(node_runtime, "resolve_npm_bin", lambda: "/usr/bin/npm")
+
+
+@pytest.fixture(autouse=True)
 def _no_cluster_record_reads(monkeypatch):
     """No test reads a cloud-deploy record it did not put there (#4138).
 

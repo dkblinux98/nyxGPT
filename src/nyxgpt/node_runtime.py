@@ -183,7 +183,13 @@ def node_environment(base: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def parse_node_major(version_text: str) -> int | None:
-    """The major in `node -v`-style output (`v24.21.0`), or None if unreadable."""
+    """The major in `node -v`-style output (`v<major>.<minor>.<patch>`), or None.
+
+    Spelled with placeholders rather than a sample version on purpose:
+    `tests/unit/test_no_hardcoded_release_version.py` reads a literal `vX.Y.Z`
+    in live code as a pinned nyxGPT release line, and it is right to -- the
+    pattern is indistinguishable from the thing that guard exists to catch.
+    """
     match = _VERSION_RE.search(version_text or "")
     return int(match.group(1)) if match else None
 
@@ -220,6 +226,10 @@ class NodeRuntimeReport:
 
     @property
     def ok(self) -> bool:
+        """True only for `NODE_OK` -- the declared major, read from the binary.
+
+        Not "a `node` exists", which is what every check this replaces asked.
+        """
         return self.state == NODE_OK
 
     def to_dict(self) -> dict[str, object]:

@@ -27,6 +27,7 @@ import subprocess
 import pytest
 
 from nyxgpt import cloud_artifact_smoke as smoke
+from nyxgpt import node_runtime as smoke_node_runtime
 
 
 def _completed(
@@ -267,7 +268,13 @@ def test_old_python_fault_rewrites_versioned_interpreters():
 
 
 def test_no_node_fault_drops_the_node_provisioning():
-    script = "curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -\ndnf install -y nodejs\nkeep me\n"
+    # The fixture names a NodeSource URL for the declared major: `_NO_NODE_RE`
+    # is written against `setup_\d+\.x`, so the fault keeps reproducing #3761
+    # whatever major the declaration moves to (#4194).
+    script = (
+        f"curl -fsSL {smoke_node_runtime.nodesource_setup_url('dnf')} | bash -\n"
+        "dnf install -y nodejs\nkeep me\n"
+    )
     injected, records = smoke.apply_faults(script, ["no-node"])
 
     assert "nodesource" not in injected and "nodejs" not in injected

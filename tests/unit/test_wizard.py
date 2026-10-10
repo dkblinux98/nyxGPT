@@ -19,6 +19,23 @@ from nyxgpt.wizard import (
 
 pytestmark = pytest.mark.unit
 
+# Captured at import, ahead of `tests/conftest.py`'s suite-wide stub (#4194).
+_REAL_RESOLVE_NODE = wizard_module.node_runtime.resolve_node_bin
+_REAL_RESOLVE_NPM = wizard_module.node_runtime.resolve_npm_bin
+
+
+def _restore_real_node_resolution(monkeypatch, wizard_mod) -> None:
+    """Put the real `node`/`npm` resolvers back, and clear the ambient env.
+
+    The suite stubs them so that no test depends on which Node the runner has;
+    the two tests below are about what the wizard WRITES for a given host, so
+    they need the real resolution with a controlled `which`.
+    """
+    monkeypatch.setattr(wizard_mod.node_runtime, "resolve_node_bin", _REAL_RESOLVE_NODE)
+    monkeypatch.setattr(wizard_mod.node_runtime, "resolve_npm_bin", _REAL_RESOLVE_NPM)
+    monkeypatch.delenv(wizard_mod.node_runtime.NODE_BIN_ENV_VAR, raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
+
 
 def test_validate_ollama_connection_success():
     """Test successful Ollama connection validation."""
@@ -227,9 +244,9 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
 
     # Patched through `node_runtime`, which owns the resolution since #4194 --
     # the wizard no longer calls `shutil.which` itself.
+    _restore_real_node_resolution(monkeypatch, wizard_mod)
     monkeypatch.setattr(wizard_mod.node_runtime.shutil, "which", lambda prog: f"/fake/bin/{prog}")
     monkeypatch.setattr(wizard_mod.node_runtime.platform, "system", lambda: "Linux")
-    monkeypatch.delenv(wizard_mod.node_runtime.NODE_BIN_ENV_VAR, raising=False)
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
@@ -261,9 +278,8 @@ def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, 
     """
     import nyxgpt.wizard as wizard_mod
 
+    _restore_real_node_resolution(monkeypatch, wizard_mod)
     monkeypatch.setattr(wizard_mod.node_runtime.shutil, "which", lambda prog: None)
-    monkeypatch.delenv(wizard_mod.node_runtime.NODE_BIN_ENV_VAR, raising=False)
-    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(

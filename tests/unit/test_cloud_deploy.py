@@ -25,6 +25,7 @@ from nyxgpt import (
     cloud_mac,
     cloud_screen,
     cloud_verified,
+    node_runtime,
 )
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.doc_links import doc_url
@@ -408,19 +409,31 @@ def test_provision_script_installs_node_before_ops_install():
     script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
 
     # Both package-manager branches of the support matrix (dnf on Amazon
-    # Linux, apt-get on Ubuntu) get Node 20, not just one.
-    assert "rpm.nodesource.com/setup_20.x" in script
-    assert "deb.nodesource.com/setup_20.x" in script
+    # Linux, apt-get on Ubuntu) get the DECLARED Node, not just one. Read from
+    # `node_runtime` since #4194 rather than restating `20`: a test that names
+    # the major itself is one more copy of the decision, and would have gone
+    # red on the fix rather than following it.
+    assert node_runtime.nodesource_setup_url("dnf") in script
+    assert node_runtime.nodesource_setup_url("apt") in script
     # Before the install that needs it -- the real invocation, not the
     # narration around it.
     assert script.index("nodesource.com") < script.index("run_nyxgpt ops install")
 
 
-def test_provision_script_keeps_an_existing_node_20_installation():
-    """Re-deploys and Node-preinstalled AMIs shouldn't reinstall the toolchain."""
+def test_provision_script_keeps_an_existing_declared_node_installation():
+    """Re-deploys and Node-preinstalled AMIs shouldn't reinstall the toolchain.
+
+    The comparison is `-ne` since #4194, not `-lt`: a NEWER major is a mismatch
+    too. `-lt 20` meant an instance that happened to carry Node 26 was left
+    alone, running a bundle built and tested on nothing of the kind -- the same
+    "newer is fine" assumption that let macOS drift to 26.11.
+    """
     script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
 
-    assert 'if ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR:-0}" -lt 20 ]; then' in script
+    assert (
+        "if ! command -v npm >/dev/null 2>&1 || "
+        f'[ "${{NODE_MAJOR:-0}}" -ne {node_runtime.NODE_MAJOR} ]; then'
+    ) in script
 
 
 def test_provision_script_fails_fast_when_npm_is_still_missing():
