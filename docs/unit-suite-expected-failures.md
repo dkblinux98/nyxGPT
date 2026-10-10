@@ -26,8 +26,11 @@ leaves nothing of yours to repair.
 
 ## The floor, by name
 
-Exactly one test is expected to fail on some developer machines and no CI
-runner. If you see anything else, it is yours — or it is a regression.
+One test is expected to fail on some developer machines and no CI runner, and
+one *layout* — dev dependencies in the user site rather than a virtualenv —
+fails two more for a reason that is the environment's, not the tree's. Both are
+named below with their mechanism. If you see anything else, it is yours — or it
+is a regression.
 
 ### `tests/unit/test_resources_packaging.py::test_resources_resolve_from_installed_non_editable_wheel`
 
@@ -47,6 +50,33 @@ That is the test working correctly — those files must never ship — but it is
 reporting the state of *your machine*, not of the diff under test. It passes on
 a clean checkout and in CI. Clean the untracked files under `terraform/aws/*/`
 if you want a green local run.
+
+### A user-site install, not a virtualenv (`pip install --user`, or `pip install` outside a venv)
+
+Two tests fail rather than pass or skip when the dev dependencies live in
+`~/.local/...`:
+
+* `tests/unit/test_invocation_independent_tests.py::test_the_shared_resolver_finds_the_interpreter_running_this_test`
+* `tests/unit/test_resources_packaging.py::test_resources_resolve_from_installed_non_editable_wheel`
+  (fails instead of skipping)
+
+**The mechanism**: since #4020 the suite moves `$HOME` into a temp directory
+before anything is imported (`tests/home_sandbox.py`). The parent process's
+`sys.path` was computed under the *real* `$HOME` and still lists
+`~/.local/lib/pythonX.Y/site-packages`, so the parent can import `pytest` and
+`build`. Every subprocess it starts expands `~` to the sandbox, where that
+directory does not exist — so `python -c "import pytest"` fails in the child,
+and `runnable_module_or_skip("build")` correctly reports that this interpreter
+cannot run `python -m build`. Parent and children disagree about what is
+installed, and the guards are reporting that honestly.
+
+This is the documented setup (`docs/testing.md` → "Running tests") doing its
+job: a fresh venv passes both, and CI's layout is unaffected. The pre-#4195
+`importorskip("build")` had the same parent/child gap and merely hid it behind
+a skip. If user-site installs are ever meant to be supported, the fix belongs
+in `home_sandbox` — carrying the real user site forward into the sandbox — not
+in the guards, which would have to start trusting the parent's view of the
+world over the child's.
 
 ## What is deliberately *not* on this list
 

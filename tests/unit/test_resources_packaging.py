@@ -17,8 +17,7 @@ import venv
 from pathlib import Path
 
 import pytest
-
-pytest.importorskip("build", reason="`build` (dev dependency) not installed")
+from shell_suite import runnable_module_or_skip
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -234,6 +233,14 @@ def planted_generated_secrets():
 
 @pytest.mark.unit
 def test_resources_resolve_from_installed_non_editable_wheel(tmp_path, planted_generated_secrets):
+    # NOT `pytest.importorskip("build")`, which made this test's result depend
+    # on the command that started pytest rather than on the tree (#4195):
+    # `python -m pytest` puts the repo root on sys.path, the gitignored
+    # `build/` directory setuptools leaves there imports as a namespace
+    # package, and `importorskip` then said yes to an interpreter that cannot
+    # run `python -m build`. The helper asks what the subprocess below asks.
+    runnable_module_or_skip("build", needed_for="the wheel this test builds")
+
     dist_dir = tmp_path / "dist"
     build_cp = subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist_dir), str(REPO_ROOT)],

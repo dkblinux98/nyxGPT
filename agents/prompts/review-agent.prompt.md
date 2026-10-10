@@ -143,8 +143,13 @@ REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
   the search yourself as well and report it in a "### Class Sweep" section.
   Medium (blocking): a missing or incomplete sweep (a surface the issue named
   and the sweep does not account for), an obvious sibling instance left
-  unfixed, or the same decision corrected in N copies where one source was
-  available and the PR does not say why. Cite at least one concrete instance;
+  unfixed, the same decision corrected in N copies where one source was
+  available and the PR does not say why, or an out-of-class finding claimed
+  with no issue number that resolves -- RESOLVE every `#NNNN` the sweep cites
+  (`gh issue view <N> --json number,title,state`), because #4197 described one
+  in detail, said "filed, not fixed here", and nothing was filed. Since #4195
+  `class_sweep.py` appends a note to the section when the claim names no issue;
+  a note left standing is that finding. Cite at least one concrete instance;
   a reported search that found nothing, or feature work with no defect behind
   it, satisfies the gate. A consolidation on a class-sweep fix is in scope by
   definition -- never flag it as scope creep.

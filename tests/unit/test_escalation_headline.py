@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from shell_suite import bash4_or_skip
+from shell_suite import assert_shell_suite_ran, bash4_or_skip
 
 pytestmark = pytest.mark.unit
 
@@ -330,6 +330,7 @@ class TestShellSuite:
             # with what is being tested.
             env={**os.environ, "NYXGPT_TEST_PYTHON": sys.executable},
         )
-        assert result.returncode == 0, result.stdout + result.stderr
-        # A skipped section must not read as a pass here either.
-        assert "it records the first failing node ID" in result.stdout, result.stdout
+        # Three outcomes, not two (#4195): passed, failed, or could-not-run.
+        # `proof_of_execution` is why exit 0 alone is not accepted -- the suite
+        # used to print "All tests passed." with its EXECUTED half skipped.
+        assert_shell_suite_ran(result, proof_of_execution="it records the first failing node ID")
