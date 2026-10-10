@@ -62,6 +62,7 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+import warnings
 from pathlib import Path
 
 import pytest
@@ -276,7 +277,12 @@ def _written_argv_indices(body: str) -> set[int] | None:
     caller to the coarse fallback.
     """
     try:
-        tree = ast.parse(body)
+        with warnings.catch_warnings():
+            # A *shell* heredoc body can be syntactically valid Python and full
+            # of `\$`, which `ast.parse` reports as an invalid escape. That is
+            # a fact about the bash we are reading, not a defect to surface.
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(body)
     except SyntaxError:
         return None
 
@@ -302,7 +308,7 @@ def _written_argv_indices(body: str) -> set[int] | None:
         targets = node.targets[0]
         value = node.value
         if isinstance(targets, ast.Tuple) and isinstance(value, ast.Tuple):
-            for target, element in zip(targets.elts, value.elts):
+            for target, element in zip(targets.elts, value.elts, strict=True):
                 index = argv_index(element)
                 if isinstance(target, ast.Name) and index is not None:
                     argv_names[target.id] = index
@@ -668,7 +674,7 @@ class TestTheDetectorsAreNotVacuous:
         assert shell_offenders(
             'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
             'PLANTED="$ROOT_DIR/.github/workflows/zz-injection.yml"\n'
-            'cat > "$PLANTED" <<\'YAML\'\n'
+            "cat > \"$PLANTED\" <<'YAML'\n"
             "name: unsafe\n"
             "YAML\n"
         )

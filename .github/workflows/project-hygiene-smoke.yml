@@ -76,6 +76,10 @@ on:
       - "tests/test_pr_head_guard_discriminates.sh"
       # The shared pytest-interpreter resolver the script above sources (#4195).
       - "tests/pytest_python.sh"
+      # ...and the shared fixture-copy helper it sources (#4198): the script's
+      # injections happen in a throwaway copy of the tracked tree, so a change
+      # to how that copy is made changes what the guard is measured against.
+      - "tests/fixture_checkout.sh"
       - "tests/unit/test_pull_request_target_safety.py"
   pull_request:
     paths:
@@ -89,6 +93,10 @@ on:
       - "tests/test_pr_head_guard_discriminates.sh"
       # The shared pytest-interpreter resolver the script above sources (#4195).
       - "tests/pytest_python.sh"
+      # ...and the shared fixture-copy helper it sources (#4198): the script's
+      # injections happen in a throwaway copy of the tracked tree, so a change
+      # to how that copy is made changes what the guard is measured against.
+      - "tests/fixture_checkout.sh"
       - "tests/unit/test_pull_request_target_safety.py"
   workflow_dispatch:
 

@@ -89,6 +89,51 @@ accepts only pytest exit `1` as "the guard went red", because every other
 non-zero status means the guard never started and reporting that as a caught
 defect made all nine of its cases vacuous.
 
+### A test's fixture lives in a directory the test owns
+
+**The checkout is never the fixture** (#4198, ledger **D-069**). A test that
+edits, plants or deletes a file inside the repository is writing state every
+other reader of the tree can see, and **an `EXIT` trap or a `finally` restore
+is not a mitigation** — it answers neither half of the problem:
+
+* the window is real *while the test runs*. A parallel `pytest` failed
+  `tests/unit/test_context_index.py` because
+  `tests/test_pr_head_guard_discriminates.sh` had planted a workflow under
+  `.github/workflows/`, and that workflow's whole purpose is to hand this
+  repository's `workflow`-scoped PAT to a PR author;
+* no trap and no `finally` runs on `SIGKILL`, a job timeout or a runner
+  eviction, so an interrupted run leaves the edits behind in a checkout nobody
+  knows is dirty.
+
+Gitignored destinations count too: `git status` staying clean is the floor, not
+the rule. A planted `k8s/secret.yaml` is invisible to git and perfectly visible
+to a `detect-secrets` hook, a parallel job and the developer's next build.
+
+In practice:
+
+* Python — write under `tmp_path`, never under a
+  `Path(__file__).resolve().parents[N]` constant.
+* shell — `TMP="$(mktemp -d)"` and `trap 'rm -rf "$TMP"' EXIT`. The trap
+  *discards*; it never restores, so nothing about the run's correctness
+  depends on it firing.
+* when the fixture has to look like the repository — a guard that globs
+  `.github/workflows/*.yml`, walks the tree for prose, or builds a wheel —
+  **`tests/fixture_checkout.sh`** copies every tracked file into a directory
+  you name (~1,300 files, ~25 MB, about a tenth of a second). It is the one
+  place that makes such a copy; `test_pr_head_guard_discriminates.sh` and
+  `tests/unit/test_resources_packaging.py` both call it.
+* **prefer copying the guard over giving the guard a root override.** A
+  `GUARD_ROOT`-style seam is a switch that can be left on against the real
+  repository. `tests/unit/test_pull_request_target_safety.py` resolves its root
+  from `Path(__file__)`, so the fixture copy of that file examines the fixture
+  and production reads production — the same code, no seam.
+
+`tests/unit/test_tests_own_their_fixtures.py` fails the build on a
+reintroduction, reading both the shell suites and the Python modules for write
+destinations inside the checkout. Its two detectors are pinned in both
+directions, so one that stopped matching cannot read as a tree that stopped
+offending.
+
 **Run the suite from a virtualenv, not from a user-site install.** The rules
 above make a test's answer independent of the *command*; they cannot make it
 independent of an environment where the parent process and its children see
