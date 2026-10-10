@@ -174,65 +174,86 @@ print("RESOURCE_RESOLUTION_OK")
 """
 
 
+#: The generated-secret paths an install drops into the tree, which must never
+#: reach a wheel. Planting them is the fault-injection half (#3753) -- drop
+#: either exclusion from pyproject.toml and the wheel test below fails.
+#:
+#: `terraform/aws/mac*/terraform.tfvars` (#3995) is a plain `.tfvars` rather
+#: than anything under `.terraform/`, and the distinction is the whole point:
+#: `"**/*"` is glob-style and does not match dotfiles, so a dot-directory could
+#: never reach the wheel and planting one would make this fixture pass no
+#: matter what pyproject.toml said. Verified by building both ways -- drop the
+#: `terraform/aws/mac*` entries *or* their two per-package keys from
+#: exclude-package-data and these files appear in the wheel.
+_GENERATED_SECRETS = (
+    "k8s/secret.yaml",
+    "k8s/observability/secret.yaml",
+    "terraform/aws/mac/terraform.tfvars",
+    "terraform/aws/mac-release/terraform.tfvars",
+)
+
+
 @pytest.fixture
-def planted_generated_secrets():
-    """Put the k8s secrets an install generates into the tree being built.
+def source_tree_with_generated_secrets(tmp_path) -> Path:
+    """A throwaway copy of the tracked checkout, with the secrets planted in IT.
 
-    Without this the "no secret reached the wheel" assertions in the script
-    above are vacuous everywhere they actually run: CI builds from a fresh
+    WHY A COPY (#4198). This fixture used to plant the files in the real
+    checkout and remove them from a `finally`. Both halves were wrong. While
+    the test ran, this repository contained four files named `secret.yaml` /
+    `terraform.tfvars` whose contents read `api-key: "planted-secret"`, which
+    anything else reading the tree in that window sees -- a parallel test job,
+    a `detect-secrets` hook, the developer. And a `finally` does not run on
+    `kill -9`, a job timeout or a runner eviction, so an interrupted run left
+    them there; the fixture then skipped planting on the next run because the
+    path already existed, which is a test quietly asserting about leftovers.
+
+    Building in the copy removes the `build/lib` problem the old teardown
+    chased as well: setuptools does not clean that staging tree between
+    builds, so a planted file that reached it once was copied into every later
+    wheel built from this checkout even after the source file was gone. Here
+    the whole tree is thrown away with `tmp_path`.
+
+    Without the planting the "no secret reached the wheel" assertions in the
+    script above are vacuous everywhere they run: CI builds from a fresh
     checkout that has never run `nyxgpt ops install --kubernetes`, so the
-    files the `exclude-package-data` entries exist for are not there to leak
-    in the first place. Planting them is the fault-injection half (#3753) --
-    drop either exclusion from pyproject.toml and this test fails.
-
-    A developer's real generated secret is never touched or deleted: only
-    files this fixture created are removed -- and they are removed from
-    setuptools' `build/lib` staging tree as well as from the source tree.
-    That second half is not tidiness: `build/lib` is not cleaned between
-    builds, so a file that reached it once is copied into every later wheel
-    built from this checkout even after the source file is gone. Leaving one
-    behind would poison the developer's next `python -m build` with a secret
-    this test invented.
+    files the `exclude-package-data` entries exist for are not there to leak.
     """
-    planted = []
-    for relative in (
-        "k8s/secret.yaml",
-        "k8s/observability/secret.yaml",
-        # #3995: the same fault injection for the two EC2 Mac roots, which a
-        # `terraform apply` run in either drops next to the tracked config --
-        # carrying the real host and instance ids. A plain `terraform.tfvars`
-        # rather than anything under `.terraform/`, and the distinction is the
-        # whole point: `"**/*"` is glob-style and does not match dotfiles, so
-        # a dot-directory could never reach the wheel and planting one would
-        # make this fixture pass no matter what pyproject.toml said. Verified
-        # by building both ways -- drop the `terraform/aws/mac*` entries *or*
-        # their two per-package keys from exclude-package-data and these two
-        # files appear in the wheel.
-        "terraform/aws/mac/terraform.tfvars",
-        "terraform/aws/mac-release/terraform.tfvars",
-    ):
-        path = REPO_ROOT / relative
-        if path.exists():
-            continue
+    root = tmp_path / "checkout"
+    # `tests/fixture_checkout.sh` is the one place that knows how to make a
+    # disposable copy of the tracked tree (#4198); the shell suites call the
+    # same script.
+    copy = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "tests" / "fixture_checkout.sh"),
+            str(REPO_ROOT),
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert copy.returncode == 0, f"could not copy the checkout:\n{copy.stdout}\n{copy.stderr}"
+
+    for relative in _GENERATED_SECRETS:
+        path = root / relative
+        assert not path.exists(), (
+            f"{relative} is in the TRACKED tree -- a generated secret must not "
+            "be committed, and planting over it would hide that it was"
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "# planted by test_resources_packaging.py -- must not reach a wheel\n"
             'stringData:\n  api-key: "planted-secret"\n',
             encoding="utf-8",
         )
-        planted.append(relative)
-    try:
-        yield
-    finally:
-        for relative in planted:
-            (REPO_ROOT / relative).unlink(missing_ok=True)
-            (REPO_ROOT / "build" / "lib" / "nyxgpt" / "resources" / relative).unlink(
-                missing_ok=True
-            )
+    return root
 
 
 @pytest.mark.unit
-def test_resources_resolve_from_installed_non_editable_wheel(tmp_path, planted_generated_secrets):
+def test_resources_resolve_from_installed_non_editable_wheel(
+    tmp_path, source_tree_with_generated_secrets
+):
     # NOT `pytest.importorskip("build")`, which made this test's result depend
     # on the command that started pytest rather than on the tree (#4195):
     # `python -m pytest` puts the repo root on sys.path, the gitignored
@@ -242,8 +263,20 @@ def test_resources_resolve_from_installed_non_editable_wheel(tmp_path, planted_g
     runnable_module_or_skip("build", needed_for="the wheel this test builds")
 
     dist_dir = tmp_path / "dist"
+    # Built from the fixture copy, not from the checkout: the planted secrets
+    # are in the copy, and the `build/` and `*.egg-info` staging trees
+    # setuptools leaves behind land there too rather than in the repository
+    # (#4198).
     build_cp = subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist_dir), str(REPO_ROOT)],
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--outdir",
+            str(dist_dir),
+            str(source_tree_with_generated_secrets),
+        ],
         capture_output=True,
         text=True,
         timeout=300,
