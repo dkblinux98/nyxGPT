@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -195,8 +196,18 @@ def test_the_scanner_reads_user_facing_strings_only(source, expected, tmp_path, 
     package = tmp_path / "src" / "nyxgpt"
     package.mkdir(parents=True)
     (package / "sample.py").write_text(source, encoding="utf-8")
-    monkeypatch.setattr("tests.unit.test_no_repo_relative_user_paths.ROOT", tmp_path, raising=False)
-    import tests.unit.test_no_repo_relative_user_paths as module
 
+    # `sys.modules[__name__]`, NOT `import tests.unit.test_...` (#4195). This
+    # module is already imported -- that is what is running -- and asking for
+    # it again by dotted path needs the REPO ROOT on `sys.path` plus `tests`
+    # and `tests.unit` to be importable. Neither has an `__init__.py`, and
+    # pytest's prepend import mode puts `tests/unit` on `sys.path`, not the
+    # repo root. So the import resolved under `python -m pytest` (which
+    # prepends the current directory, making `tests` a namespace package) and
+    # raised `ModuleNotFoundError: No module named 'tests'` under the `pytest`
+    # console script -- the same tree, five passes or five failures depending
+    # on the command typed. Same mechanism as the `build/` namespace-directory
+    # trap in test_resources_packaging.py; `__name__` has no such dependency.
+    module = sys.modules[__name__]
     monkeypatch.setattr(module, "ROOT", tmp_path)
     assert [hit.rsplit(": ", 1)[1] for hit in module._python_hits()] == expected

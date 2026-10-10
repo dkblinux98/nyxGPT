@@ -181,6 +181,60 @@ class TestNoTestGuardsADashMSubprocessWithImportorskip:
         )
 
 
+class TestNoTestImportsItselfByDottedPath:
+    """The mirror image of the `build/` trap, found by criterion 6's full run.
+
+    `tests/unit/test_no_repo_relative_user_paths.py` re-imported ITSELF as
+    `tests.unit.test_no_repo_relative_user_paths` in order to monkeypatch its
+    own `ROOT`. That needs the repo root on `sys.path` and `tests` /
+    `tests.unit` importable -- neither has an `__init__.py`, and pytest's
+    prepend import mode puts `tests/unit` on `sys.path`, not the repo root. So:
+
+        python -m pytest   ->  5 passed   (cwd prepended, `tests` is a
+                                           namespace package)
+        pytest             ->  5 failed   ModuleNotFoundError: No module
+                                          named 'tests'
+
+    The same namespace-package mechanism as `build/`, in the other direction,
+    and found the same way: by running the full suite both ways rather than by
+    reading the file. `sys.modules[__name__]` answers the same question with no
+    dependency on how pytest was started.
+    """
+
+    def test_no_test_module_imports_the_tests_package(self):
+        offenders = []
+        for path in sorted((ROOT / "tests").rglob("*.py")):
+            if path.name == Path(__file__).name:
+                continue
+            for line_no, text in _code_lines(path):
+                if re.search(r"^\s*(?:import|from)\s+tests[. ]", text) or re.search(
+                    r"""monkeypatch\.setattr\(\s*["']tests\.""", text
+                ):
+                    offenders.append(f"{path.relative_to(ROOT)}:{line_no}: {text.strip()}")
+        assert not offenders, (
+            "a test module imported through the `tests` package resolves only "
+            "when the repo root is on sys.path, which `python -m pytest` "
+            "arranges and the `pytest` console script does not -- so the "
+            "result depends on the command (#4195). Use "
+            f"`sys.modules[__name__]` for the running module: {offenders}"
+        )
+
+    def test_the_tests_tree_really_is_not_an_importable_package(self):
+        """Fault injection for the guard above: the premise, asserted.
+
+        If someone adds `tests/__init__.py` the dotted import would start
+        working and the guard would look like pedantry. It is not -- but the
+        reason would have changed, so make the premise fail loudly instead of
+        letting the rule survive as folklore.
+        """
+        for missing in (ROOT / "tests" / "__init__.py", ROOT / "tests" / "unit" / "__init__.py"):
+            assert not missing.exists(), (
+                f"{missing.relative_to(ROOT)} now exists, which changes why "
+                "dotted `tests.` imports are fragile. Re-derive the rule in "
+                "test_no_test_module_imports_the_tests_package (#4195)."
+            )
+
+
 class TestShellSuitesResolveTheirInterpreter:
     """The rule: one resolver, and a loud third outcome when it finds nothing."""
 
