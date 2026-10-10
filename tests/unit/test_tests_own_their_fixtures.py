@@ -32,7 +32,11 @@ in anything under `tests/`:
   destination, or a path argument handed to a heredoc program that writes,
   where the path resolves under the repo root through the suite's own
   variables (`$ROOT_DIR/...`, `$REPO_ROOT/...`, or a variable assigned from
-  one);
+  one) -- INCLUDING through a helper function, which is how two of the three
+  tracked files in #4198 were patched: the call site is not a write and the
+  body writes to `$1`, so only binding the one to the other finds it. Over
+  the suite as it stood, the detector reports all 23 of its mutating lines;
+  over the fixed suite, none;
 * Python -- `write_text`/`write_bytes`/`unlink`/`mkdir`/`open(..., "w")`/
   `shutil.*`/`os.remove` and friends on a path derived from a
   `Path(__file__).resolve().parents[N]` constant.
@@ -83,6 +87,9 @@ _TMP = "@TMP@"
 #: Unresolvable (a command substitution, a variable set outside the file, a
 #: positional). Never an offender: the guard reports what it can read.
 _UNKNOWN = "@?@"
+
+#: `$NAME`, `${NAME}` and the positionals `$1`...`$9`.
+_VARIABLE = re.compile(r"\$\{([A-Za-z_0-9][A-Za-z0-9_]*)[^}]*\}|\$([A-Za-z_0-9][A-Za-z0-9_]*)")
 
 #: Shell variables holding the repo root. `ROOT_DIR` is the convention in
 #: `tests/*.sh`; the other two appear in `scripts/`-shaped code.
@@ -199,23 +206,39 @@ def _expand(token: str, variables: dict[str, str]) -> str:
             return _ROOT
         return variables.get(name, _UNKNOWN)
 
-    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace, token)
+    # Digits on purpose: `$1`/`$2` are how a helper function refers to the
+    # path its caller handed it, and that indirection is how two of the three
+    # tracked files in #4198 were patched.
+    return re.sub(_VARIABLE, replace, token)
 
 
-def _shell_variables(lines: list[tuple[int, str]]) -> dict[str, str]:
-    """Map each simply-assigned variable in a suite to its expansion."""
-    variables: dict[str, str] = {}
+#: An assignment, including the several on one `local a="$1" b="$2"` line.
+#: `(?:^|(?<=\s))` with the `-` lookahead excluded keeps `--flag=value` out.
+_ASSIGNMENT = re.compile(r"""(?:^|(?<=\s))(?!-)([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)""")
+
+
+def _shell_variables(
+    lines: list[tuple[int, str]], seed: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Map each simply-assigned variable in a suite to its expansion.
+
+    `seed` is the scope the lines are read in. It is how a helper function's
+    body is resolved at a particular call site: with `$1` bound to the
+    caller's argument, `local file="$1"` makes `file` the caller's path, which
+    is the indirection `_patch_last_ref "$WF"` uses.
+    """
+    variables: dict[str, str] = dict(seed or {})
     for _, line in lines:
-        match = re.match(r"\s*(?:local\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-        if not match:
+        stripped = line.strip()
+        if stripped.startswith("#"):
             continue
-        name, raw = match.group(1), match.group(2).strip()
-        if name in _ROOT_VAR_NAMES or _ROOT_ASSIGNMENT.search(raw):
-            variables[name] = _ROOT
-            continue
-        if raw[:1] in {'"', "'"} and raw[-1:] == raw[:1]:
-            raw = raw[1:-1]
-        variables[name] = _expand(raw, variables)
+        for name, raw in _ASSIGNMENT.findall(line):
+            if name in _ROOT_VAR_NAMES or _ROOT_ASSIGNMENT.search(raw):
+                variables[name] = _ROOT
+                continue
+            if raw[:1] in {'"', "'"} and raw[-1:] == raw[:1]:
+                raw = raw[1:-1]
+            variables[name] = _expand(raw, variables)
     return variables
 
 
@@ -375,11 +398,66 @@ def _positional_arguments(tokens: list[str]) -> list[str]:
     return rest  # rest[0] is the script (`-`), so argv[N] is rest[N]
 
 
+def _shell_functions(lines: list[tuple[int, str]]) -> dict[str, list[tuple[int, str]]]:
+    """`name -> body lines` for each function the script defines.
+
+    Needed because a suite can route the write through a helper, which is how
+    the one this issue is about patched two of its three tracked files:
+
+        _patch_last_ref() { python3 - "$1" "$2" <<'PY' ... }
+        _patch_last_ref "$WF" '${{ github.head_ref }}'
+
+    Nothing on either line is a repo-rooted destination by itself -- `$1` is
+    unresolvable in the body, and the call site is not a write. Binding the
+    call's arguments to the body's positionals is what connects them.
+    """
+    functions: dict[str, list[tuple[int, str]]] = {}
+    name: str | None = None
+    body: list[tuple[int, str]] = []
+    for lineno, line in lines:
+        if name is None:
+            opener = re.match(r"\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{\s*$", line)
+            if opener:
+                name, body = opener.group(1), []
+            continue
+        if line.rstrip() == "}":
+            functions[name] = body
+            name = None
+            continue
+        body.append((lineno, line))
+    return functions
+
+
+def _line_destinations(tokens: list[str], body: str | None, variables: dict[str, str]) -> list[str]:
+    """Every token one command line writes to, heredoc destinations included."""
+    dests = _destinations(tokens)
+    if not body:
+        return dests
+    written = _written_argv_indices(body)
+    if written is None:
+        # Not Python: fall back to "a writing body means every repo-rooted
+        # argument is suspect", unless the line also hands it a path it owns,
+        # which is then the likely destination.
+        if _HEREDOC_WRITES.search(body) and not any(
+            _expand(token, variables).startswith(_TMP) for token in tokens
+        ):
+            dests.extend(tokens)
+        return dests
+    argv = _positional_arguments(tokens)
+    dests.extend(argv[index] for index in sorted(written) if index < len(argv))
+    return dests
+
+
 def shell_offenders(text: str) -> list[str]:
     """Writes into the repo checkout made by a shell script's own commands."""
     lines, bodies = _strip_heredocs(text)
     variables = _shell_variables(lines)
+    functions = _shell_functions(lines)
     offenders: list[str] = []
+
+    def writes_into_the_checkout(dests: list[str], bindings: dict[str, str]) -> bool:
+        scope = {**variables, **bindings}
+        return any(_expand(dest, scope).startswith(_ROOT + "/") for dest in dests)
 
     for lineno, line in lines:
         stripped = line.strip()
@@ -388,23 +466,31 @@ def shell_offenders(text: str) -> list[str]:
         tokens = _tokenize(line)
         if tokens is None:
             continue
-        dests = _destinations(tokens)
-        body = bodies.get(lineno)
-        if body:
-            written = _written_argv_indices(body)
-            if written is None:
-                # Not Python: fall back to "a writing body means every
-                # repo-rooted argument is suspect", unless the line also hands
-                # it a path it owns, which is then the likely destination.
-                if _HEREDOC_WRITES.search(body) and not any(
-                    _expand(t, variables).startswith(_TMP) for t in tokens
-                ):
-                    dests.extend(tokens)
-            else:
-                argv = _positional_arguments(tokens)
-                dests.extend(argv[index] for index in sorted(written) if index < len(argv))
-        for dest in dests:
-            if _expand(dest, variables).startswith(_ROOT + "/"):
+
+        if writes_into_the_checkout(_line_destinations(tokens, bodies.get(lineno), variables), {}):
+            offenders.append(f"{lineno}: {stripped}")
+            continue
+
+        # A call to one of this script's own functions: bind the arguments to
+        # the body's positionals and ask the same question of the body. One
+        # level deep, which is all these suites use and all that can be read
+        # without tracking the call graph.
+        words = [t for t in tokens if t not in {"&&", "||", ";", "|", "(", ")"}]
+        if not words or words[0] not in functions or "{" in words:
+            continue  # `name() {` is the definition, not a call
+        arguments = words[1:]
+        bindings = {
+            str(index + 1): _expand(argument, variables) for index, argument in enumerate(arguments)
+        }
+        # Re-resolve the body's locals with the arguments bound, so
+        # `local file="$1"` carries the caller's path.
+        bindings = _shell_variables(functions[words[0]], {**variables, **bindings})
+        for body_lineno, body_line in functions[words[0]]:
+            body_tokens = _tokenize(body_line)
+            if body_tokens is None:
+                continue
+            dests = _line_destinations(body_tokens, bodies.get(body_lineno), variables)
+            if writes_into_the_checkout(dests, bindings):
                 offenders.append(f"{lineno}: {stripped}")
                 break
     return offenders
@@ -689,6 +775,39 @@ class TestTheDetectorsAreNotVacuous:
             "import sys\n"
             'open(sys.argv[1], "w").write("broken")\n'
             "PY\n"
+        )
+
+    def test_it_catches_a_write_routed_through_a_helper_function(self):
+        """How two of the three tracked files in #4198 were actually patched.
+
+        Neither line is a write on its own: the call site runs a function, and
+        the body writes to `$1`, which means nothing until the argument is
+        bound. The indirection is the thing to catch -- a rule that stops at
+        the literal `cp "$PRISTINE" "$WF"` is one refactor from vacuous.
+        """
+        assert shell_offenders(
+            'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+            'WF="$ROOT_DIR/.github/workflows/ensure_project_hygiene.yml"\n'
+            "_patch_last_ref() {\n"
+            '  local file="$1" replacement="$2"\n'
+            '  python3 - "$file" "$replacement" <<\'PY\'\n'
+            "import sys\n"
+            'open(sys.argv[1], "w").write(sys.argv[2])\n'
+            "PY\n"
+            "}\n"
+            "_patch_last_ref \"$WF\" 'anything'\n"
+        )
+
+    def test_a_helper_writing_only_to_a_path_the_suite_owns_is_quiet(self):
+        """The same indirection, used correctly: read the checkout, write $TMP."""
+        assert not shell_offenders(
+            'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+            'TMP="$(mktemp -d)"\n'
+            "_revert() {\n"
+            '  local src="$1" dst="$2"\n'
+            '  cp "$src" "$dst"\n'
+            "}\n"
+            '_revert "$ROOT_DIR/scripts/agents/create_issue.sh" "$TMP/retired.sh"\n'
         )
 
     def test_it_catches_an_rm_of_a_repo_path(self):
