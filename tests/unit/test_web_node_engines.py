@@ -19,12 +19,21 @@ What it took down was 15 CI checks at once -- `validate-web`,
 `session-backend-fault-injection` -- because all of them build the web image,
 and none of them reports the cause anywhere near the top.
 
-The claim is major-level on purpose: the Node baseline is written as a major
-everywhere (`node:20-alpine`, `node-version: '20'`), so both sides resolve to
-"latest 20.x" and that is the strongest thing that can honestly be asserted.
-Only a dependency demanding a NEWER major than the baseline fails here;
-ranges this file cannot parse are skipped rather than guessed at, so a future
-dependency bump cannot redden the build on a parser quirk.
+The claim is major-level on purpose: the Node baseline is written as a major,
+so both sides resolve to "latest <major>.x" and that is the strongest thing
+that can honestly be asserted. Only a dependency demanding a NEWER major than
+the baseline fails here; ranges this file cannot parse are skipped rather than
+guessed at, so a future dependency bump cannot redden the build on a parser
+quirk.
+
+Since #4194 the baseline is nyxGPT's ONE Node declaration
+(`node_runtime.NODE_MAJOR`), not a value derived from `web/Dockerfile`. The
+derivation was the right shape with the wrong source: the Dockerfile was itself
+an unguarded copy, so "the Node the web image is built with" could be -- and
+was -- a different major from the Node CI ran, the Linux installs provisioned
+and the macOS keg served. `tests/unit/test_node_version_declaration.py` is what
+now holds the Dockerfile equal to the declaration; this file asks the separate
+question of whether the locked dependency tree can run on it.
 """
 
 from __future__ import annotations
@@ -34,6 +43,8 @@ import re
 from pathlib import Path
 
 import pytest
+
+from nyxgpt import node_runtime
 
 pytestmark = pytest.mark.unit
 
@@ -53,16 +64,25 @@ _LOWER_BOUND = re.compile(r"(?:>=?|\^|~|=)?\s*(\d+)(?:\.[\dx*]+)*\s*$")
 
 
 def _node_baseline_major() -> int:
-    """The Node major the web image is built with, read from its Dockerfile."""
+    """The Node major nyxGPT declares -- and which the web image must be built on.
+
+    Read from the declaration (#4194) rather than from `web/Dockerfile`, with
+    the Dockerfile then checked AGAINST it. The old direction made this file's
+    whole premise depend on an unguarded copy: whatever major the Dockerfile
+    happened to name became "the baseline", so the file could not notice that
+    the image was built on 20 while nothing else was.
+    """
+    declared = node_runtime.NODE_MAJOR
     dockerfile = (WEB / "Dockerfile").read_text(encoding="utf-8")
     majors = {int(m) for m in _FROM_NODE.findall(dockerfile)}
     assert majors, "web/Dockerfile declares no `FROM node:<major>` stage"
-    assert len(majors) == 1, (
-        f"web/Dockerfile builds on more than one Node major ({sorted(majors)}). "
-        "The deps stage, the builder and the runner must agree, or the tree that "
-        "installs is not the tree that runs."
+    assert majors == {declared}, (
+        f"web/Dockerfile builds on Node {sorted(majors)}, but nyxGPT declares Node "
+        f"{declared} (node_runtime.NODE_MAJOR / .nvmrc). Every stage -- deps, builder, "
+        "runner -- takes the declared major, or the tree that installs is not the tree "
+        "that runs."
     )
-    return majors.pop()
+    return declared
 
 
 def _lower_bound_major(alternative: str) -> int:
@@ -135,22 +155,33 @@ def test_no_web_dependency_requires_a_newer_node_than_the_build_image():
     )
 
 
-def test_every_workflow_that_runs_npm_in_web_uses_the_build_images_node():
+def test_every_workflow_that_runs_npm_in_web_sets_node_up_from_the_declaration():
     """A split baseline is the same defect with a longer fuse.
 
     `validate-web` passing on Node 22 while `web/Dockerfile` builds on 20 would
     let exactly this class through the gate that exists to catch it.
+
+    Rewritten for #4194. It used to compare each workflow's `node-version`
+    literal against the baseline, which now passes vacuously -- there are no
+    literals left, and a test that goes green by losing its subject has stopped
+    guarding. The claim it makes instead is the stronger one the fix made
+    available: a workflow that runs npm against `web/` must SET NODE UP, from
+    the declaration file, rather than take whatever the runner image ships.
     """
     baseline = _node_baseline_major()
-    mismatched: list[str] = []
+    offenders: list[str] = []
     for workflow in sorted(WORKFLOWS.glob("*.yml")):
         text = workflow.read_text(encoding="utf-8")
         if not _TOUCHES_WEB.search(text):
             continue
-        for major in _NODE_VERSION.findall(text):
-            if int(major) != baseline:
-                mismatched.append(f"  {workflow.name}: node-version {major}")
-    assert not mismatched, (
-        f"web/Dockerfile builds on Node {baseline}; these workflows run npm against "
-        "web/ on a different major:\n" + "\n".join(mismatched)
+        # Reusable workflows and jobs that only *read* a web path (a `paths:`
+        # filter, a `web/package` mention in a comment) have no npm step to
+        # set Node up for; `setup-node` being absent entirely is the signal.
+        if "actions/setup-node" not in text:
+            continue
+        if f"node-version-file: '{node_runtime.NODE_VERSION_FILE}'" not in text:
+            offenders.append(f"  {workflow.name}")
+    assert not offenders, (
+        f"nyxGPT declares Node {baseline} in {node_runtime.NODE_VERSION_FILE}; these "
+        "workflows set Node up for the web tier without reading it:\n" + "\n".join(offenders)
     )

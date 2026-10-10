@@ -15,7 +15,17 @@ class NyxgptWeb < Formula
   sha256 "__SHA256__"
   version "__VERSION__"
   license "MIT"
-  depends_on "node"
+  # The VERSIONED keg, identical to ../nyxgpt-web.rb and for the same reason
+  # (#4194): `depends_on "node"` resolves to whatever major homebrew-core has
+  # moved to, so the published keg -- the one a user with no checkout installs
+  # -- was the surface with no Node declaration at all. `node@NN` is keg-only,
+  # so this keg's `node` is reachable at `opt_bin` and not via `PATH`, and
+  # `brew upgrade node` cannot move it.
+  #
+  # The major is nyxGPT's one Node declaration (`.nvmrc` /
+  # `node_runtime.NODE_MAJOR`), held equal by
+  # `tests/unit/test_node_version_declaration.py`.
+  depends_on "node@24"
 
   def install
     system "npm", "ci"
@@ -72,8 +82,10 @@ class NyxgptWeb < Formula
       # launchd/Homebrew services often run with a minimal PATH.
       export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-      # Prefer the Node installed by Homebrew.
-      export PATH="#{Formula["node"].opt_bin}:#{Formula["node"].opt_libexec}/bin:${PATH}"
+      # The DECLARED Node, ahead of everything (#4194) -- the `node@24` keg,
+      # not the unversioned `node` in /opt/homebrew/bin that the line above
+      # puts on PATH. See ../nyxgpt-web.rb.
+      export PATH="#{Formula["node@24"].opt_bin}:#{Formula["node@24"].opt_libexec}/bin:${PATH}"
 
       CONFIG_FILE="$HOME/.nyxGPT/config.ini"
       SYS_PY="/usr/bin/python3"
@@ -102,6 +114,9 @@ class NyxgptWeb < Formula
       echo "nyxgpt-web starting (self-contained Cellar build)" >&2
       echo "  host: $HOST" >&2
       echo "  port: $PORT" >&2
+      # Which Node this service actually resolved (#4194), in its own log --
+      # see ../nyxgpt-web.rb.
+      echo "  node: $(command -v node) $(node -v 2>/dev/null || echo unknown)" >&2
 
       cd "#{libexec}"
       exec npm run start
@@ -181,6 +196,15 @@ class NyxgptWeb < Formula
   test do
     assert_predicate bin/"nyxgpt-web", :exist?
     assert_predicate libexec/".next", :exist?
+
+    # The keg runs the DECLARED Node, not whatever `node` is on PATH (#4194).
+    # Asserted in the formula because this is the only place the question can
+    # be asked of the installed keg itself: `brew test` runs with the user's
+    # PATH, so reading `node -v` here would answer about their shell. The
+    # dependency's own `opt_bin` is what the wrapper prepends, so it is what
+    # has to be major 24.
+    node_version = shell_output("#{Formula["node@24"].opt_bin}/node -v").strip
+    assert_match(/^v24\./, node_version)
 
     # And the server has to actually come up, not merely be present (#3860):
     # `npm prune --omit=dev` once left a keg whose `next start` crash-looped

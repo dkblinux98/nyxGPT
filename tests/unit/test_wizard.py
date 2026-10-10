@@ -225,7 +225,11 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
 
     import nyxgpt.wizard as wizard_mod
 
-    monkeypatch.setattr(wizard_mod.shutil, "which", lambda prog: f"/fake/bin/{prog}")
+    # Patched through `node_runtime`, which owns the resolution since #4194 --
+    # the wizard no longer calls `shutil.which` itself.
+    monkeypatch.setattr(wizard_mod.node_runtime.shutil, "which", lambda prog: f"/fake/bin/{prog}")
+    monkeypatch.setattr(wizard_mod.node_runtime.platform, "system", lambda: "Linux")
+    monkeypatch.delenv(wizard_mod.node_runtime.NODE_BIN_ENV_VAR, raising=False)
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
@@ -247,11 +251,19 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
 
 
 def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, monkeypatch):
-    """When node/npm aren't on PATH, fall back to the standard Homebrew
-    locations rather than writing empty values."""
+    """When node/npm aren't on PATH, fall back to where the DECLARED keg lands.
+
+    The fallback used to be `/opt/homebrew/bin/node` -- the *unversioned*
+    Homebrew keg, i.e. whatever major `brew upgrade node` had last moved to,
+    written into the user's config as a fact (#4194). It is now the versioned
+    `node@NN` keg nyxGPT declares, so a config generated on a host with no Node
+    points at the Node the install is about to put there.
+    """
     import nyxgpt.wizard as wizard_mod
 
-    monkeypatch.setattr(wizard_mod.shutil, "which", lambda prog: None)
+    monkeypatch.setattr(wizard_mod.node_runtime.shutil, "which", lambda prog: None)
+    monkeypatch.delenv(wizard_mod.node_runtime.NODE_BIN_ENV_VAR, raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
@@ -263,8 +275,9 @@ def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, 
 
     parser = ConfigParser()
     parser.read(output_path)
-    assert parser.get("paths", "node_bin") == "/opt/homebrew/bin/node"
-    assert parser.get("paths", "npm_bin") == "/opt/homebrew/bin/npm"
+    keg = f"/opt/homebrew/opt/{wizard_mod.node_runtime.HOMEBREW_NODE_FORMULA}/bin"
+    assert parser.get("paths", "node_bin") == f"{keg}/node"
+    assert parser.get("paths", "npm_bin") == f"{keg}/npm"
 
 
 def test_generate_config_ini_generates_secrets(tmp_path: Path):
