@@ -2788,6 +2788,57 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4043, #4193, #4195; extends **D-006**, **D-066**,
   **D-069**.
 
+- **D-071** · 2026-10-10 · developer (#4192, review round 3) — **A job that
+  runs pytest must be able to COLLECT it: a required check that dies at
+  collection is red about the runner's package set, not about the head.**
+  Found as the live red that escalated this PR to the owner, and it arrived
+  through the gate **D-070** added one round earlier.
+  `pipeline-readers-drain` installed `pyyaml pytest` and ran
+  `pytest tests/unit/test_sigpipe_pipeline_guard.py`; any target under
+  `tests/` loads the **root** `tests/conftest.py`, whose import closure runs
+  `conftest.py` → `log_guard.py` → **`psutil`**, two files from anything a
+  workflow author reads. So the job exited **4** —
+  `ImportError while loading conftest`, a *usage* error, not a test failure —
+  with every assertion it exists for untested, on a head that was fine. Gate
+  comments at 18:19Z (hand-back) and 18:28Z (escalation); run 38075053828.
+  **The decision is made independently in 15 jobs across 11 workflows**, and
+  the tree already held three different answers: `pip install -e .` (6 jobs),
+  `--noconftest` (7), and an explicit `psutil` install (1). Nothing checked
+  any of them, so one job answering *neither* was indistinguishable from the
+  rest until it ran. Per **D-066**, corrected as one source rather than 15
+  copies: `scripts/agents/lib/pytest_conftest_guard.py` derives what the root
+  conftest needs **from the conftest's own imports** and holds every job to
+  one rule — *a pytest call that loads the root conftest requires
+  `pip install -e .`, or it says `--noconftest`*. A bare module list can never
+  satisfy it, because the closure imports first-party `nyxgpt`. Enforced as
+  the new `[required]` `pytest-jobs-can-collect` job on the same wide filter
+  as its sibling. Executed evidence, both directions, in a venv built with the
+  job's exact dependency set: the retired command reproduces
+  `ModuleNotFoundError: No module named 'psutil'` at exit 4, the shipped one
+  passes 31/31; and three planted fixtures
+  (`tests/fixtures/pytest_conftest_guard/`) prove the guard rejects the
+  defect's own shape and accepts **both** repairs — a guard that flagged
+  `--noconftest` would have 14 false positives on this tree, and a gate that
+  cries wolf is a gate someone switches off, which is where #4192 started.
+  The plants are files, not heredocs, because the guard reads `run:` bodies
+  textually and an inline `pip install -e .` would have exempted the planting
+  job and hidden a real violation in it. One link is pinned rather than
+  assumed: every third-party module in the closure must be a declared runtime
+  dependency of the package, so `pip install -e .` genuinely suffices — if
+  someone adds an import `pyproject.toml` does not declare, the test says so
+  instead of six jobs reddening one at a time. Also from the sweep, two
+  corrections of record rather than behaviour: `red-head-round-smoke.yml`'s
+  `psutil` step carried the comment "pytest cannot even collect without it",
+  a premise that stopped being load-bearing when that call gained
+  `--noconftest` (kept as belt and braces, premise corrected so the next
+  author does not copy a false claim); and round 2's entry in
+  `.github/required-checks.txt` had been spliced into the middle of the
+  `restart-wait` comment, leaving both gates' rationale unreadable. Number
+  from `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1`
+  — run, not eyeballed.
+  Source: #4192; related #4193, #4195; extends **D-006**, **D-066**,
+  **D-069**, **D-070**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

@@ -44,6 +44,28 @@ name: Pipefail Pipeline Smoke
 # The path filter is wide on purpose. The guard's claim is about the whole
 # gate surface, so a PR touching any workflow or any shell script is exactly
 # the PR on which the claim could stop being true.
+#
+# ---------------------------------------------------------------------------
+# The second job answers the sibling question, on the same surface and the
+# same filter (#4192, review round 3):
+#
+#   "Can a job that runs pytest COLLECT what it runs -- or does the check
+#    report the runner's installed package set instead of the head?"
+#
+# `pipeline-readers-drain` itself is the defect that filed it. Added as a
+# [required] check by the previous round, it installed `pyyaml pytest` and ran
+# `pytest tests/unit/test_sigpipe_pipeline_guard.py`, which loads the ROOT
+# `tests/conftest.py` -> `tests/log_guard.py` -> `psutil`. It died at
+# collection with exit 4 and went red on a head that was fine, which took the
+# PR to a hand-back and then to an owner escalation. Same class as everything
+# else on this issue: a required check whose colour was not evidence about the
+# commit.
+#
+# The decision it got wrong is made independently in 15 jobs across 11
+# workflows, three different ways (package install / `--noconftest` / an
+# explicit module list). `pytest_conftest_guard` is the one source that holds
+# all of them to one rule, derived from the conftest's own imports so there is
+# no restated dependency list to drift.
 
 on:
   push:
@@ -145,5 +167,78 @@ jobs:
 
       # The executed halves: the mechanism itself, and the two repaired steps
       # run against a stub producer out of the workflow they ship in.
+      # `--noconftest`, and it is load-bearing: any target under `tests/`
+      # makes pytest load the ROOT `tests/conftest.py`, whose import closure
+      # reaches `tests/log_guard.py` and therefore `psutil`. With the minimal
+      # install above, this step died at collection with exit 4
+      # (`ModuleNotFoundError: No module named 'psutil'`) and took the whole
+      # required check red on a green head -- this gate's own failure mode,
+      # arriving through the gate that enforces it. This suite needs no app
+      # import: it inserts its own `sys.path` entry for the guard module and
+      # uses only `tmp_path` and its own fixtures. `pytest_conftest_guard`
+      # now holds every pytest-running job in the repository to that choice.
       - name: The repaired steps, executed, in both directions
-        run: python -m pytest tests/unit/test_sigpipe_pipeline_guard.py -v
+        run: |
+          python -m pytest -q -p no:cacheprovider --noconftest --no-header \
+            tests/unit/test_sigpipe_pipeline_guard.py
+
+  pytest-jobs-can-collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Same reasoning as the job above: the filter is wide, so a feature-branch
+    # push would duplicate the PR run that already covers the head.
+    if: github.event_name != 'push' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Deliberately the SAME minimal install that broke the sibling job --
+      # no `-e .`, no `psutil`. This job has to run in the environment the
+      # guard exists to police, which also means its own pytest step below
+      # must obey the rule it enforces.
+      - name: Install PyYAML and pytest
+        run: python -m pip install --quiet pyyaml pytest
+
+      - name: Every pytest job can collect what it runs
+        run: python scripts/agents/lib/pytest_conftest_guard.py
+
+      # A guard that cannot fail is not a guard (#3753, ledger D-006). Three
+      # plants, because the rule has one failure and TWO legitimate repairs,
+      # and reporting either repair as a violation would be the vacuous-gate
+      # defect from the other side. They are files under
+      # tests/fixtures/pytest_conftest_guard/ rather than heredocs: the guard
+      # reads `run:` bodies textually, so an inline plant would be scanned as
+      # part of this job -- and `installs-the-package.yml`'s `pip install -e .`
+      # would then exempt the whole planting job and hide a real violation in
+      # it. The unit test points at the same three files.
+      - name: Guard rejects a job that cannot collect, accepts both repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIXTURES=tests/fixtures/pytest_conftest_guard
+
+          if python scripts/agents/lib/pytest_conftest_guard.py "$FIXTURES/cannot-collect.yml"; then
+            echo "::error::the guard accepted a job that cannot collect -- it is not measuring anything"
+            exit 1
+          fi
+          echo "good: the uncollectable job was rejected"
+
+          python scripts/agents/lib/pytest_conftest_guard.py "$FIXTURES/skips-the-conftest.yml" \
+            || { echo "::error::the guard flagged a --noconftest job -- false positive"; exit 1; }
+          echo "good: --noconftest accepted"
+
+          python scripts/agents/lib/pytest_conftest_guard.py "$FIXTURES/installs-the-package.yml" \
+            || { echo "::error::the guard flagged an editable-install job -- false positive"; exit 1; }
+          echo "good: pip install -e . accepted"
+
+      # Obeys its own rule: --noconftest, because this suite needs no app
+      # import either. If that were wrong, the guard step above would say so.
+      - name: The guard's own assertions, and the closure it rests on
+        run: |
+          python -m pytest -q -p no:cacheprovider --noconftest --no-header \
+            tests/unit/test_pytest_conftest_guard.py

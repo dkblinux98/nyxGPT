@@ -202,21 +202,40 @@ acceptance-standard
 # guard against that filed as advisory is the same gap with a job attached to
 # it.
 The model backend, installed and pulled on real macOS
-# macos-brew-smoke.yml's `restart-wait` job (#4192). Required, and the only
-# pipefail-pipeline-smoke.yml (#4192, review round 2). Required, and
-# deliberately wide-filtered: it is the only thing standing between the gate
-# surface and a check whose colour is not evidence about the head. `brew
-# services list | grep -q "$KEG"` turned its own SUCCESS into a red required
-# check (run 38071858945) because `grep -q` left on the first match and brew's
-# next write took EPIPE, which `pipefail` reported as the pipeline's status;
-# the same head was green an hour before. The predicate form is worse and
-# silent -- `launchctl list | grep -q` reads a lost race as "not loaded", so
-# the step skips the half it exists to prove and then passes on a service that
-# survived. This job runs the mechanism, both repaired steps against a stub
-# producer that loses the race on purpose, and the tree-wide scan. A red one
-# means a gate somewhere can now go red (or quietly pass) for a reason that
-# has nothing to do with the commit.
+# pipefail-pipeline-smoke.yml's `pipeline-readers-drain` job (#4192, review
+# round 2). Required, and deliberately wide-filtered: it is the only thing
+# standing between the gate surface and a check whose colour is not evidence
+# about the head. `brew services list | grep -q "$KEG"` turned its own SUCCESS
+# into a red required check (run 38071858945) because `grep -q` left on the
+# first match and brew's next write took EPIPE, which `pipefail` reported as
+# the pipeline's status; the same head was green an hour before. The predicate
+# form is worse and silent -- `launchctl list | grep -q` reads a lost race as
+# "not loaded", so the step skips the half it exists to prove and then passes
+# on a service that survived. This job runs the mechanism, both repaired steps
+# against a stub producer that loses the race on purpose, and the tree-wide
+# scan. A red one means a gate somewhere can now go red (or quietly pass) for
+# a reason that has nothing to do with the commit.
 pipeline-readers-drain
+# pipefail-pipeline-smoke.yml's `pytest-jobs-can-collect` job (#4192, review
+# round 3), and the job above is the defect that filed it. Added as a required
+# check by round 2, `pipeline-readers-drain` installed `pyyaml pytest` and ran
+# `pytest tests/unit/...`, which loads the ROOT `tests/conftest.py` ->
+# `tests/log_guard.py` -> `psutil`. It exited 4 at COLLECTION -- a usage
+# error, not a test failure -- so the check was red with every assertion it
+# exists for untested, on a head that was fine. That took the PR to a
+# hand-back and then to an owner escalation.
+#
+# Fifteen jobs across eleven workflows make this same decision, three
+# different ways, and nothing on the tree checked any of them. This job holds
+# all of them to one rule -- a pytest call that loads the root conftest needs
+# `pip install -e .`, or it says `--noconftest` -- derived from the conftest's
+# own imports, so there is no restated dependency list to drift. Required
+# because the failure it prevents is precisely a red required check that says
+# nothing about the commit, which is the state this whole issue was filed
+# from; and cheap, because it is the same wide path filter as its sibling and
+# runs in about a minute on ubuntu-latest.
+pytest-jobs-can-collect
+# macos-brew-smoke.yml's `restart-wait` job (#4192). Required, and the only
 # job in that workflow that does not run on a Mac -- which is the point. The
 # `keg-install` step driving #4043's self-restart failed on 9 of its last 10
 # PR runs because it sampled the api's pid one second after an endpoint that
