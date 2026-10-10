@@ -41,6 +41,25 @@ names, and answers:
 `failed` wins over `pending`: one concluded failure decides the head without
 waiting for the rest.
 
+### The `failed` row was switched off for six weeks (#4192)
+
+Between 2026-08-26 and 2026-10-10 the review workflow's `head-gate` job decided
+`proceed` on `failed` under a temporary owner rule, passing the failing check
+names into the review prompt as an observation instead of refusing. The rule
+was scoped "REVERT AFTER #4034"; #4034 merged on 2026-09-30 and nothing
+reverted it, because the one suite that measured the decision
+(`tests/test_reviewable_head_gate.sh`) had been changed to assert the temporary
+answer. Red heads merged for ten days, ending with PR #4191 landing three red
+required checks on `v3.0.1`.
+
+Two things changed so a pause cannot go quiet again: the suite pins `failed` as
+the decision **and** as reachable from the `head-not-reviewable` job that acts
+on it, and the submission side's refusal classifies deterministically (the
+overload signature used to match a bare `529` in a head SHA — see
+`classify_error`). The lesson is the general one: **a gate switched off needs a
+test that goes red while it is off**, or the revert depends on someone
+remembering.
+
 ### The refusal continues the round, and that takes a file
 
 Exiting 3 with a clear sentence on stderr does not, by itself, deliver "the

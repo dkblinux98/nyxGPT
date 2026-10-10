@@ -2689,6 +2689,60 @@ rather than mechanism, and nothing can enforce them.
   **D-066**, **D-067**; `docs/cloud.md` § "Every row is AWS's answer or is
   labelled as not being one".
 
+- **D-069** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
+  that measures something other than the behaviour, is not a gate — and the
+  revert of a temporary rule is owed a test that is RED while the rule is in
+  force.** The owner's instruction was to make `v3.0.1`'s required set
+  trustworthy before cutting `3.0.1rc2`; what the four failures had in common
+  is that each one's *measurement* was wrong, not (in three cases) the thing
+  measured. **(a) The red-head review block is restored.** The
+  `claude-code-review.yml` `head-gate` `failed)` arm decided `proceed` from
+  2026-08-26 under a rule scoped "REVERT AFTER #4034"; #4034 merged
+  2026-09-30, nothing reverted it, and the one suite that could have noticed
+  had been edited to assert the temporary answer — so red heads merged for ten
+  days, ending with PR #4191 landing three red required checks on the release
+  branch. `tests/test_reviewable_head_gate.sh` now pins `failed` as the
+  decision *and* as reachable from the `head-not-reviewable` job that acts on
+  it. **(b) An error signature matches a signal, never a substring.**
+  `classify_error`'s `529|[Oo]verloaded` sat above the red-head signature and
+  matched the bare digits `529` anywhere, so one refusal classified
+  `retriable:ci_red` or `retriable:api_overloaded` according to its head SHA.
+  `529` is now matched only where the text says it is a status; the sweep found
+  the same defect in the FATAL `PR.*merged` arm (co-occurrence, not assertion)
+  and bounded every remaining wildcard; a property test runs every signature
+  in the function against identifier-only text. **(c) A gate asserts the
+  behaviour, not the string that implements it.** Branch Guard Smoke grepped
+  `developer_auto_implement.yml` for the parameter expansion that used to
+  rewrite `Refs` → `Closes`; #4184 moved it into `rescue_pr.py promote` and
+  improved it, and the gate went red on every run for two days. It now *runs*
+  the promotion, and `branch-guard-smoke.yml`'s path filter names the helper.
+  **(d) An asynchronous operation must be waited for, not sampled.**
+  `macos-brew-smoke.yml`'s #4043 step read the api's pid one second after
+  `POST /infra/restart-required`, which answers `{"status":"scheduled"}` by
+  design (`threading.Timer(0.5, …)`, then an asynchronous `launchctl kickstart
+  -k`): `up` returned instantly against the *old* process, so the step
+  reported `pid=23672 (was 23672)` on 9 of its last 10 runs — a restart that
+  had not happened yet, reported as one that did not happen. The pid change is
+  now the wait condition. The issue's own diagnosis of this one (a pip call on
+  the `nyxgpt-web` install path reaching Apple's trust store) did **not**
+  hold: the `simple/pip/` + `OSStatus -26276` lines in those logs are step 8's
+  deliberate negative control, step 18 passed on all five cited runs, and
+  `validate_pip_sandbox_flags` (#4122, D-057) already covers all four formula
+  files on every PR. **Diagnose from the run, not from the issue** — the
+  grep that found the signature found the fault injection that prints it. The
+  sweep did harden that guard where it was *narrower than its own rule*: the
+  install-block scan ended at a marker only the api formula contains, and the
+  pip detector matched `pip` and `*/pip` but not `pip3`/`pip3.12`.
+  Executed evidence: `tests/test_reviewable_head_gate.sh`,
+  `tests/test_ensure_pr_exists.sh` (Branch Guard Smoke),
+  `tests/unit/test_failure_classification.py`,
+  `tests/unit/test_brew_pip_sandbox_trust.py`, and `macos-brew-smoke`'s
+  `keg-install` job twice on this PR. Number from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
+  run, not eyeballed.
+  Source: #4192; related #4184, #4191, #4179, #4122, #4043, #4034, #3995,
+  #3971; extends **D-006**, **D-057**, **D-066**, **D-067**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

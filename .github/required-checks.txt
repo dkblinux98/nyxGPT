@@ -244,6 +244,19 @@ The model backend, installed and pulled on real macOS
 #
 #   The bar to flip it stands as written above: green twice in a row on
 #   unrelated PRs.
+#
+# WHY IT WAS RED THROUGH 2026-10-10, diagnosed on #4192 and recorded because
+# "failing at a different step each time" above was the reason it is advisory
+# and that reason had never been examined: the last ten PR runs all failed at
+# the SAME step, `The api restarts itself when the UI asks it to (#4043)`, and
+# the defect was in the step rather than in the keg. It read the api's pid one
+# second after `POST /infra/restart-required`, which answers
+# `{"status":"scheduled"}` by design, so `up` returned against the process
+# that had not been replaced yet. The pid change is the wait condition now.
+# That is one cause removed, not the whole history; the bar above is unchanged
+# and this job stays advisory until it is met on unrelated PRs, because
+# flipping a gate on two passes of the PR that touched it is the trade this
+# section already refused once.
 Install the working tree's formulas
 
 # The review's own runs, including the gate itself. Requiring any of them
