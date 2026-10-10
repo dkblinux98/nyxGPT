@@ -11,8 +11,8 @@ Why it exists: the rc9 cloud round found five serial defects in the EC2
 install path (#3759 artifact-relative paths, #3760 docker, #3761 npm, #3762
 subprocess output, #3782 the 3.9 venv), each one masking the next because the
 bootstrap aborts at its first failure. `linux-native-smoke.yml` structurally
-cannot see any of them: it runs on ubuntu-latest with Python 3.11 and Node 20
-already installed by setup actions, and installs nyxGPT *editable from the
+cannot see any of them: it runs on ubuntu-latest with Python 3.11 and the
+declared Node already installed by setup actions, and installs nyxGPT *editable from the
 checkout*. That is the D-006 "green by luck" condition -- a machine groomed to
 never hit the failures the smoke is supposed to catch.
 
@@ -95,7 +95,7 @@ BOOTSTRAP_PATH = f"{STAGING_DIR}/nyxgpt-bootstrap.sh"
 ARTIFACT_DIR = f"{STAGING_DIR}/artifacts"
 
 # Default budgets, in seconds. The bootstrap is the long pole by an order of
-# magnitude: dnf, a Node 20 install, an Ollama download, `npm ci` + a Next.js
+# magnitude: dnf, a Node install, an Ollama download, `npm ci` + a Next.js
 # build, and a Cassandra container all happen inside it.
 DEFAULT_BOOTSTRAP_TIMEOUT = 2400.0
 DEFAULT_BUILD_TIMEOUT = 900.0
@@ -183,7 +183,7 @@ FAULTS: dict[str, Fault] = {
     ),
     "no-node": Fault(
         description=(
-            "Drop the Node 20 provisioning, reintroducing the #3761 class: "
+            "Drop the Node provisioning, reintroducing the #3761 class: "
             "`ops install` reaches the web build with no `npm` on the machine."
         ),
         expects="node-provisioning",
@@ -574,7 +574,7 @@ _FAILURE_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     (
         "node-provisioning",
         r"npm: command not found|node: command not found|npm ci|Node\.js version",
-        "node provisioning: the web build ran without a usable Node 20 (the #3761 class)",
+        "node provisioning: the web build ran without a usable Node (the #3761 class)",
     ),
     (
         "docker-handling",

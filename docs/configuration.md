@@ -708,24 +708,26 @@ Configurable templates control how retrieved context is presented to the LLM. Us
 Absolute paths for operational components. The setup wizard (`nyxgpt wizard`,
 also run automatically by `nyxgpt ops install` on a fresh machine) fills these
 in automatically from the running environment — the repository checkout it
-runs from, the active Python interpreter, and `node`/`npm` found on `PATH`
-(falling back to the standard Homebrew locations). The values below are
-illustrative.
+runs from, the active Python interpreter, and the Node toolchain nyxGPT
+declares ([The declared Node.js version](ops.md#the-declared-nodejs-version)).
+On macOS that is the **versioned** `node@NN` Homebrew keg, not the unversioned
+`node` on `PATH`, so a `brew upgrade node` does not rewrite what these point
+at (#4194). The values below are illustrative.
 
 ```ini
 [paths]
 repo_dir = /path/to/nyxGPT
 venv_python = /path/to/nyxGPT/.venv/bin/python
-node_bin = /opt/homebrew/bin/node
-npm_bin = /opt/homebrew/bin/npm
+node_bin = /opt/homebrew/opt/node@24/bin/node
+npm_bin = /opt/homebrew/opt/node@24/bin/npm
 ```
 
 | Key | Description |
 |---|---|
 | `repo_dir` | Absolute path to the nyxGPT repository |
 | `venv_python` | Path to the Python executable in the project venv |
-| `node_bin` | Path to Node.js executable |
-| `npm_bin` | Path to npm executable |
+| `node_bin` | Path to the declared Node.js executable (the versioned Homebrew keg on macOS) |
+| `npm_bin` | Path to the matching npm |
 
 ---
 

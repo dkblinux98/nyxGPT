@@ -1354,29 +1354,36 @@ nyxgpt up
    nyxgpt ops doctor
    ```
 
-### Node.js not found (Web UI)
+### Node.js missing, or the wrong version (Web UI)
 
-**Symptom**: Web UI logs show "node: command not found"
+**Symptom**: Web UI logs show `node: command not found`, or `nyxgpt ops
+doctor` reports that the Node on this host is not the one nyxGPT declares.
 
-**Solutions**:
+The formula depends on the **versioned** keg (`node@NN`, for the major in
+`.nvmrc` — see
+[The declared Node.js version](ops.md#the-declared-nodejs-version)) and finds
+it via `Formula["node@NN"]`, not via `[paths]` in config.ini and not via
+`PATH`. That is deliberate: `node@NN` is keg-only, so Homebrew does not link
+it into `$(brew --prefix)/bin`, and `brew upgrade node` — which moves the
+*unversioned* formula to whatever major homebrew-core has reached — cannot
+change what the web service runs (#4194).
 
-1. Verify Node.js is installed via Homebrew (the `nyxgpt-web` formula
-   `depends_on "node"` and finds it via `Formula["node"]`, not `[paths]` in
-   config.ini):
-   ```bash
-   brew list node
-   ```
+**Solution**: one wrapped command reports and repairs it.
 
-2. Reinstall the `node` formula if it's missing, then reinstall `nyxgpt-web`:
-   ```bash
-   brew install node
-   nyxgpt ops install
-   ```
+```bash
+nyxgpt ops node
+```
 
-3. Restart web service:
-   ```bash
-   brew services restart nyxgpt-web
-   ```
+It prints the declared major, what this host resolved, and installs the
+versioned keg if that is missing or wrong. Then restart the service:
+
+```bash
+nyxgpt ops restart web
+```
+
+`nyxgpt ops status` prints the resolved Node on every run, and the SRE
+dashboard's Infrastructure page shows the same value — so "is the web tier on
+the right Node?" is answerable without a terminal.
 
 ---
 

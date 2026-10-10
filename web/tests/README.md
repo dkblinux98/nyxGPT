@@ -72,12 +72,18 @@ export const handlers = [
 ## Node Version Compatibility
 
 **Current Configuration:**
-- Node v20.11.1 (system version)
-- happy-dom v20.x (compatible with Node 20.11.1)
+- Node — the major declared in `.nvmrc`, the same one CI, the container image
+  and the Homebrew keg use ([The declared Node.js version](../../docs/ops.md#the-declared-nodejs-version)).
+  Not "the system version": `engines` in `web/package.json` pins it and
+  `engine-strict=true` in `web/.npmrc` makes `npm install` refuse any other,
+  so the suite cannot be run on a Node the bundle was not built with (#4194).
+- happy-dom v20.x
 - Vitest v4.x
 - React Testing Library v16.x
 
-**Note:** Some packages (Vite, @vitejs/plugin-react) show engine warnings but work correctly with Node 20.11.1. Future updates may require Node 20.19.0+.
+**Note:** engine warnings from a transitive package are no longer something to
+work around here — a mismatch against the declared major is a hard failure, and
+`nyxgpt ops node` installs the right one.
 
 ## Known Limitations
 
