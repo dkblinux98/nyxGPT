@@ -2754,6 +2754,43 @@ rather than mechanism, and nothing can enforce them.
   `tests/unit/test_board_sweeps_are_dispatch_driven.py`;
   `.github/workflows/acceptance-sweep-dispatch-smoke.yml`.
 
+- **D-071** · 2026-10-21 · developer-agent (#4204) — **"Is this issue
+  accepted?" is answered in one place, and `Done` is accepted.**
+  `scripts/agents/lib/acceptance_status.py` holds the vocabulary; four
+  callers used to each carry their own hard-coded list of Status values and
+  **`Done` was on none of them** — `promote_accepted_features.sh` (blocker
+  must be exactly `For Release`), `sweep_parked_blocked_issues()` (CLOSED and
+  `Acceptance Testing`/`For Release`), `drain_gate.py`'s `sprint_unreleased`,
+  and `sprint_calc.py`'s `sprint_park_state`. `Done` is a lane **the loop
+  writes itself** (`release_ceremony.sh` Phase 3 close-out), so an issue that
+  was accepted and then *released* read as "not accepted yet" — and
+  permanently, since nothing moves an issue back out of `Done`: anything
+  parked behind such a blocker was unpromotable forever, the reachable shape
+  being a reopened original (**D-042**) whose blocker is released under
+  another milestone or none. **Two NAMED predicates, not an ordering over
+  lanes**: `is_accepted` (`For Release`, `Done`) and
+  `has_reached_acceptance` (adds `Acceptance Testing` — the
+  "Acceptance Testing or beyond" the review runbook always described).
+  `Acceptance Failed` is in neither, deliberately: it is "beyond"
+  `Acceptance Testing` in board order, but work is still owed on both
+  populations parked there (**D-008**/#3780, **D-042**), and an ordering
+  would have made it count as a completed blocker. The *writer* is part of
+  the fix — Phase 3 now sets `$STATUS_DONE` (a config key with a literal
+  default, like its three siblings) rather than a bare `"Done"`, so writer
+  and readers cannot drift apart again. Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4204 (found by #4201's class sweep, filed out of class per
+  **D-067**); applies **D-066**; `tests/unit/test_acceptance_status.py` is
+  the enforcement — it fails the build if any script compares a Status value
+  to decide acceptance on its own or writes `Done` as a bare literal (the
+  #4174 lesson: a rule with no check is not a rule);
+  `tests/test_promote_accepted_features.sh` and `tests/test_gh_project_lib.sh`
+  carry the before/after cases; `docs/acceptance-drain-gate.md` →
+  "What 'accepted' means". Corrects, as falsified prose, `AGENTS.md` and
+  `docs/how-this-project-is-run.md`, both of which named `Closed` as the
+  released lane — `Closed` is a merged PR's card (#3742), never an issue's.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

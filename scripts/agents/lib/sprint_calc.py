@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from acceptance_status import is_accepted  # noqa: E402
 from parked_resume import build_gate_lines  # noqa: E402
 
 _PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -113,7 +114,7 @@ def autopilot_decision(remaining_open_backlog: int) -> str:
 PARK_CONTINUE = "continue"  # eligible Backlog work left -- kick, don't park
 PARK_WORK_IN_FLIGHT = "work_in_flight"  # Backlog empty, but issues still open
 PARK_AWAITING_ACCEPTANCE = "awaiting_acceptance"  # all closed, not all accepted
-PARK_SPRINT_COMPLETE = "sprint_complete"  # every item accepted to For Release
+PARK_SPRINT_COMPLETE = "sprint_complete"  # every item accepted (For Release / Done)
 PARK_EMPTY = "empty"  # no items in the sprint at all
 
 
@@ -125,6 +126,13 @@ def sprint_park_state(payload: dict[str, Any]) -> dict[str, Any]:
                           active sprint's OPEN and CLOSED issues
       status_backlog      the Backlog status value (default "Backlog")
       status_for_release  the For Release status value (default "For Release")
+      status_done         the ceremony's close-out status (default "Done")
+
+    "Accepted" is asked of `acceptance_status.is_accepted`, the one
+    vocabulary (#4204), rather than compared against `status_for_release`
+    here. It used to be the latter, which left a sprint whose issues the
+    release ceremony had moved to `Done` reporting `awaiting_acceptance`
+    forever -- nothing moves an issue back out of `Done`.
 
     Returns the state plus the numbers behind it, so the caller can report
     what it is parked in front of instead of just announcing a verdict.
@@ -136,13 +144,21 @@ def sprint_park_state(payload: dict[str, Any]) -> dict[str, Any]:
         str(k): [int(n) for n in v] for k, v in (payload.get("closed") or {}).items()
     }
     status_backlog = payload.get("status_backlog") or "Backlog"
-    status_for_release = payload.get("status_for_release") or "For Release"
+    # The status NAMES travel in the payload (the shell resolves them from
+    # config), so they are handed to the vocabulary as overrides rather than
+    # read from this process's environment.
+    overrides = {
+        "STATUS_FOR_RELEASE": str(payload.get("status_for_release") or ""),
+        "STATUS_DONE": str(payload.get("status_done") or ""),
+    }
 
     backlog_open = len(open_by_status.get(status_backlog, []))
     open_total = sum(len(v) for v in open_by_status.values())
-    accepted = sorted(closed_by_status.get(status_for_release, []))
+    accepted = sorted(
+        n for s, nums in closed_by_status.items() if is_accepted(s, overrides) for n in nums
+    )
     awaiting_acceptance = sorted(
-        n for s, nums in closed_by_status.items() if s != status_for_release for n in nums
+        n for s, nums in closed_by_status.items() if not is_accepted(s, overrides) for n in nums
     )
     closed_total = len(accepted) + len(awaiting_acceptance)
 
@@ -262,8 +278,9 @@ def _park_headline(event_phrase: str, sprint_title: str, park_state: dict[str, A
         accepted = [int(n) for n in (park_state.get("accepted") or [])]
         lines.append(
             f"✅ **Sprint Autopilot — sprint complete**: {event_phrase}. Every item in "
-            f'**"{sprint_title}"** has been accepted by the owner and is in **For '
-            f"Release** ({len(accepted)} item(s): {_issue_list(accepted)})."
+            f'**"{sprint_title}"** has been accepted by the owner — **For Release**, or '
+            f"**Done** where the release ceremony has already closed it out "
+            f"({len(accepted)} item(s): {_issue_list(accepted)})."
         )
         lines.append("")
         lines.append(

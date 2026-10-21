@@ -81,7 +81,7 @@ park note says which one:
 | `continue` | open Backlog work remains -- kick, don't park |
 | `work_in_flight` | Backlog empty, but issues are still open (In Progress / In Review) |
 | `awaiting_acceptance` | every item closed, not all accepted: "agentic work complete; awaiting owner acceptance" |
-| `sprint_complete` | every item accepted and in **For Release** |
+| `sprint_complete` | every item accepted — **For Release**, or **Done** once the release ceremony closed its milestone out (#4204) |
 | `empty` | the sprint has no items |
 
 **Owner definition (2026-08-10, #3709):** *"The sprint isn't done until all
