@@ -4548,8 +4548,28 @@ head_check_runs() {
           | "\(.name)=\(if .status != "completed" then "pending" else (.conclusion // "pending") end)"'
 }
 
-# "<name>=<url>" for every check run on a commit -- where to GO to read why it
-# failed (#4179).
+# check_conclusion_is_failure <conclusion>
+#
+# THE one place that decides whether a check-run conclusion means the gate did
+# not pass. `required_check_state` reads it to classify the head and
+# `red_head_check_lines` reads it to pick WHICH run to cite; a second copy of
+# this list is how the two would come to disagree about one check (D-066).
+#
+# `cancelled` counts as failure: the gate it stood for did not pass, and the
+# only routine cancellation here (concurrency, newest-wins) changes the head
+# SHA, so it is not this head's answer.
+#
+# `success`, `neutral` and `skipped` are not failures. A skipped job is a path
+# filter or an `if:` having decided the job does not apply.
+check_conclusion_is_failure() {
+  case "${1:-}" in
+    failure | timed_out | cancelled | action_required | startup_failure | stale) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# "<name>\t<conclusion>\t<url>" for every check run on a commit -- where to GO
+# to read why it failed (#4179).
 #
 # A separate function and a separate call rather than a fourth line on
 # `required_check_state`: this is only ever wanted on the red path (a refusal,
@@ -4558,11 +4578,31 @@ head_check_runs() {
 # its three-line output is a pinned contract. Never fails the caller -- a URL
 # is a convenience on a failure path, and the check's NAME is the part that
 # matters.
+#
+# THE CONCLUSION IS CARRIED, not just the URL, because a check NAME is not
+# unique on a head (#4192). GitHub attaches the `push` run's check runs and the
+# `pull_request` run's check runs to the same commit, so a workflow that
+# triggers on both reports twice under one name -- and the two can disagree:
+# on PR #4193's head `fd2247c4`, `security-scan` was `skipped` (push, path
+# filter) and `failure` (pull_request). This function used to emit `name=url`
+# and the caller took the first match, so the refusal pointed the next round at
+# the SKIPPED run, whose log is empty. `required_check_state` was right about
+# which check failed and the brief was wrong about where to read it, which is
+# the same defect this issue is about one level down: the report was not
+# evidence.
+#
+# Tab-separated, not `=`-separated: a check-run URL may legitimately contain
+# `=` in a query string, and splitting a three-field record on it needs the
+# caller to count separators.
 head_check_links() {
   local sha="$1"
   require_cmd gh
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${sha}/check-runs" --paginate \
-    --jq '.check_runs[] | "\(.name)=\(.html_url // .details_url // "")"' 2>/dev/null || return 0
+    --jq '.check_runs[]
+          | [.name,
+             (if .status != "completed" then "pending" else (.conclusion // "pending") end),
+             (.html_url // .details_url // "")]
+          | @tsv' 2>/dev/null || return 0
 }
 
 # red_head_check_lines <sha> <failed_names_csv>
@@ -4582,6 +4622,11 @@ head_check_links() {
 # The URL is best effort. A failing check with no readable URL still gets its
 # line, because "which check" is the cause and "where to read it" is the
 # convenience.
+#
+# When a name appears more than once on the head -- routine, see
+# `head_check_links` -- the FAILING run's URL wins. Falling back to any run
+# with a URL keeps the old best-effort behaviour for the case where the name
+# failed but GitHub gave no link for that particular run.
 red_head_check_lines() {
   local sha="${1:-}" failed_csv="${2:-}"
   [[ -n "$failed_csv" ]] || return 0
@@ -4595,13 +4640,30 @@ red_head_check_lines() {
     [[ -n "$name" ]] || continue
     url=""
     if [[ -n "$links" ]]; then
-      # Split on the FIRST `=` only: a check-run URL may legitimately carry
-      # one in a query string, and `-F=` would truncate it there.
-      url="$(printf '%s\n' "$links" \
-        | awk -v n="$name" 'index($0, n "=") == 1 { u = substr($0, length(n) + 2); if (u != "") { print u; exit } }')"
+      url="$(_red_head_check_url "$name" "$links")"
     fi
     printf 'red-head-check: %s%s\n' "$name" "${url:+ $url}"
   done
+  return 0
+}
+
+# _red_head_check_url <name> <links>
+#
+# The URL to cite for one failing check name, given `head_check_links` output.
+# A run whose conclusion `check_conclusion_is_failure` accepts wins; otherwise
+# the first run of that name that has a URL at all.
+_red_head_check_url() {
+  local want="${1:-}" links="${2:-}" row_name row_concl row_url fallback=""
+  while IFS=$'\t' read -r row_name row_concl row_url; do
+    [[ "$row_name" == "$want" ]] || continue
+    [[ -n "$row_url" ]] || continue
+    if check_conclusion_is_failure "$row_concl"; then
+      printf '%s\n' "$row_url"
+      return 0
+    fi
+    [[ -n "$fallback" ]] || fallback="$row_url"
+  done <<< "$links"
+  [[ -n "$fallback" ]] && printf '%s\n' "$fallback"
   return 0
 }
 
@@ -4650,20 +4712,15 @@ required_check_state() {
     concl="${line##*=}"
     printf '%s\n' "$names" | grep -Fx -- "$name" >/dev/null || continue
     present=$((present + 1))
-    case "$concl" in
-      # `cancelled` counts as failure: the gate it stood for did not pass, and
-      # the only routine cancellation here (concurrency, newest-wins) changes
-      # the head SHA, so it is not this head's answer.
-      failure|timed_out|cancelled|action_required|startup_failure|stale)
-        [[ ",$failed," == *",$name,"* ]] || failed="${failed:+$failed,}$name"
-        ;;
-      pending)
-        [[ ",$pending," == *",$name,"* ]] || pending="${pending:+$pending,}$name"
-        ;;
-      # success / neutral / skipped: a skipped job is a path filter or an `if:`
-      # having decided the job does not apply, which is not a failure.
-      *) ;;
-    esac
+    # `check_conclusion_is_failure` is the single source for this list -- see
+    # its comment. `failed` wins over `pending` for the same name, which is
+    # what makes a head with two runs of one name (push + pull_request) answer
+    # on the one that failed.
+    if check_conclusion_is_failure "$concl"; then
+      [[ ",$failed," == *",$name,"* ]] || failed="${failed:+$failed,}$name"
+    elif [[ "$concl" == "pending" ]]; then
+      [[ ",$pending," == *",$name,"* ]] || pending="${pending:+$pending,}$name"
+    fi
   done <<< "$runs"
 
   local state

@@ -18,19 +18,50 @@ the diagnostic is then *absent*. Without that second half the check would be
 green on any build, fixed or not -- the #3753 lesson: a job that only runs the
 happy path passes on every machine that fails to reproduce the bug.
 
+A third section (#4192) answers the other half of the same question: when the
+output is too long to carry whole, does the excerpt still contain the
+diagnosis? `_bounded_output` rescues "salient" lines out of the elided middle
+for exactly that reason (#3861), and until 2026-10-21 it looked for the keyword
+at the START of the line -- which no real producer writes, because the output
+has already been labelled by whatever wrapped it (BuildKit's `#23 90.52 `,
+npm's own `npm `). So the rescue was vacuous on every tool ops shells out to,
+with every test green, because the tests supplied their own column-0 fixtures.
+This section runs the real bytes of a real failed `docker build` (captured in
+`tests/fixtures/bounded_output/`, see its README) through the real excerpt, and
+fault-injects the retired anchored pattern to prove the check is not vacuous
+either.
+
 Usage: python3 scripts/ops-subprocess-output-smoke.py
-Exit 0 = both halves held.
+Exit 0 = all three sections held.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from nyxgpt import ops
+
+#: The real `docker build` -> `npm ci` network failure, captured by running it.
+_PREFIXED_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "bounded_output"
+    / "docker-build-npm-ci-network-failure.txt"
+)
+#: npm's own name for what went wrong, which is the line the excerpt must keep.
+_PREFIXED_MARKER = "npm error code"
+#: `_OUTPUT_EXCERPT_SALIENT_RE` as it stood before #4192: the same keywords,
+#: anchored to the start of the line. Injected, not described.
+_RETIRED_ANCHORED_SALIENT_RE = re.compile(
+    r"^\s*(?:error|warning|fatal|failed|exception|traceback)\b[: ]",
+    re.IGNORECASE,
+)
 
 # pip's refusal wording has been stable across many releases; match on the
 # part that is the actual diagnosis rather than on exact punctuation.
@@ -91,6 +122,82 @@ def _failure_lines(messages: list[str]) -> list[str]:
     return [m for m in messages if "Subprocess exited non-zero" in m]
 
 
+def _check_prefixed_producer_output() -> int:
+    """Section 3 (#4192): a long, line-prefixed failure still carries its cause.
+
+    Runs the captured `docker build` -> `npm ci` output through the real
+    `_bounded_output`, then injects the retired anchored pattern and requires
+    the cause to disappear. The second half is the point: with the anchor in
+    place this fixture rescues nothing at all, which is how the mechanism could
+    be shipped broken past a green suite.
+    """
+    raw = _PREFIXED_FIXTURE.read_text(encoding="utf-8")
+    lines = raw.strip().splitlines()
+    if len(lines) <= ops._OUTPUT_EXCERPT_VERBATIM_MAX_LINES:
+        print(
+            f"FAIL: the fixture is {len(lines)} lines, at or under the "
+            f"{ops._OUTPUT_EXCERPT_VERBATIM_MAX_LINES}-line verbatim floor -- "
+            "nothing would be elided, so this section would prove nothing"
+        )
+        return 1
+
+    # Which lines only the rescue can carry: salient, and not already kept by
+    # the head/tail window. Derived from the module's own constants so a
+    # recapture of the fixture (different step numbers, different elapsed
+    # times) cannot turn this into a test of two hardcoded strings.
+    head, tail = ops._OUTPUT_EXCERPT_HEAD_LINES, ops._OUTPUT_EXCERPT_TAIL_LINES
+    kept_anyway = set(lines[:head]) | set(lines[-tail:])
+    rescue_only = [
+        line
+        for line in lines[head : len(lines) - tail]
+        if line not in kept_anyway and _PREFIXED_MARKER in line
+    ]
+    if not rescue_only:
+        print(
+            f"FAIL: no {_PREFIXED_MARKER!r} line sits in the elided middle of this "
+            "fixture, so the rescue is not what is being measured -- recapture it"
+        )
+        return 1
+
+    excerpt = ops._bounded_output(raw)
+    if "lines omitted" not in excerpt:
+        print("FAIL: the fixture was not elided at all; the premise does not hold")
+        return 1
+    missing = [line for line in rescue_only if line not in excerpt]
+    if missing:
+        print("FAIL: the excerpt of a real build failure dropped the line naming its cause:")
+        for line in missing:
+            print(f"    {line}")
+        print("--- excerpt ---")
+        print(excerpt)
+        print("--- end ---")
+        return 1
+    print(
+        f"PASS: a {len(lines)}-line prefixed build failure still names its cause "
+        f"({len(rescue_only)} line(s) carried out of the elided middle)"
+    )
+
+    original = ops._OUTPUT_EXCERPT_SALIENT_RE
+    ops._OUTPUT_EXCERPT_SALIENT_RE = _RETIRED_ANCHORED_SALIENT_RE  # type: ignore[assignment]
+    try:
+        injected = ops._bounded_output(raw)
+    finally:
+        ops._OUTPUT_EXCERPT_SALIENT_RE = original  # type: ignore[assignment]
+
+    survived = [line for line in rescue_only if line in injected]
+    if survived:
+        print(
+            "FAIL: the cause survived the retired line-start anchor -- this "
+            "section proves nothing about the pattern"
+        )
+        return 1
+    if "error/warning line(s) among them follow" in injected:
+        print("FAIL: the retired anchor rescued something; the injection is not faithful")
+        return 1
+    print("PASS: anchored to the line start it rescues nothing at all (the #4192 defect)")
+    return 0
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
@@ -132,7 +239,7 @@ def main() -> int:
             return 1
         print("PASS: with the excerpt suppressed the refusal is invisible (the #3783 defect)")
 
-    return 0
+    return _check_prefixed_producer_output()
 
 
 if __name__ == "__main__":

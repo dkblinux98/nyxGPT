@@ -2866,6 +2866,59 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4193, #4195; extends **D-006**, **D-066**,
   **D-070**, **D-071**.
 
+- **D-073** · 2026-10-21 · developer (#4192, review round 4) — **When a gate
+  goes red, its report must name the cause and the run that produced it. Two
+  mechanisms built for exactly that were vacuous, both because a pattern was
+  anchored where real output is prefixed.** Found while diagnosing the two red
+  required checks on head `fd2247c4` — the diagnosis itself is the evidence.
+  (a) `terraform-local-smoke` failed inside
+  `nyxgpt ops install --terraform --dev` → `docker build nyxgpt-web` →
+  `npm ci`, and the failure log read `... [67 lines omitted] ...` with nothing
+  rescued. `_bounded_output`'s salient-line rescue (**#3861**, added because a
+  head+tail window had already cost two diagnosis rounds) matched
+  `^\s*(?:error|warning|fatal|...)` with `re.match`, so it only ever fired on
+  a line whose FIRST word is the keyword — and nothing `ops` shells out to
+  writes that way, because the output has already been labelled by whatever
+  wrapped it: BuildKit's `#23 90.52 `, npm's own `npm `, compose's
+  `service-1  | `, `kubectl logs --prefix`, `make[1]: `. The mechanism was
+  therefore switched off against every producer it was written for, with its
+  whole test suite green, because every one of those tests supplied a fixture
+  with the keyword at column 0 (`"error: 499"`). Measured on the real bytes of
+  the failing build — captured by running it, `tests/fixtures/bounded_output/`
+  — the retired pattern rescues **zero** lines from the elided middle, where
+  npm had put `npm error code <errno>` and `npm error syscall`. Now searched,
+  not anchored; the `\b…\b[: ]` shape is what keeps it from becoming "keep
+  everything", so `urllib.error.HTTPError`, `error_tracking_dsn` and
+  `ReleaseCandidateError(` are still not read as a tool reporting a failure.
+  Gated by the already-`[required]` `ops-subprocess-output` job, whose smoke
+  gained a third section running the real capture in both directions.
+  (b) The same round was handed a brief citing the WRONG RUN:
+  `security-scan https://…/runs/39671540833/job/119470454880` is the `skipped`
+  **push** run, whose log is empty; the failure was in the `pull_request` run
+  39671548060. **A check NAME is not unique on a head** — GitHub attaches both
+  events' check runs to the same commit, and on this head `security-scan` was
+  `skipped` and `failure` at once — and `red_head_check_lines` (**#4179**) took
+  the first match by name. `required_check_state` was right about which check
+  failed and the brief was wrong about where to read it: the report was not
+  evidence, one level down from the defect this issue is about.
+  `head_check_links` now carries the conclusion (`name\tconclusion\turl`) and
+  the failing run wins, falling back to any run with a URL. Per **D-066** the
+  conclusion list is extracted to one `check_conclusion_is_failure` that both
+  the classifier and the citation read, rather than a second copy in jq.
+  Fault-injected in `tests/test_red_head_round.sh` with the skipped row first,
+  as the API returned it: the retired first-match reader is executed and must
+  cite the skipped run. The two red checks themselves: `security-scan` was
+  `GHSA-587h-7wmj-h5pm` (HIGH, `vite <=7.3.6`) published against a pinned
+  version — the recurrence `web/audit-ci.jsonc` predicted, cleared by
+  `npm audit fix` to vite 7.3.7, no allowlist entry; `terraform-local-smoke`
+  was a transient registry failure, and the same `docker build` on the same
+  ref succeeds (exit 0) on a runner, so the fix owed here was to the reporting
+  and not to the build. Number from
+  `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run,
+  not eyeballed.
+  Source: #4192; related #4193, #3861, #4179, #3783; extends **D-070**,
+  **D-071**, **D-072**, **D-066**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

@@ -68,6 +68,27 @@
   // understood. `tests/unit/test_audit_ci_allowlist.py` fails the build on a
   // bare-ID entry for that reason.
   //
+  // It recurred again on 2026-10-21 (#4192), and that time the ORIGINAL
+  // remedy was the right one, so nothing was allowlisted:
+  //
+  //   GHSA-587h-7wmj-h5pm  launch-editor: an `fs.existsSync()` existence
+  //                        check can be bypassed on Windows. HIGH, filed
+  //                        against `vite`, range `>=7.0.0 <=7.3.6`, 7 paths.
+  //   vite@7.3.6           what the lock pinned; `npm view vite versions`
+  //                        shows 7.3.7 published, and every dependent
+  //                        (@vitejs/plugin-react, vitest, @vitest/mocker)
+  //                        already accepts `^7.0.0`.
+  //   npm audit fix        bumped vite 7.3.6 -> 7.3.7 in the lock alone,
+  //                        3 lines, no package.json edit, no major moves.
+  //                        `npm run audit:ci` then passes.
+  //
+  // Note which branch of this file's own advice applied: the recurrence was
+  // read as "check `npm audit` before looking for a culprit in the branch",
+  // and the branch was indeed innocent -- `security-scan` was red on PR #4193
+  // for an advisory published against a pinned version. That is the third
+  // sighting of this pattern and the second cleared by an upgrade; only the
+  // 2026-10-04 one had nothing to upgrade to.
+  //
   // REVISIT: drop both entries as soon as braces publishes a fixed release
   // (watch the advisory's `first_patched_version`), or when next-pwa and
   // eslint-config-next move off the fast-glob/micromatch chain. Neither entry

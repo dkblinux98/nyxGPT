@@ -384,9 +384,12 @@ _run_submit() {
   printf '%s\n' "$1" > "$TMP/check-runs.txt"
   # Where each check run can be READ (#4179). Written alongside the
   # conclusions so a refusal can name the check AND its run URL.
-  printf '%s\n' \
-    "k8s-artifact-smoke=https://github.com/test-owner/test-repo/actions/runs/777/job/888" \
-    "security-scan=" > "$TMP/check-run-links.txt"
+  # `name<TAB>conclusion<TAB>url` since #4192 -- the conclusion is carried
+  # because a name is not unique on a head.
+  printf '%s\t%s\t%s\n' \
+    "k8s-artifact-smoke" "failure" \
+    "https://github.com/test-owner/test-repo/actions/runs/777/job/888" \
+    "security-scan" "failure" "" > "$TMP/check-run-links.txt"
   shift
   # The stub cannot answer Projects v2 GraphQL, so the bookkeeping tail
   # (project hygiene, status, assignment) is not what these cases assert --

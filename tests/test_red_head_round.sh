@@ -279,14 +279,75 @@ _assert_contains "with a diagnosis the owner can act on" "$(_result)" "DIAGNOSIS
 echo "--- red_head_check_lines writes what the parser reads ---"
 
 head_check_links() {
-  printf '%s\n' \
-    "k3s-cloud-smoke=https://github.com/o/r/actions/runs/9/job/8" \
-    "security-scan="
+  printf '%s\t%s\t%s\n' \
+    "k3s-cloud-smoke" "failure" "https://github.com/o/r/actions/runs/9/job/8" \
+    "security-scan" "failure" ""
 }
 LINES="$(red_head_check_lines abc1234 "k3s-cloud-smoke,security-scan")"
 _assert_contains "the failing check carries its URL" "$LINES" \
   "red-head-check: k3s-cloud-smoke https://github.com/o/r/actions/runs/9/job/8"
 _assert_contains "a check with no URL still gets its line" "$LINES" "red-head-check: security-scan"
+
+# ---------------------------------------------------------------------------
+# A check NAME is not unique on a head (#4192).
+#
+# GitHub attaches the `push` run's check runs and the `pull_request` run's
+# check runs to the SAME commit, so a workflow triggering on both reports
+# twice under one name -- and the two disagree exactly when it matters. On PR
+# #4193's head `fd2247c4`, `security-scan` was `skipped` (push, path filter)
+# and `failure` (pull_request). The refusal cited the SKIPPED run, whose log
+# is empty, and the round that received the brief had to find the real run by
+# hand. `required_check_state` was right about WHICH check failed; the brief
+# was wrong about where to read it.
+#
+# The skipped row is deliberately FIRST, which is the order the API returned
+# it in on that head: a reader that takes the first match by name gets the
+# wrong answer, and one that asks for the failing run gets the right one.
+# ---------------------------------------------------------------------------
+echo "--- a duplicated check name cites the run that FAILED ---"
+
+head_check_links() {
+  printf '%s\t%s\t%s\n' \
+    "security-scan" "skipped" "https://github.com/o/r/actions/runs/1111/job/2222" \
+    "security-scan" "failure" "https://github.com/o/r/actions/runs/3333/job/4444"
+}
+DUP="$(red_head_check_lines fd2247c4 "security-scan")"
+_assert_contains "the failing run's URL is the one cited" "$DUP" \
+  "red-head-check: security-scan https://github.com/o/r/actions/runs/3333/job/4444"
+if grep -q "runs/1111" <<< "$DUP"; then
+  echo "FAIL: the brief cited the skipped run -- the #4192 defect"
+  exit 1
+fi
+echo "  ok: the skipped run is not cited"
+
+# Fault injection: the retired "first match by name" reader, run against the
+# same rows. Without this half the case above passes on any implementation
+# that happens to see the failing row first.
+_retired_first_match_url() {
+  printf '%s\n' "$2" | awk -v n="$1" -F'\t' '$1 == n && $3 != "" { print $3; exit }'
+}
+RETIRED="$(_retired_first_match_url security-scan "$(head_check_links)")"
+_assert_eq "the retired reader really does cite the skipped run" \
+  "https://github.com/o/r/actions/runs/1111/job/2222" "$RETIRED"
+
+# And the other half of the same head: `required_check_state` must call it
+# failed, not skipped, when one name carries both conclusions.
+head_check_runs() { printf 'security-scan=skipped\nsecurity-scan=failure\n'; }
+NYXGPT_REQUIRED_CHECKS_FILE="$ROOT_DIR/.github/required-checks.txt" \
+  _assert_eq "a name that is both skipped and failed is failed" "state=failed" \
+  "$(NYXGPT_REQUIRED_CHECKS_FILE="$ROOT_DIR/.github/required-checks.txt" \
+    required_check_state fd2247c4 | sed -n '1p')"
+unset -f head_check_runs
+
+# A name with only a non-failing run still gets its best-effort URL -- the
+# fallback is kept, because "which check" is the cause and the URL is the
+# convenience.
+head_check_links() {
+  printf '%s\t%s\t%s\n' "stamps" "skipped" "https://github.com/o/r/actions/runs/55/job/66"
+}
+_assert_contains "a non-failing run is still better than no URL" \
+  "$(red_head_check_lines fd2247c4 "stamps")" \
+  "red-head-check: stamps https://github.com/o/r/actions/runs/55/job/66"
 
 PARSED="$(printf '%s\n%s\n' "a red head is not reviewable" "$LINES" \
   | "$PYTHON" "$ROOT_DIR/scripts/agents/lib/escalation_evidence.py" red-head-checks)"
@@ -395,7 +456,8 @@ if [[ "$*" == *"/pulls/"*"head.sha"* ]]; then
 fi
 if [[ "$*" == *"/check-runs"* ]]; then
   if [[ "$*" == *html_url* ]]; then
-    echo "k3s-cloud-smoke=https://github.com/test-owner/test-repo/actions/runs/5/job/6"
+    printf '%s\t%s\t%s\n' "k3s-cloud-smoke" "failure" \
+      "https://github.com/test-owner/test-repo/actions/runs/5/job/6"
   else
     echo "security-scan=success"
     echo "k3s-cloud-smoke=failure"

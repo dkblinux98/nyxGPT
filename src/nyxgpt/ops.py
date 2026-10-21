@@ -1077,8 +1077,36 @@ _OUTPUT_EXCERPT_MAX_LINE_CHARS = 500
 # that say something went wrong, wherever they are, and to stay bounded by
 # capping how many of them are kept.
 _OUTPUT_EXCERPT_SALIENT_LINES = 12
+#
+# SEARCHED, NOT ANCHORED, and that distinction is the whole of the #4192 fix.
+# The pattern was `^\s*(?:...)` applied with `re.match`, so it only rescued a
+# line whose FIRST word is the keyword -- and almost nothing ops shells out to
+# writes that way, because the output has already passed through something that
+# labels its lines:
+#
+#   docker build (BuildKit)  `#23 90.52 npm error code EAI_AGAIN`
+#   npm                      `npm error request to ... failed, reason: ...`
+#   docker compose           `nyxgpt-api-1  | ERROR ...`
+#   kubectl logs --prefix    `[pod/nyxgpt-api-0/api] error ...`
+#   make                     `make[1]: *** Error 1`
+#
+# So on 2026-10-21 `terraform-local-smoke` went red on `docker build
+# nyxgpt-web`, the excerpt printed the BARE `... [67 lines omitted] ...` marker,
+# and the elided middle was where npm had put `npm error code <errno>` and
+# `npm error request to ... failed, reason: ...`. The mechanism written in
+# #3861 precisely so a diagnosis round would not be spent guessing was defeated
+# by a four-character prefix, and the round was spent guessing. (Measured
+# against the real bytes: `tests/fixtures/bounded_output/` -- the retired
+# anchored form rescues ZERO lines from them.)
+#
+# Searching anywhere on the line is bounded the same way it always was: by
+# `_OUTPUT_EXCERPT_SALIENT_LINES`, not by how early the keyword appears. The
+# `\b...\b[: ]` shape is what keeps it discriminating rather than "keep
+# everything" -- the keyword has to be a whole word used as a label, so
+# `urllib.error.HTTPError`, `error_tracking_dsn` and `ReleaseCandidateError(`
+# are not mistaken for a tool saying something went wrong.
 _OUTPUT_EXCERPT_SALIENT_RE = re.compile(
-    r"^\s*(?:error|warning|fatal|failed|exception|traceback)\b[: ]",
+    r"\b(?:error|warning|fatal|failed|exception|traceback)\b[: ]",
     re.IGNORECASE,
 )
 
@@ -1112,10 +1140,14 @@ def _bounded_output(text: str | None) -> str:
     Output no longer than `_OUTPUT_EXCERPT_VERBATIM_MAX_LINES` is kept whole,
     and up to `_OUTPUT_EXCERPT_SALIENT_LINES` lines from the elided middle of
     anything longer that looks like an error/warning are carried out with the
-    marker (the *last* such lines, which sit nearest the failure). The rescued
-    lines are labelled as coming from the omitted region and are still shown
-    in their original order, so nothing here can be misread as the end of the
-    output.
+    marker (the *last* such lines, which sit nearest the failure). "Looks like"
+    is decided ANYWHERE on the line, not at its start: what ops shells out to
+    is routinely wrapped by something that labels each line (BuildKit's `#23
+    90.52 `, compose's `service-1  | `, npm's own `npm `), and requiring the
+    keyword first is what made this rescue silently vacuous on exactly those
+    tools -- see `_OUTPUT_EXCERPT_SALIENT_RE`. The rescued lines are labelled
+    as coming from the omitted region and are still shown in their original
+    order, so nothing here can be misread as the end of the output.
     """
     if not text or not text.strip():
         return ""
@@ -1132,7 +1164,7 @@ def _bounded_output(text: str | None) -> str:
         return "\n".join(lines)
     omitted = len(lines) - head_and_tail
     middle = lines[_OUTPUT_EXCERPT_HEAD_LINES : len(lines) - _OUTPUT_EXCERPT_TAIL_LINES]
-    salient = [line for line in middle if _OUTPUT_EXCERPT_SALIENT_RE.match(line)]
+    salient = [line for line in middle if _OUTPUT_EXCERPT_SALIENT_RE.search(line)]
     salient = salient[-_OUTPUT_EXCERPT_SALIENT_LINES:] if salient else []
     marker = f"... [{omitted} lines omitted] ..."
     if salient:
