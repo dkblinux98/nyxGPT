@@ -56,7 +56,7 @@ DATA_BRANCH="${DATA_BRANCH:-claude/retro-data}"
 
 if [[ -z "${BASE_REF:-}" ]]; then
   BASE_REF="$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null \
-    | awk '$1 == "ref:" { sub("refs/heads/", "", $2); print $2; exit }')"
+    | awk '!v && $1 == "ref:" { sub("refs/heads/", "", $2); v=$2 } END { print v }')"
 fi
 [[ -n "$BASE_REF" ]] || _die "cannot resolve the base branch (set BASE_REF)"
 

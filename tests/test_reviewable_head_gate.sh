@@ -256,7 +256,7 @@ unset -f required_check_state sleep head_check_runs
 source "$ROOT_DIR/scripts/agents/lib/gh_project.sh"
 set +e
 
-REFUSAL="$(grep -h 'red head is not reviewable' "$ROOT_DIR/scripts/agents/developer_submit_for_review.sh" | head -1)"
+REFUSAL="$(grep -h 'red head is not reviewable' "$ROOT_DIR/scripts/agents/developer_submit_for_review.sh" | sed -n '1p')"
 _assert_contains "the submit script still prints the refusal sentence" "$REFUSAL" "red head is not reviewable"
 _assert_eq "and classify_error routes it to a developer round, not a hand-off" \
   "retriable:ci_red" "$(classify_error "$REFUSAL")"

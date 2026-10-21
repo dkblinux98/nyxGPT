@@ -375,7 +375,7 @@ _assert_contains "and is taken out of draft before review is requested" \
 # an earlier round already promoted.
 PROMOTE="$ROOT_DIR/scripts/agents/lib/rescue_pr.py"
 cp "$TMP/pr-body.md" "$TMP/promote-body.md"
-RESCUE_TITLE="$(sed -n 's/^gh pr create .* --title \(.*\) --body-file .*$/\1/p' "$TMP/gh.log" | head -1)"
+RESCUE_TITLE="$(sed -n 's/^gh pr create .* --title \(.*\) --body-file .*$/\1/p' "$TMP/gh.log" | sed -n '1p')"
 # The title the real script writes, read off the stub's own transcript. If the
 # script ever stops prefixing `wip:`, that is a change to assert, not to
 # tolerate: a hard-coded title here would hide it.

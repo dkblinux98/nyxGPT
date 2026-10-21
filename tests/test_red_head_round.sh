@@ -324,7 +324,7 @@ echo "  ok: the skipped run is not cited"
 # same rows. Without this half the case above passes on any implementation
 # that happens to see the failing row first.
 _retired_first_match_url() {
-  printf '%s\n' "$2" | awk -v n="$1" -F'\t' '$1 == n && $3 != "" { print $3; exit }'
+  printf '%s\n' "$2" | awk -v n="$1" -F'\t' '!v && $1 == n && $3 != "" { v=$3 } END { print v }'
 }
 RETIRED="$(_retired_first_match_url security-scan "$(head_check_links)")"
 _assert_eq "the retired reader really does cite the skipped run" \

@@ -156,23 +156,58 @@ def _step_name(step: dict, index: int) -> str:
     return f"step[{index}]"
 
 
-def _script_start_line(path: Path, script: str) -> int:
+def _script_start_line(path: Path, script: str, cursor: int = 1, name: str = "") -> int:
     """Best-effort 1-based line of a script body's first line.
 
     ``yaml.safe_load`` discards positions, and re-parsing with a node-tracking
     loader would still not survive the block-scalar folding, so anchor on the
-    first non-empty line of the body instead. Line numbers here are a
-    navigation aid for the report; correctness of the scan does not rest on
-    them.
+    body's own first non-empty line instead. Correctness of the scan does not
+    rest on this; being *able to find the step* does.
+
+    Two anchors, because one is not enough (#4192 round 5): almost every body
+    in this tree opens with ``set -euo pipefail``, so a scan that always
+    started at line 1 reported every step in ``macos-brew-smoke.yml`` at the
+    line of the FIRST such body -- 59 steps all claiming line 353. Searching
+    from ``cursor`` (the previous step's line, since steps appear in file
+    order) and preferring the step's own ``- name:`` resolves it. A report
+    that points at the wrong line is the same trap as an elided cause: it
+    reads as evidence and sends the next reader to the wrong place.
     """
+    lines = path.read_text().splitlines()
     first = next((ln for ln in script.splitlines() if ln.strip()), "")
-    if not first:
-        return 1
     needle = first.strip()
-    for number, line in enumerate(path.read_text().splitlines(), start=1):
-        if line.strip() == needle:
+    start = max(cursor - 1, 0)
+
+    if name and not name.startswith("step["):
+        for number in range(start, len(lines)):
+            stripped = lines[number].strip()
+            if stripped in (f"- name: {name}", f'- name: "{name}"', f"- name: '{name}'"):
+                start = number
+                break
+
+    if not needle:
+        return start + 1
+
+    def _is_here(text: str) -> bool:
+        stripped = text.strip()
+        # A one-line body lives on its own key: `run: pip install -r ...`.
+        return stripped == needle or (
+            stripped.endswith(needle)
+            and stripped.removesuffix(needle).rstrip().endswith(("run:", "script:"))
+        )
+
+    for number in range(start, len(lines)):
+        if _is_here(lines[number]):
+            return number + 1
+    # Behind the cursor only if the file and the parse disagree; fall back to
+    # a whole-file scan rather than silently returning 1.
+    for number, line in enumerate(lines, start=1):
+        if _is_here(line):
             return number
-    return 1
+    # A folded scalar (`run: >-`) joins its lines, so the body's first line
+    # exists in no single line of the file. The step's own anchor is still the
+    # right place to send a reader -- line 1 never is.
+    return start + 1
 
 
 def is_safe_in_run(expression: str) -> bool:
@@ -197,6 +232,9 @@ def iter_script_steps(path: Path) -> Iterator[ScriptStep]:
     jobs = document.get("jobs")
     if not isinstance(jobs, dict):
         return
+    # Steps appear in the file in the order they are parsed, so each body is
+    # looked for at or after the previous one's line.
+    cursor = 1
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
@@ -212,12 +250,15 @@ def iter_script_steps(path: Path) -> Iterator[ScriptStep]:
                 bodies.append(("script", with_block["script"]))
             if isinstance(step.get("run"), str):
                 bodies.append(("run", step["run"]))
+            name = _step_name(step, index)
             for kind, body in bodies:
+                line = _script_start_line(path, body, cursor=cursor, name=name)
+                cursor = max(cursor, line)
                 yield ScriptStep(
                     path=path,
                     job=str(job_name),
-                    step=_step_name(step, index),
-                    line=_script_start_line(path, body),
+                    step=name,
+                    line=line,
                     script=body,
                     kind=kind,
                 )

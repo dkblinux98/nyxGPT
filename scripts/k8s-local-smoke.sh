@@ -123,6 +123,96 @@ sre_access_line() {
     nyxgpt ops status 2>/dev/null | grep -m1 'Access: ' || true
 }
 
+# --- The GlitchTip ingestion wait (7e), and why it is a condition ----------
+#
+# The wait this replaced was a 240s deadline, raised from 120s by #4182 on the
+# diagnosis "the worker's queue latency under CPU pressure has no upper bound
+# this script can derive". That diagnosis was wrong, and the raise could never
+# have worked. Measured on run 39679850907 against a kind cluster running the
+# same image and the same manifest (#4192):
+#
+#   failing CI run     400 "Enqueuing due task", 0 "Processing task"
+#   healthy cluster    133 "Enqueuing due task", 133 "Processing task",
+#                      each finishing in ~3ms on a 4-vCPU box
+#
+# The worker's SCHEDULER half was running and its CONSUMER half had never
+# started, so the event could not become an issue at any deadline. Worse, the
+# failure message said "the DSN does not resolve to the in-cluster GlitchTip"
+# while the diagnostics step printed `api DSN: http://REDACTED@glitchtip:8080/1`
+# on the same run -- a gate naming a cause it had not measured, which is this
+# issue's class. So the wait now ends on one of three STATES, each with its
+# own sentence, and the fast ones end fast.
+#
+# GlitchTip 6.2 runs `vtasks`, not celery: the queue keys are `{vt}:q:default`
+# and `{vt}:q:failed`. Read off the running Redis rather than taken from the
+# docs, and counted by TYPE so a renamed queue still counts.
+glitchtip_queue_depth() {
+    kubectl -n "$NAMESPACE" exec deploy/glitchtip-redis -- sh -c '
+        total=0
+        for key in $(redis-cli --raw KEYS "*"); do
+            [ "$(redis-cli --raw TYPE "$key")" = list ] || continue
+            total=$(( total + $(redis-cli --raw LLEN "$key") ))
+        done
+        printf %s "$total"' 2>/dev/null || printf '?'
+}
+
+# How many tasks the worker has SCHEDULED and how many it has CONSUMED. The
+# gap between the two is the whole diagnosis above, and it is the only signal
+# that distinguishes "slow" from "not running at all".
+glitchtip_worker_counts() {
+    kubectl -n "$NAMESPACE" logs deploy/glitchtip-worker --tail 500 2>/dev/null \
+        | awk '/Enqueuing due task/ {s++} /Processing task/ {p++} END {print (s+0), (p+0)}' \
+        || printf '0 0'
+}
+
+# Wait for GlitchTip to hold an issue for $1, on the worker's PROGRESS rather
+# than on a deadline. Sets GLITCHTIP_ISSUES, GLITCHTIP_WAIT_REASON,
+# GLITCHTIP_WORKER_SCHEDULED, GLITCHTIP_WORKER_PROCESSED and
+# GLITCHTIP_QUEUE_DEPTH for the caller to report. The poll counts are
+# overridable so tests/unit/test_glitchtip_wait_condition.py can run this very
+# function against a stub kubectl in seconds.
+wait_for_glitchtip_issue() {
+    local marker="$1" poll=0 counts
+    local polls="${GLITCHTIP_WAIT_POLLS:-48}"
+    local sleep_s="${GLITCHTIP_WAIT_SLEEP:-5}"
+    # The consumer gets a grace window before its silence is read as "not
+    # running": a worker that has only just been scheduled has processed
+    # nothing yet, and calling that a dead consumer would be the same mistake
+    # in the other direction.
+    local grace="${GLITCHTIP_WORKER_GRACE_POLLS:-6}"
+    GLITCHTIP_ISSUES=""
+    GLITCHTIP_WAIT_REASON=""
+    GLITCHTIP_WORKER_SCHEDULED=0
+    GLITCHTIP_WORKER_PROCESSED=0
+    GLITCHTIP_QUEUE_DEPTH="?"
+    while [ "$poll" -lt "$polls" ]; do
+        poll=$(( poll + 1 ))
+        GLITCHTIP_ISSUES="$(kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
+            "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
+glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issues/" \
+            2>/dev/null || true)"
+        case "$GLITCHTIP_ISSUES" in
+            *"$marker"*)
+                GLITCHTIP_WAIT_REASON=found
+                return 0
+                ;;
+        esac
+        counts="$(glitchtip_worker_counts)"
+        GLITCHTIP_WORKER_SCHEDULED="${counts%% *}"
+        GLITCHTIP_WORKER_PROCESSED="${counts##* }"
+        GLITCHTIP_QUEUE_DEPTH="$(glitchtip_queue_depth)"
+        if [ "$poll" -ge "$grace" ] \
+            && [ "${GLITCHTIP_WORKER_PROCESSED:-0}" = 0 ] \
+            && [ "${GLITCHTIP_WORKER_SCHEDULED:-0}" -gt 0 ]; then
+            GLITCHTIP_WAIT_REASON=worker-idle
+            return 1
+        fi
+        sleep "$sleep_s"
+    done
+    GLITCHTIP_WAIT_REASON=not-arrived
+    return 1
+}
+
 cleanup() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -941,42 +1031,39 @@ sys.exit(0 if r.status_code == 202 else 1)
 " || fail "the api would not report an error (503 means error tracking is inactive or has \
 no valid DSN -- the #3990 state: the api had no [error_tracking] section at all)"
 
-found=""
-# 48 x 5s = 240s, raised from 120s. OUT OF CLASS for #4182 and recorded there
-# as such; changed here because it is a flaky wait blocking a required check
-# rather than a weak assertion. Evidence that 120s was too tight and not that
-# anything was broken: commit 8f9e5724 ran this job twice -- the push-triggered
-# run passed and the pull_request-triggered run failed on this very line, same
-# code, same cluster shape. GlitchTip ingests through Redis and a celery
-# worker, both scheduled on a node this job deliberately ballasts down to
-# 7936Mi, so the gap between "202 accepted" and "the issue exists" is the
-# worker's queue latency under CPU pressure and has no upper bound this script
-# can derive. Nothing is weakened: the issue must still appear, and the loop
-# breaks the moment it does, so a healthy cluster pays nothing for the margin.
-for _ in $(seq 1 48); do
-    issues=$(kubectl -n "$NAMESPACE" exec deploy/grafana -- sh -c \
-        "wget -q -O - -T 10 --header=\"Authorization: Bearer \$(cat /etc/nyxgpt-secrets/\
-glitchtip-grafana-token)\" http://glitchtip:8080/api/0/organizations/nyxgpt/issues/" \
-        2>/dev/null || true)
-    case "$issues" in *"$ERROR_MARKER"*) found=1; break ;; esac
-    sleep 5
-done
-if [ -z "$found" ]; then
-    # Say what GlitchTip actually answered before failing (#3990). The two
-    # candidate subjects are "the api sent it somewhere else" and "GlitchTip
-    # received it and made no issue of it", and the issue list is the only
-    # record that distinguishes them which no Pod log carries. It holds no
+if wait_for_glitchtip_issue "$ERROR_MARKER"; then
+    ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
+else
+    # Say what GlitchTip actually answered before failing (#3990). It holds no
     # credential: the token travels in a request header, inside the Pod.
     echo "--- GlitchTip's issue list for org nyxgpt (looking for ${ERROR_MARKER}) ---" >&2
     # `|| true`, not a draining reader: this is a truncated diagnostic dump,
     # so `head -c`'s early exit is the point and its status is not an answer
     # anyone reads (#4192 exemption 1). `sed` has no byte-range equivalent.
-    printf '%s\n' "${issues:-<no response>}" | head -c 4000 >&2 || true
+    printf '%s\n' "${GLITCHTIP_ISSUES:-<no response>}" | head -c 4000 >&2 || true
     echo >&2
-    fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
-resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
+    # The DSN, measured, because the message this replaced ASSERTED it was
+    # wrong (#4192). Host and port only -- the key stays in the Pod.
+    echo "--- the DSN the api process actually carries ---" >&2
+    kubectl -n "$NAMESPACE" exec deploy/nyxgpt-api-stable -- sh -c \
+        'printf "api DSN: %s\n" "$(printf %s "${NYXGPT_ERROR_TRACKING_DSN:-<EMPTY>}" \
+| sed -E "s#//[^@]*@#//REDACTED@#")"' >&2 2>/dev/null || true
+    echo "worker: ${GLITCHTIP_WORKER_SCHEDULED:-?} task(s) scheduled, \
+${GLITCHTIP_WORKER_PROCESSED:-?} processed; queue depth ${GLITCHTIP_QUEUE_DEPTH:-?}" >&2
+    case "$GLITCHTIP_WAIT_REASON" in
+        worker-idle)
+            fail "GlitchTip's worker scheduled ${GLITCHTIP_WORKER_SCHEDULED} task(s) and \
+processed NONE -- its consumer half is not running, so no event can become an issue here no \
+matter how long this waits. Not the api's DSN (printed above), and not latency"
+            ;;
+        *)
+            fail "the api accepted the error and GlitchTip's worker IS consuming \
+(${GLITCHTIP_WORKER_PROCESSED} task(s) processed) but no issue for ${ERROR_MARKER} exists -- \
+the event did not reach this GlitchTip (#3565's failure mode, in Kubernetes; check the DSN \
+printed above)"
+            ;;
+    esac
 fi
-ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
 
 # 7f. The report an OPERATOR reads. Everything above is this script driving the
 #     cluster directly; the owner's 2026-08-26 re-test found that none of it

@@ -477,7 +477,7 @@ jobs:
             set -e
             PYTHONPATH="$WORK/broken" "$PY" -m pip download --no-deps --only-binary :all: \
               --disable-pip-version-check --dest "$WORK/wheelhouse-broken" pip
-            broken_wheel="$(ls "$WORK"/wheelhouse-broken/pip-*.whl | head -1)"
+            broken_wheel="$(ls "$WORK"/wheelhouse-broken/pip-*.whl | sed -n '1p')"
             PYTHONPATH="$WORK/broken" "$WORK/venv-broken/bin/python" "$broken_wheel/pip" \
               install --no-index --disable-pip-version-check "$broken_wheel"
           ) > "$WORK/broken.log" 2>&1
@@ -506,7 +506,7 @@ jobs:
             set -e
             PYTHONPATH="$WORK/fixed" "$PY" -m pip download --no-deps --only-binary :all: \
               --disable-pip-version-check --dest "$WORK/wheelhouse-fixed" pip
-            fixed_wheel="$(ls "$WORK"/wheelhouse-fixed/pip-*.whl | head -1)"
+            fixed_wheel="$(ls "$WORK"/wheelhouse-fixed/pip-*.whl | sed -n '1p')"
             # The bootstrap's second interpreter is the venv's, running pip
             # out of the wheel by zipimport -- a green run here also proves
             # the shim reaches that process, the env-inheritance property the
@@ -667,7 +667,7 @@ jobs:
           # and it never reaches the module that is missing.
           "$PY" -m pip download --no-deps --only-binary :all: \
             --disable-pip-version-check --dest "$WORK/wheelhouse" pip
-          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | sed -n '1p')"
           "$WORK/venv-new/bin/python" "$WHEEL/pip" install --no-index \
             --disable-pip-version-check "$WHEEL"
           "$WORK/venv-new/bin/pip" --version
@@ -886,7 +886,7 @@ jobs:
           # shellcheck disable=SC2086  # the flag list is read out of the formula
           PYTHONPATH="$WORK/sabotage" "$PY" -m pip download --no-deps --only-binary :all: \
             --disable-pip-version-check $DOWNLOAD_FLAGS --dest "$WORK/wheelhouse" pip
-          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | sed -n '1p')"
           echo "downloaded: $WHEEL"
 
           # The venv is populated exactly as the recipe does it -- offline,
@@ -963,9 +963,8 @@ jobs:
           # channel. Checked here, on the tarball this runner just built, so
           # a stamping regression is named at the build rather than three
           # steps later as a confusing version mismatch.
-          DECLARED="$(tar -xzOf "dist/homebrew/dist/nyxgpt-api-${SMOKE_VERSION}.tar.gz" \
-            "nyxgpt-api-${SMOKE_VERSION}/pyproject.toml" \
-            | awk -F'"' '/^version =/{print $2; exit}')"
+          DECLARED="$(scripts/tarball_declared_version.sh \
+            "dist/homebrew/dist/nyxgpt-api-${SMOKE_VERSION}.tar.gz")"
           echo "the vendored pyproject.toml declares: ${DECLARED}"
           test "$DECLARED" = "$SMOKE_VERSION" || {
             echo "::error::the ${SMOKE_VERSION} tarball declares ${DECLARED}"
@@ -1119,7 +1118,7 @@ jobs:
             set -e
             PYTHONPATH="$WORK/rc12-shim" "$PY" -m pip download --no-deps --only-binary :all: \
               --disable-pip-version-check --dest "$WORK/wheelhouse-mask" pip
-            mask_wheel="$(ls "$WORK"/wheelhouse-mask/pip-*.whl | head -1)"
+            mask_wheel="$(ls "$WORK"/wheelhouse-mask/pip-*.whl | sed -n '1p')"
             PYTHONPATH="$WORK/rc12-shim" "$WORK/venv-mask/bin/python" "$mask_wheel/pip" \
               install --no-index --disable-pip-version-check "$mask_wheel"
           ) > "$WORK/mask.log" 2>&1
@@ -2628,16 +2627,15 @@ jobs:
           # checkout to work around it; the workaround is retired with the
           # defect it worked around, and what is checked here now is the
           # builder's own stamp on the two tarballs this runner just built.
-          # `awk` printing nothing fails the comparison, so a tarball with no
-          # version line cannot pass this quietly.
-          declared_version() {
-            tar -xzOf "$1/dist/nyxgpt-api-$2.tar.gz" "nyxgpt-api-$2/pyproject.toml" \
-              | awk -F'"' '/^version =/{print $2; exit}'
-          }
+          # The reader is `scripts/tarball_declared_version.sh` -- one source
+          # for this decision across all three steps that ask it (#4183,
+          # D-066), and it refuses a tarball with no version line rather than
+          # comparing against an empty string.
           for want in 3.0.0:dist/stable 3.0.0rc0:dist/rc; do
             VERSION="${want%%:*}"
             DIR="${want##*:}"
-            DECLARED="$(declared_version "$DIR" "$VERSION")"
+            DECLARED="$(scripts/tarball_declared_version.sh \
+              "$DIR/dist/nyxgpt-api-$VERSION.tar.gz")"
             echo "${DIR}: the vendored pyproject.toml declares '${DECLARED}'"
             test "$DECLARED" = "$VERSION" || {
               echo "a keg built from this tarball would report '${DECLARED}',"
@@ -3677,12 +3675,13 @@ jobs:
           # that metadata (#3850). Two tarballs declaring one version would
           # make both kegs report the same build and the comparison would be
           # measuring nothing.
-          declared() {
-            tar -xzOf "dist/$1/dist/nyxgpt-api-$2.tar.gz" "nyxgpt-api-$2/pyproject.toml" \
-              | awk -F'"' '/^version =/{print $2; exit}'
-          }
-          RC0="$(declared rc0 3.0.0rc0)"
-          RC1="$(declared rc1 3.0.0rc1)"
+          # Same one source as the other two steps that ask this (#4183,
+          # D-066): `scripts/tarball_declared_version.sh`. The copy that used
+          # to live here is what reddened this job on run 39679850952 --
+          # `awk ... exit` closed the pipe with the member half-written, tar
+          # took EPIPE, and `pipefail` failed the step on the right answer.
+          RC0="$(scripts/tarball_declared_version.sh dist/rc0/dist/nyxgpt-api-3.0.0rc0.tar.gz)"
+          RC1="$(scripts/tarball_declared_version.sh dist/rc1/dist/nyxgpt-api-3.0.0rc1.tar.gz)"
           echo "rc0 declares '${RC0}' / rc1 declares '${RC1}'"
           test "$RC0" = "3.0.0rc0" && test "$RC1" = "3.0.0rc1" || {
             echo "::error::the stamped versions are wrong (#3850), so the two kegs are not two builds"

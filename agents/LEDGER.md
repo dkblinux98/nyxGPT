@@ -2919,6 +2919,50 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4193, #3861, #4179, #3783; extends **D-070**,
   **D-071**, **D-072**, **D-066**.
 
+- **D-074** · 2026-10-21 · developer (#4192, review round 5) — **A guard that
+  enumerates idioms instead of the behaviour it is named for is the defect it
+  is checking for. And a wait with a deadline is not a wait on a condition.**
+  Two red required checks on head `c78d492d`, and both were in this issue's
+  class with the gates themselves as the instances.
+  (a) `macos-brew-smoke`'s `candidate-upgrade` job died on
+  `tar -xzOf … | awk -F'"' '/^version =/{print $2; exit}'` with
+  `Write error: Broken pipe` — **having read the right version**. `awk`'s
+  `exit` is `grep -q` by another name, and **D-071**'s guard knew only
+  `grep -q` and `head`, so it went green on 211 files with three live copies
+  in one of them. Worse, `split_pipeline` counted quotes left-to-right, so a
+  pipeline inside `"$( … )"` — the dominant idiom in this tree — read as
+  having **no pipe at all**: correcting that took the tree-wide count from 0
+  to **38** on the same head, i.e. D-071's "79 hazards, now clean" had never
+  looked inside a command substitution. `EARLY_READERS` is now the
+  enumeration (`head`, early `grep`, `sed … q`, `awk … exit` outside `END`,
+  `read`, a `while read` loop that `break`s), every entry executed against a
+  200k-line producer, and a test fails if an entry has no case. The three
+  copies of "what version does this tarball declare?" became one
+  `scripts/tarball_declared_version.sh` (**D-066**); the retired reader exits
+  **141** on the tarball the helper reads `9.9.9` from. Also fixed: every
+  `run:` body in `macos-brew-smoke.yml` was reported at ONE line, because
+  `_script_start_line` anchored on the body's first line from line 1 and
+  every body opens `set -euo pipefail` — a report that points at the wrong
+  place reads exactly like one that does not.
+  (b) `k8s-local-smoke` 7e failed as *"the api accepted the error but
+  GlitchTip never received it — the DSN does not resolve"*, on a run whose own
+  diagnostics printed `api DSN: http://REDACTED@glitchtip:8080/1`. The real
+  state, measured: the worker logged **400** `Enqueuing due task` and **0**
+  `Processing task`, where the same image and manifest on a kind cluster log
+  them **133/133** at ~3ms each. The worker's scheduler half was up and its
+  consumer half had never started, so **#4182's raise of this wait from 120s
+  to 240s could never have worked** — the diagnosis it was based on ("queue
+  latency under CPU pressure") was wrong. The wait now ends in one of three
+  states, each with its own sentence and the DSN read out of the running Pod
+  rather than blamed, and `worker-idle` stops at the grace window instead of
+  spending the budget to print a cause that did not happen. GlitchTip 6.2 runs
+  `vtasks`, not celery (`{vt}:q:default`, `{vt}:q:failed`), read off the
+  running Redis and counted by `TYPE` so a rename still counts.
+  The worker defect itself is **#4208**, filed out of class and not patched:
+  the cause is not yet known and a pick today would be a guess.
+  Source: #4192; related #4193, #4208, #4182, #3990, #3565; extends **D-070**,
+  **D-071**, **D-073**, **D-066**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

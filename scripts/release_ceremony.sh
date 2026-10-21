@@ -525,7 +525,8 @@ TIP=$(git rev-parse --verify -q "origin/${REL_BRANCH}" 2>/dev/null || true)
 if [[ -n "$TIP" ]]; then
   prereq release-branch gate true "release tip ${REL_BRANCH} -> ${TIP}"
   # version sanity on the branch tip
-  PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" | awk -F'"' '/^version =/{print $2; exit}')
+  PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" \
+    | awk -F'"' '!v && /^version =/{v=$2} END{print v}')
   if [[ "$PY_VER" == "$VERSION" ]]; then
     prereq pyproject-version gate true "pyproject version on the tip = ${VERSION}"
   else
@@ -981,7 +982,7 @@ else
   NEXT_PY_JSON=$(gh api "repos/${REPO}/contents/pyproject.toml?ref=${NEXT_BRANCH}")
   NEXT_PY_SHA=$(jq -r .sha <<<"$NEXT_PY_JSON")
   NEXT_PY_CUR=$(jq -r .content <<<"$NEXT_PY_JSON" | python3 -c 'import sys,base64; print(base64.b64decode(sys.stdin.read()).decode())' \
-    | awk -F'"' '/^version =/{print $2; exit}')
+    | awk -F'"' '!v && /^version =/{v=$2} END{print v}')
   if [[ "$NEXT_PY_CUR" == "$NEXT_VERSION" ]]; then
     log "  ok: ${NEXT_BRANCH} pyproject version already ${NEXT_VERSION}"
   else
@@ -995,7 +996,7 @@ print(base64.b64encode(t.encode()).decode())")
       -f message="chore: bump version to ${NEXT_VERSION} post-${VERSION}-release (ceremony)" --silent
     NEW_CUR=$(gh api "repos/${REPO}/contents/pyproject.toml?ref=${NEXT_BRANCH}" --jq .content \
       | python3 -c 'import sys,base64; print(base64.b64decode(sys.stdin.read()).decode())' \
-      | awk -F'"' '/^version =/{print $2; exit}')
+      | awk -F'"' '!v && /^version =/{v=$2} END{print v}')
     [[ "$NEW_CUR" == "$NEXT_VERSION" ]] || fail "verify failed: ${NEXT_BRANCH} pyproject version is '$NEW_CUR'"
     log "  verified: ${NEXT_BRANCH} pyproject version bumped ${NEXT_PY_CUR} -> ${NEXT_VERSION}"
   fi

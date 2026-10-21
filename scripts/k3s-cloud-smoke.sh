@@ -226,7 +226,7 @@ log "PASS: an overlapping VPC network is refused, and nothing is installed"
 # the shipped pair -- the substrate's VPC and the pinned k3s networks -- passes
 # the guard it now has to pass, which is the combination owner acceptance runs.
 VPC_CIDR="$(awk '/variable "vpc_cidr"/,/^}/' terraform/aws/variables.tf \
-  | awk -F'"' '/default/ {print $2; exit}')"
+  | awk -F'"' '!found && /default/ {found=$2} END {print found}')"
 [[ -n "$VPC_CIDR" ]] || fail "could not read vpc_cidr's default out of terraform/aws/variables.tf"
 log "MEASURED: the substrate VPC default is $VPC_CIDR"
 NYXGPT_VPC_CIDRS="$VPC_CIDR" bash "$WORK/k3s-bootstrap.sh"
@@ -780,7 +780,7 @@ PY
 # again. Nothing about the phase changed; only its owner did.
 CURRENT_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT_LABEL" \
   -o jsonpath='{range .items[*]}{.metadata.name}={.spec.replicas}{"\n"}{end}' \
-  | awk -F= '$2 != "0" {print $1; exit}')"
+  | awk -F= '!found && $2 != "0" {found=$1} END {print found}')"
 CURRENT_RS_UID="$(kubectl -n "$NAMESPACE" get "rs/$CURRENT_RS" -o jsonpath='{.metadata.uid}')"
 kubectl -n "$NAMESPACE" patch "pod/$ROLLOUT-corpse" --type=merge -p "$(cat <<JSON
 {"metadata":{"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet",

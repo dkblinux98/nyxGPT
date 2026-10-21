@@ -35,6 +35,22 @@ Three measurements, because each answers a different question:
 Direction 2 matters most: a test that only exercises the fixed form passes on
 any machine where the race does not reproduce, which is how this reached the
 release branch (#3753's lesson, ledger D-006).
+
+**Round 5 added a fourth** (`4. The class, not the idiom`), because the three
+above all passed while the identical defect reddened the same workflow again
+(run 39679850952, `candidate-upgrade`)::
+
+    tar -xzOf "$tgz" "$member" | awk -F'"' '/^version =/{print $2; exit}'
+
+``awk``'s ``exit`` is ``grep -q`` under another name, and the guard knew only
+``grep -q`` and ``head``. Worse, ``split_pipeline`` counted quotes
+left-to-right, so a pipeline inside ``"$( ... )"`` -- the dominant idiom in
+this tree -- read as having no pipe at all, which is why the sweep's "79
+hazards, now clean" reported 0 where the corrected scan reports 38. A gate
+named for a behaviour and enforcing one spelling of it is this issue's class
+with the gate itself as the instance, so this section measures the *class*:
+every reader in `EARLY_READERS`, each one executed, and the enumeration itself
+pinned so a documented rule cannot sit unimplemented.
 """
 
 from __future__ import annotations
@@ -414,3 +430,285 @@ def test_the_guard_covers_the_surfaces_it_claims() -> None:
     assert len([p for p in paths if p.suffix in (".yml", ".yaml")]) > 50
     assert len([p for p in paths if p.suffix == ".sh"]) > 50
     assert WORKFLOW.relative_to(REPO_ROOT) in paths
+
+
+# ---------------------------------------------------------------------------
+# 4. The class, not the idiom (round 5)
+# ---------------------------------------------------------------------------
+
+#: One snippet per entry in ``guard.EARLY_READERS``, keyed by that entry, so
+#: the parametrisation and the enumeration cannot drift apart. Each is run
+#: under ``pipefail`` against a 200k-line producer AND handed to the guard:
+#: the hazard has to be real before it is worth flagging.
+EARLY_READER_CASES: dict[str, str] = {
+    "head": f"{PRODUCER} | head -1 >/dev/null",
+    "grep -q / -l / -m N": f"{PRODUCER} | grep -q '^1$'",
+    "sed ... q / Q": f"{PRODUCER} | sed -n '1p;q'",
+    "awk ... exit": f"{PRODUCER} | awk '/^1$/{{print; exit}}' >/dev/null",
+    "read": f"{PRODUCER} | read -r _first",
+    "while/until read ... break": (
+        f'{PRODUCER} | while read -r line; do echo "$line" >/dev/null; break; done'
+    ),
+}
+
+
+def test_the_cases_cover_every_reader_the_guard_claims() -> None:
+    """A rule in the docs and not in the enumeration is not enforced.
+
+    The reverse of the defect this section exists for: `awk ... exit` was a
+    hazard nobody had written down. Now the list is the contract, and a new
+    entry with no executed case fails here rather than passing silently.
+    """
+    assert set(EARLY_READER_CASES) == set(guard.EARLY_READERS)
+
+
+@pytest.mark.parametrize("reader", list(EARLY_READER_CASES))
+def test_every_early_reader_really_kills_its_producer(reader: str) -> None:
+    """Executed, not assumed: each spelling fails the pipeline it succeeds in."""
+    assert _pipefail(EARLY_READER_CASES[reader]) != 0, reader
+
+
+@pytest.mark.parametrize("reader", list(EARLY_READER_CASES))
+def test_the_guard_flags_every_early_reader(reader: str, tmp_path: Path) -> None:
+    hazards = guard.find_hazards(
+        "set -euo pipefail\n" + EARLY_READER_CASES[reader] + "\n", tmp_path / "s.sh"
+    )
+    assert hazards, reader
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        # `exit` reached only from END runs after EOF: the input is drained.
+        f"{PRODUCER} | awk '/^1$/{{v=$0}} END{{print v; exit (v == \"\")}}'",
+        # The replacement this sweep applied: first match held, printed at END.
+        f"{PRODUCER} | awk '!v && /^1$/{{v=$0}} END{{print v}}'",
+        # `q` as DATA, not as a command.
+        f"{PRODUCER} | sed 's/q/x/' >/dev/null",
+        f"{PRODUCER} | sed -n '/queued/p'",
+        # A `while read` loop with no `break` drains, like any other reader.
+        f'{PRODUCER} | while read -r line; do : "$line"; done',
+    ],
+)
+def test_the_draining_forms_are_accepted_and_really_drain(snippet: str, tmp_path: Path) -> None:
+    """Both halves in one test: the guard allows it *and* bash agrees."""
+    assert guard.find_hazards("set -euo pipefail\n" + snippet + "\n", tmp_path / "s.sh") == []
+    assert _pipefail(snippet) == 0, snippet
+
+
+def test_the_awk_replacement_prints_what_the_retired_form_printed() -> None:
+    """The equivalence the sweep rests on, for the `awk` rewrites."""
+    stamped = "python3 -c \"print('\\n'.join(['version = \\\"9.9.9\\\"'] + ['pad'] * 50000))\""
+    retired = subprocess.run(
+        ["bash", "-c", f"{stamped} | awk -F'\"' '/^version =/{{print $2; exit}}'"],
+        capture_output=True,
+        text=True,
+    )
+    shipped = subprocess.run(
+        ["bash", "-c", f"{stamped} | awk -F'\"' '!v && /^version =/{{v=$2}} END{{print v}}'"],
+        capture_output=True,
+        text=True,
+    )
+    assert shipped.stdout == retired.stdout == "9.9.9\n"
+
+
+# --- The pipeline the splitter could not see -------------------------------
+
+
+def test_a_pipe_inside_a_command_substitution_is_a_pipeline(tmp_path: Path) -> None:
+    """The silent pass: ``"$( a | reader )"`` scanned as having no pipe.
+
+    Counting quotes left-to-right makes the second ``"`` CLOSE the assignment's
+    own quote, so the ``|`` looks quoted. Bash starts quoting afresh inside
+    ``$( )``. This is the exact shape of the third live copy of the defect, and
+    the first version of this guard passed it.
+    """
+    line = 'DECLARED="$(tar -xzOf "$tgz" "$member" | awk -F\'"\' \'/^v/{print $2; exit}\')"'
+    assert len(guard.split_pipeline(line)) == 2
+    hazards = guard.find_hazards("set -euo pipefail\n" + line + "\n", tmp_path / "s.sh")
+    assert len(hazards) == 1
+    assert hazards[0].producer == "tar"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Nested substitution, still a pipeline.
+        'V="$(echo "$(date)" | head -1)"',
+        # Backticks open a context of their own too.
+        'V=`ls "$d" | head -1`',
+    ],
+)
+def test_substitution_shapes_are_split(line: str, tmp_path: Path) -> None:
+    assert guard.find_hazards("set -euo pipefail\n" + line + "\n", tmp_path / "s.sh")
+
+
+def test_a_quoted_pipe_is_still_not_a_pipeline(tmp_path: Path) -> None:
+    """The correction must not have made every `|` a pipeline."""
+    for line in (
+        "kubectl get pods -o jsonpath='{.a|b}' | grep x >/dev/null",
+        'echo "a|b" | grep x >/dev/null',
+        "awk -F'|' '{print $1}' file >/dev/null",
+    ):
+        assert guard.find_hazards("set -euo pipefail\n" + line + "\n", tmp_path / "s.sh") == []
+
+
+# --- The live fix: one helper, executed both ways --------------------------
+
+HELPER = REPO_ROOT / "scripts" / "tarball_declared_version.sh"
+RETIRED_READER = """awk -F'"' '/^version =/{print $2; exit}'"""
+
+
+def _sdist(tmp_path: Path, name: str, version: str, pad: int = 200_000) -> Path:
+    """A real sdist whose pyproject is long enough to still be writing."""
+    root = tmp_path / f"{name}-{version}"
+    root.mkdir(parents=True, exist_ok=True)
+    body = ["[project]", f'version = "{version}"']
+    body += [f"# pad {i}" for i in range(pad)]
+    # A later `version =` under another table: the helper must take the first.
+    body += ["[tool.other]", 'version = "0.0.0"']
+    (root / "pyproject.toml").write_text("\n".join(body) + "\n", encoding="utf-8")
+    tarball = tmp_path / f"{name}-{version}.tar.gz"
+    subprocess.run(
+        ["tar", "-czf", str(tarball), "-C", str(tmp_path), root.name],
+        check=True,
+        capture_output=True,
+    )
+    return tarball
+
+
+def test_the_retired_declared_version_form_dies_on_the_right_answer(tmp_path: Path) -> None:
+    """Run 39679850952 in miniature: EPIPE on a tarball that declares correctly."""
+    tarball = _sdist(tmp_path, "nyxgpt-api", "9.9.9")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            f'v="$(tar -xzOf "{tarball}" "nyxgpt-api-9.9.9/pyproject.toml" '
+            f'| {RETIRED_READER})"\n'
+            'echo "got=$v"\n',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "got=" not in result.stdout
+
+
+def test_the_helper_reads_the_same_tarball_and_succeeds(tmp_path: Path) -> None:
+    tarball = _sdist(tmp_path, "nyxgpt-api", "9.9.9")
+    result = subprocess.run(["bash", str(HELPER), str(tarball)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "9.9.9", "the FIRST version line, not [tool.other]'s"
+
+
+def test_the_helper_refuses_a_tarball_that_declares_nothing(tmp_path: Path) -> None:
+    """An empty answer must not compare equal to an expected version."""
+    root = tmp_path / "nyxgpt-api-1.0.0"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    tarball = tmp_path / "nyxgpt-api-1.0.0.tar.gz"
+    subprocess.run(
+        ["tar", "-czf", str(tarball), "-C", str(tmp_path), root.name],
+        check=True,
+        capture_output=True,
+    )
+    result = subprocess.run(["bash", str(HELPER), str(tarball)], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "declares no version" in result.stderr
+
+
+def test_every_step_that_asks_the_version_asks_the_one_helper() -> None:
+    """D-066: the decision lives in one place, and the copies are gone.
+
+    Three steps of `macos-brew-smoke.yml` each made this decision, and all
+    three made it the same wrong way -- which is why the fix consolidates
+    instead of correcting them one at a time.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert RETIRED_READER not in text, "a copy of the retired reader is back"
+    assert text.count("scripts/tarball_declared_version.sh") >= 3
+    # ...and no step reaches into a tarball for a version by hand any more.
+    for _, line in guard.logical_lines(text):
+        if "tar -xzOf" in line and "pyproject.toml" in line:
+            raise AssertionError(f"a step still reads the version itself: {line.strip()}")
+
+
+# --- The report has to point at the step ----------------------------------
+
+TWO_STEP_YAML = """\
+name: planted
+on: [push]
+jobs:
+  planted:
+    runs-on: ubuntu-latest
+    steps:
+      - name: An earlier step opening exactly the same way
+        run: |
+          set -euo pipefail
+          echo harmless
+      - name: The step with the hazard in it
+        run: |
+          set -euo pipefail
+          brew services list | head -1
+"""
+
+
+def test_the_hazard_is_reported_at_its_own_line(tmp_path: Path) -> None:
+    """Not at the first body in the file that happens to start the same way.
+
+    Every `run:` here opens with `set -euo pipefail`, so anchoring on the
+    body's first line without a cursor reported all 59 steps of
+    `macos-brew-smoke.yml` at one line -- which cost this round a diagnosis.
+    A wrong line in a report reads exactly like a right one.
+    """
+    planted = tmp_path / "planted.yml"
+    planted.write_text(TWO_STEP_YAML, encoding="utf-8")
+    (hazard,) = guard.scan([planted])
+    lines = TWO_STEP_YAML.splitlines()
+    assert lines[hazard.line - 1].strip() == "brew services list | head -1"
+
+
+def test_every_step_body_resolves_to_its_own_first_line() -> None:
+    """The same property over every workflow in the repository."""
+    sys.path.insert(0, str(GUARD.parent))
+    from workflow_script_guard import iter_script_steps, workflow_files  # noqa: PLC0415
+
+    misattributed = []
+    for path in workflow_files():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for step in iter_script_steps(path):
+            first = next((ln for ln in step.script.splitlines() if ln.strip()), "")
+            if not first:
+                continue
+            here = lines[step.line - 1].strip()
+            # A folded scalar (`run: >-`) exists in no single line, so the
+            # step's own anchor is the answer there.
+            if not (
+                here == first.strip()
+                or here.endswith(first.strip())
+                or here.startswith(("- name:", "run:", "script:"))
+            ):
+                misattributed.append(f"{path.name}:{step.line} [{step.step}] -> {here[:60]}")
+    assert misattributed == [], "\n".join(misattributed)
+
+
+# --- The boundary, measured rather than assumed ---------------------------
+
+
+def test_no_interpreter_reader_in_this_tree_stops_early() -> None:
+    """The one hazard shape a textual guard cannot see.
+
+    `producer | python3 script.py` is only a hazard if the script stops
+    reading before EOF. Nothing in this tree does -- `sys.stdin.read()`
+    throughout -- and the docstring says so, so the claim is checked here
+    instead of being left as a comment that quietly stops being true.
+    """
+    early = []
+    for path in sorted((REPO_ROOT / "scripts").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), start=1):
+            if re.search(r"stdin\.readline\(|next\(\s*sys\.stdin", line):
+                early.append(f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}")
+    assert early == [], "\n".join(early)

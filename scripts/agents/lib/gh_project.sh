@@ -210,7 +210,7 @@ classify_error() {
   if echo "$error_text" | grep "Final Verification failed: gate=" >/dev/null; then
     local _gate
     _gate="$(echo "$error_text" \
-      | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
+      | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | sed -n '1p')"
     echo "verification_failed:${_gate:-unknown}"
     return
   fi

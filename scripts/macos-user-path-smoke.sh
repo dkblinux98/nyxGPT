@@ -417,7 +417,7 @@ done
 # asserting something untrue. What CAN be asserted is that api/web never
 # appear in that line, which is non-vacuous exactly when the wait did run.
 if grep -q "Still unhealthy" "$WORK/up.log"; then
-  STILL_LINE="$(grep -h "Still unhealthy" "$WORK/up.log" | head -1)"
+  STILL_LINE="$(grep -h "Still unhealthy" "$WORK/up.log" | sed -n '1p')"
   for component in api web; do
     if printf '%s' "$STILL_LINE" | grep -qE "(^|[ ,:])${component}([,.]|$)"; then
       fail "nyxgpt up reported $component unhealthy while its service was started: $STILL_LINE (#3853)"
