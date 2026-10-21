@@ -72,38 +72,6 @@
   // (watch the advisory's `first_patched_version`), or when next-pwa and
   // eslint-config-next move off the fast-glob/micromatch chain. Neither entry
   // is a standing acceptance of the advisory.
-  //
-  // It recurred again on 2026-10-21 (during #4200, whose diff touches no
-  // JavaScript dependency at all -- the predicted signature above, exactly).
-  // GHSA-587h-7wmj-h5pm, HIGH, `vite <= 7.3.6` via the `launch-editor`
-  // existence-check bypass; `vite` 7.3.6 was what the lock pinned, and
-  // 7.3.7 is published and fixes it. NO new allowlist entry was needed and
-  // none was added -- the upgrade exists, so the gate was cleared by taking
-  // it. How, and why not the obvious way:
-  //
-  //   npm audit fix        CRASHES in this tree: "Cannot read properties of
-  //                        null (reading 'edgesOut')", exit 1, lockfile
-  //                        untouched. The 2026-09-30 remedy is unavailable.
-  //   vite is TRANSITIVE   nothing here depends on it directly; it arrives
-  //                        under vitest / @vitejs/plugin-react / coverage-v8,
-  //                        so there is no package.json pin to move the way
-  //                        `next` 16.3.0 -> ^16.3.8 was moved.
-  //   `overrides.vite`     hence the `"vite": "^7.3.7"` override in
-  //                        package.json, following the serialize-javascript
-  //                        precedent (#3644). Every consumer's peer range
-  //                        (`^4.2.0 || ^5 || ^6 || ^7`, `^6 || ^7 || ^8`)
-  //                        admits 7.3.7, so this is a patch bump inside the
-  //                        range they already asked for, not a forced major.
-  //   Verified             `npm ci` exits 0 and `npm run audit:ci` prints
-  //                        "Passed npm security audit"; high findings 7 -> 6,
-  //                        the remaining 6 being the two allowlisted braces
-  //                        paths above. 4 moderate remain, non-blocking.
-  //
-  // REVISIT: remove `overrides.vite` once vitest/@vitejs/plugin-react resolve
-  // vite >= 7.3.7 on their own. Like the entries above it is a remedy, not an
-  // acceptance -- and prefer an override to an allowlist entry whenever a
-  // fixed version exists, since an override actually removes the vulnerable
-  // code while an allowlist entry only stops the gate reporting it.
   "allowlist": [
     "GHSA-vfj7-8cjw-p6xm|@ducanh2912/next-pwa>fast-glob>micromatch>braces",
     "GHSA-vfj7-8cjw-p6xm|eslint-config-next>@next/eslint-plugin-next>fast-glob>micromatch>braces"

@@ -52,7 +52,6 @@
     "vitest": "^4.0.16"
   },
   "overrides": {
-    "serialize-javascript": "^7.0.5",
-    "vite": "^7.3.7"
+    "serialize-javascript": "^7.0.5"
   }
 }
