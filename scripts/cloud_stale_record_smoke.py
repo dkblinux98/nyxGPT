@@ -71,6 +71,24 @@ two of them are negative controls:
   `"status": "declined"`, and the next `nyxgpt cloud status` must not report an
   unfinished deploy over a run that created nothing.
 
+**#4200: a second host must not cancel the first host's release.** The deferred
+release went into ONE Terraform state file with ONE fixed resource-name prefix,
+so scheduling host B's release did not create a second schedule -- Terraform
+updated the one schedule in place to name B, and host A was left still
+allocated, still inside AWS's 24-hour minimum and still billing with nothing
+scheduled to release it and no Slack message to say so. Two more scenarios,
+and the first is again the control:
+
+* `pre-fix-two-hosts` -- `release_paths` and `_release_name_prefix` restored to
+  the single global slot at the boundary. Both hosts' applies must land in the
+  same state file under the same names, which is the overwrite. Without it,
+  `two-hosts` proves only that this build composes per-host names.
+* `two-hosts`         -- the same `nyxgpt cloud destroy --yes` with two
+  still-allocated hosts on the ledger: two applies, two backend state paths,
+  two resource-name prefixes, each naming its own host -- and a real
+  `nyxgpt cloud status` that reports BOTH hosts, because a charge nothing names
+  is a charge nobody stops.
+
 Usage:
     python scripts/cloud_stale_record_smoke.py              # every scenario
     python scripts/cloud_stale_record_smoke.py --scenario released
@@ -207,7 +225,15 @@ class _RecordedAws(BaseHTTPRequestHandler):
         self._record(action)
         if action == "DescribeHosts":
             if self.host_present and self._owns_the_host():
-                self._xml(_fixture_text("describe_hosts_available.xml"))
+                # Dispatched on the host id the SDK asked about (#4200). There
+                # is more than one host now, and EC2 answers
+                # `DescribeHosts(HostIds=[one])` with that one -- so a server
+                # that returned the same host whatever was asked would make
+                # every host look like the first one, and the two-host
+                # scenarios could not tell them apart. An id with no recorded
+                # response falls through to the single-host fixture, which is
+                # what every pre-#4200 scenario here asks for.
+                self._xml(_fixture_text(_host_fixture((fields.get("HostId.1") or [""])[0])))
             else:
                 # HTTP 400 with the error document -- the status code matters:
                 # botocore raises ClientError off it, and the whole 2026-10-03
@@ -247,6 +273,19 @@ def _snake(action: str) -> str:
             out.append("_")
         out.append(char.lower())
     return "".join(out)
+
+
+#: Which recorded `DescribeHosts` response answers for which host id. The
+#: default is the 2026-10-03 host every scenario before #4200 asks about.
+HOST_FIXTURES = {
+    "h-06c438d25077be888": "describe_hosts_available.xml",
+    "h-0bbb2222bbbb2222b": "describe_hosts_second_available.xml",
+}
+
+
+def _host_fixture(host_id: str) -> str:
+    """The recorded available-host response for `host_id`."""
+    return HOST_FIXTURES.get(host_id, "describe_hosts_available.xml")
 
 
 def _fixture_text(name: str) -> str:
@@ -648,6 +687,36 @@ TERRAFORM_SHIM += "\n".join(
         "import json, os, sys",
         'record = {"argv": sys.argv[1:],',
         '          "env": {k: v for k, v in os.environ.items() if "AWS" in k}}',
+        # The tfvars AS TERRAFORM READ IT, snapshotted at invocation time
+        # (#4200). Reading the file after the run stopped working when the
+        # per-host cleanup began deleting a destroyed stack's own tfvars -- and
+        # the snapshot is the better evidence anyway: the claim is about what
+        # the subprocess was handed, not about what survived it.
+        "for _argument in sys.argv[1:]:",
+        '    if _argument.startswith("-var-file="):',
+        "        try:",
+        '            with open(_argument.split("=", 1)[1], encoding="utf-8") as _vars:',
+        '                record["varfile"] = _vars.read()',
+        "        except OSError:",
+        '            record["varfile"] = ""',
+        # The one behaviour of the real binary the scenarios depend on: an
+        # `apply` CREATES the state file (#4200). `init` and `apply` are
+        # separate invocations, so the backend path is remembered in a sidecar
+        # between them. Without this, `release_stack_exists` is false straight
+        # after a destroy the shim only pretended to run -- `cloud status`
+        # would report every host as unscheduled and the two-host scenario
+        # could not tell a working build from a broken one.
+        '_backend = os.environ["TERRAFORM_SHIM_LOG"] + ".backend"',
+        "for _argument in sys.argv[1:]:",
+        '    if _argument.startswith("-backend-config=path="):',
+        '        with open(_backend, "w", encoding="utf-8") as _handle:',
+        '            _handle.write(_argument.split("=", 2)[2])',
+        'if "apply" in sys.argv and os.path.exists(_backend):',
+        '    with open(_backend, encoding="utf-8") as _handle:',
+        "        _state = _handle.read().strip()",
+        "    if _state:",
+        '        with open(_state, "w", encoding="utf-8") as _handle:',
+        '            _handle.write("{}" + chr(10))',
         'with open(os.environ["TERRAFORM_SHIM_LOG"], "a", encoding="utf-8") as handle:',
         "    handle.write(json.dumps(record) + chr(10))",
         "# Nothing parses this; printed so a `version` call looks like one.",
@@ -990,9 +1059,16 @@ def scenario_terraform_credentials() -> None:
                 "terraform was started without this run's credential choice: "
                 f"{[c['env'].get('AWS_PROFILE') for c in wrong]}",
             )
-            restamped = (cloud / "mac-release.tfvars").read_text(encoding="utf-8")
+            # Read from the shim's snapshot rather than from disk (#4200): the
+            # per-host cleanup deletes a destroyed stack's own tfvars, and what
+            # this asserts is what Terraform was HANDED, which is the claim.
+            restamped = [
+                call.get("varfile", "")
+                for call in calls
+                if "mac-release" in " ".join(call["argv"]) and "varfile" in call
+            ]
             _require(
-                'aws_profile = "nyxgpt"' in restamped,
+                restamped and all('aws_profile = "nyxgpt"' in text for text in restamped),
                 "the stored tfvars an earlier run wrote was reused with its own credential "
                 f"choice: {restamped!r}",
             )
@@ -1086,7 +1162,7 @@ def scenario_pre_fix_terraform() -> None:
                 "the pre-fix behaviour unexpectedly handed Terraform a profile",
             )
             _require(
-                "aws_profile" not in (cloud / "mac-release.tfvars").read_text(encoding="utf-8"),
+                all("aws_profile" not in call.get("varfile", "") for call in calls),
                 "the pre-fix behaviour unexpectedly re-stamped the stored tfvars",
             )
             print(
@@ -1144,6 +1220,273 @@ def scenario_declined() -> None:
 #: The modules every scenario's subprocess needs before it can test anything.
 #: `nyxgpt` is the product under test; `boto3` is how it asks AWS, and without
 #: it the deploy legitimately reports that AWS could not be asked.
+
+# --- #4200: a second host must not cancel the first host's release ---------
+
+#: Two hosts, both allocated from this machine, neither released. The first is
+#: the record the earlier scenarios use; the second is what a deploy/destroy
+#: inside the 24-hour window, or a retried Mac deploy, leaves behind.
+SECOND_HOST_ID = "h-0bbb2222bbbb2222b"
+
+# The pre-#4200 single-slot behaviour, restored at the boundary. `release_paths`
+# is the one resolver that made the state file and tfvars per host, so putting
+# the global pair back is exactly the old code -- and nothing else has to be
+# touched to get it.
+PRE_FIX_ONE_SLOT_DRIVER = '''\
+"""Drive the CLI with the pre-#4200 single release-stack slot restored."""
+
+import sys
+
+from nyxgpt import cloud_mac
+
+cloud_mac.release_paths = lambda host_id: (
+    cloud_mac.MAC_RELEASE_TFSTATE_FILE,
+    cloud_mac.MAC_RELEASE_TFVARS_FILE,
+)
+# And the fixed resource-name prefix that went with it: every host's schedule
+# was called `<prefix>-release`, so the second apply retargeted the first's.
+cloud_mac._release_name_prefix = lambda tfvars_file, name_prefix, host_id: name_prefix
+
+from nyxgpt.cli import cli  # noqa: E402 - after the patches, deliberately
+
+sys.exit(cli())
+'''
+
+
+def _record_two_hosts(home: Path) -> None:
+    """Put a second, older, still-allocated host on the ledger.
+
+    The ledger (`state.json`'s `mac_hosts` block) is what #4200 added, and this
+    is the state it exists for: one host described by the Mac block because it
+    is the current deployment's, and one that an earlier deployment allocated
+    and that nothing has released.
+    """
+    state_file = home / ".nyxGPT" / "cloud" / "state.json"
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    state["mac_hosts"] = [
+        {
+            "host_id": SECOND_HOST_ID,
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "availability_zone": "us-east-1a",
+            "allocated_at": "2026-09-30T15:49:43+00:00",
+            "release_at": "2026-10-01T16:19:43+00:00",
+            "hourly_rate": 0.65,
+            "release_scheduled": False,
+        },
+        {
+            "host_id": STALE_HOST_ID,
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "availability_zone": "us-east-1a",
+            "allocated_at": "2026-09-30T15:49:43+00:00",
+            "release_at": "2026-10-01T16:19:43+00:00",
+            "hourly_rate": 0.65,
+            "release_scheduled": True,
+        },
+    ]
+    state_file.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def _applied_release_stacks(calls: list[dict]) -> dict[str, dict[str, str]]:
+    """The release-stack applies the shim saw, keyed by the host each named.
+
+    Reads the tfvars snapshot rather than the command line, because the host id
+    and the resource-name prefix are both *in the vars file* -- which is the
+    thing the single slot used to overwrite.
+    """
+    applied: dict[str, dict[str, str]] = {}
+    state_path = ""
+    for call in calls:
+        for argument in call["argv"]:
+            if argument.startswith("-backend-config=path="):
+                state_path = argument.split("=", 2)[2]
+        if "apply" not in call["argv"] or "varfile" not in call:
+            continue
+        values = {
+            part.split("=", 1)[0].strip(): part.split("=", 1)[1].strip().strip('"')
+            for part in call["varfile"].splitlines()
+            if "=" in part and not part.strip().startswith("#")
+        }
+        host = values.get("host_id", "")
+        if host:
+            applied[host] = {
+                "name_prefix": values.get("name_prefix", ""),
+                "state_file": state_path,
+            }
+    return applied
+
+
+def scenario_two_hosts() -> None:
+    """#4200: scheduling host B's release leaves host A's schedule intact.
+
+    Run the way an operator runs it -- a real `nyxgpt cloud destroy --yes` from
+    the installed console script, against the `~/.nyxGPT` layout that holds two
+    still-allocated hosts -- with the recording `terraform` shim on PATH. What
+    is asserted is what Terraform was actually handed: two applies, two
+    different backend state paths, two different resource-name prefixes, one
+    per host.
+
+    Then a real `nyxgpt cloud status`, which must list BOTH hosts. Before
+    #4200 it listed one: the record had a single Mac slot, so the host that had
+    lost it was also the host with no release scheduled, and neither fact was
+    visible from anywhere.
+    """
+    server, endpoint = serve(host_present=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = _prepare_home(root)
+            _record_two_hosts(home)
+            (home / ".nyxGPT" / "config.ini").parent.mkdir(parents=True, exist_ok=True)
+            (home / ".nyxGPT" / "config.ini").write_text(
+                "[cloud]\nregion = us-east-1\n\n"
+                "[monitoring]\nslack_channel = C0SMOKE\nslack_bot_token = xoxb-smoke\n",
+                encoding="utf-8",
+            )
+            bindir, log = _install_terraform_shim(root)
+
+            destroyed = run_cli(
+                home,
+                endpoint,
+                ["cloud", "destroy", "--yes"],
+                path_prefix=bindir,
+                shim_log=log,
+            )
+            _report("two-hosts (destroy)", destroyed)
+
+            calls = _shim_calls(log)
+            applied = _applied_release_stacks(calls)
+            for host, detail in applied.items():
+                print(f"--- release stack applied for {host}")
+                print(f"      name_prefix={detail['name_prefix']!r}")
+                print(f"      state file={detail['state_file']!r}")
+            _require(
+                set(applied) == {STALE_HOST_ID, SECOND_HOST_ID},
+                "a release schedule was not applied for every still-allocated host: "
+                f"{sorted(applied)}",
+            )
+            _require(
+                len({detail["state_file"] for detail in applied.values()}) == 2,
+                "both hosts' release stacks were applied into the SAME Terraform state "
+                "file, so the second apply updates the first host's schedule in place: "
+                f"{applied}",
+            )
+            _require(
+                len({detail["name_prefix"] for detail in applied.values()}) == 2,
+                "both hosts' release stacks name their AWS resources identically, so the "
+                f"second apply retargets the first host's schedule: {applied}",
+            )
+            for host, detail in applied.items():
+                _require(
+                    cloud_mac_slug(host) in detail["name_prefix"],
+                    f"{host}'s stack does not name itself: {detail['name_prefix']!r}",
+                )
+                _require(
+                    cloud_mac_slug(host) in detail["state_file"],
+                    f"{host}'s state file does not name itself: {detail['state_file']!r}",
+                )
+
+            status = run_cli(home, endpoint, ["cloud", "status"], path_prefix=bindir, shim_log=log)
+            output = _report("two-hosts (status)", status)
+            for host in (STALE_HOST_ID, SECOND_HOST_ID):
+                _require(
+                    host in output,
+                    f"`nyxgpt cloud status` does not report {host}, which is allocated and "
+                    "billing -- a charge nothing names is a charge nobody stops",
+                )
+            # Two host blocks, and neither of them warning that nothing will
+            # release it: each host's own schedule stack is on disk, which is
+            # the state that was impossible with one slot.
+            _require(
+                output.count("EC2 Mac Dedicated Host") == 2,
+                "`nyxgpt cloud status` printed one Dedicated Host block for two hosts",
+            )
+            _require(
+                "NOTHING WILL RELEASE IT" not in output,
+                "a host's release schedule went missing even though one was applied for it: "
+                "this is the overwrite, reported by the surface that now catches it",
+            )
+            _require(
+                "NOT scheduled to be released" not in output,
+                "a host that was just scheduled is reported as unscheduled",
+            )
+            print("--- PASS: one release stack per host, and `cloud status` reports both")
+    finally:
+        server.shutdown()
+
+
+def cloud_mac_slug(host_id: str) -> str:
+    """`h-0abc` -> `0abc`, the same derivation `cloud_mac.host_slug` makes.
+
+    Spelled out here rather than imported so the assertion is independent of
+    the module under test: a `host_slug` that returned a constant would
+    otherwise satisfy a test that asked it what to expect.
+    """
+    return host_id[2:] if host_id.startswith("h-") else host_id
+
+
+def scenario_pre_fix_two_hosts() -> None:
+    """The negative control for #4200: with one slot, the second host wins.
+
+    Identical state, identical command -- and `release_paths` restored to the
+    single global pair plus the fixed resource-name prefix. BOTH applies must
+    land on the SAME state file with the SAME names, which is `terraform apply`
+    updating one schedule to point at whichever host was scheduled last. If
+    this stops reproducing, `two-hosts` passing proves nothing.
+    """
+    server, endpoint = serve(host_present=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = _prepare_home(root)
+            _record_two_hosts(home)
+            (home / ".nyxGPT" / "config.ini").write_text(
+                "[cloud]\nregion = us-east-1\n\n"
+                "[monitoring]\nslack_channel = C0SMOKE\nslack_bot_token = xoxb-smoke\n",
+                encoding="utf-8",
+            )
+            bindir, log = _install_terraform_shim(root)
+            driver = root / "pre_fix_one_slot_driver.py"
+            driver.write_text(PRE_FIX_ONE_SLOT_DRIVER, encoding="utf-8")
+
+            env = _env(home, endpoint)
+            env["PATH"] = os.pathsep.join([str(bindir), env["PATH"]])
+            env["TERRAFORM_SHIM_LOG"] = str(log)
+            completed = subprocess.run(
+                [sys.executable, str(driver), "cloud", "destroy", "--yes"],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(REPO_ROOT),
+                timeout=300,
+            )
+            _report("pre-fix two hosts (negative control)", completed)
+
+            applied = _applied_release_stacks(_shim_calls(log))
+            states = {detail["state_file"] for detail in applied.values()}
+            prefixes = {detail["name_prefix"] for detail in applied.values()}
+            print(f"--- state files used: {sorted(states)}")
+            print(f"--- name prefixes used: {sorted(prefixes)}")
+            _require(
+                applied,
+                "no release stack was applied at all, so this control proves nothing and "
+                "`two-hosts` proves nothing either",
+            )
+            _require(
+                len(states) == 1 and len(prefixes) == 1,
+                "the pre-fix single slot unexpectedly produced per-host stacks, so the "
+                f"positive scenario is vacuous: {applied}",
+            )
+            print(
+                "--- PASS (as a FAILURE of the old code): every host's release was applied "
+                "into one state file under one set of names, so only the last host scheduled "
+                "has a release"
+            )
+    finally:
+        server.shutdown()
+
+
 REQUIRED_IN_SUBPROCESS = ("nyxgpt", "boto3")
 
 
@@ -1187,6 +1530,9 @@ def main() -> int:
             "pre-fix-terraform",
             "terraform-credentials",
             "declined",
+            # #4200: one host, one release schedule.
+            "pre-fix-two-hosts",
+            "two-hosts",
             "all",
         ],
         default="all",
@@ -1246,6 +1592,11 @@ def main() -> int:
         "pre-fix-terraform": scenario_pre_fix_terraform,
         "terraform-credentials": scenario_terraform_credentials,
         "declined": scenario_declined,
+        # #4200. The negative control first, as everywhere else here: if one
+        # release-stack slot does not reproduce the overwrite, the per-host
+        # scenario below is not evidence that per-host stacks fixed anything.
+        "pre-fix-two-hosts": scenario_pre_fix_two_hosts,
+        "two-hosts": scenario_two_hosts,
     }
     for name in scenarios if args.scenario == "all" else [args.scenario]:
         scenarios[name]()

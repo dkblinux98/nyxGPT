@@ -565,9 +565,15 @@ def record_findings(record: dict[str, Any]) -> list[str]:
         # check then reported against the *second* host instead of the first.
         host_id = str(record.get("mac_host_id") or "")
         if not release_stack_exists(host_id):
+            # Structural only, and deliberately says nothing about billing
+            # (#4181): a finding is reported over a record that has NOT been
+            # confirmed at AWS, and "it is still billing" is a claim about AWS
+            # that only `observation.usable` may license. What is free to state
+            # here is what this machine holds -- the flag, and the absence of
+            # the stack the flag refers to.
             findings.append(
                 "mac_release_scheduled is true but no release schedule for this host exists on "
-                "this machine -- nothing will release it, and it is still billing"
+                "this machine, so nothing here will release it"
             )
     return findings
 
@@ -1107,9 +1113,14 @@ def _host_payload(record: dict[str, Any], args: argparse.Namespace | None = None
         # rather than inferring "scheduled" from the flag above.
         "release_schedule_present": schedule_present,
         "release_state_file": str(release_paths(host_id)[0]) if host_id else "",
+        # Gated on `usable`, like every other claim in this payload (#4181):
+        # "still billing" is about AWS, and a reader handed that sentence over
+        # an unconfirmed record would state it. Empty when the host is
+        # scheduled, and empty when nothing has confirmed the host -- the
+        # unconfirmed case has its own wording in `provenance`.
         "unscheduled_warning": (
             ""
-            if schedule_present
+            if schedule_present or not observation.usable
             else (
                 f"NOT scheduled to be released -- still billing. Nothing on this machine will "
                 f"release {host_id}. Run `nyxgpt cloud destroy --yes` to schedule it."
@@ -2839,7 +2850,11 @@ def _schedule_one(
     remember_host(
         {
             "host_id": host_id,
-            "release_at": scheduler_timestamp(release_at),
+            # The record's own ISO form, not the scheduler's naive `at()`
+            # timestamp: every reader here parses offset-aware timestamps, and
+            # a ledger row carrying one of each is a row whose two time fields
+            # cannot be compared.
+            "release_at": release_at.isoformat(),
             "release_scheduled": True,
             "release_scheduled_at": scheduled_at,
         },

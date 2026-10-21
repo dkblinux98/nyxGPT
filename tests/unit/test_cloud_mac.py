@@ -2463,3 +2463,29 @@ def test_the_slug_never_escapes_the_cloud_directory(host_id):
 
     assert state_file.parent == cloud_infra.CLOUD_DIR
     assert tfvars.parent == cloud_infra.CLOUD_DIR
+
+
+def test_the_unscheduled_warning_is_not_stated_over_an_unconfirmed_host(monkeypatch):
+    """#4181's rule applies to #4200's new sentence too.
+
+    "Still billing" is a claim about AWS. Over a record nothing confirmed, the
+    honest statement is `provenance` -- which is why the warning is empty there
+    rather than asserting a charge from a host id and a missing file.
+    """
+    _presence(monkeypatch, None, reason="AWS could not be asked")
+    _record_host()
+
+    pending = cloud_mac.pending_release(_args())
+
+    assert pending["release_schedule_present"] is False
+    assert pending["unscheduled_warning"] == ""
+    assert pending["usable"] is False
+
+
+def test_the_missing_schedule_finding_claims_nothing_about_billing():
+    """Findings are reported over records nothing has confirmed, so the wording
+    stays structural: the flag, and the absence of the stack it refers to."""
+    findings = cloud_mac.record_findings({"mac_host_id": "h-0abc", "mac_release_scheduled": True})
+
+    assert findings
+    assert not any("billing" in finding for finding in findings)
