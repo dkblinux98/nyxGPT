@@ -2713,11 +2713,19 @@ def cloud_deploy_status(
     for on an explicit load or refresh.
 
     `verify_host=true` additionally asks AWS whether the recorded resources
-    still exist -- the EC2 Mac Dedicated Host plus what Cost Explorer says it
-    has cost (#4136), and the Linux substrate's instance (#4181), because "an
-    instance exists and is being billed" is the same claim whichever substrate
-    it is made about. Opt-in like the health probe, and asked for on the same
-    explicit load. It changes nothing in AWS.
+    still exist -- **every** EC2 Mac Dedicated Host, one `DescribeHosts` each
+    (#4200), plus what Cost Explorer says the deployment's has cost (#4136),
+    and the Linux substrate's instance (#4181), because "an instance exists and
+    is being billed" is the same claim whichever substrate it is made about.
+    Opt-in like the health probe, and asked for on the same explicit load. It
+    changes nothing in AWS.
+
+    `mac_hosts` is the complete list of hosts that are allocated or pending
+    release, each with its own release time and its own
+    `release_schedule_present`; `mac_host` is the current deployment's and is
+    one of them. A client must read the list: a Dedicated Host bills until it
+    is released and outlives the deployment that created it, so a surface that
+    renders only `mac_host` hides exactly the hosts that nothing is releasing.
 
     The reply's `mac_host.usable` / `infra.observation.usable` is what tells the
     page whether it may state presence, billing or release at all, and
