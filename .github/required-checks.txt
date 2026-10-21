@@ -178,6 +178,16 @@ files-a-ticket
 terraform-artifact-smoke
 reviewable-head-behaves
 gate-is-delegated
+# acceptance-sweep-dispatch-smoke.yml's first job (#4201). Required, and
+# path-filtered to the two sweep workflows plus the helper and its callers, so
+# it is absent -- and free -- on essentially every PR. When it does run it is
+# the executed evidence that removing the `*/30` crons did not strand the
+# sweeps: the argv shape, the `--ref` that stops a dispatch silently running
+# the default branch's copy, the best-effort contract, and the promotion
+# cascade converging in one run -- each re-planted in its pre-fix form to
+# prove the assertion can fail. A red one means a merge, ceremony or gate
+# release no longer starts the sweep that promotes the owner's work.
+helper-behaves
 # The round-state classification rules (#4015). Path-filtered, so it is free
 # on the PRs it does not run for -- absent is not pending.
 round-state-rules-hold
@@ -273,3 +283,17 @@ link-revert-to-issue
 stamp-closed-lane
 detect
 resolve
+
+# acceptance-sweep-dispatch-smoke.yml's live half (#4201). Advisory, and the
+# split from its `helper-behaves` sibling is deliberate. The PROPERTY -- that
+# every actor dispatches, through one helper, naming the release branch -- is
+# required above and is a statement about the head. This job additionally
+# performs a real `dry_run=true` dispatch and polls for the resulting run, so
+# it can go red for two reasons that are not about the change under review:
+# GitHub's dispatch-to-run latency exceeding the poll, and a context with no
+# `SCRUMMASTER_AGENT_TOKEN` (it warns and passes in that case rather than
+# claiming a disproof it did not make). It still RUNS and still prints the run
+# URLs to the step summary, which is what makes it the citable executed
+# evidence for the trigger -- this only stops an Actions hiccup wedging the
+# pipeline behind it.
+dispatch-reaches-the-sweeps

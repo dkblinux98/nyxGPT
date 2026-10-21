@@ -63,8 +63,10 @@ Backlog -> In Progress -> In Review -> Acceptance Testing -> For Release -> Clos
 
 An issue can also be "parked" mid-flow — merged but held at "In Review"
 instead of advancing to Acceptance Testing — if its acceptance criteria
-depend on other, still-open issues; it promotes automatically once every
-blocker clears. Full semantics are in
+depend on other, still-open issues; it is promoted once every blocker clears,
+by a sweep the actor making the last move dispatches rather than by a timer
+(#4201 — if *you* clear the last blocker on the board, that raises no event:
+`gh workflow run sweep_parked_blocked_issues.yml`). Full semantics are in
 [AGENTS.md](../AGENTS.md#project-status-semantics) and
 [agents/runbooks/review-runbook.md](../agents/runbooks/review-runbook.md) §9.
 
@@ -181,7 +183,7 @@ sign-off, and the ceremony (master fast-forward, tag, GitHub Release,
 candidates) runs from it unattended.
 
 Full mechanics — the related-issue model, the blocking dependency, and the
-sweep that automatically promotes a feature to "For Release" once every
+dispatched sweep that promotes a feature to "For Release" once every
 related failure clears — are in
 [agents/runbooks/review-runbook.md](../agents/runbooks/review-runbook.md) §9;
 the drain gate and the automated ceremony are in

@@ -30,9 +30,12 @@ on:
 #   sends it back through dev -> review. No per-round issues are created;
 #   the failure issue's own history is the trail of its resolution.
 # - When every blocking issue reaches "For Release" — directly and
-#   transitively — the original is promoted to "For Release" automatically by
+#   transitively — the original is promoted to "For Release" by
 #   promote_accepted_features.yml (scripts/agents/promote_accepted_features.sh),
-#   which also heals any missing blocking links.
+#   which also heals any missing blocking links. That sweep is DISPATCHED by
+#   whoever made the last move and is not on a timer (#4201, ledger D-070):
+#   an agent merging the last blocker dispatches it; an owner moving the last
+#   blocker on the board raises no event and dispatches it by hand.
 #
 # Improvement issues (handle_improvement.yml) record the same native
 # relationship; the two commands differ only in the label they apply and the
@@ -311,7 +314,7 @@ jobs:
             echo
             echo "## Notes"
             echo
-            echo "- The issue this blocks is recorded in GitHub's **Relationships** panel (native blocked-by), not in this body — see the \"Blocking\" section of this issue. It is promoted to \"For Release\" automatically once everything blocking it, transitively, reaches \"For Release\"."
+            echo "- The issue this blocks is recorded in GitHub's **Relationships** panel (native blocked-by), not in this body — see the \"Blocking\" section of this issue. It is promoted to \"For Release\" once everything blocking it, transitively, reaches \"For Release\" — by a sweep the actor making the last move dispatches, not by a timer (#4201)."
           } > "$BODY_FILE"
 
           # Rework happens in the active sprint; everything else (Module,
@@ -446,7 +449,8 @@ jobs:
                 `- Developer agent fixes via a \`fix/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
                 `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your re-test\n` +
                 `- If #${issue}'s fix fails your re-test, comment \`@acceptance-failure\` **on #${issue}** — it is reopened and re-cycled, not replaced\n` +
-                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release, assigned back to you and closed, automatically\n\n` +
+                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release, assigned back to you and closed\n` +
+                `- That promotion sweep is dispatched by whoever made the last move, not polled for on a timer (#4201). An agent merging the last blocker dispatches it automatically; if **you** move the last blocker to For Release on the board, that raises no event — one dispatch picks it up: \`gh workflow run promote_accepted_features.yml --ref ${process.env.RELEASE_BRANCH || '<release branch>'}\`\n\n` +
                 `[Monitor progress](${repoUrl}/issues/${issue})`;
             }
 
@@ -463,6 +467,7 @@ jobs:
           FEATURE: ${{ steps.handle.outputs.feature }}
           NUM: ${{ steps.handle.outputs.num }}
           GATED: ${{ steps.handle.outputs.gated }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
 
       # FAIL LOUDLY (#3999). Until 2026-08-22 a failure of this handler was
       # invisible: the step died with no output, the owner's report was

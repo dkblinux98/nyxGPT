@@ -1032,5 +1032,35 @@ else
 fi
 
 resume_agent_flags
+
+# Phase 3 rewrote the Status of every closed issue in the released milestone
+# (-> Done) and Phase 4 repointed the line. Both are board changes the two
+# acceptance sweeps wait on, and neither raises an event -- so the ceremony
+# dispatches them itself rather than leaving a cron to notice (#4201).
+#
+# AFTER `resume_agent_flags`, deliberately, and after the repoint:
+#
+#   * both sweep workflows gate on `vars.AGENTS_ENABLED == 'true'`, which
+#     Phase 0 set to false. A dispatch sent any earlier in the ceremony is
+#     accepted by GitHub and then skipped by the job -- a run that looks
+#     like evidence and did nothing. A run that stops part-way leaves the
+#     flags paused on purpose, so it reaches neither this line nor the
+#     dispatch, which is the correct outcome: nothing should sweep a line
+#     mid-release.
+#   * the ref is the NEXT line's branch, because that is the branch the
+#     sweeps now check out (`vars.RELEASE_BRANCH`, repointed above).
+#
+# `load_config` is re-run here rather than assumed: Phase 3's source of the
+# lib is inside a conditional, and `--phase4-only` skips Phase 3 entirely.
+if [[ $DRY -eq 1 ]]; then
+  log "DRY-RUN: would dispatch the acceptance sweeps on ${NEXT_BRANCH}"
+elif [[ -f "$DIR/agents/lib/gh_project.sh" && -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1091
+  source "$DIR/agents/lib/gh_project.sh"; load_config
+  dispatch_acceptance_sweeps "release ceremony for ${VERSION} completed" "$NEXT_BRANCH"
+else
+  log "  NOTE: no gh_project.sh/config on this host — dispatch the acceptance sweeps by hand: gh workflow run promote_accepted_features.yml --ref ${NEXT_BRANCH}"
+fi
+
 log "NEXT_LINE ${NEXT_BRANCH} #${NEXT_RELEASE_ISSUE}"
 log "Ceremony complete for ${VERSION}."

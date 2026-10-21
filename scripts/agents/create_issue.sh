@@ -448,9 +448,10 @@ fi
 if [[ -n "$BLOCKS" ]]; then
   echo "[create-issue] Recording native relationship: #${ISSUE_NUMBER} blocks #${BLOCKS}..." >&2
 
-  # Best-effort, exactly as in the handlers: promote_accepted_features.sh
-  # heals a missing link on its next sweep, so a transient API failure must
-  # not fail issue creation that has already succeeded.
+  # Best-effort, exactly as in the handlers: a transient API failure must
+  # not fail issue creation that has already succeeded. It is NOT healed
+  # later -- see the paragraph below, and #4201 for why this path therefore
+  # dispatches no sweep.
   if mark_issue_blocked_by "$BLOCKS" "$ISSUE_NUMBER"; then
     echo "[create-issue]   ✓ #${BLOCKS} is now blocked by #${ISSUE_NUMBER}" >&2
   else

@@ -450,6 +450,17 @@ else
   fi
 fi
 
+# The merge just changed the lane the two acceptance sweeps wait on, on
+# either branch above: parking this issue at In Review is what the
+# parked-blocked sweep looks for, and moving it to Acceptance Testing or
+# For Release is what may complete some OTHER parked issue's blocker set.
+# Nothing else will announce that -- a user project's item changes raise no
+# `projects_v2_item` event -- so this path dispatches the sweeps itself
+# (#4201) rather than leaving a cron to discover it within half an hour.
+# Best-effort by construction: the helper always returns 0, so a refused
+# dispatch can never turn a completed merge into a failed run.
+dispatch_acceptance_sweeps "PR #${PR} merged, issue #${ISSUE} moved"
+
 fi
 
 echo "[review] ✓ Critical path complete" >&2

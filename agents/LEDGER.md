@@ -2716,6 +2716,44 @@ rather than mechanism, and nothing can enforce them.
   out-of-class per **D-067**; extends **D-066**, **D-067**; `docs/testing.md`
   § "A test's fixture lives in a directory the test owns".
 
+- **D-070** · 2026-10-21 · developer-agent (#4201) — **Both acceptance sweeps
+  are dispatch-driven, not polled.** The `*/30 * * * *` crons on
+  `promote_accepted_features.yml` and `sweep_parked_blocked_issues.yml` are
+  removed; `workflow_dispatch` is the only trigger. This is the third and last
+  instance of the shape **D-060** retired for the release ceremony and the
+  2026-08-25 change retired for the drain gate: a workflow whose work is
+  *noticing that a known actor changed board state*, triggered by a poll
+  GitHub then throttles to every 3-8 hours. Measured 2026-10-21: the promote
+  sweep's last 50 runs were all `schedule`, the latest took ~3.5 minutes and
+  promoted nothing — ~170 runner-minutes/day for one workflow, doubled by its
+  sibling. **Every actor that changes the state a sweep waits on now
+  dispatches both sweeps itself, through one helper**,
+  `dispatch_acceptance_sweeps` (D-066): the review merge path, the release
+  ceremony (after Phase 4's flag restore — both sweeps gate on
+  `AGENTS_ENABLED`, so an earlier dispatch is accepted and then skipped) and
+  the drain gate release (edge-triggered on an actual release, because
+  `acceptance_drain_gate.yml` subscribes to both sweeps' `workflow_run` and an
+  unconditional dispatch would be a gate→sweeps→gate cycle). The acceptance
+  handlers are deliberately *not* callers: all they write is a new blocker and
+  a park, so they add a gate and can never satisfy one. The owner's own board
+  move raises no event (user project, no `projects_v2_item`) and is one
+  deliberate `gh workflow run promote_accepted_features.yml`, named in the
+  handler copy and the reopen comment. `usage_limit_retry.yml`'s
+  `13,43 * * * *` was assessed and **kept**: it waits on a wall-clock
+  `retry_after`, which no actor can announce, so it is a timer and not a poll.
+  One correction rides with this: the cron had been doubling as the promote
+  sweep's **cascade iterator** — promoting #A to `For Release` can complete
+  #B's gate, and that second hop used to wait for the next tick — so
+  `promote_accepted_features.sh` now runs to a fixed point, as
+  `sweep_parked_blocked_issues()` always has. Revisit only if a real event for
+  user-project item changes becomes available (the same condition **D-060**
+  carries). Number from `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.1` — run, not eyeballed.
+  Source: #4201; extends **D-060**, **D-066**; supersedes the cron described
+  in both workflows' headers and in `docs/acceptance-drain-gate.md`;
+  `tests/unit/test_board_sweeps_are_dispatch_driven.py`;
+  `.github/workflows/acceptance-sweep-dispatch-smoke.yml`.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
