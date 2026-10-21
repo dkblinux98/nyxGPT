@@ -41,6 +41,121 @@ Run **integration tests only**:
 pytest -m integration
 ```
 
+### The answer must not depend on the command (#4195)
+
+`pytest`, `python -m pytest`, `pytest tests/unit`, `pytest <file>` and the
+smoke jobs must all give the **same** answer for the same tree. They did not,
+and the two ways they diverged are both easy to reintroduce:
+
+1. **`python -m pytest` prepends the current directory to `sys.path`; the
+   `pytest` console script does not.** The repo root holds a gitignored
+   `build/` directory that setuptools leaves behind on any `pip install -e .`,
+   and with the repo root on `sys.path` that bare directory imports as a
+   *namespace package*. So `pytest.importorskip("build")` answered **yes** on
+   an interpreter that cannot run `python -m build`, and the test went from
+   `skipped` to `failed` purely on which command was typed.
+
+   **Rule:** guard what you *run*. For a `python -m X` subprocess use
+   `runnable_module_or_skip("X", needed_for=...)` from
+   `tests/unit/shell_suite.py`, which asks for `X.__main__` — the thing a
+   directory with no `__main__.py` cannot provide. `importorskip` stays
+   correct for a module the test imports itself.
+
+2. **A shell suite that picks its interpreter off `PATH`.** `python3` on a CI
+   runner and on most dev machines is a system interpreter with no pytest, so
+   a suite that executes pytest got a different answer from `bash tests/<x>.sh`
+   than from the pytest wrapper that passes `NYXGPT_TEST_PYTHON`.
+
+   **Rule:** source `tests/pytest_python.sh` and take the interpreter from
+   `require_pytest_python` (or `require_python` when the suite only runs
+   stdlib scripts). It is the one place the candidate order and the
+   `command -v` absolutisation live.
+
+**Three outcomes, never two.** A suite that executes something exits `0`
+(passed), `1` (a check failed) or **`77`** (this machine cannot run
+`python -m pytest`, so the suite could not answer). The pytest wrappers map
+`77` to a skip via `assert_shell_suite_ran`; the smoke jobs treat it as a
+broken job. Collapsing `77` into `0` is what let
+`tests/test_escalation_evidence.sh` print *"All tests passed."* with its whole
+executed half skipped, and collapsing it into `1` would make a red test that
+says nothing about the code.
+
+**A skip that reads as a pass is worse than a failure.** A pytest wrapper
+around an executing suite asserts both the exit status *and* a line the suite
+only prints once its executed section ran — that is what
+`assert_shell_suite_ran`'s `proof_of_execution` is for. The same rule applies
+to fault-injection scripts: `tests/test_pr_head_guard_discriminates.sh`
+accepts only pytest exit `1` as "the guard went red", because every other
+non-zero status means the guard never started and reporting that as a caught
+defect made all nine of its cases vacuous.
+
+### A test's fixture lives in a directory the test owns
+
+**The checkout is never the fixture** (#4198, ledger **D-069**). A test that
+edits, plants or deletes a file inside the repository is writing state every
+other reader of the tree can see, and **an `EXIT` trap or a `finally` restore
+is not a mitigation** — it answers neither half of the problem:
+
+* the window is real *while the test runs*. A parallel `pytest` failed
+  `tests/unit/test_context_index.py` because
+  `tests/test_pr_head_guard_discriminates.sh` had planted a workflow under
+  `.github/workflows/`, and that workflow's whole purpose is to hand this
+  repository's `workflow`-scoped PAT to a PR author;
+* no trap and no `finally` runs on `SIGKILL`, a job timeout or a runner
+  eviction, so an interrupted run leaves the edits behind in a checkout nobody
+  knows is dirty.
+
+Gitignored destinations count too: `git status` staying clean is the floor, not
+the rule. A planted `k8s/secret.yaml` is invisible to git and perfectly visible
+to a `detect-secrets` hook, a parallel job and the developer's next build.
+
+In practice:
+
+* Python — write under `tmp_path`, never under a
+  `Path(__file__).resolve().parents[N]` constant.
+* shell — `TMP="$(mktemp -d)"` and `trap 'rm -rf "$TMP"' EXIT`. The trap
+  *discards*; it never restores, so nothing about the run's correctness
+  depends on it firing.
+* when the fixture has to look like the repository — a guard that globs
+  `.github/workflows/*.yml`, walks the tree for prose, or builds a wheel —
+  **`tests/fixture_checkout.sh`** copies every tracked file into a directory
+  you name (~1,300 files, ~25 MB, about a tenth of a second). It is the one
+  place that makes such a copy; `test_pr_head_guard_discriminates.sh` and
+  `tests/unit/test_resources_packaging.py` both call it.
+* **prefer copying the guard over giving the guard a root override.** A
+  `GUARD_ROOT`-style seam is a switch that can be left on against the real
+  repository. `tests/unit/test_pull_request_target_safety.py` resolves its root
+  from `Path(__file__)`, so the fixture copy of that file examines the fixture
+  and production reads production — the same code, no seam.
+
+`tests/unit/test_tests_own_their_fixtures.py` fails the build on a
+reintroduction, reading both the shell suites and the Python modules for write
+destinations inside the checkout. Its two detectors are pinned in both
+directions, so one that stopped matching cannot read as a tree that stopped
+offending.
+
+**Run the suite from a virtualenv, not from a user-site install.** The rules
+above make a test's answer independent of the *command*; they cannot make it
+independent of an environment where the parent process and its children see
+different packages. That is what `pip install --user` (or any `pip install`
+outside a venv) produces here: the suite moves `$HOME` into a temp directory
+before anything is imported (see the next section), the parent's `sys.path` was
+computed under the real `$HOME` and still lists `~/.local/...`, and every
+subprocess it starts resolves `~/.local` under the sandbox and finds nothing.
+So `python -c "import pytest"` fails in a child while `import pytest` works in
+the parent, and `runnable_module_or_skip` reports "cannot run `python -m build`"
+for a `build` the parent can see. Observed: a user-site layout fails
+`test_the_shared_resolver_finds_the_interpreter_running_this_test` and turns
+`tests/unit/test_resources_packaging.py` from a skip into a failure. A fresh
+venv passes both, CI's layout is unaffected, and the pre-#4195 `importorskip`
+had the same parent/child gap — this is the documented setup doing its job, not
+a new constraint. If user-site installs ever need to be supported, the gap is in
+`home_sandbox`, not in the guards.
+
+`tests/unit/test_invocation_independent_tests.py` enforces all of the above,
+including the one permitted `--deselect` in `.github/workflows/**` — which has
+to name what gates the excluded test instead.
+
 ## What a pytest run may touch
 
 **Nothing of yours.** The suite gives itself a private `$HOME` in a fresh temp
@@ -75,6 +190,9 @@ This logging setup mirrors the application and CLI logging configuration to ensu
 - Add new unit tests under `tests/unit/` and mark them with `@pytest.mark.unit` (or use a file-level marker).
 - Add new integration tests under `tests/integration/` and mark them with `@pytest.mark.integration`.
 - Do not mix unit and integration behavior in the same test file.
+- A test's result must come from the tree, not from the command that started
+  pytest or from what happens to be installed — see
+  "The answer must not depend on the command" above.
 
 ## Web UI Testing (Next.js)
 

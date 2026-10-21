@@ -2689,7 +2689,34 @@ rather than mechanism, and nothing can enforce them.
   **D-066**, **D-067**; `docs/cloud.md` § "Every row is AWS's answer or is
   labelled as not being one".
 
-- **D-069** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
+- **D-069** · 2026-10-10 · developer-agent (#4198) — **A test's fixture lives
+  in a directory the test owns; the checkout is never the fixture, and an
+  `EXIT`/`finally` restore is not a mitigation.** It answers neither half of
+  the problem: the window is real while the test runs, so every other reader
+  of the tree sees the injected state (a parallel `pytest` really did fail
+  `test_context_index.py` on a workflow `test_pr_head_guard_discriminates.sh`
+  had planted — a workflow whose purpose is to hand this repo's `workflow`-scoped
+  PAT to a PR author), and no trap or `finally` runs on `SIGKILL`, a job timeout
+  or a runner eviction, so an interrupted run leaves it behind in a checkout
+  nobody knows is dirty. Gitignored destinations are included: `git status`
+  staying clean is the floor, not the rule. One source for the copy —
+  `tests/fixture_checkout.sh` tars every tracked file into a throwaway
+  directory (~1,300 files, ~25 MB, 0.12 s), which both the shell suites and
+  `test_resources_packaging.py` call rather than each inventing it (D-066).
+  Where a guard must be pointed at the copy, the copy of the GUARD is what runs
+  it — `test_pull_request_target_safety.py` resolves its root from
+  `Path(__file__)`, so no root override, environment variable or seam exists
+  that a later edit could leave switched on against the real repository.
+  Enforced by `tests/unit/test_tests_own_their_fixtures.py`, which reads both
+  shell and Python for repo-rooted write destinations and whose own detectors
+  are pinned in both directions (#4167). Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4198; found by the #4195 class sweep (PR #4197) and filed as
+  out-of-class per **D-067**; extends **D-066**, **D-067**; `docs/testing.md`
+  § "A test's fixture lives in a directory the test owns".
+
+- **D-070** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
   that measures something other than the behaviour, is not a gate — and the
   revert of a temporary rule is owed a test that is RED while the rule is in
   force.** The owner's instruction was to make `v3.0.1`'s required set
@@ -2743,7 +2770,7 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4184, #4191, #4179, #4122, #4043, #4034, #3995,
   #3971; extends **D-006**, **D-057**, **D-066**, **D-067**.
 
-- **D-070** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
+- **D-071** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
   colour is not evidence if its own plumbing can decide it: under
   `set -o pipefail`, a pipeline whose reader may leave early reports the
   producer's broken pipe instead of the answer.** Found as a live red on this
@@ -2786,13 +2813,13 @@ rather than mechanism, and nothing can enforce them.
   `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
   run, not eyeballed.
   Source: #4192; related #4043, #4193, #4195; extends **D-006**, **D-066**,
-  **D-069**.
+  **D-070**.
 
-- **D-071** · 2026-10-10 · developer (#4192, review round 3) — **A job that
+- **D-072** · 2026-10-10 · developer (#4192, review round 3) — **A job that
   runs pytest must be able to COLLECT it: a required check that dies at
   collection is red about the runner's package set, not about the head.**
   Found as the live red that escalated this PR to the owner, and it arrived
-  through the gate **D-070** added one round earlier.
+  through the gate **D-071** added one round earlier.
   `pipeline-readers-drain` installed `pyyaml pytest` and ran
   `pytest tests/unit/test_sigpipe_pipeline_guard.py`; any target under
   `tests/` loads the **root** `tests/conftest.py`, whose import closure runs
@@ -2837,7 +2864,7 @@ rather than mechanism, and nothing can enforce them.
   from `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1`
   — run, not eyeballed.
   Source: #4192; related #4193, #4195; extends **D-006**, **D-066**,
-  **D-069**, **D-070**.
+  **D-070**, **D-071**.
 
 ## Parked
 

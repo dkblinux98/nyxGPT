@@ -35,8 +35,15 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Resolved to an ABSOLUTE path before anything is put on PATH: the stub
 # directory below shadows `python3`, and a shim that re-execs the bare name
-# would exec itself forever.
-PYTHON="$(command -v "${NYXGPT_TEST_PYTHON:-python3}" || echo "${NYXGPT_TEST_PYTHON:-python3}")"
+# would exec itself forever. Through the shared resolver since #4195, which is
+# where that rule and the candidate order now live for every shell suite --
+# `resolve_python` rather than `resolve_pytest_python` because this suite's
+# `$PYTHON` only runs stdlib scripts. The old inline form fell back to a bare
+# name when `command -v` found nothing, which produced a wall of
+# "command not found" instead of saying what was missing.
+# shellcheck source=tests/pytest_python.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pytest_python.sh"
+PYTHON="$(require_python "$ROOT_DIR")" || exit $?
 
 FAILURES=0
 TMP="$(mktemp -d)"

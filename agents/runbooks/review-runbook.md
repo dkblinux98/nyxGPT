@@ -384,7 +384,17 @@ ask.
   sweep does not account for;
 - an obvious **sibling instance left unfixed**, cited as `file:line`;
 - the same decision **corrected in N copies** where one source was available
-  and the PR does not say why it was not consolidated.
+  and the PR does not say why it was not consolidated;
+- an **out-of-class finding claimed but not filed** — the sweep describes
+  something belonging to a different class and names no issue, or names a
+  number that does not resolve. **Resolve every `#NNNN` the sweep cites**
+  (`gh issue view <N> --json number,title,state`): the number is the evidence,
+  the prose is not. On #4197 the sweep described an out-of-class defect in
+  careful detail, said "filed, not fixed here", and nothing had been filed —
+  merging it would have closed the only issue that mentioned the defect. Since
+  #4195 `class_sweep.py` appends a note to the section when the claim names no
+  issue, so an unbacked claim arrives labelled; a note left standing is this
+  finding.
 
 A generality finding must name at least one concrete instance or surface — a
 bare "this might be elsewhere" is speculation, which §1b forbids.
