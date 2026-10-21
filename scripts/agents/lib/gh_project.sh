@@ -384,6 +384,16 @@ load_config() {
   # so no new repo variable is required.
   STATUS_CLOSED="${STATUS_CLOSED:-Closed}"
 
+  # The release ceremony's close-out lane (scripts/release_ceremony.sh
+  # Phase 3 sets every closed issue in the released milestone to it). Named
+  # here for the same reason as its three siblings above -- optional config
+  # key, literal default, no new repo variable -- and because until #4204 it
+  # was a bare string literal in the ceremony and absent from every list of
+  # accepted statuses, which made a RELEASED blocker read as "not accepted
+  # yet" forever. The vocabulary now lives in lib/acceptance_status.py; this
+  # is the name it is read under.
+  STATUS_DONE="${STATUS_DONE:-Done}"
+
   # Timezone in which sprint-date boundaries are evaluated (owner rule,
   # 2026-07-31: "midnight is midnight EDT, not UTC"). Iteration start dates
   # are timezone-less, so every "has this sprint started/ended?" comparison
@@ -867,6 +877,84 @@ issue_status() {
   echo "$resp" \
     | jq -r --arg field "$STATUS_FIELD" '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[]? | select(.field.name==$field) | .name' \
     | head -1
+}
+
+# ============================================================
+# The accepted-status vocabulary (#4204, ledger D-066)
+# ============================================================
+#
+# "Is this issue accepted?" is answered in ONE place --
+# lib/acceptance_status.py -- and these three functions are how the shell
+# asks. Before #4204 every caller carried its own hard-coded list of Status
+# values and `Done` (which scripts/release_ceremony.sh Phase 3 writes) was in
+# none of them, so an issue that was accepted and then RELEASED read as "not
+# accepted yet" permanently: nothing moves an issue back out of `Done`.
+#
+# The vocabulary is read ONCE per run and compared in-process, so a sweep over
+# N blockers pays one interpreter start-up rather than N. The cache is keyed on
+# the status names themselves, so a caller (or a test) that changes them mid-run
+# gets a fresh read rather than a stale answer.
+_ACCEPTANCE_VOCAB_KEY=""
+_ACCEPTANCE_VOCAB_ACCEPTED=""
+_ACCEPTANCE_VOCAB_REACHED=""
+
+_acceptance_vocabulary_load() {
+  require_cmd jq
+  require_cmd python3
+  local key resp
+  key="${STATUS_ACCEPTANCE_TESTING:-}|${STATUS_FOR_RELEASE:-}|${STATUS_DONE:-}"
+  if [[ "$key" == "$_ACCEPTANCE_VOCAB_KEY" && -n "$_ACCEPTANCE_VOCAB_ACCEPTED" ]]; then
+    return 0
+  fi
+  # The names are passed explicitly rather than inherited: load_config sets
+  # them as shell variables and several callers (and every shell test) never
+  # export them, so os.getenv() in the module would otherwise see nothing and
+  # silently fall back to the defaults.
+  resp="$(STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}" \
+          STATUS_FOR_RELEASE="${STATUS_FOR_RELEASE:-For Release}" \
+          STATUS_DONE="${STATUS_DONE:-Done}" \
+          python3 "${_LIB_DIR}/acceptance_status.py" vocabulary)" || return 2
+  _ACCEPTANCE_VOCAB_ACCEPTED="$(jq -r '.accepted[]' <<<"$resp")" || return 2
+  _ACCEPTANCE_VOCAB_REACHED="$(jq -r '.reached_acceptance[]' <<<"$resp")" || return 2
+  [[ -n "$_ACCEPTANCE_VOCAB_ACCEPTED" ]] || return 2
+  _ACCEPTANCE_VOCAB_KEY="$key"
+}
+
+# Membership test against one of the two cached lists. Exit 0 = yes, 1 = no,
+# 2 = the vocabulary could not be read. Callers must distinguish 2 from 1: an
+# unreadable vocabulary is "unknown", and treating it as "not accepted" would
+# hold work back silently, exactly the way #4204's hard-coded lists did.
+_status_in_vocabulary() {
+  local list="$1" status="$2" entry
+  _acceptance_vocabulary_load || return 2
+  while IFS= read -r entry; do
+    [[ -n "$entry" && "$entry" == "$status" ]] && return 0
+  done <<<"$list"
+  return 1
+}
+
+# True when `status` means the owner has ACCEPTED this issue: `For Release`,
+# or `Done` once the release ceremony closed its milestone out.
+status_is_accepted() {
+  _acceptance_vocabulary_load || return 2
+  _status_in_vocabulary "$_ACCEPTANCE_VOCAB_ACCEPTED" "$1"
+}
+
+# True when `status` means the issue is merged and has at least REACHED the
+# owner's acceptance queue -- "Acceptance Testing or beyond", which is how the
+# review runbook has always described the parked-blocked sweep's gate.
+# `Acceptance Failed` is deliberately NOT in this set: work is still owed on
+# both populations that park there (#3780, D-042). See acceptance_status.py.
+status_has_reached_acceptance() {
+  _acceptance_vocabulary_load || return 2
+  _status_in_vocabulary "$_ACCEPTANCE_VOCAB_REACHED" "$1"
+}
+
+# The accepted-status list as a JSON array, for callers that hand the decision
+# to `jq` rather than testing one value at a time.
+accepted_statuses_json() {
+  _acceptance_vocabulary_load || return 2
+  printf '%s\n' "$_ACCEPTANCE_VOCAB_ACCEPTED" | jq -R -n -c '[inputs | select(length > 0)]'
 }
 
 # Clears (unsets) a project field on an item -- used by
@@ -2227,9 +2315,13 @@ ${AUTOPILOT_INFO_MARKER}" \
 
       park_state=""
       if [[ -n "$snapshot" ]]; then
+        # `status_done` travels with the other two (#4204): sprint_park_state
+        # asks acceptance_status.py whether a closed item is accepted, and
+        # `Done` -- what the release ceremony sets a released issue to -- is.
         park_state="$(jq -n -c --argjson s "$snapshot" --arg b "$STATUS_BACKLOG" \
           --arg f "${STATUS_FOR_RELEASE:-For Release}" \
-          '$s + {status_backlog: $b, status_for_release: $f}' \
+          --arg d "${STATUS_DONE:-Done}" \
+          '$s + {status_backlog: $b, status_for_release: $f, status_done: $d}' \
           | python3 "${_LIB_DIR}/sprint_calc.py" sprint-park-state 2>/dev/null || echo "")"
       fi
 
@@ -4491,8 +4583,12 @@ _issue_open_state() {
 
 # Runs the sweep: lists parked issues (list_parked_blocked_issues), then
 # iterates to a fixed point promoting any whose blockers (blocked_by_issues)
-# have ALL completed -- "complete" = the blocker is CLOSED and its Status is
-# STATUS_ACCEPTANCE_TESTING or STATUS_FOR_RELEASE. A promotion made mid-run
+# have ALL completed -- "complete" = the blocker is CLOSED and its Status has
+# reached acceptance, which status_has_reached_acceptance() answers from the
+# one vocabulary in lib/acceptance_status.py (#4204). It used to be tested
+# against a list written here, and `Done` -- what the release ceremony sets a
+# released issue to -- was not on it, so a blocker that was accepted and then
+# released held its parked issue back forever. A promotion made mid-run
 # updates the same in-memory resolved-state cache the completeness check
 # reads, so a parked blocker chain (A blocked by B blocked by C) resolves
 # transitively in one run instead of one hop per sweep interval. Honors
@@ -4500,12 +4596,13 @@ _issue_open_state() {
 # downstream chain links are evaluated as they would really resolve).
 #
 # Reads: STATUS_IN_REVIEW, STATUS_ACCEPTANCE_TESTING, STATUS_FOR_RELEASE,
-# HUMAN_OWNER (from load_config). Prints a final "Promoted N issue(s)." line
+# STATUS_DONE, HUMAN_OWNER (from load_config -- the last three only through
+# status_has_reached_acceptance). Prints a final "Promoted N issue(s)." line
 # to stdout; all progress detail goes to stderr.
 sweep_parked_blocked_issues() {
   require_cmd jq
   local dry_run="${DRY_RUN:-0}"
-  local n p b info bstate bstatus blocker_refs
+  local n p b info bstate bstatus blocker_refs rc
   local iter changed all_complete promoted_count max_iterations
 
   local -a parked=()
@@ -4550,10 +4647,31 @@ sweep_parked_blocked_issues() {
         info="${resolved[$b]}"
         bstate="${info%%:*}"
         bstatus="${info#*:}"
-        if [[ "$bstate" != "CLOSED" ]] || { [[ "$bstatus" != "$STATUS_ACCEPTANCE_TESTING" ]] && [[ "$bstatus" != "$STATUS_FOR_RELEASE" ]]; }; then
+        if [[ "$bstate" != "CLOSED" ]]; then
           all_complete=0
           break
         fi
+        # "At or past acceptance?" is asked of lib/acceptance_status.py, not
+        # of a status list of this function's own (#4204). Exit 2 means the
+        # vocabulary itself could not be read: hold, and SAY so -- a silent
+        # "not complete" is indistinguishable from an unaccepted blocker,
+        # which is the shape of the defect this consolidation removes.
+        # `|| rc=$?`, never a bare call: under the caller's `set -e` a false
+        # test standing as the whole statement would exit the sweep.
+        rc=0
+        status_has_reached_acceptance "$bstatus" || rc=$?
+        case "$rc" in
+          0) ;;
+          1)
+            all_complete=0
+            break
+            ;;
+          *)
+            echo "[sweep-parked] [warn] Could not read the accepted-status vocabulary -- holding #$p (blocker #$b is '${bstatus}')" >&2
+            all_complete=0
+            break
+            ;;
+        esac
       done
 
       if [[ "$all_complete" == "1" ]]; then

@@ -325,7 +325,11 @@ class TestSprintParkNote:
 class TestSprintParkState:
     """#3709: the park decision counts the sprint's WHOLE open population,
     and completion is two states -- agentic work complete (awaiting the
-    owner's acceptance) and sprint complete (everything in For Release)."""
+    owner's acceptance) and sprint complete (everything accepted).
+
+    "Accepted" is `acceptance_status.is_accepted` since #4204 -- `For
+    Release`, or `Done` once the release ceremony closed the milestone out --
+    not a comparison against `status_for_release` alone."""
 
     def _state(self, open_by_status=None, closed_by_status=None):
         return sprint_calc.sprint_park_state(
@@ -334,6 +338,7 @@ class TestSprintParkState:
                 "closed": closed_by_status or {},
                 "status_backlog": "Backlog",
                 "status_for_release": "For Release",
+                "status_done": "Done",
             }
         )
 
@@ -369,6 +374,30 @@ class TestSprintParkState:
         result = self._state(closed_by_status={"For Release": [3508, 3509]})
         assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
         assert result["accepted"] == [3508, 3509]
+
+    def test_released_items_in_done_are_accepted_not_awaiting(self):
+        # #4204: `Done` is what release_ceremony.sh Phase 3 writes onto every
+        # closed issue in the released milestone. Read as "not accepted yet"
+        # -- which is what `s != status_for_release` did -- a released sprint
+        # reported `awaiting_acceptance` forever, because nothing moves an
+        # issue back out of `Done`.
+        result = self._state(closed_by_status={"Done": [3508, 3509]})
+        assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
+        assert result["accepted"] == [3508, 3509]
+        assert result["awaiting_acceptance"] == []
+
+    def test_a_mix_of_for_release_and_done_is_still_complete(self):
+        result = self._state(closed_by_status={"For Release": [3509], "Done": [3508]})
+        assert result["state"] == sprint_calc.PARK_SPRINT_COMPLETE
+        assert result["accepted"] == [3508, 3509]
+
+    def test_acceptance_failed_is_still_awaiting_not_accepted(self):
+        # `Acceptance Failed` is "beyond" Acceptance Testing in board order
+        # and is deliberately NOT accepted: the owner failed it.
+        result = self._state(closed_by_status={"Done": [3508], "Acceptance Failed": [3510]})
+        assert result["state"] == sprint_calc.PARK_AWAITING_ACCEPTANCE
+        assert result["awaiting_acceptance"] == [3510]
+        assert result["accepted"] == [3508]
 
     def test_open_work_outranks_accepted_items(self):
         result = self._state({"In Progress": [3513]}, {"For Release": [3508]})

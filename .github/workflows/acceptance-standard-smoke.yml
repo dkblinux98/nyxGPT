@@ -29,12 +29,17 @@ name: Acceptance Standard Smoke
 #
 # This is the ONLY job that runs these three suites, so their paths are the
 # trigger set below; if you add a consumer of drain_gate.py's
-# `acceptance_role`, add it here too.
+# `acceptance_role`, add it here too. `lib/acceptance_status.py` is on the
+# list for the same reason (#4204): it is the one place that answers "is this
+# accepted?", the promotion gate reads it, and the promotion suite carries the
+# retired-form case showing a RELEASED blocker (`Done`) used to strand what it
+# blocked forever.
 
 on:
   push:
     paths:
       - "scripts/agents/lib/drain_gate.py"
+      - "scripts/agents/lib/acceptance_status.py"
       - "scripts/agents/lib/gh_project.sh"
       - "scripts/agents/promote_accepted_features.sh"
       - ".github/workflows/handle_acceptance_failure.yml"
@@ -46,6 +51,7 @@ on:
   pull_request:
     paths:
       - "scripts/agents/lib/drain_gate.py"
+      - "scripts/agents/lib/acceptance_status.py"
       - "scripts/agents/lib/gh_project.sh"
       - "scripts/agents/promote_accepted_features.sh"
       - ".github/workflows/handle_acceptance_failure.yml"
