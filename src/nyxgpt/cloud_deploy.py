@@ -4197,6 +4197,16 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
         # nyxGPT itself -- scheduling a second host rewrote the one stack, and
         # the first host kept a `release_scheduled` flag that nothing would act
         # on. The flag is shown as what it is and the conclusion is not drawn.
+        #
+        # DEFENCE IN DEPTH, NOT THE DELIVERY PATH: `cloud_mac.record_findings`
+        # reports exactly this combination as INCOHERENT, which closes
+        # `observation.usable`, which means the `not usable` branch above has
+        # already won before control can reach here. The loud warning an
+        # operator actually sees for a flag-true/no-stack record is that
+        # branch's, carrying `provenance`. Kept because the two conditions are
+        # independently computed and a future change to either could separate
+        # them -- but do not "improve" this wording expecting anyone to read
+        # it, and do not delete the branch above thinking this one covers it.
         _print_row(
             "Release",
             "recorded as scheduled, but NO release schedule for this host exists on this "
@@ -4204,10 +4214,23 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
             "`nyxgpt cloud destroy --yes` schedules it",
         )
     else:
+        # The money sentence comes from the payload (#4200 review): it is
+        # decided once, in `cloud_mac.observe_host`, so this row and the
+        # dashboard card cannot word the same state differently (D-066) -- and
+        # it NAMES THE HOST, which matters now that this prints one block per
+        # host and "still billing" on its own does not say which.
+        #
+        # The literal is the fallback for the two cases the field is empty in:
+        # a leftover release stack with the flag false (`unscheduled_warning`
+        # is gated on the stack being absent), and a payload from a build older
+        # than #4200.
         _print_row(
             "Release",
-            "NOT scheduled to be released -- still billing. `nyxgpt cloud destroy --yes` "
-            "terminates the Mac and schedules it",
+            mac_host.get("unscheduled_warning")
+            or (
+                "NOT scheduled to be released -- still billing. `nyxgpt cloud destroy --yes` "
+                "terminates the Mac and schedules it"
+            ),
         )
     _print_row("Spend", _mac_spend_label(mac_host))
 

@@ -2268,6 +2268,54 @@ def test_a_host_is_only_forgotten_once_aws_says_it_is_gone(monkeypatch):
     assert cloud_mac.release_stack_exists("h-0held2222held2222")
 
 
+def test_what_aws_said_about_a_host_only_a_stack_names_is_written_down(monkeypatch):
+    """#4200 review, Minor 4: the answer needs somewhere to land.
+
+    A host can be tracked by a leftover release stack alone -- a pre-#4200
+    record, or a run that died between the allocation and the ledger write --
+    and `tracked_hosts()` therefore asks AWS about it. But
+    `_remember_verification` early-returned when the host had no ledger entry,
+    so the answer was discarded, and every surface went on saying "nothing has
+    asked AWS about this host" immediately after a run had asked -- over a host
+    that is billing. Which is #4200's own class: a fact about a billing
+    resource with no per-resource place to live is a fact that gets dropped.
+    """
+    _release_stack("h-0orphan11orphan11")
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=True),
+    )
+    assert cloud_mac.ledger_entry("h-0orphan11orphan11") == {}
+
+    assert cloud_mac.reconcile_released_hosts(_args(), cleanup=False) == []
+
+    entry = cloud_mac.ledger_entry("h-0orphan11orphan11")
+    assert entry["host_id"] == "h-0orphan11orphan11"
+    assert entry["host_present"] is True
+    assert entry["verified_at"]
+
+
+def test_a_released_host_no_ledger_names_is_not_written_down_to_be_deleted(monkeypatch):
+    """The other side of that guard, and the reason it is not simply removed.
+
+    `reconcile_released_hosts` forgets a released host on the statement after
+    the one that records what AWS said, so creating the entry for a host AWS
+    reports as GONE would write the ledger twice to end where it started -- and
+    would briefly publish an entry asserting a host that no longer exists.
+    """
+    _release_stack("h-0orphan11orphan11")
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=False),
+    )
+
+    assert cloud_mac.reconcile_released_hosts(_args()) == ["h-0orphan11orphan11"]
+
+    assert cloud_mac.load_host_ledger() == []
+
+
 def test_a_host_aws_could_not_be_asked_about_stays_on_the_books(monkeypatch):
     """A record deleted on the strength of expired credentials hides a resource
     that is still costing money."""

@@ -19,6 +19,14 @@
 // local status would read as a contradiction rather than as a missing source.
 
 import { useCallback, useEffect, useState } from 'react';
+// `next/link` rather than a bare `<a>` for in-app routes: `@next/next/
+// no-html-link-for-pages` is an ERROR, and `ci-tests.yml`'s blocking eslint
+// step lints every file a merge touches -- so these two standing errors would
+// have failed the build on the first merge that edited this file for any
+// reason. Found by the #4200 review round, whose diff happened to be that
+// merge. The rest of the page's `<a>` elements point at `/admin/...` routes
+// that the rule does not flag.
+import Link from 'next/link';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import { apiErrorText, errorMessage } from '../../../lib/apiError';
@@ -645,9 +653,12 @@ function unconfirmedReason(cloud: CloudDeployStatus): string {
 // more than one can be outstanding -- and the host that lost the record's one
 // slot was both the host nothing displayed and the host nothing released.
 //
-// Every claim here is still server-decided (`usable`, `provenance`,
-// `unscheduled_warning`): D-066's rule is that this card must not be able to
-// word a state differently from `nyxgpt cloud status`.
+// Every claim here is still server-decided -- `usable` gates whether any
+// statement about AWS may be made at all, `provenance` is the sentence for when
+// it is closed, and `unscheduled_warning` is the "nothing will release this
+// host" sentence. D-066's rule is that this card must not be able to word a
+// state differently from `nyxgpt cloud status`, so it renders those three
+// rather than composing its own.
 function MacHostPanel({ host, destroyCommand }: { host: MacHost; destroyCommand: string }) {
   if (!host?.host_id) return null;
   return (
@@ -743,12 +754,34 @@ function MacHostPanel({ host, destroyCommand }: { host: MacHost; destroyCommand:
                            meant scheduling a second host retargeted the first
                            host's schedule, and the first host kept a flag
                            nothing would act on. The flag is shown as a flag and
-                           no conclusion is drawn from it. */
+                           no conclusion is drawn from it.
+
+                           DEFENCE IN DEPTH, NOT THE DELIVERY PATH: the server
+                           reports this same combination as INCOHERENT
+                           (`cloud_mac.record_findings`), which closes `usable`,
+                           so the `!host.usable` branch above has already won
+                           before this one can be reached. The warning an
+                           operator sees for a flag-true/no-stack record is that
+                           branch's, carrying `provenance`. Kept because the two
+                           conditions are computed independently -- but do not
+                           polish this wording expecting it to be read, and do
+                           not drop the branch above believing this covers it. */
                         host.release_scheduled
                       ? `recorded as scheduled, but NO release schedule for this host exists on the machine that allocated it — NOTHING WILL RELEASE IT AND IT IS STILL BILLING. \`${
                           destroyCommand
                         }\` schedules it`
-                      : `NOT scheduled to be released — still billing. \`${
+                      : /* Server-decided (#4200 review): `unscheduled_warning`
+                           is the one money sentence, composed once in
+                           `cloud_mac.observe_host` so this card and `nyxgpt
+                           cloud status` cannot word the same state differently
+                           (D-066), and it NAMES THE HOST -- which matters now
+                           that this page draws one card per host and "still
+                           billing" alone does not say which. The literal is the
+                           fallback for the two cases the field is empty in: a
+                           leftover release stack with the flag false, and a
+                           payload from an api older than #4200. */
+                        host.unscheduled_warning ||
+                        `NOT scheduled to be released — still billing. \`${
                           destroyCommand
                         }\` terminates the Mac and schedules it`
                   }
@@ -1057,8 +1090,8 @@ export default function InfrastructurePage() {
         Full local Terraform and Kubernetes stacks are available today via{' '}
         <code>nyxgpt ops install --terraform</code> and{' '}
         <code>nyxgpt ops install --kubernetes</code> — see the{' '}
-        <a href="/support/docs/terraform">Terraform guide</a> and the{' '}
-        <a href="/support/docs/kubernetes">Kubernetes guide</a>. Neither requires a pre-existing
+        <Link href="/support/docs/terraform">Terraform guide</Link> and the{' '}
+        <Link href="/support/docs/kubernetes">Kubernetes guide</Link>. Neither requires a pre-existing
         cluster: the
         Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
         reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
@@ -2204,14 +2237,6 @@ export default function InfrastructurePage() {
             </>
           )}
 
-          {/* #3995. Outside the known/unknown branch above, deliberately: the
-              ordinary end state of a macOS teardown is "no deployment, one
-              Dedicated Host still billing until tomorrow", and a block that
-              only rendered for a live deployment would hide the single
-              remaining charge at exactly the moment it is all that is left.
-              Observed, never driven (Definition of Done): the release is
-              already scheduled in AWS, and the pointer names the wrapped
-              command that schedules it when it is not. */}
           {/* #3995. Outside the known/unknown branch above, deliberately: the
               ordinary end state of a macOS teardown is "no deployment, one
               Dedicated Host still billing until tomorrow", and a block that

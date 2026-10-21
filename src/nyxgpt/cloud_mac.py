@@ -2522,8 +2522,22 @@ def _remember_verification(
     """
     answer = presence if isinstance(presence, HostPresence) else HostPresence(present=presence)
     account = cloud_identity.account_default(args)
-    if not ledger_entry(host_id):
+    if not ledger_entry(host_id) and answer.present is False:
+        # Nothing to remember about a host AWS says is gone and the ledger does
+        # not list: `reconcile_released_hosts` forgets a released host on the
+        # very next statement, so creating the entry here would write the ledger
+        # twice to end where it started -- and would briefly publish an entry
+        # asserting a host that no longer exists.
         return
+    # Otherwise the entry is CREATED when it is missing (`remember_host` appends
+    # keyed by host id). A host can be tracked by a leftover release stack alone
+    # -- a pre-#4200 record, or a run that died between the allocation and the
+    # ledger write -- and `tracked_hosts()` therefore asks AWS about it. Before
+    # this, that answer had nowhere to land: the early return discarded it, so
+    # every surface went on saying "nothing has asked AWS about this host"
+    # immediately after a run had asked, over a host that is billing. Which is
+    # the same class as #4200 itself -- a fact about a billing resource with no
+    # per-resource place to live is a fact that gets dropped.
     remember_host(
         {
             "host_id": host_id,
