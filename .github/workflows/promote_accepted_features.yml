@@ -15,10 +15,34 @@ name: Promote Accepted Features
 #
 # The sweep also heals the native blocking relationship (failure blocks
 # feature) if the handler couldn't set it.
+#
+# THE SCHEDULE WAS REMOVED (#4201, ledger D-070). It was `*/30 * * * *`:
+# 48 runs a day, each checking out the release branch and walking every
+# parked issue's transitive blocked-by closure to report "Promoted 0
+# issue(s)". Same removal, same reasoning as the release ceremony's cron
+# (D-060, 2026-10-05) and the drain gate's (2026-08-25) -- GitHub throttles
+# a busy cron to every 3-8 hours, so the poll was unreliable as well as
+# expensive, and first principle 1 says do not poll what will notify you.
+#
+# This workflow is DISPATCH-ONLY. Every actor that changes the state it
+# waits on dispatches it, through the one shared helper
+# `dispatch_acceptance_sweeps` (scripts/agents/lib/gh_project.sh): the
+# review merge path, the release ceremony and the drain gate release. The
+# one state change no actor can announce is the OWNER moving an issue on
+# the project board -- a user project raises no `projects_v2_item` event --
+# so that case is one deliberate dispatch, the same shape D-060 uses for
+# the ceremony:
+#
+#   gh workflow run promote_accepted_features.yml --ref <release branch> -f dry_run=true
+#   gh workflow run promote_accepted_features.yml --ref <release branch>
+#
+# Stated so a future session does not "restore" the cron on finding it
+# gone: nothing is stranded by its absence. The sweep converges in ONE run
+# (the fixed-point loop in promote_accepted_features.sh -- the cron used to
+# double as the cascade iterator, one hop per tick), and running it when
+# nothing is promotable moves nothing and posts nothing.
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

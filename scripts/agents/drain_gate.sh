@@ -60,6 +60,29 @@ fi
 result="$(drain_gate_release)"
 echo "$result"
 
+# A gate opening is a board change the acceptance sweeps care about: the
+# lane it opens on is `Acceptance Testing` having drained, and the items it
+# leaves parked are exactly the promotion candidates (#3780/D-042). So
+# dispatch the sweeps here rather than leaving a cron to find it (#4201).
+#
+# EDGE-TRIGGERED ON PURPOSE, and this is load-bearing, not an optimization:
+# `acceptance_drain_gate.yml` triggers on `workflow_run` completion of both
+# sweeps, so dispatching them on every evaluation would be a cycle --
+# gate -> sweeps -> gate -> sweeps, the #3790 shape. Dispatching only when
+# this run actually RELEASED something breaks it in one hop: the next
+# evaluation finds the held lane already empty, releases nothing, and
+# dispatches nothing. Evaluation is free of side effects by construction
+# (drain_gate_release moves nothing when the gate is shut), which is what
+# makes that convergence safe rather than merely likely.
+#
+# DRY_RUN still populates `.released` (it reports what it would move), so it
+# is excluded explicitly: a report that dispatches two real runs is not a
+# report.
+released_count="$(jq -r '(.released // []) | length' <<<"$result" 2>/dev/null || echo 0)"
+if [[ "${DRY_RUN:-0}" != "1" && "$released_count" != "0" ]]; then
+  dispatch_acceptance_sweeps "drain gate released ${released_count} issue(s) to ${STATUS_BACKLOG}"
+fi
+
 # A partial release is a real problem — the lane is half-open and the kick
 # has already gone out — so surface it rather than exiting 0 quietly.
 failed_count="$(jq -r '(.failed // []) | length' <<<"$result")"

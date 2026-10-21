@@ -446,7 +446,8 @@ jobs:
                 `- Developer agent fixes via a \`fix/${issue}-...\` branch and a PR with \`Closes #${issue}\`\n` +
                 `- Review agent reviews and merges; #${issue} then lands in Acceptance Testing for your re-test\n` +
                 `- If #${issue}'s fix fails your re-test, comment \`@acceptance-failure\` **on #${issue}** — it is reopened and re-cycled, not replaced\n` +
-                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release, assigned back to you and closed, automatically\n\n` +
+                `- When everything blocking this issue reaches **For Release** — directly and transitively — it is promoted to For Release, assigned back to you and closed\n` +
+                `- That promotion sweep is dispatched by whoever made the last move, not polled for on a timer (#4201). An agent merging the last blocker dispatches it automatically; if **you** move the last blocker to For Release on the board, that raises no event — one dispatch picks it up: \`gh workflow run promote_accepted_features.yml --ref ${process.env.RELEASE_BRANCH || '<release branch>'}\`\n\n` +
                 `[Monitor progress](${repoUrl}/issues/${issue})`;
             }
 
@@ -463,6 +464,7 @@ jobs:
           FEATURE: ${{ steps.handle.outputs.feature }}
           NUM: ${{ steps.handle.outputs.num }}
           GATED: ${{ steps.handle.outputs.gated }}
+          RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
 
       # FAIL LOUDLY (#3999). Until 2026-08-22 a failure of this handler was
       # invisible: the step died with no output, the owner's report was
