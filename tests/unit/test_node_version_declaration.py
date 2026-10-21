@@ -35,6 +35,7 @@ container stage is covered without touching this file.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -77,6 +78,44 @@ _DECLARATION_SURFACES = (
 )
 
 
+# Directories with no surface in them and a great many files: skipping them is
+# about walk cost, not about exempting anything.
+_PRUNED_DIRS = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".next",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+    }
+)
+
+
+def _is_discovered_surface(rel: str) -> bool:
+    """True for a file whose KIND installs or runs Node, wherever it lives.
+
+    `_DECLARATION_SURFACES` lists the surfaces that exist today, which is what
+    makes a rename fail loudly -- but a list only ever covers what someone
+    remembered to add. A SECOND web container stage in a new Dockerfile, a
+    third Homebrew formula, another `scripts/cloud` bootstrap: each is the same
+    defect arriving through a file this guard was never told about, which is
+    exactly how #4194's six copies accumulated. Discovery by kind means the
+    sweep does not depend on anyone updating a list.
+    """
+    name = rel.rsplit("/", 1)[-1]
+    if name == "Dockerfile" or name.endswith(".Dockerfile"):
+        return True
+    if rel.startswith("homebrew/") and (name.endswith(".rb") or name.endswith(".rb.tmpl")):
+        return True
+    return rel.startswith("scripts/cloud/") and (name.endswith(".sh") or name.endswith(".sh.tmpl"))
+
+
 _TRIPLE_QUOTED = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
 _FULL_LINE_COMMENT = re.compile(r"^[ \t]*#.*$", re.MULTILINE)
 _TRAILING_COMMENT = re.compile(r"[ \t]{2,}#.*$", re.MULTILINE)
@@ -116,8 +155,21 @@ def _node_majors_named_by(text: str, *, python: bool = False) -> set[int]:
 
 
 def _surface_files() -> list[Path]:
-    """The named surfaces plus every workflow -- the full set to check."""
-    return [REPO_ROOT / rel for rel in _DECLARATION_SURFACES] + sorted(WORKFLOWS.glob("*.yml"))
+    """The named surfaces, every workflow, and every file of a surface KIND.
+
+    Three sources on purpose. The named list makes a *rename* fail
+    (`test_every_named_surface_exists`); the workflow glob and the kind walk
+    make an *addition* fail without anyone editing this file.
+    """
+    found = {REPO_ROOT / rel for rel in _DECLARATION_SURFACES}
+    found.update(WORKFLOWS.glob("*.yml"))
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _PRUNED_DIRS]
+        for name in filenames:
+            path = Path(dirpath) / name
+            if _is_discovered_surface(path.relative_to(REPO_ROOT).as_posix()):
+                found.add(path)
+    return sorted(found)
 
 
 def test_every_named_surface_exists():
@@ -132,6 +184,31 @@ def test_every_named_surface_exists():
         "These surfaces are named by this guard but do not exist: "
         + ", ".join(missing)
         + ". If one moved, update `_DECLARATION_SURFACES` in the same commit."
+    )
+
+
+def test_the_sweep_finds_surfaces_nobody_listed():
+    """Discovery by kind must actually be discovering, not quietly finding zero.
+
+    `_is_discovered_surface` is the half of the sweep that covers files added
+    after this guard was written, so it is also the half that can rot in
+    silence: one wrong prefix and it matches nothing, every check still passes,
+    and the guard has gone green by losing its subject. Assert it reaches real
+    files, and specifically ones the named list does not mention.
+    """
+    named = {REPO_ROOT / rel for rel in _DECLARATION_SURFACES}
+    discovered = [
+        path
+        for path in _surface_files()
+        if path not in named
+        and path.parent != WORKFLOWS
+        and _is_discovered_surface(path.relative_to(REPO_ROOT).as_posix())
+    ]
+    assert discovered, (
+        "No Node surface was found by kind -- `_is_discovered_surface` matches "
+        "nothing in this tree, so only the hard-coded list is being swept. "
+        "Check its prefixes against where Dockerfiles, Homebrew formulas and "
+        "the cloud bootstraps actually live."
     )
 
 

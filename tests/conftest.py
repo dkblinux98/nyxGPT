@@ -295,8 +295,33 @@ def _no_instance_metadata_reads(monkeypatch):
     cloud_imds.reset_cache()
 
 
+@pytest.fixture(scope="session")
+def _declared_node_bin_dir(tmp_path_factory):
+    """A real, executable `node`/`npm` for the stubbed declaration to point at.
+
+    `_runner_runs_the_declared_node` below says "this host runs the declared
+    Node", and a path that does not exist cannot mean that: `ops` does not only
+    *name* the resolved interpreter, it RUNS it (`_node_can_resolve` shells out
+    to `node -p require.resolve(...)`). Pointed at a non-existent
+    `/usr/bin/node`, that raised `FileNotFoundError` and logged a warning --
+    machine-dependent, since the failure only surfaced once `web/node_modules`
+    existed and the probe was reached at all, which is true in CI and not in a
+    fresh checkout.
+
+    The shims exit non-zero, which is the same answer the real probe gives on a
+    host with no web dependencies installed, and they give it without depending
+    on what Node the runner happens to carry.
+    """
+    bin_dir = tmp_path_factory.mktemp("declared-node-bin")
+    for name in ("node", "npm"):
+        shim = bin_dir / name
+        shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        shim.chmod(0o755)
+    return bin_dir
+
+
 @pytest.fixture(autouse=True)
-def _runner_runs_the_declared_node(monkeypatch):
+def _runner_runs_the_declared_node(monkeypatch, _declared_node_bin_dir):
     """The suite's default is "this host runs the Node nyxGPT declares" (#4194).
 
     Same reasoning as `_no_instance_metadata_reads` above. Since #4194 every
@@ -318,22 +343,25 @@ def _runner_runs_the_declared_node(monkeypatch):
     """
     from nyxgpt import node_runtime
 
+    node_bin = str(_declared_node_bin_dir / "node")
+    npm_bin = str(_declared_node_bin_dir / "npm")
     declared = node_runtime.NodeRuntimeReport(
         state=node_runtime.NODE_OK,
-        path="/usr/bin/node",
+        path=node_bin,
         version=f"v{node_runtime.NODE_MAJOR}.0.0",
         major=node_runtime.NODE_MAJOR,
         declared_major=node_runtime.NODE_MAJOR,
-        detail=f"Node v{node_runtime.NODE_MAJOR}.0.0 at /usr/bin/node (stubbed by conftest)",
+        detail=f"Node v{node_runtime.NODE_MAJOR}.0.0 at {node_bin} (stubbed by conftest)",
         remediation="",
     )
     monkeypatch.setattr(node_runtime, "node_version_report", lambda *, timeout=15.0: declared)
     # `ops` imports the module, not the function, so patching the module
     # attribute reaches every caller -- but the npm/node *paths* are resolved
     # separately and would still come off the runner's PATH. Pinned too, so a
-    # test asserting on an argv sees a stable one.
-    monkeypatch.setattr(node_runtime, "resolve_node_bin", lambda: "/usr/bin/node")
-    monkeypatch.setattr(node_runtime, "resolve_npm_bin", lambda: "/usr/bin/npm")
+    # test asserting on an argv sees a stable one -- stable for the session,
+    # and pointing at something that exists (see `_declared_node_bin_dir`).
+    monkeypatch.setattr(node_runtime, "resolve_node_bin", lambda: node_bin)
+    monkeypatch.setattr(node_runtime, "resolve_npm_bin", lambda: npm_bin)
 
 
 @pytest.fixture(autouse=True)
