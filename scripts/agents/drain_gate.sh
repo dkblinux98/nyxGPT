@@ -60,6 +60,19 @@ fi
 result="$(drain_gate_release)"
 echo "$result"
 
+# A gate opening is a board change the acceptance sweeps care about: the
+# lane it opens on is `Acceptance Testing` having drained, and the items it
+# leaves parked are exactly the promotion candidates (#3780/D-042). So
+# dispatch the sweeps here rather than leaving a cron to find it (#4201).
+#
+# EDGE-TRIGGERED ON PURPOSE -- `drain_gate_wants_sweeps` is where that rule
+# and the reasoning behind it live (it stops a gate -> sweeps -> gate cycle;
+# the gate subscribes to both sweeps' `workflow_run` completion).
+if drain_gate_wants_sweeps "$result"; then
+  released_count="$(jq -r '(.released // []) | length' <<<"$result")"
+  dispatch_acceptance_sweeps "drain gate released ${released_count} issue(s) to ${STATUS_BACKLOG}"
+fi
+
 # A partial release is a real problem — the lane is half-open and the kick
 # has already gone out — so surface it rather than exiting 0 quietly.
 failed_count="$(jq -r '(.failed // []) | length' <<<"$result")"

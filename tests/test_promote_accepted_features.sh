@@ -369,6 +369,48 @@ _assert_contains "an issue in an unrelated lane is not a promotion candidate" \
   "$out" "#3733 status 'In Progress' is neither 'Acceptance Testing' nor 'Acceptance Failed'"
 _assert_not_contains "and it is not promoted" "$out" "would promote #3733"
 
+# --- Scenario 8: a cascade resolves inside ONE run (#4201) -----------
+# The `*/30` cron used to double as the cascade iterator: promoting #700
+# completed #600's gate, and #600 moved on the NEXT tick. With the cron gone
+# (ledger D-070) a chain has to converge within one run, so the sweep
+# iterates to a fixed point.
+#
+# The fixture deliberately puts the DEPENDENT issue first in the processing
+# order -- `jq keys[]` sorts them as strings, so #600 is evaluated before
+# the #700 it waits on. A single-pass sweep leaves #600 behind here, which
+# is exactly the defect the loop removes; evaluating them the other way
+# round would pass either way and prove nothing.
+#
+#   #400 (Acceptance Failure, For Release) blocks #700
+#   #700 (Acceptance Failure, Acceptance Testing) blocks #600
+cat > "$TMP/issues.json" <<'EOF'
+[{"number": 400, "id": 400, "labels": ["Acceptance Failure"], "body": ""},
+ {"number": 700, "id": 700, "labels": ["Acceptance Failure"], "body": ""}]
+EOF
+cat > "$TMP/deps.json" <<'EOF'
+{"blocking": {"400": [700], "700": [600]},
+ "blocked_by": {"700": [400], "600": [700, 400]}}
+EOF
+cat > "$TMP/status.json" <<'EOF'
+{"400": "For Release", "700": "Acceptance Testing", "600": "Acceptance Testing"}
+EOF
+echo '{}' > "$TMP/states.json"
+out="$(_run_sweep)"
+_assert_contains "the first hop of the cascade is promoted" "$out" "would promote #700"
+_assert_contains "the second hop is promoted in the same run, not the next tick" \
+  "$out" "would promote #600"
+_assert_contains "the extra pass is reported" "$out" "re-checking for a cascade"
+_assert_contains "both hops are counted once" "$out" "Promoted 2 issue(s)."
+
+# A chain that cannot move must not spin: with #400 unaccepted nothing is
+# promotable, the first pass promotes nothing, and the loop stops there.
+cat > "$TMP/status.json" <<'EOF'
+{"400": "In Progress", "700": "Acceptance Testing", "600": "Acceptance Testing"}
+EOF
+out="$(_run_sweep)"
+_assert_contains "an unmovable chain is a clean no-op" "$out" "Promoted 0 issue(s)."
+_assert_not_contains "and it does not re-check" "$out" "re-checking for a cascade"
+
 # --- Scenario 7: nothing to do --------------------------------------
 echo '[]' > "$TMP/issues.json"
 out="$(_run_sweep)"

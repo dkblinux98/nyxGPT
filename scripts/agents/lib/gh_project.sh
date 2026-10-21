@@ -1298,8 +1298,10 @@ acceptance_lane_snapshot() {
 # (drain_gate.py rework_features applies the rule).
 #
 # An issue that cannot be read contributes nothing -- one unreadable issue
-# must not silently open the gate wider than it should, and the next poll
-# retries.
+# must not silently open the gate wider than it should. It is retried by the
+# gate's next evaluation, which is still event-driven (`issues: closed`, a
+# sweep's `workflow_run`, or an owner dispatch) -- not by a poll; this
+# workflow has had no schedule since 2026-08-25.
 drain_gate_classify_held() {
   local held_json="$1"
   require_cmd jq
@@ -1410,7 +1412,9 @@ drain_gate_state() {
 # not collapse into any of the three answers: each of them authorizes a
 # write (dispatch a developer / promote and close an issue / leave parked),
 # and a transient API failure is evidence for none. Callers skip the issue
-# and let the next sweep decide.
+# and let the next run of their sweep decide -- which since #4201 is the next
+# DISPATCH of it, not a half-hour tick, so the skip is logged loudly rather
+# than relied on to resolve itself shortly.
 issue_acceptance_role() {
   local issue="$1"
   require_cmd jq
@@ -1433,7 +1437,8 @@ issue_acceptance_role() {
   # Fail-safe, matching the payload read above: each of the three roles
   # authorizes a write, so an unreadable edge must answer "unknown" (return 1)
   # rather than collapse into one of them. Recoverable in both directions --
-  # the item stays parked and the next poll re-reads it (#3999 review).
+  # the item stays parked and the next run re-reads it (#3999 review); since
+  # #4201 that run is the next dispatch of the sweep.
   local blocks_raw blocked_by_raw
   blocks_raw="$(blocking_issues_checked "$issue")" || return 1
   blocked_by_raw="$(blocked_by_issues_checked "$issue")" || return 1
@@ -1483,7 +1488,9 @@ acceptance_reopen_original() {
 
 This issue is reopened as the signal that it failed acceptance testing; the comment above says why.${derived_note}
 
-It waits here in **${lane}**, assigned to @${SCRUM_AGENT:-the scrummaster agent}. Nothing is dispatched against *this* issue — when everything blocking it reaches **${STATUS_FOR_RELEASE:-For Release}**, transitively, \`promote_accepted_features.sh\` moves it there, assigns it back to @${HUMAN_OWNER:-the human owner} and closes it." \
+It waits here in **${lane}**, assigned to @${SCRUM_AGENT:-the scrummaster agent}. Nothing is dispatched against *this* issue — when everything blocking it reaches **${STATUS_FOR_RELEASE:-For Release}**, transitively, \`promote_accepted_features.sh\` moves it there, assigns it back to @${HUMAN_OWNER:-the human owner} and closes it.
+
+The sweep runs when the actor that made the last move dispatches it, not on a timer (#4201). An agent merging the last blocker dispatches it automatically. If **you** move the last blocker to **${STATUS_FOR_RELEASE:-For Release}** on the board, that raises no event GitHub can deliver — one dispatch picks it up: \`gh workflow run promote_accepted_features.yml --ref ${RELEASE_BRANCH:-<release branch>}\`." \
     || _warn "acceptance_reopen_original: could not comment on #${issue}."
 
   return 0
@@ -2016,6 +2023,140 @@ dispatch_next_issue() {
 
   _warn "dispatch_next_issue: could not send the dispatch event (${reason})."
   return 1
+}
+
+# -------------------------
+# Acceptance sweeps: dispatched by the actor, never polled for (#4201)
+# -------------------------
+# The two acceptance sweeps -- "Promote Accepted Features"
+# (promote_accepted_features.sh) and "Sweep Parked Blocked Issues"
+# (sweep_parked_blocked_issues.sh) -- exist to notice that a board lane
+# changed. Both ran on `*/30 * * * *` until 2026-10-21: 96 runs a day
+# between them, each one checking out the release branch and walking every
+# parked issue's transitive blocked-by closure through the API to report
+# "Promoted 0 issue(s)". That is the shape D-060 retired for the release
+# ceremony and the 2026-08-25 change retired for the drain gate, for the
+# same two reasons: GitHub throttles a busy cron to every 3-8 hours, so the
+# poll is unreliable as well as expensive, and first principle 1 says do not
+# poll what will notify you.
+#
+# So every actor that changes the state a sweep waits on dispatches the
+# sweeps itself, through THIS function and no other (one source per
+# decision, D-066): the review merge path, the release ceremony and the
+# drain gate release. Callers do not choose WHICH sweep to run -- the two
+# read overlapping state, both are idempotent, and a caller that had to pick
+# would be a second copy of "which lane did I just change?".
+#
+# The two acceptance handlers (`@acceptance-failure`, `@improvement`) are
+# deliberately NOT callers, though they do write board state. What they
+# write is a new BLOCKER plus a park: they add a gate, they never satisfy
+# one, so a sweep dispatched from them can promote nothing. The one thing it
+# could have done -- heal a missing link -- does not apply to a
+# handler-filed issue either (the heal loop only reaches candidates
+# resolvable from a native edge or the retired prose marker, and these write
+# no marker; #3999). Dispatching there would be two runs per owner comment
+# to do nothing, which is the cost this change exists to remove. What the
+# handlers do carry is the owner-facing copy naming the dispatch they will
+# need after moving the last blocker themselves.
+#
+# Why `workflow_dispatch` (`gh workflow run --ref`) and not a
+# `repository_dispatch` event like `dispatch_next_issue`:
+#
+#   * `repository_dispatch` only ever triggers the DEFAULT branch's copy of
+#     a workflow. The sweeps already check out `RELEASE_BRANCH` explicitly,
+#     so a dispatch that runs the release branch's own copy is the honest
+#     expression of what they do -- and it is exercisable from a branch,
+#     which is what lets this trigger carry executed evidence at all
+#     (D-006). A `repository_dispatch` trigger could only ever be inspected
+#     until after it merged.
+#   * it is addressable, so the owner's documented single dispatch
+#     (`gh workflow run promote_accepted_features.yml`) is the SAME
+#     mechanism the agents use, rather than a second path with its own
+#     failure modes.
+#
+# Best-effort by construction: always returns 0. A sweep that did not get
+# dispatched costs a delayed promotion; a merge, ceremony or gate release
+# that failed because a dispatch failed costs the work itself.
+#
+#: The two sweeps, in the order a reader would want them dispatched. Add a
+#: sweep here, not at a call site -- a caller that names one workflow is the
+#: divergence this function exists to prevent.
+ACCEPTANCE_SWEEP_WORKFLOWS=(
+  "promote_accepted_features.yml"
+  "sweep_parked_blocked_issues.yml"
+)
+
+# Args: <reason> [ref] [dry_run]
+#   reason   -- what changed, for the run log
+#   ref      -- the branch whose copy of the workflow runs; defaults to
+#               RELEASE_BRANCH, which is the branch the sweeps check out
+#   dry_run  -- "true" dispatches the sweeps in report-only mode. Not a test
+#               hook bolted on: it is how THIS path gets executed evidence
+#               (D-006) without moving an issue. The alternative was a smoke
+#               job dispatching the sweeps by hand, which would be the second
+#               copy of the dispatch this function exists to prevent.
+dispatch_acceptance_sweeps() {
+  local reason="${1:-}" ref="${2:-}" dry_run="${3:-}" wf
+  local -a inputs=()
+  [[ -z "$dry_run" ]] || inputs=(-f "dry_run=${dry_run}")
+
+  # `${RELEASE_BRANCH:-}` and not `get_release_branch`: that helper echoes the
+  # variable bare, and under `set -eu` -- which every caller of this function
+  # runs with -- an unbound variable makes bash exit the command
+  # substitution's subshell fatally, bypassing the `|| echo ""` that looks
+  # like it handles it and killing the merge that called us. `load_config`
+  # requires RELEASE_BRANCH, so this is unreachable in the loop; it is written
+  # this way because "unreachable" is not a property this function may depend
+  # on when the cost of being wrong is a lost merge.
+  if [[ -z "$ref" ]]; then
+    ref="${RELEASE_BRANCH:-}"
+  fi
+  if [[ -z "$ref" ]]; then
+    # Without a ref `gh workflow run` falls back to the default branch,
+    # which is the trap manually_trigger_pr_review.sh documents: the run
+    # looks successful and executes a copy of the workflow nobody chose.
+    # Say so instead.
+    _warn "dispatch_acceptance_sweeps: no RELEASE_BRANCH configured -- the acceptance sweeps were NOT dispatched (${reason}). Run them by hand: gh workflow run promote_accepted_features.yml --ref <release branch>"
+    return 0
+  fi
+
+  for wf in "${ACCEPTANCE_SWEEP_WORKFLOWS[@]}"; do
+    if gh workflow run "$wf" -R "${REPO_OWNER}/${REPO_NAME}" --ref "$ref" \
+        "${inputs[@]+"${inputs[@]}"}" >/dev/null 2>&1; then
+      echo "[dispatch] acceptance sweep ${wf} dispatched on ${ref}${dry_run:+ (dry_run=${dry_run})} (${reason})" >&2
+    else
+      # Reported, never propagated: see the best-effort note above. There is
+      # deliberately no status variable to carry out of the loop -- one would
+      # only invite a later `return "$rc"` that breaks the contract.
+      _warn "dispatch_acceptance_sweeps: GitHub refused the dispatch of ${wf} on ${ref} (${reason}). It is not retried here; dispatch it by hand if a promotion is waiting."
+    fi
+  done
+
+  return 0
+}
+
+# True when a drain-gate run should dispatch the sweeps (#4201). Exit 0 =
+# dispatch.
+#
+# This is a predicate rather than an inline `if` in drain_gate.sh because the
+# property it carries is the one that keeps a workflow CYCLE from existing:
+# `acceptance_drain_gate.yml` triggers on `workflow_run` completion of both
+# sweeps, so a gate run that dispatched them unconditionally would be
+# gate -> sweeps -> gate -> sweeps without end (the #3790 shape). Dispatching
+# only when this run actually RELEASED something breaks it in one hop -- the
+# next evaluation finds the held lane empty, releases nothing and dispatches
+# nothing. A DRY_RUN still fills `.released` with what it WOULD move, so it is
+# excluded explicitly: a report that starts two real runs is not a report.
+#
+# Being a function means it is executed by
+# tests/unit/test_board_sweeps_are_dispatch_driven.py against each gate
+# outcome, instead of being a line of shell nobody can run.
+drain_gate_wants_sweeps() {
+  local result="${1:-}"
+  [[ "${DRY_RUN:-0}" != "1" ]] || return 1
+  local count
+  count="$(jq -r '(.released // []) | length' <<<"$result" 2>/dev/null || echo 0)"
+  [[ "${count:-0}" != "0" ]]
 }
 
 sprint_autopilot_kick() {

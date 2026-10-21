@@ -71,6 +71,17 @@ REQUIRED_CHECKS = ROOT / ".github" / "required-checks.txt"
 #: `pr_project_status_on_close.yml` (the card never got stamped `Closed`) are
 #: on `pull_request_target` as of #4167.
 DEPENDABOT_SECRETLESS_TOLERATED = {
+    "acceptance-sweep-dispatch-smoke.yml": (
+        "Degrades rather than dies (#4201): `dispatch-reaches-the-sweeps` tests "
+        '`-z "${GH_TOKEN:-}"` first and a withheld secret renders as the empty '
+        "string, so the job emits a `::warning::` saying the live dispatch was "
+        "not attempted and exits 0 -- it never claims a disproof it did not "
+        "make, and nothing is written. Also path-filtered to the two sweep "
+        "workflows and the dispatch helper's callers, which a Dependabot PR "
+        "reaches only via a github-actions update touching this workflow, and "
+        "classified `[not-required]`. The property itself is covered by the "
+        "sibling `helper-behaves` job, which reads no secret at all."
+    ),
     "claude-code-review.yml": (
         "Gated out before it can fail: every `pull_request` path in `head-gate`'s "
         "`if:` requires `vars.REVIEW_AGENT` to be a requested reviewer or an "

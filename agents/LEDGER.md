@@ -2716,7 +2716,44 @@ rather than mechanism, and nothing can enforce them.
   out-of-class per **D-067**; extends **D-066**, **D-067**; `docs/testing.md`
   § "A test's fixture lives in a directory the test owns".
 
-- **D-070** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
+- **D-070** · 2026-10-21 · developer-agent (#4201) — **Both acceptance sweeps
+  are dispatch-driven, not polled.** The `*/30 * * * *` crons on
+  `promote_accepted_features.yml` and `sweep_parked_blocked_issues.yml` are
+  removed; `workflow_dispatch` is the only trigger. This is the third and last
+  instance of the shape **D-060** retired for the release ceremony and the
+  2026-08-25 change retired for the drain gate: a workflow whose work is
+  *noticing that a known actor changed board state*, triggered by a poll
+  GitHub then throttles to every 3-8 hours. Measured 2026-10-21: the promote
+  sweep's last 50 runs were all `schedule`, the latest took ~3.5 minutes and
+  promoted nothing — ~170 runner-minutes/day for one workflow, doubled by its
+  sibling. **Every actor that changes the state a sweep waits on now
+  dispatches both sweeps itself, through one helper**,
+  `dispatch_acceptance_sweeps` (D-066): the review merge path, the release
+  ceremony (after Phase 4's flag restore — both sweeps gate on
+  `AGENTS_ENABLED`, so an earlier dispatch is accepted and then skipped) and
+  the drain gate release (edge-triggered on an actual release, because
+  `acceptance_drain_gate.yml` subscribes to both sweeps' `workflow_run` and an
+  unconditional dispatch would be a gate→sweeps→gate cycle). The acceptance
+  handlers are deliberately *not* callers: all they write is a new blocker and
+  a park, so they add a gate and can never satisfy one. The owner's own board
+  move raises no event (user project, no `projects_v2_item`) and is one
+  deliberate `gh workflow run promote_accepted_features.yml`, named in the
+  handler copy and the reopen comment. `usage_limit_retry.yml`'s
+  `13,43 * * * *` was assessed and **kept**: it waits on a wall-clock
+  `retry_after`, which no actor can announce, so it is a timer and not a poll.
+  One correction rides with this: the cron had been doubling as the promote
+  sweep's **cascade iterator** — promoting #A to `For Release` can complete
+  #B's gate, and that second hop used to wait for the next tick — so
+  `promote_accepted_features.sh` now runs to a fixed point, as
+  `sweep_parked_blocked_issues()` always has. Revisit only if a real event for
+  user-project item changes becomes available (the same condition **D-060**
+  carries). Number from `python3 scripts/agents/lib/ledger_ids.py next D
+  --base origin/v3.0.1` — run, not eyeballed.
+  Source: #4201; extends **D-060**, **D-066**; supersedes the cron described
+  in both workflows' headers and in `docs/acceptance-drain-gate.md`;
+  `tests/unit/test_board_sweeps_are_dispatch_driven.py`;
+  `.github/workflows/acceptance-sweep-dispatch-smoke.yml`.
+- **D-071** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
   that measures something other than the behaviour, is not a gate — and the
   revert of a temporary rule is owed a test that is RED while the rule is in
   force.** The owner's instruction was to make `v3.0.1`'s required set
@@ -2770,7 +2807,7 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4184, #4191, #4179, #4122, #4043, #4034, #3995,
   #3971; extends **D-006**, **D-057**, **D-066**, **D-067**.
 
-- **D-071** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
+- **D-072** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
   colour is not evidence if its own plumbing can decide it: under
   `set -o pipefail`, a pipeline whose reader may leave early reports the
   producer's broken pipe instead of the answer.** Found as a live red on this
@@ -2813,13 +2850,13 @@ rather than mechanism, and nothing can enforce them.
   `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
   run, not eyeballed.
   Source: #4192; related #4043, #4193, #4195; extends **D-006**, **D-066**,
-  **D-070**.
+  **D-071**.
 
-- **D-072** · 2026-10-10 · developer (#4192, review round 3) — **A job that
+- **D-073** · 2026-10-10 · developer (#4192, review round 3) — **A job that
   runs pytest must be able to COLLECT it: a required check that dies at
   collection is red about the runner's package set, not about the head.**
   Found as the live red that escalated this PR to the owner, and it arrived
-  through the gate **D-071** added one round earlier.
+  through the gate **D-072** added one round earlier.
   `pipeline-readers-drain` installed `pyyaml pytest` and ran
   `pytest tests/unit/test_sigpipe_pipeline_guard.py`; any target under
   `tests/` loads the **root** `tests/conftest.py`, whose import closure runs
@@ -2864,9 +2901,9 @@ rather than mechanism, and nothing can enforce them.
   from `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1`
   — run, not eyeballed.
   Source: #4192; related #4193, #4195; extends **D-006**, **D-066**,
-  **D-070**, **D-071**.
+  **D-071**, **D-072**.
 
-- **D-073** · 2026-10-21 · developer (#4192, review round 4) — **When a gate
+- **D-074** · 2026-10-21 · developer (#4192, review round 4) — **When a gate
   goes red, its report must name the cause and the run that produced it. Two
   mechanisms built for exactly that were vacuous, both because a pattern was
   anchored where real output is prefixed.** Found while diagnosing the two red
@@ -2916,10 +2953,10 @@ rather than mechanism, and nothing can enforce them.
   and not to the build. Number from
   `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run,
   not eyeballed.
-  Source: #4192; related #4193, #3861, #4179, #3783; extends **D-070**,
-  **D-071**, **D-072**, **D-066**.
+  Source: #4192; related #4193, #3861, #4179, #3783; extends **D-071**,
+  **D-072**, **D-073**, **D-066**.
 
-- **D-074** · 2026-10-21 · developer (#4192, review round 5) — **A guard that
+- **D-075** · 2026-10-21 · developer (#4192, review round 5) — **A guard that
   enumerates idioms instead of the behaviour it is named for is the defect it
   is checking for. And a wait with a deadline is not a wait on a condition.**
   Two red required checks on head `c78d492d`, and both were in this issue's
@@ -2927,12 +2964,12 @@ rather than mechanism, and nothing can enforce them.
   (a) `macos-brew-smoke`'s `candidate-upgrade` job died on
   `tar -xzOf … | awk -F'"' '/^version =/{print $2; exit}'` with
   `Write error: Broken pipe` — **having read the right version**. `awk`'s
-  `exit` is `grep -q` by another name, and **D-071**'s guard knew only
+  `exit` is `grep -q` by another name, and **D-072**'s guard knew only
   `grep -q` and `head`, so it went green on 211 files with three live copies
   in one of them. Worse, `split_pipeline` counted quotes left-to-right, so a
   pipeline inside `"$( … )"` — the dominant idiom in this tree — read as
   having **no pipe at all**: correcting that took the tree-wide count from 0
-  to **38** on the same head, i.e. D-071's "79 hazards, now clean" had never
+  to **38** on the same head, i.e. D-072's "79 hazards, now clean" had never
   looked inside a command substitution. `EARLY_READERS` is now the
   enumeration (`head`, early `grep`, `sed … q`, `awk … exit` outside `END`,
   `read`, a `while read` loop that `break`s), every entry executed against a
@@ -2960,8 +2997,8 @@ rather than mechanism, and nothing can enforce them.
   running Redis and counted by `TYPE` so a rename still counts.
   The worker defect itself is **#4208**, filed out of class and not patched:
   the cause is not yet known and a pick today would be a guess.
-  Source: #4192; related #4193, #4208, #4182, #3990, #3565; extends **D-070**,
-  **D-071**, **D-073**, **D-066**.
+  Source: #4192; related #4193, #4208, #4182, #3990, #3565; extends **D-071**,
+  **D-072**, **D-074**, **D-066**.
 
 ## Parked
 

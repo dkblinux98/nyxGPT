@@ -13,6 +13,7 @@ fails if it drifts. Do not hand-edit.
 | Workflow | Triggered by | Name |
 |---|---|---|
 | `acceptance-standard-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Standard Smoke |
+| `acceptance-sweep-dispatch-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Sweep Dispatch Smoke |
 | `acceptance_drain_gate.yml` | issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
 | `acceptance_plan.yml` | issues | Acceptance Plan Actions |
 | `add-to-release-issue-on-milestone.yml` | issues | Add issue to release issue on milestone assignment |
@@ -74,7 +75,7 @@ fails if it drifts. Do not hand-edit.
 | `pr_project_status_on_close.yml` | pull_request_target | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
-| `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |
+| `promote_accepted_features.yml` | workflow_dispatch | Promote Accepted Features |
 | `rag-fresh-cassandra-smoke.yml` | pull_request, push, workflow_dispatch | RAG Fresh Cassandra Smoke |
 | `reconcile_closed_backlog_status.yml` | workflow_dispatch | Reconcile Closed Backlog Status |
 | `red-head-round-smoke.yml` | push, pull_request, workflow_dispatch | Red Head Round Smoke |
@@ -105,7 +106,7 @@ fails if it drifts. Do not hand-edit.
 | `stranded_residue_sweep.yml` | workflow_dispatch | Stranded Residue Sweep |
 | `support-intake-smoke.yml` | push, pull_request, workflow_dispatch | Support Intake Smoke |
 | `support_intake_guard.yml` | issues | Support Intake Guard |
-| `sweep_parked_blocked_issues.yml` | schedule, workflow_dispatch | Sweep Parked Blocked Issues |
+| `sweep_parked_blocked_issues.yml` | workflow_dispatch | Sweep Parked Blocked Issues |
 | `sweep_pr_status.yml` | schedule, workflow_dispatch | Sweep PR Status |
 | `terraform-aws-validate.yml` | pull_request, push | Terraform AWS Validate |
 | `terraform-local-smoke.yml` | pull_request, push | Terraform Local Smoke |
