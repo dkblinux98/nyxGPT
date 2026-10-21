@@ -1259,8 +1259,10 @@ acceptance_lane_snapshot() {
 # (drain_gate.py rework_features applies the rule).
 #
 # An issue that cannot be read contributes nothing -- one unreadable issue
-# must not silently open the gate wider than it should, and the next poll
-# retries.
+# must not silently open the gate wider than it should. It is retried by the
+# gate's next evaluation, which is still event-driven (`issues: closed`, a
+# sweep's `workflow_run`, or an owner dispatch) -- not by a poll; this
+# workflow has had no schedule since 2026-08-25.
 drain_gate_classify_held() {
   local held_json="$1"
   require_cmd jq
@@ -1371,7 +1373,9 @@ drain_gate_state() {
 # not collapse into any of the three answers: each of them authorizes a
 # write (dispatch a developer / promote and close an issue / leave parked),
 # and a transient API failure is evidence for none. Callers skip the issue
-# and let the next sweep decide.
+# and let the next run of their sweep decide -- which since #4201 is the next
+# DISPATCH of it, not a half-hour tick, so the skip is logged loudly rather
+# than relied on to resolve itself shortly.
 issue_acceptance_role() {
   local issue="$1"
   require_cmd jq
@@ -1394,7 +1398,8 @@ issue_acceptance_role() {
   # Fail-safe, matching the payload read above: each of the three roles
   # authorizes a write, so an unreadable edge must answer "unknown" (return 1)
   # rather than collapse into one of them. Recoverable in both directions --
-  # the item stays parked and the next poll re-reads it (#3999 review).
+  # the item stays parked and the next run re-reads it (#3999 review); since
+  # #4201 that run is the next dispatch of the sweep.
   local blocks_raw blocked_by_raw
   blocks_raw="$(blocking_issues_checked "$issue")" || return 1
   blocked_by_raw="$(blocked_by_issues_checked "$issue")" || return 1
