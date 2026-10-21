@@ -271,9 +271,7 @@ def test_the_release_stack_teardown_restamps_before_terraform_reads_it(
     monkeypatch.setattr(
         cloud_infra,
         "run_terraform",
-        lambda *a, **k: seen.update(
-            cloud_mac._read_tfvars(cloud_mac.MAC_RELEASE_TFVARS_FILE)
-        ),
+        lambda *a, **k: seen.update(cloud_mac._read_tfvars(cloud_mac.MAC_RELEASE_TFVARS_FILE)),
     )
 
     assert (
