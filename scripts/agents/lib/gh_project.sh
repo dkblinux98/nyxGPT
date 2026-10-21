@@ -2061,8 +2061,16 @@ dispatch_acceptance_sweeps() {
   local -a inputs=()
   [[ -z "$dry_run" ]] || inputs=(-f "dry_run=${dry_run}")
 
+  # `${RELEASE_BRANCH:-}` and not `get_release_branch`: that helper echoes the
+  # variable bare, and under `set -eu` -- which every caller of this function
+  # runs with -- an unbound variable makes bash exit the command
+  # substitution's subshell fatally, bypassing the `|| echo ""` that looks
+  # like it handles it and killing the merge that called us. `load_config`
+  # requires RELEASE_BRANCH, so this is unreachable in the loop; it is written
+  # this way because "unreachable" is not a property this function may depend
+  # on when the cost of being wrong is a lost merge.
   if [[ -z "$ref" ]]; then
-    ref="$(get_release_branch 2>/dev/null || echo "")"
+    ref="${RELEASE_BRANCH:-}"
   fi
   if [[ -z "$ref" ]]; then
     # Without a ref `gh workflow run` falls back to the default branch,

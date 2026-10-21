@@ -217,6 +217,39 @@ def test_a_refused_dispatch_does_not_fail_the_caller(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_an_unset_release_branch_does_not_kill_the_caller(tmp_path: Path) -> None:
+    """The failure mode that looks handled and is not.
+
+    Reading the branch through a helper that echoes `${RELEASE_BRANCH}` bare
+    makes bash exit the command substitution's subshell *fatally* under
+    `set -eu` — straight past the `|| echo ""` that appears to cover it — so a
+    merge calling this would die after it had already merged. `load_config`
+    requires the variable, which makes this unreachable in the loop; it is
+    asserted anyway because "unreachable" is the wrong thing to stake a
+    completed merge on.
+    """
+    script = textwrap.dedent(f"""
+        set -euo pipefail
+        REPO_OWNER=o REPO_NAME=r
+        source "{LIB}"
+        {HELPER} "no ref configured"
+        echo "SURVIVED"
+        """)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "SURVIVED" in result.stdout
+    assert "were NOT dispatched" in result.stderr, (
+        "a dispatch that could not happen must say so, and name the by-hand "
+        f"command: {result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 @pytest.mark.parametrize(
     ("result", "dry_run", "wanted", "why"),
     [
