@@ -617,8 +617,9 @@ markers.**
   **retired**. Nothing writes it. It is still *read* as a documented fallback
   for issues filed before this decision, and
   `promote_accepted_features.sh` heals any such link into a real native edge
-  on its next sweep, so historical data converges instead of needing a
-  separate backfill.
+  on its next run, so historical data converges instead of needing a
+  separate backfill. That run is dispatched by whoever last changed a lane,
+  not a cron (#4201, ledger D-070).
 - Consumers: `promote_accepted_features.sh` (transitive promotion gate),
   `_issue_open_gate_refs` / `parked_resume.py` (auto-resume gating), and the
   retrospective (`scripts/retrospective/dump_relationships.py` →

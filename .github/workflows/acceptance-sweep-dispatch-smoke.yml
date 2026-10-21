@@ -1,0 +1,323 @@
+name: Acceptance Sweep Dispatch Smoke
+
+# Which question does this job answer? (#3775 executed verification, D-006)
+#
+#   "With the `*/30` crons gone, does an actor's dispatch actually START the
+#    two acceptance sweeps -- when RUN, not when read?"
+#
+# #4201 removed the crons from promote_accepted_features.yml and
+# sweep_parked_blocked_issues.yml and replaced them with one shared helper,
+# `dispatch_acceptance_sweeps` (scripts/agents/lib/gh_project.sh), called by
+# the review merge path, the release ceremony and the drain gate release.
+# That is a change whose entire claim is about runtime behaviour: whether
+# GitHub accepts the dispatch, whether it routes to the right workflow, and
+# whether the run comes from the branch the sweeps check out. Unit tests
+# structurally cannot reach any of it, and the cron it replaces was never
+# executable from a branch either -- `schedule` only ever runs the default
+# branch's copy, which is exactly why this was inspected rather than run for
+# as long as it was a poll.
+#
+# Two jobs, because the two halves fail differently:
+#
+#   * `helper-behaves` executes the shell -- argv shape, the `--ref` that
+#     stops a dispatch silently running the DEFAULT branch's copy, and the
+#     best-effort contract (a refused dispatch must not fail the merge that
+#     called it) -- and then re-plants the pre-fix condition to prove the
+#     guard can fail.
+#   * `dispatch-reaches-the-sweeps` performs a REAL dispatch through the real
+#     helper, on this branch, with `dry_run=true`, and prints the resulting
+#     run URLs. That is the citable evidence: a run of each sweep whose event
+#     is `workflow_dispatch`, originating from the new hook and from nothing
+#     else. `dry_run=true` is what makes it harmless -- the sweeps report what
+#     they would promote and move nothing.
+#
+# Why `workflow_dispatch` and not a `repository_dispatch` event like the
+# next-issue kick: `repository_dispatch` only ever triggers the default
+# branch's copy of a workflow, so it could not be exercised from a branch at
+# all, and the sweeps already check out `vars.RELEASE_BRANCH` explicitly.
+# See the helper's own docstring.
+#
+# What it does not cover: the sweeps' own promotion logic (that is
+# tests/test_promote_accepted_features.sh and tests/test_drain_gate_lib.sh,
+# both of which run under pytest), and the owner's by-hand dispatch of a
+# board move, which is a human action by design.
+
+on:
+  push:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/drain_gate.sh"
+      - "scripts/agents/review_accept_and_merge.sh"
+      - "scripts/agents/promote_accepted_features.sh"
+      - "scripts/agents/sweep_parked_blocked_issues.sh"
+      - "scripts/release_ceremony.sh"
+      - "tests/unit/test_board_sweeps_are_dispatch_driven.py"
+      - ".github/workflows/promote_accepted_features.yml"
+      - ".github/workflows/sweep_parked_blocked_issues.yml"
+      - ".github/workflows/acceptance-sweep-dispatch-smoke.yml"
+      # The prose guards read the surfaces that carry the trigger copy, so a
+      # change to one of them has to run the job that measures it -- the
+      # mistake #4193 found in branch-guard-smoke's own filter.
+      - ".github/workflows/handle_acceptance_failure.yml"
+      - ".github/workflows/handle_improvement.yml"
+      - "agents/runbooks/review-runbook.md"
+      - "docs/acceptance-drain-gate.md"
+      - "docs/how-this-project-is-run.md"
+  pull_request:
+    paths:
+      - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/drain_gate.sh"
+      - "scripts/agents/review_accept_and_merge.sh"
+      - "scripts/agents/promote_accepted_features.sh"
+      - "scripts/agents/sweep_parked_blocked_issues.sh"
+      - "scripts/release_ceremony.sh"
+      - "tests/unit/test_board_sweeps_are_dispatch_driven.py"
+      - ".github/workflows/promote_accepted_features.yml"
+      - ".github/workflows/sweep_parked_blocked_issues.yml"
+      - ".github/workflows/acceptance-sweep-dispatch-smoke.yml"
+      # The prose guards read the surfaces that carry the trigger copy, so a
+      # change to one of them has to run the job that measures it -- the
+      # mistake #4193 found in branch-guard-smoke's own filter.
+      - ".github/workflows/handle_acceptance_failure.yml"
+      - ".github/workflows/handle_improvement.yml"
+      - "agents/runbooks/review-runbook.md"
+      - "docs/acceptance-drain-gate.md"
+      - "docs/how-this-project-is-run.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  helper-behaves:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: The trigger-shape and wiring guards, executed
+        # These are pytest files and the pytest suite runs on the release
+        # branch, not on pull requests -- so without this step the guard that
+        # keeps the crons off and the guard that keeps every actor wired would
+        # first run AFTER the merge that broke them.
+        #
+        # `pip install -e .`, not just pytest: the root tests/conftest.py
+        # imports tests/log_guard.py (-> psutil) and `nyxgpt.config`, and
+        # nothing puts `src/` on the path but the install. Without it pytest
+        # dies at collection with exit 4.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade pip setuptools
+          python -m pip install --quiet -e .
+          python -m pip install --quiet pyyaml pytest
+          python -m pytest -q -p no:cacheprovider --no-header \
+            tests/unit/test_board_sweeps_are_dispatch_driven.py
+
+      - name: The promotion cascade resolves in one run, executed
+        # The cron was doubling as the cascade iterator (one hop per tick).
+        # With it gone the sweep has to converge inside one run, which is a
+        # property of the real script against a stub `gh`.
+        shell: bash
+        run: bash tests/test_promote_accepted_features.sh
+
+      - name: Prove the guards can fail -- re-plant the cron and drop the --ref
+        # A test that cannot fail proves nothing (#3753). Two injections, one
+        # per property this change rests on.
+        shell: bash
+        run: |
+          set -uo pipefail
+          FAIL=0
+
+          # (1) Restore the `*/30` cron on one sweep. The trigger guard must
+          #     go red; if it does not, it is not reading the `on:` block.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path(".github/workflows/promote_accepted_features.yml")
+          p.write_text(p.read_text().replace(
+              "on:\n  workflow_dispatch:",
+              'on:\n  schedule:\n    - cron: "*/30 * * * *"\n  workflow_dispatch:',
+              1))
+          PY
+          if python -m pytest -q -p no:cacheprovider --no-header \
+               tests/unit/test_board_sweeps_are_dispatch_driven.py >/dev/null 2>&1; then
+            echo "::error::the trigger guard passed with the */30 cron restored -- it is not checking the schedule"
+            FAIL=1
+          else
+            echo "ok: restoring the cron turns the guard red"
+          fi
+          git checkout -- .github/workflows/promote_accepted_features.yml
+
+          # (2) Drop the `--ref`. `gh workflow run` then dispatches the
+          #     DEFAULT branch's copy -- a run that looks like evidence and
+          #     executed something nobody chose (the trap
+          #     manually_trigger_pr_review.sh documents). The argv assertion
+          #     must catch it.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("scripts/agents/lib/gh_project.sh")
+          body = p.read_text()
+          assert '--ref "$ref"' in body, "the dispatch no longer passes --ref at all"
+          p.write_text(body.replace('--ref "$ref" ', "", 1))
+          PY
+          if python -m pytest -q -p no:cacheprovider --no-header \
+               tests/unit/test_board_sweeps_are_dispatch_driven.py >/dev/null 2>&1; then
+            echo "::error::the argv guard passed with --ref removed -- a dispatch could silently run the default branch"
+            FAIL=1
+          else
+            echo "ok: removing --ref turns the guard red"
+          fi
+          git checkout -- scripts/agents/lib/gh_project.sh
+
+          # (3) Re-plant the prose the first pass at #4201 actually missed:
+          #     the "(cron + dispatch)" header on one sweep's own script,
+          #     deleted and re-asserted by the same commit. Selected by -k so
+          #     the PROSE guard has to go red, not merely the file.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("scripts/agents/sweep_parked_blocked_issues.sh")
+          t = p.read_text()
+          s = t.index("# Run via .github/workflows/sweep_parked")
+          e = t.index("There is no cron.", s) + len("There is no cron.")
+          p.write_text(
+              t[:s]
+              + "# Run via .github/workflows/sweep_parked_blocked_issues.yml (cron + dispatch)."
+              + t[e:]
+          )
+          PY
+          if python -m pytest -q -p no:cacheprovider --no-header \
+               tests/unit/test_board_sweeps_are_dispatch_driven.py \
+               -k advertises >/dev/null 2>&1; then
+            echo "::error::the prose guard passed with the '(cron + dispatch)' header re-planted -- a sweep can again advertise a cron it does not have"
+            FAIL=1
+          else
+            echo "ok: advertising a cron the sweep does not have turns the guard red"
+          fi
+          git checkout -- scripts/agents/sweep_parked_blocked_issues.sh
+
+          # (4) Re-plant the other missed sibling: the handler-filed issue's
+          #     body promising promotion "automatically" with nothing named as
+          #     the promoter. This is the copy the owner reads, and the gate it
+          #     describes is most often completed by the owner's own board
+          #     move -- the one case that raises no event at all.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path(".github/workflows/handle_acceptance_failure.yml")
+          body = p.read_text()
+          live = (
+              'It is promoted to \\"For Release\\" once everything blocking it, '
+              'transitively, reaches \\"For Release\\" — by a sweep the actor '
+              'making the last move dispatches, not by a timer (#4201).'
+          )
+          assert live in body, "the handler's Notes line no longer carries the dispatch caveat"
+          p.write_text(body.replace(
+              live,
+              'It is promoted to \\"For Release\\" automatically once everything '
+              'blocking it, transitively, reaches \\"For Release\\".',
+              1))
+          PY
+          if python -m pytest -q -p no:cacheprovider --no-header \
+               tests/unit/test_board_sweeps_are_dispatch_driven.py \
+               -k promoter >/dev/null 2>&1; then
+            echo "::error::the prose guard passed with an unattributed 'promoted automatically' re-planted"
+            FAIL=1
+          else
+            echo "ok: promising an automatic promotion with no promoter turns the guard red"
+          fi
+          git checkout -- .github/workflows/handle_acceptance_failure.yml
+
+          exit $FAIL
+
+  dispatch-reaches-the-sweeps:
+    # The live half. Skipped rather than failed when the token is absent (a
+    # fork PR carries no secrets): a job that cannot authenticate has not
+    # disproved anything, and saying so beats a red run that means nothing.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dispatch both sweeps through the real helper, in dry-run
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          # This branch, deliberately -- not `vars.RELEASE_BRANCH`. The point
+          # is to run THIS change's copy of the sweep workflows.
+          REF: ${{ github.head_ref || github.ref_name }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::warning::no SCRUMMASTER_AGENT_TOKEN in this context -- the live dispatch was not attempted."
+            echo "attempted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The real function, with the real `gh`. `dry_run=true` is what
+          # keeps this harmless: both sweeps report and move nothing.
+          source scripts/agents/lib/gh_project.sh
+          RELEASE_BRANCH="$REF"
+          export RELEASE_BRANCH
+          # Stamped BEFORE the dispatch, so the next step can tell this run's
+          # sweep runs from an earlier smoke run's on the same branch. The
+          # 60-second lead absorbs runner-vs-GitHub clock skew without
+          # widening the window enough to admit a previous smoke run, which is
+          # minutes or hours old.
+          SINCE="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
+          dispatch_acceptance_sweeps "acceptance-sweep-dispatch-smoke on ${REF}" "$REF" "true"
+          echo "attempted=true" >> "$GITHUB_OUTPUT"
+          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
+
+      - name: Find the runs the dispatch started and cite them
+        if: steps.dispatch.outputs.attempted == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.head_ref || github.ref_name }}
+          SINCE: ${{ steps.dispatch.outputs.since }}
+        shell: bash
+        # The dispatch is accepted before the run object exists, so this
+        # polls rather than reading once. A run that never appears is a
+        # failure of the thing being tested, not a flake to retry away: the
+        # whole claim of #4201 is that the dispatch starts the sweep.
+        #
+        # The `created_at >= SINCE` filter is what makes that a real check: on
+        # any branch that has run this smoke before, taking the newest
+        # `workflow_dispatch` run unfiltered would cite the EARLIER run and
+        # pass while this dispatch silently failed.
+        run: |
+          set -euo pipefail
+          FAIL=0
+          {
+            echo "### Acceptance sweep dispatch — executed evidence (#4201)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for WF in promote_accepted_features.yml sweep_parked_blocked_issues.yml; do
+            URL=""
+            for _ in $(seq 1 20); do
+              URL="$(gh api "repos/$REPO/actions/workflows/$WF/runs?event=workflow_dispatch&branch=$REF&per_page=5" 2>/dev/null \
+                | jq -r --arg since "$SINCE" \
+                  '[.workflow_runs[] | select(.created_at >= $since) | .html_url] | first // empty' 2>/dev/null || true)"
+              [[ -n "$URL" ]] && break
+              sleep 6
+            done
+            if [[ -z "$URL" ]]; then
+              echo "::error::no workflow_dispatch run of $WF appeared on $REF -- the dispatch did not start the sweep"
+              echo "- ❌ \`$WF\` — no run appeared on \`$REF\`" >> "$GITHUB_STEP_SUMMARY"
+              FAIL=1
+              continue
+            fi
+            echo "dispatched run for $WF: $URL"
+            echo "- ✅ \`$WF\` — $URL" >> "$GITHUB_STEP_SUMMARY"
+            echo "  (event \`workflow_dispatch\`, \`dry_run=true\`, ref \`$REF\`)" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          exit $FAIL

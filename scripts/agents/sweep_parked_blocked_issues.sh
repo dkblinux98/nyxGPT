@@ -10,7 +10,11 @@
 # resolution loop that lets a parked blocker chain resolve transitively in
 # one run.
 #
-# Run via .github/workflows/sweep_parked_blocked_issues.yml (cron + dispatch).
+# Run via .github/workflows/sweep_parked_blocked_issues.yml, which is
+# DISPATCH-ONLY since #4201 (ledger D-070): the actor that changes a lane
+# dispatches this sweep through dispatch_acceptance_sweeps(), and the owner's
+# own board moves are covered by one deliberate
+# `gh workflow run sweep_parked_blocked_issues.yml`. There is no cron.
 #
 # ENV:
 #   DRY_RUN=1   report what would be promoted, change nothing

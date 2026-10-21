@@ -940,13 +940,20 @@ The parked issue moves to Acceptance Testing (and the owner is assigned)
 only once **every** blocker is complete -- merged and itself in Acceptance
 Testing or beyond (For Release). This is enforced by a sweep
 (`sweep_parked_blocked_issues.sh`, run via
-`.github/workflows/sweep_parked_blocked_issues.yml`, every 30 min +
-`workflow_dispatch` with a `dry_run` input): it finds every parked issue and
-promotes any whose blockers have all completed, posting a promotion comment
-on each. A chain of parked issues (A blocked by B blocked by C) resolves
-transitively within one sweep run -- once C completes, B promotes in the
-same pass, which in turn makes A eligible and it promotes too, rather than
-each hop waiting for a separate 30-minute cycle.
+`.github/workflows/sweep_parked_blocked_issues.yml`, `workflow_dispatch`
+only, with a `dry_run` input): it finds every parked issue and promotes any
+whose blockers have all completed, posting a promotion comment on each. A
+chain of parked issues (A blocked by B blocked by C) resolves transitively
+within one sweep run -- once C completes, B promotes in the same pass, which
+in turn makes A eligible and it promotes too.
+
+**The sweep has no schedule** (#4201, ledger D-070; the `*/30` cron was
+removed for the reasons D-060 removed the ceremony's). The actor that
+changes what it waits on dispatches it: the merge path above calls
+`dispatch_acceptance_sweeps`, as do the release ceremony and the drain gate
+release. A board move *you* make raises no event GitHub can deliver, so that
+case is one dispatch:
+`gh workflow run sweep_parked_blocked_issues.yml --ref <release branch>`.
 
 Motivating case: #3508 was parked back to In Review by the owner, blocked by
 #3621/#3622 -- its repo-less-portability acceptance criteria are unmeetable
@@ -956,8 +963,13 @@ until those land.
 Move the issue to "For Release" in the project board. No action needed in GitHub.
 **Gate:** an issue that anything blocks (see below) is NOT moved to
 "For Release" by hand — the promotion sweep
-(`promote_accepted_features.yml`, every 30 min) moves it automatically once
-everything blocking it, transitively, has itself been accepted (For Release).
+(`promote_accepted_features.yml`) moves it once everything blocking it,
+transitively, has itself been accepted (For Release). That sweep is
+dispatched by whoever made the last move, not polled for on a timer (#4201):
+an agent merging the last blocker dispatches it automatically, and if **you**
+move the last blocker to "For Release" on the board — which raises no event —
+one dispatch picks it up:
+`gh workflow run promote_accepted_features.yml --ref <release branch>`.
 
 ### If acceptance reveals an improvement (not a defect)
 
@@ -1077,7 +1089,8 @@ successor.
 
 **Promotion:** when everything blocking an issue reaches "For Release" —
 directly and **transitively**, so a failure filed against a failure counts —
-it is promoted to "For Release" automatically by the promotion sweep, with a
+it is promoted to "For Release" by the promotion sweep — dispatched by
+whoever made the last move, never polled for (#4201, §9 above) — with a
 comment recording which issues cleared it. If it is a reopened original, the
 same sweep assigns it back to you and **closes** it: your reopen asked a
 question, and the promotion is where it is answered. Unique-failure count per feature
