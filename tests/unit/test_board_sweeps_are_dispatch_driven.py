@@ -171,9 +171,7 @@ def test_every_actor_dispatches_the_sweeps(actor: Path) -> None:
     """A lane change nobody announces is a lane change nothing acts on."""
     body = (REPO_ROOT / actor).read_text(encoding="utf-8")
     calls = [
-        line
-        for line in body.splitlines()
-        if HELPER in line and not line.lstrip().startswith("#")
+        line for line in body.splitlines() if HELPER in line and not line.lstrip().startswith("#")
     ]
     assert calls, f"{actor} changes board state but never calls {HELPER}"
 
@@ -194,15 +192,13 @@ def test_a_refused_dispatch_does_not_fail_the_caller(tmp_path: Path) -> None:
     stub.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
     stub.chmod(0o755)
 
-    script = textwrap.dedent(
-        f"""
+    script = textwrap.dedent(f"""
         set -euo pipefail
         REPO_OWNER=o REPO_NAME=r RELEASE_BRANCH=v9.9.9
         source "{LIB}"
         {HELPER} "stubbed refusal"
         echo "RC=$?"
-        """
-    )
+        """)
     result = subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
@@ -221,6 +217,39 @@ def test_a_refused_dispatch_does_not_fail_the_caller(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(
+    ("result", "dry_run", "wanted", "why"),
+    [
+        ('{"action":"released","released":[1,2]}', "0", True, "released two"),
+        ('{"action":"none","released":[]}', "0", False, "nothing held"),
+        ('{"action":"none","reason":"gate closed"}', "0", False, "gate shut"),
+        ('{"action":"released","released":[1]}', "1", False, "dry run"),
+        ("not json at all", "0", False, "unreadable result"),
+    ],
+    ids=["released", "nothing-held", "gate-closed", "dry-run", "unreadable"],
+)
+def test_the_gate_dispatch_is_edge_triggered(
+    result: str, dry_run: str, wanted: bool, why: str, tmp_path: Path
+) -> None:
+    """The property that stops a gate -> sweeps -> gate cycle, executed.
+
+    `acceptance_drain_gate.yml` triggers on `workflow_run` completion of both
+    sweeps. A gate run that dispatched them on every evaluation would restart
+    itself forever — the #3790 shape. Only an actual release may dispatch, and
+    a DRY_RUN (which still reports what it *would* move) may not.
+    """
+    script = textwrap.dedent(f"""
+        set -uo pipefail
+        source "{LIB}"
+        DRY_RUN={dry_run}
+        if drain_gate_wants_sweeps {result!r}; then echo WANTED; else echo SKIPPED; fi
+        """)
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+    expected = "WANTED" if wanted else "SKIPPED"
+    assert expected in out, f"{why}: expected {expected}, got {out!r}"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_the_dispatch_names_the_release_branch(tmp_path: Path) -> None:
     """`gh workflow run` without `--ref` runs the DEFAULT branch's copy.
 
@@ -231,20 +260,16 @@ def test_the_dispatch_names_the_release_branch(tmp_path: Path) -> None:
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     stub = stub_dir / "gh"
-    stub.write_text(
-        '#!/usr/bin/env bash\necho "$@" >> "$GH_ARGV_LOG"\n', encoding="utf-8"
-    )
+    stub.write_text('#!/usr/bin/env bash\necho "$@" >> "$GH_ARGV_LOG"\n', encoding="utf-8")
     stub.chmod(0o755)
     log = tmp_path / "argv.log"
 
-    script = textwrap.dedent(
-        f"""
+    script = textwrap.dedent(f"""
         set -euo pipefail
         REPO_OWNER=o REPO_NAME=r RELEASE_BRANCH=v9.9.9
         source "{LIB}"
         {HELPER} "stubbed success"
-        """
-    )
+        """)
     subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
@@ -258,6 +283,6 @@ def test_the_dispatch_names_the_release_branch(tmp_path: Path) -> None:
     )
     argv = log.read_text(encoding="utf-8")
     for sweep in SWEEPS:
-        assert f"workflow run {sweep} -R o/r --ref v9.9.9" in argv, (
-            f"{sweep} was not dispatched on the release branch:\n{argv}"
-        )
+        assert (
+            f"workflow run {sweep} -R o/r --ref v9.9.9" in argv
+        ), f"{sweep} was not dispatched on the release branch:\n{argv}"

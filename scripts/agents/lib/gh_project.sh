@@ -2042,8 +2042,19 @@ ACCEPTANCE_SWEEP_WORKFLOWS=(
   "sweep_parked_blocked_issues.yml"
 )
 
+# Args: <reason> [ref] [dry_run]
+#   reason   -- what changed, for the run log
+#   ref      -- the branch whose copy of the workflow runs; defaults to
+#               RELEASE_BRANCH, which is the branch the sweeps check out
+#   dry_run  -- "true" dispatches the sweeps in report-only mode. Not a test
+#               hook bolted on: it is how THIS path gets executed evidence
+#               (D-006) without moving an issue. The alternative was a smoke
+#               job dispatching the sweeps by hand, which would be the second
+#               copy of the dispatch this function exists to prevent.
 dispatch_acceptance_sweeps() {
-  local reason="${1:-}" ref="${2:-}" wf rc=0
+  local reason="${1:-}" ref="${2:-}" dry_run="${3:-}" wf rc=0
+  local -a inputs=()
+  [[ -z "$dry_run" ]] || inputs=(-f "dry_run=${dry_run}")
 
   if [[ -z "$ref" ]]; then
     ref="$(get_release_branch 2>/dev/null || echo "")"
@@ -2058,8 +2069,9 @@ dispatch_acceptance_sweeps() {
   fi
 
   for wf in "${ACCEPTANCE_SWEEP_WORKFLOWS[@]}"; do
-    if gh workflow run "$wf" -R "${REPO_OWNER}/${REPO_NAME}" --ref "$ref" >/dev/null 2>&1; then
-      echo "[dispatch] acceptance sweep ${wf} dispatched on ${ref} (${reason})" >&2
+    if gh workflow run "$wf" -R "${REPO_OWNER}/${REPO_NAME}" --ref "$ref" \
+        "${inputs[@]+"${inputs[@]}"}" >/dev/null 2>&1; then
+      echo "[dispatch] acceptance sweep ${wf} dispatched on ${ref}${dry_run:+ (dry_run=${dry_run})} (${reason})" >&2
     else
       rc=1
       _warn "dispatch_acceptance_sweeps: GitHub refused the dispatch of ${wf} on ${ref} (${reason}). It is not retried here; dispatch it by hand if a promotion is waiting."
@@ -2069,6 +2081,30 @@ dispatch_acceptance_sweeps() {
   # Reported, never propagated: see the best-effort note above.
   [[ "$rc" == "0" ]] || true
   return 0
+}
+
+# True when a drain-gate run should dispatch the sweeps (#4201). Exit 0 =
+# dispatch.
+#
+# This is a predicate rather than an inline `if` in drain_gate.sh because the
+# property it carries is the one that keeps a workflow CYCLE from existing:
+# `acceptance_drain_gate.yml` triggers on `workflow_run` completion of both
+# sweeps, so a gate run that dispatched them unconditionally would be
+# gate -> sweeps -> gate -> sweeps without end (the #3790 shape). Dispatching
+# only when this run actually RELEASED something breaks it in one hop -- the
+# next evaluation finds the held lane empty, releases nothing and dispatches
+# nothing. A DRY_RUN still fills `.released` with what it WOULD move, so it is
+# excluded explicitly: a report that starts two real runs is not a report.
+#
+# Being a function means it is executed by
+# tests/unit/test_board_sweeps_are_dispatch_driven.py against each gate
+# outcome, instead of being a line of shell nobody can run.
+drain_gate_wants_sweeps() {
+  local result="${1:-}"
+  [[ "${DRY_RUN:-0}" != "1" ]] || return 1
+  local count
+  count="$(jq -r '(.released // []) | length' <<<"$result" 2>/dev/null || echo 0)"
+  [[ "${count:-0}" != "0" ]]
 }
 
 sprint_autopilot_kick() {
