@@ -162,9 +162,7 @@ def _run(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
         ["bash", str(script)], capture_output=True, text=True, env=env, timeout=120
     )
     assert done.returncode == 0, done.stdout + done.stderr
-    return dict(
-        line.split("=", 1) for line in done.stdout.splitlines() if line.count("=") >= 1
-    )
+    return dict(line.split("=", 1) for line in done.stdout.splitlines() if line.count("=") >= 1)
 
 
 def test_the_issue_arriving_late_still_passes(stub_kubectl, tmp_path: Path) -> None:
@@ -245,15 +243,13 @@ def test_the_failure_prints_the_dsn_instead_of_blaming_it() -> None:
     # rationale above the new wait, and an assertion satisfied by incidental
     # text is the defect this PR's round 4 was about. What must be gone is the
     # claim being MADE.
-    code = "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     assert "the DSN does not resolve to the in-cluster GlitchTip" not in code
     assert "the DSN the api process actually carries" in code
     assert "NYXGPT_ERROR_TRACKING_DSN" in text
     assert "Not the api's DSN (printed above), and not latency" in text
     # ...and the key never leaves the Pod.
-    assert 's#//[^@]*@#//REDACTED@#' in text
+    assert "s#//[^@]*@#//REDACTED@#" in text
 
 
 def test_the_wait_has_no_hard_coded_deadline_left() -> None:
