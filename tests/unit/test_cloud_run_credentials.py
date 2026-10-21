@@ -253,15 +253,36 @@ def test_numbers_and_booleans_survive_a_round_trip(_isolated_cloud_home):
 def test_the_release_stack_teardown_restamps_before_terraform_reads_it(
     monkeypatch, _isolated_cloud_home
 ):
-    """The end-to-end shape of finding 2, at the seam below the CLI."""
+    """The end-to-end shape of finding 2, at the seam below the CLI.
+
+    Asserted at the moment Terraform is invoked rather than afterwards: since
+    #4200 the teardown deletes the stack's own state and tfvars when it
+    finishes, so that a released host's leftover files cannot go on reporting it
+    as pending. "Before Terraform reads it" is the claim, and the stub is where
+    that is observable.
+    """
     cloud_mac.MAC_RELEASE_TFSTATE_FILE.write_text("{}", encoding="utf-8")
     cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text(
         'aws_region = "us-east-1"\nhost_id = "h-0abc"\n', encoding="utf-8"
     )
+    seen: dict[str, object] = {}
     monkeypatch.setattr(cloud_infra, "sync_terraform_config", lambda: None)
     monkeypatch.setattr(cloud_mac, "_init", lambda *a, **k: None)
-    monkeypatch.setattr(cloud_infra, "run_terraform", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cloud_infra,
+        "run_terraform",
+        lambda *a, **k: seen.update(
+            cloud_mac._read_tfvars(cloud_mac.MAC_RELEASE_TFVARS_FILE)
+        ),
+    )
 
-    assert cloud_mac.destroy_release_stack(region="us-east-1", profile="nyxgpt") is True
+    assert (
+        cloud_mac.destroy_release_stack(host_id="h-0abc", region="us-east-1", profile="nyxgpt")
+        is True
+    )
 
-    assert cloud_mac._read_tfvars(cloud_mac.MAC_RELEASE_TFVARS_FILE)["aws_profile"] == "nyxgpt"
+    assert seen["aws_profile"] == "nyxgpt"
+    # And the files that described the now-destroyed stack are gone, so
+    # `release_stack_hosts` cannot report this host as still pending release.
+    assert not cloud_mac.MAC_RELEASE_TFVARS_FILE.exists()
+    assert not cloud_mac.release_stack_exists("h-0abc")

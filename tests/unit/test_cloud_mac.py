@@ -344,6 +344,22 @@ def _record_host(**overrides):
     return cloud_mac.record_mac_host(values)
 
 
+def _release_stack(host_id, *, region="us-east-1"):
+    """Write the files a release stack for `host_id` leaves on this machine.
+
+    State plus tfvars under the per-host names `cloud_mac.release_paths`
+    resolves, because that pair IS what "this host is scheduled to be released"
+    means locally -- the record's flag is only a claim about it.
+    """
+    state_file, tfvars = cloud_mac.release_paths(host_id)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text("{}\n", encoding="utf-8")
+    tfvars.write_text(
+        f'aws_region = "{region}"\nhost_id = "{host_id}"\n', encoding="utf-8"
+    )
+    return state_file, tfvars
+
+
 def _presence(monkeypatch, present, reason=""):
     """Patch the one AWS-answer seam the reconcile reads (#4181).
 
@@ -790,6 +806,11 @@ def test_reconcile_re_applies_the_recorded_ami_and_volume_not_freshly_resolved_o
     `--root-volume-size`, forcing replacement the same way an AMI change does.
     """
     _record_host(mac_ami_id="ami-booted", mac_root_volume_size=400)
+    # Terraform already holds the host, so the reconcile has nothing to import
+    # (#4200). Without this the reconcile would stop rather than let the apply
+    # allocate a second host -- which is what the test below the next one
+    # proves it does.
+    _mac_state("h-0abc")
     applied: dict[str, object] = {}
 
     def _capture(plan):
@@ -823,6 +844,7 @@ def test_a_record_written_before_the_ami_was_pinned_falls_back_to_the_defaults(m
     reconcile -- with the module's `ignore_changes` as the thing that keeps it
     from being replaced -- rather than crash or plan a 0 GiB root volume."""
     _record_host()
+    _mac_state("h-0abc")
     applied: dict[str, object] = {}
 
     def _capture(plan):
@@ -1360,6 +1382,8 @@ def test_a_reconcile_that_somehow_allocated_a_new_host_records_it_loudly(monkeyp
     to happen: if it ever does, a non-refundable minimum has started with no
     disclosure, and the record saying so is how the operator finds out."""
     _record_host()
+    _mac_state("h-0abc")
+    cloud_mac.remember_host(cloud_mac._ledger_from_block(cloud_mac.load_mac_record()))
     monkeypatch.setattr(
         cloud_mac,
         "apply_mac_host",
@@ -1377,8 +1401,24 @@ def test_a_reconcile_that_somehow_allocated_a_new_host_records_it_loudly(monkeyp
     # recomputed rather than carried across -- and the record stays coherent.
     assert record["mac_allocated_at"] != "2026-08-22T18:00:00+00:00"
     assert cloud_mac.record_findings(record) == []
-    # And the superseded block is retrievable, under its own name.
-    assert cloud_mac.cloud_record.load_archive()[0]["block"]["mac_host_id"] == "h-0abc"
+    # And the superseded block is retrievable, under its own name. Found by
+    # substrate rather than by position: since #4200 the ledger is a block of
+    # its own, so "the newest archive entry" is no longer necessarily this one.
+    superseded = [
+        entry
+        for entry in cloud_mac.cloud_record.load_archive()
+        if entry.get("substrate") == cloud_mac.cloud_record.SUBSTRATE_MAC
+    ]
+    assert superseded[0]["block"]["mac_host_id"] == "h-0abc"
+    # #4200. The block is the new host's, and the OLD host is still on the
+    # ledger -- allocated, billing, and named by something. Before the ledger
+    # this was the moment it left the record entirely: the warning above was
+    # printed once, to a terminal, and after that nothing on the machine knew
+    # the host existed.
+    assert [entry["host_id"] for entry in cloud_mac.load_host_ledger()] == [
+        "h-0abc",
+        "h-0c8f9957132fb0794",
+    ]
 
 
 # --- Free internal-consistency checks ------------------------------------
@@ -1418,24 +1458,28 @@ def test_a_scheduled_release_with_no_schedule_is_reported():
     release was scheduled. The local half of that is free to check."""
     findings = cloud_mac.record_findings({"mac_host_id": "h-0abc", "mac_release_scheduled": True})
 
-    assert any("no release schedule exists" in finding for finding in findings)
+    assert any("no release schedule for this host exists" in finding for finding in findings)
 
 
 def test_a_schedule_for_a_different_host_is_reported():
-    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text(
-        'host_id = "h-06c438d25077be888"\n', encoding="utf-8"
-    )
+    """#4200. The question is about THIS host's own stack. A stack that names
+    another host is not this host's schedule, and the wording says so of the
+    host being reported on rather than of whichever host happened to own the
+    one global slot."""
+    _release_stack("h-06c438d25077be888")
 
     findings = cloud_mac.record_findings(
         {"mac_host_id": "h-0c8f9957132fb0794", "mac_release_scheduled": True}
     )
 
-    assert any("rather than h-0c8f9957132fb0794" in finding for finding in findings)
+    assert any("no release schedule for this host exists" in finding for finding in findings)
+    # ...and the other host's stack is untouched and still its own.
+    assert cloud_mac.release_stack_exists("h-06c438d25077be888")
 
 
 def test_a_coherent_record_reports_nothing():
     allocated = datetime(2026, 10, 3, 19, 27, 5, tzinfo=UTC)
-    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text('host_id = "h-0abc"\n', encoding="utf-8")
+    _release_stack("h-0abc")
 
     assert (
         cloud_mac.record_findings(
