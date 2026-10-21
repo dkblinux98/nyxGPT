@@ -610,7 +610,10 @@ jobs:
                * fix every instance in this PR, and where the same decision is
                  made in several places CONSOLIDATE it into one place every
                  surface calls rather than correcting each copy;
-               * file anything out of class as its own issue and name it;
+               * file anything out of class as its own issue YOURSELF
+                 (`scripts/agents/create_issue.sh`, no `--blocks`) and put the
+                 number on the `**Out of class, filed:**` line — nothing files
+                 it for you, and a claim with no number is a finding (#4195);
                * write all of it to `/tmp/class-sweep.md` (Write tool) —
                  `developer_submit_for_review.sh` attaches that file to the PR
                  body under the `<!-- nyxgpt-class-sweep -->` marker, and
@@ -921,7 +924,11 @@ jobs:
                yourself. If the reviewer's finding IS a missing or incomplete
                class sweep, that file is the thing being rejected and rewriting
                it is the fix, not an afterthought. Anything out of class gets
-               its own issue, named in your summary.
+               its own issue — **you file it** with
+               `scripts/agents/create_issue.sh` (no `--blocks`), and the number
+               goes on the sweep's `**Out of class, filed:**` line and in your
+               summary. Nothing files it for you; a described-but-unfiled
+               finding is a Medium the reviewer blocks on (#4195).
 
             ### Step 2.5: Resolve merge conflicts with the release branch (if any)
             Conflicts are YOUR work, not the owner's (owner rule 2026-08-15,
@@ -1162,9 +1169,16 @@ jobs:
                the next divergence, which is how #4179 survived seven weeks. A
                consolidation on a class-sweep fix is in scope by definition.
             5. **OUT-OF-CLASS findings are filed, not dropped.** Anything
-               belonging to a DIFFERENT class gets its own issue — report it in
-               the PR body for the workflow to file; do not silently fix it
-               here and do not forget it.
+               belonging to a DIFFERENT class gets its own issue, and **you
+               file it** — `scripts/agents/create_issue.sh --title … --label
+               "Acceptance Failure" --body-file … --copy-from-issue
+               ${{ github.event.issue.number }}` (do NOT pass `--blocks`: an
+               out-of-class finding is a separate defect, not a blocker on this
+               one). Then put the number it printed on the
+               `**Out of class, filed:**` line. No workflow files it for you —
+               describing it in the PR body and leaving it at that is how #4197
+               reached review having detailed an out-of-class defect with no
+               issue behind it. Do not silently fix it here either.
             6. **Write the sweep to `/tmp/class-sweep.md`.** You do not own the
                PR body — `developer_submit_for_review.sh` builds it, and it
                attaches that file under the `<!-- nyxgpt-class-sweep -->`
@@ -1181,13 +1195,19 @@ jobs:
                | `docs/terraform.md` | documents the old precedence | updated |
 
                **Consolidated:** <the one place the decision now lives, or "n/a">
-               **Out of class, filed:** <one line each, or "none">
+               **Out of class, filed:** #NNNN <one line each>, or "none"
                ```
 
                If you leave that file empty the script appends a **NOT
                PROVIDED** block instead, which the reviewer is told to treat as
                the finding. A skipped sweep is visible either way — write the
                file.
+
+               The `#NNNN` is not decoration: `class_sweep.py` reads the
+               out-of-class line and appends a note to the section when the
+               claim names no issue, so "filed, not fixed here" over nothing
+               arrives at the reviewer already labelled (#4195). `none` is a
+               complete answer; a claim without a number is not.
 
             A rule this project states but does not ENFORCE is itself a class
             (#4174): if your change adds a rule to `CLAUDE.md`, a charter, a

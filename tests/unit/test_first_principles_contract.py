@@ -85,8 +85,8 @@ def _agent_surface_files() -> list[Path]:
     return files
 
 
-def _tracked_markdown_files() -> list[Path]:
-    """Every `*.md` file the repository actually contains.
+def _tracked_markdown_files(root: Path = REPO_ROOT) -> list[Path]:
+    """Every `*.md` file the repository at `root` actually contains.
 
     Deliberately `git ls-files` and not `rglob`: the claim under test is about
     the *repository*, and a checkout is not the same thing as a working
@@ -96,17 +96,32 @@ def _tracked_markdown_files() -> list[Path]:
     -- so the test failed on a workspace artifact, in the review gate, on
     whatever PR happened to be under review. A committed duplicate anywhere in
     the tree still fails; a scratch file no longer can.
+
+    `root` is a parameter so the test for that behavior can point the scan at
+    a throwaway repository instead of planting the artifact in this one
+    (#4198). It defaults to the checkout, which is what every other caller
+    wants, so no caller can accidentally examine the wrong tree.
     """
     result = subprocess.run(
         ["git", "ls-files", "-z", "--", "*.md"],
-        cwd=REPO_ROOT,
+        cwd=root,
         capture_output=True,
         text=True,
         check=True,
     )
-    files = [REPO_ROOT / name for name in result.stdout.split("\0") if name]
+    files = [root / name for name in result.stdout.split("\0") if name]
     assert files, "no tracked markdown files found -- the scan would pass vacuously"
     return files
+
+
+def _duplicate_statements(marker: str, root: Path = REPO_ROOT) -> list[Path]:
+    """Tracked markdown files other than `CLAUDE.md` carrying the full statement."""
+    source = root / "CLAUDE.md"
+    return [
+        path.relative_to(root)
+        for path in sorted(_tracked_markdown_files(root))
+        if path != source and marker in path.read_text(encoding="utf-8", errors="ignore")
+    ]
 
 
 def _copied_sentence_count(text: str) -> int:
@@ -142,11 +157,7 @@ def test_the_source_stays_single(claude_md: str) -> None:
         "uses its closing sentence as the marker for 'the full statement'"
     )
 
-    duplicates = [
-        path.relative_to(REPO_ROOT)
-        for path in sorted(_tracked_markdown_files())
-        if path != CLAUDE_MD and marker in path.read_text(encoding="utf-8", errors="ignore")
-    ]
+    duplicates = _duplicate_statements(marker)
     assert not duplicates, (
         "the principles are stated in full outside CLAUDE.md: "
         f"{duplicates}. A second copy is paid for on every run and drifts out "
@@ -155,37 +166,56 @@ def test_the_source_stays_single(claude_md: str) -> None:
     )
 
 
-def test_an_untracked_workspace_copy_is_not_a_duplicate(claude_md: str) -> None:
+def test_an_untracked_workspace_copy_is_not_a_duplicate(claude_md: str, tmp_path: Path) -> None:
     """The scan reads the checkout, not whatever the runner left lying beside it.
 
     Injects the exact artifact that made this contract fail in the review gate:
     `.claude-pr/CLAUDE.md`, an untracked copy of the source. Before the scan was
     narrowed to tracked files this reported a duplicate and failed every review
     round run in such a workspace, on PRs that had touched nothing.
+
+    IN A THROWAWAY REPOSITORY, not in this one (#4198). This test used to plant
+    `.claude-pr/CLAUDE.md` in the real checkout and remove it from a `finally`,
+    which meant every concurrent reader of the tree saw it for the duration and
+    an interrupted run left it behind untracked. A `tmp_path` repository is
+    also a stronger test: the artifact can be planted unconditionally (the real
+    checkout might already have one, which made the old assertion conditional
+    on the environment), and the case can prove the UNFILTERED walk really
+    would have failed -- the half the in-tree version could not state.
     """
-    artifact_dir = REPO_ROOT / ".claude-pr"
-    artifact = artifact_dir / "CLAUDE.md"
+    marker = "Where these conflict with speed, they win."
+    repo = tmp_path / "workspace"
+    (repo / ".claude-pr").mkdir(parents=True)
+    (repo / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "guide.md").write_text("cites CLAUDE.md, states nothing\n", encoding="utf-8")
 
-    # The review gate creates this artifact itself, so on the runner it is
-    # usually already here. Refusing to run in that case would fail the test in
-    # the one environment the fix is about; instead, assert the property against
-    # the real artifact and never delete what this test did not create.
-    dir_preexisted = artifact_dir.exists()
-    file_preexisted = artifact.exists()
+    # `git ls-files` reads the index, so staging is enough -- no commit, no
+    # identity, nothing that depends on the runner's git config.
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "CLAUDE.md", "docs/guide.md"], cwd=repo, check=True)
 
-    if not dir_preexisted:
-        artifact_dir.mkdir()
-    try:
-        if not file_preexisted:
-            artifact.write_text(claude_md, encoding="utf-8")
-        assert artifact.exists(), "the injected artifact is missing -- nothing was tested"
-        assert artifact not in _tracked_markdown_files()
-        test_the_source_stays_single(claude_md)
-    finally:
-        if not file_preexisted and artifact.exists():
-            artifact.unlink()
-        if not dir_preexisted and artifact_dir.exists():
-            shutil.rmtree(artifact_dir)
+    # The artifact the review workflow drops beside a checkout: untracked, and
+    # carrying the full statement.
+    artifact = repo / ".claude-pr" / "CLAUDE.md"
+    artifact.write_text(claude_md, encoding="utf-8")
+
+    assert artifact.exists(), "the injected artifact is missing -- nothing was tested"
+    assert artifact not in _tracked_markdown_files(repo)
+
+    # Both directions. An unfiltered walk DOES see it, which is the failure
+    # this narrowing fixed...
+    unfiltered = [
+        path
+        for path in repo.rglob("*.md")
+        if path != repo / "CLAUDE.md" and marker in path.read_text(encoding="utf-8")
+    ]
+    assert unfiltered == [artifact], (
+        "the fixture no longer reproduces the defect -- an unfiltered walk has "
+        "to find the artifact, or this test passes over nothing"
+    )
+    # ...and the tracked-files scan does not.
+    assert not _duplicate_statements(marker, repo)
 
 
 def test_agent_surfaces_cite_rather_than_restate() -> None:

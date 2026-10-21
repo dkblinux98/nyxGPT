@@ -43,35 +43,81 @@
 #
 # Each must make the guard RED. The shipped tree must make it GREEN. A guard
 # that passes case 1 through 9 is asserting nothing and this script says so.
+#
+# AND ONE WAY THIS SCRIPT COULD ITSELF BE VACUOUS (#4195). It used to run a
+# bare `python3 -m pytest` and read any non-zero status as "the guard is red,
+# as it must be". On a machine where PATH's `python3` has no pytest -- a
+# GitHub Actions runner before `setup-python`, and most dev machines -- that is
+# every case at once: nine `[ok] (guard red, as it must be)` lines with the
+# guard never having started, which reads exactly like a guard that caught
+# everything. So the interpreter is resolved up front through the shared
+# resolver (and the suite exits 77 if there is none), and `_guard` now
+# distinguishes pytest's "a test failed" (1) from every other status -- no
+# tests collected (5), usage error (4), internal error (3), interrupted (2) --
+# each of which is this script being broken, not the guard being red.
+#
+# AND ONE WAY IT USED TO BE DANGEROUS (#4198). Every injection below used to
+# be made in the REAL checkout -- three tracked files rewritten in place and a
+# tenth workflow planted in `.github/workflows/`, put back only by an `EXIT`
+# trap. That made the repository itself the fixture: a concurrent reader saw
+# the injected tree (a parallel `pytest` run really did fail
+# `test_context_index.py` on the planted file), and a `kill -9`, a job timeout
+# or a runner eviction -- none of which run an `EXIT` trap -- left an unsafe
+# workflow and three modified files behind in a checkout nobody knew was
+# dirty. So the injections are made in a throwaway copy of the tracked tree
+# built by `tests/fixture_checkout.sh`, INCLUDING the guard's own file: the
+# guard resolves its root from `__file__`, so a copy of it reads the copy, and
+# this script needs no override, no environment variable and no seam in the
+# guard that could change its behavior on the real repository. The last case
+# proves the real checkout came through untouched.
+#
+# Exit status: 0 all cases passed, 1 a case failed, 77 this machine cannot run
+# `python -m pytest` so the script could not answer (tests/pytest_python.sh).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WF="$ROOT_DIR/.github/workflows/ensure_project_hygiene.yml"
-CLOSE_WF="$ROOT_DIR/.github/workflows/pr_project_status_on_close.yml"
+# shellcheck source=tests/pytest_python.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pytest_python.sh"
+# shellcheck source=tests/fixture_checkout.sh
+source "$(dirname "${BASH_SOURCE[0]}")/fixture_checkout.sh"
+PYTHON="$(require_pytest_python "$ROOT_DIR")" || exit $?
+
+# What the real checkout looked like before this script ran anything. The last
+# case compares it again; a difference means the fixture leaked, which is the
+# defect #4198 was filed for and is a failure of this script and not of the
+# guard.
+PORCELAIN_BEFORE="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || echo "__git-unavailable__")"
+
+# The tree every injection below is made in. A copy of the tracked files,
+# outside the checkout, owned by this process: `rm -rf` is the entire cleanup
+# and there is nothing to restore, so no signal and no eviction can leave the
+# repository modified.
+FIXTURE="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE"' EXIT
+fixture_checkout "$ROOT_DIR" "$FIXTURE"
+
+WF="$FIXTURE/.github/workflows/ensure_project_hygiene.yml"
+CLOSE_WF="$FIXTURE/.github/workflows/pr_project_status_on_close.yml"
 # Case 8 plants a file rather than editing one, so it must not collide with a
 # real workflow name; `*.yml` is what the guard globs, so the name matters and
 # the extension does too.
-PLANTED_WF="$ROOT_DIR/.github/workflows/zz-pr-head-guard-injection.yml"
+PLANTED_WF="$FIXTURE/.github/workflows/zz-pr-head-guard-injection.yml"
 GUARD="tests/unit/test_pull_request_target_safety.py"
 
 # Case 9's target: one of the five files whose prose named the retired
 # trigger. A script comment rather than a doc, so the case also shows the scan
 # is not markdown-only.
-PROSE_FILE="$ROOT_DIR/scripts/agents/reconcile_pr_lane.sh"
+PROSE_FILE="$FIXTURE/scripts/agents/reconcile_pr_lane.sh"
 
-PRISTINE="$(mktemp)"
-CLOSE_PRISTINE="$(mktemp)"
-PROSE_PRISTINE="$(mktemp)"
+# The pristine copies stay in `$TMPDIR` as before -- what changed is that the
+# files they restore are also in `$TMPDIR` now.
+PRISTINE="$FIXTURE.pristine-hygiene"
+CLOSE_PRISTINE="$FIXTURE.pristine-close"
+PROSE_PRISTINE="$FIXTURE.pristine-prose"
 cp "$WF" "$PRISTINE"
 cp "$CLOSE_WF" "$CLOSE_PRISTINE"
 cp "$PROSE_FILE" "$PROSE_PRISTINE"
-restore() {
-  cp "$PRISTINE" "$WF"
-  cp "$CLOSE_PRISTINE" "$CLOSE_WF"
-  cp "$PROSE_PRISTINE" "$PROSE_FILE"
-  rm -f "$PRISTINE" "$CLOSE_PRISTINE" "$PROSE_PRISTINE" "$PLANTED_WF"
-}
-trap restore EXIT
+trap 'rm -rf "$FIXTURE" "$PRISTINE" "$CLOSE_PRISTINE" "$PROSE_PRISTINE"' EXIT
 
 FAILURES=0
 
@@ -81,30 +127,52 @@ FAILURES=0
 # script install the whole project to answer a question about a workflow file.
 # The full suite still collects the same file WITH conftest, so nothing here
 # exempts it from the ordinary run.
+# Prints nothing; returns pytest's own exit status. `set -e` is on, so the
+# status is captured rather than tested inline.
+#
+# Run from `$FIXTURE`, against `$FIXTURE`'s copy of the guard: the guard
+# resolves its root from `Path(__file__).resolve().parents[2]`, so the copy
+# examines the copy with no override of any kind (#4198). Pointing it at
+# another tree is therefore not a seam in the guard that a future edit could
+# leave switched on against the real repository -- there is no seam.
 _guard() {
-  (cd "$ROOT_DIR" && python3 -m pytest "$GUARD" -q -p no:cacheprovider --noconftest \
-      >/tmp/guard.out 2>&1)
+  local rc=0
+  (cd "$FIXTURE" && "$PYTHON" -m pytest "$GUARD" -q -p no:cacheprovider --noconftest \
+      >/tmp/guard.out 2>&1) || rc=$?
+  return "$rc"
 }
 
 _expect_green() {
-  local desc="$1"
-  if _guard; then
+  local desc="$1" rc=0
+  _guard || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     echo "[ok] $desc"
   else
-    echo "[FAIL] $desc -- the guard is red on a tree that should pass:" >&2
+    echo "[FAIL] $desc -- the guard is red on a tree that should pass (pytest exit ${rc}):" >&2
     cat /tmp/guard.out >&2
     FAILURES=$((FAILURES + 1))
   fi
 }
 
 _expect_red() {
-  local desc="$1"
-  if _guard; then
+  local desc="$1" rc=0
+  _guard || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     echo "[FAIL] $desc -- the guard PASSED on a workflow that hands this" >&2
     echo "       repository's secrets to a PR author. The guard is vacuous." >&2
     FAILURES=$((FAILURES + 1))
+  elif [[ "$rc" -ne 1 ]]; then
+    # NOT "red, as it must be". Only pytest exit 1 means an assertion failed,
+    # which is the one status that proves the guard SAW the injection. 5 is
+    # "no tests collected", 4/3/2 are usage/internal/interrupt, and anything
+    # else is the interpreter failing to start -- all of them mean this script
+    # measured nothing, and calling that a pass is the #4195 defect.
+    echo "[FAIL] $desc -- the guard did not RUN (pytest exit ${rc}, not 1), so" >&2
+    echo "       its redness proves nothing about the injected defect:" >&2
+    cat /tmp/guard.out >&2
+    FAILURES=$((FAILURES + 1))
   else
-    echo "[ok] $desc (guard red, as it must be)"
+    echo "[ok] $desc (guard red on an assertion, as it must be)"
   fi
 }
 
@@ -242,6 +310,42 @@ cp "$PROSE_PRISTINE" "$PROSE_FILE"
 
 echo "=== restored ==="
 _expect_green "the guard passes again once the file is restored"
+
+echo "=== half 5: the real checkout was never the fixture (#4198) ==="
+
+# The executed half of the #4198 fix. Nine injections have just run, including
+# one that plants a workflow handing this repository's PAT to a PR author; if
+# any of it reached the checkout, `git status` says so. Compared against the
+# snapshot taken before the fixture was built rather than against "clean", so
+# the case is just as valid in a working tree that was already dirty -- what it
+# asserts is that THIS script changed nothing.
+if [[ "$PORCELAIN_BEFORE" == "__git-unavailable__" ]]; then
+  echo "[FAIL] the real checkout is unmodified -- cannot be checked: no git here," >&2
+  echo "       and this assertion is the whole of the #4198 fix." >&2
+  FAILURES=$((FAILURES + 1))
+else
+  PORCELAIN_AFTER="$(git -C "$ROOT_DIR" status --porcelain)"
+  if [[ "$PORCELAIN_BEFORE" == "$PORCELAIN_AFTER" ]]; then
+    echo "[ok] the real checkout is byte-for-byte as it was: the injections"
+    echo "     happened in $FIXTURE and nowhere else"
+  else
+    echo "[FAIL] the injections leaked into the real checkout (#4198). Before:" >&2
+    printf '%s\n' "$PORCELAIN_BEFORE" >&2
+    echo "       After:" >&2
+    printf '%s\n' "$PORCELAIN_AFTER" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
+# And the planted workflow specifically, by name: the one injected artifact
+# whose presence in a real checkout would be a live privilege-escalation
+# shape rather than a modified file.
+if [[ -e "$ROOT_DIR/.github/workflows/$(basename "$PLANTED_WF")" ]]; then
+  echo "[FAIL] the planted unsafe workflow is in the REAL .github/workflows (#4198)." >&2
+  FAILURES=$((FAILURES + 1))
+else
+  echo "[ok] the planted unsafe workflow exists in no real checkout"
+fi
 
 if ((FAILURES > 0)); then
   echo "FAILED: $FAILURES case(s)" >&2

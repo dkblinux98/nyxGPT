@@ -22,9 +22,26 @@ set -uo pipefail
 # and `first_error_after_marker` (why did Phase 3 itself fail).
 #
 # Usage: bash tests/test_escalation_evidence.sh
+#
+# Exit status: 0 all checks passed, 1 a check failed, 77 this machine has no
+# interpreter that can run `python -m pytest` so the suite could not answer
+# (see tests/pytest_python.sh). Those three are deliberately distinct: #4195
+# was filed because the third used to be reported as the first.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${NYXGPT_TEST_PYTHON:-python3}"
+
+# Section 2 EXECUTES the pytest gate, so this suite needs an interpreter that
+# has pytest -- and it used to take `${NYXGPT_TEST_PYTHON:-python3}`, which is
+# why the same tree gave two answers (#4195). From pytest, that variable is the
+# interpreter pytest is running under and the section ran; from the documented
+# `bash tests/test_escalation_evidence.sh`, `python3` is whatever is on PATH --
+# a system interpreter with no pytest on a CI runner and on most dev machines
+# -- so the section was skipped and the suite still printed "All tests passed."
+# and exited 0. One resolver, shared with every other shell suite that runs
+# pytest, and a loud exit 77 where no interpreter will do.
+# shellcheck source=tests/pytest_python.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pytest_python.sh"
+PYTHON="$(require_pytest_python "$ROOT_DIR")" || exit $?
 
 FAILURES=0
 TMP_ROOT="$(mktemp -d)"
@@ -121,22 +138,11 @@ PY
 export NYXGPT_AGENT_ERROR_FILE="$TMP_ROOT/agent-error.txt"
 : > "$NYXGPT_AGENT_ERROR_FILE"
 
-# This section EXECUTES the gate, so it needs an interpreter that has pytest.
-# `$NYXGPT_TEST_PYTHON` is set by tests/unit/test_escalation_headline.py (to
-# the interpreter pytest is itself running under) and by the smoke workflow.
-# Where there is none, the section is announced as skipped rather than
-# silently passing -- and the smoke job greps for one of its [ok] lines, so a
-# skip there is a job failure rather than a quiet gap.
-if ! "$PYTHON" -c "import pytest" >/dev/null 2>&1; then
-  echo "[SKIP] ${PYTHON} has no pytest -- the executed Final Verification checks are skipped."
-  echo "[SKIP] Run with NYXGPT_TEST_PYTHON=<interpreter with pytest> to execute them."
-  VERIFY_SKIPPED=1
-else
-  VERIFY_SKIPPED=0
-fi
-
-if [[ "$VERIFY_SKIPPED" -eq 0 ]]; then
-
+# No `if` guarding this section any more, deliberately (#4195). The whole
+# section is reached only when `require_pytest_python` above found an
+# interpreter that can run pytest; where it could not, the suite has already
+# exited 77 saying so. There is no third path in which these checks are
+# skipped while the suite goes on to print "All tests passed."
 VERIFY_OUT="$(
   cd "$VERIFY_DIR" &&
   NYXGPT_VERIFY_GATES="pytest" \
@@ -182,7 +188,6 @@ else
 fi
 _assert_eq "and records nothing" "" "$(read_agent_error_detail)"
 cd "$ROOT_DIR" || exit 1  # the `if cd ...` above moved this shell
-fi  # VERIFY_SKIPPED
 
 # ---------------------------------------------------------------------------
 # 3. prune_stray_worktrees.sh, with the failure proven first

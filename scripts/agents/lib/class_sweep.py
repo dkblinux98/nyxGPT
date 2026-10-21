@@ -20,6 +20,18 @@ had no artifact to miss. It is deliberately **advisory** -- it never refuses a
 submission, because whether a class was really swept is the reviewer's
 judgement and not a grep's.
 
+**The out-of-class claim carries its issue number, or the section says it does
+not** (#4195, PR #4197). D-067's fourth obligation is that out-of-class findings
+are *filed as their own issue and named*; a sweep that writes "filed, not fixed
+here" and names no number is prose, and nothing downstream could tell the
+difference between a filed issue and a forgotten one. That is how #4197 reached
+review having described an out-of-class defect in detail with no issue behind
+it -- caught by the reviewer reading the tracker, which is precisely the
+"reviewer must notice an absence" mechanism #4183 exists to replace. So the
+claim is checked here, where every sweep already passes, and an unbacked one is
+stated inside the section instead of being left to be spotted. Advisory like the
+rest of this module: it reports, it never refuses.
+
 The decision lives here and nowhere else, because this runs from two places (a
 fresh submission and a re-review of an existing PR) and two copies of a decision
 is the very fault this gate exists to catch (#4179, ledger **D-066**).
@@ -28,6 +40,7 @@ is the very fault this gate exists to catch (#4179, ledger **D-066**).
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -41,8 +54,31 @@ MISSING_MARKER = "<!-- nyxgpt-no-class-sweep -->"
 SECTION_HEADING = "## Class sweep"
 MISSING_HEADING = "## Class sweep — NOT PROVIDED"
 
+#: The marker on the note appended when the sweep's out-of-class result is not
+#: backed by an issue number. Like `MISSING_MARKER` it is deliberately NOT a
+#: superstring of `SECTION_MARKER`: a note must never read as a sweep.
+UNCITED_MARKER = "<!-- nyxgpt-out-of-class-uncited -->"
+
 #: Where the developer leaves the sweep. The prompts name this path literally.
 DEFAULT_SWEEP_PATH = "/tmp/class-sweep.md"
+
+#: How the sweep names its out-of-class result. Matched loosely on purpose --
+#: "Out of class, filed:", "Out-of-class findings:" and "OUT OF CLASS" are all
+#: wordings the prompts and runbook have used, and the check is about whether a
+#: number is attached, not about house style.
+_OUT_OF_CLASS_RE = re.compile(r"out[\s\-]?of[\s\-]?class", re.IGNORECASE)
+
+#: An issue reference. `#4198` is the whole evidence the claim needs.
+_ISSUE_REF_RE = re.compile(r"#\d+")
+
+#: The label and its value, so "none" can be read from the value rather than
+#: from anywhere in the paragraph -- `**Out of class, filed:** none` contains
+#: the word "filed", so testing the whole paragraph would get it backwards.
+_OUT_OF_CLASS_VALUE_RE = re.compile(r"out[\s\-]?of[\s\-]?class[^:\n]*:\s*(.*)", re.IGNORECASE)
+
+#: A value that claims nothing was found. Anchored at the start of the value:
+#: "none" ending a sentence about something that WAS found must not clear it.
+_NOTHING_FOUND_RE = re.compile(r"^\W*(none|nothing|n/?a|no\b|zero)", re.IGNORECASE)
 
 
 def read_sweep(path: str | Path) -> str | None:
@@ -59,10 +95,95 @@ def read_sweep(path: str | Path) -> str | None:
     return text.strip() or None
 
 
+def _paragraphs(text: str) -> list[str]:
+    """Split on blank lines. The paragraph is the unit a claim is read in."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line.strip():
+            current.append(line)
+        elif current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def out_of_class_gap(sweep: str | None) -> str | None:
+    """Why the sweep's out-of-class result is not evidence, or None if it is.
+
+    Returns ``"uncited"`` when the sweep states an out-of-class finding and
+    attaches no issue number to it, ``"missing"`` when it says nothing about
+    out-of-class findings at all, and ``None`` when the obligation is met --
+    either a number is there, or the sweep says plainly that there was nothing.
+
+    The check is scoped to the paragraph making the claim, and the "nothing
+    found" test reads the value after the label rather than the paragraph. Both
+    are deliberate: a sweep cites #4183 and the issue it is fixing all over
+    itself, so "does the sweep contain a `#NNNN` anywhere" would pass every
+    time and guard nothing -- the vacuous shape #4195 already had to fix once.
+    """
+    if sweep is None:
+        return None  # the NOT PROVIDED receipt already says more than this would
+
+    claims = [block for block in _paragraphs(sweep) if _OUT_OF_CLASS_RE.search(block)]
+    if not claims:
+        return "missing"
+
+    for block in claims:
+        if _ISSUE_REF_RE.search(block):
+            return None
+        value = _OUT_OF_CLASS_VALUE_RE.search(block)
+        if value is not None and _NOTHING_FOUND_RE.match(value.group(1)):
+            return None
+    return "uncited"
+
+
+def render_out_of_class_note(gap: str | None) -> str:
+    """Render the note for an unbacked out-of-class claim ("" when there is none)."""
+    if gap is None:
+        return ""
+
+    if gap == "uncited":
+        headline = (
+            "**Out-of-class finding claimed, no issue named (D-067).** The sweep above "
+            "states an out-of-class result and attaches no issue number to it, so "
+            "nothing here separates *filed* from *written down and forgotten*."
+        )
+    else:
+        headline = (
+            "**Out-of-class result not stated (D-067).** The sweep above does not say "
+            "what it found outside the class — not even `none`, which is a complete "
+            "answer."
+        )
+
+    return (
+        "\n".join(
+            [
+                "",
+                UNCITED_MARKER,
+                f"> {headline}",
+                ">",
+                "> **Developer:** file it with `scripts/agents/create_issue.sh` and put the",
+                "> number on the `**Out of class, filed:**` line, or write `none` there.",
+                ">",
+                "> **Reviewer:** D-067 requires out-of-class findings to be filed as their",
+                "> own issue and named. An unbacked claim is the Medium (blocking) finding",
+                "> (`agents/runbooks/review-runbook.md` §1e) — #4197 reached review having",
+                "> described an out-of-class defect in detail with no issue behind it, and",
+                "> only a tracker search caught it.",
+            ]
+        )
+        + "\n"
+    )
+
+
 def render_section(sweep: str | None, sweep_path: str | Path = DEFAULT_SWEEP_PATH) -> str:
     """Render the body section for a recorded sweep, or the receipt for none."""
     if sweep is not None:
-        return "\n".join([SECTION_HEADING, SECTION_MARKER, sweep, ""])
+        note = render_out_of_class_note(out_of_class_gap(sweep))
+        return "\n".join([SECTION_HEADING, SECTION_MARKER, sweep, note])
 
     return (
         "\n".join(

@@ -827,11 +827,16 @@ jobs:
             - Sibling instances you found still unfixed: [NONE / file:line each]
             - Same decision corrected in more than one copy: [NO / where, and
               whether the PR says why it was not consolidated]
-            - Out-of-class findings filed and named: [N/A / #NNNN each /
+            - Out-of-class findings filed and named: [N/A / #NNNN each, each
+              one RESOLVED with `gh issue view <N> --json number,title,state` /
               MISSING — found but neither filed nor named]
             [If the sweep is missing or incomplete, a sibling instance is left
-            unfixed, or N copies were corrected where one source was available
-            and unexplained, this BLOCKS APPROVE (Medium) — §1e]
+            unfixed, N copies were corrected where one source was available and
+            unexplained, or an out-of-class finding is described with no issue
+            number that resolves, this BLOCKS APPROVE (Medium) — §1e. The
+            number is the evidence; "filed, not fixed here" is not (#4197).
+            `class_sweep.py` appends a note to the sweep section when the claim
+            names no issue — a note left standing is the finding.]
 
             ### Executed Verification
             - Runtime/install/platform claim in this PR: [one line, or NONE —

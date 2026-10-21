@@ -332,6 +332,125 @@ def test_implement_prompt_names_the_handoff_and_the_consolidation_rule(
     )
 
 
+# --- Who files the out-of-class issue, and with what evidence (#4195) -------
+#
+# The implement prompt used to say an out-of-class finding should be reported
+# "in the PR body for the workflow to file". No workflow files it, and the
+# runbook had said so all along -- two copies of one decision, one of them
+# false. #4197 followed the prompt: a detailed out-of-class description, the
+# words "filed, not fixed here", and no issue. These pin both halves of the
+# fix: the instruction says who acts and how, and nothing re-promises an
+# automation that does not exist.
+
+#: Every developer-facing surface that tells the agent what to do with an
+#: out-of-class finding. A copy that goes stale is the defect, so they are
+#: checked together.
+OUT_OF_CLASS_SURFACES = (IMPLEMENT_WORKFLOW, DEVELOPER_RUNBOOK, DEVELOPER_PROMPT)
+
+
+@pytest.mark.parametrize("path", OUT_OF_CLASS_SURFACES, ids=lambda p: p.name)
+def test_the_developer_is_told_to_file_the_out_of_class_issue_itself(path: Path) -> None:
+    flowed = _flowed(_read(path))
+    assert "create_issue.sh" in flowed, (
+        f"{path.relative_to(REPO_ROOT)} must name the script that files an "
+        "out-of-class issue. 'File it' with no mechanism is how #4197 shipped "
+        "a described-but-unfiled finding"
+    )
+    assert "Out of class, filed:" in flowed, (
+        f"{path.relative_to(REPO_ROOT)} must name the sweep line the issue "
+        "number goes on, which is what class_sweep.py reads"
+    )
+
+
+@pytest.mark.parametrize("path", OUT_OF_CLASS_SURFACES, ids=lambda p: p.name)
+def test_no_surface_promises_an_automation_that_files_it(path: Path) -> None:
+    """The exact false claim #4195 removed, kept out of every copy.
+
+    An instruction that hands the obligation to a non-existent automation is
+    worse than none: the agent follows it, the step never happens, and the PR
+    body reads as though it did.
+    """
+    flowed = _flowed(_read(path)).lower()
+    for claim in ("for the workflow to file", "the workflow files it", "workflow will file"):
+        assert claim not in flowed, (
+            f"{path.relative_to(REPO_ROOT)} claims something else files the "
+            f"out-of-class issue ('{claim}'). Nothing does — the developer "
+            "files it with scripts/agents/create_issue.sh (#4195)"
+        )
+
+
+def test_the_sweep_template_asks_for_the_issue_number() -> None:
+    """Prompt and runbook show the same template, with `#NNNN` in it.
+
+    They are two copies of one hand-off format by necessity (one is read by an
+    agent mid-run, the other by a human), so the test is what keeps them from
+    drifting -- the drift that produced this finding.
+    """
+    for path in (IMPLEMENT_WORKFLOW, DEVELOPER_RUNBOOK):
+        flowed = _flowed(_read(path))
+        assert "**Out of class, filed:** #NNNN" in flowed, (
+            f"{path.relative_to(REPO_ROOT)}'s sweep template must show the "
+            "issue number on the out-of-class line; without it the agent "
+            'writes prose and "filed" means nothing checkable'
+        )
+
+
+def test_review_blocks_on_a_claimed_but_unfiled_out_of_class_finding(
+    review_runbook: str, review_workflow: str
+) -> None:
+    """The reviewer reads the blocking list, so the condition belongs in it.
+
+    §1e listed three blocking conditions and this was not one of them; it sat
+    in the prose above as "must be filed and named". The #4197 reviewer caught
+    it by judgement, which is the mechanism #4183 exists to replace.
+    """
+    conditions = review_runbook.split("**Blocking conditions.**", 1)[1]
+    conditions = conditions.split("A generality finding", 1)[0]
+    assert "out-of-class finding claimed but not filed" in _flowed(conditions).lower(), (
+        "review-runbook §1e's blocking-conditions list must name a claimed-"
+        "but-unfiled out-of-class finding; prose above the list is what the "
+        "#4197 reviewer had to supply from judgement"
+    )
+    assert "gh issue view" in _flowed(conditions), (
+        "the reviewer must be told to RESOLVE each cited issue number -- the "
+        "number is the evidence and an unresolvable one reads identically"
+    )
+
+    template = review_workflow.split("### Class Sweep", 1)[1].split("### Executed Verification", 1)[
+        0
+    ]
+    assert "gh issue view" in _flowed(template), (
+        "the review body template must report the numbers as resolved, so a "
+        "checked claim is distinguishable from a copied one"
+    )
+
+    assert "gh issue view" in _flowed(_read(REVIEW_PROMPT)), (
+        "agents/prompts/review-agent.prompt.md is the third copy of the "
+        "blocking list; a rule added to two of three is the D-066 divergence "
+        "this gate exists to stop"
+    )
+
+
+def test_the_helper_checks_the_claim_rather_than_trusting_it() -> None:
+    """#4174: a rule this project states must also be enforced somewhere.
+
+    The enforcement lives in the one module both callers already pass through
+    (D-066), not in a second copy per caller.
+    """
+    helper = _read(REPO_ROOT / "scripts" / "agents" / "lib" / "class_sweep.py")
+    assert "def out_of_class_gap" in helper, (
+        "class_sweep.py must decide whether the out-of-class claim names an "
+        "issue; a rule nothing checks is the #4174 class"
+    )
+    assert "UNCITED_MARKER" in helper, (
+        "an unbacked claim must reach the reviewer under its own marker, the "
+        "way a missing sweep already does"
+    )
+    assert (
+        "create_issue.sh" in helper
+    ), "the note must tell the developer how to clear it, not only that it is wrong"
+
+
 def test_submit_script_carries_or_reports_the_sweep() -> None:
     text = _read(SUBMIT_SCRIPT)
     assert "class_sweep.py" in text, (

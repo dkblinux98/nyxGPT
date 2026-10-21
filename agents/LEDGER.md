@@ -2689,6 +2689,33 @@ rather than mechanism, and nothing can enforce them.
   **D-066**, **D-067**; `docs/cloud.md` § "Every row is AWS's answer or is
   labelled as not being one".
 
+- **D-069** · 2026-10-10 · developer-agent (#4198) — **A test's fixture lives
+  in a directory the test owns; the checkout is never the fixture, and an
+  `EXIT`/`finally` restore is not a mitigation.** It answers neither half of
+  the problem: the window is real while the test runs, so every other reader
+  of the tree sees the injected state (a parallel `pytest` really did fail
+  `test_context_index.py` on a workflow `test_pr_head_guard_discriminates.sh`
+  had planted — a workflow whose purpose is to hand this repo's `workflow`-scoped
+  PAT to a PR author), and no trap or `finally` runs on `SIGKILL`, a job timeout
+  or a runner eviction, so an interrupted run leaves it behind in a checkout
+  nobody knows is dirty. Gitignored destinations are included: `git status`
+  staying clean is the floor, not the rule. One source for the copy —
+  `tests/fixture_checkout.sh` tars every tracked file into a throwaway
+  directory (~1,300 files, ~25 MB, 0.12 s), which both the shell suites and
+  `test_resources_packaging.py` call rather than each inventing it (D-066).
+  Where a guard must be pointed at the copy, the copy of the GUARD is what runs
+  it — `test_pull_request_target_safety.py` resolves its root from
+  `Path(__file__)`, so no root override, environment variable or seam exists
+  that a later edit could leave switched on against the real repository.
+  Enforced by `tests/unit/test_tests_own_their_fixtures.py`, which reads both
+  shell and Python for repo-rooted write destinations and whose own detectors
+  are pinned in both directions (#4167). Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4198; found by the #4195 class sweep (PR #4197) and filed as
+  out-of-class per **D-067**; extends **D-066**, **D-067**; `docs/testing.md`
+  § "A test's fixture lives in a directory the test owns".
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from shell_suite import bash4_or_skip
+from shell_suite import assert_shell_suite_ran, bash4_or_skip
 
 pytestmark = pytest.mark.unit
 
@@ -310,6 +310,7 @@ class TestShellSuite:
             timeout=300,
             env={**os.environ, "NYXGPT_TEST_PYTHON": sys.executable},
         )
-        assert result.returncode == 0, result.stdout + result.stderr
-        # A skipped section must not read as a pass here either.
-        assert "a red head continues the round" in result.stdout, result.stdout
+        # Three outcomes, not two (#4195): passed, failed, or could-not-run.
+        # The same helper every pytest wrapper around an executing suite uses,
+        # so no two of them can disagree about what exit 77 means.
+        assert_shell_suite_ran(result, proof_of_execution="a red head continues the round")
