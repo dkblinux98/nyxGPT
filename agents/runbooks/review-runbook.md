@@ -1089,7 +1089,8 @@ successor.
 
 **Promotion:** when everything blocking an issue reaches "For Release" —
 directly and **transitively**, so a failure filed against a failure counts —
-it is promoted to "For Release" automatically by the promotion sweep, with a
+it is promoted to "For Release" by the promotion sweep — dispatched by
+whoever made the last move, never polled for (#4201, §9 above) — with a
 comment recording which issues cleared it. If it is a reopened original, the
 same sweep assigns it back to you and **closes** it: your reopen asked a
 question, and the promotion is where it is answered. Unique-failure count per feature

@@ -7,7 +7,8 @@ name: Promote Accepted Features
 # owner uses the latter to keep what they have tested and failed visible in
 # one place — and both lanes are handled identically here. When every issue
 # in the feature's TRANSITIVE blocked-by closure (#3731) has reached
-# "For Release", the feature is promoted to "For Release" automatically;
+# "For Release", the feature is promoted to "For Release" -- by whoever
+# dispatched this sweep, not on a timer (see DISPATCH-ONLY below);
 # while any blocker is still open the sweep moves nothing at all, so the
 # owner's lane placement is read, never rearranged. In "Acceptance Failed"
 # only CLOSED items are candidates: the OPEN ones there are the drain

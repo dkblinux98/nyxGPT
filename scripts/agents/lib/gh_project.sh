@@ -2057,7 +2057,7 @@ ACCEPTANCE_SWEEP_WORKFLOWS=(
 #               job dispatching the sweeps by hand, which would be the second
 #               copy of the dispatch this function exists to prevent.
 dispatch_acceptance_sweeps() {
-  local reason="${1:-}" ref="${2:-}" dry_run="${3:-}" wf rc=0
+  local reason="${1:-}" ref="${2:-}" dry_run="${3:-}" wf
   local -a inputs=()
   [[ -z "$dry_run" ]] || inputs=(-f "dry_run=${dry_run}")
 
@@ -2086,13 +2086,13 @@ dispatch_acceptance_sweeps() {
         "${inputs[@]+"${inputs[@]}"}" >/dev/null 2>&1; then
       echo "[dispatch] acceptance sweep ${wf} dispatched on ${ref}${dry_run:+ (dry_run=${dry_run})} (${reason})" >&2
     else
-      rc=1
+      # Reported, never propagated: see the best-effort note above. There is
+      # deliberately no status variable to carry out of the loop -- one would
+      # only invite a later `return "$rc"` that breaks the contract.
       _warn "dispatch_acceptance_sweeps: GitHub refused the dispatch of ${wf} on ${ref} (${reason}). It is not retried here; dispatch it by hand if a promotion is waiting."
     fi
   done
 
-  # Reported, never propagated: see the best-effort note above.
-  [[ "$rc" == "0" ]] || true
   return 0
 }
 

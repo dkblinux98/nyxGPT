@@ -49,22 +49,40 @@ on:
       - "scripts/agents/drain_gate.sh"
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/promote_accepted_features.sh"
+      - "scripts/agents/sweep_parked_blocked_issues.sh"
       - "scripts/release_ceremony.sh"
       - "tests/unit/test_board_sweeps_are_dispatch_driven.py"
       - ".github/workflows/promote_accepted_features.yml"
       - ".github/workflows/sweep_parked_blocked_issues.yml"
       - ".github/workflows/acceptance-sweep-dispatch-smoke.yml"
+      # The prose guards read the surfaces that carry the trigger copy, so a
+      # change to one of them has to run the job that measures it -- the
+      # mistake #4193 found in branch-guard-smoke's own filter.
+      - ".github/workflows/handle_acceptance_failure.yml"
+      - ".github/workflows/handle_improvement.yml"
+      - "agents/runbooks/review-runbook.md"
+      - "docs/acceptance-drain-gate.md"
+      - "docs/how-this-project-is-run.md"
   pull_request:
     paths:
       - "scripts/agents/lib/gh_project.sh"
       - "scripts/agents/drain_gate.sh"
       - "scripts/agents/review_accept_and_merge.sh"
       - "scripts/agents/promote_accepted_features.sh"
+      - "scripts/agents/sweep_parked_blocked_issues.sh"
       - "scripts/release_ceremony.sh"
       - "tests/unit/test_board_sweeps_are_dispatch_driven.py"
       - ".github/workflows/promote_accepted_features.yml"
       - ".github/workflows/sweep_parked_blocked_issues.yml"
       - ".github/workflows/acceptance-sweep-dispatch-smoke.yml"
+      # The prose guards read the surfaces that carry the trigger copy, so a
+      # change to one of them has to run the job that measures it -- the
+      # mistake #4193 found in branch-guard-smoke's own filter.
+      - ".github/workflows/handle_acceptance_failure.yml"
+      - ".github/workflows/handle_improvement.yml"
+      - "agents/runbooks/review-runbook.md"
+      - "docs/acceptance-drain-gate.md"
+      - "docs/how-this-project-is-run.md"
   workflow_dispatch:
 
 permissions:
@@ -156,6 +174,63 @@ jobs:
           fi
           git checkout -- scripts/agents/lib/gh_project.sh
 
+          # (3) Re-plant the prose the first pass at #4201 actually missed:
+          #     the "(cron + dispatch)" header on one sweep's own script,
+          #     deleted and re-asserted by the same commit. Selected by -k so
+          #     the PROSE guard has to go red, not merely the file.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("scripts/agents/sweep_parked_blocked_issues.sh")
+          t = p.read_text()
+          s = t.index("# Run via .github/workflows/sweep_parked")
+          e = t.index("There is no cron.", s) + len("There is no cron.")
+          p.write_text(
+              t[:s]
+              + "# Run via .github/workflows/sweep_parked_blocked_issues.yml (cron + dispatch)."
+              + t[e:]
+          )
+          PY
+          if python -m pytest -q -p no:cacheprovider --no-header \
+               tests/unit/test_board_sweeps_are_dispatch_driven.py \
+               -k advertises >/dev/null 2>&1; then
+            echo "::error::the prose guard passed with the '(cron + dispatch)' header re-planted -- a sweep can again advertise a cron it does not have"
+            FAIL=1
+          else
+            echo "ok: advertising a cron the sweep does not have turns the guard red"
+          fi
+          git checkout -- scripts/agents/sweep_parked_blocked_issues.sh
+
+          # (4) Re-plant the other missed sibling: the handler-filed issue's
+          #     body promising promotion "automatically" with nothing named as
+          #     the promoter. This is the copy the owner reads, and the gate it
+          #     describes is most often completed by the owner's own board
+          #     move -- the one case that raises no event at all.
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path(".github/workflows/handle_acceptance_failure.yml")
+          body = p.read_text()
+          live = (
+              'It is promoted to \\"For Release\\" once everything blocking it, '
+              'transitively, reaches \\"For Release\\" — by a sweep the actor '
+              'making the last move dispatches, not by a timer (#4201).'
+          )
+          assert live in body, "the handler's Notes line no longer carries the dispatch caveat"
+          p.write_text(body.replace(
+              live,
+              'It is promoted to \\"For Release\\" automatically once everything '
+              'blocking it, transitively, reaches \\"For Release\\".',
+              1))
+          PY
+          if python -m pytest -q -p no:cacheprovider --no-header \
+               tests/unit/test_board_sweeps_are_dispatch_driven.py \
+               -k promoter >/dev/null 2>&1; then
+            echo "::error::the prose guard passed with an unattributed 'promoted automatically' re-planted"
+            FAIL=1
+          else
+            echo "ok: promising an automatic promotion with no promoter turns the guard red"
+          fi
+          git checkout -- .github/workflows/handle_acceptance_failure.yml
+
           exit $FAIL
 
   dispatch-reaches-the-sweeps:
@@ -190,7 +265,12 @@ jobs:
           source scripts/agents/lib/gh_project.sh
           RELEASE_BRANCH="$REF"
           export RELEASE_BRANCH
-          SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Stamped BEFORE the dispatch, so the next step can tell this run's
+          # sweep runs from an earlier smoke run's on the same branch. The
+          # 60-second lead absorbs runner-vs-GitHub clock skew without
+          # widening the window enough to admit a previous smoke run, which is
+          # minutes or hours old.
+          SINCE="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
           dispatch_acceptance_sweeps "acceptance-sweep-dispatch-smoke on ${REF}" "$REF" "true"
           echo "attempted=true" >> "$GITHUB_OUTPUT"
           echo "since=$SINCE" >> "$GITHUB_OUTPUT"
@@ -201,11 +281,17 @@ jobs:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           REPO: ${{ github.repository }}
           REF: ${{ github.head_ref || github.ref_name }}
+          SINCE: ${{ steps.dispatch.outputs.since }}
         shell: bash
         # The dispatch is accepted before the run object exists, so this
         # polls rather than reading once. A run that never appears is a
         # failure of the thing being tested, not a flake to retry away: the
         # whole claim of #4201 is that the dispatch starts the sweep.
+        #
+        # The `created_at >= SINCE` filter is what makes that a real check: on
+        # any branch that has run this smoke before, taking the newest
+        # `workflow_dispatch` run unfiltered would cite the EARLIER run and
+        # pass while this dispatch silently failed.
         run: |
           set -euo pipefail
           FAIL=0
@@ -217,8 +303,9 @@ jobs:
           for WF in promote_accepted_features.yml sweep_parked_blocked_issues.yml; do
             URL=""
             for _ in $(seq 1 20); do
-              URL="$(gh api "repos/$REPO/actions/workflows/$WF/runs?event=workflow_dispatch&branch=$REF&per_page=5" \
-                --jq '[.workflow_runs[] | .html_url] | first // empty' 2>/dev/null || true)"
+              URL="$(gh api "repos/$REPO/actions/workflows/$WF/runs?event=workflow_dispatch&branch=$REF&per_page=5" 2>/dev/null \
+                | jq -r --arg since "$SINCE" \
+                  '[.workflow_runs[] | select(.created_at >= $since) | .html_url] | first // empty' 2>/dev/null || true)"
               [[ -n "$URL" ]] && break
               sleep 6
             done

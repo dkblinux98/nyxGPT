@@ -20,7 +20,16 @@ first two — so the rule is checked here rather than written down again:
    actor that changes the state a sweep waits on calls it;
 4. the helper is best-effort *by execution*: a refused dispatch still exits 0,
    because a merge, ceremony or gate release must never fail over a sweep that
-   can be asked for again.
+   can be asked for again;
+5. **no prose promises a timer** — not "runs on a cron", not "promoted
+   automatically" with nothing named as the promoter. This half is checked
+   here because the first pass at #4201 fixed one of each pair of sibling
+   sentences and missed the other: the prose pass matched poll-phrasings ("the
+   next sweep", "within 30 minutes") but not the ``(cron + dispatch)`` header
+   form or the "promoted automatically once" body-note form, so
+   ``sweep_parked_blocked_issues.sh``'s own header still advertised a cron the
+   same commit deleted. A claim about a trigger is cheap to assert and
+   expensive to disbelieve, so it gets a guard rather than another note.
 """
 
 from __future__ import annotations
@@ -77,6 +86,109 @@ ACTORS = (
 _INVOKES_GH_WORKFLOW_RUN = re.compile(
     r"(?:^|[;&|]\s*|\b(?:if|elif|then|else|do)\s+|!\s*)gh workflow run\b"
 )
+
+#: The four files that describe their OWN trigger: each sweep's workflow and
+#: each sweep's script. These are where a reader goes to learn how the sweep
+#: starts, so a stale cron claim here is the most expensive one in the tree —
+#: and `sweep_parked_blocked_issues.sh` carried exactly that until this guard.
+SELF_DESCRIBING = (
+    Path(".github/workflows/promote_accepted_features.yml"),
+    Path(".github/workflows/sweep_parked_blocked_issues.yml"),
+    Path("scripts/agents/promote_accepted_features.sh"),
+    Path("scripts/agents/sweep_parked_blocked_issues.sh"),
+)
+
+#: Words that make a cron mention HISTORY rather than a live claim. The two
+#: sweeps' headers explain at length what the cron was and why it went, which
+#: is the opposite of promising one — so the guard asks for the tense, not for
+#: silence about crons.
+_RETROSPECTIVE = re.compile(
+    r"\b(?:was|were|used to|removed|retired|until|no longer|dispatch-only|"
+    r"instead of|rather than|not|absent|absence|gone|without)\b",
+    re.IGNORECASE,
+)
+
+#: A live claim that something starts on a timer.
+_TIMER_CLAIM = re.compile(r"\bcron\b|\bschedule[sd]?\b|\bpoll(?:s|ed|ing)?\b", re.IGNORECASE)
+
+#: The promotion promise with no promoter named. Matched in BOTH orders
+#: ("promoted ... automatically", "automatically promotes ...") because the
+#: instance this guard was written for used the first and a sibling two
+#: sections away in the same document used the second.
+_UNATTRIBUTED_PROMOTION = (
+    re.compile(r"promot(?:e|ed|es|ion)\w*.{0,120}?automatic", re.IGNORECASE | re.DOTALL),
+    re.compile(r"automatic\w*.{0,80}?promot", re.IGNORECASE | re.DOTALL),
+)
+
+#: "Promote" is overloaded in this tree — a canary track is promoted too, and
+#: `docs/api.md` quite correctly describes that one as automatic. Only the
+#: board sense is in this class, so the paragraph has to be about a lane.
+_BOARD_SENSE = re.compile(r"For Release|block(?:er|ing|ed)|acceptance", re.IGNORECASE)
+
+#: Directories with no prose of ours in them.
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".next",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+    }
+)
+
+_PROSE_SUFFIXES = frozenset({".md", ".sh", ".yml", ".yaml", ".py"})
+
+
+def _prose_files() -> list[Path]:
+    """Every text file of ours, so this is the class and not a named list."""
+    found = []
+    for path in REPO_ROOT.rglob("*"):
+        if path.suffix not in _PROSE_SUFFIXES or not path.is_file():
+            continue
+        if _SKIP_DIRS.intersection(path.relative_to(REPO_ROOT).parts):
+            continue
+        if path == Path(__file__):
+            continue  # this file quotes the forbidden forms in order to ban them
+        found.append(path)
+    return sorted(found)
+
+
+#: What separates one paragraph from the next. A bare `#` is the blank line of
+#: a shell or YAML comment block, and without it a 50-line file header reads as
+#: ONE paragraph — which is how the first version of this guard sat green on
+#: the very defect it was written for: a retrospective sentence 30 lines above
+#: excused the live claim.
+_BLOCK_BREAKS = frozenset({"", "#", "#!", "//", "--"})
+
+
+def _paragraphs(text: str) -> list[tuple[int, str]]:
+    """Paragraph blocks, with the line number each one starts on.
+
+    Per-*line* matching would miss the real instances: markdown prose wraps,
+    and "promoted to For Release ... automatically" straddled a line break in
+    `docs/how-this-project-is-run.md`. Requiring the attribution in the same
+    paragraph is also the honest bar — a reader takes the claim and its
+    qualifier together, not one line at a time.
+    """
+    blocks, start, buffer = [], 1, []
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.strip() not in _BLOCK_BREAKS:
+            if not buffer:
+                start = number
+            buffer.append(line)
+            continue
+        if buffer:
+            blocks.append((start, " ".join(buffer)))
+            buffer = []
+    if buffer:
+        blocks.append((start, " ".join(buffer)))
+    return blocks
 
 
 def _triggers(path: Path) -> dict:
@@ -174,6 +286,62 @@ def test_every_actor_dispatches_the_sweeps(actor: Path) -> None:
         line for line in body.splitlines() if HELPER in line and not line.lstrip().startswith("#")
     ]
     assert calls, f"{actor} changes board state but never calls {HELPER}"
+
+
+@pytest.mark.parametrize("relative", SELF_DESCRIBING, ids=lambda p: p.name)
+def test_no_sweep_advertises_a_cron_it_does_not_have(relative: Path) -> None:
+    """The file that tells you how the sweep starts has to be right (AC5).
+
+    `scripts/agents/sweep_parked_blocked_issues.sh` said "Run via
+    .github/workflows/sweep_parked_blocked_issues.yml (cron + dispatch)" in the
+    same commit that deleted that cron, while its sibling header in
+    `promote_accepted_features.sh` was corrected. One of each pair is how a
+    class survives a fix.
+    """
+    offenders = []
+    for number, block in _paragraphs((REPO_ROOT / relative).read_text(encoding="utf-8")):
+        if _TIMER_CLAIM.search(block) and not _RETROSPECTIVE.search(block):
+            offenders.append(f"{relative}:{number}: {block.strip()[:120]}")
+    assert not offenders, (
+        "a sweep's own header claims a trigger it does not have:\n"
+        + "\n".join(offenders)
+        + "\n\nBoth sweeps are dispatch-only (ledger D-070). Say so, or say in "
+        "the past tense what the cron used to be and why it went."
+    )
+
+
+def test_no_prose_promises_an_automatic_promotion_with_no_promoter() -> None:
+    """ "Promoted automatically" is now a half-truth, and the half that is
+    missing is the one the reader needs.
+
+    Promotion still happens without anyone asking for it *when an agent made
+    the last move* — the merge path dispatches the sweep. The commonest case is
+    the other one: the owner moves the last blocker to "For Release" on the
+    board, which raises no event at all, and nothing happens until somebody
+    dispatches. So every paragraph making the promise must name the dispatch in
+    the same breath. Tree-wide on purpose: the class is "prose promising the
+    poll", not the five sentences review and this sweep happened to find.
+    """
+    offenders = []
+    for path in _prose_files():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "promot" not in text.lower():
+            continue  # cheap gate: most of the tree never mentions promotion
+        for number, block in _paragraphs(text):
+            if not any(pattern.search(block) for pattern in _UNATTRIBUTED_PROMOTION):
+                continue
+            if not _BOARD_SENSE.search(block):
+                continue
+            if "dispatch" in block.lower():
+                continue
+            offenders.append(f"{path.relative_to(REPO_ROOT)}:{number}: {block.strip()[:140]}")
+    assert not offenders, (
+        "these promise an automatic promotion without naming what triggers "
+        "it:\n" + "\n".join(offenders) + "\n\nSince #4201 (ledger D-070) the "
+        "promotion sweeps have no schedule: the actor that makes the last move "
+        "dispatches them, and an owner's board move raises no event. Name the "
+        "dispatch in the same paragraph as the promise."
+    )
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
