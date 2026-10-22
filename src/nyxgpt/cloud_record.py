@@ -56,6 +56,19 @@ SUBSTRATE_AWS = "aws"
 #: The EC2 Mac Dedicated Host plus the instance on it (`cloud_mac`).
 SUBSTRATE_MAC = "mac"
 
+#: The ledger of EVERY Dedicated Host this machine has allocated and not yet
+#: seen released (#4200). A *separate* block from `SUBSTRATE_MAC`, and that is
+#: the whole point: the Mac block describes the one host the current deployment
+#: sits on and is replaced whole by each deploy, so a second allocation
+#: overwrote the first host's fields and the first host left the record
+#: entirely -- still allocated, still billing, named by nothing.
+#:
+#: A host bills until it is released, so its record has to outlive the
+#: deployment that created it. One slot cannot do that; a list keyed by host id
+#: can, and `write_block(SUBSTRATE_MAC, ...)` cannot touch it because the key
+#: belongs to another block.
+SUBSTRATE_MAC_HOSTS = "mac-hosts"
+
 #: Keys the Linux substrate owns. Re-exported as `cloud_infra.STATE_KEYS`.
 AWS_BLOCK_KEYS: tuple[str, ...] = (
     "region",
@@ -122,10 +135,18 @@ MAC_BLOCK_KEYS: tuple[str, ...] = (
     "mac_spend_error",
 )
 
+#: The one key the Mac-host ledger owns: a list of per-host entries, each a
+#: dict `cloud_mac` owns the shape of. One key rather than a key per host so
+#: the block rules above still apply unchanged -- the list is replaced whole,
+#: and the entry for a host that has been released ceases to exist rather than
+#: becoming a row of nulls.
+MAC_HOSTS_BLOCK_KEYS: tuple[str, ...] = ("mac_hosts",)
+
 #: Every substrate's key set, by substrate name.
 BLOCK_KEYS: dict[str, tuple[str, ...]] = {
     SUBSTRATE_AWS: AWS_BLOCK_KEYS,
     SUBSTRATE_MAC: MAC_BLOCK_KEYS,
+    SUBSTRATE_MAC_HOSTS: MAC_HOSTS_BLOCK_KEYS,
 }
 
 #: How many superseded blocks `state-archive.jsonl` keeps. Bounded because it

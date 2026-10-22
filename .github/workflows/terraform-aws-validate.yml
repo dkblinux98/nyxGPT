@@ -85,3 +85,19 @@ jobs:
         run: |
           terraform init -backend=false -input=false
           terraform validate
+
+      # #4200's executed evidence for the Terraform half: two host ids must
+      # produce two sets of AWS resource names with NOTHING in common. One
+      # fixed `name_prefix` meant the second host's apply found the first
+      # host's `aws_scheduler_schedule.release` and retargeted it, leaving a
+      # host that was still allocated, still inside AWS's 24-hour minimum and
+      # still billing with nothing scheduled to release it.
+      #
+      # The suite proves both halves (#3753's rule): its last two run blocks
+      # pass the pre-#4200 fixed prefix for two different hosts and REQUIRE the
+      # identical schedule name to come out, so the per-host assertions cannot
+      # pass vacuously. Offline -- `command = plan` throughout, with only
+      # `data.aws_caller_identity` overridden.
+      - name: terraform test (two hosts, two independent release stacks -- #4200)
+        working-directory: terraform/aws/mac-release
+        run: terraform test

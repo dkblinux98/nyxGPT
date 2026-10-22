@@ -65,9 +65,19 @@ MAC_RELEASE_CONFIG_DIRNAME = "mac-release"
 # down on different schedules, and sharing one state file would put the
 # deferred host back in the way of the substrate's destroy.
 MAC_TFSTATE_FILE = cloud_infra.CLOUD_DIR / "mac.tfstate"
-MAC_RELEASE_TFSTATE_FILE = cloud_infra.CLOUD_DIR / "mac-release.tfstate"
-
 MAC_TFVARS_FILE = cloud_infra.CLOUD_DIR / "mac.tfvars"
+
+# The release root's state and vars are **per host** (#4200), and the legacy
+# single-slot pair below is only still named so a stack created before that
+# change can be found and torn down. One slot could only ever hold one host:
+# scheduling the release of host B rewrote these two files and `terraform
+# apply` updated the one schedule in place, so host A -- still allocated,
+# still inside its 24-hour minimum, still billing about $15.60 a day -- was
+# left with no release scheduled at all and no Slack message to say so,
+# because the schedule that would have sent it now named B.
+#
+# `release_paths` is the one resolver; nothing else composes these names.
+MAC_RELEASE_TFSTATE_FILE = cloud_infra.CLOUD_DIR / "mac-release.tfstate"
 MAC_RELEASE_TFVARS_FILE = cloud_infra.CLOUD_DIR / "mac-release.tfvars"
 
 # This substrate's *block* inside the shared `~/.nyxGPT/cloud/state.json`.
@@ -549,17 +559,21 @@ def record_findings(record: dict[str, Any]) -> list[str]:
                 f"(expected {expected.isoformat()})"
             )
     if record.get("mac_release_scheduled"):
-        scheduled_host = _recorded_release_host()
+        # Asked of THIS host's own stack since #4200. It used to be asked of the
+        # one global stack, which is why scheduling a second host's release
+        # silently turned the first host's "scheduled" flag into a lie that this
+        # check then reported against the *second* host instead of the first.
         host_id = str(record.get("mac_host_id") or "")
-        if not scheduled_host:
+        if not release_stack_exists(host_id):
+            # Structural only, and deliberately says nothing about billing
+            # (#4181): a finding is reported over a record that has NOT been
+            # confirmed at AWS, and "it is still billing" is a claim about AWS
+            # that only `observation.usable` may license. What is free to state
+            # here is what this machine holds -- the flag, and the absence of
+            # the stack the flag refers to.
             findings.append(
-                "mac_release_scheduled is true but no release schedule exists on this machine "
-                "-- nothing will release this host"
-            )
-        elif scheduled_host != host_id:
-            findings.append(
-                f"mac_release_scheduled is true but the release schedule names {scheduled_host} "
-                f"rather than {host_id}"
+                "mac_release_scheduled is true but no release schedule for this host exists on "
+                "this machine, so nothing here will release it"
             )
     return findings
 
@@ -567,13 +581,24 @@ def record_findings(record: dict[str, Any]) -> list[str]:
 # --- Consent -----------------------------------------------------------
 
 
-def format_allocation_disclosure(plan: MacAllocationPlan, releasable_at: datetime) -> str:
+def format_allocation_disclosure(
+    plan: MacAllocationPlan,
+    releasable_at: datetime,
+    *,
+    already_billing: list[dict[str, Any]] | None = None,
+) -> str:
     """The block printed before anything is allocated.
 
     Everything an operator needs to decide, in the order they need it: what is
     being created, where, what it costs, and -- the part nothing else in AWS
     tells you until it is too late -- that they cannot stop paying for it for
     a day.
+
+    `already_billing` is `pending_releases()` (#4200). A host this machine has
+    already allocated and not seen released is named here, with its own release
+    time, because "this is a non-refundable charge" and "this is your SECOND
+    non-refundable charge, and the first one is still running" are different
+    decisions. The disclosure is what the operator is given to make it with.
     """
     pricing = plan.pricing or MacHostPricing(
         instance_type=plan.instance_type, host_family=host_family(plan.instance_type), region=""
@@ -609,6 +634,32 @@ def format_allocation_disclosure(plan: MacAllocationPlan, releasable_at: datetim
     if plan.candidate_azs and len(plan.candidate_azs) > 1:
         others = ", ".join(az for az in plan.candidate_azs if az != plan.availability_zone)
         lines.append(f"Other zones offering {plan.instance_type}: {others} (--mac-az to choose).")
+    outstanding = already_billing or []
+    if outstanding:
+        lines.extend(
+            [
+                "",
+                f"WARNING: {len(outstanding)} Dedicated Host(s) allocated from this machine have "
+                "NOT been released. This allocation is IN ADDITION to them, and each one carries "
+                f"its own {HOST_MINIMUM_HOURS}-hour minimum:",
+            ]
+        )
+        for host in outstanding:
+            if host.get("release_schedule_present"):
+                fate = f"release scheduled for {host.get('release_at') or 'an unknown time'} UTC"
+            else:
+                fate = "NOT scheduled to be released -- nothing here will release it"
+            rate = host.get("hourly_rate")
+            cost = f", ${float(rate):.4f}/hour" if rate else ""
+            lines.append(
+                f"  {host.get('host_id')} ({host.get('instance_type') or 'unknown type'} in "
+                f"{host.get('region') or 'unknown'}{cost}) -- {fate}"
+            )
+        lines.append(
+            "If you meant to reuse one of those, answer no and run `nyxgpt cloud status` -- a "
+            "host that AWS confirms is still allocated is reused by this command rather than "
+            "re-allocated."
+        )
     return "\n".join(lines)
 
 
@@ -711,6 +762,220 @@ def clear_mac_record(*, reason: str = "") -> None:
     cloud_record.clear_block(cloud_record.SUBSTRATE_MAC, reason=reason)
 
 
+# --- The per-host release stack: one host, one stack (#4200) -----------
+
+
+def host_slug(host_id: str) -> str:
+    """The filename- and AWS-name-safe part of a Dedicated Host id.
+
+    `h-0c8f9957132fb0794` -> `0c8f9957132fb0794`. The `h-` prefix is dropped
+    because every one of these carries it, and anything outside `[0-9a-z]` is
+    replaced so a malformed id recorded by an older build still produces a
+    usable path instead of escaping the directory.
+    """
+    cleaned = "".join(character if character.isalnum() else "-" for character in host_id.lower())
+    return cleaned[2:] if cleaned.startswith("h-") else cleaned
+
+
+def release_paths(host_id: str) -> tuple[Path, Path]:
+    """`(tfstate, tfvars)` for the release stack of exactly `host_id` (#4200).
+
+    Per host, so scheduling the release of a second host cannot rewrite the
+    first host's stack. The legacy single-slot pair is returned instead when it
+    is the stack that *already* describes this host: those files are the only
+    record of resources that exist in AWS, and renaming them underneath a live
+    stack would orphan a schedule rather than adopt it. A host with no legacy
+    claim gets its own pair, so one upgrade converges the layout without a
+    migration step.
+    """
+    slug = host_slug(host_id)
+    if not slug:
+        return (MAC_RELEASE_TFSTATE_FILE, MAC_RELEASE_TFVARS_FILE)
+    if MAC_RELEASE_TFVARS_FILE.exists() and _tfvars_host(MAC_RELEASE_TFVARS_FILE) == host_id:
+        return (MAC_RELEASE_TFSTATE_FILE, MAC_RELEASE_TFVARS_FILE)
+    return (
+        cloud_infra.CLOUD_DIR / f"mac-release-{slug}.tfstate",
+        cloud_infra.CLOUD_DIR / f"mac-release-{slug}.tfvars",
+    )
+
+
+def release_stack_exists(host_id: str) -> bool:
+    """Is there a release stack on this machine for `host_id`?
+
+    The honest form of "is this host scheduled to be released". The record's
+    `mac_release_scheduled` flag is a claim a previous run wrote down; this is
+    the Terraform state that claim depends on, and the two disagreeing is one of
+    the incoherences `record_findings` reports.
+    """
+    state_file, tfvars = release_paths(host_id)
+    return state_file.exists() and _tfvars_host(tfvars) == host_id
+
+
+def release_stack_hosts() -> list[str]:
+    """Every host id a release stack on this machine names, sorted.
+
+    Read from the tfvars rather than from the record, so a host whose block was
+    lost is still found -- which is the situation #4200 is about.
+    """
+    found: set[str] = set()
+    try:
+        candidates = sorted(cloud_infra.CLOUD_DIR.glob("mac-release*.tfvars"))
+    except OSError:  # pragma: no cover - an unreadable cloud dir
+        return []
+    for tfvars in candidates:
+        host_id = _tfvars_host(tfvars)
+        if host_id and tfvars.with_suffix(".tfstate").exists():
+            found.add(host_id)
+    return sorted(found)
+
+
+def _tfvars_host(path: Path) -> str:
+    """The `host_id` a release-stack tfvars names, or `""`."""
+    if not path.exists():
+        return ""
+    return str(_read_tfvars(path).get("host_id") or "")
+
+
+# --- The host ledger: every host that still bills (#4200) --------------
+#
+# `state.json`'s Mac block describes the host the *current* deployment sits on,
+# and a deploy replaces it whole. A Dedicated Host outlives that deployment by
+# construction -- it is still allocated after the instance is terminated, and
+# AWS refuses to release it for 24 hours -- so a single-slot record cannot track
+# two of them, and the one it drops is the one nothing then reports or releases.
+#
+# This ledger is keyed by host id and holds an entry for every host from the
+# moment it is allocated until AWS confirms it is gone. It is the one source for
+# "which hosts still cost money": `pending_releases`, `nyxgpt cloud status`, the
+# API payload, both dashboard cards and `teardown`'s scheduling loop all read it
+# rather than deciding for themselves.
+
+#: Fields a ledger entry carries. Deliberately a subset of the Mac block's: the
+#: ledger exists to see and release a host, not to redescribe the deployment
+#: that used to be on it. Mapped to and from `mac_`-prefixed block keys by
+#: `_ledger_from_block` / `_block_from_ledger`, so `observe_host` and
+#: `record_findings` read a ledger entry with no second code path.
+LEDGER_FIELDS: tuple[str, ...] = (
+    "host_id",
+    "instance_type",
+    "region",
+    "availability_zone",
+    "allocated_at",
+    "release_at",
+    "hourly_rate",
+    "release_scheduled",
+    "release_scheduled_at",
+    "verified_at",
+    "host_present",
+    "verify_error",
+    "verified_profile",
+    "verified_account_id",
+)
+
+
+def load_host_ledger() -> list[dict[str, Any]]:
+    """Every host still on the ledger, oldest allocation first.
+
+    Entries with no `host_id` are dropped on the way out: a row that cannot name
+    its host cannot be acted on, and leaving it in would make every caller
+    guard for it.
+    """
+    block = cloud_record.load_block(cloud_record.SUBSTRATE_MAC_HOSTS)
+    raw = block.get("mac_hosts")
+    if not isinstance(raw, list):
+        return []
+    entries = [
+        {key: entry[key] for key in LEDGER_FIELDS if key in entry}
+        for entry in raw
+        if isinstance(entry, dict) and entry.get("host_id")
+    ]
+    return sorted(entries, key=lambda entry: str(entry.get("allocated_at") or ""))
+
+
+def _write_host_ledger(entries: list[dict[str, Any]], *, reason: str) -> list[dict[str, Any]]:
+    """Replace the ledger with `entries`. An empty list clears the block."""
+    if not entries:
+        cloud_record.clear_block(cloud_record.SUBSTRATE_MAC_HOSTS, reason=reason)
+        return []
+    cloud_record.write_block(
+        cloud_record.SUBSTRATE_MAC_HOSTS,
+        {"mac_hosts": entries},
+        reason=reason,
+    )
+    return load_host_ledger()
+
+
+def ledger_entry(host_id: str) -> dict[str, Any]:
+    """The ledger's entry for `host_id`, or `{}`."""
+    for entry in load_host_ledger():
+        if str(entry.get("host_id") or "") == host_id:
+            return entry
+    return {}
+
+
+def remember_host(values: dict[str, Any], *, reason: str = "") -> list[dict[str, Any]]:
+    """Add or update `values["host_id"]`'s ledger entry. Returns the whole ledger.
+
+    Merged per entry rather than replaced, because the callers each know a
+    different part of the truth: the allocation knows the price and the zone,
+    the teardown knows the release is scheduled, the reconcile knows what AWS
+    last said. Merging is safe *here* -- unlike the Mac block, where it was the
+    #4136 defect -- because the merge is keyed by the host id, so a field can
+    only ever land on the host it was resolved for.
+    """
+    host_id = str(values.get("host_id") or "")
+    if not host_id:
+        return load_host_ledger()
+    updates = {key: values[key] for key in LEDGER_FIELDS if key in values}
+    entries = load_host_ledger()
+    for index, entry in enumerate(entries):
+        if str(entry.get("host_id") or "") == host_id:
+            merged = dict(entry)
+            for key, value in updates.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
+            entries[index] = merged
+            break
+    else:
+        entries.append({key: value for key, value in updates.items() if value is not None})
+    return _write_host_ledger(entries, reason=reason or f"recorded Dedicated Host {host_id}")
+
+
+def forget_ledger_host(host_id: str, *, reason: str = "") -> bool:
+    """Drop `host_id` from the ledger. Returns False when it was not on it.
+
+    Called only once AWS has said the host is gone. A host dropped while it
+    still bills is the exact failure the ledger exists to prevent, so there is
+    deliberately no "tidy up the ledger" path that does not ask AWS first.
+    """
+    entries = load_host_ledger()
+    kept = [entry for entry in entries if str(entry.get("host_id") or "") != host_id]
+    if len(kept) == len(entries):
+        return False
+    _write_host_ledger(kept, reason=reason or f"Dedicated Host {host_id} has been released")
+    return True
+
+
+def _ledger_from_block(block: dict[str, Any]) -> dict[str, Any]:
+    """A ledger entry from a Mac block -- the `mac_` prefix dropped."""
+    entry = {field: block.get(f"mac_{field}") for field in LEDGER_FIELDS}
+    entry["host_id"] = str(block.get("mac_host_id") or "")
+    return {key: value for key, value in entry.items() if value is not None}
+
+
+def _block_from_ledger(entry: dict[str, Any]) -> dict[str, Any]:
+    """A Mac-block-shaped dict from a ledger entry -- the `mac_` prefix restored.
+
+    So `observe_host` and `record_findings` are the SAME functions for a ledger
+    host as for the current deployment's host. A second copy of "is this host
+    confirmed" is exactly the divergence that let one surface assert billing
+    over a host another surface had already given up on.
+    """
+    return {f"mac_{field}": entry[field] for field in LEDGER_FIELDS if field in entry}
+
+
 def pending_release(args: argparse.Namespace | None = None) -> dict[str, Any]:
     """What `nyxgpt cloud status` reports about a host that may still be billing.
 
@@ -729,9 +994,67 @@ def pending_release(args: argparse.Namespace | None = None) -> dict[str, Any]:
     in the owner's acceptance round this payload asserted billing over a host
     AWS no longer had, from a record that contradicted itself, and every reader
     believed it because the payload said so.
+
+    **One host -- the deployment's (#4200).** `pending_releases` is what reports
+    every host that still bills, and it is what every surface should list;
+    this remains because a single Mac deployment is still the common case and
+    the API's `mac_host` key is it.
     """
+    return _host_payload(load_mac_record(), args)
+
+
+def pending_releases(args: argparse.Namespace | None = None) -> list[dict[str, Any]]:
+    """Every Dedicated Host that is allocated or pending release (#4200).
+
+    The ONE source for "what still costs money" -- `nyxgpt cloud status`, the
+    API payload and both dashboard cards list what this returns rather than
+    reading the record themselves. Oldest allocation first, so the host that has
+    been billing longest is the one read first.
+
+    Built from the union of three places, because each of them can know about a
+    host the other two do not:
+
+    * the **ledger**, which is the record of every host from allocation until
+      AWS confirms the release;
+    * the **Mac block**, which describes the current deployment's host (and is
+      the only one of the three for a record written before the ledger existed);
+    * the **release stacks on disk**, which name a host even when both records
+      above have been replaced -- the #4200 case exactly. A host found only
+      there is reported with what little is known of it rather than omitted,
+      because "nothing here describes it" is not a reason to stop billing for
+      it.
+
+    A host with no release stack is reported with `release_schedule_present`
+    false, which is what the surfaces turn into "NOT scheduled to be released --
+    still billing".
+    """
+    blocks: dict[str, dict[str, Any]] = {}
+    for entry in load_host_ledger():
+        blocks[str(entry["host_id"])] = _block_from_ledger(entry)
     record = load_mac_record()
-    if not record:
+    current = str(record.get("mac_host_id") or "")
+    if current:
+        # The block wins for its own host: it carries the spend figure, the
+        # instance and the security group, none of which the ledger holds.
+        blocks[current] = record
+    for host_id in release_stack_hosts():
+        blocks.setdefault(host_id, {"mac_host_id": host_id})
+    payloads = [_host_payload(block, args) for block in blocks.values()]
+    return sorted(
+        (payload for payload in payloads if payload),
+        key=lambda payload: (str(payload.get("allocated_at") or ""), str(payload["host_id"])),
+    )
+
+
+def _host_payload(record: dict[str, Any], args: argparse.Namespace | None = None) -> dict[str, Any]:
+    """The payload every surface reads about one Dedicated Host.
+
+    One builder for the current deployment's host and for a host that only the
+    ledger or a leftover release stack still names (#4200) -- so no surface can
+    describe the two differently, and the "still billing" wording is decided
+    once.
+    """
+    if not record.get("mac_host_id"):
         return {}
     observation = observe_host(args, record=record)
     allocated_at = parse_timestamp(str(record.get("mac_allocated_at") or ""))
@@ -760,8 +1083,16 @@ def pending_release(args: argparse.Namespace | None = None) -> dict[str, Any]:
         spend = None
 
     releasable = bool(release_at and now >= release_at)
+    host_id = str(record.get("mac_host_id") or "")
+    # #4200. The record's `mac_release_scheduled` is what some previous run
+    # wrote down; this is whether the Terraform stack that would do the
+    # releasing is actually on this machine, for THIS host. The two are
+    # reported separately and never collapsed, because the defect was precisely
+    # a flag that stayed true while the schedule it referred to had been
+    # rewritten to name a different host.
+    schedule_present = release_stack_exists(host_id)
     return {
-        "host_id": str(record.get("mac_host_id") or ""),
+        "host_id": host_id,
         "instance_id": str(record.get("mac_instance_id") or ""),
         "instance_type": str(record.get("mac_instance_type") or ""),
         "region": str(record.get("mac_region") or ""),
@@ -777,6 +1108,24 @@ def pending_release(args: argparse.Namespace | None = None) -> dict[str, Any]:
         "release_at": str(record.get("mac_release_at") or ""),
         "release_scheduled": bool(record.get("mac_release_scheduled")),
         "release_scheduled_at": str(record.get("mac_release_scheduled_at") or ""),
+        # Whether *this host's* release stack exists here, and the sentence to
+        # print when it does not (#4200). Decided once; every surface prints it
+        # rather than inferring "scheduled" from the flag above.
+        "release_schedule_present": schedule_present,
+        "release_state_file": str(release_paths(host_id)[0]) if host_id else "",
+        # Gated on `usable`, like every other claim in this payload (#4181):
+        # "still billing" is about AWS, and a reader handed that sentence over
+        # an unconfirmed record would state it. Empty when the host is
+        # scheduled, and empty when nothing has confirmed the host -- the
+        # unconfirmed case has its own wording in `provenance`.
+        "unscheduled_warning": (
+            ""
+            if schedule_present or not observation.usable
+            else (
+                f"NOT scheduled to be released -- still billing. Nothing on this machine will "
+                f"release {host_id}. Run `nyxgpt cloud destroy --yes` to schedule it."
+            )
+        ),
         "hourly_rate": rate or None,
         # What AWS billed, and only that. `None` means nobody has asked AWS
         # yet (or it could not answer) -- it never silently becomes the local
@@ -918,13 +1267,25 @@ def _restamp_tfvars(path: Path, *, region: str, profile: str) -> None:
     _write_tfvars(path, values)
 
 
-def _init(config_dir: Path, state_file: Path) -> None:
-    """`terraform init` one of the Mac roots against its own local state file."""
-    cloud_infra.run_terraform(
-        ["init", "-input=false", f"-backend-config=path={state_file}"],
-        capture=True,
-        chdir=config_dir,
-    )
+def _init(config_dir: Path, state_file: Path, *, reconfigure: bool = False) -> None:
+    """`terraform init` one of the Mac roots against its own local state file.
+
+    `reconfigure=True` for the release root, which since #4200 is initialized
+    against a *different* state file per host from the same working directory.
+    Terraform records the backend configuration it last initialized under
+    `.terraform/`, and a changed `path` otherwise makes it stop and ask whether
+    to migrate the previous host's state into the new file -- a question that
+    fails outright under `-input=false`, and whose "yes" would copy host A's
+    resources into host B's state and then have Terraform update them to point
+    at B. `-reconfigure` adopts the named backend and copies nothing, which is
+    the only correct answer: these are two independent stacks that happen to
+    share a root module.
+    """
+    arguments = ["init", "-input=false"]
+    if reconfigure:
+        arguments.append("-reconfigure")
+    arguments.append(f"-backend-config=path={state_file}")
+    cloud_infra.run_terraform(arguments, capture=True, chdir=config_dir)
 
 
 def _outputs(config_dir: Path) -> dict[str, Any]:
@@ -1051,6 +1412,63 @@ def forget_host() -> bool:
     return True
 
 
+def _adopt_allocated_host(plan: MacAllocationPlan, host_id: str) -> bool:
+    """Put a still-held Dedicated Host back into the Mac root's state (#4200).
+
+    `terraform import`, and the alternative is allocating a second host. The
+    sequence that needs it is the ordinary one: `cloud destroy` calls
+    `forget_host` so the destroy cannot try to release the host inside AWS's
+    24-hour minimum, which leaves Terraform's state with no `aws_ec2_host.this`
+    while the host is very much still allocated and still billing. The next
+    `cloud deploy --os macos` then reconciles -- announcing "no new host, no new
+    24-hour minimum" -- and `terraform apply` creates the missing resource,
+    which on this resource type means `AllocateHosts`.
+
+    A no-op when state already holds the host, which is the common case (a
+    re-deploy with no teardown in between).
+
+    **A failure here stops the deploy.** Falling through to the apply would
+    spend the operator's money on a second host they did not ask for, so the
+    error says what happened and names the host that is already billing. That
+    is the inverse of the usual "best effort" treatment, deliberately: the
+    cheap, reversible outcome is a deploy that does not run.
+    """
+    if not host_id or allocated_host_from_state() == host_id:
+        return False
+    cloud_infra.sync_terraform_config()
+    config_dir = _config_dir(MAC_CONFIG_DIRNAME)
+    _write_tfvars(MAC_TFVARS_FILE, _plan_tfvars(plan))
+    _init(config_dir, MAC_TFSTATE_FILE)
+    print(
+        f"Terraform's state does not hold Dedicated Host {host_id} (a previous "
+        "`nyxgpt cloud destroy` dropped it so the teardown could not release it early). "
+        "Importing it so this deploy reuses the host you are already paying for."
+    )
+    try:
+        cloud_infra.run_terraform(
+            [
+                "import",
+                "-input=false",
+                f"-var-file={MAC_TFVARS_FILE}",
+                f"{HOST_RESOURCE_TYPE}.{HOST_RESOURCE_NAME}",
+                host_id,
+            ],
+            capture=True,
+            chdir=config_dir,
+        )
+    except CloudCommandError as exc:
+        raise CloudCommandError(
+            f"Dedicated Host {host_id} is allocated and billing, but it could not be imported "
+            f"into Terraform's state: {exc}\n"
+            "Nothing was applied, because applying would have allocated a SECOND host and "
+            "started a second non-refundable 24-hour minimum.\n"
+            "`nyxgpt cloud status` shows the host and its scheduled release; fix what the error "
+            "above names and re-run, or run `nyxgpt cloud destroy --yes` to schedule this host's "
+            "release and deploy again afterwards."
+        ) from exc
+    return True
+
+
 def destroy_mac_instance(plan_values: dict[str, Any]) -> dict[str, Any]:
     """Terminate the Mac and delete its network, leaving the host allocated.
 
@@ -1093,7 +1511,21 @@ def apply_release_schedule(
     slack_bot_token: str,
     name_prefix: str = "nyxgpt-mac",
 ) -> dict[str, Any]:
-    """Create the one-shot schedule that releases `host_id` once it can be released."""
+    """Create the one-shot schedule that releases `host_id` once it can be released.
+
+    **One stack per host (#4200).** The state file, the tfvars and every AWS
+    resource name are derived from `host_id`, so applying a schedule for a
+    second host creates a second, independent stack instead of updating the one
+    schedule to name the new host -- which left the first host, still inside its
+    24-hour minimum and still billing, with nothing scheduled to release it and
+    no Slack message to say so.
+
+    Idempotent per host: re-applying for the same host reconciles that host's
+    own stack. A stack applied before #4200 keeps the resource names it was
+    created with (read back from its tfvars) rather than being renamed, because
+    renaming an EventBridge schedule is a destroy-and-create and this one may be
+    the only thing that will ever release the host.
+    """
     if not slack_bot_token.strip():
         raise CloudCommandError(
             "No Slack bot token is configured, and the deferred host release reports its "
@@ -1104,21 +1536,25 @@ def apply_release_schedule(
         )
     cloud_infra.sync_terraform_config()
     config_dir = _config_dir(MAC_RELEASE_CONFIG_DIRNAME)
+    state_file, tfvars_file = release_paths(host_id)
     _write_tfvars(
-        MAC_RELEASE_TFVARS_FILE,
+        tfvars_file,
         {
             "aws_region": region,
             "aws_profile": profile,
-            "name_prefix": name_prefix,
+            # The host id is in every resource name, so two hosts cannot collide
+            # on a schedule, a state machine, an IAM role or the EventBridge
+            # connection. An existing stack keeps the prefix it was created with.
+            "name_prefix": _release_name_prefix(tfvars_file, name_prefix, host_id),
             "host_id": host_id,
             "release_at": scheduler_timestamp(release_at),
             "slack_channel": slack_channel,
             "slack_authorization_header": f"Bearer {slack_bot_token.strip()}",
         },
     )
-    _init(config_dir, MAC_RELEASE_TFSTATE_FILE)
+    _init(config_dir, state_file, reconfigure=True)
     cloud_infra.run_terraform(
-        ["apply", "-input=false", "-auto-approve", f"-var-file={MAC_RELEASE_TFVARS_FILE}"],
+        ["apply", "-input=false", "-auto-approve", f"-var-file={tfvars_file}"],
         chdir=config_dir,
     )
     outputs = _outputs(config_dir)
@@ -1128,11 +1564,33 @@ def apply_release_schedule(
         "schedule_name": str(outputs.get("schedule_name") or ""),
         "state_machine_arn": str(outputs.get("state_machine_arn") or ""),
         "slack_channel": str(outputs.get("slack_channel") or slack_channel),
+        "state_file": str(state_file),
     }
 
 
-def destroy_release_stack(*, region: str = "", profile: str = "") -> bool:
-    """Tear down a completed release stack. Returns False when there is none.
+def _release_name_prefix(tfvars_file: Path, name_prefix: str, host_id: str) -> str:
+    """AWS resource-name prefix for `host_id`'s release stack.
+
+    The host slug is appended so the stacks of two hosts name no resource in
+    common -- without it, `aws_scheduler_schedule.release` is called
+    `nyxgpt-tf-mac-release` for both and the second apply simply retargets the
+    first host's schedule.
+
+    An already-applied stack keeps what its own tfvars says, whatever this run
+    would have composed. Changing `name_prefix` renames every resource, and
+    renaming is destroy-then-create: for the one-shot schedule that is the only
+    thing that will ever release the host, a failed create after a successful
+    destroy leaves the host billing with nothing to stop it.
+    """
+    existing = str(_read_tfvars(tfvars_file).get("name_prefix") or "")
+    if existing:
+        return existing
+    slug = host_slug(host_id)
+    return f"{name_prefix}-{slug}" if slug else name_prefix
+
+
+def destroy_release_stack(*, host_id: str, region: str = "", profile: str = "") -> bool:
+    """Tear down one host's completed release stack. Returns False when there is none.
 
     The schedule deletes itself when it fires, but the state machine, the
     EventBridge connection and the Secrets Manager secret EventBridge creates
@@ -1152,18 +1610,32 @@ def destroy_release_stack(*, region: str = "", profile: str = "") -> bool:
     than required so a caller that genuinely has no resolution (a test, a
     teardown with no record) gets the environment's, which is what it had
     before.
+
+    **`host_id` is required, and it names the only stack this touches (#4200).**
+    It used to destroy "the release stack", of which there was one -- so
+    cleaning up after a finished host would have torn down a *pending* host's
+    schedule had the two ever shared the slot. Now the cleanup of one host
+    cannot reach another's, which is the acceptance criterion in both
+    directions: scheduling B leaves A's schedule alone, and cleaning up A
+    leaves B's alone.
     """
-    if not MAC_RELEASE_TFSTATE_FILE.exists():
+    state_file, tfvars_file = release_paths(host_id)
+    if not state_file.exists():
         return False
     cloud_infra.sync_terraform_config()
     config_dir = _config_dir(MAC_RELEASE_CONFIG_DIRNAME)
-    _restamp_tfvars(MAC_RELEASE_TFVARS_FILE, region=region, profile=profile)
-    _init(config_dir, MAC_RELEASE_TFSTATE_FILE)
+    _restamp_tfvars(tfvars_file, region=region, profile=profile)
+    _init(config_dir, state_file, reconfigure=True)
     cloud_infra.run_terraform(
-        ["destroy", "-input=false", "-auto-approve", f"-var-file={MAC_RELEASE_TFVARS_FILE}"],
+        ["destroy", "-input=false", "-auto-approve", f"-var-file={tfvars_file}"],
         capture=True,
         chdir=config_dir,
     )
+    # The stack is gone, so the files that described it must go too: a leftover
+    # tfvars naming a released host makes `release_stack_hosts` report it as
+    # still pending, which is the same class of defect in the other direction.
+    state_file.unlink(missing_ok=True)
+    tfvars_file.unlink(missing_ok=True)
     return True
 
 
@@ -1441,7 +1913,13 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
     plan = resolve_allocation_plan(args)
     allocated_at = utc_now().replace(microsecond=0)
     releasable_at = release_time(allocated_at)
-    confirm_allocation(format_allocation_disclosure(plan, releasable_at), assume_yes=assume_yes)
+    # Every host this machine has allocated and not seen released, named in the
+    # disclosure (#4200). The reconcile above has just asked AWS about each of
+    # them, so what is left here is what is really still outstanding.
+    confirm_allocation(
+        format_allocation_disclosure(plan, releasable_at, already_billing=pending_releases(args)),
+        assume_yes=assume_yes,
+    )
 
     print(
         f"\nAllocating a {plan.instance_type} Dedicated Host in {plan.region}/"
@@ -1472,6 +1950,19 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
                     "mac_release_scheduled": False,
                 },
                 reason=f"recorded Dedicated Host {stranded} stranded by a failed apply",
+            )
+            remember_host(
+                {
+                    "host_id": stranded,
+                    "instance_type": plan.instance_type,
+                    "region": plan.region,
+                    "availability_zone": plan.availability_zone,
+                    "allocated_at": allocated_at.isoformat(),
+                    "release_at": releasable_at.isoformat(),
+                    "hourly_rate": (plan.pricing.hourly_rate if plan.pricing else None),
+                    "release_scheduled": False,
+                },
+                reason=f"Dedicated Host {stranded} stranded by a failed apply",
             )
             print(
                 f"\nWARNING: Dedicated Host {stranded} WAS allocated before this failure and is "
@@ -1519,6 +2010,9 @@ def allocate(args: argparse.Namespace, *, assume_yes: bool = False) -> dict[str,
         },
         reason=f"allocated Dedicated Host {host_id}",
     )
+    # And onto the ledger, which is what keeps this host visible and releasable
+    # after a later deploy replaces the block above (#4200).
+    remember_host(_ledger_from_block(record), reason=f"allocated Dedicated Host {host_id}")
     return {
         "allocated": True,
         "host_id": host_id,
@@ -1574,7 +2068,7 @@ def _heal_orphaned_record(
     recorded_allocation = parse_timestamp(str(existing.get("mac_allocated_at") or "")) or (
         allocated_at
     )
-    return record_mac_host(
+    record = record_mac_host(
         {
             "mac_host_id": host_id,
             "mac_instance_type": instance_type,
@@ -1587,6 +2081,11 @@ def _heal_orphaned_record(
         },
         reason=f"adopted Dedicated Host {host_id} from Terraform state",
     )
+    remember_host(
+        _ledger_from_block(record),
+        reason=f"adopted Dedicated Host {host_id} from Terraform state",
+    )
+    return record
 
 
 def _recorded_root_volume_size(existing: dict[str, Any]) -> int:
@@ -1746,10 +2245,23 @@ def _reconcile_existing(args: argparse.Namespace, existing: dict[str, Any]) -> d
         f"(host {expected_host}, confirmed at AWS in this run) -- no new host, no new "
         "24-hour minimum."
     )
+    # The host is still held and AWS has confirmed it in this run, so this
+    # deploy reuses it. That requires Terraform to be holding it too (#4200):
+    # `cloud destroy` removes `aws_ec2_host.this` from state on purpose, so that
+    # the destroy does not call ReleaseHosts inside the 24-hour window -- and a
+    # re-apply against that state does not reconcile the host, it ALLOCATES A
+    # SECOND ONE, starting a second non-refundable 24-hour minimum with no
+    # disclosure. Importing it first is what makes "deploy, destroy, deploy"
+    # reuse the Mac the operator is already paying for.
+    _adopt_allocated_host(plan, expected_host)
     outputs = apply_mac_host(plan)
     record = record_mac_host(
         _reconciled_block(existing, outputs, plan),
         reason=f"reconciled Dedicated Host {expected_host}",
+    )
+    remember_host(
+        _ledger_from_block(record),
+        reason=f"reconciled Dedicated Host {record.get('mac_host_id')}",
     )
     return {
         "allocated": False,
@@ -1814,44 +2326,94 @@ def reconcile_released_host(args: argparse.Namespace, *, cleanup: bool = True) -
     through here, so a read-only command ran `terraform destroy` on the release
     schedule. Cleanup belongs to `cloud destroy` and `cloud deploy`, which pass
     the default.
+
+    **It asks about every host, not only the deployment's (#4200).** Delegated
+    to `reconcile_released_hosts`; the boolean it returns is still specifically
+    about the current deployment's host, because that is what the callers
+    branch on -- `teardown` has nothing left to tear down, `allocate` has no
+    host to reconcile.
     """
     record = load_mac_record()
     host_id = str(record.get("mac_host_id") or "")
-    if not host_id:
-        return False
-    region = _record_region(record, args)
+    cleared = reconcile_released_hosts(args, cleanup=cleanup)
+    return bool(host_id) and host_id in cleared
+
+
+def tracked_hosts() -> list[str]:
+    """Every Dedicated Host this machine has any trace of, oldest first (#4200).
+
+    The union of the three places a host can be named -- the ledger, the Mac
+    block, and a release stack's tfvars -- and the one answer to "which hosts
+    must we ask AWS about". A host named by only one of them is still a host
+    that may be billing, and the reason the union is taken rather than the
+    intersection is that each of the three has, at some point, been the only one
+    that knew.
+    """
+    ordered = [str(entry["host_id"]) for entry in load_host_ledger()]
+    current = str(load_mac_record().get("mac_host_id") or "")
+    for host_id in ([current] if current else []) + release_stack_hosts():
+        if host_id and host_id not in ordered:
+            ordered.append(host_id)
+    return ordered
+
+
+def reconcile_released_hosts(args: argparse.Namespace, *, cleanup: bool = True) -> list[str]:
+    """Forget every tracked host AWS says is gone. Returns the host ids cleared.
+
+    One `DescribeHosts` per tracked host, and only a definite *no* acts: a host
+    whose answer could not be obtained stays on the books, because a record
+    deleted on the strength of expired credentials hides a resource that is
+    still costing money. Never raises -- a reconcile that cannot run must not
+    stop the command it runs ahead of.
+    """
+    record = load_mac_record()
+    current = str(record.get("mac_host_id") or "")
     profile = _record_profile(args)
-    try:
-        presence = host_presence(host_id, region, profile)
-    except Exception as exc:  # pragma: no cover - host_presence swallows its own
-        presence = HostPresence(present=None, reason=f"AWS could not be asked: {exc}")
-    # Written down whatever the answer was, including "could not ask" and the
-    # reason for it (#4181). An unrecorded failure is why every reader had to
-    # word the unconfirmed case as "nobody has asked yet".
-    _record_verification(host_id, presence, profile=profile, args=args)
-    if presence.present is not False:
-        return False
-    print(
-        f"Dedicated Host {host_id} has been released -- AWS no longer has it. "
-        "Clearing it from this machine's cloud state."
-    )
-    if cleanup:
+    cleared: list[str] = []
+    for host_id in tracked_hosts():
+        entry = ledger_entry(host_id)
+        block = record if host_id == current else _block_from_ledger(entry)
+        region = _record_region(block, args)
         try:
-            destroy_release_stack(region=region, profile=profile)
-        except Exception as exc:  # pragma: no cover - best effort by design
-            print(f"note: could not clean up the released host's schedule: {exc}", file=sys.stderr)
-    clear_mac_record(reason=f"AWS reports Dedicated Host {host_id} as released")
-    if cleanup:
-        MAC_TFSTATE_FILE.unlink(missing_ok=True)
-        MAC_TFVARS_FILE.unlink(missing_ok=True)
-    elif MAC_RELEASE_TFSTATE_FILE.exists():
+            presence = host_presence(host_id, region, profile)
+        except Exception as exc:  # pragma: no cover - host_presence swallows its own
+            presence = HostPresence(present=None, reason=f"AWS could not be asked: {exc}")
+        # Written down whatever the answer was, including "could not ask" and the
+        # reason for it (#4181). An unrecorded failure is why every reader had to
+        # word the unconfirmed case as "nobody has asked yet".
+        if host_id == current:
+            _record_verification(host_id, presence, profile=profile, args=args)
+        _remember_verification(host_id, presence, profile=profile, args=args)
+        if presence.present is not False:
+            continue
         print(
-            "note: the released host's EventBridge schedule stack is still on this machine. "
-            "`nyxgpt cloud status` observes and changes nothing, so it does not tear it down; "
-            "`nyxgpt cloud destroy --yes` and the next `nyxgpt cloud deploy --os macos` do.",
-            file=sys.stderr,
+            f"Dedicated Host {host_id} has been released -- AWS no longer has it. "
+            "Clearing it from this machine's cloud state."
         )
-    return True
+        if cleanup:
+            try:
+                destroy_release_stack(host_id=host_id, region=region, profile=profile)
+            except Exception as exc:  # pragma: no cover - best effort by design
+                print(
+                    f"note: could not clean up the released host's schedule: {exc}",
+                    file=sys.stderr,
+                )
+        forget_ledger_host(host_id, reason=f"AWS reports Dedicated Host {host_id} as released")
+        if host_id == current:
+            clear_mac_record(reason=f"AWS reports Dedicated Host {host_id} as released")
+            if cleanup:
+                MAC_TFSTATE_FILE.unlink(missing_ok=True)
+                MAC_TFVARS_FILE.unlink(missing_ok=True)
+        if not cleanup and release_stack_exists(host_id):
+            print(
+                f"note: the released host {host_id}'s EventBridge schedule stack is still on "
+                "this machine. `nyxgpt cloud status` observes and changes nothing, so it does "
+                "not tear it down; `nyxgpt cloud destroy --yes` and the next `nyxgpt cloud "
+                "deploy --os macos` do.",
+                file=sys.stderr,
+            )
+        cleared.append(host_id)
+    return cleared
 
 
 def _record_region(record: dict[str, Any], args: argparse.Namespace) -> str:
@@ -1940,6 +2502,53 @@ def _record_verification(
         )
     except Exception:  # pragma: no cover - a record that moved under us
         return
+
+
+def _remember_verification(
+    host_id: str,
+    presence: HostPresence | bool,
+    *,
+    profile: str = "",
+    args: argparse.Namespace | None = None,
+) -> None:
+    """The same answer, written onto `host_id`'s ledger entry (#4200).
+
+    The ledger needs its own copy because it outlives the Mac block: a host that
+    is no longer the deployment's has no block to carry `mac_verified_at`, and
+    without it every surface would have to word that host as "nobody has asked"
+    forever -- over a host that is billing. Keyed by host id, so unlike the
+    block's version it needs no staleness gate: the fields cannot land on
+    another host.
+    """
+    answer = presence if isinstance(presence, HostPresence) else HostPresence(present=presence)
+    account = cloud_identity.account_default(args)
+    if not ledger_entry(host_id) and answer.present is False:
+        # Nothing to remember about a host AWS says is gone and the ledger does
+        # not list: `reconcile_released_hosts` forgets a released host on the
+        # very next statement, so creating the entry here would write the ledger
+        # twice to end where it started -- and would briefly publish an entry
+        # asserting a host that no longer exists.
+        return
+    # Otherwise the entry is CREATED when it is missing (`remember_host` appends
+    # keyed by host id). A host can be tracked by a leftover release stack alone
+    # -- a pre-#4200 record, or a run that died between the allocation and the
+    # ledger write -- and `tracked_hosts()` therefore asks AWS about it. Before
+    # this, that answer had nowhere to land: the early return discarded it, so
+    # every surface went on saying "nothing has asked AWS about this host"
+    # immediately after a run had asked, over a host that is billing. Which is
+    # the same class as #4200 itself -- a fact about a billing resource with no
+    # per-resource place to live is a fact that gets dropped.
+    remember_host(
+        {
+            "host_id": host_id,
+            "verified_at": utc_now().isoformat(),
+            "host_present": answer.present,
+            "verify_error": answer.reason or None,
+            "verified_profile": profile or None,
+            "verified_account_id": (account.account_id if account.profile == profile else None),
+        },
+        reason=f"recorded what AWS said about {host_id}",
+    )
 
 
 # How recent a `DescribeHosts` confirmation has to be to count as "this run".
@@ -2122,15 +2731,42 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
     with it -- the substrate, the tunnel and the deploy record all still have
     to come down, and an operator with a stuck host needs the *other* things
     gone so the one that is left is unambiguous.
+
+    **It covers every host, not only this deployment's (#4200).** Once the
+    current host is dealt with, any other host still on the ledger without a
+    release schedule gets one -- and the early returns below are only taken when
+    there is no such backlog, because "this deployment is already gone" was
+    never a reason to leave another host billing with nothing to release it.
     """
-    if reconcile_released_host(args):
-        return {"managed": False, "already_released": True}
+    # Read before the reconcile, because the reconcile is what clears it: the
+    # question "was THIS deployment's host the one that turned out to be
+    # released" cannot be asked of a record that no longer names it.
+    deployed_host = str(load_mac_record().get("mac_host_id") or "")
+    released = reconcile_released_hosts(args)
     record = load_mac_record()
-    if not record and not mac_state_exists():
+    host_id = str(record.get("mac_host_id") or "")
+    outstanding = [host for host in tracked_hosts() if not release_stack_exists(host)]
+    if deployed_host and deployed_host in released and not outstanding:
+        return {"managed": False, "already_released": True}
+    if not record and not mac_state_exists() and not outstanding:
         return {"managed": False}
+    if not record and not mac_state_exists():
+        # No deployment left here, but hosts are. Schedule their releases and
+        # report that as the whole of this teardown.
+        saved_region = str(getattr(args, "region", None) or "") or str(
+            cloud_infra.load_settings().get("aws_region") or ""
+        )
+        profile = _record_profile(args)
+        errors: list[str] = []
+        schedules = _schedule_outstanding_hosts(saved_region, profile, skip="", errors=errors)
+        return {
+            "managed": False,
+            "already_released": bool(released),
+            "other_schedules": schedules,
+            "errors": errors,
+        }
 
     saved = cloud_infra.load_settings()
-    host_id = str(record.get("mac_host_id") or "")
     # The record first: a host lives in exactly one region and that is the one
     # it was allocated in, whatever the flags or the AWS CLI default say now.
     # Flags are only a fallback for a record written before the region was
@@ -2159,46 +2795,30 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
         "errors": [],
     }
 
-    # A release stack from a *previous* host, whose schedule has already fired
-    # and deleted itself, still holds a state machine, a connection and the
-    # Secrets Manager secret EventBridge made for it. This is the moment we can
-    # be sure it is finished, so it is the moment it gets cleaned up.
-    previous_host = _recorded_release_host()
-    if previous_host and previous_host != host_id:
-        try:
-            if host_still_allocated(previous_host, region, profile) is False:
-                destroy_release_stack(region=region, profile=profile)
-        except Exception as exc:  # pragma: no cover - best effort by design
-            result["errors"].append(f"could not clean up the previous release stack: {exc}")
+    # A release stack whose schedule has already fired and deleted itself still
+    # holds a state machine, a connection and the Secrets Manager secret
+    # EventBridge made for it. This is the moment we can be sure it is finished,
+    # so it is the moment it gets cleaned up -- and since #4200 it is cleaned up
+    # **per host**, only for hosts AWS has confirmed are gone, which
+    # `reconcile_released_hosts` has just done at the top of this function. A
+    # stack belonging to a host that is still allocated is never touched here:
+    # tearing it down would remove the only thing that will release that host.
+    result["errors"].extend(_cleanup_finished_release_stacks(region, profile, keep=host_id))
 
     if host_id:
-        channel, token = _slack_settings()
-        try:
-            result["schedule"] = apply_release_schedule(
-                host_id=host_id,
-                release_at=release_at,
-                region=region,
-                profile=profile,
-                slack_channel=channel,
-                slack_bot_token=token,
-                name_prefix=f"{cloud_infra.load_settings().get('name_prefix') or 'nyxgpt-tf'}-mac",
-            )
-            result["release_scheduled"] = True
-            # Amended, not written whole, and gated on the host id (#4136): this
-            # says "the release of *this* host is scheduled", and landing it on
-            # a block that has since been replaced is how a
-            # `mac_release_scheduled_at` 78 seconds earlier than the
-            # `mac_allocated_at` of the host it described got written.
-            amend_mac_record(
-                {
-                    "mac_release_scheduled": True,
-                    "mac_release_scheduled_at": utc_now().isoformat(),
-                },
-                host_id=host_id,
-                reason="deferred release scheduled",
-            )
-        except Exception as exc:
-            result["errors"].append(str(exc))
+        result["schedule"] = _schedule_one(
+            host_id, release_at, region, profile, errors=result["errors"]
+        )
+        result["release_scheduled"] = bool(result["schedule"])
+
+    # Every OTHER host still on the ledger with no schedule of its own (#4200).
+    # Before this, a host that lost its slot to a later one was never looked at
+    # again by anything: it had no schedule, no Slack message, and no row on
+    # `cloud status`. A teardown is the one command that is already resolving
+    # credentials and Terraform, so it is where the backlog gets cleared.
+    result["other_schedules"] = _schedule_outstanding_hosts(
+        region, profile, skip=host_id, errors=result["errors"]
+    )
 
     try:
         destroyed = destroy_mac_instance(_teardown_tfvars(record, region, profile))
@@ -2210,18 +2830,117 @@ def teardown(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def _recorded_release_host() -> str:
-    """Host id the existing release stack's tfvars names, or "" when there is none."""
-    if not MAC_RELEASE_TFVARS_FILE.exists():
-        return ""
+def _schedule_one(
+    host_id: str,
+    release_at: datetime,
+    region: str,
+    profile: str,
+    *,
+    errors: list[str],
+) -> dict[str, Any]:
+    """Apply `host_id`'s own release stack and record that it exists.
+
+    The one place a release gets scheduled, so the Slack settings, the name
+    prefix and the two records that say "this host's release is scheduled" are
+    decided once however many hosts a teardown has to cover.
+    """
+    channel, token = _slack_settings()
     try:
-        for line in MAC_RELEASE_TFVARS_FILE.read_text(encoding="utf-8").splitlines():
-            key, _, value = line.partition("=")
-            if key.strip() == "host_id":
-                return value.strip().strip('"')
-    except OSError:
-        return ""
-    return ""
+        schedule = apply_release_schedule(
+            host_id=host_id,
+            release_at=release_at,
+            region=region,
+            profile=profile,
+            slack_channel=channel,
+            slack_bot_token=token,
+            name_prefix=f"{cloud_infra.load_settings().get('name_prefix') or 'nyxgpt-tf'}-mac",
+        )
+    except Exception as exc:
+        errors.append(str(exc))
+        return {}
+    scheduled_at = utc_now().isoformat()
+    # The ledger first, and unconditionally: it is keyed by host id, so it
+    # cannot be stale, and it is the record that outlives the deployment.
+    remember_host(
+        {
+            "host_id": host_id,
+            # The record's own ISO form, not the scheduler's naive `at()`
+            # timestamp: every reader here parses offset-aware timestamps, and
+            # a ledger row carrying one of each is a row whose two time fields
+            # cannot be compared.
+            "release_at": release_at.isoformat(),
+            "release_scheduled": True,
+            "release_scheduled_at": scheduled_at,
+        },
+        reason=f"deferred release scheduled for {host_id}",
+    )
+    # Amended, not written whole, and gated on the host id (#4136): this says
+    # "the release of *this* host is scheduled", and landing it on a block that
+    # has since been replaced is how a `mac_release_scheduled_at` 78 seconds
+    # earlier than the `mac_allocated_at` of the host it described got written.
+    # A mismatch is no longer an error -- the ledger above has already recorded
+    # it, and this host simply is not the one the block describes.
+    with contextlib.suppress(cloud_record.StaleRecordError):
+        amend_mac_record(
+            {"mac_release_scheduled": True, "mac_release_scheduled_at": scheduled_at},
+            host_id=host_id,
+            reason="deferred release scheduled",
+        )
+    return schedule
+
+
+def _schedule_outstanding_hosts(
+    region: str,
+    profile: str,
+    *,
+    skip: str,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    """Schedule a release for every other tracked host that has none (#4200).
+
+    The repair half of the fix. The defect left hosts with no schedule at all,
+    and a fix that only stops *new* ones being orphaned would leave the ones
+    already orphaned billing forever -- including, on the owner's machine, any
+    host stranded by the rounds that found this.
+    """
+    scheduled: list[dict[str, Any]] = []
+    for host_id in tracked_hosts():
+        if host_id == skip or release_stack_exists(host_id):
+            continue
+        entry = ledger_entry(host_id)
+        allocated_at = parse_timestamp(str(entry.get("allocated_at") or ""))
+        release_at = parse_timestamp(str(entry.get("release_at") or "")) or release_time(
+            allocated_at or utc_now()
+        )
+        host_region = str(entry.get("region") or region)
+        print(
+            f"Dedicated Host {host_id} is still allocated and has no release scheduled. "
+            f"Scheduling its release for {scheduler_timestamp(release_at)} UTC."
+        )
+        schedule = _schedule_one(host_id, release_at, host_region, profile, errors=errors)
+        if schedule:
+            scheduled.append(schedule)
+    return scheduled
+
+
+def _cleanup_finished_release_stacks(region: str, profile: str, *, keep: str) -> list[str]:
+    """Destroy the release stacks of hosts AWS no longer has. Returns error strings.
+
+    Per host (#4200), and only on a definite "the host is gone": a stack torn
+    down while its host is still allocated removes the one thing that was going
+    to release it. `keep` is the host this teardown is about to schedule, which
+    is never a candidate.
+    """
+    errors: list[str] = []
+    for host_id in release_stack_hosts():
+        if host_id == keep:
+            continue
+        try:
+            if host_still_allocated(host_id, region, profile) is False:
+                destroy_release_stack(host_id=host_id, region=region, profile=profile)
+        except Exception as exc:  # pragma: no cover - best effort by design
+            errors.append(f"could not clean up the release stack for {host_id}: {exc}")
+    return errors
 
 
 def _teardown_tfvars(record: dict[str, Any], region: str, profile: str) -> dict[str, Any]:

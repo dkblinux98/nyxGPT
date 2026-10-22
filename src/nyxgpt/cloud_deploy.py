@@ -3748,6 +3748,15 @@ def deploy_status(probe_health: bool = False, verify_host: bool = False) -> dict
         # no AWS call; `verify_host=True` above is what asks AWS, and the
         # block says which of the two the reader is looking at (#4136).
         "mac_host": cloud_mac.pending_release(),
+        # EVERY host that is allocated or pending release, not just this
+        # deployment's (#4200). A Dedicated Host bills until it is released and
+        # outlives the deployment that created it, so there can be more than one
+        # outstanding at a time -- and the single `mac_host` slot above reported
+        # only the newest, which is how a host with no release scheduled at all
+        # billed on unseen. Each entry carries its own release time and its own
+        # `release_schedule_present`; the list is this payload's complete answer
+        # to "what still costs money".
+        "mac_hosts": cloud_mac.pending_releases(),
         "connection": connection_status(on_instance),
         "infra": infra,
         "tunnel": tunnel,
@@ -4032,7 +4041,9 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
     # allocated and nothing else on the machine can see it (#4122). This block
     # was already printed on the DEPLOYED and UNKNOWN verdicts; NOT COMPLETED
     # was the gap, which is the verdict a failed `--os macos` deploy lands on.
-    _print_pending_mac_host(mac_host)
+    # Every host since #4200: a failed deploy is one of the ways a second host
+    # gets allocated while the first is still held.
+    _print_pending_mac_hosts(status)
 
     # D-018 -- never imply an answer nothing checked. This sentence used to
     # print unconditionally, and two ordinary flows reach here with nothing
@@ -4125,6 +4136,25 @@ def _print_incomplete_summary(status: dict[str, Any], commands: dict[str, str]) 
         print(f"  {commands['destroy']}  -- tear the instance down if you do not want it")
 
 
+def _print_pending_mac_hosts(status: dict[str, Any]) -> None:
+    """Print one block per outstanding EC2 Mac Dedicated Host (#4200).
+
+    Every host, because every one of them bills independently. This used to
+    print the single `mac_host` slot, so a second allocation hid the first --
+    the host that had no release scheduled was also the one nothing displayed,
+    and the two facts had the same cause.
+
+    Falls back to `mac_host` for a payload rendered by an older build, so a
+    dashboard or script reading one of those still sees the host it knows about.
+    """
+    hosts = status.get("mac_hosts")
+    if not isinstance(hosts, list) or not hosts:
+        single = status.get("mac_host") or {}
+        hosts = [single] if single.get("host_id") else []
+    for mac_host in hosts:
+        _print_pending_mac_host(mac_host)
+
+
 def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
     """Print the EC2 Mac Dedicated Host block, when one is outstanding (#3995).
 
@@ -4204,16 +4234,51 @@ def _print_pending_mac_host(mac_host: dict[str, Any]) -> None:
             "as AWS confirms the host is gone, which `nyxgpt cloud status`, `nyxgpt cloud deploy "
             "--os macos` and `nyxgpt cloud destroy --yes` each ask it",
         )
-    elif mac_host.get("release_scheduled"):
+    elif mac_host.get("release_scheduled") and mac_host.get("release_schedule_present"):
         _print_row(
             "Release",
             "scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack",
         )
-    else:
+    elif mac_host.get("release_scheduled"):
+        # #4200. The record says scheduled and this host's schedule stack is not
+        # here. Before the per-host split that combination was produced by
+        # nyxGPT itself -- scheduling a second host rewrote the one stack, and
+        # the first host kept a `release_scheduled` flag that nothing would act
+        # on. The flag is shown as what it is and the conclusion is not drawn.
+        #
+        # DEFENCE IN DEPTH, NOT THE DELIVERY PATH: `cloud_mac.record_findings`
+        # reports exactly this combination as INCOHERENT, which closes
+        # `observation.usable`, which means the `not usable` branch above has
+        # already won before control can reach here. The loud warning an
+        # operator actually sees for a flag-true/no-stack record is that
+        # branch's, carrying `provenance`. Kept because the two conditions are
+        # independently computed and a future change to either could separate
+        # them -- but do not "improve" this wording expecting anyone to read
+        # it, and do not delete the branch above thinking this one covers it.
         _print_row(
             "Release",
-            "NOT scheduled yet -- `nyxgpt cloud destroy --yes` terminates the Mac and "
-            "schedules it",
+            "recorded as scheduled, but NO release schedule for this host exists on this "
+            "machine -- NOTHING WILL RELEASE IT AND IT IS STILL BILLING. "
+            "`nyxgpt cloud destroy --yes` schedules it",
+        )
+    else:
+        # The money sentence comes from the payload (#4200 review): it is
+        # decided once, in `cloud_mac.observe_host`, so this row and the
+        # dashboard card cannot word the same state differently (D-066) -- and
+        # it NAMES THE HOST, which matters now that this prints one block per
+        # host and "still billing" on its own does not say which.
+        #
+        # The literal is the fallback for the two cases the field is empty in:
+        # a leftover release stack with the flag false (`unscheduled_warning`
+        # is gated on the stack being absent), and a payload from a build older
+        # than #4200.
+        _print_row(
+            "Release",
+            mac_host.get("unscheduled_warning")
+            or (
+                "NOT scheduled to be released -- still billing. `nyxgpt cloud destroy --yes` "
+                "terminates the Mac and schedules it"
+            ),
         )
     _print_row("Spend", _mac_spend_label(mac_host))
 
@@ -4329,7 +4394,7 @@ def _print_status_summary(status: dict[str, Any]) -> None:
         # until tomorrow". Reporting only the deployment would make the single
         # remaining charge invisible at exactly the moment it is the only
         # thing left (#3995).
-        _print_pending_mac_host(status.get("mac_host") or {})
+        _print_pending_mac_hosts(status)
         return
 
     if status["source"] in (SOURCE_DEPLOY_ATTEMPT, SOURCE_SUBSTRATE_RECORD):
@@ -4424,7 +4489,7 @@ def _print_status_summary(status: dict[str, Any]) -> None:
     else:
         _print_row("Substrate", "unknown -- this deploy predates the record of it")
 
-    _print_pending_mac_host(status.get("mac_host") or {})
+    _print_pending_mac_hosts(status)
 
     access = infra.get("access_model") or {}
     if access.get("open_ports"):

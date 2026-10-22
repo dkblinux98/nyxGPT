@@ -19,6 +19,14 @@
 // local status would read as a contradiction rather than as a missing source.
 
 import { useCallback, useEffect, useState } from 'react';
+// `next/link` rather than a bare `<a>` for in-app routes: `@next/next/
+// no-html-link-for-pages` is an ERROR, and `ci-tests.yml`'s blocking eslint
+// step lints every file a merge touches -- so these two standing errors would
+// have failed the build on the first merge that edited this file for any
+// reason. Found by the #4200 review round, whose diff happened to be that
+// merge. The rest of the page's `<a>` elements point at `/admin/...` routes
+// that the rule does not flag.
+import Link from 'next/link';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import { apiErrorText, errorMessage } from '../../../lib/apiError';
@@ -407,6 +415,15 @@ type MacHost = {
   spend_error?: string;
   currency: string;
   releasable_now: boolean;
+  // #4200. Whether THIS host's own release stack exists on the machine that
+  // allocated it, and the sentence to show when it does not. Separate from
+  // `release_scheduled`, which is only a flag a previous run wrote down: a
+  // single global release stack meant scheduling a second host silently
+  // retargeted the first host's schedule, leaving that flag true over a
+  // schedule that no longer existed. Rendered server-side so this card cannot
+  // word it differently from `nyxgpt cloud status` (D-066).
+  release_schedule_present?: boolean;
+  unscheduled_warning?: string;
   // When AWS last confirmed this host exists. Empty means no run has, which is
   // a different claim from "it is gone" -- and the reason this panel does not
   // say "still billing" on the strength of the record alone.
@@ -511,6 +528,13 @@ type CloudDeployStatus = {
   // this page that can be true while every other field says 'nothing is
   // deployed', and the one thing still costing money when it is.
   mac_host: MacHost;
+  // EVERY host that is allocated or pending release, oldest allocation first
+  // (#4200). A Dedicated Host bills until it is released and outlives the
+  // deployment that created it, so more than one can be outstanding at a time
+  // -- and the single `mac_host` slot above reported only the newest, so a host
+  // left with no release scheduled was also the one this page did not draw.
+  // Optional because a payload from an older build carries only `mac_host`.
+  mac_hosts?: MacHost[];
   connection: CloudConnection;
   infra: CloudInfraStatus;
   tunnel: { running: boolean; pid: number };
@@ -619,6 +643,196 @@ function unconfirmedReason(cloud: CloudDeployStatus): string {
     cloud.infra?.observation?.reason ||
     'nothing on this machine has asked AWS about it in this run'
   );
+}
+
+// One EC2 Mac Dedicated Host, as its own card (#4200).
+//
+// Extracted from the single inline block this page used to draw for
+// `cloud.mac_host`, unchanged in content, because the list is the fix: a host
+// bills until it is released and outlives the deployment that created it, so
+// more than one can be outstanding -- and the host that lost the record's one
+// slot was both the host nothing displayed and the host nothing released.
+//
+// Every claim here is still server-decided -- `usable` gates whether any
+// statement about AWS may be made at all, `provenance` is the sentence for when
+// it is closed, and `unscheduled_warning` is the "nothing will release this
+// host" sentence. D-066's rule is that this card must not be able to word a
+// state differently from `nyxgpt cloud status`, so it renders those three
+// rather than composing its own.
+function MacHostPanel({ host, destroyCommand }: { host: MacHost; destroyCommand: string }) {
+  if (!host?.host_id) return null;
+  return (
+            <div style={{ marginTop: '1rem' }}>
+              {/* #4136. "Still billing" is a claim about AWS, so it is only made
+                  when AWS confirmed the host. An unconfirmed record says so
+                  instead: this panel reported "still billing" over a host that
+                  had been released three days earlier, because the local record
+                  was the only thing anything asked. */}
+              {/* #4181. The gate is `usable`, not `verified_at`: a
+                  confirmation over a record whose own fields contradict each
+                  other confirms a host but not the block describing it, and
+                  this heading said "still billing" directly above the
+                  INCOHERENT warnings about the same block. */}
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                {host.usable
+                  ? 'EC2 Mac Dedicated Host — still billing'
+                  : 'EC2 Mac Dedicated Host — recorded here, not confirmed at AWS'}
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                AWS bills an allocated Dedicated Host for a 24-hour minimum and refuses to release
+                one before that window closes, so <code>nyxgpt cloud destroy</code> terminates the
+                Mac immediately and defers only the host release. This host outlives the instance
+                and the deploy record by design.
+              </p>
+              {/* #4181 finding 6: the REASON, not the remedy for a reason
+                  nobody checked. This used to say "nothing has asked AWS
+                  about this host yet" whatever the cause — including a run
+                  whose boto3 was missing and a run that asked the wrong
+                  account. `provenance` carries whichever applied. */}
+              {!host.usable && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
+                  {host.provenance ??
+                    'Nothing has asked AWS about this host in this run.'}{' '}
+                  Every row below is what this machine RECORDED, not what AWS reports: none of it
+                  is evidence that the host exists, that it is billing, or that its release is
+                  scheduled. <code>nyxgpt cloud status</code> asks, and clears the block if the
+                  host is gone.
+                </p>
+              )}
+              {(host.incoherent?.length ?? 0) > 0 && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--danger, #c0392b)', marginBottom: '0.5rem' }}>
+                  This record is internally inconsistent, so its fields were written by different
+                  runs about different hosts and cannot be read together:
+                  {' '}
+                  {host.incoherent?.join('; ')}. Run{' '}
+                  <code>nyxgpt cloud status</code>, which asks AWS and rebuilds it.
+                </p>
+              )}
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
+                <Row
+                  label="Host"
+                  value={`${host.host_id}${
+                    host.instance_type ? ` (${host.instance_type})` : ''
+                  }`}
+                />
+                <Row
+                  label="Location"
+                  value={`${host.region || 'unknown'} / ${
+                    host.availability_zone || 'unknown'
+                  }`}
+                />
+                <Row label="Allocated" value={host.allocated_at || 'unknown'} />
+                <Row
+                  label="Releasable at"
+                  value={
+                    host.releasable_now
+                      ? `${host.release_at || 'unknown'} — that moment has passed`
+                      : `${host.release_at || 'unknown'} (AWS’s 24-hour minimum)`
+                  }
+                />
+                {/* #4181 finding 3. "The scheduled release has fired" and "a
+                    one-shot AWS schedule releases it" are statements about
+                    EventBridge, and they were rendered from the same fields
+                    the INCOHERENT warning above had just disqualified. The
+                    recorded value is still shown; the conclusion is not. */}
+                <Row
+                  label="Release"
+                  value={
+                    !host.usable
+                      ? `recorded as ${
+                          host.release_scheduled ? 'scheduled' : 'NOT scheduled'
+                        } — not verified in this run, so nyxGPT cannot say whether anything will release this host. \`${
+                          destroyCommand
+                        }\` schedules it and reports what AWS said`
+                      : host.release_scheduled && host.releasable_now
+                      ? 'the scheduled release has fired — Slack has the outcome. Not “released”: nothing here watched it. The block clears as soon as AWS confirms the host is gone, which `nyxgpt cloud status` asks'
+                      : host.release_scheduled && host.release_schedule_present !== false
+                      ? 'scheduled — a one-shot AWS schedule releases it and reports the outcome to Slack'
+                      : /* #4200. The flag says scheduled and this host's own
+                           release stack is not on the machine. nyxGPT itself
+                           used to produce that combination: one global stack
+                           meant scheduling a second host retargeted the first
+                           host's schedule, and the first host kept a flag
+                           nothing would act on. The flag is shown as a flag and
+                           no conclusion is drawn from it.
+
+                           DEFENCE IN DEPTH, NOT THE DELIVERY PATH: the server
+                           reports this same combination as INCOHERENT
+                           (`cloud_mac.record_findings`), which closes `usable`,
+                           so the `!host.usable` branch above has already won
+                           before this one can be reached. The warning an
+                           operator sees for a flag-true/no-stack record is that
+                           branch's, carrying `provenance`. Kept because the two
+                           conditions are computed independently -- but do not
+                           polish this wording expecting it to be read, and do
+                           not drop the branch above believing this covers it. */
+                        host.release_scheduled
+                      ? `recorded as scheduled, but NO release schedule for this host exists on the machine that allocated it — NOTHING WILL RELEASE IT AND IT IS STILL BILLING. \`${
+                          destroyCommand
+                        }\` schedules it`
+                      : /* Server-decided (#4200 review): `unscheduled_warning`
+                           is the one money sentence, composed once in
+                           `cloud_mac.observe_host` so this card and `nyxgpt
+                           cloud status` cannot word the same state differently
+                           (D-066), and it NAMES THE HOST -- which matters now
+                           that this page draws one card per host and "still
+                           billing" alone does not say which. The literal is the
+                           fallback for the two cases the field is empty in: a
+                           leftover release stack with the flag false, and a
+                           payload from an api older than #4200. */
+                        host.unscheduled_warning ||
+                        `NOT scheduled to be released — still billing. \`${
+                          destroyCommand
+                        }\` terminates the Mac and schedules it`
+                  }
+                />
+                <Row
+                  label="Confirmed at AWS"
+                  value={
+                    host.usable
+                      ? `${host.verified_at} in ${
+                          host.observation?.account_label || 'the resolved account'
+                        }`
+                      : host.provenance ??
+                        'never — nothing here has asked AWS whether this host exists'
+                  }
+                />
+                {/* #4136. AWS's figure when there is one, and the local
+                    estimate named as an estimate when there is not. A number
+                    that is not the bill may be shown; it may not be shown as
+                    the bill. */}
+                <Row
+                  label="Spend"
+                  value={
+                    host.accrued_cost !== null && host.accrued_cost !== undefined
+                      ? `${host.currency || 'USD'} ${host.accrued_cost.toFixed(2)} from AWS Cost Explorer${
+                          host.spend_through ? ` through ${host.spend_through}` : ''
+                        } (as of ${host.spend_as_of || 'unknown'})`
+                      : host.estimated_cost !== null &&
+                        host.estimated_cost !== undefined &&
+                        host.hourly_rate
+                      ? `no AWS figure (${
+                          host.spend_error ||
+                          host.observation?.reason ||
+                          'AWS has not been asked yet'
+                        }). Local ESTIMATE only: ${host.currency || 'USD'} ${host.estimated_cost.toFixed(
+                          2,
+                        )} at $${host.hourly_rate.toFixed(4)}/hour, counted from the recorded allocation time — it keeps counting whether or not AWS is still charging`
+                      : 'unknown — no AWS figure and no rate was recorded for this host'
+                  }
+                />
+              </ul>
+            </div>
+  );
+}
+
+// Every outstanding Dedicated Host the payload names, oldest allocation first.
+// `mac_hosts` is the complete answer; the single `mac_host` is the fallback for
+// a payload rendered by an api older than #4200, so an operator running a
+// mismatched pair still sees the host that build knows about.
+function macHostsOf(cloud: CloudDeployStatus | null): MacHost[] {
+  if (cloud?.mac_hosts?.length) return cloud.mac_hosts;
+  return cloud?.mac_host?.host_id ? [cloud.mac_host] : [];
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -876,8 +1090,8 @@ export default function InfrastructurePage() {
         Full local Terraform and Kubernetes stacks are available today via{' '}
         <code>nyxgpt ops install --terraform</code> and{' '}
         <code>nyxgpt ops install --kubernetes</code> — see the{' '}
-        <a href="/support/docs/terraform">Terraform guide</a> and the{' '}
-        <a href="/support/docs/kubernetes">Kubernetes guide</a>. Neither requires a pre-existing
+        <Link href="/support/docs/terraform">Terraform guide</Link> and the{' '}
+        <Link href="/support/docs/kubernetes">Kubernetes guide</Link>. Neither requires a pre-existing
         cluster: the
         Kubernetes path provisions a local <code>kind</code> cluster automatically when none is
         reachable, and uses an existing cluster (minikube, Docker Desktop, ...) as-is when one
@@ -2030,137 +2244,20 @@ export default function InfrastructurePage() {
               remaining charge at exactly the moment it is all that is left.
               Observed, never driven (Definition of Done): the release is
               already scheduled in AWS, and the pointer names the wrapped
-              command that schedules it when it is not. */}
-          {cloud?.mac_host?.host_id && (
-            <div style={{ marginTop: '1rem' }}>
-              {/* #4136. "Still billing" is a claim about AWS, so it is only made
-                  when AWS confirmed the host. An unconfirmed record says so
-                  instead: this panel reported "still billing" over a host that
-                  had been released three days earlier, because the local record
-                  was the only thing anything asked. */}
-              {/* #4181. The gate is `usable`, not `verified_at`: a
-                  confirmation over a record whose own fields contradict each
-                  other confirms a host but not the block describing it, and
-                  this heading said "still billing" directly above the
-                  INCOHERENT warnings about the same block. */}
-              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-                {cloud.mac_host.usable
-                  ? 'EC2 Mac Dedicated Host — still billing'
-                  : 'EC2 Mac Dedicated Host — recorded here, not confirmed at AWS'}
-              </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
-                AWS bills an allocated Dedicated Host for a 24-hour minimum and refuses to release
-                one before that window closes, so <code>nyxgpt cloud destroy</code> terminates the
-                Mac immediately and defers only the host release. This host outlives the instance
-                and the deploy record by design.
-              </p>
-              {/* #4181 finding 6: the REASON, not the remedy for a reason
-                  nobody checked. This used to say "nothing has asked AWS
-                  about this host yet" whatever the cause — including a run
-                  whose boto3 was missing and a run that asked the wrong
-                  account. `provenance` carries whichever applied. */}
-              {!cloud.mac_host.usable && (
-                <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.5rem' }}>
-                  {cloud.mac_host.provenance ??
-                    'Nothing has asked AWS about this host in this run.'}{' '}
-                  Every row below is what this machine RECORDED, not what AWS reports: none of it
-                  is evidence that the host exists, that it is billing, or that its release is
-                  scheduled. <code>nyxgpt cloud status</code> asks, and clears the block if the
-                  host is gone.
-                </p>
-              )}
-              {(cloud.mac_host.incoherent?.length ?? 0) > 0 && (
-                <p style={{ fontSize: '0.8rem', color: 'var(--danger, #c0392b)', marginBottom: '0.5rem' }}>
-                  This record is internally inconsistent, so its fields were written by different
-                  runs about different hosts and cannot be read together:
-                  {' '}
-                  {cloud.mac_host.incoherent?.join('; ')}. Run{' '}
-                  <code>nyxgpt cloud status</code>, which asks AWS and rebuilds it.
-                </p>
-              )}
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.875rem' }}>
-                <Row
-                  label="Host"
-                  value={`${cloud.mac_host.host_id}${
-                    cloud.mac_host.instance_type ? ` (${cloud.mac_host.instance_type})` : ''
-                  }`}
-                />
-                <Row
-                  label="Location"
-                  value={`${cloud.mac_host.region || 'unknown'} / ${
-                    cloud.mac_host.availability_zone || 'unknown'
-                  }`}
-                />
-                <Row label="Allocated" value={cloud.mac_host.allocated_at || 'unknown'} />
-                <Row
-                  label="Releasable at"
-                  value={
-                    cloud.mac_host.releasable_now
-                      ? `${cloud.mac_host.release_at || 'unknown'} — that moment has passed`
-                      : `${cloud.mac_host.release_at || 'unknown'} (AWS’s 24-hour minimum)`
-                  }
-                />
-                {/* #4181 finding 3. "The scheduled release has fired" and "a
-                    one-shot AWS schedule releases it" are statements about
-                    EventBridge, and they were rendered from the same fields
-                    the INCOHERENT warning above had just disqualified. The
-                    recorded value is still shown; the conclusion is not. */}
-                <Row
-                  label="Release"
-                  value={
-                    !cloud.mac_host.usable
-                      ? `recorded as ${
-                          cloud.mac_host.release_scheduled ? 'scheduled' : 'NOT scheduled'
-                        } — not verified in this run, so nyxGPT cannot say whether anything will release this host. \`${
-                          cloud?.commands?.destroy ?? 'nyxgpt cloud destroy --yes'
-                        }\` schedules it and reports what AWS said`
-                      : cloud.mac_host.release_scheduled && cloud.mac_host.releasable_now
-                      ? 'the scheduled release has fired — Slack has the outcome. Not “released”: nothing here watched it. The block clears as soon as AWS confirms the host is gone, which `nyxgpt cloud status` asks'
-                      : cloud.mac_host.release_scheduled
-                      ? 'scheduled — a one-shot AWS schedule releases it and reports the outcome to Slack'
-                      : `not scheduled yet — \`${
-                          cloud?.commands?.destroy ?? 'nyxgpt cloud destroy --yes'
-                        }\` terminates the Mac and schedules it`
-                  }
-                />
-                <Row
-                  label="Confirmed at AWS"
-                  value={
-                    cloud.mac_host.usable
-                      ? `${cloud.mac_host.verified_at} in ${
-                          cloud.mac_host.observation?.account_label || 'the resolved account'
-                        }`
-                      : cloud.mac_host.provenance ??
-                        'never — nothing here has asked AWS whether this host exists'
-                  }
-                />
-                {/* #4136. AWS's figure when there is one, and the local
-                    estimate named as an estimate when there is not. A number
-                    that is not the bill may be shown; it may not be shown as
-                    the bill. */}
-                <Row
-                  label="Spend"
-                  value={
-                    cloud.mac_host.accrued_cost !== null && cloud.mac_host.accrued_cost !== undefined
-                      ? `${cloud.mac_host.currency || 'USD'} ${cloud.mac_host.accrued_cost.toFixed(2)} from AWS Cost Explorer${
-                          cloud.mac_host.spend_through ? ` through ${cloud.mac_host.spend_through}` : ''
-                        } (as of ${cloud.mac_host.spend_as_of || 'unknown'})`
-                      : cloud.mac_host.estimated_cost !== null &&
-                        cloud.mac_host.estimated_cost !== undefined &&
-                        cloud.mac_host.hourly_rate
-                      ? `no AWS figure (${
-                          cloud.mac_host.spend_error ||
-                          cloud.mac_host.observation?.reason ||
-                          'AWS has not been asked yet'
-                        }). Local ESTIMATE only: ${cloud.mac_host.currency || 'USD'} ${cloud.mac_host.estimated_cost.toFixed(
-                          2,
-                        )} at $${cloud.mac_host.hourly_rate.toFixed(4)}/hour, counted from the recorded allocation time — it keeps counting whether or not AWS is still charging`
-                      : 'unknown — no AWS figure and no rate was recorded for this host'
-                  }
-                />
-              </ul>
-            </div>
-          )}
+              command that schedules it when it is not.
+
+              One card per host since #4200. Every allocated host bills on its
+              own, so reporting only the deployment's hid the ones that had lost
+              the record's single slot -- which were exactly the hosts left with
+              no release scheduled. `mac_hosts` is the whole answer; `mac_host`
+              is the fallback for a payload from an older api. */}
+          {macHostsOf(cloud).map((host) => (
+            <MacHostPanel
+              key={host.host_id}
+              host={host}
+              destroyCommand={cloud?.commands?.destroy ?? 'nyxgpt cloud destroy --yes'}
+            />
+          ))}
         </div>
 
         <div style={boxStyle}>

@@ -3760,6 +3760,65 @@ def test_the_unconfirmed_heading_names_the_reason_not_the_command_printing_it(mo
     assert "recorded as scheduled -- not verified in this run" in out
 
 
+def test_the_unscheduled_row_prints_the_servers_sentence_not_its_own(capsys):
+    """#4200 review, Minor 2: the money sentence has ONE author.
+
+    `cloud_mac.observe_host` composes `unscheduled_warning` -- gated on
+    `usable`, because "still billing" is a claim about AWS -- and it names the
+    host, which matters now that this prints one block per host and "still
+    billing" alone does not say which one. The field shipped with #4200 and was
+    read by nothing: both this row and the dashboard card went on composing
+    their own wording, which is two places for the same decision to drift
+    (D-066). This is the test that the row reads it.
+    """
+    cloud_deploy._print_pending_mac_host(
+        {
+            "host_id": "h-0aaa1111aaaa1111a",
+            "usable": True,
+            "billing": True,
+            "release_scheduled": False,
+            "releasable_now": False,
+            "unscheduled_warning": (
+                "NOT scheduled to be released -- still billing. Nothing on this machine will "
+                "release h-0aaa1111aaaa1111a. Run `nyxgpt cloud destroy --yes` to schedule it."
+            ),
+            "incoherent": [],
+            "provenance": "confirmed at AWS in nyxgpt (066835328281) at 2026-10-21T10:00:00+00:00",
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "Nothing on this machine will release h-0aaa1111aaaa1111a" in out
+    # And the row's own literal is not ALSO printed: one state described twice
+    # is how two surfaces start disagreeing about it.
+    assert "terminates the Mac and schedules it" not in out
+
+
+def test_the_unscheduled_row_keeps_its_own_wording_when_the_payload_has_none(capsys):
+    """The other half of the same branch, and why the literal stays.
+
+    `unscheduled_warning` is empty in two reachable cases -- a leftover release
+    stack with the flag false (the field is gated on the stack being absent),
+    and a payload from a build older than #4200 -- and a blank Release row over
+    a host that is billing is the one outcome this file exists to prevent.
+    """
+    cloud_deploy._print_pending_mac_host(
+        {
+            "host_id": "h-0aaa1111aaaa1111a",
+            "usable": True,
+            "billing": True,
+            "release_scheduled": False,
+            "releasable_now": False,
+            "incoherent": [],
+            "provenance": "confirmed at AWS in nyxgpt (066835328281) at 2026-10-21T10:00:00+00:00",
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "NOT scheduled to be released -- still billing" in out
+    assert "terminates the Mac and schedules it" in out
+
+
 def test_a_read_only_status_verifies_both_substrates_and_changes_neither(monkeypatch):
     """Findings 1-4 together, at the command's own seam.
 

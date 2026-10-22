@@ -2790,6 +2790,39 @@ rather than mechanism, and nothing can enforce them.
   "What 'accepted' means". Corrects, as falsified prose, `AGENTS.md` and
   `docs/how-this-project-is-run.md`, both of which named `Closed` as the
   released lane — `Closed` is a merged PR's card (#3742), never an issue's.
+- **D-072** · 2026-10-21 · developer-agent (#4200) — **A record or a scheduled
+  action for a billing cloud resource is keyed by that resource. One global
+  slot can hold one, so writing the second silently orphans the first — and the
+  resource nothing names is the resource nothing releases.** The EC2 Mac
+  deferred release had one tfvars, one Terraform state file and one fixed
+  `name_prefix`, so scheduling host B's release did not create a second
+  schedule: `terraform apply` found `aws_scheduler_schedule.release` and
+  retargeted it. Host A, still allocated and still inside AWS's 24-hour
+  minimum, was left with nothing scheduled to release it — and the Slack
+  message that would have said so belonged to the schedule just retargeted.
+  The single `mac_*` block in `state.json` had the same shape, so the host that
+  lost the slot was also the host no surface drew: ~$15.60/day, billing until
+  someone noticed. The rule is not "add a second slot": per-host state and
+  per-host AWS names (`release_paths`, `_release_name_prefix`), a `mac_hosts`
+  ledger block another block's whole-replacement cannot reach, per-host
+  cleanup, and **removal only on a definite answer from AWS** — a record
+  dropped on expired credentials hides a live charge, which is the same defect
+  mirrored. Two consequences worth stating: a teardown schedules a release for
+  *every* tracked host that has none (a fix that only stops new orphans leaves
+  the existing ones billing forever), and a deploy *imports* a still-held host
+  back into Terraform state before applying, because the state `cloud destroy`
+  deliberately emptied is a state whose apply ALLOCATES — an import that cannot
+  be done stops the deploy rather than buying a second host. #4181's gate still
+  governs the new wording: "still billing" is a claim about AWS, so the
+  missing-schedule finding states structure only. Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4200; extends **D-066** (one source per decision — `pending_releases`
+  is the single answer to "what still costs money", read by the CLI, the API and
+  both dashboard cards); `docs/cloud.md` § "Teardown, and the deferred host
+  release"; `terraform/aws/mac-release/tests/per_host.tftest.hcl` and the
+  `two-hosts` / `pre-fix-two-hosts` scenarios of
+  `scripts/cloud_stale_record_smoke.py` are the executed evidence.
 
 ## Parked
 
