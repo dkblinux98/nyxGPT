@@ -274,10 +274,98 @@ spec:
         app: glitchtip-worker
         tier: observability
     spec:
+      # Compose expresses this container's start-up order explicitly --
+      # `depends_on` glitchtip-redis `service_healthy`, glitchtip-postgres
+      # `service_healthy` and glitchtip-migrate
+      # `service_completed_successfully`. This overlay stated none of it, and
+      # Kubernetes has no `depends_on`, so the worker Pod started in parallel
+      # with Redis and Postgres coming up. That is the #4208 defect, and it is
+      # unrecoverable rather than slow: `runworker`'s FIRST act is
+      # `Worker.run()` -> `backend._rescue_tasks()`, an unguarded Valkey call,
+      # and the scheduler's first act is `acquire_lock`. Measured on this
+      # image -- a worker started while the broker was not yet accepting
+      # connections processed 0 of 0 tasks and never recovered, with the
+      # container `running` and 0 restarts, whether the Service name was
+      # unresolvable or resolved to a closed port; the same image started
+      # after Redis was accepting processed 91 of 92. #4182 read the symptom
+      # as queue latency and raised the smoke wait from 120s to 240s; no
+      # deadline helps, because nothing is in flight.
+      #
+      # So the dependency is stated the only way Kubernetes offers: the
+      # worker's own process does not begin until its datastores will answer.
+      initContainers:
+        - name: wait-for-redis
+          # Same image as the glitchtip-redis Deployment above, for the
+          # `redis-cli` the glitchtip image does not carry.
+          image: redis:7.4.9-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until redis-cli -h glitchtip-redis -p 6379 ping; do
+                echo "waiting for glitchtip-redis to accept connections"
+                sleep 2
+              done
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+        - name: wait-for-migrations
+          image: glitchtip/glitchtip:6.2.0
+          # Compose's `glitchtip-migrate: service_completed_successfully` and
+          # `glitchtip-postgres: service_healthy` in one question, asked of
+          # the only authority on it. `migrate --check` exits 0 only when no
+          # migration is unapplied, and non-zero both when some are and when
+          # Postgres will not answer (verified against this image: 0 on a
+          # migrated database, 1 on an unreachable one). It applies nothing,
+          # so it cannot race the `migrate` initContainer on the glitchtip
+          # Deployment that does.
+          command:
+            - sh
+            - -c
+            - |
+              until ./manage.py migrate --check; do
+                echo "waiting for glitchtip migrations to be applied"
+                sleep 3
+              done
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-observability-secrets
+                  key: glitchtip-secret-key
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
       containers:
         - name: worker
           image: glitchtip/glitchtip:6.2.0
           command: ["./bin/run-celery-with-beat.sh"]
+          ports:
+            # Declared for documentation and for `kubectl port-forward`; the
+            # probes below reach it on 127.0.0.1 inside the container, and
+            # nothing else consumes it. There is deliberately no Service and
+            # no Prometheus scrape job: prometheus.yaml has two static jobs
+            # (nyxgpt-api, prometheus) and no Kubernetes service discovery, so
+            # adding one would be a new moving part this defect does not need.
+            # `nyxgpt ops status` does NOT read this page: it asks the broker
+            # for queue depths (`redis-cli LLEN` in the glitchtip-redis Pod,
+            # `_k8s_error_ingestion_result`), because the question an operator
+            # asks -- what was dead-lettered -- is answerable from outside the
+            # Pod. The one thing that execs this page is k8s-local-smoke's 7e
+            # failure diagnostics, which print the probe's own verdict.
+            - name: metrics
+              containerPort: 9090
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -297,11 +385,81 @@ spec:
               value: "1,3"
             - name: CELERY_WORKER_MAX_TASKS_PER_CHILD
               value: "10000"
+            # Read by django_vtasks/conf.py. Kept for the Compose twin's
+            # parity and for `runworker`'s own heartbeat, but deliberately NOT
+            # what the probes below read: in a reproduction of the #4208 wedge
+            # this file's mtime was measured FRESH while the consumer was
+            # doing nothing at all, because `Worker.run()` had not returned
+            # and so `_heartbeat_loop` kept writing. See
+            # glitchtip-worker-ready.py.
             - name: VTASKS_HEALTH_CHECK_FILE
               value: /tmp/vtasks_health_check
+            # Turns the consumer's own counters into something a probe can
+            # read. `runworker` starts this server before it starts either
+            # half, so it answers even when the worker is wedged -- which is
+            # exactly what makes "served, but publishing no consumer metrics"
+            # a usable signal.
+            - name: VTASKS_METRICS_PORT
+              value: "9090"
+          volumeMounts:
+            - name: probe
+              mountPath: /etc/nyxgpt/probes
+              readOnly: true
+          # Ready means CONSUMING, not running (#4208 AC1). This Deployment
+          # fronts no Service, so NotReady routes nothing away from anything;
+          # what it does is make the half-dead state visible to every surface
+          # that already reads readiness -- `kubectl get pods`, the
+          # `nyxgpt ops status` workload lines and the SRE dashboard rows that
+          # read them, and scripts/k8s-local-smoke.sh's rollout wait -- instead
+          # of teaching each of those about vtasks separately.
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - /etc/nyxgpt/probes/glitchtip-worker-ready.py
+            # The worker has to boot Django and take the scheduler lock before
+            # its first task; 40s is comfortably past that on a ballasted
+            # node, and the start-up wedge this catches is permanent, so
+            # nothing is lost by asking later.
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          # And a restart is the recovery, because the wedge cannot clear
+          # itself: the consumer only ever calls `_rescue_tasks` once, at
+          # start-up. By the time this fires, whatever was not accepting
+          # connections at boot has had minutes to come up, so the restarted
+          # process gets past it -- the same reason the Compose twin's
+          # `restart: unless-stopped` works once something declares the
+          # container unhealthy. Deliberately slacker than readiness
+          # (--max-stall-seconds 420 against readiness's 180, x3 failures):
+          # NotReady is a report and should be prompt, while a restart throws
+          # away in-flight work and must be sure.
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - /etc/nyxgpt/probes/glitchtip-worker-ready.py
+                - --max-stall-seconds
+                - "420"
+                - --state-file
+                - /tmp/nyxgpt-glitchtip-worker-liveness.state
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
               cpu: 50m
               memory: 256Mi
             limits:
               memory: 1Gi
+      volumes:
+        # Generated by kustomize from k8s/observability/
+        # glitchtip-worker-ready.py -- see kustomization.yaml. One file, read
+        # by both substrates, so the Kubernetes probes and the Compose
+        # healthcheck cannot drift into disagreeing about what "the worker is
+        # healthy" means.
+        - name: probe
+          configMap:
+            name: glitchtip-worker-probe

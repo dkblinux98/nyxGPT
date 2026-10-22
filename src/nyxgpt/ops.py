@@ -10999,6 +10999,10 @@ K8S_NO_DATA_LABEL = "NO DATA"
 # questions without scheduling a Pod of our own on a node that #3825 showed is
 # already tight.
 K8S_TELEMETRY_PROBE_DEPLOYMENT = "grafana"
+# The broker the GlitchTip worker's queues live in -- the only Pod in the
+# overlay carrying a `redis-cli`, and so the only place the vtasks queue
+# depths below can be read from.
+K8S_GLITCHTIP_REDIS_DEPLOYMENT = "glitchtip-redis"
 
 # Per-request budget for those in-cluster fetches. Short on purpose: these are
 # Service-to-Service hops inside one node, and this probe runs at the end of
@@ -11373,6 +11377,98 @@ def _k8s_error_reporting_credentials_result() -> OpsResult:
     )
 
 
+# django_vtasks namespaces every key it owns under VTASKS_VALKEY_PREFIX, which
+# conf.py defaults to `{vt}` and forces a trailing colon onto. `q:failed` is
+# the dead-letter list `_fail_task` and the rescue path LPUSH onto; `q:ingest`
+# is the batch queue an accepted event waits in before it becomes an issue.
+# Verified against glitchtip/glitchtip:6.2.0 by reading the keyspace of a
+# running worker.
+VTASKS_DLQ_KEY = "{vt}:q:failed"
+VTASKS_INGEST_QUEUE_KEY = "{vt}:q:ingest"
+
+
+def _vtasks_queue_depth(key: str) -> int | None:
+    """``LLEN`` for one vtasks list, or None if Redis could not be asked."""
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "exec",
+            f"deploy/{K8S_GLITCHTIP_REDIS_DEPLOYMENT}",
+            "--",
+            "redis-cli",
+            "LLEN",
+            key,
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    try:
+        return int((cp.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _k8s_error_ingestion_result() -> OpsResult:
+    """Is GlitchTip's worker LOSING events, and is it behind?
+
+    The third error-tracking question, and the one no other surface can
+    answer. `_k8s_errors_flow_result` says what GlitchTip has received and the
+    workload lines say whether the worker Pod is ready -- since #4208 that
+    readiness means its consumer is really consuming -- but a worker that is
+    up, consuming, and failing every ingest task looks perfect on both. The
+    tasks go to `{vt}:q:failed` and the events in them never become issues.
+
+    That list is why this line exists: #4208's healthy reference cluster put
+    6 items in it within two minutes of start-up, and the only way to see
+    them was to run `redis-cli` inside the broker Pod by hand. An operator
+    reads `nyxgpt ops status`.
+
+    The ingest backlog rides along because it is the same question one step
+    earlier -- a growing `{vt}:q:ingest` is the shape a stalled consumer makes
+    from outside the Pod -- and because it costs one more `LLEN` on an exec
+    that has already been paid for.
+
+    `[ATTENTION]`, not `[NO DATA]`, when the dead-letter queue is non-empty:
+    events have been dropped and will stay dropped until someone looks. A
+    broker that cannot be asked is `[NO DATA]`, because an un-asked question
+    is not a failed one.
+    """
+    if _which("kubectl") is None:
+        return _no_data("observability error ingestion: kubectl is not installed")
+
+    dlq = _vtasks_queue_depth(VTASKS_DLQ_KEY)
+    if dlq is None:
+        return _no_data(
+            "observability error ingestion: could not ask GlitchTip's broker what its worker "
+            "has failed",
+            f"`redis-cli LLEN {VTASKS_DLQ_KEY}` did not answer in "
+            f"deploy/{K8S_GLITCHTIP_REDIS_DEPLOYMENT}.",
+        )
+    backlog = _vtasks_queue_depth(VTASKS_INGEST_QUEUE_KEY)
+    backlog_note = "" if backlog is None else f"{backlog} event task(s) waiting to be ingested"
+
+    if dlq:
+        return _attention(
+            f"observability error ingestion: {dlq} ingestion task(s) in the worker's "
+            f"dead-letter queue",
+            "Each one is an event GlitchTip accepted and never turned into an issue, so the "
+            "SRE Home panels are missing them. Read why with `nyxgpt ops logs glitchtip-worker` "
+            f"(the worker logs the traceback as it dead-letters) -- the payloads stay in "
+            f"{VTASKS_DLQ_KEY} until they age out of its cap. "
+            + (f"Also {backlog_note}." if backlog_note else ""),
+        )
+    return OpsResult(
+        True,
+        "observability error ingestion: no ingestion task has been dead-lettered",
+        backlog_note,
+    )
+
+
 def _k8s_observability_data_flow(state: dict[str, str] | None = None) -> list[OpsResult]:
     """Ask the telemetry backends what they have RECEIVED (#3990).
 
@@ -11405,6 +11501,9 @@ def _k8s_observability_data_flow(state: dict[str, str] | None = None) -> list[Op
         _k8s_metrics_flow_result(),
         _k8s_logs_flow_result(),
         _k8s_errors_flow_result(),
+        # What the worker LOST on the way, which neither of its neighbours can
+        # see (#4208 AC3).
+        _k8s_error_ingestion_result(),
         # Right after the errors line it explains, and separate from it: one
         # question per line (see both functions' docstrings).
         _k8s_error_reporting_credentials_result(),

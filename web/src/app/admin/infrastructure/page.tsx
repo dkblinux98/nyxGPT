@@ -1768,10 +1768,24 @@ export default function InfrastructurePage() {
                         READY means the workload is running, not that telemetry is
                         reaching it. For what each backend has actually received —
                         Jaeger&apos;s spans, Prometheus&apos;s scrape targets,
-                        Loki&apos;s log labels, GlitchTip&apos;s errors, and whether
-                        Grafana&apos;s GlitchTip credential still authenticates — run{' '}
-                        <code>nyxgpt ops status</code>.
+                        Loki&apos;s log labels, GlitchTip&apos;s errors, what
+                        GlitchTip&apos;s worker dead-lettered instead of ingesting,
+                        and whether Grafana&apos;s GlitchTip credential still
+                        authenticates — run <code>nyxgpt ops status</code>.
                       </p>
+                      {/* #4208 narrowed what READY does and does not cover here,
+                          and the distinction is worth keeping straight on the one
+                          surface read without a terminal. glitchtip-worker's badge
+                          used to mean only "the container started": it declared no
+                          probe at all, so it read READY through a CI run in which
+                          its consumer processed none of 400 scheduled tasks. Its
+                          probe now reads the consumer's own counters, so a READY
+                          badge on that row does mean it is consuming.
+                          What a badge still cannot say is whether the tasks it
+                          consumes SUCCEED -- a worker failing every ingest task is
+                          perfectly ready and losing every event -- which is why the
+                          dead-letter queue is named in the pointer above rather than
+                          folded into this row. */}
                       {/* #3986: this card used to state as a fact that the SRE
                           Services were ClusterIP and a forward the only way in.
                           The SRE-tier publish falsified that --
