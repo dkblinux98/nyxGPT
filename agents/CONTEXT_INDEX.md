@@ -55,6 +55,7 @@ fails if it drifts. Do not hand-edit.
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
 | `github-script-injection-smoke.yml` | push, pull_request, workflow_dispatch | GitHub-Script Injection Smoke |
+| `glitchtip-worker-smoke.yml` | push, pull_request, workflow_dispatch | GlitchTip Worker Consumption Smoke |
 | `handle_acceptance_failure.yml` | issue_comment | Handle Acceptance Failure |
 | `handle_improvement.yml` | issue_comment | Handle Improvement |
 | `huddle-session-smoke.yml` | push, pull_request, workflow_dispatch | Huddle Session Smoke |

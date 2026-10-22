@@ -901,10 +901,11 @@ Notes:
   the SRE Home GlitchTip panels answer `401 Unauthorized`.
 - **Running is reported separately from receiving.** `nyxgpt ops install
   --kubernetes`, `nyxgpt ops observability --kubernetes` **and `nyxgpt ops
-  status`** print five extra lines after the per-workload readiness ones,
+  status`** print six extra lines after the per-workload readiness ones,
   asking each backend what it has actually received -- Jaeger's service list,
-  Prometheus's scrape targets, Loki's job labels, GlitchTip's issue list, and
-  (on its own line) whether GlitchTip accepts Grafana's token. A backend that
+  Prometheus's scrape targets, Loki's job labels, GlitchTip's issue list,
+  what GlitchTip's worker *dead-lettered* on the way, and (on its own line)
+  whether GlitchTip accepts Grafana's token. A backend that
   is up but empty prints `[NO DATA]`, not `[OK]`: a stack nobody has chatted
   with legitimately has no spans, so it is not a failure either. Ten `1/1
   ready` workloads receiving nothing is precisely the state that reached
@@ -921,6 +922,14 @@ Notes:
   the two into one `errors:` line is what let an api with no DSN print green
   through the whole report (owner acceptance, 2026-08-26) -- the credential was
   fine and the wiring was not.
+
+  The `error ingestion:` line is the one no other surface can answer. A
+  worker that is up, consuming, and failing every ingest task looks perfect
+  both to the readiness lines above and to `errors:`; the tasks land in
+  `{vt}:q:failed` and the events in them never become issues. The line
+  reports that list's depth (and the ingest backlog beside it), because the
+  alternative was running `redis-cli` inside the broker Pod by hand, and an
+  operator reads `nyxgpt ops status` (#4208).
 
   The DSN question is asked of the **Pod**, never of the Secret: an
   environment is fixed at process start, so a Pod that booted before
@@ -1029,7 +1038,15 @@ message.
   may be shared between two Pods (the same storage argument that rules out
   an Ollama canary pair — see [Ollama canary
   feasibility](#ollama-canary-feasibility)).
-- **Readiness means usable, not merely listening.** Cassandra's probe runs a
+- **Readiness means usable, not merely listening** — and for a workload with
+  no socket to listen on, it means *working*. `glitchtip-worker` serves
+  nothing, so there was nothing obvious to probe and for a long time it
+  declared no probe at all; it then spent a CI run reading `1/1 Running` with
+  0 restarts while its consumer half processed none of 400 scheduled tasks
+  (#4208). Its probe now reads the consumer's own `vtasks` counters, and
+  `tests/unit/test_glitchtip_worker_consumption.py` fails the build on any
+  workload in `k8s/` that declares no readiness probe and no written-down
+  reason. Cassandra's probe runs a
   CQL query, and Ollama's probe checks that *both* configured models —
   `[nyxgpt] default_model` and `[rag] embedding_model` — are actually present;
   its `postStart` hook pulls them on first start, so a fresh install can

@@ -112,8 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         "--metrics-port",
         type=int,
         default=int(os.environ.get("VTASKS_METRICS_PORT") or 0),
-        help="port runworker serves its Prometheus metrics on "
-        "(default: $VTASKS_METRICS_PORT)",
+        help="port runworker serves its Prometheus metrics on " "(default: $VTASKS_METRICS_PORT)",
     )
     parser.add_argument(
         "--max-stall-seconds",
@@ -127,8 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--state-file",
         default="/tmp/nyxgpt-glitchtip-worker-probe.state",  # noqa: S108
-        help="where to remember the last processed-task total and when it "
-        "last changed",
+        help="where to remember the last processed-task total and when it " "last changed",
     )
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args(argv)
