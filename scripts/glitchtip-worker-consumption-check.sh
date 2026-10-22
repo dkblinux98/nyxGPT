@@ -81,10 +81,12 @@ HEARTBEAT_PROBE='import os,sys,time
 p=os.environ["VTASKS_HEALTH_CHECK_FILE"]
 sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<30 else 1)'
 
+# `run-worker.sh`, matching what both substrates invoke since #4212 -- this
+# script's whole value is that the thing it measures is the thing that ships.
 start_worker() {
     docker run -d --name gt-worker --network "$NET" "${WORKER_ENV[@]}" \
         -v "$PROBE_SRC:$PROBE_MOUNT:ro" \
-        "$GLITCHTIP_IMAGE" ./bin/run-celery-with-beat.sh >/dev/null
+        "$GLITCHTIP_IMAGE" ./bin/run-worker.sh >/dev/null
 }
 
 processed_count() { docker logs gt-worker 2>&1 | grep -c 'Processing task' || true; }

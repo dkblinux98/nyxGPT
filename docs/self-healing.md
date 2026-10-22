@@ -1129,15 +1129,32 @@ stuck" for them the way it can for the services above.
 into a GlitchTip Issue) was originally left out of the HTTP-probe survey
 above -- it has a shell and `python`, but no `wget`/`curl` to probe an HTTP
 endpoint with. The first attempt at a fix (#3565 round 1) assumed this
-image ran Celery (`command: ./bin/run-celery-with-beat.sh`) and probed with
-`celery -A glitchtip inspect ping`. That assumption was wrong for the
-pinned `glitchtip:6.2.0` image: `run-celery-with-beat.sh` only prints a
-deprecation notice and execs `run-worker.sh`, which runs `django-vtasks`'s
-`manage.py runworker` -- there is no `celery` binary or Python module in
-this image at all, so the probe failed on every single run with `celery:
-not found`, permanently misreporting a healthy worker as unhealthy (#3565
-round 2, live-verified via `docker inspect --format
-'{{json .State.Health}}'` against the running container).
+image ran Celery -- the service then invoked
+`./bin/run-celery-with-beat.sh` -- and probed with `celery -A glitchtip
+inspect ping`. That assumption was wrong for the pinned
+`glitchtip:6.2.0` image: that script only prints a deprecation notice and
+execs `run-worker.sh`, which runs `django-vtasks`'s `manage.py runworker`
+-- there is no `celery` binary or Python module in this image at all, so
+the probe failed on every single run with `celery: not found`,
+permanently misreporting a healthy worker as unhealthy (#3565 round 2,
+live-verified via `docker inspect --format '{{json .State.Health}}'`
+against the running container).
+
+Nothing in either substrate names Celery any more (#4212). Both now invoke
+`./bin/run-worker.sh` directly -- the identical process, under the name of
+what actually runs -- and neither carries the `CELERY_WORKER_AUTOSCALE` /
+`CELERY_WORKER_MAX_TASKS_PER_CHILD` pair they used to, because the image
+has no reader for either and they described a 1-3 worker pool that never
+existed. The worker is one `runworker` process whose in-flight task count
+and DB-connection-owning thread lanes are both sized by
+`VTASKS_CONCURRENCY` (`django-vtasks`' default is 20, and nyxGPT leaves it
+there -- measured at ~105MiB RSS against the container's 1GiB limit, so
+the limit is not a reason to cap it). `VTASKS_QUEUES` deliberately is not
+set either: `glitchtip/settings.py` assigns it, and `django-vtasks` only
+falls back to the environment for settings Django leaves unset, so an env
+var would be inert. `scripts/glitchtip-env-reader-check.sh` re-proves all
+of that against the pinned image on every run of the
+**GlitchTip Worker Consumption Smoke** workflow.
 
 Round 2 used `django-vtasks`'s own liveness mechanism instead: `runworker`
 reads `VTASKS_HEALTH_CHECK_FILE` from the environment (no Django setting
