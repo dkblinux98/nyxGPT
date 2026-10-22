@@ -1,6 +1,6 @@
 """Is the glitchtip-worker CONSUMING, or merely running?
 
-`glitchtip-worker` runs `./bin/run-celery-with-beat.sh`, which execs
+`glitchtip-worker` runs `./bin/run-worker.sh`, which execs
 `manage.py runworker --scheduler`: a *scheduler* half and a *consumer* half
 inside one container. `django_vtasks`'s `runworker` command starts both as
 bare asyncio tasks and then awaits a stop event it only ever receives from a

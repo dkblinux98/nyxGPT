@@ -176,7 +176,15 @@ image-build-fetch-policy-smoke
 # is how the defect reached acceptance twice. A red one means either the
 # start-up gate or the probe is gone, and the half-dead state is invisible
 # again.
-glitchtip-worker is Ready only when consuming
+#
+# The same job also carries #4212's executed evidence: that the pinned image
+# reads every variable the two substrates set on it, that it has no reader at
+# all for the `CELERY_*` pair they used to carry, that `VTASKS_QUEUES` is
+# inert from the environment while `VTASKS_CONCURRENCY` is not, and that the
+# default concurrency fits the worker's memory limit -- the measurement behind
+# leaving it at the default. A red one there means a comment on one of the
+# manifests has become false.
+glitchtip-worker is Ready only when consuming, and reads its config
 k3s-cloud-smoke
 k8s-artifact-smoke
 k8s-capacity-smoke

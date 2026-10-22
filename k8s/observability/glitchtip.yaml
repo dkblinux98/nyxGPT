@@ -1,5 +1,7 @@
 # Self-hosted error tracking (GlitchTip), the `errors` half of the
-# observability layer: Postgres, Redis, the web app, and the Celery worker.
+# observability layer: Postgres, Redis, the web app, and the ingest worker --
+# a `django-vtasks` `runworker`, not a Celery one; the pinned image contains no
+# Celery at all, which is what #4212 is about.
 # Exception data stays inside this cluster -- nothing talks to Sentry SaaS,
 # exactly as in Compose mode.
 apiVersion: apps/v1
@@ -209,10 +211,6 @@ spec:
               value: http://localhost:8080
             - name: DEFAULT_FROM_EMAIL
               value: errors@nyxgpt.local
-            - name: CELERY_WORKER_AUTOSCALE
-              value: "1,3"
-            - name: CELERY_WORKER_MAX_TASKS_PER_CHILD
-              value: "10000"
             # Self-registration let anyone reaching the UI mint their own org
             # and shadow the provisioned project (#3565) -- accounts come
             # from `nyxgpt ops glitchtip-init` only.
@@ -350,7 +348,12 @@ spec:
       containers:
         - name: worker
           image: glitchtip/glitchtip:6.2.0
-          command: ["./bin/run-celery-with-beat.sh"]
+          # `run-worker.sh`, not the `run-celery-with-beat.sh` this used to
+          # call (#4212). The two are the same process -- that script's whole
+          # body is `echo "This script is deprecated, use run-worker.sh";
+          # exec bin/run-worker.sh` -- so this names what actually runs
+          # instead of a component the image does not contain.
+          command: ["./bin/run-worker.sh"]
           ports:
             # Declared for documentation and for `kubectl port-forward`; the
             # probes below reach it on 127.0.0.1 inside the container, and
@@ -381,10 +384,31 @@ spec:
               value: redis://glitchtip-redis:6379/0
             - name: EMAIL_URL
               value: consolemail://
-            - name: CELERY_WORKER_AUTOSCALE
-              value: "1,3"
-            - name: CELERY_WORKER_MAX_TASKS_PER_CHILD
-              value: "10000"
+            # No concurrency or queue knob is set here, and that is the
+            # decision rather than an omission (#4212) -- the Compose twin
+            # carries the same decision and the same reasoning. This
+            # container used to carry `CELERY_WORKER_AUTOSCALE: "1,3"` and
+            # `CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"`; the pinned image
+            # has ZERO readers for either and no `celery` binary or module to
+            # read them, so they described a 1-3 worker pool that never
+            # existed while the process actually ran a 20-lane one.
+            #
+            # The knob the image DOES read is `VTASKS_CONCURRENCY` (default
+            # 20), which sizes both the worker's asyncio semaphore and its
+            # `_LanePool` of DB-connection-owning threads. Left at the
+            # default because the `limits.memory: 1Gi` below is not the
+            # constraint: measured under that limit, the default costs
+            # 105MiB RSS / 34 threads / 5 Postgres connections, against
+            # 100MiB / 18 threads / 4 connections at
+            # `VTASKS_CONCURRENCY=4` -- ~0.5% of the limit, for less
+            # throughput. `scripts/glitchtip-env-reader-check.sh`
+            # re-measures it on every run.
+            #
+            # `VTASKS_QUEUES` must NOT be set here: `glitchtip/settings.py`
+            # assigns it (`["default", "ingest"]`) and
+            # `VtasksSettings.__getattr__` consults the environment only when
+            # the Django setting is None, so an env var here would be read by
+            # nothing -- the same defect as the `CELERY_*` pair.
             # Read by django_vtasks/conf.py. Kept for the Compose twin's
             # parity and for `runworker`'s own heartbeat, but deliberately NOT
             # what the probes below read: in a reproduction of the #4208 wedge

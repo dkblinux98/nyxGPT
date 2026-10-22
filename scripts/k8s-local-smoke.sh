@@ -947,8 +947,9 @@ found=""
 # rather than a weak assertion. Evidence that 120s was too tight and not that
 # anything was broken: commit 8f9e5724 ran this job twice -- the push-triggered
 # run passed and the pull_request-triggered run failed on this very line, same
-# code, same cluster shape. GlitchTip ingests through Redis and a celery
-# worker, both scheduled on a node this job deliberately ballasts down to
+# code, same cluster shape. GlitchTip ingests through Redis and a
+# `django-vtasks` worker (not Celery -- the image has no such thing, #4212),
+# both scheduled on a node this job deliberately ballasts down to
 # 7936Mi, so the gap between "202 accepted" and "the issue exists" is the
 # worker's queue latency under CPU pressure and has no upper bound this script
 # can derive. Nothing is weakened: the issue must still appear, and the loop

@@ -4,7 +4,18 @@ name: GlitchTip Worker Consumption Smoke
 permissions:
   contents: read
 
-# One question: does `glitchtip-worker` report healthy while consuming nothing?
+# Two questions about the inside of the `glitchtip-worker` container, both
+# answered by running it, because neither is visible from the manifests:
+#
+#   1. does it report healthy while consuming nothing? (#4208)
+#   2. does the image read the variables nyxGPT sets on it? (#4212)
+#
+# The second is here rather than in a job of its own because it has the same
+# subject, the same fixtures and the same triggers -- and because the first is
+# how the second was found: a variable the image ignores was named as a
+# candidate cause while diagnosing #4208.
+#
+# Question 1: does `glitchtip-worker` report healthy while consuming nothing?
 # (#4208)
 #
 # `k8s-local-smoke` already fails when the worker stops ingesting -- that is
@@ -30,6 +41,19 @@ permissions:
 # `k8s-local-smoke` is that proof already -- `glitchtip-worker` is in
 # `ops.K8S_OBSERVABILITY_DEPLOYMENTS`, so its rollout has to complete, and
 # therefore its readiness probe has to pass, before that job reaches step 7e.
+#
+# Question 2: does the image read what the manifests set on it? (#4212)
+#
+# `tests/unit/test_third_party_container_env.py` holds the one table of "this
+# image reads this variable, for this reason" and checks both substrates
+# against it. Being a static check over YAML, it can only enforce the table's
+# claims -- it cannot see that the image stopped reading `VTASKS_CONCURRENCY`,
+# or that `glitchtip/settings.py` started leaving `VTASKS_QUEUES` unset so an
+# env var there would suddenly matter. The second step below is what keeps the
+# table honest against the image, and it measures the worker's footprint under
+# the manifest's real memory limit, which is the justification for leaving the
+# default concurrency alone rather than re-stating the retired `CELERY_*`
+# intent through the knob that works.
 on:
   push:
     paths:
@@ -38,6 +62,7 @@ on:
       - "k8s/observability/kustomization.yaml"
       - "docker-compose.yml"
       - "scripts/glitchtip-worker-consumption-check.sh"
+      - "scripts/glitchtip-env-reader-check.sh"
       - ".github/workflows/glitchtip-worker-smoke.yml"
   pull_request:
     paths:
@@ -46,6 +71,7 @@ on:
       - "k8s/observability/kustomization.yaml"
       - "docker-compose.yml"
       - "scripts/glitchtip-worker-consumption-check.sh"
+      - "scripts/glitchtip-env-reader-check.sh"
       - ".github/workflows/glitchtip-worker-smoke.yml"
   workflow_dispatch:
 
@@ -55,12 +81,12 @@ concurrency:
 
 jobs:
   glitchtip-worker-smoke:
-    name: glitchtip-worker is Ready only when consuming
+    name: glitchtip-worker is Ready only when consuming, and reads its config
     runs-on: ubuntu-latest
-    # Two 90s settle windows plus a GlitchTip migrate (~2min on a cold cache)
-    # plus three image pulls. 25 is a wide margin on that, and well under the
-    # default 360.
-    timeout-minutes: 25
+    # Two 90s settle windows, a third 75s one for the #4212 measurement, two
+    # GlitchTip migrates (~2min each on a cold cache) and three image pulls.
+    # 35 is a wide margin on that, and well under the default 360.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -69,3 +95,11 @@ jobs:
       # its EXIT trap has already run by then.
       - name: Reproduce the wedge, then prove the gate and the probe fix it
         run: ./scripts/glitchtip-worker-consumption-check.sh
+
+      # Runs second because it is the cheaper of the two to re-run by hand and
+      # the more likely to be red on an image bump: an image that stopped
+      # reading VTASKS_CONCURRENCY, or started reading VTASKS_QUEUES from the
+      # environment, falsifies the comments on both substrates before it
+      # breaks anything a probe can see.
+      - name: Prove the image reads every variable the manifests set on it
+        run: ./scripts/glitchtip-env-reader-check.sh

@@ -31,7 +31,7 @@ detects and stops any of those Compose containers it finds running.
 | `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib:0.157.0` | Receives OTLP spans from the API, forwards to Jaeger | `4318` (HTTP), `4317` (gRPC) |
 | `jaeger` <sup>†</sup> | `jaegertracing/all-in-one:1.76.0` | Trace storage + UI      | `16686`              |
 | `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | Self-hosted error tracker UI + ingest | `8080` |
-| `glitchtip-worker` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | Turns reported exceptions into GlitchTip issues — `django-vtasks` scheduler + consumer in one container, despite the `run-celery-*` script name ([self-healing](self-healing.md)) | — |
+| `glitchtip-worker` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | Turns reported exceptions into GlitchTip issues — a single `django-vtasks` `runworker` process holding both the scheduler and the consumer, with no Celery anywhere in the image ([self-healing](self-healing.md)) | — |
 | `glitchtip-migrate` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | One-shot GlitchTip DB migration | —              |
 | `glitchtip-postgres` <sup>‡</sup> | `postgres:16.14` | GlitchTip's database         | —                    |
 | `glitchtip-redis` <sup>‡</sup> | `redis:7.4.9-alpine` | GlitchTip's queue/cache          | —                    |
