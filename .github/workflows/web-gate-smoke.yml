@@ -1,0 +1,302 @@
+name: Web Gate Smoke
+
+# Does the blocking web gate actually block? (#4209)
+#
+# #3266 put a 100% coverage threshold on `web/vitest.config.ts` and
+# `ci-tests.yml` ran it as a blocking step, and for the whole of that time
+# nothing ever demonstrated the pair working. It did not: the job was
+# `if: github.ref == RELEASE_BRANCH` on a workflow with no `pull_request`
+# trigger, so the gate was only evaluated after the merge that broke it, and
+# the one documented local way to run it (`npm run test:coverage`) was
+# `vitest` in watch mode and never terminated. The threshold had been red on
+# the release branch for long enough that no merge could be blamed for it, and
+# #4207 shipped two failing web tests through a green PR.
+#
+# A gate repaired by inspection is a gate nobody has run. These two jobs are
+# the executed evidence (D-006), each proven in BOTH directions:
+#
+#   the-web-gate-blocks-a-regression  plants a real regression in the real
+#     suite and requires the real command to fail, then requires the same
+#     command to pass with the regression corrected -- so a pass is a
+#     statement about the gate, not about the probe being absent.
+#
+#   the-gate-guards-are-not-vacuous   runs the tree-wide guard, then reverts
+#     `ci-tests.yml` to its pre-#4209 shape in the working tree and requires
+#     the guard to FAIL. A guard that cannot fail is the defect it polices.
+#
+# Path-filtered to the gate's own surface, so it is absent -- and free -- on
+# essentially every PR (`.github/required-checks.txt`: absent is not pending).
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ci-tests.yml'
+      - '.github/workflows/web-gate-smoke.yml'
+      - '.github/required-checks.txt'
+      - 'scripts/ci/diff_scope.py'
+      - 'web/vitest.config.ts'
+      - 'web/package.json'
+      - 'tests/unit/test_diff_scope.py'
+      - 'tests/unit/test_blocking_gates_reach_pull_requests.py'
+  push:
+    paths:
+      - '.github/workflows/ci-tests.yml'
+      - '.github/workflows/web-gate-smoke.yml'
+      - '.github/required-checks.txt'
+      - 'scripts/ci/diff_scope.py'
+      - 'web/vitest.config.ts'
+      - 'web/package.json'
+      - 'tests/unit/test_diff_scope.py'
+      - 'tests/unit/test_blocking_gates_reach_pull_requests.py'
+
+jobs:
+  the-web-gate-blocks-a-regression:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      # The probe is a ternary with two arms, which isolates the BRANCH
+      # threshold -- the one that was red (99.38%, 3527/3549). A probe with an
+      # unreached statement would also trip `statements` and `lines`, and the
+      # log would not distinguish "the gate works" from "the gate works for a
+      # kind of gap that was not the problem".
+      - name: Plant the probe the gate is measured against
+        run: |
+          set -euo pipefail
+          mkdir -p web/src/lib
+          cat > web/src/lib/__gate_probe.ts <<'PROBE'
+          // Planted by .github/workflows/web-gate-smoke.yml and removed in the
+          // same job. If you are reading this in a commit, the smoke job died
+          // between planting and cleanup -- delete it.
+          export function gateProbe(flag: boolean): string {
+            return flag ? 'taken' : 'not taken';
+          }
+          PROBE
+
+      # HALF 1 of #4207's defect: a test asserting wording the source does not
+      # produce. That PR shipped two of these and nothing on it went red.
+      - name: A failing web test fails the gate
+        run: |
+          set -euo pipefail
+          cat > web/tests/__gate_probe.test.ts <<'SPEC'
+          import { describe, expect, it } from 'vitest';
+          import { gateProbe } from '@/lib/__gate_probe';
+
+          describe('gate probe', () => {
+            it('asserts wording the source does not produce (#4207s shape)', () => {
+              expect(gateProbe(true)).toBe('TAKEN');
+            });
+          });
+          SPEC
+          cd web
+          if npx vitest run tests/__gate_probe.test.ts > /tmp/failing-test.log 2>&1; then
+            cat /tmp/failing-test.log
+            echo "::error::a deliberately failing web test PASSED the gate -- \
+          the blocking vitest step is not measuring the suite (#4209)"
+            exit 1
+          fi
+          grep -q "1 failed" /tmp/failing-test.log \
+            || { cat /tmp/failing-test.log; \
+                 echo "::error::vitest exited non-zero for some reason other than the planted failure"; \
+                 exit 1; }
+          echo "a failing web test fails the gate, as it must"
+
+      # HALF 2, and the one this issue was filed for: the 100% branch
+      # threshold. Only the `flag === true` arm is covered, which is the exact
+      # shape of all 22 branches that were red on v3.0.1 -- the arm that runs
+      # when the api does not send an optional field, which no fixture sent.
+      - name: An uncovered branch fails the gate
+        run: |
+          set -euo pipefail
+          cat > web/tests/__gate_probe.test.ts <<'SPEC'
+          import { describe, expect, it } from 'vitest';
+          import { gateProbe } from '@/lib/__gate_probe';
+
+          describe('gate probe', () => {
+            it('covers one arm only', () => {
+              expect(gateProbe(true)).toBe('taken');
+            });
+          });
+          SPEC
+          cd web
+          if npm run test:coverage > /tmp/uncovered-branch.log 2>&1; then
+            tail -40 /tmp/uncovered-branch.log
+            echo "::error::an uncovered branch PASSED the 100% coverage gate -- \
+          the threshold in web/vitest.config.ts is not blocking (#3266, #4209)"
+            exit 1
+          fi
+          tail -20 /tmp/uncovered-branch.log
+          grep -q "Coverage for branches" /tmp/uncovered-branch.log \
+            || { tail -60 /tmp/uncovered-branch.log; \
+                 echo "::error::the run failed, but not on the branch threshold -- \
+          the gate is red for some other reason and this job proves nothing"; \
+                 exit 1; }
+          echo "an uncovered branch fails the gate, as it must"
+
+      # The other direction, and the reason the probe is CORRECTED rather than
+      # deleted: a green run with the probe gone only shows the tree is green.
+      # A green run with both arms covered shows the gate was measuring the
+      # probe and is satisfied by covering it.
+      - name: Covering the branch makes the gate pass
+        run: |
+          set -euo pipefail
+          cat > web/tests/__gate_probe.test.ts <<'SPEC'
+          import { describe, expect, it } from 'vitest';
+          import { gateProbe } from '@/lib/__gate_probe';
+
+          describe('gate probe', () => {
+            it('covers the taken arm', () => {
+              expect(gateProbe(true)).toBe('taken');
+            });
+
+            it('covers the arm the api does not send', () => {
+              expect(gateProbe(false)).toBe('not taken');
+            });
+          });
+          SPEC
+          cd web
+          npm run test:coverage 2>&1 | tail -20
+
+      # If the probe ever reached a commit it would itself be the kind of
+      # silent gap this job exists to catch, so the cleanup is asserted rather
+      # than assumed -- and `if: always()` so a failure above still leaves a
+      # clean tree for the log to be read against.
+      - name: Remove the probe and prove the tree is clean
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f web/src/lib/__gate_probe.ts web/tests/__gate_probe.test.ts
+          rmdir web/src/lib 2>/dev/null || true
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git status --porcelain
+            echo "::error::the smoke job left changes in the working tree"
+            exit 1
+          fi
+
+  the-gate-guards-are-not-vacuous:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the diff_scope end-to-end test diffs HEAD~1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # `pip install -e .` and not just `pip install pytest`: these suites load
+      # the ROOT tests/conftest.py, which imports tests/log_guard.py, which
+      # imports psutil. Without the package a pytest call here exits 4 at
+      # COLLECTION -- a usage error that reads as a red required check saying
+      # nothing about the commit (#4192).
+      - name: Install nyxgpt (editable, dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: The guards pass on this head
+        run: |
+          pytest -q -p no:cacheprovider \
+            tests/unit/test_diff_scope.py \
+            tests/unit/test_blocking_gates_reach_pull_requests.py \
+            tests/unit/test_required_checks.py
+
+      # Re-plant the defect. If the guard still passes with every blocking gate
+      # back behind a push-only condition, then the guard is decoration and
+      # #4209 can return the moment someone edits that `if:`.
+      - name: Reverting ci-tests.yml to its pre-#4209 shape must fail the guard
+        run: |
+          set -euo pipefail
+          cp .github/workflows/ci-tests.yml /tmp/ci-tests.keep
+          python3 - <<'INJECT'
+          from pathlib import Path
+
+          path = Path(".github/workflows/ci-tests.yml")
+          text = path.read_text()
+          before = text
+          text = text.replace("on:\n  push:\n  pull_request:\n", "on:\n  push:\n")
+          text = text.replace(
+              "if: github.event_name == 'pull_request' || github.ref == format",
+              "if: github.ref == format",
+          )
+          if text == before:
+              raise SystemExit(
+                  "fault injection matched nothing -- ci-tests.yml no longer has "
+                  "the trigger/condition this job reverts, so the proof below "
+                  "would be vacuous"
+              )
+          path.write_text(text)
+          INJECT
+          if pytest -q -p no:cacheprovider \
+               tests/unit/test_blocking_gates_reach_pull_requests.py \
+               > /tmp/injected.log 2>&1; then
+            cp /tmp/ci-tests.keep .github/workflows/ci-tests.yml
+            tail -40 /tmp/injected.log
+            echo "::error::the guard PASSED with every blocking gate reverted to \
+          push-only -- it does not police #4209"
+            exit 1
+          fi
+          cp /tmp/ci-tests.keep .github/workflows/ci-tests.yml
+          grep -q "only ever evaluated after the merge" /tmp/injected.log \
+            || { tail -40 /tmp/injected.log; \
+                 echo "::error::the guard failed, but not on the reachability \
+          assertion -- it is red for some other reason and proves nothing"; \
+                 exit 1; }
+          echo "the guard fails when the defect is re-planted, as it must"
+
+      # Same question for the other half: a watch-mode npm script is what made
+      # the gate unrunnable locally, and the assertion that catches it has to
+      # be able to fail too.
+      - name: Restoring the watch-mode npm script must fail the guard
+        run: |
+          set -euo pipefail
+          cp web/package.json /tmp/package.keep
+          python3 - <<'INJECT'
+          import json
+          from pathlib import Path
+
+          path = Path("web/package.json")
+          data = json.loads(path.read_text())
+          data["scripts"]["test:coverage"] = "vitest --coverage"
+          path.write_text(json.dumps(data, indent=2) + "\n")
+          INJECT
+          if pytest -q -p no:cacheprovider \
+               tests/unit/test_blocking_gates_reach_pull_requests.py \
+               > /tmp/injected-watch.log 2>&1; then
+            cp /tmp/package.keep web/package.json
+            tail -40 /tmp/injected-watch.log
+            echo "::error::the guard PASSED with test:coverage back in watch mode"
+            exit 1
+          fi
+          cp /tmp/package.keep web/package.json
+          grep -q "does not terminate" /tmp/injected-watch.log \
+            || { tail -40 /tmp/injected-watch.log; \
+                 echo "::error::the guard failed for some other reason"; exit 1; }
+          echo "the guard fails when the watch-mode script is restored, as it must"
+
+      - name: The tree is as it was
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git status --porcelain
+            echo "::error::fault injection left changes in the working tree"
+            exit 1
+          fi

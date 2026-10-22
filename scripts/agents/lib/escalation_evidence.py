@@ -112,6 +112,7 @@ _GATE_LABELS = {
     "mypy": "mypy type checking",
     "pytest": "pytest",
     "tsc": "TypeScript type checking",
+    "vitest": "the web unit suite and its 100% coverage gate",
     "routes": "web route validation",
 }
 
@@ -142,7 +143,7 @@ def format_verification_detail(
     """The text Final Verification records as its own failure reason.
 
     `gate` is which check failed (black / ruff / mypy / pytest / tsc /
-    routes). `failures` are pytest's `FAILED <nodeid>` node IDs -- taken from
+    vitest / routes). `failures` are pytest's `FAILED <nodeid>` node IDs -- taken from
     its `-rf` short summary, never grepped out of `-v` output, because the
     short summary is the only part of pytest's output whose shape is a
     contract. `total` is how many there were in all (the file names the first

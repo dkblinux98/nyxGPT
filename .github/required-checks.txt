@@ -53,6 +53,35 @@ security-scan
 terraform-aws-validate
 validate-web
 
+# ci-tests.yml's three jobs (#4209). Required, and they are newly classifiable
+# at all: until 2026-10-22 that workflow had no `pull_request` trigger and
+# every job was `if: github.ref == RELEASE_BRANCH`, so `ruff`, `black`, `mypy`,
+# `pytest`, `tsc`, `eslint` and `vitest --coverage` -- every step that file
+# labels "(blocking)" -- were only ever evaluated AFTER the merge that broke
+# them. A gate that cannot attach to a PR head cannot be a required check for
+# one, which is why this list did not name them; now that it can, not naming
+# them would mean the review does not wait for the suite it is reviewing.
+#
+# All three self-scope on the diff (`scripts/ci/diff_scope.py`) and report a
+# definite conclusion either way, so on a PR they are never `absent` -- they
+# are present and green with their steps skipped. A push to a feature branch
+# ALSO leaves a `skipped` run of each on the same head (the `if:` above): that
+# is "did not apply", which this file's header already covers, and the
+# PR-event run is the one carrying the answer.
+test
+determinism
+web
+# web-gate-smoke.yml (#4209). Both required, and path-filtered to the gate's
+# own surface so they are absent -- and free -- on essentially every PR. The
+# first plants a failing web test and then an uncovered branch in the real
+# suite and requires the real command to fail on each, then requires it to
+# pass with the branch covered; the second reverts `ci-tests.yml` to its
+# push-only shape and requires the tree-wide guard to fail. A red one means
+# the 100% coverage gate is back to being declared and not evaluated, which is
+# the state v3.0.1 was in for the whole of its life before this.
+the-web-gate-blocks-a-regression
+the-gate-guards-are-not-vacuous
+
 # Smoke jobs. These are this project's executed-verification evidence (D-006);
 # a red one is a real defect on the head, which is precisely what the developer
 # round must fix rather than the reviewer relay.
