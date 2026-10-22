@@ -261,7 +261,7 @@ jobs:
           [ "$live" -lt "$hist" ] || {
             echo "::error::install records are printed above the live state (#4182 finding 2)"; exit 1; }
           # And no present-tense claim survives above it.
-          if echo "$status" | grep -qE '^Install mode \((native api/web|terraform)\):'; then
+          if grep -qE '^Install mode \((native api/web|terraform)\):' <<<"$status"; then
             echo "::error::status still leads with an install-mode claim for something that is not running"
             exit 1
           fi
@@ -279,7 +279,7 @@ jobs:
           echo "$out" | cat -n
           grep -q 'Install history -- records of past installs' <<<"$out" || {
             echo "::error::ops doctor did not report the stale markers as history (#4182 finding 2)"; exit 1; }
-          if echo "$out" | grep -qE '^Install mode \(native api/web\):'; then
+          if grep -qE '^Install mode \(native api/web\):' <<<"$out"; then
             echo "::error::ops doctor still leads with a native install-mode claim for nothing running"
             exit 1
           fi
@@ -320,7 +320,7 @@ jobs:
             echo "::error::an Install history block was printed on a machine with no install-mode markers (#4182)"
             exit 1
           fi
-          if echo "$out" | grep -qE 'native api/web:|^Install mode \(native api/web\):'; then
+          if grep -qE 'native api/web:|^Install mode \(native api/web\):' <<<"$out"; then
             echo "::error::a native install mode was reported on a machine that never recorded one (#4182)"
             exit 1
           fi

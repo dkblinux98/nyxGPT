@@ -51,6 +51,19 @@ named for a behaviour and enforcing one spelling of it is this issue's class
 with the gate itself as the instance, so this section measures the *class*:
 every reader in `EARLY_READERS`, each one executed, and the enumeration itself
 pinned so a documented rule cannot sit unimplemented.
+
+**Round 6 found the same shape once more, in the same instrument.** The
+pattern recognising `grep`'s early exit required `q`/`l`/`L` to be the LAST
+letter of the option cluster, so `grep -qE`, `-qi`, `-qiE`, `-qF` and `-qx`
+were invisible -- and those are the spellings this tree actually writes.
+Round 5's "38 hazards, now clean" was therefore measured with an instrument
+blind to the most common form: the corrected scan reports **52** on the same
+head, among them `brew services list | grep -qE` in the published-tap scenario
+(the same producer whose lost race reddened run 38071858945) and every
+signature inside `classify_error`, whose determinism is this issue's criterion
+2. `GREP_CLUSTER_CASES` now executes each spelling in both directions, and
+`test_the_retired_cluster_pattern_missed_them` plants the narrow pattern back
+and requires it to miss them, so the widening is measured rather than trusted.
 """
 
 from __future__ import annotations
@@ -415,10 +428,21 @@ def test_the_guard_reports_the_line_it_found(tmp_path: Path) -> None:
 def test_the_tree_has_no_such_pipeline() -> None:
     """Every workflow, and every shell script the gates run.
 
-    The sweep for #4192: 79 pipelines across 34 files, every one of them a
-    gate workflow or an agent script, each now either reading from a
-    here-string/file or using a reader that drains. Measured by running this
-    guard against the pre-fix head (`71e4b29e`), not estimated.
+    The sweep for #4192, and its count has been corrected twice because each
+    correction was a defect in the INSTRUMENT, not a recount:
+
+    * round 2 reported 79 pipelines across 34 files;
+    * round 5 found `split_pipeline` blind to `"$( a | reader )"`, which took
+      the same head from 0 to 38;
+    * round 6 found `_GREP_EARLY` blind to any cluster whose `q` is not last
+      (`-qE`, `-qi`, `-qiE`, `-qF`, `-qx`), which took it from 0 to **52**
+      across 20 files -- the gates, the agent scripts, and every signature in
+      `classify_error`.
+
+    Each figure was measured by running the guard, and each was wrong because
+    the guard could not see part of its own class. That is why this file pins
+    the reader enumeration and the cluster spellings by execution rather than
+    trusting the pattern to be complete.
     """
     hazards = guard.scan(guard.default_paths())
     assert hazards == [], "\n".join(h.format() for h in hazards)
@@ -450,6 +474,94 @@ EARLY_READER_CASES: dict[str, str] = {
         f'{PRODUCER} | while read -r line; do echo "$line" >/dev/null; break; done'
     ),
 }
+
+
+#: The option-cluster spellings of `grep`'s early exit, which are the SAME
+#: reader wearing different clothes. `-q` is almost never written alone in this
+#: tree: it travels with `-E`, `-i`, `-F` or `-x`, and in GNU/BSD grep the
+#: letters of a cluster are order-free, so every one of these stops at the
+#: first match exactly as `-q` does.
+#:
+#: This dictionary exists because the guard's first pattern anchored `q`/`l`/`L`
+#: at the END of the cluster. `-Eq` was flagged, `-qE` was not, and a tree-wide
+#: sweep run with that instrument reported ZERO hazards while 52 of them were
+#: live -- including `brew services list | grep -qE` (the same producer whose
+#: lost race reddened run 38071858945) and every signature inside
+#: `classify_error`. A guard that enforces one spelling of the behaviour it is
+#: named for is the defect it exists to catch, so the spellings are now pinned
+#: by execution rather than by the regex's good intentions.
+GREP_CLUSTER_CASES: dict[str, str] = {
+    "-qE": f"{PRODUCER} | grep -qE '^1$'",
+    "-qi": f"{PRODUCER} | grep -qi '^1$'",
+    "-qiE": f"{PRODUCER} | grep -qiE '^1$'",
+    "-qF": f"{PRODUCER} | grep -qF '1'",
+    "-qx": f"{PRODUCER} | grep -qx '1'",
+    "-Eq": f"{PRODUCER} | grep -Eq '^1$'",
+    "-Fxq": f"{PRODUCER} | grep -Fxq '1'",
+    "--quiet": f"{PRODUCER} | grep --quiet '^1$'",
+}
+
+#: The narrow pattern this fix retired, kept so the repair is measured rather
+#: than asserted: `test_the_retired_cluster_pattern_missed_them` plants it back
+#: and requires the cluster cases to go unreported.
+_RETIRED_GREP_EARLY = re.compile(r"""(?x)
+    (?:^|\s)
+    (?:
+        -[A-Za-z]*[qlL]
+      | --quiet | --silent
+      | --files-with-matches
+      | -m\s*\d+ | --max-count(?:=|\s)\s*\d+
+    )
+    (?:\s|$)
+    """)
+
+
+@pytest.mark.parametrize("cluster", list(GREP_CLUSTER_CASES))
+def test_every_grep_cluster_really_kills_its_producer(cluster: str) -> None:
+    """Executed: the cluster spellings are the same early exit, not a style."""
+    assert _pipefail(GREP_CLUSTER_CASES[cluster]) == 141, cluster
+
+
+@pytest.mark.parametrize("cluster", list(GREP_CLUSTER_CASES))
+def test_the_guard_flags_every_grep_cluster(cluster: str, tmp_path: Path) -> None:
+    hazards = guard.find_hazards(
+        "set -euo pipefail\n" + GREP_CLUSTER_CASES[cluster] + "\n", tmp_path / "s.sh"
+    )
+    assert hazards, cluster
+
+
+def test_the_retired_cluster_pattern_missed_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fault injection: prove the widening is load-bearing, not cosmetic.
+
+    With the retired end-anchored pattern in place, the pipelines above that
+    bash itself kills with exit 141 are reported as safe. That is how 52 live
+    hazards sat under a green guard.
+    """
+    monkeypatch.setattr(guard, "_GREP_EARLY", _RETIRED_GREP_EARLY)
+    missed = [
+        cluster
+        for cluster, snippet in GREP_CLUSTER_CASES.items()
+        if not guard.find_hazards("set -euo pipefail\n" + snippet + "\n", Path("s.sh"))
+    ]
+    assert "-qE" in missed and "-qi" in missed and "-qiE" in missed and "-qF" in missed
+    assert "-Eq" not in missed and "-Fxq" not in missed, (
+        "the retired pattern did see clusters ending in q -- this injection is not "
+        "reproducing the defect it claims to"
+    )
+
+
+def test_the_attached_argument_edge_is_documented_not_silent() -> None:
+    """`grep -eqfoo` makes the `q` part of the pattern, and we flag it anyway.
+
+    Stated here as well as in the guard's docstring so the imprecision is a
+    recorded trade rather than a surprise: over-reporting asks for a rewrite
+    that is behaviour-preserving either way, while under-reporting is a latent
+    flake nothing measures. The tree has no such spelling.
+    """
+    assert guard._GREP_EARLY.search(" -eqfoo"), (
+        "the attached-argument edge stopped being flagged -- update the guard's "
+        "docstring and this test together, or the documented trade is fiction"
+    )
 
 
 def test_the_cases_cover_every_reader_the_guard_claims() -> None:

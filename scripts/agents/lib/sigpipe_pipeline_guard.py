@@ -64,6 +64,21 @@ class, measuring one member of it. Every reader below is now enumerated from
 the behaviour, and :data:`EARLY_READERS` is the list a reviewer should extend
 rather than a new rule bolted alongside.
 
+**The spelling is not the class, part two** -- the third correction, and the
+same shape one level down. Having enumerated the readers, the pattern that
+recognised ``grep``'s early exit still required ``q``/``l``/``L`` to be the
+**last** letter of the option cluster. ``grep -q`` and ``grep -Eq`` were
+flagged; ``grep -qE``, ``-qi``, ``-qiE``, ``-qF`` and ``-qx`` -- the
+spellings this tree actually writes -- were not. So the sweep converted
+exactly what the instrument could see and reported "0 hazards" over 52 live
+ones, among them ``brew services list | grep -qE`` (the same producer from the
+paragraph above, in the published-tap scenario script) and every signature
+inside ``classify_error``. The count has risen 0 -> 38 -> 52 across three
+rounds, each time because the guard was blind to part of its own class, which
+is why the cluster spellings are now pinned by execution in
+``tests/unit/test_sigpipe_pipeline_guard.py`` rather than by this regex
+looking right.
+
 The supported forms, all of which drain or do not pipe at all::
 
     grep -q PATTERN <<<"$text"           # no pipe: nothing can be left unread
@@ -125,10 +140,32 @@ except ImportError:  # pragma: no cover
 #: exit on the first match, ``-l``/``--files-with-matches`` on the first
 #: matching file, ``-m N``/``--max-count=N`` after N matches. A plain ``grep``,
 #: ``grep -c``, ``wc``, ``tail`` and ``sed`` all read to EOF and are fine.
+#:
+#: ``q``/``l``/``L`` count ANYWHERE in a short-option cluster, which is the
+#: whole point of the character class being bracketed by ``[A-Za-z]*`` on both
+#: sides. The first version of this pattern anchored the class at the END of
+#: the cluster (``-[A-Za-z]*[qlL]`` followed by whitespace), so ``grep -q``
+#: and ``grep -Eq`` were flagged while ``grep -qE``, ``-qi``, ``-qiE``,
+#: ``-qF`` and ``-qx`` -- the *more common* spellings, and the ones this
+#: tree actually uses -- were invisible. A tree-wide sweep run with that
+#: instrument reported 0 hazards with live early-exit readers in the gates and
+#: inside ``classify_error`` itself: the guard enforced one spelling of the
+#: behaviour it is named for, which is the very class it exists to catch.
+#: Do not narrow it back.
+#:
+#: The known imprecision, stated so nobody mistakes it for a bug: ``-e`` and
+#: ``-f`` take an attached argument, so in ``grep -eqfoo`` the ``q`` is part of
+#: the PATTERN (``qfoo``) and not an option at all, and this pattern flags it
+#: anyway. That direction is safe -- the rewrite a false positive asks for
+#: (a here-string, or dropping ``-q`` and discarding stdout) is behaviour-
+#: preserving either way -- whereas a false NEGATIVE is a latent flake nothing
+#: measures. The tree has no such spelling; ``tests/unit/
+#: test_sigpipe_pipeline_guard.py`` pins both the cluster variants and this
+#: edge.
 _GREP_EARLY = re.compile(r"""(?x)
     (?:^|\s)
     (?:
-        -[A-Za-z]*[qlL]            # short-option cluster containing q or l
+        -[A-Za-z]*[qlL][A-Za-z]*   # short-option cluster containing q, l or L
       | --quiet | --silent
       | --files-with-matches
       | -m\s*\d+ | --max-count(?:=|\s)\s*\d+

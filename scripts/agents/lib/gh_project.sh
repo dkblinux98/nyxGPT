@@ -95,6 +95,31 @@ read_agent_error_detail() {
   return 0
 }
 
+# _signature_matches <text> <extended-regex> [grep-option...]
+#
+# THE ONE READER EVERY `classify_error` ARM USES (#4192, D-066).
+#
+# A here-string, not a pipe, and that is the whole point. `grep -q` leaves on
+# its first match; under `set -o pipefail` -- which this library's callers all
+# set -- the producer's EPIPE then becomes the pipeline's status, so a lost
+# race on `echo "$error_text" | grep -q …` reads as "this signature did not
+# match" and SILENTLY SKIPS AN ARM. There is no safe producer, only a safe
+# reader, and with no pipe there is nothing to race (ledger D-072).
+#
+# One function rather than ten spellings, so no arm can be converted and the
+# others left behind: before #4192's sweep this function held nine `grep -q`
+# pipelines and one already-drained `grep … >/dev/null`, which is what two
+# spellings of one decision looks like one round after a partial fix.
+# `tests/unit/test_failure_classification.py` reads the signature table out of
+# the arms through THIS call shape, and fails if an arm reaches for `grep`
+# directly -- a bypass would be a pattern the identifier-noise property test
+# never sees.
+_signature_matches() {
+  local text="$1" pattern="$2"
+  shift 2
+  grep -qE "$@" -e "$pattern" <<<"$text"
+}
+
 # Classifies error messages into retriable vs fatal
 # Returns: "retriable", "fatal", or "unknown"
 classify_error() {
@@ -124,13 +149,13 @@ classify_error() {
   # wildcard never spans an unbounded distance.
 
   # Fatal errors - do NOT retry these
-  if echo "$error_text" | grep -qE "is not OPEN[^|]{0,40}state=CLOSED"; then
+  if _signature_matches "$error_text" "is not OPEN[^|]{0,40}state=CLOSED"; then
     # Issue closed - could be intentional or accidental (Phase 2 will distinguish)
     echo "fatal:issue_closed"
     return
   fi
 
-  if echo "$error_text" | grep -qE "\b(Authentication failed|permission denied|Unauthorized)\b"; then
+  if _signature_matches "$error_text" "\b(Authentication failed|permission denied|Unauthorized)\b"; then
     # Auth failures won't fix themselves
     echo "fatal:auth_failure"
     return
@@ -145,19 +170,19 @@ classify_error() {
   # even this issue's own text. A FATAL class decided by co-occurrence ends the
   # round and pages the owner, so it is anchored to the claim being made about
   # a specific PR.
-  if echo "$error_text" | grep -qE "already merged|\bPR #?[0-9]+ (is|was|has been) (already )?merged\b"; then
+  if _signature_matches "$error_text" "already merged|\bPR #?[0-9]+ (is|was|has been) (already )?merged\b"; then
     # Work already complete
     echo "fatal:already_merged"
     return
   fi
 
   # Retriable errors - these might resolve with retry
-  if echo "$error_text" | grep -qE "API rate limit|rate limit exceeded"; then
+  if _signature_matches "$error_text" "API rate limit|rate limit exceeded"; then
     echo "retriable:rate_limit"
     return
   fi
 
-  if echo "$error_text" | grep -qE "network[^|]{0,30}timeout|connection[^|]{0,30}timed out|Connection reset"; then
+  if _signature_matches "$error_text" "network[^|]{0,30}timeout|connection[^|]{0,30}timed out|Connection reset"; then
     echo "retriable:network_timeout"
     return
   fi
@@ -174,13 +199,13 @@ classify_error() {
   # to decide this class for them. `[Oo]verloaded` keeps only a leading word
   # boundary, so the API's own error *shape* (`"type": "overloaded_error"`)
   # still matches alongside its message (`Overloaded`).
-  if echo "$error_text" | grep -qE "\b[Oo]verloaded" \
-    || echo "$error_text" | grep -qiE "(http|status(_code)?|code|error)[^0-9A-Za-z]{0,4}529\b"; then
+  if _signature_matches "$error_text" "\b[Oo]verloaded" \
+    || _signature_matches "$error_text" "(http|status(_code)?|code|error)[^0-9A-Za-z]{0,4}529\b" -i; then
     echo "retriable:api_overloaded"
     return
   fi
 
-  if echo "$error_text" | grep -qE "not a commit|stale ref|couldn't find remote ref"; then
+  if _signature_matches "$error_text" "not a commit|stale ref|couldn't find remote ref"; then
     echo "retriable:stale_ref"
     return
   fi
@@ -193,7 +218,7 @@ classify_error() {
   # to relay it. The signature is the refusal's own sentence, so it stays true
   # only while developer_submit_for_review.sh still prints it -- which
   # tests/test_reviewable_head_gate.sh pins.
-  if echo "$error_text" | grep -qE "red head is not reviewable"; then
+  if _signature_matches "$error_text" "red head is not reviewable"; then
     echo "retriable:ci_red"
     return
   fi
@@ -207,7 +232,7 @@ classify_error() {
   # name the gate instead of printing "error type could not be determined":
   # see scripts/agents/run_final_verification.sh and
   # scripts/agents/lib/escalation_evidence.py, which own the format this reads.
-  if echo "$error_text" | grep "Final Verification failed: gate=" >/dev/null; then
+  if _signature_matches "$error_text" "Final Verification failed: gate="; then
     local _gate
     _gate="$(echo "$error_text" \
       | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | sed -n '1p')"
@@ -215,7 +240,7 @@ classify_error() {
     return
   fi
 
-  if echo "$error_text" | grep -qE "test.*failed|pytest.*FAILED|FAILED.*test"; then
+  if _signature_matches "$error_text" "test.*failed|pytest.*FAILED|FAILED.*test"; then
     # Test failures - let the 3-attempt fix loop handle these
     echo "retriable:test_failure"
     return
@@ -4155,7 +4180,7 @@ cleanup_superseded_branches() {
 
   while IFS= read -r cand; do
     [[ -n "$cand" && "$cand" != "$keep_branch" ]] || continue
-    if echo "$protected" | grep -qx "$cand"; then
+    if grep -qx "$cand" <<<"$protected"; then
       echo "[dev] Keeping prior branch $cand (head of an open PR)" >&2
       continue
     fi
@@ -4849,6 +4874,11 @@ required_check_state() {
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
+    # `%=*` is the SHORTEST matching suffix and `##*=` the LONGEST matching
+    # prefix, so the pair splits on the LAST `=`: a check name containing one
+    # (`my=check=success`) still yields `my=check` / `success`. Written down
+    # because this pair reads like it would mis-split and does not -- #4192's
+    # round-6 review raised it as a defect, and it was measured, not argued.
     name="${line%=*}"
     concl="${line##*=}"
     printf '%s\n' "$names" | grep -Fx -- "$name" >/dev/null || continue

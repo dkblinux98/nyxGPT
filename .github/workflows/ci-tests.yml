@@ -67,7 +67,7 @@ jobs:
           fi
           CHANGED=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
           echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^(src/|web/|pyproject\.toml|tests/conftest\.py)'; then
+          if grep -qE '^(src/|web/|pyproject\.toml|tests/conftest\.py)' <<<"$CHANGED"; then
             echo "product code changed -- full suite"
             echo "pytest_args=tests/unit/" >> "$GITHUB_OUTPUT"
           else

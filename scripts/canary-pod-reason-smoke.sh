@@ -56,7 +56,7 @@ cleanup() {
 trap cleanup EXIT
 
 step "Provision a throwaway kind cluster"
-kind get clusters 2>/dev/null | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER" --wait 90s
+kind get clusters 2>/dev/null | grep -x "$CLUSTER" >/dev/null || kind create cluster --name "$CLUSTER" --wait 90s
 kubectl cluster-info --context "kind-${CLUSTER}" >/dev/null
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 ok "cluster ${CLUSTER} is up"

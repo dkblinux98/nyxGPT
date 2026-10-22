@@ -747,7 +747,7 @@ _assert_eq "the same refusal with 529 in its head SHA, run id and job id still c
 # pattern, restored and run against that same text. A check that cannot fail
 # proves nothing (#3775), and this one could not have failed before #4192 --
 # it would have been measuring the fixture's luck.
-if printf '%s' "$HOSTILE" | grep -qE "529|[Oo]verloaded"; then
+if grep -qE "529|[Oo]verloaded" <<<"$HOSTILE"; then
   echo "[ok] the retired 529-substring pattern really does match it (so the check above can fail)"
 else
   echo "[FAIL] the retired 529-substring pattern no longer matches the hostile refusal," >&2

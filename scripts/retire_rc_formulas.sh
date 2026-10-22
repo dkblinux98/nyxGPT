@@ -115,7 +115,7 @@ git push --quiet origin "HEAD:${BRANCH}"
 # after the push, so fetch the branch again first.
 git fetch --quiet --depth 1 origin "$BRANCH"
 for formula in "${RETIRED[@]}"; do
-  if git ls-tree -r --name-only FETCH_HEAD 2>/dev/null | grep -qx "$formula"; then
+  if git ls-tree -r --name-only FETCH_HEAD 2>/dev/null | grep -x "$formula" >/dev/null; then
     echo "[retire-rc] FATAL: verify failed — ${formula} is still in the tap" >&2
     exit 1
   fi

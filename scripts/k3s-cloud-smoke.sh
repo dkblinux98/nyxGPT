@@ -252,7 +252,7 @@ if ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -E '^(0\.0\.0\.0|\*|\[::\]
         public NIC, and #3503's access model is that nothing but TCP 22 is reachable"
 fi
 # -F: the address is an IPv4 literal, so its dots are data, not regex.
-ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -qF "${NODE_IP}:6443" \
+ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -F "${NODE_IP}:6443" >/dev/null \
   || fail "nothing is listening on ${NODE_IP}:6443, which is what the kubeconfig points at"
 log "PASS: the apiserver is bound to the node's private address only"
 
@@ -1026,7 +1026,7 @@ set -e
 [[ $compose_rc -ne 0 ]] \
   || fail "the Compose survey still answers from here -- the injection proves nothing"
 log "MEASURED (defect condition reproduced): \`docker compose ps\` exits $compose_rc here"
-docker ps -a --format '{{.Names}}' | grep -qx nyxgpt-cassandra \
+docker ps -a --format '{{.Names}}' | grep -x nyxgpt-cassandra >/dev/null \
   && fail "this host really has a nyxgpt-cassandra container -- the doctor half of this
            injection cannot reproduce the owner's condition"
 
@@ -1806,7 +1806,7 @@ step "13/14  FAULT INJECTION: the instance's sshd must offer a post-quantum KEX"
 #       is measured classical before the drop-in, post-quantum with it, and
 #       classical again once it is removed -- so the PQ offer is attributable
 #       to this file and not to the runner's default.
-if ! ssh -Q kex 2>/dev/null | grep -qE '^(mlkem768x25519-sha256|sntrup761x25519-sha512@openssh.com)$'; then
+if ! ssh -Q kex 2>/dev/null | grep -E '^(mlkem768x25519-sha256|sntrup761x25519-sha512@openssh.com)$' >/dev/null; then
   log "SKIP: this runner's OpenSSH implements no post-quantum KEX, so there is nothing"
   log "      here to prove the drop-in against (the block's own no-op branch covers it)"
 else

@@ -84,7 +84,7 @@ guidance_is_present() {
   # operator free to keep using the command Homebrew handed them.
   local subsystem
   for subsystem in Ollama Cassandra observability; do
-    if ! printf '%s\n' "$section" | grep -qi -- "$subsystem"; then
+    if ! grep -qi -- "$subsystem" <<<"$section"; then
       echo "  missing: what \`brew services start\` leaves undone for $subsystem"
       rc=1
     fi

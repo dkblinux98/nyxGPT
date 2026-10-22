@@ -306,7 +306,7 @@ esac
 
 # No PR. Either the branch carries nothing of its own (delete it) or it
 # carries work that must not be lost (open a draft PR for it).
-if classify_mergeable "$BRANCH" "$ISSUE" "$BASE_BRANCH" | grep -qx -e merged -e superseded; then
+if classify_mergeable "$BRANCH" "$ISSUE" "$BASE_BRANCH" | grep -x -e merged -e superseded >/dev/null; then
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[dry-run] would delete ${BRANCH} — content provably on ${BASE_BRANCH}" >&2
     exit 0

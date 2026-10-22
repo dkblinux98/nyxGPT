@@ -2970,7 +2970,11 @@ rather than mechanism, and nothing can enforce them.
   pipeline inside `"$( … )"` — the dominant idiom in this tree — read as
   having **no pipe at all**: correcting that took the tree-wide count from 0
   to **38** on the same head, i.e. D-072's "79 hazards, now clean" had never
-  looked inside a command substitution. `EARLY_READERS` is now the
+  looked inside a command substitution. (**That 38 is itself corrected to 52
+  by D-076** — this round's instrument was still blind to `grep -qE` and its
+  siblings. The figure is left as it was measured, because the pattern of a
+  count that keeps rising as the instrument is repaired is the point.)
+  `EARLY_READERS` is now the
   enumeration (`head`, early `grep`, `sed … q`, `awk … exit` outside `END`,
   `read`, a `while read` loop that `break`s), every entry executed against a
   200k-line producer, and a test fails if an entry has no case. The three
@@ -2999,6 +3003,70 @@ rather than mechanism, and nothing can enforce them.
   the cause is not yet known and a pick today would be a guess.
   Source: #4192; related #4193, #4208, #4182, #3990, #3565; extends **D-071**,
   **D-072**, **D-074**, **D-066**.
+
+- **D-076** · 2026-10-21 · developer (#4192, review round 6, huddle
+  `HUDDLE_DECISION: proceed`) — **A guard that recognises one spelling of a
+  behaviour reports zero and means nothing. Three rounds in, the instrument
+  was still the instance.**
+  `_GREP_EARLY` required `q`/`l`/`L` to be the **last** letter of the option
+  cluster, so `grep -q` and `grep -Eq` were flagged while `grep -qE`, `-qi`,
+  `-qiE`, `-qF` and `-qx` — the spellings this tree actually writes — were
+  invisible. D-075's "38 hazards, now clean" was therefore measured with an
+  instrument blind to the most common form: the widened pattern
+  (`-[A-Za-z]*[qlL][A-Za-z]*`) reports **52** across 20 files on the same
+  head, all now converted. Among them `brew services list | grep -qE` in
+  `scripts/macos-user-path-smoke.sh` — the *same producer* whose lost race
+  reddened run 38071858945, the defect D-072 was opened for — and **every
+  signature inside `classify_error`**, where a lost race reads as "this
+  signature did not match" and silently skips an arm of the classifier whose
+  determinism is this issue's own criterion 2. The count has now risen 0 → 38
+  → 52 across three rounds, each time because the guard could not see part of
+  its own class; so the spellings are pinned by **execution** (`GREP_CLUSTER_
+  CASES`, each run against a 200k-line producer, plus a fault injection that
+  restores the narrow pattern and requires it to miss them) rather than by the
+  regex's good intentions. The known imprecision (`grep -eqfoo`, where `q` is
+  part of the pattern) is documented in the guard and pinned by a test: over-
+  reporting asks for a behaviour-preserving rewrite, under-reporting is a
+  flake nothing measures.
+  Per **D-066** the classifier's ten arms became one reader,
+  `_signature_matches` — a here-string, not a pipe — because nine of them were
+  `grep -q` pipelines and the tenth was already a drained `grep … >/dev/null`,
+  which is what two spellings of one decision looks like one round after a
+  partial fix. `test_failure_classification.py` now reads the signature table
+  through that call shape and **fails if an arm reaches for `grep` directly**;
+  the old extractor matched only the `-q` form, so the tenth signature had
+  never been run against the identifier-noise property test.
+  Also, the second red check on `3a2162c2`: *Adding a sprint iteration does
+  not wipe board item values* reported *"the three test items never appeared —
+  cannot prove anything"* when all three writes had returned ids, and the
+  identical commit passed in the `pull_request` run a minute later (push run
+  39692591792 vs 39692595924). `assign_item` checked **neither** of its two
+  mutations in a script that deliberately does not `set -e`, so a failed write
+  was indistinguishable from success and its cause was discarded; and the
+  40-second settle was a deadline standing in for a condition. Both writes are
+  now checked and relay the API's reason where it happens, and the wait ends
+  in one of three states it can tell apart — settled, *index lag* (every write
+  returned an id, so only GitHub's item index is behind and the mutation under
+  test is **not implicated**), or *missing*. `tests/unit/
+  test_sprint_proof_item_setup.py` lifts the real functions and runs both
+  directions against a stub `gh`, in the same `[required]` job, before the
+  live proof spends two minutes and a scratch project.
+  **Not fixed, and said plainly:** `k8s-local-smoke` is still red, and still
+  for **#4208** — run 39692595549 reports `GlitchTip's worker scheduled 355
+  task(s) and processed NONE`, which is D-075's repaired gate telling the
+  truth. Executed evidence gathered this round for whoever takes #4208: the
+  manifest's `command: ["./bin/run-celery-with-beat.sh"]` is a deprecated shim
+  that `exec`s `bin/run-worker.sh` → `./manage.py runworker --scheduler`
+  (scheduler and worker in **one** asyncio event loop), `CELERY_WORKER_
+  AUTOSCALE` / `CELERY_WORKER_MAX_TASKS_PER_CHILD` are inert under
+  django-vtasks, and `VTASKS_HEALTH_CHECK_FILE` configures a heartbeat that
+  **no probe reads** — so a Pod whose consumer half has died still reports
+  `1/1 Running` and `deploy/glitchtip-worker ready`. Read off the 6.2.0 image
+  itself, not inferred. No fix is attempted here: the remedy depends on
+  whether the consumer died or starved, which is not yet measured, and
+  guessing is what first principle 4 forbids.
+  Source: #4192; related #4193, #4208, #4166; extends **D-072**, **D-075**,
+  **D-066**.
 
 ## Parked
 

@@ -329,7 +329,7 @@ jobs:
           if [ "$upgrade_rc" -ne 0 ]; then
             # "already installed" is the one non-zero worth tolerating on its
             # wording: it means current is what is already here.
-            if printf '%s' "$upgrade_log" | grep -qF "already installed"; then
+            if grep -qF "already installed" <<<"$upgrade_log"; then
               echo "python@3.12 is already at the newest version Homebrew knows about"
             # Otherwise tolerate it only on the OUTCOME this step is about:
             # python@3.12 is at the newest version Homebrew knows and runs.
@@ -3989,7 +3989,7 @@ jobs:
           set -euo pipefail
           OUT="$(nyxgpt ops required-models 2>&1)"
           echo "$OUT"
-          echo "$OUT" | grep -qi "already installed" \
+          grep -qi "already installed" <<<"$OUT" \
             || { echo "a re-run did not report the models as already present" >&2; exit 1; }
 
       # Enabled at boot, not just running now. A service started in the wrong

@@ -151,18 +151,46 @@ def test_the_retired_overload_pattern_really_did_misclassify_it() -> None:
     )
 
 
+def _classify_error_body() -> str:
+    body = LIB.read_text(encoding="utf-8")
+    start = body.index("classify_error() {")
+    return body[start : body.index("\n}\n", start)]
+
+
 def _signature_patterns() -> list[str]:
     """Every pattern `classify_error` tries, read out of the function body.
 
     Read rather than restated: a list written twice is a list that drifts,
-    which is the lesson #4179 paid for. One entry per `grep -q…  "<pattern>"`.
+    which is the lesson #4179 paid for. One entry per
+    `_signature_matches "$error_text" "<pattern>"` -- the single reader every
+    arm goes through since #4192 consolidated them (D-066). Before that the
+    arms were nine `grep -q` pipelines plus one already-drained `grep …
+    >/dev/null`, and this extractor matched only the `-q` spelling: the tenth
+    signature was never run against the noise below.
     """
-    body = LIB.read_text(encoding="utf-8")
-    start = body.index("classify_error() {")
-    end = body.index("\n}\n", start)
-    found = re.findall(r'grep -q[a-zA-Z]*\s+"([^"]+)"', body[start:end])
+    found = re.findall(r'_signature_matches "\$error_text" "([^"]+)"', _classify_error_body())
     assert found, "no signatures found in classify_error -- this guard reads nothing"
     return found
+
+
+def test_every_arm_goes_through_the_one_reader() -> None:
+    """An arm that reaches for `grep` itself is invisible to the table (#4192).
+
+    Two things ride on the call shape, which is why it is pinned rather than
+    left to style: the extractor above reads the signature table out of it, and
+    `_signature_matches` is the here-string that keeps a lost SIGPIPE race from
+    being read as "this signature did not match" (D-072). A new arm written as
+    a `grep -q` pipeline would quietly get neither.
+    """
+    offenders = [
+        line.strip()
+        for line in _classify_error_body().splitlines()
+        if "grep" in line and not line.strip().startswith("#")
+    ]
+    assert not offenders, (
+        "these classify_error lines read the error text with grep directly instead of "
+        f"_signature_matches: {offenders}"
+    )
 
 
 #: Text that carries NO failure signal at all: only the identifiers a run log

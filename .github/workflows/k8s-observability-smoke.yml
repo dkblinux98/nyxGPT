@@ -381,7 +381,7 @@ jobs:
           echo "SRE host ports (K8S_OBSERVABILITY_HOST_PORT_MAPPINGS): $wanted"
           fail=0
           for host in $wanted; do
-            if printf '%s\n' "$mapped" | grep -qx "$host"; then
+            if grep -qx "$host" <<<"$mapped"; then
               echo "::error::this node publishes host port ${host} -- not a bring-your-own topology, the forward path cannot be proved here"
               fail=1
             fi
@@ -555,7 +555,7 @@ jobs:
         run: |
           set -uo pipefail
           nyxgpt ops down --kubernetes || true
-          if ! kind get clusters | grep -qx "$BYO_CLUSTER"; then
+          if ! kind get clusters | grep -x "$BYO_CLUSTER" >/dev/null; then
             echo "::error::the wrapped teardown deleted a bring-your-own cluster"
             exit 1
           fi
