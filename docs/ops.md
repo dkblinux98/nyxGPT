@@ -293,6 +293,13 @@ install, in the Homebrew formula, and for the repo's own web and MCP
 dependencies — checks npm's completed-reify receipt before reporting success,
 and reports a missing one as the registry failure it is.
 
+The same policy governs the install an EC2 instance runs for itself: the
+provisioning script `nyxgpt cloud deploy` renders carries it as exported
+environment plus the package managers' inline flags, from the same module.
+The instance has no checkout to read the policy from, so the numbers are
+written into the script — but written from `build_fetch_policy`, never retyped,
+which is what keeps the cloud path from drifting away from the local one.
+
 A step that checks several things reports one coherent status rather than a
 mix the reader has to reconcile (#3762):
 

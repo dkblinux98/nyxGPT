@@ -413,7 +413,6 @@ def test_fetching_commands_are_recognised(cmd: list[str]) -> None:
     (
         [],
         ["docker", "build", "-t", "x", "."],
-        ["brew", "install", "nyxgpt-api"],
         ["systemctl", "--user", "restart", "nyxgpt-api"],
         ["/usr/bin/python3.12", "-m", "venv", "--without-pip", "/tmp/v"],
         ["kubectl", "apply", "-f", "-"],
@@ -525,3 +524,18 @@ def test_generated_npm_step_shell_behaves(
         assert policy.classify_failure(completed.stderr) is not None
     else:
         assert policy.INCOMPLETE_FETCH_MARKER not in completed.stderr
+
+
+def test_brew_is_a_fetching_command_but_not_a_dockerfile_concern() -> None:
+    """The macOS keg install's first fetch is `brew`'s own bottle download.
+
+    It gets the policy as a subprocess (`HOMEBREW_CURL_RETRIES`), and must NOT
+    appear in the Dockerfile stanza: an `ENV HOMEBREW_CURL_RETRIES=5` in a
+    Linux image states a policy for software that is not in it.
+    """
+    assert policy.is_package_fetch_command(["/opt/homebrew/bin/brew", "install", "nyxgpt-api"])
+    env = policy.fetch_env(["brew", "install", "nyxgpt-web"], {})
+    assert env is not None
+    assert env["HOMEBREW_CURL_RETRIES"] == str(policy.RETRIES)
+    assert "HOMEBREW" not in policy.DOCKERFILE_ENV_STANZA
+    assert set(policy.ENV_POLICY) < set(policy.SUBPROCESS_ENV_POLICY)

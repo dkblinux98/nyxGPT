@@ -121,8 +121,24 @@ PIP_ENV = {
     "PIP_TIMEOUT": str(TIMEOUT_SECONDS),
 }
 
-#: The whole policy as environment, for a build step or a subprocess.
+#: The policy for a *build step* -- the two tools an image build can use, and
+#: so the set that goes into `DOCKERFILE_ENV_STANZA` and the cloud
+#: provisioning script's exports. Deliberately not the superset below: an
+#: `ENV HOMEBREW_CURL_RETRIES=5` in a Linux image states a policy for software
+#: that is not in it, and a stanza that says untrue things is worse than a
+#: shorter one.
 ENV_POLICY: dict[str, str] = {**NPM_ENV, **PIP_ENV}
+
+#: Homebrew retries bottle downloads `HOMEBREW_CURL_RETRIES` times. The macOS
+#: keg install fetches bottles for `node` and `python@3.12` before it reaches
+#: the `npm`/`pip` calls the formulas themselves make, so leaving it out would
+#: leave the first fetch of that path unstated.
+BREW_ENV = {"HOMEBREW_CURL_RETRIES": str(RETRIES)}
+
+#: The policy for any *subprocess* nyxGPT runs that fetches. A superset of
+#: `ENV_POLICY`: setting a Homebrew variable for a `pip` call costs nothing and
+#: keeps one answer to "what is our policy?" rather than one per tool.
+SUBPROCESS_ENV_POLICY: dict[str, str] = {**ENV_POLICY, **BREW_ENV}
 
 #: apt has no env knob for retries -- `APT_CONFIG` names a config *file*, not
 #: a value -- so the policy is an inline `-o` on each apt-get invocation.
@@ -240,6 +256,14 @@ def npm_install_run_step(npm_command: str) -> str:
 #: Docker has no include mechanism, so "one place" is this string plus a guard
 #: that fails the build when a copy of it drifts -- not N independently
 #: maintained stanzas.
+#:
+#: One block for both tools, deliberately, even though the node image never
+#: runs pip and the api image never runs npm: a per-tool stanza would be two
+#: strings to keep in step, which is the drift this exists to prevent, and an
+#: unused `PIP_RETRIES` in a node image costs nothing. `HOMEBREW_CURL_RETRIES`
+#: is the line this does *not* cross (see `BREW_ENV`) -- brew appears in no
+#: image at all, so naming it here would state a policy for software that is
+#: not merely unused but absent.
 DOCKERFILE_ENV_STANZA = "\n".join(
     [
         "# --- nyxGPT remote-fetch policy (#4205). Generated from",
@@ -424,14 +448,17 @@ def subprocess_env(base: dict[str, str]) -> dict[str, str]:
     in the operator's shell is not a decision this project made.
     """
     merged = dict(base)
-    merged.update(ENV_POLICY)
+    merged.update(SUBPROCESS_ENV_POLICY)
     return merged
 
 
 #: Programs that fetch from a remote package index when run. Matched on the
 #: argv[0] *basename*, because callers resolve these through `shutil.which`
-#: and a venv's `pip` is `<venv>/bin/pip`.
-FETCH_PROGRAMS = frozenset({"apt", "apt-get", "dnf", "npm", "npx", "pip", "pip3", "uv", "yum"})
+#: and a venv's `pip` is `<venv>/bin/pip` (and on a two-tap machine `brew` is
+#: resolved through `_brew_path`).
+FETCH_PROGRAMS = frozenset(
+    {"apt", "apt-get", "brew", "dnf", "npm", "npx", "pip", "pip3", "uv", "yum"}
+)
 
 
 def is_package_fetch_command(cmd: Sequence[str]) -> bool:
