@@ -180,3 +180,87 @@ def test_transitive_dependents_are_selected() -> None:
     affected = selector._source_dependents({"nyxgpt.config"})
     assert len(affected) > 1, "config has dependents; the closure returned only itself"
     assert "nyxgpt.config" in affected
+
+
+# --------------------------------------------------------------------------
+# Deletions: in the diff, not in pytest's argv (#4209 review)
+#
+# The web half of this class -- a deleted `.tsx` handed to eslint -- is what
+# the review found. This is the sibling the sweep turned up: both consumers
+# take repo-relative paths out of a diff and hand them to a tool as argv, and
+# a diff is a statement about history while argv is a statement about the
+# checkout. `pytest tests/unit/test_gone.py` exits 4 on "file or directory
+# not found" having executed nothing, which since #4209 is a RED REQUIRED
+# CHECK on the PR that did the deleting.
+# --------------------------------------------------------------------------
+
+GONE = "tests/unit/test_this_file_was_deleted_by_the_diff.py"
+
+
+def test_the_fixture_path_really_is_absent() -> None:
+    """Everything below is vacuous if someone ever creates this file."""
+    assert not (REPO_ROOT / GONE).exists()
+
+
+def test_a_deleted_test_file_is_not_handed_to_pytest() -> None:
+    """A usage error is not a test result: pytest exits 4 and runs nothing."""
+    assert GONE not in _targets(GONE)
+
+
+def test_deleting_a_test_still_runs_the_floor() -> None:
+    """Dropping the path must not drop the run.
+
+    The floor guards the agent process and runs for every change (see the
+    first test in this file); a diff that only removes a test is still a
+    change.
+    """
+    targets = _targets(GONE)
+    assert targets, "a delete-only diff selected nothing at all"
+    assert set(selector.FLOOR_TESTS).issubset(targets)
+
+
+def test_the_surviving_tests_of_a_mixed_diff_are_still_selected() -> None:
+    """The fix must not become "a deletion anywhere empties the selection"."""
+    assert "tests/unit/test_canary.py" in _targets(GONE, "tests/unit/test_canary.py")
+
+
+def test_a_deleted_test_is_reported_rather_than_silently_dropped() -> None:
+    """`main()` prints the reasons, so a dropped path is visible in the log.
+
+    Selection failures here are silent by construction -- a narrower pytest
+    invocation looks exactly like a correct one -- so the only thing between a
+    wrong drop and nobody noticing is that it says so.
+    """
+    reasons = selector.select([GONE]).reasons
+    assert any(GONE in reason and "deleted" in reason for reason in reasons), reasons
+
+
+def test_the_floor_is_filtered_too_not_just_the_changed_paths(tmp_path: Path) -> None:
+    """The floor is hardcoded paths, and a diff can delete one of those.
+
+    Filtering only the changed-test branch would leave the same exit-4 in the
+    one list that is appended to every single selection.
+    """
+    gone, *kept = selector.FLOOR_TESTS
+    for floor in kept:
+        target = tmp_path / floor
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+
+    targets = selector.select([gone], root=tmp_path).pytest_args.split()
+    assert gone not in targets
+    assert set(kept) == set(targets), "only the deleted floor test may be dropped"
+
+
+def test_selection_resolves_against_the_given_root_not_the_cwd(tmp_path: Path) -> None:
+    """The predicate is rooted, not cwd-relative.
+
+    CI runs these steps from the repo root, which is exactly the kind of
+    assumption that holds until one step adds a `cd`.
+    """
+    present = tmp_path / "tests" / "unit" / "test_only_here.py"
+    present.parent.mkdir(parents=True)
+    present.write_text("", encoding="utf-8")
+    targets = selector.select(["tests/unit/test_only_here.py"], root=tmp_path).pytest_args.split()
+    assert "tests/unit/test_only_here.py" in targets
+    assert "tests/unit/test_only_here.py" not in _targets("tests/unit/test_only_here.py")

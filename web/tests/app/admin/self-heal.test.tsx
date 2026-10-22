@@ -974,6 +974,121 @@ describe('SelfHealPage', () => {
     expect(screen.getByText(/nyxgpt ops port-forward --target observability/)).toBeInTheDocument();
   });
 
+  // #4184's pair, and the branches it left uncovered (#4209). Every fixture
+  // above sends `observability_source: 'kubernetes'` with no
+  // `substrate_declared` and no `substrate`, so the ONLY arm of the #4184
+  // ternary ever rendered was "read from the cluster" -- and the substrate
+  // line below it never rendered at all. The arm that was missing is the one
+  // for a run that declared Kubernetes before creating a single Pod, which is
+  // precisely the case #4184 says must not be described as "the cluster's own
+  // answer".
+  describe('how the substrate was decided (#4184)', () => {
+    it('does not call a declared substrate the cluster’s own answer', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({
+            ...mockKubernetesStatus,
+            substrate_declared: true,
+            substrate: 'kubernetes',
+            substrate_source: 'declared by `nyxgpt ops install --substrate kubernetes`',
+          })
+        )
+      );
+      mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+      render(<SelfHealPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/this deployment.s cluster/)).toBeInTheDocument();
+      });
+      // The declared arm says the rows are partial during an install; the
+      // other arm claims they are the cluster's answer. Printing the second
+      // over a cluster with no Pods yet is the wrong-when-printed guidance.
+      expect(screen.getByText(/not yet the whole tier/)).toBeInTheDocument();
+      expect(screen.queryByText('read from the cluster')).not.toBeInTheDocument();
+      // The parenthetical belongs to THIS paragraph. The substrate line below
+      // names the same source, so an unscoped query finds both -- and the two
+      // saying the same thing is the #4184 property, not an ambiguity to work
+      // around.
+      expect(
+        screen.getByText(/^Observability tier:/, { selector: 'p' }).textContent
+      ).toContain('(declared by `nyxgpt ops install --substrate kubernetes`)');
+      expect(
+        screen.getAllByText(/declared by `nyxgpt ops install --substrate kubernetes`/)
+      ).toHaveLength(2);
+    });
+
+    it('omits the parenthetical when nothing said how it was declared', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({ ...mockKubernetesStatus, substrate_declared: true })
+        )
+      );
+      mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+      render(<SelfHealPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/this deployment.s cluster/)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/\(undefined\)/)).not.toBeInTheDocument();
+    });
+
+    // `kubernetes` on its own is ambiguous here -- every component row
+    // carries a `kubernetes` source badge -- so the line is addressed as the
+    // paragraph it is.
+    async function substrateLine(): Promise<HTMLElement> {
+      return await screen.findByText(/^Substrate:/, { selector: 'p' });
+    }
+
+    it('names the substrate and its source below the rows', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({
+            ...mockKubernetesStatus,
+            substrate: 'kubernetes',
+            substrate_source: 'kubectl answered',
+          })
+        )
+      );
+      mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+      render(<SelfHealPage />);
+
+      expect((await substrateLine()).textContent).toBe(
+        'Substrate: kubernetes — kubectl answered'
+      );
+    });
+
+    it('names the substrate alone when its source is unknown', async () => {
+      server.use(
+        http.get('/api/v1/self-heal/status', () =>
+          HttpResponse.json({ ...mockKubernetesStatus, substrate: 'kubernetes' })
+        )
+      );
+      mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+      render(<SelfHealPage />);
+
+      // No dangling em dash, and no "undefined" standing in for the source.
+      expect((await substrateLine()).textContent).toBe('Substrate: kubernetes');
+    });
+
+    it('says nothing when no deployment answered', async () => {
+      // "Rendered only when something answered": on a box with no deployment
+      // the rows are their own explanation.
+      server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
+      mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+      render(<SelfHealPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Detected mode:/)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/^Substrate:/)).not.toBeInTheDocument();
+    });
+  });
+
   it('shows the detected mode for non-kubernetes modes without the kubernetes role statement', async () => {
     server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);

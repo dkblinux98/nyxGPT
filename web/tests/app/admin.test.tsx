@@ -951,6 +951,80 @@ describe('AdminPage Component', () => {
     expect(screen.getByRole('option', { name: 'Select a model...' })).toBeInTheDocument();
   });
 
+  // #4150's `detail` is the api's answer to "Ollama answered, and holds
+  // nothing" -- a different fault from "Ollama is not running", and the only
+  // place the required-model command is named. Every fixture in this suite
+  // sent a populated `models` array and no `detail`, so the three branches
+  // below -- the `typeof detail === 'string'` arm, the `aria-describedby`
+  // arm, and the panel itself -- were the gate's 99.38% (#4209). They are the
+  // shape of all 22: the arm that runs when the api does NOT send an optional
+  // field.
+  describe('empty-models detail (#4150)', () => {
+    const DETAIL =
+      'Ollama is reachable but holds no models. Run `nyxgpt ops required-models`.';
+
+    it('renders the detail the api sends with an empty model list', async () => {
+      server.use(
+        http.get('/api/models', () => HttpResponse.json({ models: [], detail: DETAIL }))
+      );
+
+      render(<AdminPage />);
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      const panel = await screen.findByText(new RegExp('holds no models'));
+      expect(panel).toBeInTheDocument();
+      // Named by the select, not merely rendered somewhere on the page: the
+      // remedy is useless to a screen reader that never reaches it.
+      expect(screen.getByLabelText('Default Model')).toHaveAttribute(
+        'aria-describedby',
+        'models-empty'
+      );
+    });
+
+    it('ignores a non-string detail rather than rendering it', async () => {
+      // The api contract says string; a dict or a number reaching `{detail}`
+      // in JSX is a React render crash, which is why the component tests the
+      // type rather than the truthiness.
+      server.use(
+        http.get('/api/models', () =>
+          HttpResponse.json({ models: [], detail: { code: 'empty' } })
+        )
+      );
+
+      render(<AdminPage />);
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+      expect(screen.getByLabelText('Default Model')).not.toHaveAttribute(
+        'aria-describedby'
+      );
+    });
+
+    it('drops the detail when a later load fails, rather than leaving stale advice', async () => {
+      // Two surfaces give the same advice or neither does: a remedy for
+      // "reachable but empty" printed beside an unrelated load error is worse
+      // than no remedy.
+      let answer = () => HttpResponse.json({ models: [], detail: DETAIL });
+      server.use(http.get('/api/models', () => answer()));
+      render(<AdminPage />);
+      expect(await screen.findByText(new RegExp('holds no models'))).toBeInTheDocument();
+
+      // The page re-loads models whenever the tab regains focus, which is the
+      // only path on which a second answer can replace the first.
+      answer = () => new HttpResponse(null, { status: 500 }) as never;
+      act(() => {
+        window.dispatchEvent(new Event('focus'));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText(/Failed to load models/)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(new RegExp('holds no models'))).not.toBeInTheDocument();
+    });
+  });
+
   it('renders error state when config loading fails', async () => {
     server.use(http.get('/api/v1/config/sections', () => new HttpResponse(null, { status: 500 })));
 

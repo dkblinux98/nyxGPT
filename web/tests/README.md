@@ -13,18 +13,26 @@ The test infrastructure uses:
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all tests once and exit
 npm test
+
+# Re-run on every save (watch mode -- never terminates)
+npm run test:watch
 
 # Run tests with UI
 npm run test:ui
 
-# Run tests with coverage
+# Run all tests once with the 100% coverage gate -- the exact command CI blocks on
 npm run test:coverage
 
-# Run specific test file
-npx vitest tests/setup.test.ts
+# Run a specific test file once
+npx vitest run tests/setup.test.ts
 ```
+
+`npm test` and `npm run test:coverage` terminate: both are `vitest run`. Until
+#4209 they were bare `vitest` — watch mode outside CI — so the one documented
+way to answer the coverage gate locally never printed a verdict. Watch mode is
+`npm run test:watch`, asked for by name.
 
 ## Writing Tests
 
@@ -86,7 +94,9 @@ export const handlers = [
 
 ## Coverage Gate
 
-`web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines). Any regression fails `npx vitest run --coverage`, which both `claude-code-review.yml` and `validate-web-routes.yml` run in CI. Genuinely-untestable files (generated/config) are documented in `coverage.exclude` with a comment rather than lowering the threshold.
+`web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines). Any regression fails `npm run test:coverage`. Genuinely-untestable files (generated/config) are documented in `coverage.exclude` with a comment rather than lowering the threshold.
+
+The gate is evaluated by `ci-tests.yml`'s `web` job — **on PR heads and on pushes to the release branch** (#4209) — as the same `npm run test:coverage`, and it is a required check (`.github/required-checks.txt`). It was previously `if: github.ref == RELEASE_BRANCH` on a workflow with no `pull_request` trigger, so a web regression was invisible for the whole life of the PR that introduced it and surfaced as a red release branch attributed to whichever change touched `web/` next. `web-gate-smoke.yml` is the executed evidence that the gate now blocks, proven in both directions.
 
 ## Future Improvements
 

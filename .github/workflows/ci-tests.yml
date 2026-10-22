@@ -1,16 +1,48 @@
 name: CI - Tests & Type Check
 
-# Post-merge integration tripwire (owner decision, 2026-08-18). The developer
-# runs the gates before cutting the PR and green is green for that diff, so
-# re-running them at PR time answers a question already answered. What a
-# developer's run cannot see is a change that did not exist when it ran: two
-# PRs with no overlapping lines, each green, that break each other once both
-# land. That happened twice on 2026-08-18 -- a new workflow merging against a
-# new index guard, and three branches each allocating ledger id V-046 -- and
-# both left the release branch red for hours before anyone noticed. So the
-# suite runs once, here, after the merge, as the alarm.
+# The blocking gates, evaluated where the change is reviewed AND again at the
+# merge boundary. #4209 added the first half; the second was always here.
+#
+# ON A PULL REQUEST (#4209). Until 2026-10-22 every job in this file was
+# `if: github.ref == RELEASE_BRANCH` on a workflow with no `pull_request`
+# trigger, so `ruff`, `black`, `mypy`, `pytest`, `tsc`, `eslint` and
+# `vitest --coverage` -- every step this file labels "(blocking)" -- were only
+# ever evaluated AFTER the merge that broke them. That is not a gate. A web
+# regression was invisible for the whole life of the PR that introduced it and
+# surfaced as a red release branch attributed to whichever change touched
+# `web/` next. It happened: #4207 shipped two failing web tests and nothing on
+# the PR went red; the review round found them by running the suite by hand.
+#
+# The premise the old arrangement rested on -- "the developer runs the gates
+# before cutting the PR, so re-running them at PR time answers a question
+# already answered" -- is a premise about an agent remembering to, and
+# `web/package.json`'s `test:coverage` was `vitest --coverage` in watch mode,
+# so the one documented way to answer it locally did not terminate.
+#
+# ON A PUSH TO THE RELEASE BRANCH (owner decision, 2026-08-18). This half is
+# unchanged and is not redundant with the half above. What a PR run cannot see
+# is a change that did not exist when it ran: two PRs with no overlapping
+# lines, each green, that break each other once both land. That happened twice
+# on 2026-08-18 -- a new workflow merging against a new index guard, and three
+# branches each allocating ledger id V-046 -- and both left the release branch
+# red for hours before anyone noticed. So the suite also runs after the merge,
+# as the alarm.
+#
+# Pushes to any other branch skip every job here, which reports as a skipped
+# check run rather than as nothing. `required_check_state`
+# (scripts/agents/lib/gh_project.sh) treats `skipped` as "did not apply", so
+# the PR-event run on the same head is the one that counts -- see the three
+# entries this file's jobs have in `.github/required-checks.txt`.
+#
+# Both halves share ONE scope decision (`scripts/ci/diff_scope.py`): a `push`
+# measures its diff from `github.event.before`, a pull request from the merge
+# base with its base branch, and a run with no identifiable base runs
+# everything. That used to be three inline copies of the same `github.event.before`
+# read, which is why pointing this workflow at a PR head was not a one-line
+# change (CLAUDE.md, "one source per decision").
 on:
   push:
+  pull_request:
 
 permissions:
   contents: read
@@ -18,11 +50,24 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # the selector diffs against the base ref
+          fetch-depth: 0  # diff_scope needs both sides of the diff
+
+      # One resolver, three consumers (this job, `determinism`, `web`). See
+      # scripts/ci/diff_scope.py.
+      - name: Scope this change
+        id: scope
+        env:
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # GITHUB_SHA on a pull_request is the synthesised MERGE commit,
+          # whose first parent is the base tip -- so a merge-base against it
+          # returns base.sha itself. The head is the real subject (#4209).
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/diff_scope.py --github-output >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -45,35 +90,26 @@ jobs:
         run: mypy src/
 
       # #3896: a docs-only diff used to pay exactly what a src/ rewrite paid.
-      # Pull requests run the suites their diff can actually reach; pushes to
-      # the release branch stay unscoped, so the merge boundary is still
-      # protected by the whole tree.
-      # Agentic merges do not run the app suite (owner decision, 2026-08-18).
-      # The tripwire exists to catch collisions between changes that could not
-      # see each other, and a collision can only happen inside the domain that
-      # changed: a ledger or workflow merge cannot break test_ops. A merge that
-      # touches src/ or web/ still runs everything, because that is exactly the
-      # product-vs-product case the tripwire is for.
-      - name: Select suites for this merge
+      # A change runs the suites its diff can actually reach -- except that
+      # product code and the root conftest can reach any suite, so those are
+      # never narrowed, and neither is a run whose base commit could not be
+      # identified. Both of those decisions are `diff_scope`'s `full_suite`.
+      - name: Select suites for this change
         id: select
         env:
-          BEFORE: ${{ github.event.before }}
+          FULL_SUITE: ${{ steps.scope.outputs.full_suite }}
+          CHANGED: ${{ steps.scope.outputs.changed }}
         run: |
           set -euo pipefail
-          if ! git rev-parse --quiet --verify "$BEFORE^{commit}" >/dev/null 2>&1; then
-            echo "no usable before-sha -- running everything"
+          if [[ "$FULL_SUITE" == "true" ]]; then
+            echo "product code, the root conftest, or no identifiable base -- full unit suite"
             echo "pytest_args=tests/unit/" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          CHANGED=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
-          echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^(src/|web/|pyproject\.toml|tests/conftest\.py)'; then
-            echo "product code changed -- full suite"
-            echo "pytest_args=tests/unit/" >> "$GITHUB_OUTPUT"
-          else
-            python3 scripts/ci/select_tests.py --files $CHANGED --github-output \
-              >> "$GITHUB_OUTPUT"
-          fi
+          printf '%s\n' "$CHANGED"
+          # shellcheck disable=SC2086  # intentional split: one argv per path
+          python3 scripts/ci/select_tests.py --files $CHANGED --github-output \
+            >> "$GITHUB_OUTPUT"
 
       - name: pytest - unit tests (integration tests skipped in CI, no live services)
         env:
@@ -96,19 +132,51 @@ jobs:
   # Comparing the *set of failed node ids*, not the count: two runs failing 3
   # tests each for different reasons is exactly the bug, and a count comparison
   # calls it green.
+  #
+  # #4209: it now runs on PR heads too, because the thing that breaks it is a
+  # *test* writing under the real `$HOME` and a PR is where a test is reviewed.
+  # On a pull request its steps are scoped to diffs that can reach Python
+  # (`diff_scope`'s `python`) -- an agents/ or docs-only PR cannot make the
+  # suite non-deterministic, and this job costs three suite runs. The release
+  # branch stays unscoped: the merge boundary is where collisions appear, and a
+  # collision does not announce which half of it touched `src/`.
   determinism:
     runs-on: ubuntu-latest
-    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # diff_scope needs both sides of the diff
+
+      - name: Scope this change
+        id: scope
+        env:
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # GITHUB_SHA on a pull_request is the synthesised MERGE commit,
+          # whose first parent is the base tip -- so a merge-base against it
+          # returns base.sha itself. The head is the real subject (#4209).
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/diff_scope.py --github-output >> "$GITHUB_OUTPUT"
+
+      # Self-gating on the diff rather than a workflow-level `paths:` filter,
+      # so the job reports a definite conclusion on every PR instead of
+      # vanishing -- a check that disappears is indistinguishable from one that
+      # has not run yet.
+      - name: Does this change reach Python
+        id: want
+        if: github.event_name != 'pull_request' || steps.scope.outputs.python == 'true'
+        run: echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
+        if: steps.want.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install nyxgpt (editable, dev extras)
+        if: steps.want.outputs.run == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
@@ -124,6 +192,7 @@ jobs:
       # is the assertion that catches the sandbox not being in effect, and it
       # runs in the `test` job above like any other test.
       - name: Seed an operator-style ~/.nyxGPT/config.ini
+        if: steps.want.outputs.run == 'true'
         run: |
           mkdir -p "$HOME/.nyxGPT"
           cat > "$HOME/.nyxGPT/config.ini" <<'EOF'
@@ -146,6 +215,7 @@ jobs:
           sha256sum "$HOME/.nyxGPT/config.ini" | tee /tmp/config-before.sha
 
       - name: Run the unit suite twice, the second overlapping a third session
+        if: steps.want.outputs.run == 'true'
         run: |
           set -uo pipefail
           # GitHub runs `run:` with `bash -e` whatever the script sets, and the
@@ -191,57 +261,51 @@ jobs:
           echo "both runs agreed on $(wc -l < /tmp/run1.txt) failing test(s)"
 
       - name: The suite must not have touched the operator's config
+        if: steps.want.outputs.run == 'true'
         run: |
           sha256sum -c /tmp/config-before.sha \
             || { echo "::error::pytest modified ~/.nyxGPT/config.ini (#4020)"; exit 1; }
           test ! -e "$HOME/.nyxGPT/config.ini.pytest-bak" \
             || { echo "::error::pytest left a backup in the operator's ~/.nyxGPT (#4020)"; exit 1; }
 
-  # The web gates (tsc / eslint / vitest) also lived only in the review workflow.
-  # Self-gating on the diff rather than a workflow-level `paths:` filter, so the
-  # job reports a definite conclusion on every PR instead of vanishing -- a check
-  # that disappears is indistinguishable from one that has not run yet.
+  # The web gates (tsc / eslint / vitest). Self-gating on the diff rather than
+  # a workflow-level `paths:` filter, so the job reports a definite conclusion
+  # on every PR instead of vanishing -- a check that disappears is
+  # indistinguishable from one that has not run yet.
   web:
     runs-on: ubuntu-latest
-    if: github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # diff_scope needs both sides of the diff
 
-      - name: Does this diff touch web/
-        id: touched
+      - name: Scope this change
+        id: scope
         env:
-          BASE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          if ! git rev-parse --quiet --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
-            echo "web=true" >> "$GITHUB_OUTPUT"
-            echo "no usable before-sha -- running the web gates"
-            exit 0
-          fi
-          if git diff --name-only "$BASE_SHA" "$GITHUB_SHA" | grep -q '^web/'; then
-            echo "web=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "web=false" >> "$GITHUB_OUTPUT"
-            echo "no web/ changes -- skipping web gates"
-          fi
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # GITHUB_SHA on a pull_request is the synthesised MERGE commit,
+          # whose first parent is the base tip -- so a merge-base against it
+          # returns base.sha itself. The head is the real subject (#4209).
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/diff_scope.py --github-output >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
-        if: steps.touched.outputs.web == 'true'
+        if: steps.scope.outputs.web == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install web dependencies
-        if: steps.touched.outputs.web == 'true'
+        if: steps.scope.outputs.web == 'true'
         run: cd web && npm ci
 
       - name: tsc --noEmit (blocking)
-        if: steps.touched.outputs.web == 'true'
-        run: cd web && npx tsc --noEmit
+        if: steps.scope.outputs.web == 'true'
+        run: cd web && npm run type-check
 
-      # Lints THIS merge's web files, not the whole tree. `npx eslint .`
+      # Lints THIS change's web files, not the whole tree. `npx eslint .`
       # reports ~114 errors that predate every PR it was blocking -- two
       # different merges on 2026-08-19 (#3926, #3934) each produced exactly
       # 114, which is what "pre-existing" looks like -- so a blocking
@@ -252,45 +316,50 @@ jobs:
       # Linting the diff holds the line where it can actually be held: new
       # and edited web files must be clean, and the standing debt is
       # reported (below, non-blocking) rather than blocking unrelated work.
-      - name: eslint the files this merge touched (blocking)
-        if: steps.touched.outputs.web == 'true'
+      - name: eslint the files this change touched (blocking)
+        if: steps.scope.outputs.web == 'true'
         env:
-          BASE_SHA: ${{ github.event.before }}
+          IDENTIFIED: ${{ steps.scope.outputs.identified }}
+          CHANGED: ${{ steps.scope.outputs.changed }}
         run: |
           set -euo pipefail
-          if ! git rev-parse --quiet --verify "$BASE_SHA^{commit}" >/dev/null 2>&1; then
+          if [[ "$IDENTIFIED" != "true" ]]; then
             # No identifiable diff -- a branch-creation push sends an
             # all-zeros `before`, which is exactly the first push of the next
             # release line. Blocking on `eslint src` here would re-create the
-            # defect this step removes: `src` carries 17 standing errors, so
-            # that push would fail on debt it never touched. The report-only
-            # step below still surfaces the whole tree.
-            echo "::notice::no usable before-sha -- nothing identifiable to block on"
+            # defect this step removes: `src` carries standing errors, so that
+            # push would fail on debt it never touched. The report-only step
+            # below still surfaces the whole tree.
+            echo "::notice::no identifiable base commit -- nothing identifiable to block on"
             exit 0
           fi
           # Filtering in a tested script rather than in a git pathspec: the
           # pathspec form `web/**/*.ts` requires an intermediate directory and
           # silently missed `web/next.config.ts`, so a merge touching only
           # that file linted nothing and passed (#3938 review).
-          FILES=$(git diff --name-only --diff-filter=d "$BASE_SHA" "$GITHUB_SHA" -- web \
-                  | python3 scripts/ci/select_web_lint_files.py)
+          FILES=$(printf '%s\n' "$CHANGED" | python3 scripts/ci/select_web_lint_files.py)
           if [[ -z "$FILES" ]]; then
-            echo "::notice::this merge changed no web TS/TSX files -- nothing to lint"
+            echo "::notice::this change edited no web TS/TSX files -- nothing to lint"
             exit 0
           fi
           echo "Linting:"; printf '  %s\n' $FILES
+          # shellcheck disable=SC2086  # intentional split: one argv per file
           cd web && npx eslint $FILES
 
-      # The standing debt, visible on every web merge and blocking none of
+      # The standing debt, visible on every web change and blocking none of
       # them. It is a real backlog item, not noise -- when it reaches zero,
       # delete this step and make the whole-tree lint blocking again.
       - name: eslint the whole tree (report only)
-        if: steps.touched.outputs.web == 'true'
+        if: steps.scope.outputs.web == 'true'
         continue-on-error: true
         run: |
           cd web
           npx eslint . || echo "::warning::web/ carries standing eslint debt -- see the log above"
 
-      - name: vitest (blocking)
-        if: steps.touched.outputs.web == 'true'
-        run: cd web && npx vitest run --coverage
+      # The 100% coverage gate (#3266). `npm run test:coverage` is the same
+      # command, so what a developer runs locally and what blocks here cannot
+      # drift -- which they did: this step said `vitest run` and the script
+      # said `vitest`, i.e. watch mode (#4209).
+      - name: vitest --coverage (blocking)
+        if: steps.scope.outputs.web == 'true'
+        run: cd web && npm run test:coverage

@@ -3184,3 +3184,24 @@ them.
   is the blast-radius investigation (**D-056** (b)). The #3694 cross-issue
   anomaly pause is unaffected and remains the only dispatch-wide pause — it is
   about live infrastructure, not about a count of escalations.
+
+- **S-010** — ~~"Running the gates at PR time answers a question already
+  answered: the developer runs them before cutting the PR, so `ci-tests.yml`
+  is a post-merge tripwire only."~~ (The workflow's own header comment, owner
+  decision 2026-08-18.) Superseded 2026-10-22 by #4209. **The tripwire half
+  stands and must not be removed** — two PRs with no overlapping lines, each
+  green, that break each other once both land are invisible to any PR run, and
+  that happened twice on 2026-08-18. What is retired is the *only*: the
+  premise rests on an agent remembering to run the gates, and `web`'s
+  `npm run test:coverage` was `vitest` in watch mode, so the one documented way
+  to answer the 100% coverage gate locally never terminated. Between the two
+  there was no path on which that gate ran at all, and v3.0.1 sat below the
+  threshold for its whole life with no merge attributable for it; #4207 shipped
+  two failing web tests through a green PR. All three jobs now run on PR heads
+  AND on pushes to the release branch, are `[required]`, and share one scope
+  resolver (`scripts/ci/diff_scope.py`) because a `pull_request` has no
+  `github.event.before` to read. Do not restore the push-only condition citing
+  the 2026-08-18 rationale: the enforcing guard is
+  `tests/unit/test_blocking_gates_reach_pull_requests.py`, whose docstring
+  carries the reasoning, and `web-gate-smoke.yml` is the executed evidence that
+  the gate blocks in both directions.
