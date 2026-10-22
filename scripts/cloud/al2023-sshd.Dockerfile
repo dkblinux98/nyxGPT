@@ -17,7 +17,13 @@
 # instance must never need one), no node, no docker.
 FROM amazonlinux:2023
 
-RUN dnf install -y --setopt=install_weak_deps=False \
+# `--setopt=retries/timeout` is nyxGPT's one remote-fetch policy, inline
+# because dnf has no environment knob for it (#4205,
+# src/nyxgpt/build_fetch_policy.py). Without it a transient mirror blip fails
+# `cloud-dev-deploy-smoke` with a red required check that says nothing about
+# the commit -- the defect #4205 was filed for, on the image that proves the
+# cloud path.
+RUN dnf install -y --setopt=retries=5 --setopt=timeout=30 --setopt=install_weak_deps=False \
         openssh-server shadow-utils sudo tar gzip findutils \
         python3.11 python3.11-pip \
     && dnf clean all \

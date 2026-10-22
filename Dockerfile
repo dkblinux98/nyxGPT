@@ -1,6 +1,22 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# --- nyxGPT remote-fetch policy (#4205). Generated from
+# src/nyxgpt/build_fetch_policy.py, which states the reasoning;
+# tests/unit/test_build_fetch_policy.py fails the build if these drift or
+# if a new fetching step appears without them. Do not edit by hand.
+ENV NPM_CONFIG_FETCH_RETRIES=5
+ENV NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=2000
+ENV NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=60000
+ENV NPM_CONFIG_FETCH_TIMEOUT=300000
+ENV PIP_RETRIES=5
+ENV PIP_TIMEOUT=30
+# --- end nyxGPT remote-fetch policy
+
+# `Acquire::Retries` is inline rather than in the ENV block above because apt
+# has no environment knob for it -- `APT_CONFIG` names a config *file*, not a
+# value -- and Debian's default is 0, so without this apt does not retry at
+# all (#4205). pip and npm read their half of the policy from the ENV block.
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         tesseract-ocr \
         poppler-utils \
         curl \
@@ -21,12 +37,12 @@ RUN set -eux; \
         arm64) docker_arch=aarch64 ;; \
         *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker-cli.tgz; \
+    curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 --connect-timeout 30 "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker-cli.tgz; \
     tar -xzf /tmp/docker-cli.tgz -C /tmp; \
     mv /tmp/docker/docker /usr/local/bin/docker; \
     rm -rf /tmp/docker-cli.tgz /tmp/docker; \
     mkdir -p /usr/local/lib/docker/cli-plugins; \
-    curl -fsSL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${docker_arch}" -o /usr/local/lib/docker/cli-plugins/docker-compose; \
+    curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 --connect-timeout 30 "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${docker_arch}" -o /usr/local/lib/docker/cli-plugins/docker-compose; \
     chmod +x /usr/local/bin/docker /usr/local/lib/docker/cli-plugins/docker-compose; \
     docker --version; \
     docker compose version
@@ -46,7 +62,7 @@ RUN set -eux; \
         arm64) kubectl_arch=arm64 ;; \
         *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl" -o /usr/local/bin/kubectl; \
+    curl -fsSL --retry 5 --retry-connrefused --retry-delay 2 --connect-timeout 30 "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl" -o /usr/local/bin/kubectl; \
     chmod +x /usr/local/bin/kubectl; \
     kubectl version --client
 

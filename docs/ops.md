@@ -248,6 +248,58 @@ a failed post-install step mid-stream and its caveats afterwards, so the old
 bound kept the headline and dropped the line that said why — and two rounds of
 diagnosis were spent on the difference.
 
+### "Could not reach the package registry" is a different answer from "failed"
+
+Installing nyxGPT fetches from package indexes — npm for the web bundle, PyPI
+for the api venv, your distro's repositories for the Docker engine — and those
+are reachable or not independently of whether anything is wrong with nyxGPT.
+So a failure that `ops` can attribute to an unreachable index is reported as
+that, and not as a broken install (#4205):
+
+```
+[FAIL] Could not reach the package registry while building nyxgpt-web:dev-3.0.1
+       npm could not reach the package registry (EAI_AGAIN): #8 23.97 npm error code EAI_AGAIN
+       This is a package-registry reachability failure, not a nyxGPT defect: the
+       build retried 5 times with backoff (2s-60s) and still could not fetch.
+       Check network/proxy/VPN reachability and the index's own status, then
+       retry with `nyxgpt ops install`.
+```
+
+Three things are true of that report and worth knowing:
+
+- **The retries already happened.** Every build and install step that fetches
+  runs under one stated policy — five attempts with a 2s–60s exponential
+  backoff — so this message means the blip outlasted them, not that retrying
+  was never tried. The policy lives in `src/nyxgpt/build_fetch_policy.py` and
+  nowhere else; `tests/unit/test_build_fetch_policy.py` fails the build if a
+  new fetching step appears without it.
+- **Retrying the install is safe and is the right move.** A failed image build
+  records no fingerprint, so the next `nyxgpt ops install` rebuilds rather than
+  skipping; nothing has to be cleaned up first.
+- **A build that is genuinely broken still says so.** A TypeScript error, a
+  missing `COPY` source, an unresolvable dependency and a `404` from the
+  registry are all reported as `docker build <image> failed` with their own
+  output. `ops` only claims "the registry was unreachable" when the output
+  contains positive evidence of it — being told to retry a failure that
+  retrying cannot fix is worse than an unhelpful message.
+
+The fetch policy also decides *whether a step succeeded*, which is not always
+what the tool says. `npm ci` exits **0** when the registry is unreachable: it
+prints `npm error Exit handler never called!`, creates one empty directory per
+dependency, and writes no `node_modules/.package-lock.json`. Taken at its word
+that produces a web image that builds, links, starts, and cannot serve. So
+every `npm ci`/`npm install` step — in `web/Dockerfile`, in the Linux systemd
+install, in the Homebrew formula, and for the repo's own web and MCP
+dependencies — checks npm's completed-reify receipt before reporting success,
+and reports a missing one as the registry failure it is.
+
+The same policy governs the install an EC2 instance runs for itself: the
+provisioning script `nyxgpt cloud deploy` renders carries it as exported
+environment plus the package managers' inline flags, from the same module.
+The instance has no checkout to read the policy from, so the numbers are
+written into the script — but written from `build_fetch_policy`, never retyped,
+which is what keeps the cloud path from drifting away from the local one.
+
 A step that checks several things reports one coherent status rather than a
 mix the reader has to reconcile (#3762):
 
