@@ -570,8 +570,18 @@ services:
       CELERY_WORKER_AUTOSCALE: "1,3"
       CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
       VTASKS_HEALTH_CHECK_FILE: /tmp/vtasks_health_check
+      # Turns the consumer's own counters into something the healthcheck
+      # below can read -- see the comment on it, and #4208.
+      VTASKS_METRICS_PORT: "9090"
     volumes:
       - ${HOME}/.nyxGPT/volumes/glitchtip-uploads:/code/uploads
+      # The single source for "is this worker consuming", shared verbatim
+      # with the Kubernetes probes (#4208). It lives under k8s/observability/
+      # because kustomize cannot read files above its own root, so that is
+      # the one directory both substrates can reach; mounting it from there
+      # is deliberate and is what keeps the two from drifting into
+      # disagreeing about what a healthy worker is.
+      - ./k8s/observability/glitchtip-worker-ready.py:/etc/nyxgpt/probes/glitchtip-worker-ready.py:ro
     depends_on:
       glitchtip-postgres:
         condition: service_healthy
@@ -596,21 +606,34 @@ services:
     # container: `which celery` and `python -c "import celery"` both fail
     # with "not found") -- a `celery inspect ping` probe here fails on every
     # run with "celery: not found", permanently misreporting a healthy
-    # worker as unhealthy (the #3565 round-1 rework). django-vtasks instead
-    # has a purpose-built liveness mechanism: `runworker`'s background
-    # heartbeat rewrites the file at `VTASKS_HEALTH_CHECK_FILE` (env var
-    # read directly by django_vtasks/conf.py) every 5 seconds for as long as
-    # the worker's event loop is alive, so a wedged/hung worker (heartbeat
-    # coroutine starved of scheduling) shows a stale mtime just as reliably
-    # as a crashed one shows no file at all. `python` (unlike `celery`) is
-    # confirmed present on PATH in this image.
+    # worker as unhealthy (the #3565 round-1 rework). `python` (unlike
+    # `celery`) is confirmed present on PATH in this image, which is what
+    # makes the probe below possible at all.
+    #
+    # This probe used to test the mtime of `VTASKS_HEALTH_CHECK_FILE`, on the
+    # reasoning that `runworker`'s heartbeat rewrites it every 5 seconds for
+    # as long as the event loop is alive, so a wedged worker would show a
+    # stale mtime "just as reliably as a crashed one shows no file at all".
+    # That last step is wrong, and #4208 measured it wrong: `_heartbeat_loop`
+    # runs `while self.running`, and `self.running` stays true for as long as
+    # `Worker.run()` has not RETURNED -- which, in the wedge, is forever. A
+    # worker reproduced in exactly the broken state (consumer never ran an
+    # iteration, 0 tasks processed, scheduler enqueuing into a queue nothing
+    # drains) reported a heartbeat file whose mtime was the current second.
+    # The old probe was green on the defect it existed to catch.
+    #
+    # So ask the consumer for evidence of work instead. The script is shared
+    # verbatim with the Kubernetes probes -- see the volume above and
+    # k8s/observability/glitchtip-worker-ready.py, which documents what it
+    # reads and why.
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "python -c \"import os,sys,time; p=os.environ['VTASKS_HEALTH_CHECK_FILE']; sys.exit(0 if os.path.exists(p) and time.time() - os.path.getmtime(p) < 30 else 1)\"",
-        ]
+        ["CMD", "python", "/etc/nyxgpt/probes/glitchtip-worker-ready.py"]
       interval: 30s
       timeout: 15s
       retries: 5
-      start_period: 45s
+      # The worker boots Django, takes the scheduler lock and publishes its
+      # first queue-depth sample within ~15s of the consumer's first loop;
+      # 60s clears that on a loaded workstation without hiding a wedge for
+      # long, since the wedge is permanent once entered.
+      start_period: 60s
