@@ -85,6 +85,41 @@ though their failure issues had been fixed, and the placements were then
 mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
 (D-001 note, 2026-08-14).
 
+### What "accepted" means
+
+One module answers it: `scripts/agents/lib/acceptance_status.py` (#4204,
+ledger D-066). Two questions, named rather than ordered, because the board's
+lanes are not a total order:
+
+| Question | True for | Who asks |
+|---|---|---|
+| **`is_accepted`** — the owner has accepted this issue | `For Release`, `Done` | `promote_accepted_features.sh` (the blocker gate), the drain gate's sprint scope, `sprint_calc.py`'s park state, the sprint report's `done` count |
+| **`has_reached_acceptance`** — merged and at least in the acceptance queue | `Acceptance Testing`, `For Release`, `Done` | `sweep_parked_blocked_issues()` (the parked-blocked completeness test, "Acceptance Testing or beyond") |
+
+`Done` is accepted because it is the lane **this loop writes itself**: the
+release ceremony's Phase 3 close-out sets every closed issue in the released
+milestone to it. Until #4204 each of those four callers carried its own
+hard-coded list and `Done` was on none of them, so an issue that was accepted
+and then *released* read as "not accepted yet" — permanently, since nothing
+moves an issue back out of `Done`. Anything parked behind such a blocker was
+unpromotable forever.
+
+`Acceptance Failed` is in **neither** list, although it sits "beyond"
+`Acceptance Testing` in board order. Work is still owed on both populations
+that park there — held rework whose fix has not shipped, and an original the
+owner reopened — so reading it as a completed blocker would promote parked
+work onto a blocker the owner rejected. That is why the two predicates are
+named, not derived from a lane ordering.
+
+The shell asks through `status_is_accepted` /
+`status_has_reached_acceptance` in `lib/gh_project.sh`, which read the
+vocabulary once per run. The lane names are config keys with literal
+defaults (`STATUS_FOR_RELEASE`, `STATUS_DONE`, `STATUS_ACCEPTANCE_TESTING`),
+so a rename stays a config change. `tests/unit/test_acceptance_status.py`
+fails the build if any script starts comparing a Status value to decide
+acceptance on its own, or writes `Done` as a bare literal — the single
+source is enforced, not merely documented.
+
 ### The rule
 
 - `@acceptance-failure` (`handle_acceptance_failure.yml`) and `@improvement`
@@ -98,7 +133,8 @@ mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
     release is accepted;
   - any **feature awaiting rework** — a feature the owner has already failed
     parks closed in `Acceptance Testing` (or in `Acceptance Failed`, #3780)
-    until everything blocking it reaches `For Release`
+    until everything blocking it is **accepted** — see
+    [What "accepted" means](#what-accepted-means) —
     (`promote_accepted_features.sh`, owner flow 2026-08-02).
     It is exempt while its own blockers are held, because otherwise the gate
     would deadlock on the work it is holding: the feature waits on its

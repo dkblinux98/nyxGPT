@@ -229,10 +229,25 @@ while IFS= read -r feature; do
   all_accepted=1
   for blocker in "${gate[@]}"; do
     astatus="$(blocker_status "$blocker")"
-    if [[ "$astatus" != "$STATUS_FOR_RELEASE" ]]; then
+    # "Has this blocker been accepted?" is asked of the one vocabulary in
+    # lib/acceptance_status.py (#4204, D-066). It used to be `!=
+    # "$STATUS_FOR_RELEASE"`, which read a blocker the release ceremony had
+    # moved to `Done` as unaccepted -- and since nothing moves an issue out of
+    # `Done`, whatever it blocked was unpromotable permanently.
+    # `|| rc=$?`, never a bare call: under `set -e` a false test standing as
+    # the whole statement would exit the sweep (the same trap this file's
+    # other plain-`if` notes are about).
+    rc=0
+    status_is_accepted "$astatus" || rc=$?
+    if [[ "$rc" == "2" ]]; then
+      log "[warn] Could not read the accepted-status vocabulary -- holding #$feature (blocker #$blocker is '$astatus')"
+      all_accepted=0
+      break
+    fi
+    if [[ "$rc" != "0" ]]; then
       # Not promotable -> nothing moves. A parked feature stays exactly
       # where the owner put it, in either lane (#3780).
-      log "#$feature waits in '$fstatus': blocker #$blocker is '$astatus' (needs '$STATUS_FOR_RELEASE')"
+      log "#$feature waits in '$fstatus': blocker #$blocker is '$astatus' (needs one of: $(accepted_statuses_json | jq -r 'join(", ")'))"
       all_accepted=0
       break
     fi

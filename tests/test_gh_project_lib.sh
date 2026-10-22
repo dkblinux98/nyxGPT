@@ -682,6 +682,60 @@ _assert_eq "both issues in the chain get Status -> Acceptance Testing" "2" "${#S
 _assert_eq "both issues in the chain get the owner assigned" "2" "${#ASSIGN_VERIFIED_CALLS[@]}"
 _assert_eq "both issues in the chain get a promotion comment" "2" "${#COMMENT_CALLS[@]}"
 
+# --- Test 17c: a blocker the release ceremony moved to `Done` is complete ---
+# --- (#4204). This sweep's completeness test was a list written inside the ---
+# --- function -- CLOSED and (`Acceptance Testing` or `For Release`) -- and ---
+# --- `Done`, which release_ceremony.sh Phase 3 writes onto every closed ---
+# --- issue in the released milestone, was not on it. A blocker that was ---
+# --- accepted and then RELEASED therefore held its parked issue back ---
+# --- forever: nothing moves an issue back out of `Done`. ---
+STATUS_DONE="Done"
+list_parked_blocked_issues() { echo "401"; }
+blocked_by_issues() {
+  case "$1" in
+    401) echo "402" ;;
+    *) : ;;
+  esac
+}
+_issue_open_state() {
+  case "$1" in
+    402) echo "CLOSED" ;;
+    *) echo "" ;;
+  esac
+}
+issue_status() {
+  case "$1" in
+    402) echo "Done" ;;
+    *) echo "" ;;
+  esac
+}
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+_assert_eq "a blocker released to 'Done' counts as complete" "Promoted 1 issue(s)." "$OUT"
+_assert_eq "and the parked issue is promoted to Acceptance Testing" "401 Acceptance Testing" "${SET_STATUS_CALLS[0]:-}"
+
+# --- Test 17d: `Acceptance Failed` is deliberately NOT complete. It is ---
+# --- "beyond" Acceptance Testing in board order, but work is still owed on ---
+# --- both populations parked there (#3780, D-042) -- held rework whose fix ---
+# --- has not shipped, and an original the owner reopened. Reading it as ---
+# --- complete would promote parked work onto a blocker the owner rejected, ---
+# --- which is why #4204 consolidated two NAMED predicates rather than an ---
+# --- ordering over lanes. ---
+issue_status() {
+  case "$1" in
+    402) echo "Acceptance Failed" ;;
+    *) echo "" ;;
+  esac
+}
+SET_STATUS_CALLS=(); ASSIGN_VERIFIED_CALLS=(); COMMENT_CALLS=()
+
+_run_sweep
+OUT="$(cat "$SWEEP_OUT_FILE")"
+_assert_eq "a blocker the owner failed is not complete" "Promoted 0 issue(s)." "$OUT"
+_assert_eq "and nothing is mutated for it" "0" "${#SET_STATUS_CALLS[@]}"
+
 # --- Test 18: project_field_value (#3666) -- the fill-if-missing hygiene ---
 # --- read helper. Stub graphql() directly (project_field_value's only ---
 # --- collaborator) with a fixture item carrying a single-select value, an ---

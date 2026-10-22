@@ -938,7 +938,13 @@ the merge itself or branch/PR cleanup -- only the acceptance handoff.
 
 The parked issue moves to Acceptance Testing (and the owner is assigned)
 only once **every** blocker is complete -- merged and itself in Acceptance
-Testing or beyond (For Release). This is enforced by a sweep
+Testing or beyond: `For Release`, or `Done` once the release ceremony has
+closed its milestone out. That vocabulary lives in ONE place,
+`scripts/agents/lib/acceptance_status.py`
+(`status_has_reached_acceptance` is how the shell asks), and
+`Acceptance Failed` is deliberately not in it -- work is still owed on
+everything parked there (#4204, ledger D-066; see
+`docs/acceptance-drain-gate.md` → "What 'accepted' means"). This is enforced by a sweep
 (`sweep_parked_blocked_issues.sh`, run via
 `.github/workflows/sweep_parked_blocked_issues.yml`, `workflow_dispatch`
 only, with a `dry_run` input): it finds every parked issue and promotes any
@@ -964,7 +970,8 @@ Move the issue to "For Release" in the project board. No action needed in GitHub
 **Gate:** an issue that anything blocks (see below) is NOT moved to
 "For Release" by hand — the promotion sweep
 (`promote_accepted_features.yml`) moves it once everything blocking it,
-transitively, has itself been accepted (For Release). That sweep is
+transitively, has itself been accepted — `For Release`, or `Done` once the
+release ceremony closed its milestone out (#4204). That sweep is
 dispatched by whoever made the last move, not polled for on a timer (#4201):
 an agent merging the last blocker dispatches it automatically, and if **you**
 move the last blocker to "For Release" on the board — which raises no event —

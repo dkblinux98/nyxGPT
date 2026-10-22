@@ -30,7 +30,12 @@ FROM ${BASE_IMAGE}
 # systemd + sudo + the coreutils cloud-init's environment provides. `hostname`
 # and `iproute` are not needed by nyxGPT itself but are present on the AMI and
 # are what diagnostics reach for when a run fails.
-RUN dnf -y install \
+# `--setopt=retries/timeout` is nyxGPT's one remote-fetch policy, inline
+# because dnf has no environment knob for it (#4205,
+# src/nyxgpt/build_fetch_policy.py). It changes nothing about what this image
+# contains -- the parity assertions above still hold -- only what happens when
+# a mirror blips mid-build.
+RUN dnf -y install --setopt=retries=5 --setopt=timeout=30 \
         systemd \
         sudo \
         shadow-utils \

@@ -147,13 +147,17 @@ done
 sprint_items="$(jq -c --arg t "$active_sprint" '[.[] | select(.sprint == $t and .state == "OPEN")]' "$items_json")"
 log "Sprint '${active_sprint}': $(echo "$sprint_items" | jq 'length') open issue(s) tracked."
 
+# The `done` bucket counts ACCEPTED issues, and "accepted" is the one
+# vocabulary (#4204) rather than a `== $STATUS_FOR_RELEASE` of this report's
+# own -- an issue the release ceremony moved to `Done` is accepted, and was
+# previously counted in no bucket at all.
 counts="$(jq -c --arg backlog "$STATUS_BACKLOG" --arg in_progress "$STATUS_IN_PROGRESS" \
-  --arg in_review "$STATUS_IN_REVIEW" --arg done "$STATUS_FOR_RELEASE" '
+  --arg in_review "$STATUS_IN_REVIEW" --argjson accepted "$(accepted_statuses_json)" '
   {
     backlog: ([.[] | select(.status == $backlog)] | length),
     in_progress: ([.[] | select(.status == $in_progress)] | length),
     in_review: ([.[] | select(.status == $in_review)] | length),
-    done: ([.[] | select(.status == $done)] | length)
+    done: ([.[] | select(.status as $s | $accepted | index($s))] | length)
   }' <<<"$sprint_items")"
 
 backlog_issues="$(jq -c --arg backlog "$STATUS_BACKLOG" '

@@ -67,7 +67,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_cluster_record, cloud_identity, cloud_infra, cloud_mac, cloud_verified
+from nyxgpt import (
+    build_fetch_policy,
+    cloud_cluster_record,
+    cloud_identity,
+    cloud_infra,
+    cloud_mac,
+    cloud_verified,
+)
 from nyxgpt.cloud import CloudCommandError, ConsentDeclined
 from nyxgpt.config import VALID_SESSION_BACKENDS
 from nyxgpt.doc_links import doc_url, see_doc
@@ -1327,25 +1334,38 @@ export NYXGPT_SUBSTRATE="__SUBSTRATE__"
 
 echo "==> nyxGPT ${NYXGPT_VERSION}: provisioning $(hostname) on the ${NYXGPT_SUBSTRATE} substrate"
 
+# --- Remote-fetch policy (#4205) ---------------------------------------
+# Everything below this line fetches from a package index -- the distro's
+# mirrors, PyPI, the npm registry -- and every one of them is reachable or
+# not independently of whether anything is wrong with nyxGPT. One stated
+# policy, from src/nyxgpt/build_fetch_policy.py, rendered here.
+#
+# `export`ed rather than passed as flags so it reaches what this script
+# cannot name: the `pip` inside the venv bootstrap, the build-backend child
+# pip that inherits no flag from its parent (D-057/#4122), and the `npm ci`
+# that `nyxgpt ops install` runs near the end of this script. dnf and apt
+# have no env knob for retries, so they carry the policy as inline flags.
+__FETCH_POLICY_EXPORTS__
+
 # --- OS packages -------------------------------------------------------
 if command -v dnf >/dev/null 2>&1; then
-  sudo dnf install -y docker tar gzip >/dev/null
+  sudo dnf install -y __DNF_FETCH_FLAGS__ docker tar gzip >/dev/null
   # Newest first, stopping at the first that installs: Amazon Linux 2023
   # ships 3.9 as `python3` and offers 3.11+ only as separate packages.
   for pkg in python3.13 python3.12 python3.11; do
-    if sudo dnf install -y "$pkg" "$pkg-pip" >/dev/null 2>&1; then
+    if sudo dnf install -y __DNF_FETCH_FLAGS__ "$pkg" "$pkg-pip" >/dev/null 2>&1; then
       break
     fi
   done
 elif command -v apt-get >/dev/null 2>&1; then
-  sudo apt-get update -qq
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \\
+  sudo apt-get __APT_FETCH_FLAGS__ update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get __APT_FETCH_FLAGS__ install -y -qq \\
     python3 python3-venv python3-pip docker.io tar gzip >/dev/null
   # Ubuntu 22.04 LTS's `python3` is 3.10 -- below the floor; add an explicit
   # 3.11 when the distro's own is too old. Best-effort: the resolution below
   # is what decides, and it names the problem if nothing qualifies.
   if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \\
+    sudo DEBIAN_FRONTEND=noninteractive apt-get __APT_FETCH_FLAGS__ install -y -qq \\
       python3.11 python3.11-venv >/dev/null 2>&1 || true
   fi
 else
@@ -1605,17 +1625,17 @@ if command -v node >/dev/null 2>&1; then
 fi
 if ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR:-0}" -lt 20 ]; then
   if command -v dnf >/dev/null 2>&1; then
-    if curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
-      sudo dnf install -y nodejs >/dev/null || true
+    if curl -fsSL __CURL_FETCH_FLAGS__ https://rpm.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
+      sudo dnf install -y __DNF_FETCH_FLAGS__ nodejs >/dev/null || true
     else
-      sudo dnf install -y nodejs20 nodejs20-npm >/dev/null \\
-        || sudo dnf install -y nodejs npm >/dev/null || true
+      sudo dnf install -y __DNF_FETCH_FLAGS__ nodejs20 nodejs20-npm >/dev/null \\
+        || sudo dnf install -y __DNF_FETCH_FLAGS__ nodejs npm >/dev/null || true
     fi
   else
-    if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
-      sudo apt-get install -y -qq nodejs >/dev/null || true
+    if curl -fsSL __CURL_FETCH_FLAGS__ https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null; then
+      sudo apt-get __APT_FETCH_FLAGS__ install -y -qq nodejs >/dev/null || true
     else
-      sudo apt-get install -y -qq nodejs npm >/dev/null || true
+      sudo apt-get __APT_FETCH_FLAGS__ install -y -qq nodejs npm >/dev/null || true
     fi
   fi
 fi
@@ -1629,7 +1649,7 @@ fi
 """
 
 NATIVE_LLM_RUNTIME_SECTION = """# --- Ollama ------------------------------------------------------------
-command -v ollama >/dev/null 2>&1 || curl -fsSL https://ollama.com/install.sh | sh
+command -v ollama >/dev/null 2>&1 || curl -fsSL __CURL_FETCH_FLAGS__ https://ollama.com/install.sh | sh
 """
 
 NATIVE_STACK_BRINGUP_SECTION = """# --- Retire a Kubernetes substrate, if this box was running one --------
@@ -1959,7 +1979,7 @@ if command -v k3s >/dev/null 2>&1 && [ -n "$NYXGPT_VPC_CIDRS" ]; then
   done
 fi
 if ! command -v k3s >/dev/null 2>&1; then
-  curl -sfL https://get.k3s.io \\
+  curl -sfL __CURL_FETCH_FLAGS__ https://get.k3s.io \\
     | INSTALL_K3S_EXEC="server __K3S_SERVER_FLAGS__" sh -
 fi
 sudo systemctl enable --now k3s
@@ -2177,9 +2197,32 @@ def render_provision_script(plan: DeployPlan) -> str:
         .replace("__NODE_SECTION__", node_section)
         .replace("__LLM_RUNTIME_SECTION__", llm_section)
         .replace("__STACK_BRINGUP_SECTION__", bringup_section)
+        # nyxGPT's one remote-fetch policy, rendered from the module that
+        # states it (#4205). The instance has no checkout to read it from, so
+        # the numbers have to be written into the script -- but they are
+        # written from `build_fetch_policy`, never retyped here, which is what
+        # keeps the cloud path from drifting away from the local one.
+        .replace("__FETCH_POLICY_EXPORTS__", _fetch_policy_exports())
+        .replace("__DNF_FETCH_FLAGS__", " ".join(build_fetch_policy.DNF_FLAGS))
+        .replace("__APT_FETCH_FLAGS__", " ".join(build_fetch_policy.APT_GET_FLAGS))
+        .replace("__CURL_FETCH_FLAGS__", " ".join(build_fetch_policy.CURL_FLAGS))
         # Last: `__OPS_INSTALL_FLAGS__` is inside the bringup section
         # that line just spliced in, not in the template itself.
         .replace("__OPS_INSTALL_FLAGS__", " --dev" if plan.dev else "")
+    )
+
+
+def _fetch_policy_exports() -> str:
+    """The fetch policy as `export` lines for the provisioning script (#4205).
+
+    `export` and not flags, because the things that need it most are the ones
+    this script never names: the venv bootstrap's `pip`, the build-backend
+    child pip that inherits no flag from its parent (D-057/#4122), and the
+    `npm ci` inside the `nyxgpt ops install` this script runs at the end.
+    """
+    return "\n".join(
+        f"export {name}={shlex.quote(value)}"
+        for name, value in sorted(build_fetch_policy.ENV_POLICY.items())
     )
 
 
@@ -2196,6 +2239,11 @@ def render_k3s_bootstrap() -> str:
         KUBERNETES_LLM_RUNTIME_SECTION.replace("__K3S_SERVER_FLAGS__", " ".join(K3S_SERVER_FLAGS))
         .replace("__K3S_CLUSTER_CIDR__", K3S_CLUSTER_CIDR)
         .replace("__K3S_SERVICE_CIDR__", K3S_SERVICE_CIDR)
+        # This section is rendered through TWO paths -- here and
+        # `render_provision_script`'s chain -- so every placeholder it carries
+        # has to be substituted in both. `test_rendered_scripts_have_no_
+        # unsubstituted_placeholders` is what stops the next one being missed.
+        .replace("__CURL_FETCH_FLAGS__", " ".join(build_fetch_policy.CURL_FLAGS))
     )
 
 

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from nyxgpt import (
+    build_fetch_policy,
     cloud_deploy,
     cloud_identity,
     cloud_imds,
@@ -2867,6 +2868,13 @@ def test_the_linux_bootstrap_is_untouched_by_the_dispatch():
         .replace("__LLM_RUNTIME_SECTION__", cloud_deploy.NATIVE_LLM_RUNTIME_SECTION)
         .replace("__STACK_BRINGUP_SECTION__", cloud_deploy.NATIVE_STACK_BRINGUP_SECTION)
         # After the section, not before: #3956 lifted the `ops install` call
+        # nyxGPT's one remote-fetch policy (#4205) -- rendered from
+        # `build_fetch_policy`, substrate- and OS-independent, so a native
+        # Linux deploy carries exactly what a Kubernetes one does.
+        .replace("__FETCH_POLICY_EXPORTS__", cloud_deploy._fetch_policy_exports())
+        .replace("__DNF_FETCH_FLAGS__", " ".join(build_fetch_policy.DNF_FLAGS))
+        .replace("__APT_FETCH_FLAGS__", " ".join(build_fetch_policy.APT_GET_FLAGS))
+        .replace("__CURL_FETCH_FLAGS__", " ".join(build_fetch_policy.CURL_FLAGS))
         # out of the template and into the bringup sections, so the flags
         # placeholder now arrives with the section rather than ahead of it.
         .replace("__OPS_INSTALL_FLAGS__", "")
@@ -3844,3 +3852,61 @@ def test_a_substrate_verification_failure_never_fails_the_status(monkeypatch):
     monkeypatch.setattr(cloud_mac, "pending_release", lambda *a, **k: {})
 
     assert cloud_deploy.deploy_status(verify_host=True)["known"] is False
+
+
+# --- Rendered scripts carry no unsubstituted placeholders ----------------
+
+
+def test_rendered_scripts_have_no_unsubstituted_placeholders():
+    """Every `__PLACEHOLDER__` is filled, on every render path there is.
+
+    `KUBERNETES_LLM_RUNTIME_SECTION` is rendered through **two** paths -- the
+    `render_provision_script` chain and the standalone `render_k3s_bootstrap`
+    the k3s smoke executes -- so a placeholder added to it has to be filled in
+    both. #4205 added `__CURL_FETCH_FLAGS__` to it and the standalone path
+    shipped the literal string until this test existed: a `curl
+    __CURL_FETCH_FLAGS__ https://get.k3s.io` is not a retry policy, it is a
+    broken bootstrap. The guard is shaped as "no placeholder survives any
+    render" rather than "this one is substituted", so the next addition is
+    covered without anyone remembering to extend it.
+    """
+    import re as _re
+
+    renders = {
+        "native": cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args())),
+        "k3s-bootstrap": cloud_deploy.render_k3s_bootstrap(),
+    }
+    for name, script in renders.items():
+        leftover = sorted(set(_re.findall(r"__[A-Z0-9_]+__", script)))
+        assert not leftover, f"{name} render left {leftover} unsubstituted"
+
+
+def test_rendered_provision_script_carries_the_one_fetch_policy():
+    """The cloud path runs under the same policy as the local one (#4205).
+
+    An EC2 instance has no checkout to read `build_fetch_policy` from, so the
+    numbers are written into the script -- rendered from the module, never
+    retyped, which is what stops the cloud path drifting from the local one.
+    """
+    from nyxgpt import build_fetch_policy
+
+    script = cloud_deploy.render_provision_script(cloud_deploy.resolve_plan(_args()))
+    for name, value in build_fetch_policy.ENV_POLICY.items():
+        assert f"export {name}={value}" in script
+    assert " ".join(build_fetch_policy.DNF_FLAGS) in script
+    assert " ".join(build_fetch_policy.APT_GET_FLAGS) in script
+    assert " ".join(build_fetch_policy.CURL_FLAGS) in script
+    # And no package-manager install escapes it.
+    for line in script.splitlines():
+        stripped = line.strip()
+        if _re_pm_install(stripped):
+            assert (
+                " ".join(build_fetch_policy.DNF_FLAGS) in stripped
+                or " ".join(build_fetch_policy.APT_GET_FLAGS) in stripped
+            ), f"unprotected package install in the provisioning script: {stripped}"
+
+
+def _re_pm_install(line: str) -> bool:
+    import re as _re
+
+    return bool(_re.search(r"\b(?:dnf|apt-get)\b(?!.*\bupdate\b).*\binstall\b", line))

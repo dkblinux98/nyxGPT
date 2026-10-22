@@ -36,7 +36,7 @@ sys.modules[_spec.name] = drain_gate
 _spec.loader.exec_module(drain_gate)
 
 
-def _item(number, status=None, state="CLOSED", typename="Issue"):
+def _item(number, status=None, state="CLOSED", typename="Issue", sprint=None):
     field_values = []
     if status is not None:
         field_values.append(
@@ -44,6 +44,14 @@ def _item(number, status=None, state="CLOSED", typename="Issue"):
                 "__typename": "ProjectV2ItemFieldSingleSelectValue",
                 "field": {"name": "Status"},
                 "name": status,
+            }
+        )
+    if sprint is not None:
+        field_values.append(
+            {
+                "__typename": "ProjectV2ItemFieldIterationValue",
+                "field": {"name": "Sprint"},
+                "title": sprint,
             }
         )
     return {
@@ -62,6 +70,10 @@ def _clean_env(monkeypatch):
         "STATUS_FIELD",
         "STATUS_ACCEPTANCE_TESTING",
         "STATUS_ACCEPTANCE_FAILED",
+        "STATUS_FOR_RELEASE",
+        "STATUS_DONE",
+        "SPRINT_FIELD",
+        "ACTIVE_SPRINT_TITLE",
         "RELEASE_ISSUE",
         "DRAIN_GATE_BYPASS_LABELS",
         "DRAIN_GATE_REWORK_LABEL",
@@ -135,6 +147,54 @@ def test_summarize_honors_renamed_lanes(monkeypatch):
         "acceptance_failed": [2],
         "acceptance_failed_parked": [],
     }
+
+
+# --- summarize: the sprint scope (owner decision 2026-10-01) ---------
+
+
+def test_summarize_omits_sprint_key_when_no_sprint_resolved():
+    """Absent `ACTIVE_SPRINT_TITLE` means the caller resolved no sprint, and
+    an absent key is how `decide` knows to fall back to the lane-only rule --
+    an empty list would mean the opposite."""
+    page = _page(_item(1, "Acceptance Testing", sprint="Sprint 9"))
+    assert "sprint_unreleased" not in drain_gate.summarize(page)
+
+
+def test_summarize_counts_unaccepted_sprint_items_as_still_owed(monkeypatch):
+    monkeypatch.setenv("ACTIVE_SPRINT_TITLE", "Sprint 9")
+    page = _page(
+        _item(1, "Backlog", state="OPEN", sprint="Sprint 9"),
+        _item(2, "For Release", sprint="Sprint 9"),
+        _item(3, "In Review", state="OPEN", sprint="Sprint 8"),
+    )
+    # #1 is owed; #2 is accepted; #3 belongs to another sprint.
+    assert drain_gate.summarize(page)["sprint_unreleased"] == [1]
+
+
+def test_summarize_does_not_count_released_done_items_as_still_owed(monkeypatch):
+    """#4204: `Done` is what release_ceremony.sh Phase 3 writes onto a
+    released issue. Counted as work the sprint still owes -- which is what
+    `status != for_release` did -- a released sprint reports an outstanding
+    item forever, because nothing moves an issue back out of `Done`."""
+    monkeypatch.setenv("ACTIVE_SPRINT_TITLE", "Sprint 9")
+    page = _page(
+        _item(1, "Done", sprint="Sprint 9"),
+        _item(2, "For Release", sprint="Sprint 9"),
+    )
+    assert drain_gate.summarize(page)["sprint_unreleased"] == []
+
+
+def test_summarize_sprint_scope_honors_renamed_accepted_statuses(monkeypatch):
+    monkeypatch.setenv("ACTIVE_SPRINT_TITLE", "Sprint 9")
+    monkeypatch.setenv("STATUS_FOR_RELEASE", "Shipped")
+    monkeypatch.setenv("STATUS_DONE", "Released")
+    page = _page(
+        _item(1, "Released", sprint="Sprint 9"),
+        _item(2, "Shipped", sprint="Sprint 9"),
+        _item(3, "Done", sprint="Sprint 9"),
+    )
+    # With the names overridden, the board's literal "Done" is NOT accepted.
+    assert drain_gate.summarize(page)["sprint_unreleased"] == [3]
 
 
 # --- decide ----------------------------------------------------------
