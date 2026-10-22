@@ -5313,11 +5313,31 @@ def test_vendor_tree_always_excludes_caches_even_without_caller_excludes(tmp_pat
 # --- _ensure_web_deps ---
 
 
-def _fake_subprocess_run(*, ci_rc=0, ci_stderr="", install_rc=0, resolve_rc=0):
-    def _run(cmd, cwd=None, text=True, capture_output=True):
+def _fake_subprocess_run(*, ci_rc=0, ci_stderr="", install_rc=0, resolve_rc=0, write_receipt=True):
+    """A stand-in for the `npm`/`node` subprocesses `_ensure_web_deps` runs.
+
+    `write_receipt` exists because real npm writes
+    `node_modules/.package-lock.json` when, and only when, a reify completes --
+    and #4205 made ops read exactly that as the post-condition for a fetch.
+    Passing `write_receipt=False` with `ci_rc=0` reproduces the defect: `npm
+    ci` claiming success over an empty tree, which is what the registry being
+    unreachable actually looks like.
+    """
+
+    def _run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
+        def _complete(rc):
+            if rc == 0 and write_receipt and cwd:
+                node_modules = Path(cwd) / "node_modules"
+                node_modules.mkdir(parents=True, exist_ok=True)
+                (node_modules / ".package-lock.json").write_text(
+                    '{"packages": {}}', encoding="utf-8"
+                )
+
         if cmd[:2] == ["npm", "ci"]:
+            _complete(ci_rc)
             return subprocess.CompletedProcess(cmd, ci_rc, stdout="", stderr=ci_stderr)
         if cmd[:2] == ["npm", "install"]:
+            _complete(install_rc)
             return subprocess.CompletedProcess(
                 cmd, install_rc, stdout="", stderr="npm install failed"
             )
@@ -5384,6 +5404,34 @@ def test_ensure_web_deps_npm_ci_succeeds(monkeypatch, tmp_path):
     results = ops._ensure_web_deps()
     assert results[0].ok is True
     assert "npm ci" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_web_deps_npm_ci_exit_zero_over_an_empty_tree_is_a_failure(monkeypatch, tmp_path):
+    """The #4205 defect on the native path: exit 0, nothing installed.
+
+    Reproduced for real under `docker build --network none`: with the registry
+    unreachable `npm ci` prints "Exit handler never called!", creates one
+    empty directory per dependency, writes no
+    `node_modules/.package-lock.json`, and **exits 0**. Before this check ops
+    reported "Installed web deps via npm ci" and moved on.
+    """
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
+    monkeypatch.setattr(
+        ops.subprocess,
+        "run",
+        _fake_subprocess_run(ci_rc=0, resolve_rc=1, write_receipt=False),
+    )
+
+    results = ops._ensure_web_deps()
+    assert results[0].ok is False
+    # And reported as what it was, not as a mysterious missing dependency.
+    assert "Could not reach the package registry" in results[0].message
+    assert "not a nyxGPT defect" in results[0].details
 
 
 @pytest.mark.unit
@@ -5537,11 +5585,16 @@ def test_ensure_web_deps_can_resolve_handles_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         if cmd[:1] == ["node"]:
             raise OSError("node vanished")
         if cmd[:2] == ["npm", "ci"]:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="network error")
+            # Deliberately not "network error", which #4205's classifier would
+            # (correctly) attribute to the registry and report differently.
+            # This test is about `_can_resolve` swallowing an exception.
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="npm error code ELIFECYCLE"
+            )
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
@@ -5558,7 +5611,7 @@ def test_ensure_web_deps_handles_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
 
-    def raise_run(cmd, cwd=None, text=True, capture_output=True):
+    def raise_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         raise OSError("exploded")
 
     monkeypatch.setattr(ops.subprocess, "run", raise_run)
@@ -5570,6 +5623,21 @@ def test_ensure_web_deps_handles_exception(monkeypatch, tmp_path):
 
 
 # --- _ensure_mcp_deps ---
+
+
+def _mcp_npm_success(cmd, cwd):
+    """A successful `npm ci`/`npm install`, receipt included.
+
+    `node_modules/.package-lock.json` is npm's completed-reify receipt, and
+    since #4205 ops reads it rather than trusting npm's exit status -- which is
+    0 even when the registry was unreachable and nothing was installed. A fake
+    that returns 0 without writing it is a fake of the *broken* case.
+    """
+    if cwd:
+        node_modules = Path(cwd) / "node_modules"
+        node_modules.mkdir(parents=True, exist_ok=True)
+        (node_modules / ".package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+    return subprocess.CompletedProcess(cmd, 0)
 
 
 @pytest.mark.unit
@@ -5612,7 +5680,7 @@ def test_ensure_mcp_deps_install_succeeds(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda cmd, cwd=None, text=True, capture_output=True: subprocess.CompletedProcess(cmd, 0),
+        lambda cmd, cwd=None, **kwargs: _mcp_npm_success(cmd, cwd),
     )
 
     results = ops._ensure_mcp_deps()
@@ -5628,7 +5696,7 @@ def test_ensure_mcp_deps_install_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda cmd, cwd=None, text=True, capture_output=True: subprocess.CompletedProcess(
+        lambda cmd, cwd=None, **kwargs: subprocess.CompletedProcess(
             cmd, 1, stdout="", stderr="boom"
         ),
     )
@@ -5645,7 +5713,7 @@ def test_ensure_mcp_deps_install_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/npm")
 
-    def raise_run(cmd, cwd=None, text=True, capture_output=True):
+    def raise_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         raise OSError("boom")
 
     monkeypatch.setattr(ops.subprocess, "run", raise_run)
@@ -5665,9 +5733,9 @@ def test_ensure_mcp_deps_uses_npm_ci_when_lockfile_present(monkeypatch, tmp_path
 
     seen_cmd = []
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         seen_cmd.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+        return _mcp_npm_success(cmd, cwd)
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
 
@@ -5685,9 +5753,9 @@ def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path
 
     seen_cmd = []
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         seen_cmd.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+        return _mcp_npm_success(cmd, cwd)
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
 
@@ -13073,7 +13141,10 @@ def test_build_and_load_k8s_image_build_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_run", fake_run)
     results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert results[0].ok is False
-    assert "docker build failed" in results[0].message
+    # Names the image, like the other three build sites: all four now report
+    # through `_image_build_failure_result` (#4205), and "docker build failed"
+    # on a path that builds two images said nothing about which.
+    assert f"docker build {_K8S_API_IMAGE} failed" in results[0].message
 
 
 @pytest.mark.unit

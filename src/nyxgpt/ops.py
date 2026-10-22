@@ -1247,6 +1247,7 @@ class ImageBuildFailure(RuntimeError):
     """
 
     def __init__(self, image: str, detail: str, fetch: build_fetch_policy.FetchFailure | None):
+        """`detail` is the bounded excerpt to report; `fetch` the attribution, if any."""
         self.image = image
         self.detail = detail
         self.fetch = fetch
@@ -4572,11 +4573,18 @@ def _install_native_web_systemd() -> list[OpsResult]:
         # unreachable (#4205), so its exit status alone would let a staging
         # tree with no dependencies in it be renamed over the live build below
         # and the service restarted onto it. Check npm's own receipt.
-        incomplete = npm_args[0] in (
-            "ci",
-            "install",
-        ) and not build_fetch_policy.npm_tree_is_complete(staged_extracted)
-        if cp.returncode != 0 or incomplete:
+        # The silent case, and ONLY the silent case: npm exited 0 and did not
+        # write its completed-reify receipt. A non-zero exit carries npm's own
+        # reason, and the classifier reads that -- asserting the receipt there
+        # too would attribute every loud npm failure (a lockfile mismatch, a
+        # failed postinstall script) to the registry, which is the opposite of
+        # the point.
+        silently_incomplete = (
+            cp.returncode == 0
+            and npm_args[0] in ("ci", "install")
+            and not build_fetch_policy.npm_tree_is_complete(staged_extracted)
+        )
+        if cp.returncode != 0 or silently_incomplete:
             shutil.rmtree(staging_dir, ignore_errors=True)
             results.append(
                 _package_fetch_failure(
@@ -4585,7 +4593,7 @@ def _install_native_web_systemd() -> list[OpsResult]:
                     failure_message=f"{step_name} failed for nyxgpt-web",
                     extra_output=(
                         build_fetch_policy.incomplete_fetch_message(step_name, cp.returncode)
-                        if incomplete
+                        if silently_incomplete
                         else ""
                     ),
                 )

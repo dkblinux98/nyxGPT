@@ -9,10 +9,12 @@ means nothing answered it.
 
 What the reproduction actually showed
 -------------------------------------
-Captured deliberately on a Linux runner, 2026-10-21, with the recipe in
-``tests/fixtures/bounded_output/README.md`` -- ``docker build --network none
---target deps web/``, DNS confirmed dead (a ``dns.lookup`` in the same
-sandbox answers ``EAI_AGAIN``)::
+Captured deliberately on a Linux runner, 2026-10-21 -- ``docker build
+--network none --target deps web/``, DNS confirmed dead (a ``dns.lookup`` in
+the same sandbox answers ``EAI_AGAIN``). The capture is now a job rather than
+a recipe: ``scripts/image-build-fetch-policy-smoke.sh``, run by
+``.github/workflows/image-build-fetch-policy-smoke.yml``, injects the same
+condition on every change to this module or the Dockerfiles it governs::
 
     #8 [deps 4/4] RUN npm ci
     #8 141.1 npm error Exit handler never called!
@@ -368,6 +370,8 @@ def classify_failure(output: str | None) -> FetchFailure | None:
     if not output:
         return None
     for line in output.splitlines():
+        if _is_echoed_command(line):
+            continue
         for tool, label, pattern in _REACHABILITY_PATTERNS:
             match = pattern.search(line)
             if match is None:
@@ -378,6 +382,24 @@ def classify_failure(output: str | None) -> FetchFailure | None:
                 code = groups[0]
             return FetchFailure(tool=tool, code=code or "unnamed", evidence=line.strip())
     return None
+
+
+def _is_echoed_command(line: str) -> bool:
+    """Is this line a build step's *command*, rather than its output?
+
+    BuildKit prints each `RUN` instruction before running it, and then again
+    in the failure summary -- so a step whose shell contains
+    `echo "<marker>"` has the marker on three lines, only one of which is the
+    message actually printed. Matching the instruction echo attributes the
+    failure correctly but quotes the whole Dockerfile line as its "evidence",
+    which is noise where the point of carrying evidence is that an operator
+    can read it. Skip the echoes and keep the output.
+
+    Narrow on purpose: `echo "` immediately around a marker is a command, and
+    nothing else here is guessed at.
+    """
+    position = line.find(INCOMPLETE_FETCH_MARKER)
+    return position > 0 and 'echo "' in line[:position]
 
 
 #: What to tell the operator once a failure is attributed to reachability.
