@@ -850,16 +850,18 @@ Reports:
   Pods are running (#3989)
   ([kubernetes.md](kubernetes.md#install-modes-artifact-and---dev)).
 
-  The five data-flow lines after the readiness ones — traces, metrics, logs,
-  errors, and error-reporting credentials — are the ones that distinguish *the
-  tier is running* from *the tier is receiving*. They print here and not only
-  in the install's report because `ops status` is the command an operator runs
-  to ask whether the tier is working, and ten `1/1 ready` workloads with no
-  word about what any of them has received is exactly the state that reached
-  acceptance testing in #3990. They are skipped entirely when there is no
-  observability tier to ask. See [observability in the
-  cluster](kubernetes.md#observability-in-the-cluster) for what each line asks
-  and why the credential question has a line of its own.
+  The six data-flow lines after the readiness ones — traces, metrics, logs,
+  errors, what GlitchTip's worker *dead-lettered* on the way (`error
+  ingestion:`, #4208), and error-reporting credentials — are the ones that
+  distinguish *the tier is running* from *the tier is receiving*. They print
+  here and not only in the install's report because `ops status` is the
+  command an operator runs to ask whether the tier is working, and ten `1/1
+  ready` workloads with no word about what any of them has received is
+  exactly the state that reached acceptance testing in #3990. They are
+  skipped entirely when there is no observability tier to ask. See
+  [observability in the cluster](kubernetes.md#observability-in-the-cluster)
+  for what each line asks and why the credential question has a line of its
+  own.
 
   That section's **`Access:`** line says how the SRE UIs are reached *from
   this machine*, and it is read from the cluster rather than asserted

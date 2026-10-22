@@ -358,7 +358,12 @@ spec:
             # no Prometheus scrape job: prometheus.yaml has two static jobs
             # (nyxgpt-api, prometheus) and no Kubernetes service discovery, so
             # adding one would be a new moving part this defect does not need.
-            # `nyxgpt ops status` reads the same page through `kubectl exec`.
+            # `nyxgpt ops status` does NOT read this page: it asks the broker
+            # for queue depths (`redis-cli LLEN` in the glitchtip-redis Pod,
+            # `_k8s_error_ingestion_result`), because the question an operator
+            # asks -- what was dead-lettered -- is answerable from outside the
+            # Pod. The one thing that execs this page is k8s-local-smoke's 7e
+            # failure diagnostics, which print the probe's own verdict.
             - name: metrics
               containerPort: 9090
           env:
