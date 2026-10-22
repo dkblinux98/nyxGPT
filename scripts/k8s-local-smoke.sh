@@ -970,8 +970,28 @@ if [ -z "$found" ]; then
     echo "--- GlitchTip's issue list for org nyxgpt (looking for ${ERROR_MARKER}) ---" >&2
     printf '%s\n' "${issues:-<no response>}" | head -c 4000 >&2
     echo >&2
-    fail "the api accepted the error but GlitchTip never received it -- the DSN does not \
-resolve to the in-cluster GlitchTip (#3565's failure mode, in Kubernetes)"
+    # There is a THIRD candidate subject, and until #4208 this step did not
+    # name it: GlitchTip received the event and its worker never turned it
+    # into an issue. That is what run 39679850907 actually was -- the worker
+    # Pod read `1/1 Running` with 0 restarts while its consumer processed none
+    # of 400 scheduled tasks -- and reading the failure as the DSN is what
+    # sent #4182 to raise this loop's deadline from 120s to 240s on a worker
+    # with nothing in flight. The worker is now Ready only while it consumes,
+    # so the rollout wait upstream of here should catch that first; print the
+    # evidence anyway, because a verdict with no evidence is how one defect
+    # gets diagnosed three times.
+    echo "--- the worker's own verdict on whether it is consuming ---" >&2
+    kubectl -n "$NAMESPACE" get pods -l app=glitchtip-worker >&2 2>&1 || true
+    kubectl -n "$NAMESPACE" exec deploy/glitchtip-worker -- \
+        python /etc/nyxgpt/probes/glitchtip-worker-ready.py >&2 2>&1 || true
+    for key in '{vt}:q:ingest' '{vt}:q:failed'; do
+        printf '%s depth: %s\n' "$key" \
+            "$(kubectl -n "$NAMESPACE" exec deploy/glitchtip-redis -- \
+                redis-cli LLEN "$key" 2>&1 || echo '<unavailable>')" >&2
+    done
+    fail "the api accepted the error but GlitchTip never received it, OR its worker never \
+ingested what GlitchTip received -- the three subjects are the api's DSN (#3565's failure \
+mode, in Kubernetes), GlitchTip's own ingest, and the worker above (#4208)"
 fi
 ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
 
@@ -984,7 +1004,11 @@ ok "an error raised in the cluster arrived in the in-cluster GlitchTip"
 nyxgpt ops status >/tmp/k8s-smoke-status-flow.txt 2>&1 ||
     fail "nyxgpt ops status failed"
 sed -n '/Kubernetes observability/,/^$/p' /tmp/k8s-smoke-status-flow.txt
-for line in "traces:" "metrics:" "logs:" "errors:" "error reporting credentials:"; do
+# `error ingestion:` is the sixth since #4208: a worker that is up and
+# consuming can still FAIL every ingest task, and before that line the only
+# record of it was `redis-cli` inside the broker Pod.
+for line in "traces:" "metrics:" "logs:" "errors:" "error ingestion:" \
+    "error reporting credentials:"; do
     grep -q "\\] ${line}" /tmp/k8s-smoke-status-flow.txt ||
         fail "nyxgpt ops status does not report '${line}' -- the data-flow lines are \
 install-only again (#3990 AC5)"

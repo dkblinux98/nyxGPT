@@ -129,6 +129,17 @@ native-edges-only
 # jobs are green by luck on this path. A red one means either the silent
 # failure is back or the attribution broke, and both are the defect.
 image-build-fetch-policy-smoke
+# glitchtip-worker-smoke.yml (#4208). Required. It is the executed evidence
+# that `glitchtip-worker` is Ready only while its consumer consumes, and it is
+# fault-injected in both directions: the run FAILS unless the start-up wedge
+# reproduces, unless the heartbeat probe this repo shipped until #4208 calls
+# that wedged worker healthy, and unless the new probe calls it broken. A
+# green that proves nothing is the failure mode it exists to prevent -- the
+# race is between two containers coming up, so a fast runner hides it, which
+# is how the defect reached acceptance twice. A red one means either the
+# start-up gate or the probe is gone, and the half-dead state is invisible
+# again.
+glitchtip-worker is Ready only when consuming
 k3s-cloud-smoke
 k8s-artifact-smoke
 k8s-capacity-smoke

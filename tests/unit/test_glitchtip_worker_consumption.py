@@ -55,11 +55,27 @@ def _probe_module() -> ModuleType:
     `src/nyxgpt/resources/k8s`, and a legal module name there would be
     collected as `nyxgpt.resources.k8s.observability.<name>` by setuptools'
     namespace-package discovery.
+
+    Bytecode writing is suppressed so this does not leave a `__pycache__`
+    inside `src/nyxgpt/resources/` -- a test should not add files to the
+    packaged tree. It is NOT what keeps that `.pyc` out of the wheel: builds
+    were compared with and without the directory present and setuptools
+    byte-compiles the probe during `build_py` either way, because
+    `k8s/observability/` is discovered as a namespace package and anything
+    ending `.py` inside one is a module to compile. No
+    `exclude-package-data` entry can suppress that (it applies to data files,
+    not compiled modules), and the resulting ~2KB `.pyc` is inert: the
+    hyphenated name is not importable, so nothing can ever load it.
     """
     spec = importlib.util.spec_from_file_location("glitchtip_worker_ready", PROBE_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 
@@ -431,10 +447,13 @@ def test_every_long_running_compose_service_can_be_asked_if_it_is_working() -> N
 # Every one of these answers on a port, and its probe asks it on that port --
 # which for a request-serving workload IS the job, unlike a worker whose job
 # leaves no trace on any socket.
-K8S_READINESS_WAIVERS = {
-    "cassandra": "readiness is a cqlsh/tcp check on the CQL port it exists to serve",
-    "ollama": "readiness is a tcp check on the inference port it exists to serve",
-}
+# Empty, and that is the finding: with glitchtip-worker fixed, every
+# Deployment, StatefulSet and DaemonSet in `k8s/` declares a readiness probe,
+# so there is nothing left to excuse. The dict stays because the next workload
+# added here may have a real reason -- in which case it is written down with
+# the reason, the way COMPOSE_HEALTHCHECK_WAIVERS above is, rather than the
+# probe quietly being left off.
+K8S_READINESS_WAIVERS: dict[str, str] = {}
 
 
 def test_every_k8s_workload_declares_a_readiness_probe() -> None:
