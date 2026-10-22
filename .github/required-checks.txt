@@ -71,16 +71,24 @@ validate-web
 test
 determinism
 web
-# web-gate-smoke.yml (#4209). Both required, and path-filtered to the gate's
-# own surface so they are absent -- and free -- on essentially every PR. The
-# first plants a failing web test and then an uncovered branch in the real
-# suite and requires the real command to fail on each, then requires it to
-# pass with the branch covered; the second reverts `ci-tests.yml` to its
+# web-gate-smoke.yml (#4209). All three required, and path-filtered to the
+# gate's own surface so they are absent -- and free -- on essentially every
+# PR. The first plants a failing web test and then an uncovered branch in the
+# real suite and requires the real command to fail on each, then requires it
+# to pass with the branch covered; the second reverts `ci-tests.yml` to its
 # push-only shape and requires the tree-wide guard to fail. A red one means
 # the 100% coverage gate is back to being declared and not evaluated, which is
 # the state v3.0.1 was in for the whole of its life before this.
+#
+# The third is the other direction, from this issue's review round: a gate
+# that now runs on a PR head is a gate that can be red for the WRONG reason.
+# It deletes a real web file and a real test file and requires the raw tools
+# to be red on those paths and the two blocking steps to be green on the same
+# diff -- so a PR that removes an admin screen (#3803, #3804 and #3805 each
+# did) is not handed a failure its change does not have.
 the-web-gate-blocks-a-regression
 the-gate-guards-are-not-vacuous
+a-deleted-file-does-not-redden-the-gate
 
 # Smoke jobs. These are this project's executed-verification evidence (D-006);
 # a red one is a real defect on the head, which is precisely what the developer

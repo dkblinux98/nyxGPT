@@ -12,8 +12,8 @@ name: Web Gate Smoke
 # the release branch for long enough that no merge could be blamed for it, and
 # #4207 shipped two failing web tests through a green PR.
 #
-# A gate repaired by inspection is a gate nobody has run. These two jobs are
-# the executed evidence (D-006), each proven in BOTH directions:
+# A gate repaired by inspection is a gate nobody has run. These jobs are the
+# executed evidence (D-006), each proven in BOTH directions:
 #
 #   the-web-gate-blocks-a-regression  plants a real regression in the real
 #     suite and requires the real command to fail, then requires the same
@@ -23,6 +23,12 @@ name: Web Gate Smoke
 #   the-gate-guards-are-not-vacuous   runs the tree-wide guard, then reverts
 #     `ci-tests.yml` to its pre-#4209 shape in the working tree and requires
 #     the guard to FAIL. A guard that cannot fail is the defect it polices.
+#
+#   a-deleted-file-does-not-redden-the-gate   deletes a real web file and a
+#     real test file and requires the two blocking steps to be GREEN, after
+#     first requiring the raw tools to be RED on the same paths -- the #4209
+#     review finding, whose failure mode is a required check red for a file
+#     the PR removed.
 #
 # Path-filtered to the gate's own surface, so it is absent -- and free -- on
 # essentially every PR (`.github/required-checks.txt`: absent is not pending).
@@ -37,20 +43,28 @@ on:
       - '.github/workflows/web-gate-smoke.yml'
       - '.github/required-checks.txt'
       - 'scripts/ci/diff_scope.py'
+      - 'scripts/ci/select_web_lint_files.py'
+      - 'scripts/ci/select_tests.py'
       - 'web/vitest.config.ts'
       - 'web/package.json'
       - 'tests/unit/test_diff_scope.py'
       - 'tests/unit/test_blocking_gates_reach_pull_requests.py'
+      - 'tests/unit/test_select_web_lint_files.py'
+      - 'tests/unit/test_select_tests.py'
   push:
     paths:
       - '.github/workflows/ci-tests.yml'
       - '.github/workflows/web-gate-smoke.yml'
       - '.github/required-checks.txt'
       - 'scripts/ci/diff_scope.py'
+      - 'scripts/ci/select_web_lint_files.py'
+      - 'scripts/ci/select_tests.py'
       - 'web/vitest.config.ts'
       - 'web/package.json'
       - 'tests/unit/test_diff_scope.py'
       - 'tests/unit/test_blocking_gates_reach_pull_requests.py'
+      - 'tests/unit/test_select_web_lint_files.py'
+      - 'tests/unit/test_select_tests.py'
 
 jobs:
   the-web-gate-blocks-a-regression:
@@ -298,5 +312,169 @@ jobs:
           if [[ -n "$(git status --porcelain)" ]]; then
             git status --porcelain
             echo "::error::fault injection left changes in the working tree"
+            exit 1
+          fi
+
+  # The #4209 REVIEW finding, and the same class one turn further on: the gate
+  # was fixed to run on a PR head, and a gate that runs is a gate that can be
+  # red for the wrong reason. A diff path is a statement about HISTORY; argv is
+  # a statement about the CHECKOUT, and a deletion satisfies the first and not
+  # the second. `eslint web/src/app/gone.tsx` exits 2 on an unmatched pattern
+  # and `pytest tests/unit/test_gone.py` exits 4 having run nothing -- both now
+  # a red REQUIRED check handed to the author who did the deleting. This repo
+  # removes web files routinely (#3803, #3804 and #3805 each deleted an admin
+  # screen), so the first such PR after #4209 would have hit it.
+  #
+  # Both halves, on real tracked files: the raw tools must be RED on the
+  # deleted paths (or the filter is proving nothing), and the two blocking
+  # steps must be GREEN on the same diff.
+  a-deleted-file-does-not-redden-the-gate:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # `pip install -e .` and not just pytest: these suites load the ROOT
+      # tests/conftest.py, which imports tests/log_guard.py, which imports
+      # psutil. Without the package pytest exits 4 at COLLECTION -- the same
+      # exit code this job is measuring, which would make it unreadable
+      # (#4192).
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          cd web && npm ci
+
+      # A real deletion of a real tracked file, plus a real surviving edit.
+      # The survivor matters: the fix must not degenerate into "a deletion
+      # anywhere disables the lint", and a screen removal almost always edits
+      # its neighbours in the same commit.
+      - name: Delete a web file and a test file, as a real PR would
+        id: plant
+        run: |
+          set -euo pipefail
+          DELETED_WEB=$(git ls-files web/src | grep '\.tsx$' | head -1)
+          DELETED_TEST=$(git ls-files tests/unit | grep -E '/test_[^/]*\.py$' | head -1)
+          if [[ -z "$DELETED_WEB" || -z "$DELETED_TEST" ]]; then
+            echo "::error::no tracked file to delete -- this job would be vacuous"
+            exit 1
+          fi
+          git rm -q "$DELETED_WEB" "$DELETED_TEST"
+          mkdir -p web/src/lib
+          cat > web/src/lib/__survivor_probe.ts <<'SURVIVOR'
+          // Planted by .github/workflows/web-gate-smoke.yml and removed in the
+          // same job. This is the file that SURVIVES the deletion and must
+          // still be linted.
+          export const survivorProbe = (): string => 'still here';
+          SURVIVOR
+          {
+            echo "deleted_web=$DELETED_WEB"
+            echo "deleted_test=$DELETED_TEST"
+          } >> "$GITHUB_OUTPUT"
+          echo "deleted $DELETED_WEB and $DELETED_TEST"
+
+      # HALF 1. Without a filter the blocking steps hand these paths straight
+      # to the tools, so this is the red the fix removes. If either tool is
+      # happy with a path that is not there, the filter is unnecessary and the
+      # green below means nothing.
+      - name: The raw tools are RED on a path that no longer exists
+        env:
+          DELETED_WEB: ${{ steps.plant.outputs.deleted_web }}
+          DELETED_TEST: ${{ steps.plant.outputs.deleted_test }}
+        run: |
+          set -euo pipefail
+          if (cd web && npx eslint "${DELETED_WEB#web/}") > /tmp/eslint-gone.log 2>&1; then
+            cat /tmp/eslint-gone.log
+            echo "::error::eslint accepted a deleted path -- the filter under test \
+          is unnecessary and the proof below would be vacuous"
+            exit 1
+          fi
+          cat /tmp/eslint-gone.log
+          grep -qi "No files matching the pattern" /tmp/eslint-gone.log \
+            || { echo "::error::eslint failed for some reason other than the \
+          missing file -- this job proves nothing"; exit 1; }
+
+          if pytest -q -p no:cacheprovider --collect-only "$DELETED_TEST" \
+               > /tmp/pytest-gone.log 2>&1; then
+            cat /tmp/pytest-gone.log
+            echo "::error::pytest accepted a deleted path -- the filter under test \
+          is unnecessary and the proof below would be vacuous"
+            exit 1
+          fi
+          tail -5 /tmp/pytest-gone.log
+          grep -qi "file or directory not found" /tmp/pytest-gone.log \
+            || { echo "::error::pytest failed for some reason other than the \
+          missing file -- this job proves nothing"; exit 1; }
+          echo "both tools are red on a deleted path, as this fix assumes"
+
+      # HALF 2, run the way the workflow runs it: the blocking eslint step's
+      # own body, against a diff that deletes one web file and adds another.
+      - name: The blocking eslint step is GREEN on that same diff
+        env:
+          DELETED_WEB: ${{ steps.plant.outputs.deleted_web }}
+        run: |
+          set -euo pipefail
+          CHANGED=$(printf '%s\n%s\n' "$DELETED_WEB" "web/src/lib/__survivor_probe.ts")
+          FILES=$(printf '%s\n' "$CHANGED" | python3 scripts/ci/select_web_lint_files.py)
+          echo "selected: ${FILES:-(none)}"
+          if [[ -z "$FILES" ]]; then
+            echo "::error::the survivor was dropped too -- a deletion must not \
+          disable the lint for the files the same commit edited"
+            exit 1
+          fi
+          if printf '%s\n' "$FILES" | grep -qxF "${DELETED_WEB#web/}"; then
+            echo "::error::the deleted file is still in eslint's argv"
+            exit 1
+          fi
+          # shellcheck disable=SC2086  # intentional split: one argv per file
+          (cd web && npx eslint $FILES)
+          echo "the blocking eslint step is green on a diff that deletes a web file"
+
+      - name: The blocking pytest selection is GREEN on that same diff
+        env:
+          DELETED_TEST: ${{ steps.plant.outputs.deleted_test }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/select_tests.py --files "$DELETED_TEST" --github-output \
+            > /tmp/selection.txt
+          cat /tmp/selection.txt
+          PYTEST_ARGS=$(sed -n 's/^pytest_args=//p' /tmp/selection.txt)
+          if [[ -z "$PYTEST_ARGS" ]]; then
+            echo "::error::a delete-only diff selected nothing -- the floor must still run"
+            exit 1
+          fi
+          # shellcheck disable=SC2086  # intentional split: one line per path
+          if printf '%s\n' $PYTEST_ARGS | grep -qxF "$DELETED_TEST"; then
+            echo "::error::the deleted test is still in pytest's argv"
+            exit 1
+          fi
+          # shellcheck disable=SC2086  # intentional split: one argv per path
+          pytest -q -p no:cacheprovider --collect-only $PYTEST_ARGS > /dev/null
+          echo "the blocking pytest step is green on a diff that deletes a test file"
+
+      - name: Restore the tree and prove it is clean
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f web/src/lib/__survivor_probe.ts
+          git reset -q
+          git checkout -q -- .
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git status --porcelain
+            echo "::error::the smoke job left changes in the working tree"
             exit 1
           fi

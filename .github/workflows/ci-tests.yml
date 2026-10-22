@@ -63,6 +63,10 @@ jobs:
         env:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # GITHUB_SHA on a pull_request is the synthesised MERGE commit,
+          # whose first parent is the base tip -- so a merge-base against it
+          # returns base.sha itself. The head is the real subject (#4209).
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/diff_scope.py --github-output >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
@@ -149,6 +153,10 @@ jobs:
         env:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # GITHUB_SHA on a pull_request is the synthesised MERGE commit,
+          # whose first parent is the base tip -- so a merge-base against it
+          # returns base.sha itself. The head is the real subject (#4209).
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/diff_scope.py --github-output >> "$GITHUB_OUTPUT"
 
       # Self-gating on the diff rather than a workflow-level `paths:` filter,
@@ -277,6 +285,10 @@ jobs:
         env:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # GITHUB_SHA on a pull_request is the synthesised MERGE commit,
+          # whose first parent is the base tip -- so a merge-base against it
+          # returns base.sha itself. The head is the real subject (#4209).
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/diff_scope.py --github-output >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js

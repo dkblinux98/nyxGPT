@@ -357,3 +357,95 @@ def test_the_module_runs_end_to_end_against_this_repository() -> None:
     scope = diff_scope.resolve("pull_request", push_before=None, pr_base=base, head=head)
     assert scope.identified is True
     assert scope.base is not None
+
+
+# --------------------------------------------------------------------------
+# head_sha: what the diff is measured TO (#4209 review)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("event", ["pull_request", "pull_request_target"])
+def test_a_pull_request_measures_from_its_head_not_the_merge_commit(event: str) -> None:
+    """`GITHUB_SHA` on these events is the merge commit GitHub synthesises.
+
+    Its FIRST PARENT is the base branch tip, so `base.sha` is an ancestor of
+    it and `git merge-base base.sha $GITHUB_SHA` returns `base.sha` itself --
+    every time. The merge-base property the module documents, and that
+    `test_a_pull_request_diffs_from_the_merge_base_not_the_base_tip` asserts,
+    then holds against the fake and never in production.
+    """
+    git = FakeGit(known=[HEAD])
+    assert diff_scope.head_sha(event, pr_head=HEAD, github_sha=MERGE_BASE, git=git) == HEAD
+
+
+def test_a_push_measures_from_github_sha() -> None:
+    """A push has no second shape: `GITHUB_SHA` is the commit that was pushed."""
+    git = FakeGit(known=[HEAD, PR_BASE])
+    assert diff_scope.head_sha("push", pr_head=PR_BASE, github_sha=HEAD, git=git) == HEAD
+
+
+def test_a_pull_request_falls_back_to_github_sha_when_the_head_is_unfetched() -> None:
+    """A shallow or single-branch fetch can leave the head commit absent.
+
+    The merge commit is a worse subject than the head and a much better one
+    than no subject at all -- the same "wrong costs minutes, never silence"
+    direction as `base_sha`.
+    """
+    git = FakeGit(known=[MERGE_BASE])
+    assert (
+        diff_scope.head_sha("pull_request", pr_head=HEAD, github_sha=MERGE_BASE, git=git)
+        == MERGE_BASE
+    )
+
+
+def test_an_absent_pr_head_is_not_consulted() -> None:
+    """`github.event.pull_request.head.sha` is "" on a push."""
+    git = FakeGit(known=[HEAD])
+    assert diff_scope.head_sha("pull_request", pr_head=None, github_sha=HEAD, git=git) == HEAD
+    assert diff_scope.head_sha("pull_request", pr_head="", github_sha=HEAD, git=git) == HEAD
+
+
+# --------------------------------------------------------------------------
+# still_exists: a diff path is history, argv is the checkout (#4209 review)
+# --------------------------------------------------------------------------
+
+
+def test_a_path_in_the_checkout_still_exists(tmp_path: Path) -> None:
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "a.ts").write_text("", encoding="utf-8")
+    assert diff_scope.still_exists("web/a.ts", root=tmp_path) is True
+
+
+def test_a_deleted_path_does_not(tmp_path: Path) -> None:
+    """The finding in one line: eslint exits 2 and pytest exits 4 on these."""
+    assert diff_scope.still_exists("web/gone.tsx", root=tmp_path) is False
+
+
+def test_a_directory_does_not_count_as_a_file(tmp_path: Path) -> None:
+    """`is_file()`, not `exists()`.
+
+    eslint handed a directory lints it recursively, which on `web/src` is the
+    standing debt the blocking step exists to NOT block on (#3940).
+    """
+    (tmp_path / "web" / "src").mkdir(parents=True)
+    assert diff_scope.still_exists("web/src", root=tmp_path) is False
+
+
+def test_existing_preserves_order_and_drops_only_the_missing(tmp_path: Path) -> None:
+    for name in ("b.ts", "a.ts"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    assert diff_scope.existing(["b.ts", "gone.ts", "a.ts"], root=tmp_path) == ["b.ts", "a.ts"]
+
+
+def test_a_deletion_stays_in_the_scope_that_chooses_the_gates() -> None:
+    """The filter belongs at the consumers and NOT in `Scope.changed`.
+
+    Deleting a web page moves coverage and behavior: the web gates must still
+    run on the tree without it, and the whole unit suite must still run for a
+    removed `src/` module. Filtering the diff itself would turn a deletion
+    into a change nothing measured -- trading a loud wrong red for a silent
+    wrong green, which is the worse half of this issue's own class.
+    """
+    scope = _scope(["web/src/app/admin/aws/page.tsx"])  # deleted by the PR
+    assert (scope.web, scope.full_suite) == (True, True)
+    assert "web/src/app/admin/aws/page.tsx" in scope.changed

@@ -38,6 +38,12 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+
+#: Where a repo-relative diff path is resolved from. The CI steps all run from
+#: the repo root, but resolving against the cwd is the kind of assumption that
+#: is silently wrong exactly once.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: The events this module understands, and where each one keeps its base.
 #: `pull_request_target` is included because it reports against the PR the same
@@ -138,6 +144,9 @@ def base_sha(
     which is the base branch tip as of the last synchronize and therefore
     carries every commit the base branch gained since, attributing other
     people's merges to this PR's diff.
+
+    That property depends on `head` being the PR head rather than the merge
+    commit GitHub puts in `GITHUB_SHA`; see `head_sha`.
     """
     if event_name in PULL_REQUEST_EVENTS:
         if not commit_exists(pr_base, git):
@@ -158,6 +167,71 @@ def base_sha(
     # workflow_dispatch, schedule, issue_comment, ... -- no predecessor is
     # implied by the event, so nothing is scoped away.
     return None
+
+
+def head_sha(
+    event_name: str,
+    *,
+    pr_head: str | None,
+    github_sha: str,
+    git: GitRunner = _git,
+) -> str:
+    """The commit whose content this run is measuring.
+
+    On a `push` that is `GITHUB_SHA`. On a pull request `GITHUB_SHA` is the
+    *merge* commit GitHub synthesises for the event, whose first parent is the
+    base branch tip -- so `base.sha` is an ancestor of it and
+    `git merge-base base.sha $GITHUB_SHA` returns `base.sha` itself, every
+    time. The merge-base property `base_sha` documents then holds against a
+    fake git and never in production. Measuring from the PR head instead makes
+    the documented behavior the real one: the diff is this PR's own commits and
+    nobody else's merges.
+
+    Falls back to `GITHUB_SHA` when the head commit is not in the checkout --
+    a shallow or single-branch fetch can leave it unreachable, and the merge
+    commit is a worse subject than the head and a much better one than nothing.
+    """
+    if event_name in PULL_REQUEST_EVENTS and commit_exists(pr_head, git):
+        assert pr_head is not None  # narrowed by commit_exists
+        return pr_head
+    return github_sha
+
+
+def still_exists(path: str, *, root: Path = REPO_ROOT) -> bool:
+    """Does this diff path still name a file in the checkout?
+
+    A diff is a statement about history, and a **deletion is part of it**:
+    removing a `web/` page moves coverage and behavior, so `Scope.changed`
+    keeps deleted paths and the `web` / `python` / `full_suite` decisions must
+    keep counting them. What cannot survive the deletion is handing the path to
+    a tool as an *argument*:
+
+    * `eslint web/src/app/gone.tsx` exits 2 -- "No files matching the pattern
+      ... were found" (`--error-on-unmatched-pattern` defaults to true);
+    * `pytest tests/unit/test_gone.py` exits 4 -- "file or directory not
+      found", having run nothing.
+
+    Either way the gate is red for something that is not the change, which is
+    the precise defect #4209 exists to remove -- and now that these gates block
+    a PR head, that red is handed back to an author whose PR does not have it.
+    Deleting files is routine here: #3803, #3804 and #3805 each removed an
+    admin screen.
+
+    So deletions stay in the diff, and every consumer that turns a diff path
+    into an argv entry filters through this one predicate. Two consumers
+    correcting it separately would be two places for the next divergence
+    (CLAUDE.md, "one source per decision").
+
+    `is_file()` and not `exists()`: git never names a directory in
+    `--name-only`, but eslint handed one lints it recursively, which on
+    `web/src` is the standing debt the blocking step exists to not block on.
+    """
+    return (root / path).is_file()
+
+
+def existing(paths: Iterable[str], *, root: Path = REPO_ROOT) -> list[str]:
+    """`paths`, in order, minus the ones this checkout no longer has."""
+    return [path for path in paths if still_exists(path, root=root)]
 
 
 def changed_paths(base: str, head: str, git: GitRunner = _git) -> tuple[str, ...]:
@@ -214,7 +288,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-    head = os.environ.get("GITHUB_SHA", "HEAD")
+    head = head_sha(
+        event_name,
+        pr_head=os.environ.get("PR_HEAD_SHA"),
+        github_sha=os.environ.get("GITHUB_SHA", "HEAD"),
+    )
     scope = resolve(
         event_name,
         push_before=os.environ.get("PUSH_BEFORE_SHA"),
