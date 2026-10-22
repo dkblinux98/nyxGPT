@@ -2017,6 +2017,205 @@ describe('InfrastructurePage', () => {
     ).toBeInTheDocument();
   });
 
+  // #4181's declined-consent arm, and the two it reaches (#4209). A declined
+  // disclosure is the one deploy outcome that creates nothing, so it is NOT
+  // counted as an unfinished deploy -- which puts it in the `!known` branch
+  // with "unknown from this machine", where it would be swallowed entirely if
+  // this sentence did not say it. No fixture sent `status: 'declined'`, so the
+  // arm and both halves of its phase fallback were uncovered.
+  it('says a declined deploy was declined rather than swallowing it as unknown (#4181)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          attempt: { status: 'declined', phase: 'disclosure' },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DECLINED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('disclosure')).toBeInTheDocument();
+    expect(
+      screen.getByText(/nothing was created and nothing is billed/)
+    ).toBeInTheDocument();
+    // Still UNKNOWN: a declined consent here says nothing about whether
+    // another operator's machine has a deployment.
+    expect(screen.getAllByText('UNKNOWN').length).toBeGreaterThan(0);
+  });
+
+  it('names the phase as unknown rather than blank when a declined attempt records none', async () => {
+    // `phase: ''` is what an attempt declined before the phase was stamped
+    // records. `<code></code>` would render an empty inline box the operator
+    // cannot interpret.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          attempt: { status: 'declined', phase: '' },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DECLINED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('unknown')).toBeInTheDocument();
+  });
+
+  // The other half of #4181's billing split: the substrate observation, as
+  // opposed to a mac host's. Both arms of that ternary print a provenance and
+  // only the mac one was ever rendered, so the page could have been printing
+  // the wrong machine's evidence for the billing claim and nothing would have
+  // failed.
+  it('attributes the billing confirmation to the substrate observation when there is no mac host', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          instance_id: 'i-0abc123def',
+          mac_host: null,
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            provisioned: true,
+            instance_id: 'i-0abc123def',
+            observation: {
+              confirmed: true,
+              confirmed_at: '2026-10-21T00:00:00Z',
+              present: true,
+              coherent: true,
+              usable: true,
+              findings: [],
+              reason: '',
+              profile: 'nyxgpt',
+              account_id: '000000000000',
+              account_label: 'nyxgpt (000000000000)',
+              provenance: 'confirmed at AWS in this run via profile `nyxgpt`',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/An instance exists and is being billed/)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/confirmed at AWS in this run via profile `nyxgpt`/)
+    ).toBeInTheDocument();
+    // The honest-but-unactionable wording belongs to the other arm.
+    expect(screen.queryByText(/nothing confirmed it at AWS in this run/)).toBeNull();
+  });
+
+  it('still names a command when the api sends no command table', async () => {
+    // Operational Command Wrapping (owner requirement): the card must point at
+    // a `nyxgpt` command. An older api, or one that could not build the table,
+    // sends none -- and the fallback literal is what keeps the page from
+    // rendering an empty `<code>` where the operator's next step should be.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          instance_id: 'i-0abc123def',
+          commands: {},
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            provisioned: true,
+            instance_id: 'i-0abc123def',
+            observation: {
+              confirmed: false,
+              confirmed_at: '',
+              present: null,
+              coherent: true,
+              usable: false,
+              findings: [],
+              reason: 'AWS could not be asked: ExpiredToken',
+              profile: '',
+              account_id: '',
+              account_label: 'not recorded here',
+              provenance: 'recorded on this machine; NOT confirmed at AWS',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/nothing confirmed it at AWS in this run/)).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('nyxgpt cloud status').length).toBeGreaterThan(0);
+  });
+
+  // #4184's pair on this page: an operator reading a NOT IN SCOPE badge is
+  // owed the reason the card is out of scope, and this line is that reason.
+  // The Self-Heal page and the System Health card carry the same pair from the
+  // same API fields, and all three were uncovered at 99.38% (#4209).
+  describe('which deployment the scoped cards are scoped for (#4184)', () => {
+    async function substrateLine(): Promise<HTMLElement> {
+      return await screen.findByText(/^Substrate:/, { selector: 'p' });
+    }
+
+    it('names the substrate and how it was decided', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({
+            ...mockStatusEmpty,
+            substrate: 'native',
+            substrate_source: 'brew services answered',
+          })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      expect((await substrateLine()).textContent).toBe(
+        'Substrate: native — brew services answered'
+      );
+    });
+
+    it('names the substrate alone when nothing said how it was decided', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({ ...mockStatusEmpty, substrate: 'native' })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      expect((await substrateLine()).textContent).toBe('Substrate: native');
+    });
+
+    it('says nothing when no deployment answered', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/^Substrate:/, { selector: 'p' })).toBeNull();
+    });
+  });
+
   it('shows IMDS-derived substrate facts when the dashboard is running on the EC2 instance (#3804)', async () => {
     // The owner's rc12 observation: served *from* the provisioned instance,
     // the page used to read "not provisioned" with every field blank because
@@ -3229,7 +3428,12 @@ describe('InfrastructurePage', () => {
   // is nothing but branches: every Row picks between two strings. CI's 100%
   // coverage gate caught it only once an unrelated merge touched `web/`, because
   // the `web` job is conditional on the diff -- so the gap sat in the tree while
-  // several runs reported green with that job skipped.
+  // several runs reported green with that job skipped. #4209 fixed the larger
+  // half of that: the job ran only on PUSHES to the release branch and never on
+  // a PR head, so the gate could not block the change that broke it, and the
+  // red build landed on whoever touched `web/` next. The diff condition itself
+  // stands and is correct -- a change that touches no web file cannot move web
+  // coverage.
   //
   // These cover both sides of each branch the panel owns, because the panel's
   // whole job is to say which of two true-but-different things is the case: a

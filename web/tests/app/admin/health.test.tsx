@@ -226,6 +226,60 @@ describe('AdminHealthPage', () => {
       });
     });
 
+    // #4184's pair -- which deployment the rows are about, and how that was
+    // decided -- is carried identically by this card, the Self-Heal page and
+    // the Infrastructure page. No fixture in any of the three sent
+    // `substrate`, so all three copies of the pair were uncovered branches at
+    // 99.38% (#4209): a NOT IN SCOPE badge with no reason beside it is
+    // exactly the "wrong when printed" state #4184 was filed about, and
+    // nothing would have failed if the line stopped rendering.
+    describe('which deployment these rows are about (#4184)', () => {
+      it('names the substrate and how it was decided', async () => {
+        server.use(
+          http.get('/api/v1/self-heal/status', () =>
+            HttpResponse.json({
+              ...healthySelfHealStatus,
+              substrate: 'kubernetes',
+              substrate_source: 'kubectl answered',
+            })
+          )
+        );
+
+        render(<AdminHealthPage />);
+        await waitFor(() => {
+          expect(screen.getByText('kubernetes')).toBeInTheDocument();
+        });
+        expect(screen.getByText(/-- kubectl answered/)).toBeInTheDocument();
+      });
+
+      it('names the substrate alone when nothing said how it was decided', async () => {
+        server.use(
+          http.get('/api/v1/self-heal/status', () =>
+            HttpResponse.json({ ...healthySelfHealStatus, substrate: 'compose' })
+          )
+        );
+
+        render(<AdminHealthPage />);
+        await waitFor(() => {
+          expect(screen.getByText('compose')).toBeInTheDocument();
+        });
+        // Not " -- undefined", and not a dangling separator.
+        expect(screen.queryByText(/--\s*$/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+      });
+
+      it('says nothing at all when no deployment answered', async () => {
+        // The default fixture sends no `substrate`: on a box with no
+        // deployment the rows are their own explanation, and inventing a
+        // substrate line would be the claim this card must not make.
+        render(<AdminHealthPage />);
+        await waitFor(() => {
+          expect(screen.getByText('All components healthy')).toBeInTheDocument();
+        });
+        expect(screen.queryByText(/^Substrate:/)).not.toBeInTheDocument();
+      });
+    });
+
     it('still reports a genuinely unhealthy component while others are undetermined', async () => {
       server.use(
         http.get('/api/v1/self-heal/status', () =>
