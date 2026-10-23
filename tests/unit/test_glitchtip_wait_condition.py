@@ -25,12 +25,30 @@ functions out of the script -- never a copy -- against a stub ``kubectl`` in
 each of them:
 
 1. the issue appears while the worker is consuming  -> pass
-2. the worker schedules and consumes nothing        -> fail fast, "not the DSN"
-3. the worker consumes and the issue never arrives  -> fail, "did not reach"
+2. the worker's probe says its consumer stopped     -> fail fast, "not the DSN"
+3. the worker is consuming and no issue arrives     -> fail, "did not reach"
 
 Direction 2 is the one that matters: it is the state the release branch was
 actually in, and the retired form could only reach it by spending its whole
 budget and then misnaming it.
+
+Who answers "is the worker consuming?" changed when #4208 landed on the
+release branch, and this round's merge carries the wait into it rather than
+keeping its own answer. #4208 established the mechanism -- vtasks' ``runworker``
+awaits neither its scheduler nor its consumer task, so a dead consumer leaves
+the process up -- and shipped ``k8s/observability/glitchtip-worker-ready.py``,
+which asks the consumer itself through the ``vtasks_*`` metrics and is what the
+manifest's readiness and liveness probes run. The wait now asks that same
+probe, in the same spelling. The log-line count it replaces was a second copy
+of one decision (D-066) and the weaker one: it read a log format, and it could
+not tell "the consumer loop has never run" from "it ran and stopped" -- the
+distinction the probe's two questions are.
+
+A fourth direction exists because of that merge, and it is a direction the
+counting form could not have: the probe may be *unaskable* (the Pod is not
+there yet, the api-server hiccups). "I could not ask" must not be recorded as
+"the answer is no" -- that is this issue's class pointed the other way -- so
+``unknown`` keeps the wait waiting.
 """
 
 from __future__ import annotations
@@ -50,9 +68,14 @@ SMOKE = REPO_ROOT / "scripts" / "k8s-local-smoke.sh"
 #: The functions under test, lifted from the shipped script.
 LIFTED = (
     "glitchtip_queue_depth",
-    "glitchtip_worker_counts",
+    "glitchtip_worker_verdict",
     "wait_for_glitchtip_issue",
 )
+
+#: The probe the manifest runs, and the one the wait must ask.
+PROBE_PATH = "/etc/nyxgpt/probes/glitchtip-worker-ready.py"
+PROBE_SOURCE = REPO_ROOT / "k8s" / "observability" / "glitchtip-worker-ready.py"
+MANIFEST = REPO_ROOT / "k8s" / "observability" / "glitchtip.yaml"
 
 
 def _shell_function(name: str) -> str:
@@ -79,10 +102,15 @@ def stub_kubectl(tmp_path: Path):
     """A ``kubectl`` on PATH that answers the four calls the wait makes.
 
     Parameterised through the environment so one stub covers every state:
-    ``STUB_SCHEDULED``/``STUB_PROCESSED`` shape the worker log,
+    ``STUB_PROBE_EXIT`` is the status the worker's readiness probe reports
+    (``none`` makes the exec itself fail, i.e. the Pod never answered),
     ``STUB_ISSUE_AT_POLL`` decides when (if ever) the issue list starts
     carrying the marker, and the poll counter lives in a file because each
     call is a fresh process.
+
+    The worker arm reproduces the real shape of the call under test: the
+    remote ``sh -c`` prints the probe's own stderr and then ``PROBE_EXIT=$?``,
+    which is how the script tells the probe's verdict from kubectl's.
     """
 
     def _install(**env: str) -> dict[str, str]:
@@ -93,9 +121,26 @@ def stub_kubectl(tmp_path: Path):
             """#!/usr/bin/env bash
 args="$*"
 case "$args" in
-  *"logs deploy/glitchtip-worker"*)
-    for _ in $(seq 1 "${STUB_SCHEDULED:-0}"); do echo "Enqueuing due task: uptime-dispatch-checks"; done
-    for _ in $(seq 1 "${STUB_PROCESSED:-0}"); do echo "Processing task abc: apps.uptime.tasks.dispatch_checks"; done
+  *"exec deploy/glitchtip-worker"*)
+    # The probe path must be the one the manifest mounts, or this stub is
+    # answering a question the cluster is not being asked.
+    case "$args" in
+      *"PROBE_PATH"*) ;;
+      *) echo "stub kubectl: the wait asked for something other than the probe: $args" >&2
+         exit 99 ;;
+    esac
+    case "${STUB_PROBE_EXIT:-0}" in
+      none)
+        # The exec itself failed: no PROBE_EXIT line, so no verdict.
+        echo 'Error from server (NotFound): deployments.apps "glitchtip-worker" not found' >&2
+        exit 1 ;;
+      0)
+        echo "PROBE_EXIT=0" ;;
+      *)
+        echo "the worker is serving metrics but has published no vtasks_queue_depth \
+sample, so its consumer loop has never run an iteration (#4208)"
+        echo "PROBE_EXIT=${STUB_PROBE_EXIT}" ;;
+    esac
     exit 0 ;;
   *"exec deploy/glitchtip-redis"*)
     printf %s "${STUB_QUEUE_DEPTH:-0}"; exit 0 ;;
@@ -113,7 +158,7 @@ case "$args" in
     exit 0 ;;
 esac
 exit 0
-""",
+""".replace("PROBE_PATH", PROBE_PATH),
             encoding="utf-8",
         )
         stub.chmod(0o755)
@@ -143,9 +188,9 @@ else
   echo "RESULT=fail"
 fi
 echo "REASON=${{GLITCHTIP_WAIT_REASON}}"
-echo "SCHEDULED=${{GLITCHTIP_WORKER_SCHEDULED}}"
-echo "PROCESSED=${{GLITCHTIP_WORKER_PROCESSED}}"
+echo "VERDICT=${{GLITCHTIP_WORKER_VERDICT}}"
 echo "POLLS=$(cat "$STUB_COUNTER")"
+echo "PROBE_SAID=${{GLITCHTIP_WORKER_REASON//$'\n'/ }}"
 """
 
 
@@ -167,7 +212,7 @@ def _run(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
 
 def test_the_issue_arriving_late_still_passes(stub_kubectl, tmp_path: Path) -> None:
     """A slow but working worker must not be failed: the loop keeps waiting."""
-    env = stub_kubectl(STUB_SCHEDULED="40", STUB_PROCESSED="40", STUB_ISSUE_AT_POLL="9")
+    env = stub_kubectl(STUB_PROBE_EXIT="0", STUB_ISSUE_AT_POLL="9")
     out = _run(env, tmp_path)
     assert out["RESULT"] == "pass"
     assert out["REASON"] == "found"
@@ -177,18 +222,22 @@ def test_the_issue_arriving_late_still_passes(stub_kubectl, tmp_path: Path) -> N
 def test_a_worker_that_consumes_nothing_fails_fast_and_says_so(
     stub_kubectl, tmp_path: Path
 ) -> None:
-    """The release branch's actual state (run 39679850907): 400 scheduled, 0 processed.
+    """The release branch's actual state (run 39679850907): the consumer stopped.
 
     The retired deadline could only reach this by burning 240s and then
     blaming the DSN. The grace window is what keeps a just-started worker from
     reading as a dead one, so the exit is at the grace poll and not before.
+
+    The verdict is the probe's, not this script's -- and the probe's own
+    sentence travels with it, so the failure prints the reason a reader can
+    act on instead of a count they then have to interpret.
     """
-    env = stub_kubectl(STUB_SCHEDULED="400", STUB_PROCESSED="0", STUB_ISSUE_AT_POLL="0")
+    env = stub_kubectl(STUB_PROBE_EXIT="1", STUB_ISSUE_AT_POLL="0")
     out = _run(env, tmp_path)
     assert out["RESULT"] == "fail"
     assert out["REASON"] == "worker-idle"
-    assert out["SCHEDULED"] == "400"
-    assert out["PROCESSED"] == "0"
+    assert out["VERDICT"] == "not-consuming"
+    assert "consumer loop has never run an iteration" in out["PROBE_SAID"]
     assert int(out["POLLS"]) == 3, "it waited out the grace window and then stopped"
 
 
@@ -196,34 +245,92 @@ def test_a_consuming_worker_with_no_issue_is_a_different_failure(
     stub_kubectl, tmp_path: Path
 ) -> None:
     """The state the retired message described: the event never arrived."""
-    env = stub_kubectl(STUB_SCHEDULED="40", STUB_PROCESSED="40", STUB_ISSUE_AT_POLL="0")
+    env = stub_kubectl(STUB_PROBE_EXIT="0", STUB_ISSUE_AT_POLL="0")
     out = _run(env, tmp_path)
     assert out["RESULT"] == "fail"
     assert out["REASON"] == "not-arrived"
+    assert out["VERDICT"] == "consuming"
     assert int(out["POLLS"]) == 12, "a consuming worker is waited on to the full budget"
 
 
 def test_a_just_started_worker_is_not_called_dead(stub_kubectl, tmp_path: Path) -> None:
-    """Nothing scheduled yet is not the same as nothing consumed.
+    """A probe that has not failed yet is not a dead consumer.
 
-    Guards the opposite error: reading an empty log as a dead consumer would
-    turn a cold start into a red gate, which is the mistake this change exists
-    to stop, pointed the other way.
+    Guards the opposite error: reading a cold start as a stopped consumer
+    would turn a slow boot into a red gate, which is the mistake this change
+    exists to stop, pointed the other way. The probe's own
+    ``initialDelaySeconds: 40`` is the same allowance in the manifest.
     """
-    env = stub_kubectl(STUB_SCHEDULED="0", STUB_PROCESSED="0", STUB_ISSUE_AT_POLL="11")
+    env = stub_kubectl(STUB_PROBE_EXIT="0", STUB_ISSUE_AT_POLL="11")
     out = _run(env, tmp_path)
     assert out["RESULT"] == "pass"
     assert out["REASON"] == "found"
 
 
+def test_an_unaskable_probe_is_not_read_as_a_dead_consumer(stub_kubectl, tmp_path: Path) -> None:
+    """``kubectl exec`` failing is not the worker's verdict.
+
+    The Pod may not exist yet, or the api-server may hiccup. Recording that as
+    "the consumer is dead" would be a gate naming a cause it never measured --
+    this issue's class, in the direction that fails a healthy commit. So the
+    verdict is ``unknown``, the wait runs its full budget, and the failure is
+    the one that does not claim to know why.
+    """
+    env = stub_kubectl(STUB_PROBE_EXIT="none", STUB_ISSUE_AT_POLL="0")
+    out = _run(env, tmp_path)
+    assert out["RESULT"] == "fail"
+    assert out["REASON"] == "not-arrived", "an unanswered probe must not end the wait"
+    assert out["VERDICT"] == "unknown"
+    assert int(out["POLLS"]) == 12
+
+
+def test_an_unaskable_probe_still_lets_a_healthy_run_pass(stub_kubectl, tmp_path: Path) -> None:
+    """And `unknown` is not a failure of its own: the issue arriving still passes."""
+    env = stub_kubectl(STUB_PROBE_EXIT="none", STUB_ISSUE_AT_POLL="5")
+    out = _run(env, tmp_path)
+    assert out["RESULT"] == "pass"
+    assert out["REASON"] == "found"
+
+
+def test_the_verdict_comes_from_the_shipped_probe_and_nothing_else() -> None:
+    """One source for "is the worker consuming?" (#4183 / D-066).
+
+    #4208 shipped the probe and the manifest runs it; the wait must ask the
+    same file at the same path rather than counting log lines of its own. A
+    second answer to one question is how `classify_error` ended up with two
+    spellings of one signature a round after a partial fix.
+    """
+    body = _shell_function("glitchtip_worker_verdict")
+    assert PROBE_PATH in body, "the wait must run the probe the manifest mounts"
+    assert "PROBE_EXIT=" in body, "the probe's status must be told from kubectl's"
+    # The retired second answer is gone, not merely unused. Comments are
+    # stripped first: the log lines it counted are QUOTED in the rationale
+    # above the wait as the measured evidence for the diagnosis, and an
+    # assertion satisfied (or defeated) by incidental text is the defect this
+    # PR's round 4 was about. What must be gone is the counting being DONE.
+    text = SMOKE.read_text(encoding="utf-8")
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert "glitchtip_worker_counts" not in code
+    assert "Enqueuing due task" not in code
+    assert "logs deploy/glitchtip-worker" not in code
+
+    assert PROBE_SOURCE.is_file(), f"{PROBE_SOURCE} is the probe this depends on"
+    manifest = MANIFEST.read_text(encoding="utf-8")
+    assert PROBE_PATH in manifest, "the manifest must mount the probe at the path asked for"
+
+
 def test_the_queue_depth_reader_counts_only_lists() -> None:
     """The depth probe is `KEYS` + `TYPE` + `LLEN`, measured on the real image.
 
-    GlitchTip 6.2 runs `vtasks`, not celery: its keys are `{vt}:q:default` and
+    GlitchTip 6.2 runs `vtasks`, not celery: its keys are `{vt}:q:ingest` and
     `{vt}:q:failed`, alongside several `string` scheduler keys. Naming the
     queue would break on the next rename and `LLEN` of a missing key is 0 --
     which reads as "drained" and is the wrong answer. Verified against
     `redis:7.4.9-alpine` under the shipped manifest.
+
+    That this docstring said `{vt}:q:default` until #4208 read the key off the
+    image, and the assertion below still held, is the property being asserted:
+    the reader does not name the queue, so the rename cost it nothing.
     """
     body = _shell_function("glitchtip_queue_depth")
     assert "KEYS" in body and "TYPE" in body and "LLEN" in body

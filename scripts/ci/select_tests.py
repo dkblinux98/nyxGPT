@@ -29,6 +29,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# One source for "is this diff path still in the checkout" (#4209 review):
+# naming a DELETED test file to pytest exits 4 before a single test runs, the
+# same shape as naming a deleted web file to eslint.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from diff_scope import still_exists  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "nyxgpt"
 UNIT_TESTS = REPO_ROOT / "tests" / "unit"
@@ -206,7 +213,7 @@ def _is_test_module(path: str) -> bool:
     return name.startswith("test_") or name.endswith("_test.py")
 
 
-def select(changed: list[str]) -> Selection:
+def select(changed: list[str], *, root: Path = REPO_ROOT) -> Selection:
     """Map a changed-file list onto the suites that can see its effects."""
     sel = Selection(full=False, run_python=False, python_targets=list(FLOOR_TESTS))
     bound, unbound, process = _classify_tests()
@@ -291,6 +298,20 @@ def select(changed: list[str]) -> Selection:
     if not sel.run_python:
         sel.run_python = True
         sel.reasons.append("floor only -- nothing in this diff can change Python behavior")
+
+    # The one place a path becomes argv, so the one place the checkout is
+    # consulted (#4209 review). A DELETED test file is in the diff and not in
+    # the tree, and `pytest tests/unit/test_gone.py` exits 4 on "file or
+    # directory not found" having executed nothing -- a red required check
+    # about the deletion rather than about the code. Applied to the whole list
+    # rather than to the changed-test branch above, because the floor is
+    # hardcoded paths and a diff that removes one of those lands in exactly
+    # the same place. Reported, never silent: a narrower pytest invocation
+    # looks just like a correct one.
+    missing = sorted({path for path in sel.python_targets if not still_exists(path, root=root)})
+    if missing:
+        sel.python_targets = [path for path in sel.python_targets if path not in set(missing)]
+        sel.reasons.append(f"deleted by this diff, so not named to pytest: {', '.join(missing)}")
 
     return sel
 

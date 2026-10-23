@@ -22,8 +22,9 @@ documentation are linked out to instead of duplicated here:
   Dedicated Host after a priced, typed confirmation and schedules its deferred
   release at teardown — see
   [EC2 Mac targets](cloud.md#ec2-mac-targets)), `nyxgpt cloud status` (what is
-  deployed and how to reach it, including a Dedicated Host still billing after
-  the deployment is gone — confirmed against AWS, in the account `--profile`
+  deployed and how to reach it, including **every** Dedicated Host still billing
+  after the deployment is gone, each with its own release time and whether
+  anything is actually scheduled to release it (#4200) — confirmed against AWS, in the account `--profile`
   names, with the spend figure from Cost Explorer; it states presence or
   billing only for what it confirmed in that run, and changes nothing, #4136 /
   #4181), `nyxgpt cloud ops` (read-only inspections

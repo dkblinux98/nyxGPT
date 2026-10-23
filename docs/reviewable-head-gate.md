@@ -163,7 +163,7 @@ predicate form is worse and silent — a lost race reads as "no match", so the
 step skips or passes vacuously. `scripts/agents/lib/sigpipe_pipeline_guard.py`
 now scans every workflow and every shell script under `scripts/`/`tests/` for
 the construct, as the `[required]` `pipeline-readers-drain` job; ledger
-**D-072** has the mechanism and the three accepted forms.
+**D-074** has the mechanism and the three accepted forms.
 
 **Absent is not pending.** Most jobs in the list are path-filtered, so on any
 given PR most of them never run. A required check that is not attached to the

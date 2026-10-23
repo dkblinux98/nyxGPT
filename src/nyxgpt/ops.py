@@ -48,6 +48,7 @@ from nacl import public as nacl_public
 
 from nyxgpt import (
     brew_services,
+    build_fetch_policy,
     cloud_cluster_record,
     cloud_imds,
     docker_access,
@@ -997,7 +998,13 @@ def _run(
             # (#3956) -- on a k3s node, kubectl's default is k3s's root-only
             # file, not `~/.kube/config`. A no-op for every other command and
             # for any caller that set `KUBECONFIG` itself; see `kubectl_env`.
-            env=kubectl_env(cmd, env),
+            #
+            # A child that fetches from a package index (`pip`, `npm`, `dnf`,
+            # ...) is handed nyxGPT's one remote-fetch policy the same way
+            # (#4205): applied here rather than at each call site, because a
+            # policy a new call site can forget to ask for is a policy with a
+            # hole in it. Also a no-op for everything else; see `fetch_env`.
+            env=build_fetch_policy.fetch_env(cmd, kubectl_env(cmd, env)),
             timeout=timeout,
             **output_kwargs,
         )
@@ -1197,6 +1204,105 @@ def _combined_output_excerpt(stdout: str | None, stderr: str | None) -> str:
 def _output_excerpt(cp: subprocess.CompletedProcess[str]) -> str:
     """Bounded combined output of `cp`, for an `OpsResult`'s failure details."""
     return _combined_output_excerpt(cp.stdout, cp.stderr)
+
+
+def _full_output(cp: subprocess.CompletedProcess[str]) -> str:
+    """Unbounded stdout+stderr of `cp`, for *classifying* a failure.
+
+    The bounded excerpt above is what an operator reads; it is the wrong input
+    for a decision. `_bounded_output`'s salient-line rescue anchors on lines
+    that start with `error`/`failed`, and BuildKit prefixes every line of a
+    `docker build` with `#8 23.97 `, so the lines naming a fetch failure are
+    inside the elision and match nothing. Classify the whole output; report
+    the excerpt (#4205).
+    """
+    return "\n".join(part for part in (cp.stdout, cp.stderr) if part)
+
+
+def _fetch_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment for a subprocess that fetches from a package index.
+
+    `base` defaults to this process's environment. One helper rather than the
+    policy spelled out at each `npm`/`pip` call site, so there is one place
+    that answers "what is our fetch policy?" for the native installs, the same
+    way the Dockerfile `ENV` stanza answers it for the image builds (#4205).
+    """
+    return build_fetch_policy.subprocess_env(dict(os.environ if base is None else base))
+
+
+def _package_fetch_failure(
+    cp: subprocess.CompletedProcess[str],
+    *,
+    step: str,
+    failure_message: str,
+    extra_output: str = "",
+) -> OpsResult:
+    """The one place a failed package-index fetch becomes an `OpsResult` (#4205).
+
+    `step` names what was being run (`npm ci`, `pip install nyxgpt-api`, ...)
+    and `failure_message` is the caller's ordinary wording for a build that is
+    simply broken. When `build_fetch_policy.classify_failure` can positively
+    attribute the failure to an unreachable index, the result says *that*
+    instead -- with the evidence line first, so the attribution survives the
+    output bounding and the operator can see what it was made from.
+
+    `extra_output` is for a failure the tool did not report itself -- the
+    caller's own post-condition verdict (`incomplete_fetch_message`), which
+    has to reach both the classifier and the reported detail because the tool
+    exited 0 and said nothing useful.
+
+    Consolidated rather than repeated at each fetch site: before this, no site
+    classified at all, and correcting N copies later is how one divergence
+    becomes N (CLAUDE.md, "One source per decision").
+    """
+    detail = "\n".join(part for part in (extra_output, _output_excerpt(cp)) if part)
+    fetch = build_fetch_policy.classify_failure(
+        "\n".join(part for part in (extra_output, _full_output(cp)) if part)
+    )
+    if fetch is None:
+        return OpsResult(False, failure_message, detail)
+    return OpsResult(
+        False,
+        f"Could not reach the package registry while running {step}",
+        f"{fetch.describe()}\n{build_fetch_policy.REMEDIATION}\n{detail}",
+    )
+
+
+class ImageBuildFailure(RuntimeError):
+    """A `docker build` that failed, carrying whether it failed on the network.
+
+    `_docker_build_if_needed` raised a bare `RuntimeError` before #4205, and
+    its four callers each turned that into "docker build <image> failed" --
+    which is what an operator saw when the only thing wrong was that the
+    registry was unreachable for thirty seconds. Subclasses `RuntimeError` so
+    the existing `except RuntimeError` at every call site keeps working.
+    """
+
+    def __init__(self, image: str, detail: str, fetch: build_fetch_policy.FetchFailure | None):
+        """`detail` is the bounded excerpt to report; `fetch` the attribution, if any."""
+        self.image = image
+        self.detail = detail
+        self.fetch = fetch
+        super().__init__(f"docker build {image} failed: {detail}")
+
+
+def _image_build_failure_result(image: str, exc: BaseException) -> OpsResult:
+    """The one place a failed image build becomes an `OpsResult` (#4205).
+
+    Keeps the previous wording for a build that is genuinely broken, and
+    replaces it for one that could not reach the index -- so `ops install`
+    reports "could not reach the package registry", not that nyxGPT is broken.
+    Accepts any exception so a caller's `except RuntimeError` still routes
+    here when the failure came from somewhere other than the build itself.
+    """
+    fetch = exc.fetch if isinstance(exc, ImageBuildFailure) else None
+    if fetch is None:
+        return OpsResult(False, f"docker build {image} failed", str(exc))
+    return OpsResult(
+        False,
+        f"Could not reach the package registry while building {image}",
+        f"{fetch.describe()}\n{build_fetch_policy.REMEDIATION}\n{exc}",
+    )
 
 
 # Argument names (and inline `--flag=value` forms) whose *value* may carry a
@@ -3227,8 +3333,16 @@ def _docker_build_if_needed(
         # As with `_brew_install_or_reinstall`: surface the failure and do NOT
         # record the fingerprint, so a broken build doesn't get skipped (and
         # so stick as a stale image) on the next run.
-        detail = _output_excerpt(cp)
-        raise RuntimeError(f"docker build {image} failed: {detail}")
+        #
+        # Classified here, once, on the *full* output (#4205): the image's
+        # Dockerfile already carries the retry policy, so a build that still
+        # failed on the network has exhausted it, and the caller needs to be
+        # able to tell the operator that rather than "nyxGPT is broken".
+        raise ImageBuildFailure(
+            image,
+            _output_excerpt(cp),
+            build_fetch_policy.classify_failure(_full_output(cp)),
+        )
 
     _ensure_dir(marker_dir)
     marker.write_text(fingerprint, encoding="utf-8")
@@ -4395,8 +4509,13 @@ def _install_native_api_systemd() -> list[OpsResult]:
     _run([pip, "install", "--upgrade", "pip"], check=False)
     cp = _run([pip, "install", str(tar)], check=False)
     if cp.returncode != 0:
-        details = _output_excerpt(cp)
-        results.append(OpsResult(False, "Failed to pip install nyxgpt-api", details.strip()))
+        results.append(
+            _package_fetch_failure(
+                cp,
+                step="pip install nyxgpt-api",
+                failure_message="Failed to pip install nyxgpt-api",
+            )
+        )
         return results
     results.append(
         OpsResult(True, "Installed nyxgpt-api into a self-contained venv", str(venv_dir))
@@ -4472,6 +4591,7 @@ def _install_native_web_systemd() -> list[OpsResult]:
                 text=True,
                 capture_output=True,
                 check=False,
+                env=_fetch_env(),
             )
         except Exception as e:
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -4481,13 +4601,33 @@ def _install_native_web_systemd() -> list[OpsResult]:
                 )
             )
             return results
-        if cp.returncode != 0:
+        # `npm ci` exits 0 with an *empty* node_modules when the registry is
+        # unreachable (#4205), so its exit status alone would let a staging
+        # tree with no dependencies in it be renamed over the live build below
+        # and the service restarted onto it. Check npm's own receipt.
+        # The silent case, and ONLY the silent case: npm exited 0 and did not
+        # write its completed-reify receipt. A non-zero exit carries npm's own
+        # reason, and the classifier reads that -- asserting the receipt there
+        # too would attribute every loud npm failure (a lockfile mismatch, a
+        # failed postinstall script) to the registry, which is the opposite of
+        # the point.
+        silently_incomplete = (
+            cp.returncode == 0
+            and npm_args[0] in ("ci", "install")
+            and not build_fetch_policy.npm_tree_is_complete(staged_extracted)
+        )
+        if cp.returncode != 0 or silently_incomplete:
             shutil.rmtree(staging_dir, ignore_errors=True)
             results.append(
-                OpsResult(
-                    False,
-                    f"{step_name} failed for nyxgpt-web",
-                    _output_excerpt(cp),
+                _package_fetch_failure(
+                    cp,
+                    step=f"{step_name} for nyxgpt-web",
+                    failure_message=f"{step_name} failed for nyxgpt-web",
+                    extra_output=(
+                        build_fetch_policy.incomplete_fetch_message(step_name, cp.returncode)
+                        if silently_incomplete
+                        else ""
+                    ),
                 )
             )
             return results
@@ -5050,10 +5190,10 @@ def _install_native_api_dev() -> list[OpsResult]:
     cp = _run([pip, "install", "-e", str(checkout)], check=False)
     if cp.returncode != 0:
         results.append(
-            OpsResult(
-                False,
-                "Failed to pip install -e the nyxgpt checkout",
-                _output_excerpt(cp).strip(),
+            _package_fetch_failure(
+                cp,
+                step="pip install -e the nyxgpt checkout",
+                failure_message="Failed to pip install -e the nyxgpt checkout",
             )
         )
         return results
@@ -6655,7 +6795,39 @@ def _ensure_web_deps() -> list[OpsResult]:
         return results
 
     def _run_npm(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(cmd, cwd=str(web_dir), text=True, capture_output=True)
+        return subprocess.run(
+            cmd, cwd=str(web_dir), text=True, capture_output=True, env=_fetch_env()
+        )
+
+    def _incomplete_tree(cp: subprocess.CompletedProcess[str], step: str) -> OpsResult | None:
+        """The post-condition for an `npm ci`/`install` that exited 0 (#4205).
+
+        `npm ci` exits 0 having created empty package directories when the
+        registry is unreachable, so "it returned 0" is not evidence the deps
+        are installed. Two checks, both cheap: npm's own completed-reify
+        receipt, and the resolvability of `undici` this function has always
+        tested for. The diagnosis the operator gets is the difference -- the
+        old wording ("undici still missing") reads as a dependency problem
+        when the actual cause was the network. Returns None when the tree is
+        good; one local helper rather than the three identical copies of this
+        branch that preceded it.
+        """
+        complete = build_fetch_policy.npm_tree_is_complete(web_dir)
+        if complete and _can_resolve("undici"):
+            return None
+        return _package_fetch_failure(
+            cp,
+            step=f"{step} in {web_dir}",
+            failure_message="Web deps installed but undici still missing",
+            # Only a *missing receipt* is evidence the fetch never completed.
+            # A complete tree whose `undici` will not resolve is some other
+            # fault (disk, a partial rmtree) and must not be reported as the
+            # registry's doing -- telling an operator to retry a failure that
+            # retrying cannot fix is worse than the unhelpful message.
+            extra_output=(
+                "" if complete else build_fetch_policy.incomplete_fetch_message(step, cp.returncode)
+            ),
+        )
 
     # Prefer npm ci when a lockfile exists, but if the lockfile is out of sync
     # (common after editing package.json), fall back to npm install so the lock
@@ -6672,25 +6844,21 @@ def _ensure_web_deps() -> list[OpsResult]:
                 ):
                     cp2 = _run_npm(["npm", "install"])
                     if cp2.returncode != 0:
-                        details = _output_excerpt(cp2)
                         results.append(
-                            OpsResult(
-                                False,
-                                "Failed to install web deps via npm install (after npm ci mismatch)",
-                                details.strip(),
+                            _package_fetch_failure(
+                                cp2,
+                                step=f"npm install in {web_dir}",
+                                failure_message=(
+                                    "Failed to install web deps via npm install "
+                                    "(after npm ci mismatch)"
+                                ),
                             )
                         )
                         return results
                     # npm install succeeded (and likely updated package-lock.json)
-                    if not _can_resolve("undici"):
-                        details = _output_excerpt(cp2)
-                        results.append(
-                            OpsResult(
-                                False,
-                                "Web deps installed but undici still missing",
-                                details.strip(),
-                            )
-                        )
+                    bad = _incomplete_tree(cp2, "npm install")
+                    if bad is not None:
+                        results.append(bad)
                         return results
                     results.append(
                         OpsResult(
@@ -6702,22 +6870,20 @@ def _ensure_web_deps() -> list[OpsResult]:
                     return results
 
                 # Other npm ci failure
-                details = _output_excerpt(cp)
                 results.append(
-                    OpsResult(False, "Failed to install web deps via npm ci", details.strip())
+                    _package_fetch_failure(
+                        cp,
+                        step=f"npm ci in {web_dir}",
+                        failure_message="Failed to install web deps via npm ci",
+                    )
                 )
                 return results
 
-            # npm ci succeeded
-            if not _can_resolve("undici"):
-                details = _output_excerpt(cp)
-                results.append(
-                    OpsResult(
-                        False,
-                        "Web deps installed but undici still missing",
-                        details.strip(),
-                    )
-                )
+            # npm ci reported success -- which is not the same as having
+            # installed anything (#4205).
+            bad = _incomplete_tree(cp, "npm ci")
+            if bad is not None:
+                results.append(bad)
                 return results
             results.append(OpsResult(True, "Installed web deps via npm ci", str(node_modules)))
             return results
@@ -6725,22 +6891,19 @@ def _ensure_web_deps() -> list[OpsResult]:
         # No lockfile: use npm install
         cp = _run_npm(["npm", "install"])
         if cp.returncode == 0:
-            if not _can_resolve("undici"):
-                details = _output_excerpt(cp)
-                results.append(
-                    OpsResult(
-                        False,
-                        "Web deps installed but undici still missing",
-                        details.strip(),
-                    )
-                )
+            bad = _incomplete_tree(cp, "npm install")
+            if bad is not None:
+                results.append(bad)
                 return results
             results.append(OpsResult(True, "Installed web deps via npm install", str(node_modules)))
             return results
 
-        details = _output_excerpt(cp)
         results.append(
-            OpsResult(False, "Failed to install web deps via npm install", details.strip())
+            _package_fetch_failure(
+                cp,
+                step=f"npm install in {web_dir}",
+                failure_message="Failed to install web deps via npm install",
+            )
         )
         return results
 
@@ -6789,18 +6952,36 @@ def _ensure_mcp_deps() -> list[OpsResult]:
     npm_cmd = ["npm", "ci"] if use_ci else ["npm", "install"]
 
     try:
-        cp = subprocess.run(npm_cmd, cwd=str(root_dir), text=True, capture_output=True)
-        if cp.returncode == 0:
+        cp = subprocess.run(
+            npm_cmd, cwd=str(root_dir), text=True, capture_output=True, env=_fetch_env()
+        )
+        step = " ".join(npm_cmd)
+        # Exit 0 is not evidence here either (#4205): this is the same `npm ci`
+        # that exits 0 over an empty tree with the registry unreachable, and
+        # the sentinel check above runs only on the *next* install -- so
+        # without the receipt check the operator would be told the MCP deps
+        # were installed and find them missing later.
+        if cp.returncode == 0 and build_fetch_policy.npm_tree_is_complete(root_dir):
             results.append(
                 OpsResult(
                     True,
-                    f"Installed MCP deps via {' '.join(npm_cmd)}",
+                    f"Installed MCP deps via {step}",
                     str(root_dir / "node_modules"),
                 )
             )
         else:
-            details = _output_excerpt(cp)
-            results.append(OpsResult(False, "Failed to install MCP deps", details.strip()))
+            results.append(
+                _package_fetch_failure(
+                    cp,
+                    step=f"{step} in {root_dir}",
+                    failure_message="Failed to install MCP deps",
+                    extra_output=(
+                        ""
+                        if cp.returncode != 0
+                        else build_fetch_policy.incomplete_fetch_message(step, cp.returncode)
+                    ),
+                )
+            )
     except Exception as e:
         results.append(OpsResult(False, "Failed to install MCP deps", f"{type(e).__name__}: {e}"))
 
@@ -6921,12 +7102,21 @@ def _install_packages_from_sets(
     for tool, install_cmd, packages in package_sets:
         if _which(tool) is None:
             continue
+        # The one remote-fetch policy, applied where every distro install goes
+        # through rather than at each package set (#4205). apt and dnf have no
+        # environment knob for retries, and Debian's `Acquire::Retries`
+        # defaults to 0 -- so without this a mirror blip mid-`apt-get install`
+        # reports "Could not install Docker automatically" on a host where
+        # Docker would have installed fine.
+        flags = list(build_fetch_policy.package_manager_flags(tool))
         if tool == "apt-get" and not refreshed_apt:
             # Without a package index a fresh cloud image's `install` just
             # reports "Unable to locate package".
             refreshed_apt = True
-            _privileged_run(["apt-get", "update"], expected=True)
-        cp = _privileged_run([*install_cmd, *packages], expected=expected_failure)
+            _privileged_run(["apt-get", *flags, "update"], expected=True)
+        cp = _privileged_run(
+            [install_cmd[0], *flags, *install_cmd[1:], *packages], expected=expected_failure
+        )
         if cp is None:
             return ("no-root", [])
         if cp.returncode == 0:
@@ -8281,7 +8471,7 @@ def _build_terraform_artifact_image(
             ref, context, marker_dir=DOCKER_IMAGE_MARKER_DIR, **build_kwargs
         )
     except RuntimeError as e:
-        return None, [OpsResult(False, f"docker build {ref} failed", str(e))]
+        return None, [_image_build_failure_result(ref, e)]
     return ref, [
         OpsResult(
             True,
@@ -8352,7 +8542,7 @@ def _build_terraform_docker_images() -> list[OpsResult]:
         )
         results.append(OpsResult(True, f"{refs['api']}: {decision}"))
     except RuntimeError as e:
-        results.append(OpsResult(False, f"docker build {refs['api']} failed", str(e)))
+        results.append(_image_build_failure_result(refs["api"], e))
 
     try:
         decision = _docker_build_if_needed(
@@ -8365,7 +8555,7 @@ def _build_terraform_docker_images() -> list[OpsResult]:
         )
         results.append(OpsResult(True, f"{refs['web']}: {decision}"))
     except RuntimeError as e:
-        results.append(OpsResult(False, f"docker build {refs['web']} failed", str(e)))
+        results.append(_image_build_failure_result(refs["web"], e))
 
     return results
 
@@ -9516,7 +9706,7 @@ def _build_and_load_k8s_image(
             marker_dir=DOCKER_IMAGE_MARKER_DIR,
         )
     except RuntimeError as e:
-        return [OpsResult(False, "docker build failed", str(e))]
+        return [_image_build_failure_result(image, e)]
     results = [OpsResult(True, f"{image}: {decision}")]
 
     cluster_context = _kubectl_context()
@@ -10841,6 +11031,10 @@ K8S_NO_DATA_LABEL = "NO DATA"
 # questions without scheduling a Pod of our own on a node that #3825 showed is
 # already tight.
 K8S_TELEMETRY_PROBE_DEPLOYMENT = "grafana"
+# The broker the GlitchTip worker's queues live in -- the only Pod in the
+# overlay carrying a `redis-cli`, and so the only place the vtasks queue
+# depths below can be read from.
+K8S_GLITCHTIP_REDIS_DEPLOYMENT = "glitchtip-redis"
 
 # Per-request budget for those in-cluster fetches. Short on purpose: these are
 # Service-to-Service hops inside one node, and this probe runs at the end of
@@ -11215,6 +11409,98 @@ def _k8s_error_reporting_credentials_result() -> OpsResult:
     )
 
 
+# django_vtasks namespaces every key it owns under VTASKS_VALKEY_PREFIX, which
+# conf.py defaults to `{vt}` and forces a trailing colon onto. `q:failed` is
+# the dead-letter list `_fail_task` and the rescue path LPUSH onto; `q:ingest`
+# is the batch queue an accepted event waits in before it becomes an issue.
+# Verified against glitchtip/glitchtip:6.2.0 by reading the keyspace of a
+# running worker.
+VTASKS_DLQ_KEY = "{vt}:q:failed"
+VTASKS_INGEST_QUEUE_KEY = "{vt}:q:ingest"
+
+
+def _vtasks_queue_depth(key: str) -> int | None:
+    """``LLEN`` for one vtasks list, or None if Redis could not be asked."""
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "exec",
+            f"deploy/{K8S_GLITCHTIP_REDIS_DEPLOYMENT}",
+            "--",
+            "redis-cli",
+            "LLEN",
+            key,
+        ],
+        check=False,
+        expected=True,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    if cp.returncode != 0:
+        return None
+    try:
+        return int((cp.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _k8s_error_ingestion_result() -> OpsResult:
+    """Is GlitchTip's worker LOSING events, and is it behind?
+
+    The third error-tracking question, and the one no other surface can
+    answer. `_k8s_errors_flow_result` says what GlitchTip has received and the
+    workload lines say whether the worker Pod is ready -- since #4208 that
+    readiness means its consumer is really consuming -- but a worker that is
+    up, consuming, and failing every ingest task looks perfect on both. The
+    tasks go to `{vt}:q:failed` and the events in them never become issues.
+
+    That list is why this line exists: #4208's healthy reference cluster put
+    6 items in it within two minutes of start-up, and the only way to see
+    them was to run `redis-cli` inside the broker Pod by hand. An operator
+    reads `nyxgpt ops status`.
+
+    The ingest backlog rides along because it is the same question one step
+    earlier -- a growing `{vt}:q:ingest` is the shape a stalled consumer makes
+    from outside the Pod -- and because it costs one more `LLEN` on an exec
+    that has already been paid for.
+
+    `[ATTENTION]`, not `[NO DATA]`, when the dead-letter queue is non-empty:
+    events have been dropped and will stay dropped until someone looks. A
+    broker that cannot be asked is `[NO DATA]`, because an un-asked question
+    is not a failed one.
+    """
+    if _which("kubectl") is None:
+        return _no_data("observability error ingestion: kubectl is not installed")
+
+    dlq = _vtasks_queue_depth(VTASKS_DLQ_KEY)
+    if dlq is None:
+        return _no_data(
+            "observability error ingestion: could not ask GlitchTip's broker what its worker "
+            "has failed",
+            f"`redis-cli LLEN {VTASKS_DLQ_KEY}` did not answer in "
+            f"deploy/{K8S_GLITCHTIP_REDIS_DEPLOYMENT}.",
+        )
+    backlog = _vtasks_queue_depth(VTASKS_INGEST_QUEUE_KEY)
+    backlog_note = "" if backlog is None else f"{backlog} event task(s) waiting to be ingested"
+
+    if dlq:
+        return _attention(
+            f"observability error ingestion: {dlq} ingestion task(s) in the worker's "
+            f"dead-letter queue",
+            "Each one is an event GlitchTip accepted and never turned into an issue, so the "
+            "SRE Home panels are missing them. Read why with `nyxgpt ops logs glitchtip-worker` "
+            f"(the worker logs the traceback as it dead-letters) -- the payloads stay in "
+            f"{VTASKS_DLQ_KEY} until they age out of its cap. "
+            + (f"Also {backlog_note}." if backlog_note else ""),
+        )
+    return OpsResult(
+        True,
+        "observability error ingestion: no ingestion task has been dead-lettered",
+        backlog_note,
+    )
+
+
 def _k8s_observability_data_flow(state: dict[str, str] | None = None) -> list[OpsResult]:
     """Ask the telemetry backends what they have RECEIVED (#3990).
 
@@ -11247,6 +11533,9 @@ def _k8s_observability_data_flow(state: dict[str, str] | None = None) -> list[Op
         _k8s_metrics_flow_result(),
         _k8s_logs_flow_result(),
         _k8s_errors_flow_result(),
+        # What the worker LOST on the way, which neither of its neighbours can
+        # see (#4208 AC3).
+        _k8s_error_ingestion_result(),
         # Right after the errors line it explains, and separate from it: one
         # question per line (see both functions' docstrings).
         _k8s_error_reporting_credentials_result(),

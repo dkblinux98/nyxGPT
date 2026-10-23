@@ -410,6 +410,30 @@ host-release failure never blocks the rest of the destroy — the substrate, the
 tunnel and the deploy record still come down, and the warning names what is
 left.
 
+**One stack per host (#4200).** Each host gets its *own* release stack: its own
+Terraform state under `~/.nyxGPT/cloud/mac-release-<host>.tfstate`, its own
+tfvars beside it, and AWS resource names carrying the host id
+(`nyxgpt-tf-mac-<host>-release`, `-release-sfn`, `-release-scheduler`,
+`-slack`). That is not filing tidiness: with one shared stack, scheduling a
+second host's release did not create a second schedule — `terraform apply`
+found the existing one and *updated it* to name the new host. The first host,
+still allocated and still inside its 24-hour minimum, was left with nothing
+scheduled to release it, and the Slack message that would have said so belonged
+to the schedule that had just been retargeted. A teardown now also schedules a
+release for **any** host nyxGPT has allocated and not seen released, so a
+backlog cannot build up, and cleaning up a finished host's stack never touches
+another host's pending one.
+
+**A second host is never allocated by accident.** `nyxgpt cloud deploy --os
+macos` reuses a host it has already allocated when AWS confirms it is still
+there — including after a `destroy`, which removes the host from Terraform's
+state on purpose (step 2 above): the deploy *imports* it back before applying,
+because applying without it would allocate a second host and start a second
+non-refundable 24-hour minimum. If the import cannot be done the deploy stops
+and says so rather than falling through to the apply. And when a fresh
+allocation really is needed, the priced disclosure names every host already
+billing, with its own release time, before asking for the typed confirmation.
+
 **What you see in Slack.** The state machine posts to the channel in
 `[monitoring] slack_channel` (see
 [configuration.md](configuration.md#monitoring)) using the bot token already
@@ -430,12 +454,22 @@ Two details that would otherwise make the report a lie, and are handled:
   buffer on the fire time keeps the first attempt out of the obviously-too-
   early window.
 
-**Watching it.** `nyxgpt cloud status` shows the host until it is gone — id,
-region and AZ, when it was allocated, when it becomes releasable, whether the
-release is scheduled, when AWS last confirmed the host exists, and what Cost
-Explorer says it has cost. It shows it *after* the deployment is destroyed too,
-which is the whole point: that is the state where the host is the only thing
-still costing money.
+**Watching it.** `nyxgpt cloud status` shows **every** host until it is gone —
+id, region and AZ, when it was allocated, when it becomes releasable, whether
+the release is scheduled, when AWS last confirmed the host exists, and what Cost
+Explorer says it has cost. One block per host, oldest allocation first: a host
+bills on its own, so reporting only the current deployment's hid the ones that
+most needed reporting (#4200). It shows them *after* the deployment is destroyed
+too, which is the whole point: that is the state where the hosts are the only
+thing still costing money.
+
+A host whose release schedule is not on this machine is not reported as
+scheduled. The row reads **`NOT scheduled to be released -- still billing`**, or
+— when the record claims a schedule that is not there — says so in those words
+and names `nyxgpt cloud destroy --yes` as the fix. Nothing that was recorded
+drops out of view: the hosts are tracked in a `mac_hosts` ledger in
+`~/.nyxGPT/cloud/state.json` that a later deploy cannot overwrite, and a host is
+removed from it only once AWS answers that it is gone.
 
 ```
 EC2 Mac Dedicated Host (still billing -- confirmed at AWS in nyxgpt (066835328281) at 2026-08-23T06:00:00+00:00)
@@ -446,6 +480,20 @@ EC2 Mac Dedicated Host (still billing -- confirmed at AWS in nyxgpt (06683532828
   Confirmed at AWS  2026-08-23T06:00:00+00:00
   Release           scheduled -- a one-shot AWS schedule releases it and reports the outcome to Slack
   Spend             USD 15.60 from AWS Cost Explorer through 2026-08-23 (as of 2026-08-23T06:00:00+00:00)
+```
+
+One block per host, so a second host that is also still billing is its own
+block — and a host nothing is scheduled to release says exactly that:
+
+```
+EC2 Mac Dedicated Host (still billing -- confirmed at AWS in nyxgpt (066835328281) at 2026-08-23T06:00:00+00:00)
+  Host              h-0def5678 (mac2.metal)
+  Location          us-east-1 / us-east-1a
+  Allocated         2026-08-22T09:00:00+00:00
+  Releasable at     2026-08-23T09:30:00+00:00 (AWS's 24-hour minimum)
+  Confirmed at AWS  2026-08-23T06:00:00+00:00
+  Release           NOT scheduled to be released -- still billing. `nyxgpt cloud destroy --yes` terminates the Mac and schedules it
+  Spend             USD 8.45 from AWS Cost Explorer through 2026-08-23 (as of 2026-08-23T06:00:00+00:00)
 ```
 
 The same block appears on the admin dashboard's Infrastructure page, and on
@@ -476,10 +524,15 @@ Cost Explorer bills per request) one `GetCostAndUsage`:
   asked, rather than the remedy for a different reason — and offers the local
   number explicitly as an *estimate*.
 - A host AWS reports as **released** does not get a weaker row — its record
-  leaves `state.json` entirely, so there is nothing left to describe.
+  leaves `state.json` entirely (both its `mac_*` block, if it had one, and its
+  ledger entry), its own release stack is torn down, and there is nothing left
+  to describe. Only a definite answer does that: a host AWS could not be asked
+  about stays on the books, because a record deleted on the strength of expired
+  credentials hides something that is still costing money.
 - `INCOHERENT` rows appear when the record contradicts itself (a release
   scheduled before its host was allocated, a release window that is not
-  allocation + 24h30m, a scheduled release with no schedule). Those are
+  allocation + 24h30m, a release recorded as scheduled with no schedule for
+  *that host* on this machine). Those are
   detectable with no API call, and they mean the fields came from more than one
   run, so none of them can be read together — **including** by the rows that
   would otherwise draw a conclusion. A confirmation proves the host exists; it
@@ -513,10 +566,18 @@ arrives for a Linux plan; [`macos-brew-smoke.yml`](../.github/workflows/macos-br
 installs the same formulas from the same remote tap on a real macOS runner;
 and [`terraform-aws-validate.yml`](../.github/workflows/terraform-aws-validate.yml)
 validates the Dedicated Host and deferred-release root modules on every change
-to them. Neither the allocation nor the deferred release can be executed in CI
-— there is no EC2 Mac hardware and no way to make AWS's 24-hour clock pass —
-which is the named exception in
-[live-verification-ci.md](live-verification-ci.md), not a gap.
+to them, and runs a plan-level `terraform test` proving two host ids compose two
+sets of AWS resource names with nothing in common (#4200 — its last two run
+blocks pass the old fixed prefix for two hosts and require the collision to
+reproduce, so the check cannot pass vacuously).
+[`cloud-stale-record-smoke.yml`](../.github/workflows/cloud-stale-record-smoke.yml)
+runs the installed `nyxgpt cloud destroy --yes` with two still-allocated hosts
+on the ledger against recorded AWS responses and a recording `terraform` on
+PATH, and asserts two applies into two state files under two name prefixes plus
+a `nyxgpt cloud status` that reports both hosts. Neither the allocation itself
+nor the deferred release firing can be executed in CI — there is no EC2 Mac
+hardware and no way to make AWS's 24-hour clock pass — which is the named
+exception in [live-verification-ci.md](live-verification-ci.md), not a gap.
 
 ### `nyxgpt cloud status` — where is my instance? (#3813)
 
@@ -1217,7 +1278,7 @@ place: nothing has proved the deployment is gone.
 | `did not accept SSH within 300s` (a Linux target) | Usually a stale security-group rule — run `nyxgpt cloud allow-ip` (see [Lockout recovery](#lockout-recovery)). Also possible on a very slow first boot: retry with `--ssh-timeout 600`. |
 | `did not accept SSH within 2700s` (an EC2 Mac) | Almost always a first boot that is still running — that is what the 45-minute wait is for, and the message says so before it names the IP remedy. Raise it with `--ssh-timeout` and re-run: the deploy reconciles the Mac you already have, so there is no second host and no second 24-hour minimum. `nyxgpt cloud status` names the Dedicated Host, its release time and what it has cost so far. |
 | `Provisioning the instance failed` | Every failed step of the remote install is listed under it, in full and untruncated (the provisioning run's stdout and stderr are streamed together as they happen, so what you watched is what the summary quotes). When the run failed before any step reported — a package-manager or shell error — the last lines of its output are quoted instead, always on whole-line boundaries. Re-running `nyxgpt cloud deploy` is safe — provisioning is idempotent. |
-| `node/npm could not be installed` | Neither NodeSource nor the distro's own packages produced a Node toolchain, so `ops install` could not build the web bundle. Usually a blocked egress to `nodesource.com`; the instance needs outbound HTTPS. |
+| `node/npm could not be installed` | Neither NodeSource nor the distro's own packages produced a Node toolchain, so `ops install` could not build the web bundle. A *blocked* egress to `nodesource.com` rather than a blip: every fetch in the provisioning script runs under nyxGPT's one remote-fetch policy (five attempts with backoff — see [ops.md](ops.md#could-not-reach-the-package-registry-is-a-different-answer-from-failed)), so reaching this message means the retries were exhausted. The instance needs outbound HTTPS. |
 | `never returned 200 within 900s` | The stack installed but isn't healthy. The tunnel is left open; `nyxgpt cloud status` and `nyxgpt cloud ops doctor` (the instance's own doctor, over the wrapped SSH path) say more. |
 | `Could not open the SSH tunnel` | A local port is already bound, most often by a local nyxGPT stack. |
 
@@ -1402,7 +1463,8 @@ below for why a re-apply is not the way to change it.
 The file is a set of **per-substrate blocks** in one flat namespace: the Linux
 substrate owns `region`, `vpc_id`, `security_group_id`, `instance_id`,
 `instance_type`, `public_ip`, `private_ip`, `ssh_key_name`; the EC2 Mac owns the
-`mac_*` keys. Three rules, enforced in one place
+`mac_*` keys; and `mac_hosts` is a third block, the **Dedicated Host ledger**
+(#4200). Three rules, enforced in one place
 (`src/nyxgpt/cloud_record.py`) rather than in each command:
 
 - **A block is replaced whole, never merged into.** A write decides *every* key
@@ -1416,6 +1478,16 @@ substrate owns `region`, `vpc_id`, `security_group_id`, `instance_id`,
   them, so they can only get staler.
 - **The write is atomic** (temp file plus `os.replace`), so a killed command
   cannot leave half a record behind for the next one to read as current.
+
+**Why the ledger is a block of its own (#4200).** The first rule above is
+correct and is also why one slot cannot track a Dedicated Host: a host bills
+until AWS releases it, which is long after the deployment that allocated it is
+gone, so a later deploy replacing the `mac_*` block whole took the record of a
+still-billing host with it. `mac_hosts` is a list keyed by host id, holding an
+entry from the moment a host is allocated until AWS answers that it is gone —
+and because it belongs to a different block, a `mac_*` write cannot touch it.
+The `mac_*` block still describes the host the *current* deployment sits on, and
+that host is on the ledger too.
 
 An in-place field update is the one exception, and it is gated: it must name the
 resource it believes the block describes, and the write is refused if the record

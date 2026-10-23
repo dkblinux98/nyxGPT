@@ -18,13 +18,37 @@ class NyxgptWeb < Formula
   depends_on "node"
 
   def install
+    # nyxGPT's one remote-fetch policy (#4205). Set here because Homebrew
+    # builds under a sanitized environment, so an NPM_CONFIG_* exported by
+    # `ops install` never reaches this `npm`. Numbers from
+    # src/nyxgpt/build_fetch_policy.py; the guard test fails on drift.
+    ENV["NPM_CONFIG_FETCH_RETRIES"] = "5"
+    ENV["NPM_CONFIG_FETCH_RETRY_MINTIMEOUT"] = "2000"
+    ENV["NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT"] = "60000"
+    ENV["NPM_CONFIG_FETCH_TIMEOUT"] = "300000"
+
     system "npm", "ci"
+    # `npm ci` exits **0** with an empty node_modules when the registry is
+    # unreachable, so `system` raising is not enough -- see ../nyxgpt-web.rb
+    # and #4205. npm's completed-reify receipt is the check.
+    receipt = buildpath/"node_modules/.package-lock.json"
+    odie <<~MSG unless receipt.file? && receipt.size.positive?
+      nyxgpt-build: remote fetch did not complete: 'npm ci' left an incomplete
+      node_modules -- the package registry was most likely unreachable.
+      Retry with `nyxgpt ops install` once the registry is reachable.
+    MSG
+
     system "npm", "run", "build"
     # Drop devDependencies now that the production build exists to slim the
     # keg, but restore typescript -- `next start` re-reads next.config.ts at
     # boot and needs it to transpile, see ../nyxgpt-web.rb.
     system "npm", "prune", "--omit=dev"
     system "npm", "install", "--no-save", "typescript"
+    odie <<~MSG unless (buildpath/"node_modules/typescript/package.json").exist?
+      nyxgpt-build: remote fetch did not complete: 'npm install --no-save
+      typescript' did not install typescript -- the package registry was most
+      likely unreachable. Retry with `nyxgpt ops install`.
+    MSG
     # `Dir["*"]` skips dotfiles/dotdirs -- the `.next` production build
     # output needs its own explicit copy.
     libexec.install Dir["*"]

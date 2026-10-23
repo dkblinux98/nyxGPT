@@ -813,9 +813,14 @@ else
   if [[ -f "$DIR/agents/lib/gh_project.sh" && -f "$CONFIG_FILE" ]]; then
     # shellcheck disable=SC1091
     source "$DIR/agents/lib/gh_project.sh"; load_config
+    # `$STATUS_DONE`, not the bare literal it was until #4204: this is the
+    # WRITER of the lane, and four readers decided "is this accepted?" from
+    # lists that did not contain it. The name now comes from the same place
+    # the readers get it (load_config -> lib/acceptance_status.py), so the
+    # writer and the vocabulary cannot drift apart again.
     while read -r n; do
-      set_issue_status "$n" "Done" >/dev/null 2>&1 \
-        && log "  status Done: #$n" || log "  WARN: could not set Done on #$n"
+      set_issue_status "$n" "${STATUS_DONE:-Done}" >/dev/null 2>&1 \
+        && log "  status ${STATUS_DONE:-Done}: #$n" || log "  WARN: could not set ${STATUS_DONE:-Done} on #$n"
     done < <(gh issue list -R "$REPO" --milestone "$MS_TITLE" --state closed --limit 200 --json number --jq '.[].number')
   else
     log "  WARN: gh_project.sh lib not found — set statuses to Done manually"

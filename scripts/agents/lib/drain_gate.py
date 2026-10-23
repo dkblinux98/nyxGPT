@@ -84,6 +84,11 @@ Env vars:
                                 "Acceptance Testing")
   STATUS_ACCEPTANCE_FAILED     lane the gate holds (default
                                 "Acceptance Failed")
+  STATUS_FOR_RELEASE           )  read through acceptance_status.py, which
+  STATUS_DONE                  )  owns the "is this accepted?" vocabulary
+                                  this module asks for `sprint_unreleased`
+                                  (#4204) -- `Done` is accepted too, because
+                                  the release ceremony writes it
   RELEASE_ISSUE                release tracking issue number -- exempt
                                 from the drain check (`decide`)
   DRAIN_GATE_BYPASS_LABELS     comma-separated labels that mark an issue
@@ -107,6 +112,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from acceptance_status import is_accepted  # noqa: E402  (sibling lib, path set above)
 
 # Explicit, owner-authored process exception. #3730's own body carries
 # "This issue bypasses the drain gate it implements -- work immediately.";
@@ -148,7 +157,6 @@ def _lane(page: dict) -> tuple[list[int], list[int], list[int], list[int] | None
     # means the caller did not resolve a sprint, and the fourth list comes back
     # None so `decide` keeps its pre-sprint, lane-only behaviour rather than
     # fail-closed on an empty set.
-    for_release = os.getenv("STATUS_FOR_RELEASE", "For Release")
     sprint_field = os.getenv("SPRINT_FIELD", "Sprint")
     active_sprint = (os.getenv("ACTIVE_SPRINT_TITLE") or "").strip()
 
@@ -177,8 +185,11 @@ def _lane(page: dict) -> tuple[list[int], list[int], list[int], list[int] | None
                 sprint = fv.get("title")
         # Sprint membership is read independently of the lane: the question
         # "does this sprint still owe work?" spans every lane, not just these
-        # two.
-        if sprint_unreleased is not None and sprint == active_sprint and status != for_release:
+        # two. "Owed" is the negation of ACCEPTED, asked of the one vocabulary
+        # (#4204): this was `status != for_release`, which counted an issue the
+        # release ceremony had already moved to `Done` as work the sprint still
+        # owes.
+        if sprint_unreleased is not None and sprint == active_sprint and not is_accepted(status):
             sprint_unreleased.append(int(content["number"]))
         if status == testing:
             in_testing.append(int(content["number"]))
@@ -370,7 +381,9 @@ def decide(snapshot: dict) -> dict:
          its related feature (that feature is parked awaiting rework, and the
          rework cannot start until this very gate opens); AND
       2. the CURRENT SPRINT still owes work: at least one of its issues is not
-         yet in `For Release`, counting only issues that can actually move.
+         yet accepted -- `For Release`, or `Done` once the release ceremony
+         closed its milestone out (#4204) -- counting only issues that can
+         actually move.
 
     Condition 2 is the owner decision of 2026-10-01, and it is what makes the
     gate run on ROUNDS rather than on lanes. The lane emptying is not the same
@@ -383,7 +396,7 @@ def decide(snapshot: dict) -> dict:
     [closed]` trigger, and seven held items were released and worked while the
     round was still running.
 
-    A sprint whose every issue has reached `For Release` is a sprint ready to
+    A sprint whose every issue has been accepted is a sprint ready to
     release, and the gate stays shut: there is no next batch to drain into.
     The owner bumps anything unfinished to the next sprint by hand when the
     sprint date expires -- deliberately not automated, because nothing fires at

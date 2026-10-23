@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from ops_step_isolation import INSTALL_STEP_FUNCS
 
-from nyxgpt import ops
+from nyxgpt import build_fetch_policy, ops
 
 pytestmark = pytest.mark.unit
 
@@ -752,6 +752,26 @@ def _make_fake_web_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _fake_npm(returncode=0, *, stderr="", write_receipt=True):
+    """A stand-in for the `npm` subprocesses the web install runs.
+
+    Real `npm ci` writes `node_modules/.package-lock.json` only once the
+    install completes, and since #4205 ops reads that rather than trusting
+    npm's exit status -- which is 0 even when the registry was unreachable and
+    nothing was installed. A fake returning 0 without the receipt is a fake of
+    the broken case, so the happy paths below have to write it.
+    """
+
+    def _run(cmd, cwd=None, **kwargs):
+        if returncode == 0 and write_receipt and cwd and cmd[1:2] == ["ci"]:
+            node_modules = Path(cwd) / "node_modules"
+            node_modules.mkdir(parents=True, exist_ok=True)
+            (node_modules / ".package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+        return _cp(returncode, stderr=stderr)
+
+    return _run
+
+
 def test_install_native_web_systemd_missing_npm(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda _: None)
     results = ops._install_native_web_systemd()
@@ -766,7 +786,7 @@ def test_install_native_web_systemd_happy_path(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", repo)
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/npm" if name == "npm" else None)
-    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(0, stdout="", stderr=""))
+    monkeypatch.setattr(ops.subprocess, "run", _fake_npm())
     tpl = tmp_path / "nyxgpt-web.service"
     tpl.write_text("ExecStart=__NYXGPT_HOME__/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web\n")
     monkeypatch.setattr(ops, "_find_systemd_unit_template", lambda name: (tpl, [tpl]))
@@ -789,7 +809,7 @@ def test_install_native_web_systemd_npm_ci_failure_stops_early(monkeypatch, tmp_
     monkeypatch.setattr(ops, "REPO_ROOT", repo)
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/npm" if name == "npm" else None)
-    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(1, stderr="ci failed"))
+    monkeypatch.setattr(ops.subprocess, "run", _fake_npm(1, stderr="ci failed"))
 
     results = ops._install_native_web_systemd()
     assert results[-1].ok is False
@@ -808,7 +828,7 @@ def test_install_native_web_systemd_failed_rebuild_preserves_previous_build(monk
     monkeypatch.setattr(ops, "REPO_ROOT", repo)
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/npm" if name == "npm" else None)
-    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(0, stdout="", stderr=""))
+    monkeypatch.setattr(ops.subprocess, "run", _fake_npm())
     tpl = tmp_path / "nyxgpt-web.service"
     tpl.write_text("ExecStart=__NYXGPT_HOME__/.nyxGPT/opt/nyxgpt-web/bin/nyxgpt-web\n")
     monkeypatch.setattr(ops, "_find_systemd_unit_template", lambda name: (tpl, [tpl]))
@@ -823,11 +843,12 @@ def test_install_native_web_systemd_failed_rebuild_preserves_previous_build(monk
     marker.write_text("still the live build", encoding="utf-8")
 
     # Second install's rebuild fails partway through (npm run build).
-    monkeypatch.setattr(
-        ops.subprocess,
-        "run",
-        lambda cmd, **k: _cp(0) if cmd[1:2] == ["ci"] else _cp(1, stderr="build failed"),
-    )
+    def _ci_ok_build_fails(cmd, cwd=None, **k):
+        if cmd[1:2] == ["ci"]:
+            return _fake_npm()(cmd, cwd=cwd, **k)
+        return _cp(1, stderr="build failed")
+
+    monkeypatch.setattr(ops.subprocess, "run", _ci_ok_build_fails)
     results = ops._install_native_web_systemd()
     assert results[-1].ok is False
     assert "npm run build failed" in results[-1].message
@@ -1101,7 +1122,11 @@ def test_ensure_docker_engine_installs_missing_docker(monkeypatch):
 
     def _fake_privileged(cmd, **kwargs):
         privileged.append(cmd)
-        if cmd[:2] == ["apt-get", "install"]:
+        # Matched by content, not by position: the argv now carries the
+        # remote-fetch policy's flags between the tool and its subcommand
+        # (#4205), and a fake that cares where `install` sits would break
+        # again the next time a global option is added.
+        if cmd[0] == "apt-get" and "install" in cmd:
             present["docker"] = "/usr/bin/docker"
         return _cp(0)
 
@@ -1112,8 +1137,18 @@ def test_ensure_docker_engine_installs_missing_docker(monkeypatch):
     results = ops._ensure_docker_engine()
 
     assert all(r.ok for r in results)
-    assert ["apt-get", "update"] in privileged
-    assert ["apt-get", "install", "-y", "docker.io"] in privileged
+    # `-o Acquire::Retries=5` is nyxGPT's one remote-fetch policy, applied at
+    # the chokepoint every distro install goes through (#4205). Asserted here
+    # rather than stripped out: a distro install that silently lost its retry
+    # policy is the defect, and Debian's own default is 0 retries.
+    assert ["apt-get", *build_fetch_policy.APT_GET_FLAGS, "update"] in privileged
+    assert [
+        "apt-get",
+        *build_fetch_policy.APT_GET_FLAGS,
+        "install",
+        "-y",
+        "docker.io",
+    ] in privileged
     assert ["systemctl", "enable", "--now", "docker"] in privileged
 
 
@@ -1211,10 +1246,11 @@ def test_docker_engine_installs_on_amazon_linux_without_a_compose_package(monkey
 
     def _fake_privileged(cmd, **kwargs):
         privileged.append(cmd)
-        if cmd[:2] == ["dnf", "install"] and "docker" in cmd:
+        # Matched by content, not by position -- see the apt fake above (#4205).
+        if cmd[0] == "dnf" and "install" in cmd and "docker" in cmd:
             present["docker"] = "/usr/bin/docker"
             return _cp(0)
-        if cmd[:2] == ["dnf", "install"]:  # docker-compose-plugin: no such package here
+        if cmd[0] == "dnf" and "install" in cmd:  # docker-compose-plugin: absent here
             return _cp(1, stderr="No match for argument: docker-compose-plugin")
         return _cp(0)
 
@@ -1224,7 +1260,7 @@ def test_docker_engine_installs_on_amazon_linux_without_a_compose_package(monkey
 
     results = ops._ensure_docker_engine()
 
-    assert ["dnf", "install", "-y", "docker"] in privileged
+    assert ["dnf", *build_fetch_policy.DNF_FLAGS, "install", "-y", "docker"] in privileged
     assert all(r.ok for r in results), [r.message for r in results]
 
 
@@ -1297,7 +1333,13 @@ def test_compose_plugin_package_install_is_preferred_over_the_binary(monkeypatch
 
     results = ops._install_linux_compose_plugin()
 
-    assert ["apt-get", "install", "-y", "docker-compose-v2"] in privileged
+    assert [
+        "apt-get",
+        *build_fetch_policy.APT_GET_FLAGS,
+        "install",
+        "-y",
+        "docker-compose-v2",
+    ] in privileged
     assert not [cmd for cmd in privileged if cmd[0] == "curl"]
     assert results[0].ok is True
 

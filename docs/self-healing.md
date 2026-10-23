@@ -1114,7 +1114,7 @@ assumed:
 | `glitchtip-redis` | added | `redis-cli ping` |
 | `glitchtip` | added | Python TCP connect to `127.0.0.1:8080` |
 | `glitchtip-postgres` | pre-existing | `pg_isready` |
-| `glitchtip-worker` | added (#3565) | mtime of the `VTASKS_HEALTH_CHECK_FILE` heartbeat file |
+| `glitchtip-worker` | added (#3565), replaced (#4208) | the consumer's own `vtasks` counters, via `k8s/observability/glitchtip-worker-ready.py` |
 | `loki`, `promtail`, `otel-collector` | **none** | see below |
 
 `loki` and `otel-collector` ship images built without a shell
@@ -1129,34 +1129,85 @@ stuck" for them the way it can for the services above.
 into a GlitchTip Issue) was originally left out of the HTTP-probe survey
 above -- it has a shell and `python`, but no `wget`/`curl` to probe an HTTP
 endpoint with. The first attempt at a fix (#3565 round 1) assumed this
-image ran Celery (`command: ./bin/run-celery-with-beat.sh`) and probed with
-`celery -A glitchtip inspect ping`. That assumption was wrong for the
-pinned `glitchtip:6.2.0` image: `run-celery-with-beat.sh` only prints a
-deprecation notice and execs `run-worker.sh`, which runs `django-vtasks`'s
-`manage.py runworker` -- there is no `celery` binary or Python module in
-this image at all, so the probe failed on every single run with `celery:
-not found`, permanently misreporting a healthy worker as unhealthy (#3565
-round 2, live-verified via `docker inspect --format
-'{{json .State.Health}}'` against the running container).
+image ran Celery -- the service then invoked
+`./bin/run-celery-with-beat.sh` -- and probed with `celery -A glitchtip
+inspect ping`. That assumption was wrong for the pinned
+`glitchtip:6.2.0` image: that script only prints a deprecation notice and
+execs `run-worker.sh`, which runs `django-vtasks`'s `manage.py runworker`
+-- there is no `celery` binary or Python module in this image at all, so
+the probe failed on every single run with `celery: not found`,
+permanently misreporting a healthy worker as unhealthy (#3565 round 2,
+live-verified via `docker inspect --format '{{json .State.Health}}'`
+against the running container).
 
-`django-vtasks` has its own purpose-built liveness mechanism instead:
-`runworker` reads `VTASKS_HEALTH_CHECK_FILE` from the environment (no
-Django setting needed -- `django_vtasks/conf.py` falls back to `os.environ`
-directly) and, for as long as its event loop is alive, a background
-coroutine rewrites that file's contents every 5 seconds. The healthcheck
-sets that env var to `/tmp/vtasks_health_check` and probes with `python`
-(confirmed present in the image) checking the file's mtime is under 30
-seconds old -- a wedged worker's heartbeat coroutine stops updating the
-file just as reliably as a crashed process stops existing, giving a real
-liveness check rather than "the container process is still running."
-This was boot-tested against the real pinned image and container: a
-running worker reports `healthy`; freezing the worker process with `docker
-kill --signal=STOP` (leaving the container itself `running`) makes the
-heartbeat file go stale and the probe flip to `unhealthy` after the
-retry threshold, and `--signal=CONT` recovers it back to `healthy`. Without
-this healthcheck, a wedged worker (ingestion silently stopped, #3565)
-stayed invisible to self-heal indefinitely, since a healthcheck-less
-container with `state == "running"` is always reported healthy.
+Nothing in either substrate names Celery any more (#4212). Both now invoke
+`./bin/run-worker.sh` directly -- the identical process, under the name of
+what actually runs -- and neither carries the `CELERY_WORKER_AUTOSCALE` /
+`CELERY_WORKER_MAX_TASKS_PER_CHILD` pair they used to, because the image
+has no reader for either and they described a 1-3 worker pool that never
+existed. The worker is one `runworker` process whose in-flight task count
+and DB-connection-owning thread lanes are both sized by
+`VTASKS_CONCURRENCY` (`django-vtasks`' default is 20, and nyxGPT leaves it
+there -- measured at ~105MiB RSS against the container's 1GiB limit, so
+the limit is not a reason to cap it). `VTASKS_QUEUES` deliberately is not
+set either: `glitchtip/settings.py` assigns it, and `django-vtasks` only
+falls back to the environment for settings Django leaves unset, so an env
+var would be inert. `scripts/glitchtip-env-reader-check.sh` re-proves all
+of that against the pinned image on every run of the
+**GlitchTip Worker Consumption Smoke** workflow.
+
+Round 2 used `django-vtasks`'s own liveness mechanism instead: `runworker`
+reads `VTASKS_HEALTH_CHECK_FILE` from the environment (no Django setting
+needed -- `django_vtasks/conf.py` falls back to `os.environ` directly) and a
+background coroutine rewrites that file every 5 seconds for as long as its
+event loop is alive. The healthcheck probed that file's mtime, and it was
+boot-tested: freezing the process with `docker kill --signal=STOP` (leaving
+the container `running`) made the file go stale and the probe flip to
+`unhealthy`, and `--signal=CONT` recovered it.
+
+**That probe was green on the defect it existed to catch**, and #4208
+measured it so. `SIGSTOP` freezes the heartbeat coroutine along with
+everything else, which is why the boot test passed; the failure that actually
+happens does not. `Worker._heartbeat_loop` runs `while self.running`, and
+`self.running` stays true for as long as `Worker.run()` has not *returned* --
+so in the real wedge (`runworker`'s consumer hangs or dies on its first
+broker call while the scheduler keeps enqueuing) the heartbeat keeps writing
+forever. Reproduced on `glitchtip/glitchtip:6.2.0`: a worker started while
+its broker was not yet accepting connections processed **0** tasks, never
+recovered, stayed `running` with 0 restarts, and reported a heartbeat file
+whose mtime was the current second. A heartbeat proves the event loop turns.
+It cannot prove the consumer consumes.
+
+So since #4208 both substrates ask the consumer itself. `runworker` exposes
+Prometheus counters on `VTASKS_METRICS_PORT`, and
+`k8s/observability/glitchtip-worker-ready.py` -- one file, mounted by the
+Compose healthcheck and by the Kubernetes readiness/liveness probes, so the
+two cannot drift -- reads two things from them:
+
+* **`vtasks_queue_depth` must have at least one sample.**
+  `Worker.consume_queue` publishes it on its first iteration and every 15s
+  after, so a served metrics page with no sample means no consumer iteration
+  has ever happened. This is the start-up wedge, decidable on the first probe
+  rather than after a timeout.
+* **`vtasks_tasks_processed_total` must have moved recently.** Only
+  `process_task`/`process_batch` increment it, so it is the consumer's
+  signature and nothing else's. The scheduler enqueues work every
+  `ALERT_NOTIFICATION_INTERVAL` (60s) at worst, so a total that has not moved
+  in `--max-stall-seconds` (180 for readiness, 420 for the Kubernetes
+  liveness probe) means the consumer stopped rather than that the stack is
+  idle.
+
+`.github/workflows/glitchtip-worker-smoke.yml` re-measures all of this on
+every change to the probe, the manifest or the Compose service, by injecting
+the fault: it fails unless the wedge reproduces, the heartbeat probe calls it
+healthy, and the new probe calls it broken.
+
+Without any healthcheck at all, a wedged worker (ingestion silently stopped,
+#3565) stays invisible to self-heal indefinitely, since a healthcheck-less
+container with `state == "running"` is always reported healthy. That is why
+`tests/unit/test_glitchtip_worker_consumption.py` now fails the build on any
+Compose service that has no healthcheck and no written-down reason it cannot
+have one.
 
 ## Known limitation: healing the `api` process itself
 

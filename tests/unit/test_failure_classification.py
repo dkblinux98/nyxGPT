@@ -179,7 +179,7 @@ def test_every_arm_goes_through_the_one_reader() -> None:
     Two things ride on the call shape, which is why it is pinned rather than
     left to style: the extractor above reads the signature table out of it, and
     `_signature_matches` is the here-string that keeps a lost SIGPIPE race from
-    being read as "this signature did not match" (D-072). A new arm written as
+    being read as "this signature did not match" (D-074). A new arm written as
     a `grep -q` pipeline would quietly get neither.
     """
     offenders = [

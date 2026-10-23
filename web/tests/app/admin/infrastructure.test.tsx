@@ -2017,6 +2017,205 @@ describe('InfrastructurePage', () => {
     ).toBeInTheDocument();
   });
 
+  // #4181's declined-consent arm, and the two it reaches (#4209). A declined
+  // disclosure is the one deploy outcome that creates nothing, so it is NOT
+  // counted as an unfinished deploy -- which puts it in the `!known` branch
+  // with "unknown from this machine", where it would be swallowed entirely if
+  // this sentence did not say it. No fixture sent `status: 'declined'`, so the
+  // arm and both halves of its phase fallback were uncovered.
+  it('says a declined deploy was declined rather than swallowing it as unknown (#4181)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          attempt: { status: 'declined', phase: 'disclosure' },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DECLINED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('disclosure')).toBeInTheDocument();
+    expect(
+      screen.getByText(/nothing was created and nothing is billed/)
+    ).toBeInTheDocument();
+    // Still UNKNOWN: a declined consent here says nothing about whether
+    // another operator's machine has a deployment.
+    expect(screen.getAllByText('UNKNOWN').length).toBeGreaterThan(0);
+  });
+
+  it('names the phase as unknown rather than blank when a declined attempt records none', async () => {
+    // `phase: ''` is what an attempt declined before the phase was stamped
+    // records. `<code></code>` would render an empty inline box the operator
+    // cannot interpret.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          attempt: { status: 'declined', phase: '' },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DECLINED')).toBeInTheDocument();
+    });
+    expect(screen.getByText('unknown')).toBeInTheDocument();
+  });
+
+  // The other half of #4181's billing split: the substrate observation, as
+  // opposed to a mac host's. Both arms of that ternary print a provenance and
+  // only the mac one was ever rendered, so the page could have been printing
+  // the wrong machine's evidence for the billing claim and nothing would have
+  // failed.
+  it('attributes the billing confirmation to the substrate observation when there is no mac host', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          instance_id: 'i-0abc123def',
+          mac_host: null,
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            provisioned: true,
+            instance_id: 'i-0abc123def',
+            observation: {
+              confirmed: true,
+              confirmed_at: '2026-10-21T00:00:00Z',
+              present: true,
+              coherent: true,
+              usable: true,
+              findings: [],
+              reason: '',
+              profile: 'nyxgpt',
+              account_id: '000000000000',
+              account_label: 'nyxgpt (000000000000)',
+              provenance: 'confirmed at AWS in this run via profile `nyxgpt`',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/An instance exists and is being billed/)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/confirmed at AWS in this run via profile `nyxgpt`/)
+    ).toBeInTheDocument();
+    // The honest-but-unactionable wording belongs to the other arm.
+    expect(screen.queryByText(/nothing confirmed it at AWS in this run/)).toBeNull();
+  });
+
+  it('still names a command when the api sends no command table', async () => {
+    // Operational Command Wrapping (owner requirement): the card must point at
+    // a `nyxgpt` command. An older api, or one that could not build the table,
+    // sends none -- and the fallback literal is what keeps the page from
+    // rendering an empty `<code>` where the operator's next step should be.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+    server.use(
+      http.get('/api/v1/cloud/deploy', () =>
+        HttpResponse.json({
+          ...CLOUD_DEPLOY_UNKNOWN,
+          source: 'substrate-record',
+          known: true,
+          deployed: false,
+          instance_id: 'i-0abc123def',
+          commands: {},
+          infra: {
+            ...CLOUD_DEPLOY_UNKNOWN.infra,
+            provisioned: true,
+            instance_id: 'i-0abc123def',
+            observation: {
+              confirmed: false,
+              confirmed_at: '',
+              present: null,
+              coherent: true,
+              usable: false,
+              findings: [],
+              reason: 'AWS could not be asked: ExpiredToken',
+              profile: '',
+              account_id: '',
+              account_label: 'not recorded here',
+              provenance: 'recorded on this machine; NOT confirmed at AWS',
+            },
+          },
+        })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/nothing confirmed it at AWS in this run/)).toBeInTheDocument();
+    });
+    expect(screen.getAllByText('nyxgpt cloud status').length).toBeGreaterThan(0);
+  });
+
+  // #4184's pair on this page: an operator reading a NOT IN SCOPE badge is
+  // owed the reason the card is out of scope, and this line is that reason.
+  // The Self-Heal page and the System Health card carry the same pair from the
+  // same API fields, and all three were uncovered at 99.38% (#4209).
+  describe('which deployment the scoped cards are scoped for (#4184)', () => {
+    async function substrateLine(): Promise<HTMLElement> {
+      return await screen.findByText(/^Substrate:/, { selector: 'p' });
+    }
+
+    it('names the substrate and how it was decided', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({
+            ...mockStatusEmpty,
+            substrate: 'native',
+            substrate_source: 'brew services answered',
+          })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      expect((await substrateLine()).textContent).toBe(
+        'Substrate: native — brew services answered'
+      );
+    });
+
+    it('names the substrate alone when nothing said how it was decided', async () => {
+      server.use(
+        http.get('/api/v1/infra/status', () =>
+          HttpResponse.json({ ...mockStatusEmpty, substrate: 'native' })
+        )
+      );
+
+      render(<InfrastructurePage />);
+
+      expect((await substrateLine()).textContent).toBe('Substrate: native');
+    });
+
+    it('says nothing when no deployment answered', async () => {
+      server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+
+      render(<InfrastructurePage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/^Substrate:/, { selector: 'p' })).toBeNull();
+    });
+  });
+
   it('shows IMDS-derived substrate facts when the dashboard is running on the EC2 instance (#3804)', async () => {
     // The owner's rc12 observation: served *from* the provisioned instance,
     // the page used to read "not provisioned" with every field blank because
@@ -3229,7 +3428,12 @@ describe('InfrastructurePage', () => {
   // is nothing but branches: every Row picks between two strings. CI's 100%
   // coverage gate caught it only once an unrelated merge touched `web/`, because
   // the `web` job is conditional on the diff -- so the gap sat in the tree while
-  // several runs reported green with that job skipped.
+  // several runs reported green with that job skipped. #4209 fixed the larger
+  // half of that: the job ran only on PUSHES to the release branch and never on
+  // a PR head, so the gate could not block the change that broke it, and the
+  // red build landed on whoever touched `web/` next. The diff condition itself
+  // stands and is correct -- a change that touches no web file cannot move web
+  // coverage.
   //
   // These cover both sides of each branch the panel owns, because the panel's
   // whole job is to say which of two true-but-different things is the case: a
@@ -3357,9 +3561,37 @@ describe('InfrastructurePage', () => {
       await renderWith({ release_scheduled: false });
       // One assertion on the whole Row value: the command also appears in the
       // cards above, so matching it alone finds several elements.
+      //
+      // The wording became "NOT scheduled to be released — still billing" in
+      // #4200: the row used to read "not scheduled yet", which describes a
+      // state of the paperwork, on a page whose whole subject is that the host
+      // is costing money until something releases it.
       expect(
-        screen.getByText(/not scheduled yet — .*nyxgpt cloud destroy --yes.* terminates the Mac/)
+        screen.getByText(
+          /NOT scheduled to be released — still billing\. .*nyxgpt cloud destroy --yes.* terminates the Mac/
+        )
       ).toBeInTheDocument();
+    });
+
+    // #4200 review. `unscheduled_warning` is composed once, server-side, in
+    // `cloud_mac.observe_host`, precisely so this card and `nyxgpt cloud
+    // status` cannot word the same state differently (D-066) -- and the server
+    // names the host in it, which the card's own literal cannot do usefully now
+    // that several cards can be on screen at once. The field shipped with
+    // #4200 and no consumer; this is the test that it has one.
+    it('prefers the server-composed warning over its own wording', async () => {
+      await renderWith({
+        release_scheduled: false,
+        unscheduled_warning:
+          'NOT scheduled to be released -- still billing. Nothing on this machine will ' +
+          'release h-0abc123def456. Run `nyxgpt cloud destroy --yes` to schedule it.',
+      });
+      expect(
+        screen.getByText(/Nothing on this machine will release h-0abc123def456/)
+      ).toBeInTheDocument();
+      // And the card's own fallback is NOT also rendered: two sentences for one
+      // state is how two surfaces start disagreeing.
+      expect(screen.queryByText(/terminates the Mac and schedules it/)).toBeNull();
     });
 
     it('reports a scheduled release as scheduled, not as released', async () => {
@@ -3511,7 +3743,9 @@ describe('InfrastructurePage', () => {
         ).toBeInTheDocument();
       });
       expect(
-        screen.getByText(/not scheduled yet — .*nyxgpt cloud destroy --yes.* terminates the Mac/)
+        screen.getByText(
+          /NOT scheduled to be released — still billing\. .*nyxgpt cloud destroy --yes.* terminates the Mac/
+        )
       ).toBeInTheDocument();
     });
 
@@ -3566,6 +3800,353 @@ describe('InfrastructurePage', () => {
       // cards above, so an unscoped match is ambiguous.
       const para = screen.getByText(/Nothing is recorded as provisioned by this attempt/);
       expect(within(para).getByText('nyxgpt cloud deploy')).toBeInTheDocument();
+    });
+
+    // One card per host (#4200).
+    //
+    // This is the dashboard half of the fix, and it is the half that had no
+    // test: the panel above was written when the payload could name exactly one
+    // Dedicated Host, and #4200 is the discovery that it can name several. A
+    // host bills for a 24-hour minimum and outlives the deployment that created
+    // it, so scheduling a second host's release used to retarget the first
+    // host's schedule -- and because the same single slot was what every
+    // surface read, THE HOST NOTHING RELEASED WAS ALSO THE HOST NOTHING DREW.
+    // The two facts had one cause, which is why a page that silently renders
+    // one of two billing hosts is the same defect, not a cosmetic one.
+    //
+    // So these tests assert the list, not the card: that every entry is drawn,
+    // that each card's rows come from its OWN entry rather than the first, and
+    // that the fallback for an older api still draws the host that api knows
+    // about. Before them, nothing in CI failed if `macHostsOf` returned only
+    // `[hosts[0]]`.
+    describe('every billing Dedicated Host, one card each (#4200)', () => {
+      // Two hosts, as the api sends them: oldest allocation first. Host A is
+      // the one that lost the record's single slot in the defect -- still
+      // allocated, still inside AWS's window, and with no release scheduled.
+      const HOST_A = {
+        host_id: 'h-0aaa1111aaaa1111a',
+        instance_type: 'mac2.metal',
+        region: 'us-east-1',
+        availability_zone: 'us-east-1a',
+        allocated_at: '2026-10-20T09:00:00Z',
+        release_at: '2026-10-21T09:00:00Z',
+        releasable_now: false,
+        release_scheduled: false,
+        release_schedule_present: false,
+        unscheduled_warning:
+          'NOT scheduled to be released -- still billing. Nothing on this machine will ' +
+          'release h-0aaa1111aaaa1111a. Run `nyxgpt cloud destroy --yes` to schedule it.',
+        accrued_cost: 15.6,
+        accrued_source: 'aws-cost-explorer',
+        spend_through: '2026-10-21',
+        spend_as_of: '2026-10-21T10:00:00Z',
+        estimated_cost: 15.6,
+        hourly_rate: 0.65,
+        currency: 'USD',
+        verified_at: '2026-10-21T10:00:00Z',
+        host_present: true,
+        incoherent: [],
+        billing: true,
+        usable: true,
+        provenance: 'confirmed at AWS in nyxgpt (066835328281) at 2026-10-21T10:00:00Z',
+      };
+
+      const HOST_B = {
+        ...HOST_A,
+        host_id: 'h-0bbb2222bbbb2222b',
+        instance_type: 'mac2-m2.metal',
+        availability_zone: 'us-east-1b',
+        allocated_at: '2026-10-21T08:00:00Z',
+        release_at: '2026-10-22T08:00:00Z',
+        release_scheduled: true,
+        release_schedule_present: true,
+        unscheduled_warning: '',
+        accrued_cost: 3.25,
+      };
+
+      const renderHosts = async (hosts: unknown[], over: Record<string, unknown> = {}) => {
+        server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
+        server.use(
+          http.get('/api/v1/cloud/deploy', () =>
+            HttpResponse.json({
+              ...CLOUD_DEPLOY_UNKNOWN,
+              source: 'deploy-record',
+              known: true,
+              commands: CLOUD_LIFECYCLE_COMMANDS,
+              mac_hosts: hosts,
+              ...over,
+            })
+          )
+        );
+        render(<InfrastructurePage />);
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+        });
+      };
+
+      it('draws a card for every host in the list, not just the first', async () => {
+        await renderHosts([HOST_A, HOST_B]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(2);
+        });
+        // Each card's own identity row, from its own entry. Asserting both host
+        // ids is the point: the defect's signature is the second host's values
+        // appearing where the first host's should be, or not at all.
+        expect(screen.getByText('h-0aaa1111aaaa1111a (mac2.metal)')).toBeInTheDocument();
+        expect(screen.getByText('h-0bbb2222bbbb2222b (mac2-m2.metal)')).toBeInTheDocument();
+        expect(screen.getByText('us-east-1 / us-east-1a')).toBeInTheDocument();
+        expect(screen.getByText('us-east-1 / us-east-1b')).toBeInTheDocument();
+      });
+
+      // Acceptance criterion 3, in the words the criterion uses: a host with no
+      // schedule says so, ON ITS OWN CARD, while the host that does have one
+      // says that -- at the same time, from the same payload.
+      it('says the unscheduled host is still billing while the other reads as scheduled', async () => {
+        await renderHosts([HOST_A, HOST_B]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(2);
+        });
+        expect(
+          screen.getByText(/Nothing on this machine will release h-0aaa1111aaaa1111a/)
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(/scheduled — a one-shot AWS schedule releases it/)
+        ).toBeInTheDocument();
+      });
+
+      // The two cards report money separately, because AWS bills them
+      // separately. A single figure over two hosts is an understatement of the
+      // bill, which is the direction that costs the operator.
+      it('reports each host’s spend against that host', async () => {
+        await renderHosts([HOST_A, HOST_B]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(2);
+        });
+        expect(screen.getByText(/USD 15\.60 from AWS Cost Explorer/)).toBeInTheDocument();
+        expect(screen.getByText(/USD 3\.25 from AWS Cost Explorer/)).toBeInTheDocument();
+      });
+
+      // `mac_hosts` is the whole answer, `mac_host` the fallback for a payload
+      // from an api older than #4200 -- an operator running a mismatched
+      // web/api pair still sees the host that api knows about, rather than a
+      // page that silently stops mentioning a charge.
+      it('falls back to the single mac_host slot on an older payload', async () => {
+        await renderHosts(undefined as unknown as unknown[], {
+          mac_hosts: undefined,
+          mac_host: HOST_A,
+        });
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(screen.getByText('h-0aaa1111aaaa1111a (mac2.metal)')).toBeInTheDocument();
+      });
+
+      // An EMPTY list is not "no information": the fallback has to run for it
+      // too, or a payload that sends `mac_hosts: []` alongside a populated
+      // `mac_host` drops the host from the page -- the exact silence #4200 is
+      // about, reintroduced by a truthiness check on the wrong value.
+      it('falls back when the list is present but empty', async () => {
+        await renderHosts([], { mac_host: HOST_A });
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(screen.getByText('h-0aaa1111aaaa1111a (mac2.metal)')).toBeInTheDocument();
+      });
+
+      // And no card at all when neither names a host: a permanent "no
+      // Dedicated Host" block on every Linux deployment is noise, and an empty
+      // card over no host would be a claim about nothing.
+      it('draws no card when the list is empty and no single host is recorded', async () => {
+        await renderHosts([], { mac_host: null });
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'AWS substrate' })).toBeInTheDocument();
+        });
+        expect(
+          screen.queryByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+        ).not.toBeInTheDocument();
+      });
+
+      // A list entry with no host id names no resource, so there is nothing to
+      // report about it -- but it must not suppress the entries that do. The
+      // api sends `mac_host` with an empty id when there is no host, and a
+      // list built from that shape can inherit one.
+      it('skips an entry with no host id without losing the others', async () => {
+        await renderHosts([{ ...HOST_A, host_id: '' }, HOST_B]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(screen.getByText('h-0bbb2222bbbb2222b (mac2-m2.metal)')).toBeInTheDocument();
+      });
+
+      // --- The panel's own fallbacks, now that it is a component ------------
+      //
+      // These branches were uncovered while the panel was an inline block, and
+      // `MacHostPanel` inherited the gap verbatim. They are all the same shape
+      // -- the arm that runs when the api DOESN'T send an optional field --
+      // and they are reachable for one unremarkable reason: an api older than
+      // the field, which an operator running a mismatched web/api pair has.
+      // Each of them is the card refusing to print a blank where a figure or
+      // an explanation about money belongs.
+
+      it('explains an unconfirmed host even when the api sends no provenance', async () => {
+        await renderHosts([
+          {
+            ...HOST_A,
+            verified_at: '',
+            host_present: null,
+            billing: false,
+            usable: false,
+            provenance: undefined,
+          },
+        ]);
+        await waitFor(() => {
+          expect(
+            screen.getByRole('heading', {
+              name: /EC2 Mac Dedicated Host — recorded here, not confirmed at AWS/,
+            })
+          ).toBeInTheDocument();
+        });
+        expect(
+          screen.getByText(/Nothing has asked AWS about this host in this run/)
+        ).toBeInTheDocument();
+        // And the Confirmed-at-AWS row's own fallback, which is a different
+        // sentence: "never" is a claim about every run, not just this one.
+        expect(
+          screen.getByText(/never — nothing here has asked AWS whether this host exists/)
+        ).toBeInTheDocument();
+      });
+
+      it('draws no inconsistency warning when the api sends no findings list', async () => {
+        await renderHosts([{ ...HOST_A, incoherent: undefined }]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(screen.queryByText(/This record is internally inconsistent/)).toBeNull();
+      });
+
+      // The flag says scheduled and this host's own release stack is absent --
+      // the state nyxGPT itself used to manufacture before #4200. In
+      // PRODUCTION the server reports that combination as INCOHERENT, which
+      // closes `usable` and routes the operator to the unconfirmed branch
+      // instead; this card is handed a payload, so the branch is still
+      // reachable here and is tested here, which is the only place it can be.
+      it('draws no conclusion from a scheduled flag with no schedule behind it', async () => {
+        await renderHosts([
+          { ...HOST_A, release_scheduled: true, release_schedule_present: false },
+        ]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(
+          screen.getByText(/NOTHING WILL RELEASE IT AND IT IS STILL BILLING/)
+        ).toBeInTheDocument();
+      });
+
+      it('names AWS’s figure with no currency and no through-date recorded', async () => {
+        await renderHosts([
+          { ...HOST_A, currency: '', spend_through: '', spend_as_of: '' },
+        ]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        // USD is the assumed currency, the through-date clause is simply
+        // absent rather than empty, and "unknown" stands in for the as-of.
+        expect(
+          screen.getByText(/USD 15\.60 from AWS Cost Explorer \(as of unknown\)/)
+        ).toBeInTheDocument();
+      });
+
+      // The estimate is only ever shown NAMED as an estimate, with the reason
+      // AWS's own figure is missing (#4136). The reason has three sources in
+      // descending authority, and the last is reached when the api sends
+      // neither of the first two.
+      it('falls back through the reasons AWS has no figure, down to the last', async () => {
+        await renderHosts([
+          {
+            ...HOST_A,
+            currency: '',
+            accrued_cost: null,
+            spend_error: '',
+            observation: undefined,
+          },
+        ]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(
+          screen.getByText(/no AWS figure \(AWS has not been asked yet\)\. Local ESTIMATE only: USD 15\.60/)
+        ).toBeInTheDocument();
+      });
+
+      it('prefers the observation’s reason when there is no spend error', async () => {
+        await renderHosts([
+          {
+            ...HOST_A,
+            accrued_cost: null,
+            spend_error: '',
+            observation: { reason: 'boto3 is not installed, so nothing here can ask AWS' },
+          },
+        ]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(1);
+        });
+        expect(screen.getByText(/no AWS figure \(boto3 is not installed/)).toBeInTheDocument();
+      });
+
+      // The unconfirmed gate is per host too (#4181/#4136): one host AWS
+      // confirmed in this run and one it did not must not borrow each other's
+      // authority. "Still billing" is a claim about AWS and may only be made
+      // over the host AWS actually answered about.
+      it('gates each card on its own confirmation', async () => {
+        await renderHosts([
+          HOST_A,
+          {
+            ...HOST_B,
+            verified_at: '',
+            host_present: null,
+            billing: false,
+            usable: false,
+            provenance:
+              'recorded on this machine; NOT confirmed at AWS -- nothing on this machine has ' +
+              'asked AWS about it in this run',
+          },
+        ]);
+        await waitFor(() => {
+          expect(
+            screen.getAllByRole('heading', { name: /EC2 Mac Dedicated Host/ })
+          ).toHaveLength(2);
+        });
+        expect(
+          screen.getByRole('heading', { name: /EC2 Mac Dedicated Host — still billing/ })
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole('heading', {
+            name: /EC2 Mac Dedicated Host — recorded here, not confirmed at AWS/,
+          })
+        ).toBeInTheDocument();
+      });
     });
   });
 

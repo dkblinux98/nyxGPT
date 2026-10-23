@@ -47,7 +47,7 @@ Every issue moves through a fixed set of statuses on the GitHub project
 board:
 
 ```
-Backlog -> In Progress -> In Review -> Acceptance Testing -> For Release -> Closed
+Backlog -> In Progress -> In Review -> Acceptance Testing -> For Release -> Done
 ```
 
 - **Backlog** — approved, unscheduled.
@@ -59,7 +59,14 @@ Backlog -> In Progress -> In Review -> Acceptance Testing -> For Release -> Clos
 - **Acceptance Testing** — merged, and assigned to the human owner to
   verify the acceptance criteria against the real, running system.
 - **For Release** — accepted; only the human owner sets this.
-- **Closed** — released.
+- **Done** — released. The release ceremony's Phase 3 close-out writes it on
+  every closed issue in the released milestone, and nothing moves an issue
+  back out of it. `Done` counts as **accepted** everywhere the loop asks —
+  one module answers that question for every caller
+  (`scripts/agents/lib/acceptance_status.py`, #4204), which is what stops a
+  released blocker from stranding whatever was parked behind it. (`Closed` is
+  a different lane and not part of this chain: it is where a merged PR's own
+  project card lands, #3742.)
 
 An issue can also be "parked" mid-flow — merged but held at "In Review"
 instead of advancing to Acceptance Testing — if its acceptance criteria

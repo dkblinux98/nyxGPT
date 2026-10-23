@@ -149,7 +149,12 @@ Backlog      – approved, unscheduled
 In Progress  – active development
 In Review    – awaiting review (agent review OR human stakeholder acceptance after merge)
 For Release  – stakeholder accepted, ready for release (human sets this)
-Closed       – released (human only)
+Done         – released; the release ceremony's Phase 3 close-out writes it
+               on every closed issue in the released milestone, and nothing
+               moves an issue back out of it. It counts as ACCEPTED wherever
+               the loop asks — `scripts/agents/lib/acceptance_status.py` is
+               the one place that answers "is this accepted?" (#4204)
+Closed       – a merged PR's own project card, not an issue lane (#3742)
 
 **Important**: After merge, issues remain in "In Review" status (CLOSED in GitHub, but "In Review" in project) until human stakeholder acceptance. The human owner moves accepted issues to "For Release".
 

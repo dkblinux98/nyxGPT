@@ -2753,7 +2753,77 @@ rather than mechanism, and nothing can enforce them.
   in both workflows' headers and in `docs/acceptance-drain-gate.md`;
   `tests/unit/test_board_sweeps_are_dispatch_driven.py`;
   `.github/workflows/acceptance-sweep-dispatch-smoke.yml`.
-- **D-071** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
+- **D-071** · 2026-10-21 · developer-agent (#4204) — **"Is this issue
+  accepted?" is answered in one place, and `Done` is accepted.**
+  `scripts/agents/lib/acceptance_status.py` holds the vocabulary; four
+  callers used to each carry their own hard-coded list of Status values and
+  **`Done` was on none of them** — `promote_accepted_features.sh` (blocker
+  must be exactly `For Release`), `sweep_parked_blocked_issues()` (CLOSED and
+  `Acceptance Testing`/`For Release`), `drain_gate.py`'s `sprint_unreleased`,
+  and `sprint_calc.py`'s `sprint_park_state`. `Done` is a lane **the loop
+  writes itself** (`release_ceremony.sh` Phase 3 close-out), so an issue that
+  was accepted and then *released* read as "not accepted yet" — and
+  permanently, since nothing moves an issue back out of `Done`: anything
+  parked behind such a blocker was unpromotable forever, the reachable shape
+  being a reopened original (**D-042**) whose blocker is released under
+  another milestone or none. **Two NAMED predicates, not an ordering over
+  lanes**: `is_accepted` (`For Release`, `Done`) and
+  `has_reached_acceptance` (adds `Acceptance Testing` — the
+  "Acceptance Testing or beyond" the review runbook always described).
+  `Acceptance Failed` is in neither, deliberately: it is "beyond"
+  `Acceptance Testing` in board order, but work is still owed on both
+  populations parked there (**D-008**/#3780, **D-042**), and an ordering
+  would have made it count as a completed blocker. The *writer* is part of
+  the fix — Phase 3 now sets `$STATUS_DONE` (a config key with a literal
+  default, like its three siblings) rather than a bare `"Done"`, so writer
+  and readers cannot drift apart again. Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4204 (found by #4201's class sweep, filed out of class per
+  **D-067**); applies **D-066**; `tests/unit/test_acceptance_status.py` is
+  the enforcement — it fails the build if any script compares a Status value
+  to decide acceptance on its own or writes `Done` as a bare literal (the
+  #4174 lesson: a rule with no check is not a rule);
+  `tests/test_promote_accepted_features.sh` and `tests/test_gh_project_lib.sh`
+  carry the before/after cases; `docs/acceptance-drain-gate.md` →
+  "What 'accepted' means". Corrects, as falsified prose, `AGENTS.md` and
+  `docs/how-this-project-is-run.md`, both of which named `Closed` as the
+  released lane — `Closed` is a merged PR's card (#3742), never an issue's.
+- **D-072** · 2026-10-21 · developer-agent (#4200) — **A record or a scheduled
+  action for a billing cloud resource is keyed by that resource. One global
+  slot can hold one, so writing the second silently orphans the first — and the
+  resource nothing names is the resource nothing releases.** The EC2 Mac
+  deferred release had one tfvars, one Terraform state file and one fixed
+  `name_prefix`, so scheduling host B's release did not create a second
+  schedule: `terraform apply` found `aws_scheduler_schedule.release` and
+  retargeted it. Host A, still allocated and still inside AWS's 24-hour
+  minimum, was left with nothing scheduled to release it — and the Slack
+  message that would have said so belonged to the schedule just retargeted.
+  The single `mac_*` block in `state.json` had the same shape, so the host that
+  lost the slot was also the host no surface drew: ~$15.60/day, billing until
+  someone noticed. The rule is not "add a second slot": per-host state and
+  per-host AWS names (`release_paths`, `_release_name_prefix`), a `mac_hosts`
+  ledger block another block's whole-replacement cannot reach, per-host
+  cleanup, and **removal only on a definite answer from AWS** — a record
+  dropped on expired credentials hides a live charge, which is the same defect
+  mirrored. Two consequences worth stating: a teardown schedules a release for
+  *every* tracked host that has none (a fix that only stops new orphans leaves
+  the existing ones billing forever), and a deploy *imports* a still-held host
+  back into Terraform state before applying, because the state `cloud destroy`
+  deliberately emptied is a state whose apply ALLOCATES — an import that cannot
+  be done stops the deploy rather than buying a second host. #4181's gate still
+  governs the new wording: "still billing" is a claim about AWS, so the
+  missing-schedule finding states structure only. Number from `python3
+  scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run, not
+  eyeballed.
+  Source: #4200; extends **D-066** (one source per decision — `pending_releases`
+  is the single answer to "what still costs money", read by the CLI, the API and
+  both dashboard cards); `docs/cloud.md` § "Teardown, and the deferred host
+  release"; `terraform/aws/mac-release/tests/per_host.tftest.hcl` and the
+  `two-hosts` / `pre-fix-two-hosts` scenarios of
+  `scripts/cloud_stale_record_smoke.py` are the executed evidence.
+
+- **D-073** · 2026-10-10 · owner (#4192) — **A gate that is switched off, or
   that measures something other than the behaviour, is not a gate — and the
   revert of a temporary rule is owed a test that is RED while the rule is in
   force.** The owner's instruction was to make `v3.0.1`'s required set
@@ -2807,7 +2877,7 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4184, #4191, #4179, #4122, #4043, #4034, #3995,
   #3971; extends **D-006**, **D-057**, **D-066**, **D-067**.
 
-- **D-072** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
+- **D-074** · 2026-10-10 · developer (#4192, review round 2) — **A gate's
   colour is not evidence if its own plumbing can decide it: under
   `set -o pipefail`, a pipeline whose reader may leave early reports the
   producer's broken pipe instead of the answer.** Found as a live red on this
@@ -2850,13 +2920,13 @@ rather than mechanism, and nothing can enforce them.
   `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` —
   run, not eyeballed.
   Source: #4192; related #4043, #4193, #4195; extends **D-006**, **D-066**,
-  **D-071**.
+  **D-073**.
 
-- **D-073** · 2026-10-10 · developer (#4192, review round 3) — **A job that
+- **D-075** · 2026-10-10 · developer (#4192, review round 3) — **A job that
   runs pytest must be able to COLLECT it: a required check that dies at
   collection is red about the runner's package set, not about the head.**
   Found as the live red that escalated this PR to the owner, and it arrived
-  through the gate **D-072** added one round earlier.
+  through the gate **D-074** added one round earlier.
   `pipeline-readers-drain` installed `pyyaml pytest` and ran
   `pytest tests/unit/test_sigpipe_pipeline_guard.py`; any target under
   `tests/` loads the **root** `tests/conftest.py`, whose import closure runs
@@ -2901,9 +2971,9 @@ rather than mechanism, and nothing can enforce them.
   from `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1`
   — run, not eyeballed.
   Source: #4192; related #4193, #4195; extends **D-006**, **D-066**,
-  **D-071**, **D-072**.
+  **D-073**, **D-074**.
 
-- **D-074** · 2026-10-21 · developer (#4192, review round 4) — **When a gate
+- **D-076** · 2026-10-21 · developer (#4192, review round 4) — **When a gate
   goes red, its report must name the cause and the run that produced it. Two
   mechanisms built for exactly that were vacuous, both because a pattern was
   anchored where real output is prefixed.** Found while diagnosing the two red
@@ -2953,10 +3023,10 @@ rather than mechanism, and nothing can enforce them.
   and not to the build. Number from
   `python3 scripts/agents/lib/ledger_ids.py next D --base origin/v3.0.1` — run,
   not eyeballed.
-  Source: #4192; related #4193, #3861, #4179, #3783; extends **D-071**,
-  **D-072**, **D-073**, **D-066**.
+  Source: #4192; related #4193, #3861, #4179, #3783; extends **D-073**,
+  **D-074**, **D-075**, **D-066**.
 
-- **D-075** · 2026-10-21 · developer (#4192, review round 5) — **A guard that
+- **D-077** · 2026-10-21 · developer (#4192, review round 5) — **A guard that
   enumerates idioms instead of the behaviour it is named for is the defect it
   is checking for. And a wait with a deadline is not a wait on a condition.**
   Two red required checks on head `c78d492d`, and both were in this issue's
@@ -2964,14 +3034,14 @@ rather than mechanism, and nothing can enforce them.
   (a) `macos-brew-smoke`'s `candidate-upgrade` job died on
   `tar -xzOf … | awk -F'"' '/^version =/{print $2; exit}'` with
   `Write error: Broken pipe` — **having read the right version**. `awk`'s
-  `exit` is `grep -q` by another name, and **D-072**'s guard knew only
+  `exit` is `grep -q` by another name, and **D-074**'s guard knew only
   `grep -q` and `head`, so it went green on 211 files with three live copies
   in one of them. Worse, `split_pipeline` counted quotes left-to-right, so a
   pipeline inside `"$( … )"` — the dominant idiom in this tree — read as
   having **no pipe at all**: correcting that took the tree-wide count from 0
-  to **38** on the same head, i.e. D-072's "79 hazards, now clean" had never
+  to **38** on the same head, i.e. D-074's "79 hazards, now clean" had never
   looked inside a command substitution. (**That 38 is itself corrected to 52
-  by D-076** — this round's instrument was still blind to `grep -qE` and its
+  by D-078** — this round's instrument was still blind to `grep -qE` and its
   siblings. The figure is left as it was measured, because the pattern of a
   count that keeps rising as the instrument is repaired is the point.)
   `EARLY_READERS` is now the
@@ -2997,26 +3067,44 @@ rather than mechanism, and nothing can enforce them.
   states, each with its own sentence and the DSN read out of the running Pod
   rather than blamed, and `worker-idle` stops at the grace window instead of
   spending the budget to print a cause that did not happen. GlitchTip 6.2 runs
-  `vtasks`, not celery (`{vt}:q:default`, `{vt}:q:failed`), read off the
-  running Redis and counted by `TYPE` so a rename still counts.
+  `vtasks`, not celery, read off the running Redis and counted by `TYPE` so a
+  rename still counts.
   The worker defect itself is **#4208**, filed out of class and not patched:
   the cause is not yet known and a pick today would be a guess.
-  Source: #4192; related #4193, #4208, #4182, #3990, #3565; extends **D-071**,
-  **D-072**, **D-074**, **D-066**.
+  **Two corrections, both from #4208 landing on the release branch and merged
+  into this PR on 2026-10-23.** (i) The queue key is `{vt}:q:ingest`, not
+  `{vt}:q:default` — #4208 read it off the image; the `TYPE` count was
+  unaffected, which is why naming it wrongly cost nothing and is also why the
+  depth reader does not name it. (ii) **"Is the worker consuming?" is #4208's
+  question to answer, not this script's.** #4208 established the mechanism
+  (vtasks' `runworker` awaits neither its scheduler nor its consumer task, so
+  a dead consumer leaves the process up, the Pod `1/1 Running` and the
+  heartbeat file green) and shipped `glitchtip-worker-ready.py`, which asks the
+  consumer through the `vtasks_*` metrics and is what the manifest's readiness
+  and liveness probes run. The wait now asks that same probe in the same
+  spelling and the counting of `Enqueuing due task` / `Processing task` lines
+  is gone: it was a second answer to one question (**D-066**), and the weaker
+  one — it read a log format, and it could not tell "the consumer loop has
+  never run" from "it ran and stopped", which is the distinction the probe's
+  two questions are. The merge also adds a state the counting form could not
+  have: `unknown`, for a probe that could not be asked at all, which keeps the
+  wait waiting rather than recording "I could not ask" as "the answer is no".
+  Source: #4192; related #4193, #4208, #4182, #3990, #3565; extends **D-073**,
+  **D-074**, **D-076**, **D-066**.
 
-- **D-076** · 2026-10-21 · developer (#4192, review round 6, huddle
+- **D-078** · 2026-10-21 · developer (#4192, review round 6, huddle
   `HUDDLE_DECISION: proceed`) — **A guard that recognises one spelling of a
   behaviour reports zero and means nothing. Three rounds in, the instrument
   was still the instance.**
   `_GREP_EARLY` required `q`/`l`/`L` to be the **last** letter of the option
   cluster, so `grep -q` and `grep -Eq` were flagged while `grep -qE`, `-qi`,
   `-qiE`, `-qF` and `-qx` — the spellings this tree actually writes — were
-  invisible. D-075's "38 hazards, now clean" was therefore measured with an
+  invisible. D-077's "38 hazards, now clean" was therefore measured with an
   instrument blind to the most common form: the widened pattern
   (`-[A-Za-z]*[qlL][A-Za-z]*`) reports **52** across 20 files on the same
   head, all now converted. Among them `brew services list | grep -qE` in
   `scripts/macos-user-path-smoke.sh` — the *same producer* whose lost race
-  reddened run 38071858945, the defect D-072 was opened for — and **every
+  reddened run 38071858945, the defect D-074 was opened for — and **every
   signature inside `classify_error`**, where a lost race reads as "this
   signature did not match" and silently skips an arm of the classifier whose
   determinism is this issue's own criterion 2. The count has now risen 0 → 38
@@ -3053,7 +3141,7 @@ rather than mechanism, and nothing can enforce them.
   live proof spends two minutes and a scratch project.
   **Not fixed, and said plainly:** `k8s-local-smoke` is still red, and still
   for **#4208** — run 39692595549 reports `GlitchTip's worker scheduled 355
-  task(s) and processed NONE`, which is D-075's repaired gate telling the
+  task(s) and processed NONE`, which is D-077's repaired gate telling the
   truth. Executed evidence gathered this round for whoever takes #4208: the
   manifest's `command: ["./bin/run-celery-with-beat.sh"]` is a deprecated shim
   that `exec`s `bin/run-worker.sh` → `./manage.py runworker --scheduler`
@@ -3065,7 +3153,7 @@ rather than mechanism, and nothing can enforce them.
   itself, not inferred. No fix is attempted here: the remedy depends on
   whether the consumer died or starved, which is not yet measured, and
   guessing is what first principle 4 forbids.
-  Source: #4192; related #4193, #4208, #4166; extends **D-072**, **D-075**,
+  Source: #4192; related #4193, #4208, #4166; extends **D-074**, **D-077**,
   **D-066**.
 
 ## Parked
@@ -3428,3 +3516,24 @@ them.
   is the blast-radius investigation (**D-056** (b)). The #3694 cross-issue
   anomaly pause is unaffected and remains the only dispatch-wide pause — it is
   about live infrastructure, not about a count of escalations.
+
+- **S-010** — ~~"Running the gates at PR time answers a question already
+  answered: the developer runs them before cutting the PR, so `ci-tests.yml`
+  is a post-merge tripwire only."~~ (The workflow's own header comment, owner
+  decision 2026-08-18.) Superseded 2026-10-22 by #4209. **The tripwire half
+  stands and must not be removed** — two PRs with no overlapping lines, each
+  green, that break each other once both land are invisible to any PR run, and
+  that happened twice on 2026-08-18. What is retired is the *only*: the
+  premise rests on an agent remembering to run the gates, and `web`'s
+  `npm run test:coverage` was `vitest` in watch mode, so the one documented way
+  to answer the 100% coverage gate locally never terminated. Between the two
+  there was no path on which that gate ran at all, and v3.0.1 sat below the
+  threshold for its whole life with no merge attributable for it; #4207 shipped
+  two failing web tests through a green PR. All three jobs now run on PR heads
+  AND on pushes to the release branch, are `[required]`, and share one scope
+  resolver (`scripts/ci/diff_scope.py`) because a `pull_request` has no
+  `github.event.before` to read. Do not restore the push-only condition citing
+  the 2026-08-18 rationale: the enforcing guard is
+  `tests/unit/test_blocking_gates_reach_pull_requests.py`, whose docstring
+  carries the reasoning, and `web-gate-smoke.yml` is the executed evidence that
+  the gate blocks in both directions.

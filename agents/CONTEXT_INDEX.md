@@ -27,7 +27,7 @@ fails if it drifts. Do not hand-edit.
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
 | `canary-rollout-smoke.yml` | pull_request, push, workflow_dispatch | Canary Rollout Smoke |
 | `canary-track-metrics-smoke.yml` | pull_request, push, workflow_dispatch | Canary Track Metrics Smoke |
-| `ci-tests.yml` | push | CI - Tests & Type Check |
+| `ci-tests.yml` | push, pull_request | CI - Tests & Type Check |
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
 | `claude.yml` | issue_comment, pull_request_review_comment, issues, pull_request_review | Claude Code |
@@ -55,11 +55,13 @@ fails if it drifts. Do not hand-edit.
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
 | `github-script-injection-smoke.yml` | push, pull_request, workflow_dispatch | GitHub-Script Injection Smoke |
+| `glitchtip-worker-smoke.yml` | push, pull_request, workflow_dispatch | GlitchTip Worker Consumption Smoke |
 | `handle_acceptance_failure.yml` | issue_comment | Handle Acceptance Failure |
 | `handle_improvement.yml` | issue_comment | Handle Improvement |
 | `huddle-session-smoke.yml` | push, pull_request, workflow_dispatch | Huddle Session Smoke |
 | `huddle_decision_dispatch.yml` | issue_comment | Huddle Decision Dispatch |
 | `huddle_session.yml` | issue_comment, workflow_dispatch | Review Huddle - Session |
+| `image-build-fetch-policy-smoke.yml` | pull_request, push, workflow_dispatch | Image Build Fetch Policy Smoke |
 | `issue-relationships-smoke.yml` | push, pull_request, workflow_dispatch | Issue Relationships Smoke |
 | `k3s-cloud-smoke.yml` | pull_request, push, workflow_dispatch | k3s Cloud Smoke |
 | `k8s-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Artifact Smoke |
@@ -113,6 +115,7 @@ fails if it drifts. Do not hand-edit.
 | `usage_limit_retry.yml` | schedule, workflow_dispatch | Usage Limit Auto-Retry |
 | `validate-web-routes.yml` | pull_request, push | Web Validation |
 | `verify_phase6_issues.yml` | workflow_dispatch | Verify Phase 6 Issue Fields |
+| `web-gate-smoke.yml` | pull_request, push | Web Gate Smoke |
 
 ## Agent scripts (`scripts/agents/`)
 
