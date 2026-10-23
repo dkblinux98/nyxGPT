@@ -3198,6 +3198,35 @@ rather than mechanism, and nothing can enforce them.
   `npm update <packages>` does the same within-range job.
   Source: #4192; related #4193; extends **D-066**, **D-075**.
 
+- **D-080** · 2026-10-23 · developer (#4222) — **An adjudicated
+  code-scanning finding is recorded in `security/codeql-adjudications.yml`,
+  keyed to the FLOW (rule id, sink function, accepted source symbols), and
+  never only in GitHub's per-alert dismissal state.** A dismissed alert's
+  identity includes its sink's *line number*, so any edit that shifts a
+  dismissed sink re-raises the identical accepted finding as a new open
+  alert — and nothing reports it until `scripts/release_ceremony.sh`'s
+  code-scanning gate refuses to release. That is what blocked v3.0.1: #143
+  (`cloud_deploy.py:3690`, `won't fix`) came back as #144 when `_print_row`
+  moved to `:3924`, and one `ops doctor` flow had already been adjudicated
+  three times (#21, #22, #23) before returning a fourth as #145.
+  `scripts/agents/apply_codeql_adjudications.py` re-applies the register and
+  exits non-zero on any open critical/high alert the register does not cover;
+  `.github/workflows/codeql_adjudications.yml` runs it on the
+  `code_scanning_alert` event, so nothing is polled. It fails closed both
+  ways — an unmatched alert is reported and never dismissed, and an entry
+  matches only when rule, sink file, sink function and every observed flow
+  source agree, so a new sensitive source reaching an accepted sink is a new
+  finding rather than an automatic dismissal. Each entry names the test that
+  keeps its reason true (`enforced_by`), per **D-067**'s rule that a rule this
+  project states but does not enforce is a class of its own. Two facts worth
+  not re-deriving:
+  inline `codeql[...]` / `lgtm[...]` suppression comments do **not** take
+  effect against this repo's CodeQL default setup (recorded at
+  `src/nyxgpt/ops.py` `_log_nonzero_exit`), and a flow's source is the symbol
+  CodeQL *labels* the step with, not the step's enclosing function — measured,
+  since #144's flows resolve to its two callers and #145's to its own sink.
+  Source: #4222; related #4164, #4192; extends **D-066**, **D-067**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
