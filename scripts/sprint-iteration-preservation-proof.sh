@@ -147,16 +147,36 @@ update_field() { # update_field <iterationConfigurationInput JSON>
     "$(jq -n --arg fid "$FIELD_ID" --argjson cfg "$1" '{fid: $fid, cfg: $cfg}')"
 }
 
+#: Every item id `assign_item` has successfully created, in creation order.
+#: `snapshot_settled` reads this to tell "a write failed" from "the board index
+#: has not caught up" -- two states that look identical in an item count.
+CREATED_ITEM_IDS=()
+
 assign_item() { # assign_item <iterationId> <label>
   local item
-  item="$(graphql 'mutation($pid:ID!,$t:String!){ addProjectV2DraftIssue(input:{projectId:$pid,title:$t}){
+  # BOTH MUTATIONS ARE CHECKED (#4192). This script runs under `set -uo
+  # pipefail` and deliberately NOT `-e` -- it reports its own failures rather
+  # than dying mid-proof -- so an unchecked `gh api graphql` here leaves the
+  # item simply absent, and the only symptom is a count mismatch 40 seconds
+  # later with the cause discarded. That is how run 39692591792 reddened the
+  # release branch on a commit the identical code passed on one minute later:
+  # the gate reported "the three test items never appeared -- cannot prove
+  # anything" and could name neither which write failed nor why.
+  if ! item="$(graphql 'mutation($pid:ID!,$t:String!){ addProjectV2DraftIssue(input:{projectId:$pid,title:$t}){
       projectItem { id } } }' "$(jq -n --arg pid "$PROJECT_ID" --arg t "$2" '{pid: $pid, t: $t}')" \
-    '.data.addProjectV2DraftIssue.projectItem.id')"
-  graphql 'mutation($pid:ID!,$iid:ID!,$fid:ID!,$v:String!){
+    '.data.addProjectV2DraftIssue.projectItem.id')" || [[ -z "$item" || "$item" == "null" ]]; then
+    echo "[proof] could not create the draft issue '$2' (the API's reason is above)" >&2
+    return 1
+  fi
+  if ! graphql 'mutation($pid:ID!,$iid:ID!,$fid:ID!,$v:String!){
       updateProjectV2ItemFieldValue(input:{projectId:$pid,itemId:$iid,fieldId:$fid,
         value:{iterationId:$v}}){ projectV2Item { id } } }' \
     "$(jq -n --arg pid "$PROJECT_ID" --arg iid "$item" --arg fid "$FIELD_ID" --arg v "$1" \
-       '{pid: $pid, iid: $iid, fid: $fid, v: $v}')"
+       '{pid: $pid, iid: $iid, fid: $fid, v: $v}')"; then
+    echo "[proof] created '$2' (${item}) but could not set its Sprint value" >&2
+    return 1
+  fi
+  CREATED_ITEM_IDS+=("$item")
 }
 
 snapshot() {
@@ -171,14 +191,44 @@ snapshot() {
 # proof read an EMPTY board right after assigning three items and "passed"
 # comparing nothing to nothing). Every snapshot used as evidence waits for the
 # expected item count first.
+#
+# A DEADLINE IS NOT A CONDITION (#4192). The first window was 20 polls x 2s,
+# and run 39692591792 spent all of it seeing 2 of 3 items -- then said "the
+# three test items never appeared", which was not what it had measured: all
+# three writes had returned ids, and the PR-event run on the SAME commit
+# settled a minute later. So the wait now ends in one of three states it can
+# tell apart, and names which:
+#
+#   settled    every item created so far is visible. The only state this proof
+#              draws a conclusion from.
+#   index lag  every write returned an id, so the items exist and the
+#              project's item index has not caught up. Says nothing about the
+#              mutation under test, and the message says so.
+#   missing    fewer ids were created than expected -- a write failed and
+#              `assign_item` has already printed the API's reason.
+#
+# The window is longer than the lag ever observed, not an estimate of it:
+# costing 2 minutes on a red that would otherwise be a wrong diagnosis is the
+# cheaper trade.
+SETTLE_POLLS=60
+SETTLE_INTERVAL=2
 snapshot_settled() { # snapshot_settled <expected-item-count>
-  local snap i
-  for i in $(seq 1 20); do
+  local snap seen i waited=0
+  for ((i = 0; i < SETTLE_POLLS; i++)); do
     snap="$(snapshot)"
-    [[ "$(jq 'length' <<<"$snap")" == "$1" ]] && { printf '%s' "$snap"; return 0; }
-    sleep 2
+    seen="$(jq 'length' <<<"$snap")"
+    [[ "$seen" == "$1" ]] && { printf '%s' "$snap"; return 0; }
+    sleep "$SETTLE_INTERVAL"
+    waited=$((waited + SETTLE_INTERVAL))
   done
-  echo "[proof] WARN: board still shows $(jq 'length' <<<"$snap") item(s), expected $1" >&2
+  if [[ "${#CREATED_ITEM_IDS[@]}" -ne "$1" ]]; then
+    echo "[proof] WARN: only ${#CREATED_ITEM_IDS[@]} of $1 item(s) were ever created --" \
+      "a write failed (its reason is above), so this is NOT index lag" >&2
+  else
+    echo "[proof] WARN: all $1 item(s) were created (${CREATED_ITEM_IDS[*]}) but the board" \
+      "still shows ${seen} after ${waited}s -- the project's item index has not caught up." \
+      "The mutation under test is not implicated; re-run." >&2
+  fi
   printf '%s' "$snap"
   return 1
 }
@@ -189,7 +239,8 @@ say "config: $(jq -c '{active: [.iterations[].title], completed: [.completedIter
   || { echo "[proof] the scratch project is not in the all-completed state this proof needs" >&2; exit 2; }
 
 while read -r iter_id iter_title; do
-  assign_item "$iter_id" "item-in-${iter_title// /-}"
+  assign_item "$iter_id" "item-in-${iter_title// /-}" \
+    || { echo "[proof] could not set up the test items -- cannot prove anything" >&2; exit 2; }
 done < <(jq -r '.completedIterations[] | "\(.id) \(.title)"' <<<"$CONFIG")
 
 BEFORE="$(snapshot_settled 3)" \
@@ -231,7 +282,8 @@ fi
 # =========================================================================
 CONFIG2="$(read_config)"
 NEW_ITER_ID="$(jq -r --arg t "$NEW_TITLE" '.iterations[] | select(.title == $t) | .id' <<<"$CONFIG2")"
-assign_item "$NEW_ITER_ID" "item-in-${NEW_TITLE// /-}"
+assign_item "$NEW_ITER_ID" "item-in-${NEW_TITLE// /-}" \
+  || { echo "[proof] could not add the item TEST 2 discriminates on -- cannot prove anything" >&2; exit 2; }
 snapshot_settled 4 >/dev/null || true
 say "TEST 2 (fault injection): omit completedIterations, keep the active iteration's id"
 COMPLETED_TITLES="$(jq -r '[.completedIterations[].title] | join(", ")' <<<"$CONFIG2")"

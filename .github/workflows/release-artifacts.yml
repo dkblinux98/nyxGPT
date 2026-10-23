@@ -471,7 +471,7 @@ jobs:
             gh release download "$ASSET_TAG" -R "$REPO" --pattern "$asset" --dir "$CHECK_DIR"
             served=$(sha256sum "${CHECK_DIR}/${asset}" | cut -d ' ' -f 1)
             stamped=$(sed -n 's/^[[:space:]]*sha256 "\([0-9a-f]\{64\}\)"[[:space:]]*$/\1/p' \
-              "dist/homebrew/${name}.rb" | head -1)
+              "dist/homebrew/${name}.rb" | sed -n '1p')
             echo "${name}: served=${served} stamped=${stamped:-(none)}"
             if [ "$served" != "$stamped" ]; then
               echo "::error::${name}.rb is stamped sha256=${stamped:-(none)} but ${ASSET_TAG}"

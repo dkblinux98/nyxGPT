@@ -427,25 +427,25 @@ if [[ -n "$CURRENT_MODULE" ]]; then
   echo "✓ Module: already '$CURRENT_MODULE' — leaving as-is"
 else
   MODULE=""
-  if echo "$TITLE $BODY" | grep -qiE "\bsre\b|observab|monitor|metric|grafana|prometheus|loki|jaeger|glitchtip|self.heal|tracing|instrumentation"; then
+  if grep -qiE "\bsre\b|observab|monitor|metric|grafana|prometheus|loki|jaeger|glitchtip|self.heal|tracing|instrumentation" <<<"$TITLE $BODY"; then
     MODULE="sre"
-  elif echo "$TITLE $BODY" | grep -qiE "web|ui|frontend|react|vue"; then
+  elif grep -qiE "web|ui|frontend|react|vue" <<<"$TITLE $BODY"; then
     MODULE="web-ui"
-  elif echo "$TITLE $BODY" | grep -qiE "api|endpoint|rest|graphql"; then
+  elif grep -qiE "api|endpoint|rest|graphql" <<<"$TITLE $BODY"; then
     MODULE="api"
-  elif echo "$TITLE $BODY" | grep -qiE "rag|embedding|vector|semantic"; then
+  elif grep -qiE "rag|embedding|vector|semantic" <<<"$TITLE $BODY"; then
     MODULE="rag"
-  elif echo "$TITLE $BODY" | grep -qiE "cli|command.line|terminal"; then
+  elif grep -qiE "cli|command.line|terminal" <<<"$TITLE $BODY"; then
     MODULE="cli"
-  elif echo "$TITLE $BODY" | grep -qiE "tui|terminal.ui"; then
+  elif grep -qiE "tui|terminal.ui" <<<"$TITLE $BODY"; then
     MODULE="tui"
-  elif echo "$TITLE $BODY" | grep -qiE "test|testing|pytest"; then
+  elif grep -qiE "test|testing|pytest" <<<"$TITLE $BODY"; then
     MODULE="testing"
-  elif echo "$TITLE $BODY" | grep -qiE "doc|documentation|readme"; then
+  elif grep -qiE "doc|documentation|readme" <<<"$TITLE $BODY"; then
     MODULE="documentation"
-  elif echo "$TITLE $BODY" | grep -qiE "security|auth|permission"; then
+  elif grep -qiE "security|auth|permission" <<<"$TITLE $BODY"; then
     MODULE="security"
-  elif echo "$TITLE $BODY" | grep -qiE "logging|\blogs?\b"; then
+  elif grep -qiE "logging|\blogs?\b" <<<"$TITLE $BODY"; then
     # Logging/observability catch-all that didn't match the sre branch above
     # (option renamed observability -> sre).
     MODULE="sre"

@@ -40,6 +40,7 @@ on:
       - "tests/test_release_ceremony_phase0.sh"
       - "tests/test_release_ceremony_watch.sh"
       - "tests/unit/test_release_prereqs.py"
+      - "tests/unit/test_sprint_proof_item_setup.py"
       - ".github/workflows/release-prereq-smoke.yml"
   push:
     paths:
@@ -50,6 +51,7 @@ on:
       - "tests/test_release_ceremony_phase0.sh"
       - "tests/test_release_ceremony_watch.sh"
       - "tests/unit/test_release_prereqs.py"
+      - "tests/unit/test_sprint_proof_item_setup.py"
       - ".github/workflows/release-prereq-smoke.yml"
   workflow_dispatch:
 
@@ -102,7 +104,7 @@ jobs:
           fi
           cp /tmp/ceremony.orig scripts/release_ceremony.sh
           echo "ok: the inverted ordering fails the tests"
-          grep -E '^\[FAIL\]' /tmp/inverted.log | head
+          grep -E '^\[FAIL\]' /tmp/inverted.log | sed -n '1,10p'
 
   iteration-preservation:
     name: Adding a sprint iteration does not wipe board item values
@@ -118,6 +120,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      # Before spending two minutes and a scratch project on the live proof:
+      # the proof's own reader, run against a stub `gh`. On `3a2162c2` this
+      # job went red because `assign_item` ignored both of its mutations'
+      # statuses and the wait was a deadline rather than a condition, so the
+      # report named a cause it had not measured -- the same commit passed in
+      # the PR-event run a minute later (#4192). This runs in about a second
+      # and needs no token, so a broken reader is caught here rather than by
+      # a count 40 seconds into the live run.
+      - name: The proof's item setup reports what it measured
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tests/unit/test_sprint_proof_item_setup.py \
+            -q -p no:cacheprovider --noconftest
 
       - name: Prove preservation, and prove the proof discriminates
         run: bash scripts/sprint-iteration-preservation-proof.sh

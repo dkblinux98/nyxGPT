@@ -52,7 +52,7 @@ require_cmd jq
 milestone_number=""
 if [[ -n "$MILESTONE" ]]; then
   milestone_number="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=all&per_page=100" \
-    --jq ".[] | select(.title == \"${MILESTONE}\") | .number" | head -1)"
+    --jq ".[] | select(.title == \"${MILESTONE}\") | .number" | sed -n '1p')"
   [[ -n "$milestone_number" ]] || _die "No milestone titled '${MILESTONE}' exists (create it first; this tool never creates milestones)"
 fi
 if [[ -n "$STATUS" ]]; then
@@ -83,7 +83,7 @@ item_id_for_content() {
   echo "$resp" \
     | jq -r --arg pid "$(get_project_id)" \
         '.data.repository.issueOrPullRequest.projectItems.nodes[]? | select(.project.id == $pid) | .id' \
-    | head -1
+    | sed -n '1p'
 }
 
 normalized="$(echo "$ITEMS" | tr ',' ' ')"

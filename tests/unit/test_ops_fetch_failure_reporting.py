@@ -31,15 +31,27 @@ _NETWORK_BUILD_OUTPUT = (
 
 #: The same failure, with the cause buried: a multi-stage build keeps printing
 #: progress for the stages that were already in flight, so the npm lines land
-#: in the middle of the output rather than at the end. This is the shape the
-#: #4192 reporting fix cannot rescue -- BuildKit's `#8 23.97 ` prefix means
-#: those lines do not match `_OUTPUT_EXCERPT_SALIENT_RE`, so they are elided
-#: with everything else.
+#: in the middle of the output rather than at the end.
+#:
+#: This fixture was written against `_bounded_output` as it stood at #4205 --
+#: `_OUTPUT_EXCERPT_SALIENT_RE` was then anchored at line start, so BuildKit's
+#: `#8 23.97 ` prefix put the cause beyond any rescue. #4192's round 4 made
+#: that pattern `search` rather than `match` (ledger D-076) for exactly that
+#: reason, so the old shape no longer buries anything, and a test whose
+#: premise has quietly become false is the defect both issues are about.
+#:
+#: What buries a line *by construction*, and will keep burying it however the
+#: pattern is spelled, is the CAP: the rescue carries at most
+#: `_OUTPUT_EXCERPT_SALIENT_LINES` (12) lines and keeps the LAST of them, the
+#: ones nearest the failure. So the cause is followed here by more than twelve
+#: later error-labelled lines -- which is what a failing multi-stage build
+#: really prints, the other stages giving up after the one that broke.
 _NETWORK_BUILD_OUTPUT_CAUSE_BURIED = (
     "#1 [internal] load build definition from Dockerfile\n"
     + "#5 some very ordinary progress line\n" * 200
     + "#8 23.97 npm error code EAI_AGAIN\n"
     + "#8 23.97 npm error network In most cases you are behind a proxy\n"
+    + "#9 12.01 error: stage cancelled because another stage failed\n" * 30
     + "#9 some other stage still reporting progress\n" * 200
     + "ERROR: failed to build: failed to solve: exit code: 152\n"
 )
@@ -91,13 +103,18 @@ def test_image_build_failure_carries_the_network_attribution(monkeypatch, tmp_pa
 
 @pytest.mark.unit
 def test_image_build_failure_classifies_the_full_output_not_the_excerpt(monkeypatch, tmp_path):
-    """The trap this reporting had to avoid (#4192, D-073).
+    """The trap this reporting had to avoid (#4192, D-076).
 
-    `_bounded_output`'s salient-line rescue anchors on lines that *start* with
-    `error`/`failed`, and BuildKit prefixes every line of a build with
-    `#8 23.97 `. So the lines naming the cause match nothing and sit inside
-    the elision -- classifying the reported excerpt would see nothing at all.
-    This asserts the gap is real and that classification does not fall into it.
+    `exc.detail` is a bounded excerpt, and no bound can promise to contain the
+    cause: the salient-line rescue carries at most
+    `_OUTPUT_EXCERPT_SALIENT_LINES` of them and keeps the last, so a cause
+    followed by enough later error lines is outside the record the operator is
+    shown. Classifying that excerpt would therefore see nothing at all, on an
+    output that says `EAI_AGAIN` twice.
+
+    This asserts the gap is real -- measured on this fixture, not assumed from
+    how the pattern happens to be spelled this week -- and that classification
+    does not fall into it.
     """
     exc = _build(monkeypatch, tmp_path, _NETWORK_BUILD_OUTPUT_CAUSE_BURIED)
     # The cause is genuinely absent from the bounded excerpt...

@@ -1736,6 +1736,16 @@ a different store.
   the pull and the serve disagree about which store holds the model.
 - **Idempotent.** A model already in the store is reported present and nothing
   is downloaded, so a re-run over a warm machine costs one `/api/tags` request.
+- **A transient upstream failure is retried, a definite answer is not** (#4192).
+  Ollama fetches the manifest and blobs from the public model registry and
+  relays a registry failure as its own 5xx, so one blip used to fail the whole
+  install — including the required `terraform-artifact-smoke` check, on a
+  commit that had nothing to do with it. A 5xx, a timeout or a dropped stream
+  is now retried 5 times with 5s doubling to 40s (the budget
+  `k8s/statefulset-ollama.yaml` and the Compose entrypoint also use); a 404 for
+  a model that does not exist fails on the first attempt, because waiting will
+  not make it exist. Ollama resumes from the blobs it already holds, so a
+  retry re-downloads only the remainder.
 - Exits 0 when every required model is in place, 2 otherwise — which is what
   makes a provisioning script's `set -e` abort a deploy that cannot serve chat,
   rather than reporting success onto a broken machine.

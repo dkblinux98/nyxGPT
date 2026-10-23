@@ -56,7 +56,7 @@ cleanup() {
 trap cleanup EXIT
 
 step "Provision a throwaway kind cluster"
-kind get clusters 2>/dev/null | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER" --wait 90s
+kind get clusters 2>/dev/null | grep -x "$CLUSTER" >/dev/null || kind create cluster --name "$CLUSTER" --wait 90s
 kubectl cluster-info --context "kind-${CLUSTER}" >/dev/null
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 ok "cluster ${CLUSTER} is up"
@@ -103,7 +103,7 @@ render_deployment "nyxgpt-api-canary" "900Gi" "canary" | kubectl apply -f -
 for _ in $(seq 1 30); do
     if kubectl -n "$NAMESPACE" get pods -l app=nyxgpt-api-canary-pool \
         -o jsonpath='{.items[*].status.conditions[?(@.type=="PodScheduled")].reason}' \
-        2>/dev/null | grep -q Unschedulable; then
+        2>/dev/null | grep Unschedulable >/dev/null; then
         break
     fi
     sleep 2

@@ -68,6 +68,56 @@
   // understood. `tests/unit/test_audit_ci_allowlist.py` fails the build on a
   // bare-ID entry for that reason.
   //
+  // It recurred again on 2026-10-21 (#4192), and that time the ORIGINAL
+  // remedy was the right one, so nothing was allowlisted:
+  //
+  //   GHSA-587h-7wmj-h5pm  launch-editor: an `fs.existsSync()` existence
+  //                        check can be bypassed on Windows. HIGH, filed
+  //                        against `vite`, range `>=7.0.0 <=7.3.6`, 7 paths.
+  //   vite@7.3.6           what the lock pinned; `npm view vite versions`
+  //                        shows 7.3.7 published, and every dependent
+  //                        (@vitejs/plugin-react, vitest, @vitest/mocker)
+  //                        already accepts `^7.0.0`.
+  //   npm audit fix        bumped vite 7.3.6 -> 7.3.7 in the lock alone,
+  //                        3 lines, no package.json edit, no major moves.
+  //                        `npm run audit:ci` then passes.
+  //
+  // It recurred a FOURTH time on 2026-10-23 (#4192 again, two days later),
+  // and again the upgrade was available -- so again nothing was allowlisted:
+  //
+  //   GHSA-2464-fhr4-w9xw  next: unauthenticated RCE in the image
+  //                        optimization API for SVG. CRITICAL, `16.0.0 -
+  //                        16.4.0`; also GHSA-673q-mjm6-r5xr (CRITICAL,
+  //                        `use cache`) and GHSA-p3m5-59mp-jv5r (HIGH,
+  //                        Server Actions DoS).
+  //   GHSA-mchm-gjx6-7h55  @sentry/nextjs: middleware bypass via the tunnel
+  //                        route. CRITICAL, `< 10.75.2`.
+  //   GHSA-mrhx-c7xc-m3w5  zod: memory exhaustion. HIGH, `< 4.6.6`, reached
+  //                        only through eslint-config-next (devDependency).
+  //   npm audit fix        CRASHES on this lockfile ("Cannot read properties
+  //                        of null (reading 'edgesOut')") -- an npm bug, not
+  //                        a signal about the tree. `npm update next
+  //                        @sentry/nextjs zod` does the same job within the
+  //                        existing ranges: next 16.3.x -> 16.4.3,
+  //                        @sentry/nextjs -> 10.76.2, zod -> 4.6.7. Lockfile
+  //                        only, no package.json edit, no major moves.
+  //
+  // The two allowlist entries below are left in place but no longer match:
+  // after that update `npm audit` stops reporting GHSA-vfj7-8cjw-p6xm on
+  // either path (braces is still 3.0.3 -- the latest ever published -- under
+  // @ducanh2912/next-pwa, and the eslint-config-next path to it is gone), so
+  // audit-ci prints "Consider not allowlisting paths". That warning is not a
+  // failure, and the entries stay until the REVISIT condition below is
+  // actually met: they are path-scoped triage, and dropping them on a
+  // quiet week would silently re-arm the gate on paths nobody re-read.
+  //
+  // Note which branch of this file's own advice applied: the recurrence was
+  // read as "check `npm audit` before looking for a culprit in the branch",
+  // and the branch was indeed innocent -- `security-scan` was red on PR #4193
+  // for an advisory published against a pinned version. That is the third
+  // sighting of this pattern and the second cleared by an upgrade; only the
+  // 2026-10-04 one had nothing to upgrade to.
+  //
   // REVISIT: drop both entries as soon as braces publishes a fixed release
   // (watch the advisory's `first_patched_version`), or when next-pwa and
   // eslint-config-next move off the fast-glob/micromatch chain. Neither entry

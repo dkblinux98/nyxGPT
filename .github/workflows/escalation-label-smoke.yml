@@ -173,14 +173,14 @@ jobs:
               printf '%s\n' "$out"
               exit 1
             fi
-            if ! printf '%s\n' "$out" | grep -qF "$file"; then
+            if ! grep -qF "$file" <<<"$out"; then
               echo "::error::the guard failed on the planted ${label}, but its output never"
               echo "::error::names ${file} -- so it failed for some OTHER reason and the"
               echo "::error::plant was not actually caught."
               printf '%s\n' "$out"
               exit 1
             fi
-            if ! printf '%s\n' "$out" | grep -qF "planted"; then
+            if ! grep -qF "planted" <<<"$out"; then
               echo "::error::the guard failed on the planted ${label} and named ${file}, but"
               echo "::error::its output does not quote the planted line. Confirm the guard is"
               echo "::error::reporting the offender it found, not an unrelated assertion."

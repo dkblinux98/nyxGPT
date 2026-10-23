@@ -79,8 +79,16 @@ jobs:
 
       - name: Install the suites' own dependencies
         shell: bash
-        # psutil is not used by anything here -- `tests/conftest.py` imports it
-        # (through `log_guard`), so pytest cannot even collect without it.
+        # psutil is not used by anything here. It was added because
+        # `tests/conftest.py` imports it (through `log_guard`) and pytest
+        # could not collect without it -- but the pytest call below has since
+        # gained `--noconftest`, so the root conftest is never loaded and this
+        # is no longer load-bearing. Kept, cheap, as belt and braces if that
+        # flag is ever dropped; the premise is corrected here rather than left
+        # standing, because the next author to copy this step would copy a
+        # claim that is no longer true. `pytest_conftest_guard` (#4192) is what
+        # actually enforces the rule now, for all fifteen jobs that make this
+        # decision.
         run: python -m pip install --quiet pytest pyyaml psutil
 
       # ---------------------------------------------------------------

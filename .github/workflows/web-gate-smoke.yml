@@ -367,8 +367,11 @@ jobs:
         id: plant
         run: |
           set -euo pipefail
-          DELETED_WEB=$(git ls-files web/src | grep '\.tsx$' | head -1)
-          DELETED_TEST=$(git ls-files tests/unit | grep -E '/test_[^/]*\.py$' | head -1)
+          # `sed -n 1p`, not `head -1`: this block sets `pipefail`, and a
+          # reader that leaves on line 1 makes `git ls-files` report EPIPE
+          # instead of the answer (#4192, ledger D-074).
+          DELETED_WEB=$(git ls-files web/src | grep '\.tsx$' | sed -n '1p')
+          DELETED_TEST=$(git ls-files tests/unit | grep -E '/test_[^/]*\.py$' | sed -n '1p')
           if [[ -z "$DELETED_WEB" || -z "$DELETED_TEST" ]]; then
             echo "::error::no tracked file to delete -- this job would be vacuous"
             exit 1
@@ -436,7 +439,7 @@ jobs:
           disable the lint for the files the same commit edited"
             exit 1
           fi
-          if printf '%s\n' "$FILES" | grep -qxF "${DELETED_WEB#web/}"; then
+          if grep -qxF "${DELETED_WEB#web/}" <<<"$FILES"; then
             echo "::error::the deleted file is still in eslint's argv"
             exit 1
           fi
@@ -458,7 +461,11 @@ jobs:
             exit 1
           fi
           # shellcheck disable=SC2086  # intentional split: one line per path
-          if printf '%s\n' $PYTEST_ARGS | grep -qxF "$DELETED_TEST"; then
+          # `grep -xF … >/dev/null` rather than `-q`: same status, and it
+          # drains, so the `printf` cannot die of EPIPE under `pipefail`. A
+          # here-string is not available here -- the split into one line per
+          # path is the point (#4192, ledger D-074).
+          if printf '%s\n' $PYTEST_ARGS | grep -xF "$DELETED_TEST" >/dev/null; then
             echo "::error::the deleted test is still in pytest's argv"
             exit 1
           fi

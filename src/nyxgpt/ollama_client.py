@@ -86,6 +86,19 @@ def _is_connection_error(exc: Exception) -> bool:
     return bool(isinstance(exc, ConnectionError | TimeoutError | OSError))
 
 
+def _is_retryable_connection_error(exc: Exception) -> bool:
+    """The default `should_retry` for `_retry_with_backoff`: connection failures only.
+
+    An `HTTPError` means the request reached Ollama and Ollama answered, so
+    repeating it is not a reconnection -- the caller decides whether that
+    answer is worth asking for again (`pull_model` does; the chat path does
+    not). Everything else that is a connection failure is retried.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    return _is_connection_error(exc)
+
+
 def _retry_with_backoff(
     func: Callable[[], Any],
     max_retries: int = 3,
@@ -93,6 +106,7 @@ def _retry_with_backoff(
     max_delay: float = 10.0,
     backoff_factor: float = 2.0,
     on_retry: Callable[[int, float, Exception], None] | None = None,
+    should_retry: Callable[[Exception], bool] | None = None,
 ) -> Any:
     """Retry a function with exponential backoff on connection errors.
 
@@ -103,6 +117,12 @@ def _retry_with_backoff(
         max_delay: Maximum delay in seconds between retries
         backoff_factor: Multiplier for delay after each retry
         on_retry: Optional callback(attempt, delay, error) called before each retry
+        should_retry: Predicate deciding whether a given exception is worth
+            another attempt. Defaults to `_is_retryable_connection_error`
+            (connection failures, never an HTTP answer). This is the one
+            retry loop in the package: callers that retry a *different* class
+            of failure pass their own predicate rather than growing a second
+            copy of backoff arithmetic (D-066).
 
     Returns:
         Result from successful function call
@@ -111,22 +131,18 @@ def _retry_with_backoff(
         Last exception if all retries fail
     """
     delay = initial_delay
+    retryable = should_retry if should_retry is not None else _is_retryable_connection_error
 
     for attempt in range(max_retries + 1):
         try:
             return func()
         except Exception as e:
-            # Don't retry on HTTP errors (4xx, 5xx) - these are not connection issues
-            if isinstance(e, urllib.error.HTTPError):
-                raise
-
-            # Only retry on connection-related errors
-            if not _is_connection_error(e):
+            if not retryable(e):
                 raise
 
             # Don't retry after last attempt
             if attempt >= max_retries:
-                logger.warning(f"Failed to connect to Ollama after {max_retries + 1} attempts: {e}")
+                logger.warning(f"Ollama request failed after {max_retries + 1} attempts: {e}")
                 raise
 
             # Calculate delay with exponential backoff
@@ -136,7 +152,7 @@ def _retry_with_backoff(
                 on_retry(attempt + 1, current_delay, e)
 
             logger.info(
-                f"Ollama connection failed (attempt {attempt + 1}/{max_retries + 1}), "
+                f"Ollama request failed (attempt {attempt + 1}/{max_retries + 1}), "
                 f"retrying in {current_delay:.1f}s: {e}"
             )
 
