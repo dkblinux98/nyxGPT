@@ -31,7 +31,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-virtuoso": "^4.18.1",
-    "undici": "^6.29.0"
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "^16.2.10",
@@ -47,7 +47,7 @@
     "audit-ci": "7.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
-    "happy-dom": "^20.0.11",
+    "happy-dom": "^21.0.4",
     "msw": "^2.12.7",
     "typescript": "^5",
     "vitest": "^4.0.16"
