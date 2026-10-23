@@ -65,12 +65,18 @@ jobs:
       # to dismiss a live alert, and `GITHUB_TOKEN` on a fork PR could not
       # anyway. The real application runs on the alert event.
       - name: Apply the adjudication register
+        env:
+          # Through `env:` and read as data, never interpolated into the shell
+          # body -- `scripts/agents/lib/workflow_script_guard.py` fails the
+          # build on the latter (#3820, #3837).
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           DRY=""
-          if [ "${{ github.event_name }}" = "pull_request" ] || \
-             [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] || [ "$DRY_RUN" = "true" ]; then
             DRY="--dry-run"
           fi
           python scripts/agents/apply_codeql_adjudications.py \
-            --repo "${{ github.repository }}" --ref "$SCAN_REF" $DRY
+            --repo "$REPO" --ref "$SCAN_REF" $DRY
