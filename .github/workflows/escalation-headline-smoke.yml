@@ -132,7 +132,7 @@ jobs:
             "test_planted.py::test_release_candidate_formula_version" \
             "test_planted.py::test_release_candidate_rc_pin" \
             "2 failing test(s)"; do
-            if ! printf '%s' "$DETAIL" | grep -qF "$needle"; then
+            if ! grep -qF "$needle" <<<"$DETAIL"; then
               echo "::error::the recorded reason does not contain: ${needle}"
               exit 1
             fi
@@ -216,7 +216,7 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$ERR"
-          if ! printf '%s' "$ERR" | grep -qF "is already used by worktree"; then
+          if ! grep -qF "is already used by worktree" <<<"$ERR"; then
             echo "::error::the checkout failed for some other reason than the #4166 fatal."
             exit 1
           fi
@@ -331,12 +331,12 @@ jobs:
             "test_planted.py::test_release_candidate_formula_version" \
             "2 failing test(s)" \
             "Phase 3 diagnosis did not run"; do
-            if ! printf '%s' "$HEADLINE" | grep -qF "$needle"; then
+            if ! grep -qF "$needle" <<<"$HEADLINE"; then
               echo "::error::the headline does not name: ${needle}"
               fail=1
             fi
           done
-          if printf '%s' "$HEADLINE" | grep -qF "Error type could not be determined"; then
+          if grep -qF "Error type could not be determined" <<<"$HEADLINE"; then
             echo "::error::the headline is STILL the generic sentence -- #4176 is not fixed."
             fail=1
           fi
@@ -423,7 +423,7 @@ jobs:
             exit 1
           fi
           [ "$RC" -eq 0 ] || exit 1
-          if ! printf '%s' "$OUT" | grep -qF "[ok] it records the first failing node ID"; then
+          if ! grep -qF "[ok] it records the first failing node ID" <<<"$OUT"; then
             echo "::error::the suite's EXECUTED section did not run (it was skipped) --"
             echo "::error::this job would be green over an unexecuted gate."
             exit 1

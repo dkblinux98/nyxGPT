@@ -129,7 +129,19 @@ def test_a_missing_support_label_fails_the_run_rather_than_degrading():
     # Exact-match, not `--search`: `gh label list --search` is fuzzy, and a
     # substring hit on some other label would be exactly the false assurance
     # that let #3810 through.
-    assert "grep -Fxq" in run
+    #
+    # `-Fx`, with the status taken from grep and its output discarded -- NOT
+    # `-Fxq`. `grep -q` exits on the first match, which leaves `gh` writing
+    # into a closed pipe, and `pipefail` then reports that EPIPE as the
+    # pipeline's answer: the label would read as absent because it was found
+    # (#4192, enforced tree-wide by scripts/agents/lib/sigpipe_pipeline_guard.py).
+    # What this assertion is about is the EXACTNESS of the match, so it pins
+    # `-Fx` and leaves the draining spelling to that guard.
+    assert "grep -Fx " in run, "the label check must still match exactly (-F -x)"
+    assert "grep -Fxq" not in run, (
+        "an early-exiting reader here can report `gh`'s broken pipe as 'label "
+        "absent' -- use `grep -Fx ... >/dev/null` (#4192)"
+    )
     assert "--search" not in run
     assert "exit 1" in run
     assert "::error::" in run

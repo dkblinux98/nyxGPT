@@ -206,7 +206,7 @@ jobs:
             fi
           else
             COMMENT="${COMMENT_BODY:-}"
-            if echo "$COMMENT" | grep -q 'nyxgpt-structured-review'; then
+            if grep -q 'nyxgpt-structured-review' <<<"$COMMENT"; then
               # Fallback trigger: the structured-review comment the review
               # workflow persists after every review. The primary trigger is
               # the pull_request_review event, but that event only fires when
@@ -257,15 +257,15 @@ jobs:
                 fi
               fi
               echo "::notice::Structured-review comment fallback path (decision: $DECISION)"
-            elif echo "$COMMENT" | grep -qE '^\s*@approve-merge\s*$'; then
+            elif grep -qE '^\s*@approve-merge\s*$' <<<"$COMMENT"; then
               DECISION="APPROVE"
               TRIGGER_TYPE="manual"
               echo "::notice::Human approved merge"
-            elif echo "$COMMENT" | grep -qE '^\s*@request-changes\s*$'; then
+            elif grep -qE '^\s*@request-changes\s*$' <<<"$COMMENT"; then
               DECISION="REQUEST_CHANGES"
               TRIGGER_TYPE="manual"
               echo "::notice::Human requested changes"
-            elif echo "$COMMENT" | grep -qE '^\s*@send-to-developer\s*$'; then
+            elif grep -qE '^\s*@send-to-developer\s*$' <<<"$COMMENT"; then
               DECISION="SEND_TO_DEVELOPER"
               TRIGGER_TYPE="manual"
               echo "::notice::Human sending PR back to developer"

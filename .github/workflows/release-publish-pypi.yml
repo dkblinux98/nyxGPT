@@ -588,7 +588,7 @@ jobs:
           git add "Formula/${API_FORMULA}" "Formula/${WEB_FORMULA}"
           # Verifying the mutation: an rc push that touched a stable formula
           # would break `brew install nyxgpt-api` for every user.
-          if ! git status --porcelain -- Formula/nyxgpt-api.rb Formula/nyxgpt-web.rb | grep -q .; then
+          if ! git status --porcelain -- Formula/nyxgpt-api.rb Formula/nyxgpt-web.rb | grep . >/dev/null; then
             echo "stable formulas untouched by this rc push (verified)"
           else
             echo "::error::this rc push modified a stable formula -- refusing to push"

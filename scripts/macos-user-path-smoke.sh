@@ -390,7 +390,7 @@ for component in api web; do
   # `started` is what `brew services list` reports for a running native
   # service and what the native snapshot passes straight through; `running`
   # covers the Compose/Terraform spellings of the same state.
-  if printf '%s' "$state_line" | grep -qiE ":[[:space:]]*(started|running)\b"; then
+  if grep -qiE ":[[:space:]]*(started|running)\b" <<<"$state_line"; then
     pass "status reports $component as running"
   else
     fail "nyxgpt ops status reports $component as not running ($(printf '%s' "$state_line" | sed 's/^[[:space:]]*//')) after nyxgpt up (#3854)"
@@ -417,9 +417,9 @@ done
 # asserting something untrue. What CAN be asserted is that api/web never
 # appear in that line, which is non-vacuous exactly when the wait did run.
 if grep -q "Still unhealthy" "$WORK/up.log"; then
-  STILL_LINE="$(grep -h "Still unhealthy" "$WORK/up.log" | head -1)"
+  STILL_LINE="$(grep -h "Still unhealthy" "$WORK/up.log" | sed -n '1p')"
   for component in api web; do
-    if printf '%s' "$STILL_LINE" | grep -qE "(^|[ ,:])${component}([,.]|$)"; then
+    if grep -qE "(^|[ ,:])${component}([,.]|$)" <<<"$STILL_LINE"; then
       fail "nyxgpt up reported $component unhealthy while its service was started: $STILL_LINE (#3853)"
     else
       pass "nyxgpt up's health wait did not report $component unhealthy"
@@ -435,7 +435,7 @@ fi
 log "the service names this install actually registered"
 brew services list | grep -E "^(nyxgpt-api|nyxgpt-web)" || true
 for formula in "nyxgpt-api@${RELEASE}rc" "nyxgpt-web@${RELEASE}rc"; do
-  if brew services list | grep -qE "^${formula}[[:space:]]+started"; then
+  if brew services list | grep -E "^${formula}[[:space:]]+started" >/dev/null; then
     pass "$formula is started, and the probe above resolved it (#3853)"
   fi
 done

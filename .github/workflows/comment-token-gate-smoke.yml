@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           BODY='🚫 **Dispatch refused**: if rework is genuinely needed, file it with `@improvement` on the feature issue instead.'
-          if printf '%s' "$BODY" | grep -q '@improvement'; then
+          if printf '%s' "$BODY" | grep '@improvement' >/dev/null; then
             echo "::notice::Confirmed: the bare substring test matches this message (the defect)."
           else
             echo "::error::Fault injection failed -- the message no longer contains the token, so this job proves nothing."
@@ -128,7 +128,7 @@ jobs:
           fail=0
           # Split so this file is not itself a mention of either token.
           for retired in "RETRY_""IMPLEMENTATION" "READY_FOR_NEXT""_ISSUE"; do
-            if printf '%s\n' "$TOKENS" | grep -qx "$retired"; then
+            if grep -qx "$retired" <<<"$TOKENS"; then
               echo "::error::$retired is a live command token again -- #3882 deleted it"
               fail=1
             fi

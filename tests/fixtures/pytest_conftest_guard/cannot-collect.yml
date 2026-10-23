@@ -1,0 +1,14 @@
+# THE DEFECT, exactly as it shipped in `pipefail-pipeline-smoke.yml` and went
+# red on a green head: a minimal install, a target under `tests/`, and no
+# `--noconftest`. pytest loads the root `tests/conftest.py`, cannot import
+# `psutil` through `tests/log_guard.py`, and exits 4 at collection.
+#
+# The guard MUST reject this file. See the README beside it.
+name: planted - cannot collect
+on: [push]
+jobs:
+  cannot-collect:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python -m pip install --quiet pyyaml pytest
+      - run: python -m pytest tests/unit/test_something.py -v

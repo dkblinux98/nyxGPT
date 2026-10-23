@@ -2343,7 +2343,15 @@ def test_the_keg_install_job_proves_the_candidate_keg_reports_the_candidate():
     script = _job_run_script(_macos_smoke_workflow()["jobs"]["keg-install"])
 
     # The build-time half: the tarball the runner just built declares the rc.
-    assert "nyxgpt-api-${SMOKE_VERSION}/pyproject.toml" in script
+    # Asserted as the DECISION, not as the shell that used to make it. The
+    # inline `tar … | awk … exit` this replaced was the spelling pinned here,
+    # and it is also what reddened the `candidate-upgrade` job (#4192 round 5)
+    # -- awk's `exit` closed the pipe mid-member and `pipefail` failed the step
+    # on the right answer. One helper now answers it for all three steps that
+    # ask (D-066), so the test names the helper and the comparison.
+    assert "scripts/tarball_declared_version.sh" in script
+    assert 'DECLARED="$(scripts/tarball_declared_version.sh' in script
+    assert 'test "$DECLARED" = "$SMOKE_VERSION"' in script
     # The operator-facing half, through the command a user types...
     assert "reported_version_is() {" in script
     assert 'REPORTED="$(nyxgpt --version)"' in script

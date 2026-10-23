@@ -226,7 +226,7 @@ log "PASS: an overlapping VPC network is refused, and nothing is installed"
 # the shipped pair -- the substrate's VPC and the pinned k3s networks -- passes
 # the guard it now has to pass, which is the combination owner acceptance runs.
 VPC_CIDR="$(awk '/variable "vpc_cidr"/,/^}/' terraform/aws/variables.tf \
-  | awk -F'"' '/default/ {print $2; exit}')"
+  | awk -F'"' '!found && /default/ {found=$2} END {print found}')"
 [[ -n "$VPC_CIDR" ]] || fail "could not read vpc_cidr's default out of terraform/aws/variables.tf"
 log "MEASURED: the substrate VPC default is $VPC_CIDR"
 NYXGPT_VPC_CIDRS="$VPC_CIDR" bash "$WORK/k3s-bootstrap.sh"
@@ -247,12 +247,12 @@ step "2/14  The access surface: #3503 says nothing but TCP 22"
 log "MEASURED: listeners on 6443:"
 ss -ltnH 'sport = :6443' | sed 's/^/    | /'
 
-if ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -Eq '^(0\.0\.0\.0|\*|\[::\]):6443$'; then
+if ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -E '^(0\.0\.0\.0|\*|\[::\]):6443$' >/dev/null; then
   fail "the k3s apiserver is listening on every interface -- on an EC2 instance that is the
         public NIC, and #3503's access model is that nothing but TCP 22 is reachable"
 fi
 # -F: the address is an IPv4 literal, so its dots are data, not regex.
-ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -qF "${NODE_IP}:6443" \
+ss -ltnH 'sport = :6443' | awk '{print $4}' | grep -F "${NODE_IP}:6443" >/dev/null \
   || fail "nothing is listening on ${NODE_IP}:6443, which is what the kubeconfig points at"
 log "PASS: the apiserver is bound to the node's private address only"
 
@@ -296,7 +296,7 @@ log "PASS: local-path is present and is the default StorageClass"
 # ...and now that the deploy controller has demonstrably run, the absence of
 # these two is evidence rather than a head start.
 for unwanted in traefik svclb; do
-  if kubectl get pods -A --no-headers 2>/dev/null | grep -q "$unwanted"; then
+  if kubectl get pods -A --no-headers 2>/dev/null | grep "$unwanted" >/dev/null; then
     kubectl get pods -A | sed 's/^/    | /'
     fail "$unwanted is running -- the bootstrap's --disable flags did not take"
   fi
@@ -370,7 +370,7 @@ COREDNS_RESTARTS="$(kubectl -n kube-system get pods -l k8s-app=kube-dns \
 log "MEASURED: CoreDNS restart count is $COREDNS_RESTARTS"
 [[ "$COREDNS_RESTARTS" -eq 0 ]] \
   || fail "CoreDNS has restarted $COREDNS_RESTARTS time(s) -- it is Available but not healthy"
-if kubectl -n kube-system logs -l k8s-app=kube-dns --tail=200 2>/dev/null | grep -q "plugin/loop"; then
+if kubectl -n kube-system logs -l k8s-app=kube-dns --tail=200 2>/dev/null | grep "plugin/loop" >/dev/null; then
   kubectl -n kube-system logs -l k8s-app=kube-dns --tail=50 | sed 's/^/    | /'
   fail "CoreDNS logged a resolver loop -- its upstream resolves back to itself"
 fi
@@ -437,7 +437,7 @@ done
 log "MEASURED: Service types in the nyxgpt namespace:"
 kubectl -n "$NAMESPACE" get svc -o custom-columns=NAME:.metadata.name,TYPE:.spec.type --no-headers \
   | sed 's/^/    | /'
-if kubectl -n "$NAMESPACE" get svc -o jsonpath='{.items[*].spec.type}' | grep -Eq 'LoadBalancer|NodePort'; then
+if kubectl -n "$NAMESPACE" get svc -o jsonpath='{.items[*].spec.type}' | grep -E 'LoadBalancer|NodePort' >/dev/null; then
   fail "a Service asks for a LoadBalancer or NodePort -- #3503 allows no port but 22"
 fi
 log "PASS: every Service is ClusterIP"
@@ -780,7 +780,7 @@ PY
 # again. Nothing about the phase changed; only its owner did.
 CURRENT_RS="$(kubectl -n "$NAMESPACE" get rs -l "app=$ROLLOUT_LABEL" \
   -o jsonpath='{range .items[*]}{.metadata.name}={.spec.replicas}{"\n"}{end}' \
-  | awk -F= '$2 != "0" {print $1; exit}')"
+  | awk -F= '!found && $2 != "0" {found=$1} END {print found}')"
 CURRENT_RS_UID="$(kubectl -n "$NAMESPACE" get "rs/$CURRENT_RS" -o jsonpath='{.metadata.uid}')"
 kubectl -n "$NAMESPACE" patch "pod/$ROLLOUT-corpse" --type=merge -p "$(cat <<JSON
 {"metadata":{"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet",
@@ -1026,7 +1026,7 @@ set -e
 [[ $compose_rc -ne 0 ]] \
   || fail "the Compose survey still answers from here -- the injection proves nothing"
 log "MEASURED (defect condition reproduced): \`docker compose ps\` exits $compose_rc here"
-docker ps -a --format '{{.Names}}' | grep -qx nyxgpt-cassandra \
+docker ps -a --format '{{.Names}}' | grep -x nyxgpt-cassandra >/dev/null \
   && fail "this host really has a nyxgpt-cassandra container -- the doctor half of this
            injection cannot reproduce the owner's condition"
 
@@ -1806,7 +1806,7 @@ step "13/14  FAULT INJECTION: the instance's sshd must offer a post-quantum KEX"
 #       is measured classical before the drop-in, post-quantum with it, and
 #       classical again once it is removed -- so the PQ offer is attributable
 #       to this file and not to the runner's default.
-if ! ssh -Q kex 2>/dev/null | grep -qE '^(mlkem768x25519-sha256|sntrup761x25519-sha512@openssh.com)$'; then
+if ! ssh -Q kex 2>/dev/null | grep -E '^(mlkem768x25519-sha256|sntrup761x25519-sha512@openssh.com)$' >/dev/null; then
   log "SKIP: this runner's OpenSSH implements no post-quantum KEX, so there is nothing"
   log "      here to prove the drop-in against (the block's own no-op branch covers it)"
 else
@@ -1957,7 +1957,7 @@ if command -v k3s >/dev/null 2>&1; then
   fail "k3s is still installed after the --no-kubernetes teardown -- the cluster would
         keep running the stack the deploy record now says is native"
 fi
-if ss -ltnH 'sport = :6443' | grep -q .; then
+if ss -ltnH 'sport = :6443' | grep . >/dev/null; then
   fail "something still listens on 6443 after the k3s uninstall"
 fi
 log "PASS: k3s is uninstalled and 6443 is free"

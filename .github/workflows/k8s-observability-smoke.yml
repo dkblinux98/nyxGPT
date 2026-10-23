@@ -172,7 +172,7 @@ jobs:
           # node ports were published and whose four SRE UIs all answered 200.
           # The sentinel is `ops.PORT_FORWARD_STATUS_RUNNING_SENTINEL`, pinned
           # by tests/unit/test_port_forward_status_predicate.py.
-          if nyxgpt ops port-forward --status | grep -q 'Background port-forward running'; then
+          if nyxgpt ops port-forward --status | grep 'Background port-forward running' >/dev/null; then
             echo "::error::a managed background forward is running -- the deploy should have published the node ports on this cluster"
             fail=1
           fi
@@ -260,7 +260,7 @@ jobs:
           # wasted step or a hunt for a fault that is not there. Executed
           # rather than inspected (#3775): only a real cluster can say what
           # its Services carry.
-          access=$(echo "$status" | grep -m1 'Access: ') || {
+          access=$(grep -m1 'Access: ' <<<"$status") || {
             echo "::error::ops status printed no Access line for the SRE UIs"; exit 1; }
           echo "$access"
           case "$access" in
@@ -381,7 +381,7 @@ jobs:
           echo "SRE host ports (K8S_OBSERVABILITY_HOST_PORT_MAPPINGS): $wanted"
           fail=0
           for host in $wanted; do
-            if printf '%s\n' "$mapped" | grep -qx "$host"; then
+            if grep -qx "$host" <<<"$mapped"; then
               echo "::error::this node publishes host port ${host} -- not a bring-your-own topology, the forward path cannot be proved here"
               fail=1
             fi
@@ -413,7 +413,7 @@ jobs:
           # word "running" -- the idle message contains that word too, which
           # is what made this class of guard true in both states.
           nyxgpt ops port-forward --status
-          if ! nyxgpt ops port-forward --status | grep -q 'Background port-forward running'; then
+          if ! nyxgpt ops port-forward --status | grep 'Background port-forward running' >/dev/null; then
             echo "::error::the deploy left no managed background forward on a cluster whose host ports it cannot map -- the SRE tier is unreachable until the operator opens a terminal (#3986)"
             fail=1
           fi
@@ -456,7 +456,7 @@ jobs:
           set -uo pipefail
           status=$(nyxgpt ops status)
           echo "$status" | grep -A 14 'Kubernetes observability'
-          access=$(echo "$status" | grep -m1 'Access: ') || {
+          access=$(grep -m1 'Access: ' <<<"$status") || {
             echo "::error::ops status printed no Access line for the SRE UIs"; exit 1; }
           echo "$access"
           case "$access" in
@@ -498,12 +498,12 @@ jobs:
               echo "::error::nyxgpt ops status printed no output of its own -- nothing was measured"
               exit 1;;
           esac
-          if echo "$status" | grep -q 'Running api build'; then
+          if grep -q 'Running api build' <<<"$status"; then
             echo "$status" | grep -A 3 'Running api build'
             echo "::error::ops status reported on a native keg/venv comparison on a host with no native install (#4182)"
             exit 1
           fi
-          if echo "$status" | grep -q 'CANNOT DETERMINE -- http'; then
+          if grep -q 'CANNOT DETERMINE -- http' <<<"$status"; then
             echo "$status" | grep 'CANNOT DETERMINE'
             echo "::error::ops status reported a probe failure as a fact about this host (#4182)"
             exit 1
@@ -524,7 +524,7 @@ jobs:
           # pins every `--status` grep in this repo to this one pattern, and
           # two spellings of the same question is how the predicate drifted in
           # the first place.
-          if nyxgpt ops port-forward --status | grep -q 'Background port-forward running'; then
+          if nyxgpt ops port-forward --status | grep 'Background port-forward running' >/dev/null; then
             nyxgpt ops port-forward --status
             echo "::error::--stop returned but --status still reports a forward"
             fail=1
@@ -555,7 +555,7 @@ jobs:
         run: |
           set -uo pipefail
           nyxgpt ops down --kubernetes || true
-          if ! kind get clusters | grep -qx "$BYO_CLUSTER"; then
+          if ! kind get clusters | grep -x "$BYO_CLUSTER" >/dev/null; then
             echo "::error::the wrapped teardown deleted a bring-your-own cluster"
             exit 1
           fi

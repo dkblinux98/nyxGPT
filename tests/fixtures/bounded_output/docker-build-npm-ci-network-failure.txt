@@ -1,0 +1,94 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 991B done
+#1 DONE 0.0s
+
+#2 [auth] library/node:pull token for registry-1.docker.io
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/node:20-alpine
+#3 DONE 0.4s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [ 1/18] FROM docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#5 DONE 0.0s
+
+#6 [ 2/18] WORKDIR /app
+#6 CACHED
+
+#7 [internal] load build context
+#7 transferring context: 611B done
+#7 DONE 0.0s
+
+#8 [ 3/18] RUN mkdir -p /app/stage1 && echo layer1 > /app/stage1/marker
+#8 DONE 0.1s
+
+#9 [ 4/18] RUN mkdir -p /app/stage2 && echo layer2 > /app/stage2/marker
+#9 DONE 0.0s
+
+#10 [ 5/18] RUN mkdir -p /app/stage3 && echo layer3 > /app/stage3/marker
+#10 DONE 0.0s
+
+#11 [ 6/18] RUN mkdir -p /app/stage4 && echo layer4 > /app/stage4/marker
+#11 DONE 0.0s
+
+#12 [ 7/18] RUN mkdir -p /app/stage5 && echo layer5 > /app/stage5/marker
+#12 DONE 0.0s
+
+#13 [ 8/18] RUN mkdir -p /app/stage6 && echo layer6 > /app/stage6/marker
+#13 DONE 0.0s
+
+#14 [ 9/18] RUN mkdir -p /app/stage7 && echo layer7 > /app/stage7/marker
+#14 DONE 0.0s
+
+#15 [10/18] RUN mkdir -p /app/stage8 && echo layer8 > /app/stage8/marker
+#15 DONE 0.0s
+
+#16 [11/18] RUN mkdir -p /app/stage9 && echo layer9 > /app/stage9/marker
+#16 DONE 0.0s
+
+#17 [12/18] RUN mkdir -p /app/stage10 && echo layer10 > /app/stage10/marker
+#17 DONE 0.0s
+
+#18 [13/18] RUN mkdir -p /app/stage11 && echo layer11 > /app/stage11/marker
+#18 DONE 0.0s
+
+#19 [14/18] RUN mkdir -p /app/stage12 && echo layer12 > /app/stage12/marker
+#19 DONE 0.1s
+
+#20 [15/18] RUN mkdir -p /app/stage13 && echo layer13 > /app/stage13/marker
+#20 DONE 0.1s
+
+#21 [16/18] RUN mkdir -p /app/stage14 && echo layer14 > /app/stage14/marker
+#21 DONE 0.0s
+
+#22 [17/18] COPY package.json package-lock.json ./
+#22 DONE 0.0s
+
+#23 [18/18] RUN npm ci
+#23 90.52 npm error code EAI_AGAIN
+#23 90.52 npm error syscall getaddrinfo
+#23 90.52 npm error errno EAI_AGAIN
+#23 90.52 npm error request to https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz failed, reason: getaddrinfo EAI_AGAIN registry.npmjs.org
+#23 90.52 npm error A complete log of this run can be found in: /root/.npm/_logs/2026-10-21T20_59_18_814Z-debug-0.log
+#23 ERROR: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1
+------
+ > [18/18] RUN npm ci:
+90.52 npm error code EAI_AGAIN
+90.52 npm error syscall getaddrinfo
+90.52 npm error errno EAI_AGAIN
+90.52 npm error request to https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz failed, reason: getaddrinfo EAI_AGAIN registry.npmjs.org
+90.52 npm error A complete log of this run can be found in: /root/.npm/_logs/2026-10-21T20_59_18_814Z-debug-0.log
+------
+Dockerfile:18
+--------------------
+  16 |     RUN mkdir -p /app/stage14 && echo layer14 > /app/stage14/marker
+  17 |     COPY package.json package-lock.json ./
+  18 | >>> RUN npm ci
+  19 |     
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1

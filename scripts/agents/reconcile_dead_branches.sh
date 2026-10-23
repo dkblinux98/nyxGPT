@@ -82,7 +82,7 @@ OPEN_PR_HEADS="$(open_pr_head_branches 2>/dev/null || true)"
 
 is_open_pr_head() {
   local b="$1"
-  echo "$OPEN_PR_HEADS" | grep -qx "$b"
+  grep -qx "$b" <<<"$OPEN_PR_HEADS"
 }
 
 echo "[reconcile] Listing candidate branches (claude/*, feat/*, fix/*, chore/*)..." >&2

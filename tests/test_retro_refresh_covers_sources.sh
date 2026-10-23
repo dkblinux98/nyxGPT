@@ -62,7 +62,7 @@ for wf in "$REPO_ROOT"/.github/workflows/retro_*_dump.yml; do
     | grep -o 'scripts/retrospective/dump_[a-z_]*\.\(py\|sh\)' | sort -u)
   [[ ${#scripts[@]} -gt 0 ]] || bad "$(basename "$wf") runs no scripts/retrospective/dump_* script"
   for s in "${scripts[@]}"; do
-    if grep -v '^[[:space:]]*#' "$REFRESH" | grep -q "$s"; then
+    if grep -v '^[[:space:]]*#' "$REFRESH" | grep "$s" >/dev/null; then
       ok "$(basename "$wf") → $s is also run by retro_data_refresh.yml"
     else
       bad "$(basename "$wf") runs $s but retro_data_refresh.yml does not"
@@ -83,7 +83,7 @@ echo "== the single-file re-run path waits for the REST budget too"
 # (the dump may have failed because of it), so the fix lives in every dump
 # workflow, not only in the refresh.
 for wf in "$REPO_ROOT"/.github/workflows/retro_*_dump.yml; do
-  if grep -v '^[[:space:]]*#' "$wf" | grep -q 'await_rate_limit.sh'; then
+  if grep -v '^[[:space:]]*#' "$wf" | grep 'await_rate_limit.sh' >/dev/null; then
     ok "$(basename "$wf") waits for the REST budget before its dump"
   else
     bad "$(basename "$wf") dumps without waiting for the REST budget"

@@ -180,7 +180,7 @@ else
   sleep 2
   rag_response=$(curl -sf -X POST "$API_URL/api/v1/rag/query" "${auth_args[@]}" -H 'Content-Type: application/json' \
     -d '{"query": "What is the secret smoke-test phrase?"}' || true)
-  if echo "$rag_response" | grep -q "$doc_marker"; then
+  if echo "$rag_response" | grep "$doc_marker" >/dev/null; then
     log "  RAG query surfaced the ingested phrase"
   else
     log "  WARNING: RAG query did not surface the ingested phrase -- check RAG config"
