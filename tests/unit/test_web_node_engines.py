@@ -43,6 +43,9 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 _FROM_NODE = re.compile(r"^FROM\s+node:(\d+)[-.]", re.MULTILINE)
 _NODE_VERSION = re.compile(r"""node-version:\s*['"]?(\d+)""")
+# A setup-node step that reads the version from a file instead (#4194).
+_NODE_VERSION_FILE = re.compile(r"""node-version-file:\s*['"]?([^'"\s]+)""")
+NVMRC = REPO_ROOT / ".nvmrc"
 # A workflow that runs npm against the web tier, however it gets there.
 _TOUCHES_WEB = re.compile(r"working-directory:\s*\.?/?web\b|cd\s+web\b|web/package")
 
@@ -63,6 +66,21 @@ def _node_baseline_major() -> int:
         "installs is not the tree that runs."
     )
     return majors.pop()
+
+
+def _declared_major(version_file: Path) -> int:
+    """The Node major a `node-version-file` names (`20`, `v20`, `20.19.1`)."""
+    assert version_file.is_file(), f"setup-node reads {version_file.name}, which does not exist"
+    match = re.match(r"v?(\d+)", version_file.read_text(encoding="utf-8").strip())
+    assert match, f"{version_file.name} names no Node major"
+    return int(match.group(1))
+
+
+def test_the_declared_node_version_is_the_build_images():
+    """`.nvmrc` is the one declared version CI reads (#4194); it and
+    `web/Dockerfile` must name the same major, or CI tests a different Node
+    from the one the image ships."""
+    assert _declared_major(NVMRC) == _node_baseline_major()
 
 
 def _lower_bound_major(alternative: str) -> int:
@@ -150,6 +168,12 @@ def test_every_workflow_that_runs_npm_in_web_uses_the_build_images_node():
         for major in _NODE_VERSION.findall(text):
             if int(major) != baseline:
                 mismatched.append(f"  {workflow.name}: node-version {major}")
+        # A file-sourced version is held to the same baseline, or switching a
+        # workflow to `node-version-file` would take it out of this check.
+        for version_file in _NODE_VERSION_FILE.findall(text):
+            major = _declared_major(REPO_ROOT / version_file)
+            if major != baseline:
+                mismatched.append(f"  {workflow.name}: {version_file} -> Node {major}")
     assert not mismatched, (
         f"web/Dockerfile builds on Node {baseline}; these workflows run npm against "
         "web/ on a different major:\n" + "\n".join(mismatched)

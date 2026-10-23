@@ -1610,10 +1610,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # This workflow runs from the release branch's definition but checks out
+      # the work branch, which may predate .nvmrc. Read it from the work tree
+      # when present, else from the release branch -- never a literal here,
+      # so the declared version has exactly one source (#4194).
+      - name: Resolve the declared Node.js version
+        id: node_version
+        env:
+          RELEASE_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -f .nvmrc ]; then
+            version="$(tr -d '[:space:]' < .nvmrc)"
+          else
+            git fetch --quiet origin "$RELEASE_REF"
+            version="$(git show "origin/${RELEASE_REF}:.nvmrc" | tr -d '[:space:]')"
+            echo "::notice::work branch has no .nvmrc; using ${RELEASE_REF}'s (${version})"
+          fi
+          [ -n "$version" ] || { echo "::error::.nvmrc is empty"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ steps.node_version.outputs.version }}
 
       - name: Install Node dependencies
         working-directory: web

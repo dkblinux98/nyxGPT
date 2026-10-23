@@ -225,6 +225,7 @@ def _scope(changed: Sequence[str]) -> object:
         "web/src/app/models/page.tsx",
         "web/package.json",
         "web/next.config.ts",  # #3938: the file a git pathspec silently missed
+        ".nvmrc",  # #4194: the Node.js version web/ is built and tested with
     ],
 )
 def test_a_web_path_selects_the_web_gates(path: str) -> None:

@@ -55,7 +55,10 @@ PULL_REQUEST_EVENTS = ("pull_request", "pull_request_target")
 NULL_SHA = "0" * 40
 
 #: Paths that mean the web gates (tsc / eslint / vitest --coverage) apply.
-WEB_PREFIXES = ("web/",)
+#: `.nvmrc` is the one declared Node.js version every setup-node step reads
+#: (#4194): changing it changes what builds and tests `web/`, with no `web/`
+#: path in the diff.
+WEB_PREFIXES = ("web/", ".nvmrc")
 
 #: Paths that can change Python behavior, and therefore what the pytest gates
 #: and the determinism guard are measuring. `tests/` counts: the determinism
