@@ -3156,6 +3156,48 @@ rather than mechanism, and nothing can enforce them.
   Source: #4192; related #4193, #4208, #4166; extends **D-074**, **D-077**,
   **D-066**.
 
+- **D-079** · 2026-10-23 · developer (#4192, red-head round 8) — **A gate
+  that depends on the public internet is only as deterministic as its
+  retries. The model pull had none, in two of its three copies.**
+  `terraform-artifact-smoke` went red on `3d42d73b` at
+  `nyxgpt ops install --terraform`, with `Failed to pull the chat model
+  'qwen3.5:0.8b' … (Ollama HTTP 500: {"error":"pull model manifest: 503:
+  upstream connect error or disconnect/reset before headers. reset reason:
+  connection termination"})`. A pull is the one Ollama request whose failures
+  are mostly **not about this host**: Ollama fetches the manifest and blobs
+  from the public registry and relays the registry's failure as its own 5xx.
+  `pull_model` attempted it once, so one blip failed a required gate on a
+  commit it says nothing about — and would fail a user's install the same way.
+  "Pull the required models, and what if the pull fails?" is one decision
+  this tree makes in **three** places, and only one was right:
+  `k8s/statefulset-ollama.yaml`'s postStart retried 5× with 5s doubling,
+  while `docker-compose.yml`'s entrypoint and `nyxgpt.models.pull_model` each
+  took a single attempt. All three now carry the k8s copy's budget
+  (**D-066**), and `tests/unit/test_model_pull_retry.py` holds them to one
+  rule by **reading the manifests and executing the loops** — the two shell
+  loops lifted out of their own files and run against a stub `ollama` that
+  fails twice on purpose, the Python path against a stub `urlopen` replaying
+  the capture above. Restoring the retired single-attempt form reddens three
+  of those tests, measured.
+  The discriminator is the exception **type**, never message text:
+  `post_json`/`post_json_lines` already raise `ModelRuntimeError` for exactly
+  the retryable upstream conditions (5xx, timeout, stream dropped) and plain
+  `RuntimeError` for an answer that will not change (404, 400). A model named
+  `tiny-503:0.5b` is therefore not retryable — the same mistake `classify_error`
+  made with `529` inside a commit SHA, one module over. And one retry loop,
+  not two: `_retry_with_backoff` gained a `should_retry` predicate rather than
+  a second copy of backoff arithmetic.
+  Also this round, the **fourth** sighting of the advisory pattern
+  `web/audit-ci.jsonc` predicts in writing: `security-scan` red for two
+  CRITICAL `next` advisories, a CRITICAL `@sentry/nextjs` one and a HIGH
+  `zod` one, all published against pinned versions after the base's last
+  green run. Cleared by upgrade (next 16.4.3, @sentry/nextjs 10.76.2, zod
+  4.6.7), nothing allowlisted. Worth recording for the next occurrence:
+  `npm audit fix` **crashes** on this lockfile (`Cannot read properties of
+  null (reading 'edgesOut')`) — an npm bug, not a statement about the tree;
+  `npm update <packages>` does the same within-range job.
+  Source: #4192; related #4193; extends **D-066**, **D-075**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

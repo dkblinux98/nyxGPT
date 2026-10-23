@@ -75,9 +75,33 @@ services:
         # open model store.
         trap 'kill -TERM $$server 2>/dev/null' TERM INT
         until ollama list >/dev/null 2>&1; do sleep 2; done
+        # A pull downloads from the public model registry, so most of its
+        # failures are statements about the registry rather than about this
+        # host -- and a single attempt turned one 503 into a container that
+        # never becomes healthy and a stack that never comes up. Retried on
+        # the same budget as k8s/statefulset-ollama.yaml's postStart hook and
+        # `pull_model`'s MODEL_PULL_ATTEMPTS (5 attempts, 5s doubling to 40s);
+        # tests/unit/test_model_pull_retry.py holds all three to one rule.
+        # Giving up still does not fail the entrypoint -- as before, the
+        # healthcheck is what refuses to report the stack up with a model
+        # missing, and stopping the server here would take the diagnosis
+        # away with it. What changes is that it takes five failures, not one,
+        # and each one is printed with its attempt number.
         for model in "$$NYXGPT_DEFAULT_MODEL" "$$NYXGPT_EMBEDDING_MODEL"; do
           [ -n "$$model" ] || continue
-          ollama show "$$model" >/dev/null 2>&1 || ollama pull "$$model" || true
+          ollama show "$$model" >/dev/null 2>&1 && continue
+          attempt=1
+          delay=5
+          while [ "$$attempt" -le 5 ]; do
+            if out="$$(ollama pull "$$model" 2>&1)"; then
+              break
+            fi
+            echo "nyxgpt: pull of '$$model' failed (attempt $$attempt/5): $$out"
+            attempt=$$((attempt + 1))
+            [ "$$attempt" -le 5 ] || break
+            sleep "$$delay"
+            delay=$$((delay * 2))
+          done
         done
         wait $$server
     healthcheck:
