@@ -1,0 +1,103 @@
+# Adjudicated code-scanning findings (#4222).
+#
+# WHY THIS FILE EXISTS. A code-scanning finding that this project has examined
+# and accepted was, until now, recorded in exactly one place: GitHub's
+# per-alert dismissal state. That state is keyed to the alert, and an alert's
+# identity includes its sink's LINE NUMBER. So any edit that shifts a dismissed
+# sink re-raises the identical, already-accepted finding as a brand-new open
+# alert -- and nothing reports it until `scripts/release_ceremony.sh`'s
+# code-scanning gate refuses to release.
+#
+# It has happened at least five times:
+#
+#   * #143  cloud_deploy.py:3690  `won't fix`  -- `_print_row` moved to :3924
+#     and came back as #144, two weeks before v3.0.1's ceremony.
+#   * #21   ops.py:16965          `false positive`
+#     #22   ops.py:17913          `false positive`
+#     #23   ops.py:17914          `false positive`  -- the same `doctor()`
+#     issue-list flow, adjudicated three times at three sink lines, then a
+#     fourth as #145 on `print(f"- {i}")`.
+#
+# Keying the adjudication to the FLOW instead -- rule, sink function, source
+# function -- survives every edit that only moves lines, which is the whole
+# population above. `scripts/agents/apply_codeql_adjudications.py` re-applies
+# these to any matching open alert, and reports any open critical/high alert
+# that matches NOTHING here, which is the case a human must actually look at.
+#
+# ADDING AN ENTRY IS AN ASSERTION, not paperwork. It says: this flow was
+# traced, end to end, and the finding is not a defect. Cite the evidence in
+# `comment` -- that text is what lands on the alert and is all a future
+# session will have. A finding that IS a defect gets fixed; see the standing
+# rule at `src/nyxgpt/ops.py` `_log_nonzero_exit` -- kill the flow at its
+# source rather than trying to convince CodeQL's taint tracker that a
+# sanitizer exists, because inline `codeql[...]` / `lgtm[...]` suppression
+# comments do not take effect against this repo's CodeQL default setup.
+#
+# FIELDS
+#   rule      the CodeQL rule id, exactly as the alert reports it.
+#   path      repo-relative file holding the SINK.
+#   sink      name of the function enclosing the sink. Module level is `<module>`.
+#   sources   every source function the accepted flows start in. An open alert
+#             whose flow starts somewhere else does NOT match, and is reported
+#             rather than dismissed -- a new source into an accepted sink is a
+#             new finding.
+#   reason    one of GitHub's dismissal reasons: `false positive`,
+#             `won't fix`, `used in tests`.
+#   comment   the reason, in enough detail to re-check without re-deriving.
+#   raised_as alert numbers this flow has been raised as, newest last. History,
+#             not a matching key -- the next re-raise gets a new number.
+#   enforced_by
+#             the executed test that keeps the adjudication TRUE. An accepted
+#             finding whose premise nothing checks is a rule this project
+#             states and does not enforce (#4174), so this field is required.
+
+adjudications:
+  - rule: py/clear-text-logging-sensitive-data
+    path: src/nyxgpt/cloud_deploy.py
+    sink: _print_row
+    sources:
+      - read_vnc_password
+    reason: won't fix
+    raised_as: [143, 144]
+    enforced_by:
+      - tests/unit/test_cloud_screen.py::test_the_command_opens_the_path_and_never_echoes_the_credential
+      - tests/unit/test_cloud_screen.py::test_show_password_is_the_only_way_the_credential_is_printed
+      - tests/unit/test_cloud_screen.py::test_the_json_status_never_carries_the_credential
+    comment: >-
+      Intended disclosure on explicit request, not a leak -- same adjudication
+      as #119 and #143. The two flows are
+      `cloud_screen.py:944` (`_print_open_summary`) and `cloud_screen.py:983`
+      (`_print_status_summary`), and BOTH are gated on `show_password`, which
+      is set only by `nyxgpt cloud screen --show-password`. Without that flag
+      the rows print `status['password_file']` -- the path -- and the output
+      names the flag. The value is never in the `--json` payload, never in a
+      log record, and never in an HTTP API response or the dashboard
+      (`web/src/app/admin/infrastructure/page.tsx` reads `password_file`
+      only). It reaches the terminal of the operator who asked for it, for the
+      EC2 Mac they own, so they can type it into a VNC client -- which is the
+      entire purpose of the command. The gate is held by the three tests in
+      `enforced_by`: default withholds, `--show-password` shows, `--json`
+      withholds even with `--show-password`.
+
+  - rule: py/clear-text-logging-sensitive-data
+    path: src/nyxgpt/ops.py
+    sink: doctor
+    sources:
+      - _glitchtip_secrets_doctor_issues
+    reason: false positive
+    raised_as: [21, 22, 23, 145]
+    enforced_by:
+      - tests/unit/test_ops.py::test_glitchtip_secrets_doctor_issues_carry_no_secret_value
+    comment: >-
+      No secret value exists in this flow. CodeQL taints the whole return
+      value of `_glitchtip_secrets_doctor_issues` (ops.py:22132) because the
+      FUNCTION NAME contains "secrets"; the function returns two diagnostic
+      strings built from `secrets_dir` (a directory PATH),
+      `getpass.getuser()`, and `token_path` (a file PATH). It never reads the
+      token file, so no credential value is in scope to leak, let alone
+      returned. The `doctor()` sinks it reaches -- `print(f"- {i}")`,
+      `logger.warning`'s message and its `extra` -- therefore carry paths and
+      a username, which is what the finding was already dismissed for at
+      three earlier sink lines (#21, #22, #23). Held by the test in
+      `enforced_by`, which asserts the real token contents never appear in any
+      returned string.

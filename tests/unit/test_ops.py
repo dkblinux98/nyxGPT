@@ -11449,6 +11449,51 @@ def test_glitchtip_secrets_doctor_issues_ok_when_token_present_and_grafana_runni
     assert ops._glitchtip_secrets_doctor_issues() == []
 
 
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_carry_no_secret_value(tmp_path, monkeypatch):
+    """The premise CodeQL alert #145 is dismissed on (#4222).
+
+    `py/clear-text-logging-sensitive-data` taints this function's whole return
+    value because its NAME contains "secrets", and follows it into `doctor()`'s
+    `print(f"- {i}")` and its `logger.warning`. The dismissal recorded in
+    `security/codeql-adjudications.yml` asserts the finding is a false
+    positive: the strings are built from a directory path, `getpass.getuser()`
+    and a token file PATH, and the token file is never read at all.
+
+    That premise is a claim about code, so it is checked rather than asserted
+    (#4174). A real token value sits on disk while every reachable finding is
+    provoked, and none of them may contain it. Tested at the source function
+    rather than through `doctor()` because this is where the flow starts and
+    where a future edit would introduce the value -- `doctor` only forwards
+    whatever strings it is handed, which the tests above already pin.
+    """
+    secret = "gt-live-adjudication-canary-0f1e2d3c"  # noqa: S105  # pragma: allowlist secret
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(ops, "_which", lambda _prog: "/usr/bin/docker")
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "glitchtip-grafana-token").write_text(secret, encoding="utf-8")
+
+    secrets_dir.chmod(0o500)
+    try:
+        unwritable = ops._glitchtip_secrets_doctor_issues()
+    finally:
+        secrets_dir.chmod(0o700)
+
+    (secrets_dir / "glitchtip-grafana-token").unlink()
+    missing_token = ops._glitchtip_secrets_doctor_issues()
+
+    # Not vacuous: both reachable findings actually fired.
+    assert len(unwritable) == 1, unwritable
+    assert "not writable" in unwritable[0]
+    assert len(missing_token) == 1, missing_token
+    assert "glitchtip-grafana-token" in missing_token[0]
+
+    for issue in [*unwritable, *missing_token]:
+        assert secret not in issue, f"the token value reached a doctor finding: {issue}"
+
+
 def _write_error_tracking_config(path, *, enabled=True, dsn="http://key@localhost:8080/1"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
