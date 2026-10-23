@@ -28,7 +28,13 @@ version forever:
     off an exact `16.3.0` for that reason ("patch-range, so the lock fix
     can reach it next time without a package.json edit"), and #4221 found
     `eslint-config-next` still exactly pinned at `16.3.0`, which is the
-    path that carried the `zod` HIGH two days earlier.
+    path that carried the `zod` HIGH two days earlier. That one is NOT
+    fixed here: unpinning it resolves 16.4.3, whose react-hooks 7.1.x
+    promotes four rules to error and takes `npx eslint .` from 2 errors to
+    29 across ~20 files, which the diff-scoped blocking lint gate would
+    then charge to the next unrelated PR. It is recorded in
+    `DELIBERATE_EXACT_PINS` below and filed as #4224, so the pin is an
+    explicit accepted liability rather than an oversight.
 
 So the rule, enforced below rather than only written down (#4174): when an
 advisory is cleared, the `package.json` range moves too, and a dependency
@@ -85,6 +91,15 @@ DELIBERATE_EXACT_PINS: dict[str, str] = {
     "react": "held in lockstep with react-dom and @types/react; React upgrades are their own change",
     "react-dom": "held in lockstep with react; see above",
     "audit-ci": "the security gate's own tool -- pinned so the gate's behaviour does not drift under it",
+    # Measured during #4221, not assumed: unpinning resolves 16.4.3, whose
+    # eslint-plugin-react-hooks 7.1.1 promotes four rules
+    # (set-state-in-effect, refs, purity, preserve-manual-memoization) and
+    # takes `npx eslint .` from 2 errors to 29 across ~20 files. The web
+    # eslint gate is diff-scoped and blocking (ci-tests.yml), so landing
+    # that debt would block the next PR to touch any of those files for a
+    # reason unrelated to its own change. Carrying the pin for now is the
+    # smaller harm; retiring it is its own change.
+    "eslint-config-next": "unpinning imports 27 new react-hooks errors across ~20 files -- see #4224",
 }
 
 # Specifier prefixes that let a lockfile fix reach the dependency without a
