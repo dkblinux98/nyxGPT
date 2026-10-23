@@ -43,7 +43,15 @@
 #             new finding.
 #   reason    one of GitHub's dismissal reasons: `false positive`,
 #             `won't fix`, `used in tests`.
-#   comment   the reason, in enough detail to re-check without re-deriving.
+#   headline  the verdict in ONE sentence. This is what is written onto the
+#             alert, because GitHub caps `dismissed_comment` at 280
+#             characters -- which is the second reason this file exists, and
+#             why the dismissal comments already on this repo's alerts stop
+#             mid-word. `load_register` refuses an entry whose headline plus
+#             the pointer would exceed the cap, so the limit is hit here and
+#             not as a 422 half-way through a run.
+#   comment   the full argument, in enough detail to re-check without
+#             re-deriving. Stays in this file; never sent to GitHub.
 #   raised_as alert numbers this flow has been raised as, newest last. History,
 #             not a matching key -- the next re-raise gets a new number.
 #   enforced_by
@@ -63,6 +71,10 @@ adjudications:
       - tests/unit/test_cloud_screen.py::test_the_command_opens_the_path_and_never_echoes_the_credential
       - tests/unit/test_cloud_screen.py::test_show_password_is_the_only_way_the_credential_is_printed
       - tests/unit/test_cloud_screen.py::test_the_json_status_never_carries_the_credential
+    headline: >-
+      Intended disclosure: both flows are gated on `cloud screen
+      --show-password`; by default only the password-file path prints, and the
+      value never reaches JSON, logs, the API or the UI.
     comment: >-
       Intended disclosure on explicit request, not a leak -- same adjudication
       as #119 and #143. The two flows are
@@ -88,6 +100,10 @@ adjudications:
     raised_as: [21, 22, 23, 145]
     enforced_by:
       - tests/unit/test_ops.py::test_glitchtip_secrets_doctor_issues_carry_no_secret_value
+    headline: >-
+      No secret value in the flow: the tainted strings are built from two
+      PATHS and getpass.getuser(), and the token file is never read. CodeQL
+      taints on the function NAME.
     comment: >-
       No secret value exists in this flow. CodeQL taints the whole return
       value of `_glitchtip_secrets_doctor_issues` (ops.py:22132) because the

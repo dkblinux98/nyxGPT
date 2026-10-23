@@ -164,7 +164,8 @@ def register(tmp_path: Path) -> list[adj.Adjudication]:
                         "sink": "_print_row",
                         "sources": ["read_vnc_password"],
                         "reason": "won't fix",
-                        "comment": "Intended, on explicit operator request.",
+                        "headline": "Intended, on explicit operator request.",
+                        "comment": "The long form of the same argument.",
                         "raised_as": [143],
                         "enforced_by": ["tests/unit/test_x.py::test_y"],
                     }
@@ -268,7 +269,9 @@ def test_a_sub_blocking_severity_is_reported_but_does_not_fail(tree: Path, regis
         ({"sources": []}, "missing `sources`"),
         ({"enforced_by": []}, "missing `enforced_by`"),
         ({"comment": ""}, "missing `comment`"),
+        ({"headline": ""}, "missing `headline`"),
         ({"sink": ""}, "missing `sink`"),
+        ({"headline": "x" * 300}, "GitHub allows 280"),
     ],
 )
 def test_a_malformed_entry_is_fatal(tmp_path: Path, mutation: dict, fragment: str) -> None:
@@ -281,6 +284,7 @@ def test_a_malformed_entry_is_fatal(tmp_path: Path, mutation: dict, fragment: st
         "sink": "_print_row",
         "sources": ["read_vnc_password"],
         "reason": "won't fix",
+        "headline": "Short verdict.",
         "comment": "ok",
         "enforced_by": ["tests/unit/test_x.py::test_y"],
     }
@@ -306,6 +310,7 @@ def test_two_entries_for_one_flow_are_rejected(tmp_path: Path) -> None:
         "sink": "_print_row",
         "sources": ["a"],
         "reason": "won't fix",
+        "headline": "Short verdict.",
         "comment": "ok",
         "enforced_by": ["tests/unit/test_x.py::test_y"],
     }
@@ -434,8 +439,20 @@ def test_the_dismissal_comment_points_back_at_the_register(register: list) -> No
 
     assert "security/codeql-adjudications.yml" in comment
     assert "#143" in comment
-    assert "tests/unit/test_x.py::test_y" in comment
-    assert register[0].comment in comment
+    assert register[0].headline in comment
+    # The full argument stays in the file: 280 characters cannot hold it, and
+    # trying is how #119's dismissal ends mid-word.
+    assert register[0].comment not in comment
+
+
+def test_every_live_entry_fits_githubs_comment_limit() -> None:
+    """Learned by 422 against the real API: "Only 280 characters are allowed;
+    1043 were supplied." A register that cannot be written is a register that
+    dismisses nothing, and the failure arrives half-way through a run."""
+    for entry in adj.load_register():
+        written = len(adj.dismissal_comment(entry))
+
+        assert written <= adj.MAX_DISMISSAL_COMMENT, f"{entry.key()}: {written} characters"
 
 
 def test_alert_severity_falls_back_to_the_rule_severity() -> None:

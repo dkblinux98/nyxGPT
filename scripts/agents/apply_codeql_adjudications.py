@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ref",
         default=os.environ.get("SCAN_REF", ""),
-        help="the ref to report on, e.g. refs/heads/v3.0.1",
+        help="the ref to report on, e.g. refs/heads/<release-branch>",
     )
     parser.add_argument(
         "--dry-run",

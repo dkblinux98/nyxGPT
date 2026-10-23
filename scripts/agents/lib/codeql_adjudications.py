@@ -79,6 +79,20 @@ BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 #: `sink` for a sink at module level, where there is no enclosing function.
 MODULE_SCOPE = "<module>"
 
+#: GitHub's hard limit on `dismissed_comment`, learned by 422:
+#: "Only 280 characters are allowed; 1043 were supplied." It is also the
+#: explanation for the truncated dismissal comments already on this repo's
+#: alerts -- #119's stops mid-word at "The alert's threat model - an attacke"
+#: -- and the second reason the reasoning belongs in the repository: 280
+#: characters cannot hold why a finding was accepted. So the alert gets
+#: `headline` plus a pointer, and `comment` -- the full argument -- stays in
+#: the register. Checked when the register LOADS, not at write time: a 422
+#: mid-run would leave some alerts dismissed and the rest not.
+MAX_DISMISSAL_COMMENT = 280
+
+#: Where a reader of the alert goes for the full argument.
+REGISTER_POINTER = "Reasoning + tests: security/codeql-adjudications.yml (#4222)."
+
 #: CodeQL labels each flow step `ControlFlowNode for <what>`, sometimes with a
 #: `[post]` marker and a trailing `[Attribute x]`. What is left is either a
 #: named symbol -- which is the source this register keys on -- or an
@@ -108,6 +122,7 @@ class Adjudication:
     sink: str
     sources: frozenset[str]
     reason: str
+    headline: str
     comment: str
     raised_as: tuple[int, ...] = ()
     enforced_by: tuple[str, ...] = ()
@@ -175,7 +190,16 @@ def load_register(path: Path | None = None) -> list[Adjudication]:
         where = f"{path} adjudications[{index}]"
         if not isinstance(entry, dict):
             raise RegisterError(f"{where} is not a mapping")
-        for required in ("rule", "path", "sink", "sources", "reason", "comment", "enforced_by"):
+        for required in (
+            "rule",
+            "path",
+            "sink",
+            "sources",
+            "reason",
+            "headline",
+            "comment",
+            "enforced_by",
+        ):
             if not entry.get(required):
                 raise RegisterError(f"{where} is missing `{required}`")
         reason = str(entry["reason"])
@@ -193,10 +217,19 @@ def load_register(path: Path | None = None) -> list[Adjudication]:
             sink=str(entry["sink"]),
             sources=frozenset(str(s) for s in sources),
             reason=reason,
+            headline=" ".join(str(entry["headline"]).split()),
             comment=" ".join(str(entry["comment"]).split()),
             raised_as=tuple(int(n) for n in (entry.get("raised_as") or [])),
             enforced_by=tuple(str(t) for t in enforced_by),
         )
+        written = len(dismissal_comment(adjudication))
+        if written > MAX_DISMISSAL_COMMENT:
+            raise RegisterError(
+                f"{where}: the comment this would write to the alert is {written} characters "
+                f"and GitHub allows {MAX_DISMISSAL_COMMENT}. Shorten `headline` by "
+                f"{written - MAX_DISMISSAL_COMMENT} -- the full argument belongs in `comment`, "
+                "which stays here and is not sent."
+            )
         if adjudication.key() in seen:
             raise RegisterError(
                 f"{where}: {adjudication.key()} is adjudicated twice -- merge the "
@@ -349,21 +382,21 @@ def match_alerts(
 
 
 def dismissal_comment(adjudication: Adjudication) -> str:
-    """The text written onto the alert.
+    """The text written onto the alert: the headline, a pointer, the history.
 
-    Names the register so the next reader finds the decision in the
-    repository rather than re-deriving it from the code, which is the whole
-    point of #4222: the comment GitHub holds is a copy, and the file is the
-    original.
+    Deliberately NOT `comment`. GitHub allows 280 characters here, which is
+    not enough to say why a finding was accepted -- so the alert carries the
+    one-sentence verdict and the address of the full argument, and the
+    argument itself stays in the register. The comment GitHub holds is a
+    copy; the file is the original.
+
+    `load_register` refuses an entry whose result exceeds
+    `MAX_DISMISSAL_COMMENT`, so this never needs to truncate -- a silently
+    cut-off reason is how #119's dismissal ends mid-word.
     """
     history = (
-        f" Previously raised as {', '.join('#' + str(n) for n in adjudication.raised_as)}."
+        f" Raised as {', '.join('#' + str(n) for n in adjudication.raised_as)}."
         if adjudication.raised_as
         else ""
     )
-    return (
-        f"{adjudication.comment}\n\n"
-        f"Adjudicated in security/codeql-adjudications.yml "
-        f"({adjudication.key()}), re-applied automatically (#4222).{history} "
-        f"Enforced by: {', '.join(adjudication.enforced_by)}."
-    )
+    return f"{adjudication.headline} {REGISTER_POINTER}{history}"
