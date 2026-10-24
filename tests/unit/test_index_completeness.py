@@ -112,7 +112,10 @@ NOT_AN_INDEX: dict[str, str] = {
     "tests/integration/README.md": "how to run the integration suite; it names no test files",
     "tests/fixtures/bounded_output/README.md": "explains one fixture directory's purpose",
     "tests/fixtures/pytest_conftest_guard/README.md": "explains one fixture directory's purpose",
-    "web/README.md": "the create-next-app scaffold's getting-started text",
+    "web/README.md": (
+        "what the web UI is and which `nyxgpt` commands run it (#4231), pointing at "
+        "docs/ for the detail; it lists no file in web/"
+    ),
     "web/tests/README.md": "how the web test infrastructure works; it names no test files",
 }
 
