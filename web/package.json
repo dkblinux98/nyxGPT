@@ -42,17 +42,17 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.1.2",
-    "@vitest/coverage-v8": "^4.0.16",
-    "@vitest/ui": "^4.0.16",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/ui": "^4.1.12",
     "audit-ci": "7.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "happy-dom": "^21.0.4",
     "msw": "^2.12.7",
     "typescript": "^5",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.12"
   },
   "overrides": {
-    "serialize-javascript": "^7.0.5"
+    "serialize-javascript": "^7.1.3"
   }
 }
